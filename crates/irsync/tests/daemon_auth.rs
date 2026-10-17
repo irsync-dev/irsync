@@ -33,9 +33,13 @@ fn grants(access: Access) -> Grants {
 
 /// Sends `h` from an authorised client with `access`; returns the reply bytes' decode attempt.
 async fn exchange(access: Access, h: Hello) -> Result<HelloAckOrError, String> {
+    exchange_with(grants(access), h).await
+}
+
+async fn exchange_with(g: Grants, h: Hello) -> Result<HelloAckOrError, String> {
     let client = client_endpoint().await;
     let dir = tempfile::tempdir().unwrap();
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), grants(access)));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), g));
     let d = spawn_daemon(
         vec![
             ("rw", dir.path().to_path_buf(), false),
@@ -75,13 +79,27 @@ fn expect_err(r: Result<HelloAckOrError, String>, code: Code) {
 
 #[tokio::test]
 async fn unauthorized_key_connection_closed_before_hello() {
-    let client = client_endpoint().await;
     let stranger = client_endpoint().await;
+    closed_before_hello(|_| {
+        Arc::new(MemoryAuthorizer::single(
+            stranger.id(),
+            grants(Access::ReadWrite),
+        ))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn empty_grants_closed_before_hello() {
+    closed_before_hello(|id| Arc::new(MemoryAuthorizer::single(id, Grants::default()))).await;
+}
+
+async fn closed_before_hello(
+    mk: impl FnOnce(iroh::EndpointId) -> Arc<dyn irsync::authz::Authorizer>,
+) {
+    let client = client_endpoint().await;
     let dir = tempfile::tempdir().unwrap();
-    let authz = Arc::new(MemoryAuthorizer::single(
-        stranger.id(),
-        grants(Access::ReadWrite),
-    ));
+    let authz = mk(client.id());
     let d = spawn_daemon(vec![("rw", dir.path().to_path_buf(), false)], authz).await;
     let conn = within(client.connect(d.addr.clone(), ALPN)).await.unwrap();
     // The stream may open locally and the write may even succeed; reading must fail.
@@ -149,4 +167,46 @@ async fn unknown_module_rejected() {
         .await,
         Code::NoSuchModule,
     );
+}
+
+#[tokio::test]
+async fn rw_grant_cannot_send_to_read_only_module() {
+    expect_err(
+        exchange(Access::ReadWrite, hello("ro", b"", Direction::ClientSends)).await,
+        Code::ReadOnly,
+    );
+}
+
+#[tokio::test]
+async fn grant_lacking_module_cannot_pull() {
+    let g = Grants {
+        modules: [("ro".to_string(), Access::ReadWrite)].into(),
+        all: None,
+    };
+    expect_err(
+        exchange_with(g, hello("rw", b"", Direction::DaemonSends)).await,
+        Code::Unauthorized,
+    );
+}
+
+#[tokio::test]
+async fn ro_grant_can_pull() {
+    match exchange(Access::ReadOnly, hello("rw", b"", Direction::DaemonSends)).await {
+        Ok(HelloAckOrError::Ack(_)) => {}
+        _ => panic!("expected HelloAck"),
+    }
+}
+
+#[tokio::test]
+async fn wrong_protocol_version_rejected() {
+    let mut h = hello("rw", b"", Direction::ClientSends);
+    h.protocol_version = PROTOCOL_VERSION + 1;
+    expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+}
+
+#[tokio::test]
+async fn wrong_chunk_params_rejected() {
+    let mut h = hello("rw", b"", Direction::ClientSends);
+    h.chunk_avg += 1;
+    expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
 }

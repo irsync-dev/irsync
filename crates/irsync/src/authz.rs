@@ -27,6 +27,11 @@ pub struct Grants {
 }
 
 impl Grants {
+    /// True when the grants cover no module at all (no entries and no `*`).
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_empty() && self.all.is_none()
+    }
+
     pub fn allows(&self, module: &str, write: bool) -> bool {
         self.modules
             .get(module)

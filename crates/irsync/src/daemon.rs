@@ -23,6 +23,8 @@ use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, EndpointOpts, RelayChoice};
 use crate::session::engine::serve_daemon;
 
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct Shared {
     authz: Arc<dyn Authorizer>,
     modules: BTreeMap<String, Module>,
@@ -91,16 +93,28 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
     // Authorise on the verified key before touching any stream.
     let id = conn.remote_id();
-    let Some(grants) = shared.authz.grants(&id) else {
-        tracing::info!(peer = %id.fmt_short(), "rejecting unauthorized key");
-        conn.close(1u32.into(), b"unauthorized");
-        return Ok(());
+    let grants = match shared.authz.grants(&id) {
+        Some(g) if !g.is_empty() => g,
+        _ => {
+            tracing::info!(peer = %id.fmt_short(), "rejecting unauthorized key");
+            conn.close(1u32.into(), b"unauthorized");
+            return Ok(());
+        }
     };
-    let (mut send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
-    let hello: Hello = read_msg(&mut recv)
-        .await
-        .context("read Hello")?
-        .context("peer closed before Hello")?;
+    let first = tokio::time::timeout(HELLO_TIMEOUT, async {
+        let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
+        let hello: Hello = read_msg(&mut recv)
+            .await
+            .context("read Hello")?
+            .context("peer closed before Hello")?;
+        anyhow::Ok((send, recv, hello))
+    })
+    .await;
+    let Ok(first) = first else {
+        conn.close(2u32.into(), b"hello timeout");
+        anyhow::bail!("timed out waiting for Hello");
+    };
+    let (mut send, recv, hello) = first?;
     #[cfg(feature = "test-hooks")]
     shared
         .hellos
@@ -109,7 +123,11 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     match validate(&shared, &grants, &hello) {
         Ok(module) => {
             let root = module.path.clone();
-            let index = shared.indexes[&hello.module].clone();
+            let index = shared
+                .indexes
+                .get(&hello.module)
+                .context("module has no index")?
+                .clone();
             serve_daemon(conn, send, recv, root, hello, index).await
         }
         Err((code, message)) => {
@@ -158,6 +176,7 @@ fn validate<'a>(
                 return Err((Code::Unauthorized, "no access to module".into()));
             }
         }
+        // No dedicated code for a malformed direction; UNKNOWN is the honest answer.
         Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }
     Ok(module)
