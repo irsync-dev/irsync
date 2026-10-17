@@ -111,8 +111,25 @@ Things that would make irsync a failure even if it technically works:
   authorized_keys parsing. Only Ed25519 keys can be used as identities,
   because the iroh identity *is* an Ed25519 key.
 - **Chunking: `fastcdc` crate** (5.x, `v2020` module). **Hashing: `blake3`.**
+- **Wire format: Protocol Buffers (proto3).** Every message on every
+  stream is a protobuf message, so an irsync implementation in another
+  language can interoperate. The `.proto` files live in the repository
+  under `proto/` and are the normative protocol specification; the Rust
+  types are generated from them at build time (`prost` + `prost-build`,
+  author's suggestion; `protoc` must not be required at runtime). File
+  data on data streams is carried as raw bytes inside length-prefixed
+  protobuf frames, not as a bare byte stream, so the framing is also
+  language-neutral. Protocol evolution follows protobuf rules: new fields
+  are optional, field numbers are never reused, and `Hello` carries a
+  protocol version for anything that can't be expressed as an added
+  field.
 - Both binaries (client and daemon) ship in one executable, `irsync`, with
   the daemon as a subcommand, as rsync does with `--daemon`.
+- **The protocol is a public interface.** Nothing Rust-specific (serde
+  layouts, enum discriminants, hash of a Rust struct) may leak into what
+  goes on the wire. Chunking parameters, hash algorithm and the FastCDC
+  variant are part of the protocol specification so another
+  implementation produces identical chunk boundaries and hashes.
 
 ## Architecture
 
@@ -527,9 +544,12 @@ foreground with logs to stderr; no self-daemonising. Logging via
 - Crate layout (single crate with modules vs. workspace). A workspace with
   `irsync-proto` (wire types, chunking, no I/O) and `irsync` (everything
   else) is a reasonable default.
-- Wire serialisation format for protocol messages (`postcard` is the
-  author's suggestion; anything compact and versionable works). Framing on
-  the control stream.
+- Framing details: length prefix width (a varint or fixed u32) and
+  maximum frame size for control and data streams, within the protobuf
+  constraint above. Chunk payload size per data frame.
+- Organisation of the `.proto` files (one package `irsync.v1`, split by
+  concern) and how generated code is exposed from the `irsync-proto`
+  crate.
 - Exact index schema and migration strategy; index location naming.
 - Walker and hasher thread pool sizing.
 - The protocol state machine details and error taxonomy, provided the
@@ -558,6 +578,9 @@ Listed so they can be checked while reading:
   public key over SSH instead.
 - The 1 Gbit/s target is for direct paths; relays are fallback.
 - Platform: Linux and macOS, both roles (inferred from the APFS mention).
+- Protobuf wire format was the user's requirement; `prost` as the Rust
+  implementation and length-prefixed framing of data chunks are the
+  author's calls.
 - Module-based addressing (`dest:module/path`), TOML daemon config, XDG
   config locations, `--numeric-ids` on by default, BBR congestion control,
   FastCDC 64 KiB / 256 KiB / 1 MiB, 60 s idle timeout, 32 parallel
