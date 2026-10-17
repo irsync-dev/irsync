@@ -16,3 +16,23 @@ message Hello {
 message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
 message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }
 message ChunkRecord { uint64 offset = 1; uint32 len = 2; Hash hash = 3; }
+
+message FileEntry {
+  bytes path = 1;                                 // relative to root, '/'-separated, raw bytes
+  enum Kind { REGULAR = 0; DIRECTORY = 1; SYMLINK = 2; CHAR_DEV = 3; BLOCK_DEV = 4; FIFO = 5; SOCKET = 6; }
+  Kind kind = 2;
+  uint64 size = 3;
+  int64 mtime_sec = 4;
+  uint32 mtime_nsec = 5;
+  uint32 mode = 6;
+  uint32 uid = 7;
+  uint32 gid = 8;
+  bytes link_target = 9;
+  uint64 rdev = 10;
+  uint64 dev = 11;
+  uint64 inode = 12;
+  uint32 nlink = 13;
+  optional Hash whole_hash = 14;                  // lazy: absent until computed
+  bool sparse = 15;
+  reserved 16 to 31;                              // later metadata (xattrs)
+}

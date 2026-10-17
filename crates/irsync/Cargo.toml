@@ -5,3 +5,10 @@ edition.workspace = true
 
 [features]
 test-hooks = []
+
+[dependencies]
+irsync-proto = { path = "../irsync-proto" }
+nix = { workspace = true, features = ["fs", "user", "time"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
