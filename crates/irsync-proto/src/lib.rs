@@ -1,5 +1,7 @@
 //! Wire protocol types for irsync, generated from `proto/irsync/v1`.
 
+pub mod chunk;
+
 pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/irsync.v1.rs"));
 }

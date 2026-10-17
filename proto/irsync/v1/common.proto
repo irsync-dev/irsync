@@ -15,3 +15,4 @@ message Hello {
 }
 message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
 message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }
+message ChunkRecord { uint64 offset = 1; uint32 len = 2; Hash hash = 3; }

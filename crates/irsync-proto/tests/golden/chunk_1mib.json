@@ -1,0 +1,26 @@
+{
+  "size": 1048576,
+  "hash": "0a0527914d8907d803b24ecb2740fd01d1c5d92278a4d49533ee3f01a3636cc3",
+  "chunks": [
+    {
+      "offset": 0,
+      "len": 364837,
+      "hash": "2cbff25aba488f09152fd1b61577c5394c6f957cd14a0700d57b2a1ee9f7a1c1"
+    },
+    {
+      "offset": 364837,
+      "len": 167313,
+      "hash": "523e1a3dbe396b8317983bb2dc527167d0274bdc55038a1bab0db2360b995604"
+    },
+    {
+      "offset": 532150,
+      "len": 342136,
+      "hash": "268e6158d541544d332aa654fef7d5ac667b05d7f296f9bb560b83fe9d43cbdd"
+    },
+    {
+      "offset": 874286,
+      "len": 174290,
+      "hash": "2a76c15ef919826d22f96ad39065069b3c2a266cc03a1feb0b6fafd76db3ad83"
+    }
+  ]
+}
