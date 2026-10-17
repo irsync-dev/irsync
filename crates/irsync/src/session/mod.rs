@@ -5,11 +5,16 @@ mod control;
 pub mod engine;
 mod planner;
 mod receiver;
+pub mod reconnect;
+mod recv_io;
 mod sender_role;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use iroh::endpoint::Connection;
 use iroh::EndpointId;
 use irsync_proto::v1::{Hello, SessionPlan, SessionProgress};
 use prost::Message;
@@ -229,6 +234,132 @@ fn join_rel(a: &RelPath, b: &RelPath) -> RelPath {
     }
 }
 
+/// Close code for a connection whose session was taken over by a newer
+/// connection resuming it.
+pub const CLOSE_SUPERSEDED: u32 = 3;
+/// How long a resuming connection waits for the session's previous host to stop.
+const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct Hosted {
+    conn: Connection,
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// The sessions a daemon is hosting. A session id runs on at most one
+/// connection: a resuming connection closes the previous one and waits until
+/// its role has stopped (and persisted) before loading the session.
+#[derive(Default)]
+pub struct SessionRegistry {
+    map: std::sync::Mutex<HashMap<[u8; 16], Hosted>>,
+    /// Every id hosted so far, in order (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub hosted: Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
+}
+
+/// Holding this means the session runs on this connection only.
+pub struct SessionClaim {
+    registry: Arc<SessionRegistry>,
+    id: [u8; 16],
+    conn_id: usize,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for SessionClaim {
+    fn drop(&mut self) {
+        let mut map = self.registry.map.lock().unwrap_or_else(|e| e.into_inner());
+        if map
+            .get(&self.id)
+            .is_some_and(|h| h.conn.stable_id() == self.conn_id)
+        {
+            map.remove(&self.id);
+        }
+    }
+}
+
+impl SessionRegistry {
+    /// Makes `conn` the host of session `id`, closing any earlier host and
+    /// waiting (bounded) until it has let go.
+    pub async fn claim(
+        self: &Arc<Self>,
+        id: [u8; 16],
+        conn: &Connection,
+    ) -> anyhow::Result<SessionClaim> {
+        let (previous, lock) = {
+            let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = map.get(&id).map(|h| h.lock.clone()).unwrap_or_default();
+            let previous = map.insert(
+                id,
+                Hosted {
+                    conn: conn.clone(),
+                    lock: lock.clone(),
+                },
+            );
+            (previous.map(|h| h.conn), lock)
+        };
+        if let Some(old) = previous {
+            tracing::info!(session = %control::hex(&id), "taking over the session from an older connection");
+            old.close(CLOSE_SUPERSEDED.into(), b"superseded");
+        }
+        let guard = tokio::time::timeout(TAKEOVER_TIMEOUT, lock.lock_owned())
+            .await
+            .map_err(|_| anyhow::anyhow!("the session's previous connection did not stop"))?;
+        #[cfg(feature = "test-hooks")]
+        self.hosted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(id);
+        Ok(SessionClaim {
+            registry: self.clone(),
+            id,
+            conn_id: conn.stable_id(),
+            _guard: guard,
+        })
+    }
+}
+
+/// Test hook: closes the connection (code 99) once the daemon's data bytes
+/// (received, as receiver; written, as sender) cross a limit — exactly once.
+#[cfg(feature = "test-hooks")]
+#[derive(Debug, Default)]
+pub struct FaultInjector {
+    limit: std::sync::atomic::AtomicU64,
+    armed: std::sync::atomic::AtomicBool,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(feature = "test-hooks")]
+impl FaultInjector {
+    pub fn drop_after_bytes(&self, n: u64) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.limit.store(n, SeqCst);
+        self.armed.store(true, SeqCst);
+    }
+
+    pub fn fired(&self) -> bool {
+        self.fired.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Called with a connection's running byte count.
+    pub(crate) fn observe(&self, total: u64, conn: &Connection) {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.armed.load(SeqCst)
+            && total >= self.limit.load(SeqCst)
+            && !self.fired.swap(true, SeqCst)
+        {
+            tracing::warn!(total, "fault injection: dropping the connection");
+            conn.close(99u32.into(), b"fault");
+        }
+    }
+}
+
+/// What the daemon shares with every session it serves.
+#[derive(Clone, Default)]
+pub struct DaemonSessions {
+    pub registry: Arc<SessionRegistry>,
+    #[cfg(feature = "test-hooks")]
+    pub fault: Option<Arc<FaultInjector>>,
+}
+
 /// Called by the sender role after the first chunk of a path went out, before
 /// the rest; lets a test change the file mid-transfer.
 #[cfg(feature = "test-hooks")]
@@ -286,7 +417,9 @@ impl LocalSide {
 #[derive(Debug, Clone, Default)]
 pub struct Outcome {
     pub session_id: [u8; 16],
-    /// Files placed (receiver) or acknowledged as placed (sender).
+    /// The daemon resumed an existing session (`HelloAck.resumed`).
+    pub resumed: bool,
+    /// Files placed (receiver) or acknowledged as placed (sender) on this connection.
     pub files_transferred: u64,
     /// File data bytes that crossed the network on data streams.
     pub bytes_transferred: u64,
@@ -402,7 +535,11 @@ mod tests {
                     action: Action::Delta as i32,
                     size: 9,
                     whole_hash: None,
+                    entry: None,
                 }],
+                plan_complete: true,
+                remote_id: vec![4; 32],
+                ..SessionPlan::default()
             },
             progress: SessionProgress {
                 done_file_ids: vec![1],

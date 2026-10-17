@@ -489,4 +489,12 @@ impl Index {
         tx.commit()?;
         Ok(ids)
     }
+
+    /// Removes one session row (a finished session). Returns whether it existed.
+    pub fn delete_session(&mut self, id: &[u8; 16]) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM sessions WHERE id = ?1", [&id[..]])?;
+        Ok(n > 0)
+    }
 }

@@ -5,39 +5,42 @@
 //! `ChunkList` arrives, filled from local copies and data streams, and
 //! acknowledged only after `finalize` has verified and renamed them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::bail;
-use iroh::endpoint::{RecvStream, VarInt};
-use irsync_proto::chunk::{ChunkRecord, FileDigest};
+use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, plan_item::Action, ChunkList, DataChunk,
-    DataStreamHeader, FileAck, FileEntry, Hash, NeedChunks, PathError, PlanEntry, SessionDone,
+    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, NeedChunks,
+    PathError, PlanEntry, PlanItem, SessionDone, SessionPlan,
 };
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_util::task::TaskTracker;
 
-use super::control::{spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister};
-use super::engine::{blocking, Ctx, Events};
-use super::planner::{plan, Planned, PlannerReport};
+use super::control::{capped_errors, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister};
+use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
+use super::planner::{mkdir_replacing, plan, DirEntry, Planned, PlannerReport, Prior};
+use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
 use super::Outcome;
 use crate::filter::FilterSet;
-use crate::fs::meta::{apply_metadata, lstat_entry_with_ctime};
+use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
-use crate::net::frame::read_msg;
 use crate::plan::Side;
 use crate::recv::{FileWriter, FinalizeError};
-use crate::scan::ScanItem;
 
 /// How long to wait for the sender to close its end after `SessionDone`.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A file is given up after this many whole-file hash mismatches.
 const MAX_MISMATCHES: u32 = 2;
+/// Re-requests per file and connection for chunks its data streams did not deliver.
+const MAX_REREQUESTS: u32 = 3;
+/// How long a failed session waits for its own file tasks to stop.
+const TASK_DRAIN: Duration = Duration::from_secs(10);
 
 /// Completions of the receiver's tasks, delivered to its main loop.
 pub(super) enum Done {
@@ -65,25 +68,13 @@ pub(super) enum Done {
         gen: u32,
         msg: String,
     },
+    /// Every data stream for the requested chunks has ended, and some
+    /// chunks are still missing.
+    Drained {
+        file_id: u64,
+        gen: u32,
+    },
 }
-
-pub(super) struct Opened {
-    writer: FileWriter,
-    missing: Vec<u32>,
-    digest: FileDigest,
-}
-
-type Slot = Arc<tokio::sync::Mutex<Option<FileWriter>>>;
-
-/// Where a data stream for a file id goes: the current writer generation.
-#[derive(Clone)]
-struct Route {
-    gen: u32,
-    slot: Slot,
-    chunks: Arc<Vec<ChunkRecord>>,
-}
-
-type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum St {
@@ -103,6 +94,8 @@ struct RFile {
     /// and data streams carry an older value and are ignored.
     gen: u32,
     mismatches: u32,
+    /// `NeedChunks` re-sent for chunks the data streams did not deliver.
+    rerequests: u32,
     st: St,
     /// A `ChunkList` that arrived while the `.part` was busy (opening or finalizing).
     pending: Option<ChunkList>,
@@ -110,301 +103,6 @@ struct RFile {
     abandoned: Option<String>,
     /// The current chunk list as native records (set once opened).
     digest: Option<FileDigest>,
-}
-
-fn is_regular(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file())
-}
-
-/// Chunk count of a data stream's range, if it lines up with the chunk list.
-fn range_len(chunks: &[ChunkRecord], first: usize, offset: u64, length: u64) -> Option<usize> {
-    let start = chunks.get(first)?;
-    if start.offset != offset || length == 0 {
-        return None;
-    }
-    let mut sum = 0u64;
-    for (k, c) in chunks[first..].iter().enumerate() {
-        sum += u64::from(c.len);
-        if sum == length {
-            return Some(k + 1);
-        }
-        if sum > length {
-            return None;
-        }
-    }
-    None
-}
-
-/// Reads one data stream into the current writer of its file. Chunks are
-/// verified one by one; a stream that ends early (EOF or reset) leaves its
-/// remaining chunks missing, so the file can never complete from it.
-async fn read_stream(
-    ctx: Arc<Ctx>,
-    routes: Routes,
-    events: mpsc::UnboundedSender<Ev>,
-    bytes: Arc<AtomicU64>,
-    mut s: RecvStream,
-) {
-    let stop = |s: &mut RecvStream, code: u32| {
-        let _ = s.stop(VarInt::from_u32(code));
-    };
-    let header: DataStreamHeader = match read_msg(&mut s).await {
-        Ok(Some(h)) => h,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::debug!(error = %e, "data stream without header");
-            return stop(&mut s, 1);
-        }
-    };
-    if header.session_id != ctx.session_id {
-        tracing::warn!(file_id = header.file_id, "data stream for another session");
-        return stop(&mut s, 1);
-    }
-    let file_id = header.file_id;
-    let route = routes
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&file_id)
-        .cloned();
-    let Some(route) = route else {
-        tracing::debug!(file_id, "data stream for a file not being received");
-        return stop(&mut s, 0);
-    };
-    let first = header.first_chunk_idx as usize;
-    let Some(n) = range_len(&route.chunks, first, header.offset, header.length) else {
-        tracing::warn!(file_id, "data stream range does not match the chunk list");
-        return stop(&mut s, 1);
-    };
-    let mut arrived = 0;
-    for k in 0..n {
-        let data = match read_msg::<DataChunk, _>(&mut s).await {
-            Ok(Some(c)) => c.data,
-            Ok(None) => break,
-            Err(e) => {
-                tracing::debug!(file_id, error = %e, "data stream failed");
-                break;
-            }
-        };
-        arrived += 1;
-        bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
-        let mut guard = route.slot.lock().await;
-        let Some(w) = guard.as_mut() else {
-            // The writer was retired (new chunk list, failure): drop the rest.
-            drop(guard);
-            return stop(&mut s, 0);
-        };
-        match w.write_chunk((first + k) as u32, &data).await {
-            Ok(()) => {}
-            // Stale or corrupt data never verifies; the chunk stays missing.
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
-            }
-            Err(e) => {
-                drop(guard);
-                let _ = events.send(Ev::Recv(Done::StreamFailed {
-                    file_id,
-                    gen: route.gen,
-                    msg: e.to_string(),
-                }));
-                return stop(&mut s, 0);
-            }
-        }
-    }
-    if arrived < n {
-        tracing::debug!(
-            file_id,
-            arrived,
-            promised = n,
-            "incomplete range; its missing chunks stay missing"
-        );
-    } else {
-        // Read to the end so the sender sees a clean finish rather than STOP.
-        match read_msg::<DataChunk, _>(&mut s).await {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                tracing::warn!(file_id, "data stream carries more chunks than its header");
-                stop(&mut s, 1);
-            }
-            Err(e) => tracing::debug!(file_id, error = %e, "data stream end"),
-        }
-    }
-    let mut guard = route.slot.lock().await;
-    if guard
-        .as_ref()
-        .is_some_and(|w| w.missing_chunks().is_empty())
-    {
-        if let Some(writer) = guard.take() {
-            let _ = events.send(Ev::Recv(Done::Ready {
-                file_id,
-                gen: route.gen,
-                writer,
-            }));
-        }
-    }
-}
-
-async fn accept_streams(
-    ctx: Arc<Ctx>,
-    routes: Routes,
-    events: mpsc::UnboundedSender<Ev>,
-    bytes: Arc<AtomicU64>,
-) {
-    while let Ok(s) = ctx.conn.accept_uni().await {
-        tokio::spawn(read_stream(
-            ctx.clone(),
-            routes.clone(),
-            events.clone(),
-            bytes.clone(),
-            s,
-        ));
-    }
-}
-
-fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
-    let hash: [u8; 32] = cl
-        .whole_hash
-        .as_ref()
-        .and_then(|h| h.bytes.clone().try_into().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk list without hash"))?;
-    let chunks = cl
-        .chunks
-        .iter()
-        .map(|c| ChunkRecord::try_from(c.clone()))
-        .collect::<io::Result<Vec<_>>>()?;
-    Ok(FileDigest {
-        size: cl.size,
-        hash,
-        chunks,
-    })
-}
-
-/// Copies chunk `idx` from a local file if it is still a regular file there.
-/// Failures only mean the chunk has to come over the network.
-async fn try_copy(w: &mut FileWriter, idx: u32, from: PathBuf, offset: u64) {
-    let probe = from.clone();
-    if !blocking(move || Ok(is_regular(&probe)))
-        .await
-        .unwrap_or(false)
-    {
-        return;
-    }
-    if let Err(e) = w.copy_local(idx, &from, offset).await {
-        tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
-    }
-}
-
-/// Opens the `.part` writer (adopting earlier progress), then fills what it
-/// can locally: from the rename-detection source, then any indexed file that
-/// holds a chunk with the same hash. Returns the chunks still missing.
-async fn open_writer(
-    ctx: Arc<Ctx>,
-    path: RelPath,
-    action: Action,
-    local_copy: Option<RelPath>,
-    cl: ChunkList,
-) -> io::Result<Opened> {
-    let digest = native_digest(&cl)?;
-    // The writer works on index keys under the index root, so its partial
-    // record is keyed like every other index row; the file lands at the same place.
-    let key = ctx.key(&path);
-    let (base, rel, index, pd) = (
-        ctx.base.clone(),
-        key.clone(),
-        ctx.index().clone(),
-        ctx.opts.partial_dir.clone(),
-    );
-    let mut w = blocking(move || FileWriter::open(&base, &rel, &cl, pd.as_deref(), index)).await?;
-
-    if action == Action::Delta {
-        // Make sure the old file's chunks are indexed (cached if fresh).
-        let (base, rel) = (ctx.base.clone(), key.clone());
-        if let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
-            if entry.kind() == Kind::Regular {
-                let item = ScanItem {
-                    path: key.clone(),
-                    entry,
-                    ctime,
-                };
-                if let Err(e) = ctx.hasher.digest(&item).await {
-                    tracing::debug!(?path, error = %e, "hashing old file for delta failed");
-                }
-            }
-        }
-    }
-    if let Some(from) = &local_copy {
-        let from = ctx.full_key(from);
-        for idx in w.missing_chunks() {
-            let offset = digest.chunks[idx as usize].offset;
-            try_copy(&mut w, idx, from.clone(), offset).await;
-        }
-    }
-    let wanted: Vec<(u32, [u8; 32])> = w
-        .missing_chunks()
-        .into_iter()
-        .map(|i| (i, digest.chunks[i as usize].hash))
-        .collect();
-    if !wanted.is_empty() {
-        let index = ctx.index().clone();
-        let found = blocking(move || {
-            let ix = index
-                .lock()
-                .map_err(|_| io::Error::other("index poisoned"))?;
-            let mut v = Vec::new();
-            for (i, h) in wanted {
-                if let Some((p, off)) = ix.find_chunk(&h).map_err(io::Error::other)? {
-                    v.push((i, p, off));
-                }
-            }
-            Ok(v)
-        })
-        .await;
-        match found {
-            Ok(found) => {
-                for (idx, p, off) in found {
-                    try_copy(&mut w, idx, ctx.full_key(&p), off).await;
-                }
-            }
-            Err(e) => tracing::warn!(?path, error = %e, "chunk lookup failed"),
-        }
-    }
-    Ok(Opened {
-        missing: w.missing_chunks(),
-        writer: w,
-        digest,
-    })
-}
-
-/// Verifies and places the file, then records it (with the digest the sender
-/// gave) in the index so later sessions can quick-check and reuse it.
-async fn finalize(
-    ctx: Arc<Ctx>,
-    w: FileWriter,
-    path: RelPath,
-    entry: FileEntry,
-    digest: FileDigest,
-) -> Result<(), FinalizeError> {
-    let apply = ctx.apply_opts(&entry);
-    w.finalize(&entry, &apply).await?;
-    let (base, key, index) = (ctx.base.clone(), ctx.key(&path), ctx.index().clone());
-    let rec = blocking(move || {
-        let (mut e, ctime) = lstat_entry_with_ctime(&base, &key)?;
-        if e.size != digest.size {
-            return Ok(());
-        }
-        e.whole_hash = Some(Hash {
-            bytes: digest.hash.to_vec(),
-        });
-        index
-            .lock()
-            .map_err(|_| io::Error::other("index poisoned"))?
-            .put_entry(&key, &e, ctime, Some(&digest))
-            .map_err(io::Error::other)
-    })
-    .await;
-    if let Err(e) = rec {
-        tracing::warn!(error = %e, "recording received file in the index failed");
-    }
-    Ok(())
 }
 
 struct Receiver {
@@ -419,14 +117,198 @@ struct Receiver {
     report: Option<PlannerReport>,
     peer_listing_done: bool,
     peer_listing_incomplete: bool,
+    /// This side's walk (absent when a resumed session reuses its plan).
+    listing: Option<JoinHandle<crate::scan::ScanSummary>>,
+    /// Problems of this side's walk, known once it ended.
+    walk_errors: Vec<(RelPath, String)>,
+    /// The stored plan says every path is planned.
+    plan_complete: bool,
     files_done: u64,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
+    /// Open and finalize tasks, waited for when the session fails.
+    tasks: TaskTracker,
 }
 
 impl Receiver {
     fn complete(&self) -> bool {
         self.report.is_some() && self.peer_listing_done && self.active == 0
+    }
+
+    /// Once the sender's listing has ended and every path is planned, the
+    /// plan is stored as complete: a resumed session then needs no listings.
+    async fn maybe_mark_complete(&mut self) {
+        if self.plan_complete || !self.peer_listing_done {
+            return;
+        }
+        let Some(report) = &self.report else {
+            return;
+        };
+        if let Some(listing) = self.listing.take() {
+            self.walk_errors = match listing.await {
+                Ok(summary) => walk_errors(&summary),
+                Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
+            };
+        }
+        let dirs = report
+            .dirs
+            .iter()
+            .filter(|d| d.apply || report.touched.contains(&d.path))
+            .map(|d| FileEntry {
+                path: d.path.as_bytes().to_vec(),
+                ..d.entry.clone()
+            })
+            .collect();
+        let errors: Vec<(RelPath, String)> = self
+            .walk_errors
+            .iter()
+            .chain(&report.errors)
+            .cloned()
+            .collect();
+        let errors = errors
+            .iter()
+            .map(|(p, m)| PathError {
+                path: p.as_bytes().to_vec(),
+                message: m.clone(),
+            })
+            .collect();
+        self.persist
+            .complete(dirs, errors, report.skipped, self.peer_listing_incomplete);
+        self.plan_complete = true;
+    }
+
+    /// Resumes from a complete stored plan: makes sure the planned
+    /// directories exist and requests every file not yet placed.
+    async fn resume_plan(&mut self, plan: SessionPlan) {
+        let dirs: Vec<RelPath> = plan
+            .dirs
+            .iter()
+            .filter_map(|e| RelPath::new(&e.path).ok())
+            .collect();
+        let ctx = self.ctx.clone();
+        let mkdir_errors = blocking(move || {
+            Ok(dirs
+                .into_iter()
+                .filter_map(|d| {
+                    mkdir_replacing(&ctx.full(&d))
+                        .err()
+                        .map(|e| (d, format!("mkdir: {e}")))
+                })
+                .collect::<Vec<_>>())
+        })
+        .await
+        .unwrap_or_default();
+        self.errors.extend(mkdir_errors);
+        let mut requested = 0usize;
+        for e in plan.entries {
+            if self.persist.is_done(e.file_id) {
+                continue;
+            }
+            let (Ok(path), Some(entry)) = (RelPath::new(&e.path), e.entry) else {
+                tracing::warn!(file_id = e.file_id, "unusable stored plan entry; skipped");
+                continue;
+            };
+            let action = Action::try_from(e.action).unwrap_or(Action::Whole);
+            self.register(e.file_id, path.clone(), entry, action, None);
+            self.out.send(Msg::Plan(PlanItem {
+                file_id: e.file_id,
+                path: path.as_bytes().to_vec(),
+                action: action as i32,
+            }));
+            requested += 1;
+        }
+        tracing::info!(requested, "resuming the stored plan");
+        self.report = Some(PlannerReport {
+            skipped: plan.skipped,
+            errors: plan
+                .errors
+                .into_iter()
+                .map(|e| (RelPath::new(&e.path).unwrap_or_default(), e.message))
+                .collect(),
+            dirs: plan
+                .dirs
+                .into_iter()
+                .filter_map(|entry| {
+                    let path = RelPath::new(&entry.path).ok()?;
+                    Some(DirEntry {
+                        path,
+                        entry,
+                        apply: true,
+                    })
+                })
+                .collect(),
+            touched: HashSet::new(),
+        });
+        self.peer_listing_done = true;
+        self.peer_listing_incomplete = plan.peer_listing_incomplete;
+        self.plan_complete = true;
+    }
+
+    /// A file requested from the sender, now in flight.
+    fn register(
+        &mut self,
+        file_id: u64,
+        path: RelPath,
+        entry: FileEntry,
+        action: Action,
+        local_copy: Option<RelPath>,
+    ) {
+        self.active += 1;
+        self.files.insert(
+            file_id,
+            RFile {
+                path,
+                entry,
+                action,
+                local_copy,
+                gen: 0,
+                mismatches: 0,
+                rerequests: 0,
+                st: St::Requested,
+                pending: None,
+                abandoned: None,
+                digest: None,
+            },
+        );
+    }
+
+    /// Every data stream for the file has ended with chunks still missing:
+    /// ask again for those (bounded), or give the file up.
+    async fn on_drained(&mut self, file_id: u64, gen: u32) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
+        if f.gen != gen || f.st != St::Receiving {
+            return;
+        }
+        let route = self
+            .routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&file_id)
+            .cloned();
+        let Some(route) = route.filter(|r| r.gen == gen) else {
+            return;
+        };
+        let missing = match route.slot.lock().await.as_ref() {
+            Some(w) => w.missing_chunks(),
+            None => return,
+        };
+        if missing.is_empty() || route.pending.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        if f.rerequests >= MAX_REREQUESTS {
+            let msg = "incomplete after retries".to_string();
+            self.fail(file_id, Some(Status::WriteError), msg).await;
+            return;
+        }
+        f.rerequests += 1;
+        tracing::info!(path = ?f.path, missing = missing.len(), "re-requesting chunks");
+        route.pending.fetch_add(missing.len(), Ordering::SeqCst);
+        self.out.send(Msg::Need(NeedChunks {
+            file_id,
+            chunk_idx: missing,
+        }));
     }
 
     fn ack(&self, file_id: u64, status: Status, message: String) {
@@ -487,7 +369,7 @@ impl Receiver {
         // before the next one opens the same `.part`.
         self.retire_writer(file_id).await;
         let (ctx, events) = (self.ctx.clone(), self.events.clone());
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             let result = open_writer(ctx, path, action, local_copy, cl).await;
             let _ = events.send(Ev::Recv(Done::Opened {
                 file_id,
@@ -505,7 +387,7 @@ impl Receiver {
             f.path.clone(),
             f.entry.clone(),
         );
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             let result = finalize(ctx, w, path, entry, digest).await;
             let _ = events.send(Ev::Recv(Done::Finalized {
                 file_id,
@@ -524,25 +406,15 @@ impl Receiver {
                     action: p.action as i32,
                     size: p.entry.size,
                     whole_hash: p.entry.whole_hash.clone(),
+                    entry: Some(p.entry.clone()),
                 });
-                self.active += 1;
-                self.files.insert(
-                    p.file_id,
-                    RFile {
-                        path: p.path,
-                        entry: p.entry,
-                        action: p.action,
-                        local_copy: p.local_copy,
-                        gen: 0,
-                        mismatches: 0,
-                        st: St::Requested,
-                        pending: None,
-                        abandoned: None,
-                        digest: None,
-                    },
-                );
+                self.register(p.file_id, p.path, p.entry, p.action, p.local_copy);
             }
-            Done::PlannerFinished(r) => self.report = Some(*r),
+            Done::PlannerFinished(r) => {
+                self.report = Some(*r);
+                self.maybe_mark_complete().await;
+            }
+            Done::Drained { file_id, gen } => self.on_drained(file_id, gen).await,
             Done::Opened {
                 file_id,
                 gen,
@@ -629,6 +501,7 @@ impl Receiver {
                         gen,
                         slot: Arc::new(tokio::sync::Mutex::new(Some(o.writer))),
                         chunks: Arc::new(o.digest.chunks),
+                        pending: Arc::new(AtomicUsize::new(missing.len())),
                     },
                 );
         }
@@ -712,18 +585,64 @@ impl Receiver {
                 }
                 self.peer_listing_incomplete = e.incomplete;
                 self.peer_listing_done = true;
+                self.maybe_mark_complete().await;
             }
-            Ev::Ctrl(Msg::Error(e)) => bail!("peer error: {}", e.message),
-            Ev::Ctrl(m) => bail!(
+            Ev::Ctrl(Msg::Error(e)) => return Err(PeerError(e.message).into()),
+            Ev::Ctrl(m) => anyhow::bail!(
                 "protocol error: unexpected {} from the sender",
                 msg_name(&m)
             ),
-            Ev::PeerEof => bail!("the sender closed the control stream before the session ended"),
-            Ev::PeerFailed(e) => bail!("control stream: {e}"),
-            Ev::WriterFailed(e) => bail!("control stream: {e}"),
-            Ev::Send(_) => {}
+            Ev::PeerEof => {
+                return Err(TransportError(
+                    "the sender closed the control stream before the session ended".into(),
+                )
+                .into())
+            }
+            Ev::PeerFailed(e) | Ev::WriterFailed(e) => {
+                return Err(TransportError(format!("control stream: {e}")).into())
+            }
+            Ev::PeerListing | Ev::Send(_) => {}
         }
         Ok(())
+    }
+
+    /// The session failed: drop every open writer (persisting its progress
+    /// for the next connection), let in-flight file tasks end, and record
+    /// the files they placed meanwhile as done.
+    async fn shut_down(&mut self, events: &mut Events) {
+        let ids: Vec<u64> = self
+            .routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect();
+        for id in ids {
+            self.retire_writer(id).await;
+        }
+        self.tasks.close();
+        if tokio::time::timeout(TASK_DRAIN, self.tasks.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("file tasks still running after the session failed");
+        }
+        while let Ok(ev) = events.try_recv() {
+            if let Ev::Recv(Done::Finalized {
+                file_id,
+                gen,
+                result: Ok(()),
+            }) = ev
+            {
+                let current = self
+                    .files
+                    .get(&file_id)
+                    .is_some_and(|f| f.gen == gen && f.st == St::Finalizing);
+                if current {
+                    self.persist.done(file_id);
+                }
+            }
+        }
     }
 
     /// Applies directory metadata deepest first, after all their contents.
@@ -772,6 +691,10 @@ fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
 /// Runs the receiver role to completion: `SessionDone` is sent once the
 /// sender's listing has ended, every path is planned and every requested
 /// file is acknowledged (DONE only for verified, placed files).
+///
+/// A resumed session whose stored plan is complete skips both listings and
+/// requests the files not yet placed; one with an incomplete plan lists and
+/// plans afresh, keeping the stored file ids and skipping placed files.
 pub(super) async fn run(
     ctx: Arc<Ctx>,
     out: Out,
@@ -780,40 +703,8 @@ pub(super) async fn run(
     peer_listing: mpsc::UnboundedReceiver<Side>,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
-    let persist = Persister::start(ctx.index().clone(), ctx.session_id, ctx.key.clone()).await;
-    let (local_tx, local_rx) = mpsc::unbounded_channel();
-    let listing = spawn_listing(
-        ListingSpec {
-            root: ctx.root.clone(),
-            // The receiver lists everything it has; filters shape the sender's walk.
-            filters: Arc::new(FilterSet::new(vec![])),
-            hasher: ctx.hasher.clone(),
-            scope: ctx.scope.clone(),
-            skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
-        },
-        out.clone(),
-        Some(local_tx),
-        None,
-    );
-    let planner = tokio::spawn(plan(
-        ctx.clone(),
-        out.clone(),
-        events_tx.clone(),
-        peer_listing,
-        local_rx,
-    ));
-    let planner_abort = planner.abort_handle();
-    {
-        // A planner that dies without reporting must not leave us waiting.
-        let events = events_tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = planner.await {
-                if e.is_panic() {
-                    let _ = events.send(Ev::WriterFailed("planner panicked".into()));
-                }
-            }
-        });
-    }
+    let persist = Persister::start(&ctx).await;
+    let stored = persist.stored_plan().clone();
     let routes: Routes = Arc::default();
     let bytes = Arc::new(AtomicU64::new(0));
     let acceptor = tokio::spawn(accept_streams(
@@ -825,17 +716,60 @@ pub(super) async fn run(
     let mut r = Receiver {
         ctx: ctx.clone(),
         out: out.clone(),
-        events: events_tx,
+        events: events_tx.clone(),
         routes,
         files: HashMap::new(),
         active: 0,
         report: None,
         peer_listing_done: false,
         peer_listing_incomplete: false,
+        listing: None,
+        walk_errors: Vec::new(),
+        plan_complete: false,
         files_done: 0,
         errors: Vec::new(),
         persist,
+        tasks: TaskTracker::new(),
     };
+    let mut planner_abort = None;
+    if ctx.resumed && stored.plan_complete {
+        r.resume_plan(stored).await;
+    } else {
+        let prior = Prior::new(&stored, |id| r.persist.is_done(id));
+        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        r.listing = Some(spawn_listing(
+            ListingSpec {
+                root: ctx.root.clone(),
+                // The receiver lists everything it has; filters shape the sender's walk.
+                filters: Arc::new(FilterSet::new(vec![])),
+                hasher: ctx.hasher.clone(),
+                scope: ctx.scope.clone(),
+                skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
+            },
+            out.clone(),
+            Some(local_tx),
+            None,
+        ));
+        let planner = tokio::spawn(plan(
+            ctx.clone(),
+            out.clone(),
+            events_tx.clone(),
+            peer_listing,
+            local_rx,
+            prior,
+        ));
+        planner_abort = Some(planner.abort_handle());
+        // A planner that dies without reporting must not leave us waiting.
+        let events = events_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = planner.await {
+                if e.is_panic() {
+                    let _ = events.send(Ev::WriterFailed("planner panicked".into()));
+                }
+            }
+        });
+    }
+    drop(events_tx);
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let res: anyhow::Result<()> = loop {
         if r.complete() {
@@ -854,8 +788,13 @@ pub(super) async fn run(
     };
     if let Err(e) = res {
         acceptor.abort();
-        planner_abort.abort();
-        listing.abort();
+        if let Some(p) = planner_abort {
+            p.abort();
+        }
+        if let Some(l) = r.listing.take() {
+            l.abort();
+        }
+        r.shut_down(&mut events).await;
         r.persist.bytes(bytes.load(Ordering::Relaxed));
         r.persist.flush().await;
         return Err(e);
@@ -863,28 +802,19 @@ pub(super) async fn run(
     let mut report = r.report.take().unwrap_or_default();
     r.directory_pass(&mut report).await;
     let bytes_total = bytes.load(Ordering::Relaxed);
-    r.persist.bytes(bytes_total);
-    r.persist.flush().await;
     // Every problem this side recorded: its own walk, the planner (mkdir,
     // symlink, special, metadata, refused paths), files and directories.
     // The peer folds them into its outcome, so a push reports them too.
-    let mut errors = match listing.await {
-        Ok(summary) => walk_errors(&summary),
-        Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
-    };
+    let mut errors = std::mem::take(&mut r.walk_errors);
     errors.append(&mut report.errors);
     errors.append(&mut r.errors);
     out.send(Msg::Done(SessionDone {
         files: r.files_done,
         bytes: bytes_total,
-        errors: errors
-            .iter()
-            .map(|(p, m)| PathError {
-                path: p.as_bytes().to_vec(),
-                message: m.clone(),
-            })
-            .collect(),
+        errors: capped_errors(&errors),
     }));
+    // Finished: a later run with the same key starts a new session.
+    r.persist.finish().await;
     if r.peer_listing_incomplete {
         errors.push((RelPath::root(), "the sender's listing is incomplete".into()));
     }
@@ -901,6 +831,7 @@ pub(super) async fn run(
     acceptor.abort();
     Ok(Outcome {
         session_id: ctx.session_id,
+        resumed: ctx.resumed,
         files_transferred: r.files_done,
         bytes_transferred: bytes_total,
         files_skipped: report.skipped,
@@ -909,38 +840,4 @@ pub(super) async fn run(
         #[cfg(feature = "test-hooks")]
         retained_files: r.files.len(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn chunks(lens: &[u32]) -> Vec<ChunkRecord> {
-        let mut off = 0;
-        lens.iter()
-            .map(|&len| {
-                let c = ChunkRecord {
-                    offset: off,
-                    len,
-                    hash: [0; 32],
-                };
-                off += u64::from(len);
-                c
-            })
-            .collect()
-    }
-
-    #[test]
-    fn range_len_requires_exact_chunk_boundaries() {
-        let c = chunks(&[10, 20, 30]);
-        assert_eq!(range_len(&c, 0, 0, 60), Some(3));
-        assert_eq!(range_len(&c, 1, 10, 20), Some(1));
-        assert_eq!(range_len(&c, 1, 10, 50), Some(2));
-        // Wrong offset, a length ending mid-chunk, past the end, empty.
-        assert_eq!(range_len(&c, 1, 0, 20), None);
-        assert_eq!(range_len(&c, 0, 0, 15), None);
-        assert_eq!(range_len(&c, 0, 0, 61), None);
-        assert_eq!(range_len(&c, 3, 60, 1), None);
-        assert_eq!(range_len(&c, 0, 0, 0), None);
-    }
 }

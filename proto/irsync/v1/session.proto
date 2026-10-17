@@ -12,9 +12,22 @@ message PlanEntry {
   PlanItem.Action action = 3;
   uint64 size = 4;                                // source size when planned (0 if unknown)
   Hash whole_hash = 5;                            // source whole-file hash, when known
+  FileEntry entry = 6;                            // receiver: the sender's listing entry (applied at finalize)
 }
-message SessionPlan { repeated PlanEntry entries = 1; }
+message SessionPlan {
+  repeated PlanEntry entries = 1;
+  // Receiver: every path was planned (the sender's listing ended and the
+  // planner finished), so a resumed session can skip the listing exchange.
+  bool plan_complete = 2;
+  // Receiver, once complete: directories whose metadata is applied at the end (path order).
+  repeated FileEntry dirs = 3;
+  // Receiver, once complete: problems recorded while walking and planning.
+  repeated PathError errors = 4;
+  uint64 skipped = 5;                             // receiver: regular files found up to date
+  bool peer_listing_incomplete = 6;               // receiver: the sender's listing was incomplete
+  bytes remote_id = 7;                            // daemon: the client EndpointId that owns the session
+}
 message SessionProgress {
   repeated uint64 done_file_ids = 1;              // files acknowledged DONE
-  uint64 bytes_transferred = 2;
+  uint64 bytes_transferred = 2;                   // cumulative over all connections
 }

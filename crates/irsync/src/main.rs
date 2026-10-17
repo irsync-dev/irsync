@@ -11,10 +11,11 @@ use irsync::filter::FilterSet;
 use irsync::identity::{load_secret_key, parse_endpoint_id};
 use irsync::index::Index;
 use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
-use irsync::session::{engine::run_client, resolve_roots, LocalSide, Outcome};
+use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
+use irsync::session::{resolve_roots, LocalSide, Outcome};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{hello, Hello};
-use irsync_proto::{ALPN, PROTOCOL_VERSION};
+use irsync_proto::PROTOCOL_VERSION;
 
 fn main() {
     let args = Args::parse();
@@ -207,9 +208,16 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
             chunk_max: CHUNK_PARAMS.max,
             contents_only: *remote_co,
         };
+        let ropts = ReconnectOpts {
+            max: opts
+                .reconnect
+                .or(hc.reconnect)
+                .unwrap_or(ReconnectOpts::default().max),
+            ..ReconnectOpts::default()
+        };
         sessions += 1;
         let out = match session(
-            &endpoint, target, direction, root, *local_co, hello, &filters, opts,
+            &endpoint, target, direction, root, *local_co, hello, &filters, opts, ropts,
         )
         .await
         {
@@ -235,7 +243,8 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
     })
 }
 
-/// One source: open the local index, connect, run the session.
+/// One source: open the local index, then run the session, reconnecting and
+/// resuming as needed.
 #[allow(clippy::too_many_arguments)]
 async fn session(
     endpoint: &iroh::Endpoint,
@@ -246,6 +255,7 @@ async fn session(
     hello: Hello,
     filters: &Arc<FilterSet>,
     opts: &SyncOptions,
+    ropts: ReconnectOpts,
 ) -> anyhow::Result<Outcome> {
     let index = tokio::task::spawn_blocking({
         let root = root.clone();
@@ -261,13 +271,28 @@ async fn session(
     })
     .await??;
     let side = LocalSide::new(root, local_contents_only, index, filters.clone());
-    let conn = endpoint
-        .connect(EndpointAddr::new(target), ALPN)
-        .await
-        .with_context(|| format!("connecting to {target}"))?;
-    let out = run_client(conn.clone(), hello, side, opts).await;
-    conn.close(0u32.into(), b"done");
-    out
+    let hello_for = |id: Option<[u8; 16]>| Hello {
+        session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
+        ..hello.clone()
+    };
+    let on_state = |s: ConnState| match s {
+        ConnState::Connecting => tracing::info!(%target, "connecting"),
+        ConnState::Direct => tracing::info!("connected directly"),
+        ConnState::Relay => tracing::info!("connected through a relay"),
+        ConnState::Reconnecting { attempt } => {
+            tracing::info!(attempt, "reconnecting")
+        }
+    };
+    run_with_reconnect(
+        endpoint,
+        EndpointAddr::new(target),
+        hello_for,
+        side,
+        opts,
+        ropts,
+        on_state,
+    )
+    .await
 }
 
 fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {

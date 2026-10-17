@@ -4,14 +4,16 @@
 //! here; regular files that need data are requested with `PlanItem` and
 //! handed to the receiver's main loop.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::StreamExt;
-use irsync_proto::v1::{control::Msg, file_entry::Kind, plan_item::Action, FileEntry, PlanItem};
+use irsync_proto::v1::{
+    control::Msg, file_entry::Kind, plan_item::Action, FileEntry, PlanItem, SessionPlan,
+};
 use tokio::sync::mpsc;
 
 use super::control::{Ev, Out};
@@ -48,6 +50,30 @@ pub(super) struct PlannerReport {
     pub dirs: Vec<DirEntry>,
     /// Directories whose contents this session changes (their mtime moves).
     pub touched: HashSet<RelPath>,
+}
+
+/// What an earlier connection of a resumed session already planned: its file
+/// ids are kept (so acknowledgements stay meaningful) and files it placed
+/// are not requested again.
+#[derive(Default)]
+pub(super) struct Prior {
+    /// Planned path -> (file id, placed).
+    by_path: HashMap<RelPath, (u64, bool)>,
+    /// The highest file id used so far.
+    max_id: u64,
+}
+
+impl Prior {
+    pub fn new(plan: &SessionPlan, is_done: impl Fn(u64) -> bool) -> Prior {
+        let mut p = Prior::default();
+        for e in &plan.entries {
+            if let Ok(path) = RelPath::new(&e.path) {
+                p.by_path.insert(path, (e.file_id, is_done(e.file_id)));
+            }
+            p.max_id = p.max_id.max(e.file_id);
+        }
+        p
+    }
 }
 
 fn parent_of(p: &RelPath) -> RelPath {
@@ -88,7 +114,7 @@ fn place_via_temp(
 }
 
 /// Makes `full` a directory, replacing a non-directory in the way.
-fn mkdir_replacing(full: &Path) -> io::Result<()> {
+pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(full) {
         Ok(m) if m.is_dir() => Ok(()),
         Ok(_) => {
@@ -124,6 +150,7 @@ struct Planner {
     ok_dirs: HashSet<RelPath>,
     failed_dirs: HashSet<RelPath>,
     next_id: u64,
+    prior: Prior,
 }
 
 impl Planner {
@@ -264,14 +291,25 @@ impl Planner {
                 .await
             }
             Decision::Whole | Decision::Delta | Decision::LocalCopy { .. } => {
+                // Placing it (now or on an earlier connection) moved the parent's mtime.
                 self.touch_parent(&path);
-                self.next_id += 1;
+                let file_id = match self.prior.by_path.get(&path) {
+                    // Placed by an earlier connection of this session.
+                    Some(&(_, true)) => {
+                        self.report.skipped += 1;
+                        return;
+                    }
+                    Some(&(id, false)) => id,
+                    None => {
+                        self.next_id += 1;
+                        self.next_id
+                    }
+                };
                 let (action, local_copy) = match decision {
                     Decision::Delta => (Action::Delta, None),
                     Decision::LocalCopy { from } => (Action::Whole, Some(from)),
                     _ => (Action::Whole, None),
                 };
-                let file_id = self.next_id;
                 // Registered with the main loop before the request can be answered.
                 let _ = self.events.send(Ev::Recv(Done::Planned(Box::new(Planned {
                     file_id,
@@ -301,6 +339,7 @@ pub(super) async fn plan(
     events: mpsc::UnboundedSender<Ev>,
     peer: mpsc::UnboundedReceiver<Side>,
     local: mpsc::UnboundedReceiver<Side>,
+    prior: Prior,
 ) {
     let popts = PlanOpts {
         checksum: ctx.opts.checksum,
@@ -318,7 +357,8 @@ pub(super) async fn plan(
         report: PlannerReport::default(),
         ok_dirs: HashSet::new(),
         failed_dirs: HashSet::new(),
-        next_id: 0,
+        next_id: prior.max_id,
+        prior,
     };
     let joined = merge_join(stream_of(peer), stream_of(local));
     futures::pin_mut!(joined);

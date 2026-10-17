@@ -1,0 +1,292 @@
+//! Reconnect and resume: a session outlives a dropped connection and a
+//! restarted client, over loopback iroh endpoints with an in-process daemon.
+
+mod common;
+
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+
+use common::{archive_opts, assert_trees_equal, Flow, Harness};
+use irsync::session::engine::SessionRefused;
+use irsync::session::reconnect::ReconnectOpts;
+use irsync_proto::v1::error::Code;
+
+const MIB: usize = 1024 * 1024;
+const FILES: usize = 20;
+const FILE_SIZE: usize = 2 * MIB;
+const TOTAL: u64 = (FILES * FILE_SIZE) as u64;
+
+async fn within60<F: std::future::Future>(f: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(60), f)
+        .await
+        .expect("test timed out after 60 s")
+}
+
+/// Deterministic pseudo-random bytes.
+fn data(n: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect()
+}
+
+/// 20 files of 2 MiB each, two of them in a subdirectory.
+fn twenty_files(root: &Path) {
+    fs::create_dir(root.join("sub")).unwrap();
+    for i in 0..FILES {
+        let name = if i < 2 {
+            format!("sub/f{i:02}.bin")
+        } else {
+            format!("f{i:02}.bin")
+        };
+        fs::write(root.join(name), data(FILE_SIZE, i as u32 + 1)).unwrap();
+    }
+}
+
+/// No reconnects: the first failure ends the run.
+fn no_reconnect() -> ReconnectOpts {
+    ReconnectOpts {
+        max: Duration::ZERO,
+        ..ReconnectOpts::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_drop_mid_transfer_completes_byte_exact() {
+    within60(async {
+        let opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            twenty_files(h.src(flow));
+            h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+
+            let (out, reconnects) = h
+                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+                .await;
+            let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert!(h.daemon.fault.fired(), "{flow:?}: the fault never fired");
+            assert_eq!(reconnects, 1, "{flow:?}");
+            assert!(
+                out.resumed,
+                "{flow:?}: the second connection did not resume"
+            );
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert!(
+                out.bytes_transferred < TOTAL,
+                "{flow:?}: resumed connection re-sent everything ({} bytes)",
+                out.bytes_transferred
+            );
+            assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn client_restart_resumes_same_session() {
+    within60(async {
+        let opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            twenty_files(h.src(flow));
+            h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+
+            // First "process": the connection drops and it gives up.
+            let (first, reconnects) = h
+                .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+                .await;
+            assert!(first.is_err(), "{flow:?}: first run should fail");
+            assert_eq!(reconnects, 0, "{flow:?}");
+            let ids = h.daemon.session_ids();
+            assert_eq!(ids.len(), 1, "{flow:?}");
+
+            // Second "process": a fresh LocalSide over the same dirs and state.
+            let (second, reconnects) = h
+                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+                .await;
+            let second = second.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert_eq!(reconnects, 0, "{flow:?}");
+            assert!(second.resumed, "{flow:?}: HelloAck.resumed was false");
+            assert_eq!(second.session_id, ids[0], "{flow:?}: not the same session");
+            assert!(second.errors.is_empty(), "{flow:?}: {:?}", second.errors);
+            assert!(
+                second.bytes_transferred < TOTAL,
+                "{flow:?}: run 2 sent {} of {TOTAL} bytes",
+                second.bytes_transferred
+            );
+            assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+
+            // A finished session is gone: the next run starts fresh.
+            let (third, _) = h
+                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+                .await;
+            let third = third.unwrap();
+            assert!(!third.resumed, "{flow:?}: finished session resumed again");
+            assert_eq!(third.bytes_transferred, 0, "{flow:?}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_resume_flag_starts_fresh() {
+    within60(async {
+        let mut opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            twenty_files(h.src(flow));
+            h.daemon.fault.drop_after_bytes(30 * MIB as u64);
+
+            let (first, _) = h
+                .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+                .await;
+            assert!(first.is_err(), "{flow:?}: first run should fail");
+
+            opts.no_resume = true;
+            let (second, _) = h
+                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+                .await;
+            opts.no_resume = false;
+            let second = second.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert!(!second.resumed, "{flow:?}: --no-resume resumed");
+            assert_ne!(second.session_id, h.daemon.session_ids()[0], "{flow:?}");
+            assert!(second.errors.is_empty(), "{flow:?}: {:?}", second.errors);
+            // Placed files are up to date and partial files are adopted.
+            assert!(
+                second.bytes_transferred < TOTAL / 2,
+                "{flow:?}: fresh session sent {} of {TOTAL} bytes",
+                second.bytes_transferred
+            );
+            assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreign_client_cannot_resume_session() {
+    within60(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let (h, guest) = Harness::with_guest().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(first.is_err());
+        let id = h.daemon.session_ids()[0];
+
+        // Another authorised key presents the dormant session's id.
+        let guest_dir = tempfile::tempdir().unwrap();
+        let guest_state = tempfile::tempdir().unwrap();
+        fs::write(guest_dir.path().join("evil.txt"), b"not yours").unwrap();
+        let side = Harness::side_for(guest_dir.path(), guest_state.path());
+        let conn = guest
+            .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
+            .await
+            .unwrap();
+        let mut hello = Harness::hello(flow);
+        hello.session_id = id.to_vec();
+        let err = irsync::session::engine::run_client(conn.clone(), hello, side, &opts)
+            .await
+            .expect_err("foreign client resumed a session");
+        conn.close(0u32.into(), b"done");
+        let refused = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<SessionRefused>())
+            .unwrap_or_else(|| panic!("not a refusal: {err:#}"));
+        assert_eq!(refused.code, Code::BadSession);
+        assert!(!h.module.path().join("evil.txt").exists());
+
+        // The owner can still resume it.
+        let (again, _) = h
+            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+            .await;
+        let again = again.unwrap();
+        assert!(again.resumed);
+        assert_eq!(again.session_id, id);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn incomplete_plan_resumes_with_fresh_listing() {
+    within60(async {
+        let opts = archive_opts();
+        // Pull: the client is the receiver, so its stored plan decides.
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_bytes(30 * MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(first.is_err());
+        let id = h.daemon.session_ids()[0];
+
+        // As if the connection had dropped before planning finished.
+        let mut ix = irsync::index::Index::open(h.client_state.path(), h.local.path()).unwrap();
+        let row = ix.load_session_by_id(&id).unwrap().expect("stored session");
+        let mut rec = irsync::session::SessionRecord::from_row(&row).unwrap();
+        assert!(rec.plan.plan_complete);
+        assert!(
+            !rec.progress.done_file_ids.is_empty(),
+            "nothing placed in run 1"
+        );
+        rec.plan.plan_complete = false;
+        ix.save_session(&rec.to_row()).unwrap();
+        drop(ix);
+
+        let (out, _) = h
+            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+            .await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.resumed);
+        assert_eq!(out.session_id, id);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(out.bytes_transferred < TOTAL, "{}", out.bytes_transferred);
+        // Files placed before the drop count as up to date, not as transferred.
+        assert!(out.files_skipped >= rec.progress.done_file_ids.len() as u64);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_session_falls_back_to_fresh() {
+    within60(async {
+        let opts = archive_opts();
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(first.is_err());
+        // The daemon forgot the session (e.g. dormant-session GC).
+        let gone = h
+            .daemon_index()
+            .delete_sessions_older_than(Duration::ZERO)
+            .unwrap();
+        assert_eq!(gone.len(), 1);
+
+        let (out, reconnects) = h
+            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
+            .await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(reconnects, 0, "BAD_SESSION is not a reconnect");
+        assert!(!out.resumed);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}

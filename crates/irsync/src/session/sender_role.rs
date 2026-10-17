@@ -9,6 +9,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,14 +21,18 @@ use irsync_proto::v1::{
     PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-use super::control::{spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister};
-use super::engine::{blocking, Ctx, Events};
+use super::control::{
+    is_own_temp, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
+};
+use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
 use super::receiver::msg_name;
 use super::Outcome;
+use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
-use crate::scan::ScanItem;
+use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{Sender, DEFAULT_SPLIT_THRESHOLD};
 
 /// Re-offers per file after a change or a hash mismatch.
@@ -54,11 +60,22 @@ struct SFile {
     /// Bumped on every re-offer; older task results are ignored.
     gen: u32,
     retries: u32,
+    /// The digest behind the `ChunkList` last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
-    /// A `ChunkList` is out and its `NeedChunks` not yet seen.
-    awaiting_need: bool,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
+}
+
+/// Whether this side walks and streams its listing.
+enum Listing {
+    Running(JoinHandle<ScanSummary>),
+    /// Resumed: the receiver's first frame decides. A listing from it means
+    /// it plans afresh (we list too); a `PlanItem` means it resumes its
+    /// stored plan.
+    Undecided,
+    /// Resumed from the receiver's stored plan: no walk; every requested
+    /// path is checked the way the walk would have admitted it.
+    FromPlan,
 }
 
 struct SenderRole {
@@ -67,6 +84,7 @@ struct SenderRole {
     events: mpsc::UnboundedSender<Ev>,
     sender: Arc<Sender>,
     listed: Listed,
+    listing: Listing,
     /// Files in flight (no final ack yet, not given up).
     files: HashMap<u64, SFile>,
     /// Every file id ever planned (duplicate detection).
@@ -84,10 +102,37 @@ struct SenderRole {
 }
 
 impl SenderRole {
-    fn spawn_digest(&self, file_id: u64, gen: u32, path: RelPath, force: bool) {
+    fn start_listing(&mut self) {
+        tracing::debug!("listing the source");
+        self.listing = Listing::Running(spawn_listing(
+            ListingSpec {
+                root: self.ctx.root.clone(),
+                filters: self.ctx.filters.clone(),
+                hasher: self.ctx.hasher.clone(),
+                scope: self.ctx.scope.clone(),
+                skip: None,
+            },
+            self.out.clone(),
+            None,
+            Some(self.listed.clone()),
+        ));
+    }
+
+    /// `check`: admit the path only if the walk would have listed it as a
+    /// regular file (a resumed plan has no listing of this connection).
+    fn spawn_digest(&self, file_id: u64, gen: u32, path: RelPath, force: bool, check: bool) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
         tokio::spawn(async move {
             let result = async {
+                if check {
+                    let (root, p, filters) = (ctx.root.clone(), path.clone(), ctx.filters.clone());
+                    if !blocking(move || Ok(walk_admits(&root, &p, &filters))).await? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "not a listed regular file",
+                        ));
+                    }
+                }
                 // Re-stat: the digest must describe the file as it is now.
                 // Hashing works on index keys under the index root.
                 let key = ctx.key(&path);
@@ -148,9 +193,8 @@ impl SenderRole {
         f.retries += 1;
         f.gen += 1;
         f.digest = None;
-        f.awaiting_need = false;
         let (gen, path) = (f.gen, f.path.clone());
-        self.spawn_digest(file_id, gen, path, true);
+        self.spawn_digest(file_id, gen, path, true, false);
     }
 
     fn on_plan(&mut self, p: PlanItem) -> anyhow::Result<()> {
@@ -166,7 +210,6 @@ impl SenderRole {
                 gen: 0,
                 retries: 0,
                 digest: None,
-                awaiting_need: false,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
@@ -175,21 +218,28 @@ impl SenderRole {
             file_id,
             path: p.path,
             action: p.action,
-            size: 0,
-            whole_hash: None,
+            ..PlanEntry::default()
         });
         // Only paths this side listed as regular files are ever read: a peer
         // cannot ask for something outside the walk (e.g. through a symlink).
+        if path.as_bytes().is_empty() {
+            self.source_error(file_id, "not a listed regular file".into());
+            return Ok(());
+        }
+        if let Listing::FromPlan = self.listing {
+            self.spawn_digest(file_id, 0, path, false, true);
+            return Ok(());
+        }
         let listed = self
             .listed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&path);
-        if !listed || path.as_bytes().is_empty() {
+        if !listed {
             self.source_error(file_id, "not a listed regular file".into());
             return Ok(());
         }
-        self.spawn_digest(file_id, 0, path, false);
+        self.spawn_digest(file_id, 0, path, false, false);
         Ok(())
     }
 
@@ -211,7 +261,6 @@ impl SenderRole {
                     chunks: d.chunks.iter().map(|&c| c.into()).collect(),
                 }));
                 f.digest = Some(Arc::new(d));
-                f.awaiting_need = true;
             }
             Err(e) => self.source_error(file_id, e.to_string()),
         }
@@ -223,16 +272,20 @@ impl SenderRole {
             tracing::debug!(file_id, "NeedChunks for a file no longer in flight");
             return;
         };
-        if !f.awaiting_need {
-            return;
-        }
-        f.awaiting_need = false;
-        if n.chunk_idx.is_empty() {
-            return; // The receiver has everything; wait for its ack.
-        }
+        // The receiver may ask again for chunks its streams did not deliver.
+        // Without a digest a fresh `ChunkList` is on its way and will be
+        // answered with a new request.
         let Some(digest) = f.digest.clone() else {
             return;
         };
+        let idxs: Vec<u32> = n
+            .chunk_idx
+            .into_iter()
+            .filter(|&i| (i as usize) < digest.chunks.len())
+            .collect();
+        if idxs.is_empty() {
+            return; // The receiver has everything; wait for its ack.
+        }
         #[cfg(feature = "test-hooks")]
         let hook = if f.hooked {
             None
@@ -248,7 +301,6 @@ impl SenderRole {
         );
         #[cfg(feature = "test-hooks")]
         let path = f.path.clone();
-        let idxs = n.chunk_idx;
         self.sending += 1;
         tokio::spawn(async move {
             let bytes: u64 = idxs
@@ -283,7 +335,13 @@ impl SenderRole {
         self.sending -= 1;
         match result {
             // Counted even if the file was acknowledged meanwhile.
-            Ok(b) => self.bytes += b,
+            Ok(b) => {
+                self.bytes += b;
+                #[cfg(feature = "test-hooks")]
+                if let Some(f) = &self.ctx.fault {
+                    f.observe(self.bytes, &self.ctx.conn);
+                }
+            }
             Err(e) => {
                 let Some(f) = self.files.get(&file_id) else {
                     return;
@@ -351,6 +409,36 @@ impl SenderRole {
     }
 }
 
+/// Whether the walk (from `root`, with `filters`) would list `path` as a
+/// regular file: no component is a symlink or excluded, the file is regular
+/// and is not one of irsync's own temporary files.
+fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
+    if path.as_bytes().is_empty() || is_own_temp(path) {
+        return false;
+    }
+    let comps: Vec<&[u8]> = path.components().collect();
+    let (mut rel, mut full) = (Vec::new(), root.to_path_buf());
+    for (i, c) in comps.iter().enumerate() {
+        if i > 0 {
+            rel.push(b'/');
+        }
+        rel.extend_from_slice(c);
+        full.push(std::ffi::OsStr::from_bytes(c));
+        let last = i + 1 == comps.len();
+        let Ok(r) = RelPath::new(&rel) else {
+            return false;
+        };
+        let Ok(md) = std::fs::symlink_metadata(&full) else {
+            return false;
+        };
+        let kind_ok = if last { md.is_file() } else { md.is_dir() };
+        if !kind_ok || filters.matches(&r, !last) == Verdict::Exclude {
+            return false;
+        }
+    }
+    true
+}
+
 /// Runs the sender role until the receiver's `SessionDone`.
 pub(super) async fn run(
     ctx: Arc<Ctx>,
@@ -366,20 +454,7 @@ pub(super) async fn run(
     if !root_ok {
         bail!("source {} is not a directory", ctx.root.display());
     }
-    let persist = Persister::start(ctx.index().clone(), ctx.session_id, ctx.key.clone()).await;
-    let listed: Listed = Arc::default();
-    let listing = spawn_listing(
-        ListingSpec {
-            root: ctx.root.clone(),
-            filters: ctx.filters.clone(),
-            hasher: ctx.hasher.clone(),
-            scope: ctx.scope.clone(),
-            skip: None,
-        },
-        out.clone(),
-        None,
-        Some(listed.clone()),
-    );
+    let persist = Persister::start(&ctx).await;
     let sender = Arc::new(Sender::new(
         ctx.conn.clone(),
         ctx.session_id,
@@ -394,7 +469,8 @@ pub(super) async fn run(
         out: out.clone(),
         events: events_tx,
         sender,
-        listed,
+        listed: Arc::default(),
+        listing: Listing::Undecided,
         files: HashMap::new(),
         seen: HashSet::new(),
         abandoned: HashMap::new(),
@@ -404,6 +480,9 @@ pub(super) async fn run(
         errors: Vec::new(),
         persist,
     };
+    if !ctx.resumed {
+        s.start_listing();
+    }
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let res: anyhow::Result<()> = loop {
         let ev = tokio::select! {
@@ -417,6 +496,16 @@ pub(super) async fn run(
         let Some(ev) = ev else {
             break Err(anyhow::anyhow!("event channel closed"));
         };
+        if let Listing::Undecided = s.listing {
+            match &ev {
+                Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.start_listing(),
+                Ev::Ctrl(Msg::Plan(_)) => {
+                    tracing::info!("the receiver resumes its stored plan");
+                    s.listing = Listing::FromPlan;
+                }
+                _ => {}
+            }
+        }
         let step = match ev {
             Ev::Send(Done::Digested {
                 file_id,
@@ -455,16 +544,19 @@ pub(super) async fn run(
                 s.on_session_done(d);
                 break Ok(());
             }
-            Ev::Ctrl(Msg::Error(e)) => Err(anyhow::anyhow!("peer error: {}", e.message)),
+            Ev::Ctrl(Msg::Error(e)) => Err(PeerError(e.message).into()),
             Ev::Ctrl(m) => Err(anyhow::anyhow!(
                 "protocol error: unexpected {} from the receiver",
                 msg_name(&m)
             )),
-            Ev::PeerEof => Err(anyhow::anyhow!(
-                "the receiver closed the control stream before the session ended"
-            )),
-            Ev::PeerFailed(e) | Ev::WriterFailed(e) => Err(anyhow::anyhow!("control stream: {e}")),
-            Ev::Recv(_) => Ok(()),
+            Ev::PeerEof => Err(TransportError(
+                "the receiver closed the control stream before the session ended".into(),
+            )
+            .into()),
+            Ev::PeerFailed(e) | Ev::WriterFailed(e) => {
+                Err(TransportError(format!("control stream: {e}")).into())
+            }
+            Ev::PeerListing | Ev::Recv(_) => Ok(()),
         };
         if let Err(e) = step {
             break Err(e);
@@ -490,20 +582,29 @@ pub(super) async fn run(
         .await;
     }
     s.persist.bytes(s.bytes);
-    s.persist.flush().await;
+    let listing = std::mem::replace(&mut s.listing, Listing::FromPlan);
     if let Err(e) = res {
-        listing.abort();
+        s.persist.flush().await;
+        if let Listing::Running(l) = listing {
+            l.abort();
+        }
         return Err(e);
     }
+    // Finished: a later run with the same key starts a new session.
+    s.persist.finish().await;
     out.finish();
     // The receiver cannot finish before our ListingEnd, so the walk is over.
-    let mut errors = match listing.await {
-        Ok(summary) => walk_errors(&summary),
-        Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
+    let mut errors = match listing {
+        Listing::Running(l) => match l.await {
+            Ok(summary) => walk_errors(&summary),
+            Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
+        },
+        Listing::Undecided | Listing::FromPlan => Vec::new(),
     };
     errors.append(&mut s.errors);
     Ok(Outcome {
         session_id: ctx.session_id,
+        resumed: ctx.resumed,
         files_transferred: s.files_done,
         bytes_transferred: s.bytes,
         files_skipped: 0,

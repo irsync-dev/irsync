@@ -22,6 +22,9 @@ use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, EndpointOpts, RelayChoice};
 use crate::session::engine::serve_daemon;
+use crate::session::DaemonSessions;
+#[cfg(feature = "test-hooks")]
+use crate::session::FaultInjector;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -29,6 +32,8 @@ struct Shared {
     authz: Arc<dyn Authorizer>,
     modules: BTreeMap<String, Module>,
     indexes: HashMap<String, IndexHandle>,
+    /// Hosted sessions (one connection per session id) and test hooks.
+    hosting: DaemonSessions,
     #[cfg(feature = "test-hooks")]
     hellos: Arc<std::sync::atomic::AtomicU64>,
     /// Finished sessions, and files their hashers read.
@@ -62,6 +67,11 @@ impl Daemon {
                 authz,
                 modules: cfg.modules,
                 indexes,
+                hosting: DaemonSessions {
+                    #[cfg(feature = "test-hooks")]
+                    fault: Some(Arc::default()),
+                    ..DaemonSessions::default()
+                },
                 #[cfg(feature = "test-hooks")]
                 hellos: Default::default(),
                 #[cfg(feature = "test-hooks")]
@@ -88,6 +98,18 @@ impl Daemon {
         Arc<std::sync::atomic::AtomicU64>,
     ) {
         (self.shared.sessions.clone(), self.shared.hashed.clone())
+    }
+
+    /// The fault injector every session of this daemon consults.
+    #[cfg(feature = "test-hooks")]
+    pub fn fault_injector(&self) -> Arc<FaultInjector> {
+        self.shared.hosting.fault.clone().unwrap_or_default()
+    }
+
+    /// Ids of every session hosted so far (fresh or resumed), in order.
+    #[cfg(feature = "test-hooks")]
+    pub fn hosted_sessions(&self) -> Arc<std::sync::Mutex<Vec<[u8; 16]>>> {
+        self.shared.hosting.registry.hosted.clone()
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
@@ -149,7 +171,8 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
                 .get(&hello.module)
                 .context("module has no index")?
                 .clone();
-            let res = serve_daemon(conn, send, recv, root, hello, index).await;
+            let hosting = shared.hosting.clone();
+            let res = serve_daemon(conn, send, recv, root, hello, index, hosting).await;
             #[cfg(feature = "test-hooks")]
             {
                 use std::sync::atomic::Ordering::SeqCst;
@@ -162,7 +185,12 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
         }
         Err((code, message)) => {
             tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting session");
-            reject(&conn, &mut send, code, message).await
+            let res = reject(&conn, &mut send, code, message).await;
+            #[cfg(feature = "test-hooks")]
+            shared
+                .sessions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            res
         }
     }
 }

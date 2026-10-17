@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::EndpointId;
 use irsync_proto::v1::{error::Code, hello::Direction, Error, FileEntry, Hello, HelloAck};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
@@ -24,7 +25,8 @@ use tokio::sync::mpsc;
 
 use super::control::{self, Ev};
 use super::{
-    receiver, sender_role, IndexScope, LocalSide, Outcome, SessionKey, SideHooks, HASH_WORKERS,
+    receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
+    SessionRecord, SideHooks, HASH_WORKERS,
 };
 use crate::cli::location::Location;
 use crate::cli::{Preserve, SyncOptions};
@@ -35,6 +37,50 @@ use crate::hasher::Hasher;
 use crate::index::IndexHandle;
 use crate::net::frame::{write_msg, MAX_FRAME};
 use crate::send::DEFAULT_PARALLEL;
+
+/// The daemon refused the session: its `Error` reply to `Hello`.
+#[derive(Debug, Clone)]
+pub struct SessionRefused {
+    pub code: Code,
+    pub message: String,
+}
+
+impl std::fmt::Display for SessionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "daemon refused the session ({:?}): {}",
+            self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for SessionRefused {}
+
+/// The connection or the control stream failed underneath the session: the
+/// session can continue on a new connection.
+#[derive(Debug, Clone)]
+pub struct TransportError(pub String);
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TransportError {}
+
+/// The peer gave up on the session and said why (`Error` on the control stream).
+#[derive(Debug, Clone)]
+pub struct PeerError(pub String);
+
+impl std::fmt::Display for PeerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer error: {}", self.0)
+    }
+}
+
+impl std::error::Error for PeerError {}
 
 /// What a role needs to know about the session options.
 #[derive(Debug, Clone)]
@@ -91,6 +137,14 @@ pub(super) struct Ctx {
     pub conn: Connection,
     pub session_id: [u8; 16],
     pub key: Vec<u8>,
+    /// This connection continues an existing session (`HelloAck.resumed`).
+    pub resumed: bool,
+    /// This side's stored record of the session, when resumed and found.
+    pub record: Option<SessionRecord>,
+    /// Daemon: the client's EndpointId, stored with the session.
+    pub remote_id: Option<Vec<u8>>,
+    #[cfg(feature = "test-hooks")]
+    pub fault: Option<Arc<super::FaultInjector>>,
     /// The session root: listing paths are relative to it.
     pub root: PathBuf,
     /// The root the index was opened for (`root` = `base` + `scope.prefix`).
@@ -196,66 +250,133 @@ async fn read_frame(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
 /// refuses. The two differ in the wire type of field 1, so at most one
 /// decodes as a well-formed ack.
 async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
-    let body = read_frame(recv).await.context("reading HelloAck")?;
+    let body = read_frame(recv)
+        .await
+        .map_err(|e| TransportError(format!("reading HelloAck: {e}")))?;
     if let Ok(ack) = HelloAck::decode(&body[..]) {
         if ack.session_id.len() == 16 {
             return Ok(ack);
         }
     }
     match Error::decode(&body[..]) {
-        Ok(e) => bail!(
-            "daemon refused the session ({:?}): {}",
-            Code::try_from(e.code).unwrap_or(Code::Unknown),
-            e.message
-        ),
+        Ok(e) => Err(SessionRefused {
+            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+            message: e.message,
+        }
+        .into()),
         Err(_) => bail!("malformed reply to Hello"),
     }
 }
 
-fn remote_location(conn: &Connection, hello: &Hello) -> anyhow::Result<Location> {
+fn remote_location(daemon: EndpointId, hello: &Hello) -> anyhow::Result<Location> {
     Ok(Location::Remote {
-        host: conn.remote_id().to_string(),
+        host: daemon.to_string(),
         module: hello.module.clone(),
         path: RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid remote path"))?,
         contents_only: hello.contents_only,
     })
 }
 
+/// The client's [`SessionKey`] for a session with `daemon` described by
+/// `hello` over `local` (canonicalizes the local path, so off the async threads).
+pub async fn client_session_key(
+    daemon: EndpointId,
+    hello: &Hello,
+    local: &LocalSide,
+    opts: &SyncOptions,
+) -> anyhow::Result<Vec<u8>> {
+    let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
+    let local_loc = Location::Local {
+        path: local.root.clone(),
+        contents_only: local.contents_only,
+    };
+    let remote_loc = remote_location(daemon, hello)?;
+    let (src, dst) = match direction {
+        Direction::ClientSends => (local_loc, remote_loc),
+        Direction::DaemonSends => (remote_loc, local_loc),
+    };
+    let o = opts.clone();
+    Ok(
+        tokio::task::spawn_blocking(move || SessionKey::new(daemon, &src, &dst, &o).into_bytes())
+            .await?,
+    )
+}
+
+/// This side's stored record of session `id`, if it is there and belongs to `key`.
+async fn load_record(index: &IndexHandle, id: [u8; 16], key: &[u8]) -> Option<SessionRecord> {
+    let index = index.clone();
+    let row = blocking(move || {
+        index
+            .lock()
+            .map_err(|_| io::Error::other("index poisoned"))?
+            .load_session_by_id(&id)
+            .map_err(io::Error::other)
+    })
+    .await;
+    match row {
+        Ok(Some(row)) if row.key == key => match SessionRecord::from_row(&row) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(error = %e, "stored session is unreadable; starting it over");
+                None
+            }
+        },
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, "loading the stored session failed");
+            None
+        }
+    }
+}
+
 /// Runs a whole session as the client over `conn`: sends `hello`, then plays
 /// the sender role (`CLIENT_SENDS`) or the receiver role (`DAEMON_SENDS`) on
 /// `local`. The root and remote path must already follow rsync's
-/// trailing-slash rule (see [`super::resolve_roots`]).
+/// trailing-slash rule (see [`super::resolve_roots`]). A non-empty
+/// `hello.session_id` asks the daemon to resume that session.
 pub async fn run_client(
     conn: Connection,
     hello: Hello,
     local: LocalSide,
     opts: &SyncOptions,
 ) -> anyhow::Result<Outcome> {
+    run_client_inner(conn, hello, local, opts, &mut None).await
+}
+
+/// [`run_client`], also reporting the session id as soon as the daemon has
+/// acknowledged it (so a failed run can be resumed).
+pub(super) async fn run_client_inner(
+    conn: Connection,
+    hello: Hello,
+    local: LocalSide,
+    opts: &SyncOptions,
+    acked: &mut Option<[u8; 16]>,
+) -> anyhow::Result<Outcome> {
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
-    let local_loc = Location::Local {
-        path: local.root.clone(),
-        contents_only: local.contents_only,
-    };
-    let remote_loc = remote_location(&conn, &hello)?;
-    let (src, dst) = match direction {
-        Direction::ClientSends => (&local_loc, &remote_loc),
-        Direction::DaemonSends => (&remote_loc, &local_loc),
-    };
-    let key = {
-        let (daemon, src, dst, o) = (conn.remote_id(), src.clone(), dst.clone(), opts.clone());
-        // Canonicalizes the local path: blocking.
-        tokio::task::spawn_blocking(move || SessionKey::new(daemon, &src, &dst, &o).into_bytes())
-            .await?
-    };
+    let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
     warn_ignored_options(direction, opts);
 
-    let (mut send, mut recv) = conn.open_bi().await.context("opening control stream")?;
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| TransportError(format!("opening control stream: {e}")))?;
     write_msg(&mut send, &hello)
         .await
-        .context("sending Hello")?;
+        .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     let ack = read_hello_reply(&mut recv).await?;
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
-    tracing::info!(session = %control::hex(&session_id), ?direction, "session started");
+    *acked = Some(session_id);
+    tracing::info!(
+        session = %control::hex(&session_id),
+        resumed = ack.resumed,
+        ?direction,
+        "session started"
+    );
+    let record = if ack.resumed {
+        load_record(&local.index, session_id, &key).await
+    } else {
+        None
+    };
 
     let sends = direction == Direction::ClientSends;
     if !sends {
@@ -269,6 +390,11 @@ pub async fn run_client(
         conn,
         session_id,
         key,
+        resumed: ack.resumed,
+        record,
+        remote_id: None,
+        #[cfg(feature = "test-hooks")]
+        fault: None,
         base: local.root.clone(),
         root: local.root,
         scope: IndexScope::new(local.index, RelPath::root()),
@@ -353,6 +479,7 @@ pub async fn serve_daemon(
     module_root: PathBuf,
     hello: Hello,
     index: IndexHandle,
+    shared: DaemonSessions,
 ) -> anyhow::Result<Outcome> {
     let direction = Direction::try_from(hello.direction).context("bad direction")?;
     // The daemon sends when the client receives.
@@ -366,45 +493,55 @@ pub async fn serve_daemon(
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
-            write_msg(
-                &mut send,
-                &Error {
-                    code: Code::BadPath as i32,
-                    message: msg.clone(),
-                },
-            )
-            .await?;
-            send.finish()?;
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
-            bail!(msg);
+            return refuse(&conn, &mut send, Code::BadPath, msg).await;
         }
     };
-    // Task 17 will validate resumption; for now a client-chosen id is used as is.
-    let session_id: [u8; 16] = match <[u8; 16]>::try_from(hello.session_id.as_slice()) {
-        Ok(id) => id,
-        Err(_) => {
-            let mut id = [0u8; 16];
-            OsRng.fill_bytes(&mut id);
-            id
-        }
+    let remote = conn.remote_id();
+    let key = SessionKey::for_daemon(remote, &hello).into_bytes();
+    let (session_id, record, _claim) = if hello.session_id.is_empty() {
+        let mut id = [0u8; 16];
+        OsRng.fill_bytes(&mut id);
+        let claim = shared.registry.claim(id, &conn).await?;
+        (id, None, claim)
+    } else {
+        // Only the key that created a session may resume it, and only for
+        // the same module, path and direction.
+        let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
+        let id = <[u8; 16]>::try_from(hello.session_id.as_slice()).ok();
+        let found = match id {
+            Some(id) => load_record(&index, id, &key).await.filter(owned),
+            None => None,
+        };
+        let Some(id) = id.filter(|_| found.is_some()) else {
+            let msg = "unknown session".to_string();
+            return refuse(&conn, &mut send, Code::BadSession, msg).await;
+        };
+        // Stop an older connection still hosting it, then reload what it saved.
+        let claim = shared.registry.claim(id, &conn).await?;
+        let Some(rec) = load_record(&index, id, &key).await.filter(owned) else {
+            let msg = "session finished".to_string();
+            return refuse(&conn, &mut send, Code::BadSession, msg).await;
+        };
+        (id, Some(rec), claim)
     };
+    let resumed = record.is_some();
     write_msg(
         &mut send,
         &HelloAck {
             session_id: session_id.to_vec(),
-            resumed: false,
+            resumed,
             protocol_version: PROTOCOL_VERSION,
         },
     )
     .await?;
     tracing::info!(
         session = %control::hex(&session_id),
-        peer = %conn.remote_id().fmt_short(),
+        peer = %remote.fmt_short(),
         module = %hello.module,
         ?direction,
+        resumed,
         "session started"
     );
-    let key = SessionKey::for_daemon(conn.remote_id(), &hello).into_bytes();
     // The module's index is opened for the module root: hash and key paths
     // from there, so rows stay module-relative whatever the session path.
     let hasher = Arc::new(Hasher::new(
@@ -417,6 +554,11 @@ pub async fn serve_daemon(
         conn,
         session_id,
         key,
+        resumed,
+        record,
+        remote_id: Some(remote.as_bytes().to_vec()),
+        #[cfg(feature = "test-hooks")]
+        fault: shared.fault.clone(),
         root,
         base: module_root,
         scope: IndexScope::new(index, rel),
@@ -429,6 +571,29 @@ pub async fn serve_daemon(
         hooks: SideHooks::default(),
     };
     run_role(Arc::new(ctx), send, recv, sends).await
+}
+
+/// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
+/// and closes the connection.
+async fn refuse(
+    conn: &Connection,
+    send: &mut SendStream,
+    code: Code,
+    msg: String,
+) -> anyhow::Result<Outcome> {
+    tracing::info!(peer = %conn.remote_id().fmt_short(), ?code, %msg, "refusing session");
+    write_msg(
+        send,
+        &Error {
+            code: code as i32,
+            message: msg.clone(),
+        },
+    )
+    .await?;
+    send.finish()?;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
+    conn.close(2u32.into(), b"rejected");
+    bail!(msg);
 }
 
 /// Wires the control stream to the chosen role and reports a fatal error to

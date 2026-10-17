@@ -89,7 +89,36 @@ pub struct DaemonHandle {
     pub sessions: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Files the daemon's hashers read, summed over finished sessions.
     pub hashed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Drops a connection once the daemon's data byte count crosses a limit.
+    pub fault: std::sync::Arc<irsync::session::FaultInjector>,
+    hosted: std::sync::Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
     pub _state: tempfile::TempDir,
+}
+
+impl DaemonHandle {
+    /// Ids of the sessions the daemon has hosted (fresh or resumed), in order, deduplicated.
+    pub fn session_ids(&self) -> Vec<[u8; 16]> {
+        let mut v: Vec<[u8; 16]> = Vec::new();
+        for id in self.hosted.lock().unwrap().iter() {
+            if !v.contains(id) {
+                v.push(*id);
+            }
+        }
+        v
+    }
+
+    /// Waits until every connection that sent a Hello has been fully handled.
+    pub async fn settle(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while self.sessions.load(SeqCst) < self.hellos.load(SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "daemon sessions did not finish"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 /// Starts a daemon on a loopback endpoint serving `modules` (name -> (path, read_only)).
@@ -112,6 +141,8 @@ pub async fn spawn_daemon(
     let daemon = irsync::daemon::Daemon::new(cfg, authz, ep).expect("daemon");
     let hellos = daemon.hello_counter();
     let (sessions, hashed) = daemon.session_counters();
+    let fault = daemon.fault_injector();
+    let hosted = daemon.hosted_sessions();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -122,6 +153,8 @@ pub async fn spawn_daemon(
         hellos,
         sessions,
         hashed,
+        fault,
+        hosted,
         _state: state,
     }
 }
@@ -161,22 +194,31 @@ pub struct Harness {
 
 impl Harness {
     pub async fn new() -> Harness {
+        Self::with_guest().await.0
+    }
+
+    /// A harness plus a second client endpoint the daemon also authorises.
+    pub async fn with_guest() -> (Harness, Endpoint) {
         use irsync::authz::{Access, Grants, MemoryAuthorizer};
         let client = client_endpoint().await;
+        let guest = client_endpoint().await;
         let module = tempfile::tempdir().unwrap();
         let grants = Grants {
             all: Some(Access::ReadWrite),
             ..Grants::default()
         };
-        let authz = std::sync::Arc::new(MemoryAuthorizer::single(client.id(), grants));
+        let authz = std::sync::Arc::new(
+            MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants),
+        );
         let daemon = spawn_daemon(vec![("m", module.path().to_path_buf(), false)], authz).await;
-        Harness {
+        let h = Harness {
             daemon,
             client,
             module,
             local: tempfile::tempdir().unwrap(),
             client_state: tempfile::tempdir().unwrap(),
-        }
+        };
+        (h, guest)
     }
 
     pub fn src(&self, flow: Flow) -> &std::path::Path {
@@ -215,15 +257,54 @@ impl Harness {
 
     /// The client's side of a session over the local dir (contents only).
     pub fn local_side(&self) -> irsync::session::LocalSide {
-        let index = irsync::index::Index::open(self.client_state.path(), self.local.path())
+        Self::side_for(self.local.path(), self.client_state.path())
+    }
+
+    /// A client side over `dir` (contents only) with its index under `state`.
+    pub fn side_for(dir: &std::path::Path, state: &std::path::Path) -> irsync::session::LocalSide {
+        let index = irsync::index::Index::open(state, dir)
             .expect("open client index")
             .into_handle();
         irsync::session::LocalSide::new(
-            self.local.path().to_path_buf(),
+            dir.to_path_buf(),
             true,
             index,
             std::sync::Arc::new(irsync::filter::FilterSet::new(vec![])),
         )
+    }
+
+    /// One `run_with_reconnect` (a client "process"); returns its result and
+    /// how many times it reconnected. Waits until the daemon has finished
+    /// with every connection.
+    pub async fn run_reconnect(
+        &self,
+        opts: &irsync::cli::SyncOptions,
+        flow: Flow,
+        ropts: irsync::session::reconnect::ReconnectOpts,
+        local: irsync::session::LocalSide,
+    ) -> (anyhow::Result<irsync::session::Outcome>, u32) {
+        use irsync::session::reconnect::{run_with_reconnect, ConnState};
+        let mut reconnects = 0;
+        let out = run_with_reconnect(
+            &self.client,
+            self.daemon.addr.clone(),
+            |id| {
+                let mut h = Self::hello(flow);
+                h.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
+                h
+            },
+            local,
+            opts,
+            ropts,
+            |s| {
+                if matches!(s, ConnState::Reconnecting { .. }) {
+                    reconnects += 1;
+                }
+            },
+        )
+        .await;
+        self.daemon.settle().await;
+        (out, reconnects)
     }
 
     /// One complete session; waits until the daemon has finished its side too.

@@ -161,6 +161,12 @@ impl MemoryAuthorizer {
             map: HashMap::from([(id, grants)]),
         }
     }
+
+    /// Adds (or replaces) the grants of one more key.
+    pub fn with(mut self, id: EndpointId, grants: Grants) -> Self {
+        self.map.insert(id, grants);
+        self
+    }
 }
 
 impl Authorizer for MemoryAuthorizer {
