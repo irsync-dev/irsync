@@ -23,11 +23,11 @@ use irsync_proto::v1::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use super::control::msg_name;
 use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::receiver::msg_name;
 use super::Outcome;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;

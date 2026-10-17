@@ -9,7 +9,7 @@
 //! the planner once both listings have ended) or after them, before the
 //! directory metadata pass. A dry run plans and reports but changes nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -20,15 +20,17 @@ use std::time::Duration;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, ListingEnd,
-    NeedChunks, PathError, PlanEntry, PlanItem, SessionDone, SessionPlan,
+    NeedChunks, PathError, PlanEntry, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
-use super::control::{capped_errors, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister};
+use super::control::{
+    capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
+};
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::planner::{mkdir_replacing, parent_of, plan, DirEntry, Planned, PlannerReport, Prior};
+use super::planner::{parent_of, plan, Planned, PlannerReport, Prior};
 use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -38,6 +40,12 @@ use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
 use crate::plan::Side;
 use crate::recv::{FileWriter, FinalizeError};
+use recv_delete::{capped_paths, MAX_DONE_PATHS};
+
+#[path = "recv_delete.rs"]
+mod recv_delete;
+#[path = "recv_resume.rs"]
+mod recv_resume;
 
 /// How long to wait for the sender to close its end after `SessionDone`.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -205,115 +213,6 @@ impl Receiver {
                 }
             }
         }
-    }
-
-    /// Runs a deletion pass under the session root: refused when either
-    /// listing was incomplete (unless `--ignore-errors`). Returns the paths
-    /// deleted.
-    async fn run_deletes(&mut self, mut pass: DeletePass) -> Vec<RelPath> {
-        self.await_own_walk().await;
-        pass.set_spent(self.persist.deleted());
-        let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
-        match pass.execute(self.ctx.root.clone(), incomplete).await {
-            Ok(rep) => {
-                for p in &rep.deleted {
-                    self.ctx.hooks.event("delete", p);
-                }
-                self.persist.add_deleted(rep.deleted.len() as u64);
-                self.max_delete_reached |= rep.stopped_at_max;
-                self.errors.extend(rep.errors);
-                self.would_delete.extend(rep.would_delete);
-                self.deleted.extend(rep.deleted.iter().cloned());
-                rep.deleted
-            }
-            Err(refused) => {
-                self.errors.push((RelPath::root(), refused.to_string()));
-                Vec::new()
-            }
-        }
-    }
-
-    /// Runs a waiting `--delete-before` pass once the sender's listing has ended.
-    async fn maybe_delete_before(&mut self) {
-        if !self.peer_listing_done {
-            return;
-        }
-        if let Some((pass, reply)) = self.pending_before.take() {
-            let deleted = self.run_deletes(pass).await;
-            let _ = reply.send(deleted);
-        }
-    }
-
-    /// Resumes from a complete stored plan: makes sure the planned
-    /// directories exist and requests every file not yet placed.
-    async fn resume_plan(&mut self, plan: SessionPlan) {
-        let dirs: Vec<RelPath> = plan
-            .dirs
-            .iter()
-            .filter_map(|e| RelPath::new(&e.path).ok())
-            .collect();
-        let ctx = self.ctx.clone();
-        let mkdir_errors = blocking(move || {
-            Ok(dirs
-                .into_iter()
-                .filter_map(|d| {
-                    mkdir_replacing(&ctx.full(&d))
-                        .err()
-                        .map(|e| (d, format!("mkdir: {e}")))
-                })
-                .collect::<Vec<_>>())
-        })
-        .await
-        .unwrap_or_default();
-        self.errors.extend(mkdir_errors);
-        let mut requested = 0usize;
-        for e in plan.entries {
-            if self.persist.is_done(e.file_id) {
-                continue;
-            }
-            let (Ok(path), Some(entry)) = (RelPath::new(&e.path), e.entry) else {
-                let path = RelPath::new(&e.path).unwrap_or_default();
-                tracing::warn!(?path, file_id = e.file_id, "unusable stored plan entry");
-                self.errors
-                    .push((path, "not resumed: unusable stored plan entry".into()));
-                continue;
-            };
-            let action = Action::try_from(e.action).unwrap_or(Action::Whole);
-            self.register(e.file_id, path.clone(), entry, action, None);
-            self.ctx.hooks.event("plan", &path);
-            self.out.send(Msg::Plan(PlanItem {
-                file_id: e.file_id,
-                path: path.as_bytes().to_vec(),
-                action: action as i32,
-            }));
-            requested += 1;
-        }
-        tracing::info!(requested, "resuming the stored plan");
-        self.report = Some(PlannerReport {
-            skipped: plan.skipped,
-            errors: plan
-                .errors
-                .into_iter()
-                .map(|e| (RelPath::new(&e.path).unwrap_or_default(), e.message))
-                .collect(),
-            dirs: plan
-                .dirs
-                .into_iter()
-                .filter_map(|entry| {
-                    let path = RelPath::new(&entry.path).ok()?;
-                    Some(DirEntry {
-                        path,
-                        entry,
-                        apply: true,
-                    })
-                })
-                .collect(),
-            touched: HashSet::new(),
-            deletes: None,
-        });
-        self.peer_listing_done = true;
-        self.peer_listing_incomplete = plan.peer_listing_incomplete;
-        self.plan_complete = true;
     }
 
     /// A file requested from the sender, now in flight.
@@ -749,29 +648,6 @@ impl Receiver {
         .unwrap_or_else(|e| vec![(RelPath::root(), e.to_string())]);
         self.errors.extend(errors);
     }
-}
-
-pub(super) fn msg_name(m: &Msg) -> &'static str {
-    match m {
-        Msg::Listing(_) => "ListingEntry",
-        Msg::ListingEnd(_) => "ListingEnd",
-        Msg::Plan(_) => "PlanItem",
-        Msg::ChunkList(_) => "ChunkList",
-        Msg::Need(_) => "NeedChunks",
-        Msg::Ack(_) => "FileAck",
-        Msg::Done(_) => "SessionDone",
-        Msg::Error(_) => "Error",
-    }
-}
-
-/// At most this many deleted (or would-delete) paths travel in `SessionDone`.
-const MAX_DONE_PATHS: usize = 1000;
-
-fn capped_paths(v: &[RelPath]) -> Vec<Vec<u8>> {
-    v.iter()
-        .take(MAX_DONE_PATHS)
-        .map(|p| p.as_bytes().to_vec())
-        .collect()
 }
 
 /// `--partial-dir` inside the root, as a path to leave out of the listing.

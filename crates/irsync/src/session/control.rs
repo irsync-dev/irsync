@@ -466,6 +466,19 @@ pub(super) fn capped_errors(errors: &[(RelPath, String)]) -> Vec<PathError> {
     v
 }
 
+pub(super) fn msg_name(m: &Msg) -> &'static str {
+    match m {
+        Msg::Listing(_) => "ListingEntry",
+        Msg::ListingEnd(_) => "ListingEnd",
+        Msg::Plan(_) => "PlanItem",
+        Msg::ChunkList(_) => "ChunkList",
+        Msg::Need(_) => "NeedChunks",
+        Msg::Ack(_) => "FileAck",
+        Msg::Done(_) => "SessionDone",
+        Msg::Error(_) => "Error",
+    }
+}
+
 pub(super) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
