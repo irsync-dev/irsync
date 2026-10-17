@@ -5,25 +5,60 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-/// A path relative to a root: no leading slash, `/`-separated raw bytes,
-/// the root itself being the empty path.
+/// Error for bytes that are not a canonical relative path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidPath;
+
+impl std::fmt::Display for InvalidPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid relative path")
+    }
+}
+
+impl std::error::Error for InvalidPath {}
+
+fn valid_name(c: &[u8]) -> bool {
+    !c.is_empty() && c != b"." && c != b".." && !c.contains(&b'/') && !c.contains(&0)
+}
+
+/// A canonical path relative to a root: no leading slash, `/`-separated raw
+/// bytes, no empty, `.` or `..` components, no NUL; the root is the empty path.
+/// Canonical form makes derived `Eq`/`Hash` consistent with the component-wise `Ord`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct RelPath(pub Vec<u8>);
+pub struct RelPath(Vec<u8>);
 
 impl RelPath {
+    pub fn root() -> RelPath {
+        RelPath(Vec::new())
+    }
+
+    pub fn new(bytes: &[u8]) -> Result<RelPath, InvalidPath> {
+        if !bytes.is_empty() && !bytes.split(|&b| b == b'/').all(valid_name) {
+            return Err(InvalidPath);
+        }
+        Ok(RelPath(bytes.to_vec()))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
     pub fn components(&self) -> impl Iterator<Item = &[u8]> {
         self.0.split(|&b| b == b'/').filter(|c| !c.is_empty())
     }
 
-    pub fn join(&self, name: &[u8]) -> RelPath {
+    pub fn join(&self, name: &[u8]) -> Result<RelPath, InvalidPath> {
+        if !valid_name(name) {
+            return Err(InvalidPath);
+        }
         if self.0.is_empty() {
-            return RelPath(name.to_vec());
+            return Ok(RelPath(name.to_vec()));
         }
         let mut v = Vec::with_capacity(self.0.len() + 1 + name.len());
         v.extend_from_slice(&self.0);
         v.push(b'/');
         v.extend_from_slice(name);
-        RelPath(v)
+        Ok(RelPath(v))
     }
 
     pub fn to_os(&self) -> &OsStr {
@@ -43,8 +78,9 @@ impl PartialOrd for RelPath {
     }
 }
 
-/// True if `root/rel` stays lexically inside `root`: rejects absolute paths
-/// and any `..` component.
-pub fn is_contained(_root: &Path, rel: &RelPath) -> bool {
-    !rel.0.starts_with(b"/") && rel.components().all(|c| c != b"..")
+/// Lexical containment check over raw wire bytes: true if `rel` is a canonical
+/// relative path (no absolute, `..`, `.`, empty components or NUL). `_root` is
+/// reserved; symlink escapes are not checked here.
+pub fn is_contained(_root: &Path, rel: &[u8]) -> bool {
+    RelPath::new(rel).is_ok()
 }

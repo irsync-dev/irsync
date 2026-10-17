@@ -43,7 +43,11 @@ fn kind_of(mode: u32) -> Kind {
 /// `lstat` the entry at `root/rel` (never following a final symlink).
 /// Fills everything except `whole_hash`.
 pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
-    let full = root.join(rel.to_os());
+    let full = if rel.as_bytes().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel.to_os())
+    };
     let st = lstat(&full)?;
     let mode = st.st_mode as u32;
     let kind = kind_of(mode);
@@ -54,7 +58,7 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
     };
     // Linux and macOS both expose st_mtime / st_mtime_nsec through nix's libc FileStat.
     Ok(FileEntry {
-        path: rel.0.clone(),
+        path: rel.as_bytes().to_vec(),
         kind: kind as i32,
         size: st.st_size as u64,
         mtime_sec: st.st_mtime as i64,
@@ -68,7 +72,7 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
         inode: st.st_ino,
         nlink: st.st_nlink as u32,
         whole_hash: None,
-        sparse: (st.st_blocks as i64) * 512 < st.st_size as i64,
+        sparse: kind == Kind::Regular && (st.st_blocks as i64) * 512 < st.st_size as i64,
     })
 }
 
@@ -96,6 +100,7 @@ pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Resul
 }
 
 /// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
+/// `mknod` is umask-subject, so callers follow with `apply_metadata` to set exact mode.
 pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
     let kind = match e.kind() {
         Kind::Fifo => SFlag::S_IFIFO,
