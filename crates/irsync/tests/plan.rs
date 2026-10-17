@@ -259,3 +259,139 @@ fn merge_join_skips_invalid_paths_and_handles_empty() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0.as_bytes(), b"a");
 }
+
+fn with_nsec(mut s: Side, nsec: u32) -> Side {
+    s.entry.mtime_nsec = nsec;
+    s
+}
+
+#[test]
+fn nsec_only_difference_is_not_quick_check_equal() {
+    let s = with_nsec(reg("a", 3, 1), 5);
+    let d = with_nsec(reg("a", 3, 1), 6);
+    assert_eq!(
+        decide(Some(&s), Some(&d), &opts(), &NoLookup),
+        Decision::Delta
+    );
+    let (s, d) = (with_hash(s, 1), with_hash(d, 1));
+    assert_eq!(
+        decide(Some(&s), Some(&d), &opts(), &NoLookup),
+        Decision::MetaOnly
+    );
+}
+
+#[test]
+fn update_only_nsec_newer_dst_skips() {
+    let s = with_nsec(reg("a", 4, 1), 5);
+    let d = with_nsec(reg("a", 3, 1), 6);
+    let mut o = opts();
+    o.update_only = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+}
+
+#[test]
+fn update_only_equal_mtime_proceeds() {
+    let (s, d) = (reg("a", 4, 1), reg("a", 3, 1));
+    let mut o = opts();
+    o.update_only = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Delta);
+}
+
+#[test]
+fn mode_mask_ignores_type_bits() {
+    let mut s = reg("a", 3, 1);
+    s.entry.mode = 0o100644;
+    let d = reg("a", 3, 1);
+    let mut o = opts();
+    o.preserve.perms = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+}
+
+#[test]
+fn times_owner_group_each_trigger_meta_only() {
+    // Directory: mtime is metadata only (no quick check involved).
+    let s = side("d", Kind::Directory, 0o755);
+    let mut d = s.clone();
+    d.entry.mtime_sec = 99;
+    let mut o = opts();
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    o.preserve.times = true;
+    assert_eq!(
+        decide(Some(&s), Some(&d), &o, &NoLookup),
+        Decision::MetaOnly
+    );
+
+    let (s, mut d) = (reg("a", 3, 1), reg("a", 3, 1));
+    d.entry.uid = 5;
+    let mut o = opts();
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    o.preserve.owner = true;
+    assert_eq!(
+        decide(Some(&s), Some(&d), &o, &NoLookup),
+        Decision::MetaOnly
+    );
+
+    let (s, mut d) = (reg("a", 3, 1), reg("a", 3, 1));
+    d.entry.gid = 5;
+    let mut o = opts();
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    o.preserve.group = true;
+    assert_eq!(
+        decide(Some(&s), Some(&d), &o, &NoLookup),
+        Decision::MetaOnly
+    );
+}
+
+#[test]
+fn kind_change_suppresses_local_copy() {
+    let s = with_hash(reg("a", 3, 1), 7);
+    let d = side("a", Kind::Directory, 0o755);
+    let mut o = opts();
+    o.rename_detection = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &OneHit), Decision::Whole);
+}
+
+fn collect_keys(src: Vec<Side>, dst: Vec<Side>) -> Vec<(Vec<u8>, bool, bool)> {
+    block_on(
+        merge_join(stream::iter(src), stream::iter(dst))
+            .map(|(p, s, d)| (p.as_bytes().to_vec(), s.is_some(), d.is_some()))
+            .collect(),
+    )
+}
+
+#[test]
+fn merge_join_both_empty() {
+    assert!(collect_keys(vec![], vec![]).is_empty());
+}
+
+#[test]
+fn merge_join_one_side_empty() {
+    let out = collect_keys(vec![reg("a", 1, 1), reg("b", 1, 1)], vec![]);
+    assert_eq!(
+        out,
+        vec![(b"a".to_vec(), true, false), (b"b".to_vec(), true, false)]
+    );
+    let out = collect_keys(vec![], vec![reg("a", 1, 1)]);
+    assert_eq!(out, vec![(b"a".to_vec(), false, true)]);
+}
+
+#[test]
+fn merge_join_drops_duplicate_dst_key() {
+    let out = collect_keys(vec![reg("a", 1, 1)], vec![reg("a", 1, 1), reg("a", 1, 1)]);
+    assert_eq!(out, vec![(b"a".to_vec(), true, true)]);
+}
+
+#[test]
+fn merge_join_drops_duplicate_src_key() {
+    let out = collect_keys(vec![reg("a", 1, 1), reg("a", 1, 1)], vec![reg("a", 1, 1)]);
+    assert_eq!(out, vec![(b"a".to_vec(), true, true)]);
+}
+
+#[test]
+fn merge_join_out_of_order_does_not_panic() {
+    let out = collect_keys(
+        vec![reg("b", 1, 1), reg("a", 1, 1)],
+        vec![reg("a", 1, 1), reg("b", 1, 1)],
+    );
+    assert!(!out.is_empty());
+}

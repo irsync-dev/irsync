@@ -52,7 +52,11 @@ impl HashLookup for NoLookup {
 }
 
 fn kind_of(e: &FileEntry) -> Option<Kind> {
-    Kind::try_from(e.kind).ok()
+    let k = Kind::try_from(e.kind).ok();
+    if k.is_none() {
+        tracing::warn!(kind = e.kind, "unknown entry kind; skipping");
+    }
+    k
 }
 
 fn mtime(e: &FileEntry) -> (i64, u32) {
@@ -135,7 +139,7 @@ pub fn decide(
             }
         }
         Some(Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket) => {
-            if !p.devices || (se.rdev == de.rdev && se.mode == de.mode) {
+            if !p.devices || (se.rdev == de.rdev && se.mode & 0o7777 == de.mode & 0o7777) {
                 Decision::Skip
             } else {
                 Decision::Special
@@ -209,40 +213,47 @@ pub fn merge_join(
             st.dh = next_valid(&mut st.dst, "dst").await;
             st.primed = true;
         }
-        let out = match (st.sh.take(), st.dh.take()) {
-            (None, None) => return None,
-            (Some((p, s)), None) => {
-                st.sh = next_valid(&mut st.src, "src").await;
-                (p, Some(s), None)
-            }
-            (None, Some((p, d))) => {
-                st.dh = next_valid(&mut st.dst, "dst").await;
-                (p, None, Some(d))
-            }
-            (Some((sp, s)), Some((dp, d))) => match sp.cmp(&dp) {
-                std::cmp::Ordering::Less => {
-                    st.dh = Some((dp, d));
+        loop {
+            let out = match (st.sh.take(), st.dh.take()) {
+                (None, None) => return None,
+                (Some((p, s)), None) => {
                     st.sh = next_valid(&mut st.src, "src").await;
-                    (sp, Some(s), None)
+                    (p, Some(s), None)
                 }
-                std::cmp::Ordering::Greater => {
-                    st.sh = Some((sp, s));
+                (None, Some((p, d))) => {
                     st.dh = next_valid(&mut st.dst, "dst").await;
-                    (dp, None, Some(d))
+                    (p, None, Some(d))
                 }
-                std::cmp::Ordering::Equal => {
-                    st.sh = next_valid(&mut st.src, "src").await;
-                    st.dh = next_valid(&mut st.dst, "dst").await;
-                    (sp, Some(s), Some(d))
-                }
-            },
-        };
-        if let Some(last) = &st.last {
-            if out.0 < *last {
-                tracing::error!(path = ?out.0, previous = ?last, "merge_join input out of order");
+                (Some((sp, s)), Some((dp, d))) => match sp.cmp(&dp) {
+                    std::cmp::Ordering::Less => {
+                        st.dh = Some((dp, d));
+                        st.sh = next_valid(&mut st.src, "src").await;
+                        (sp, Some(s), None)
+                    }
+                    std::cmp::Ordering::Greater => {
+                        st.sh = Some((sp, s));
+                        st.dh = next_valid(&mut st.dst, "dst").await;
+                        (dp, None, Some(d))
+                    }
+                    std::cmp::Ordering::Equal => {
+                        st.sh = next_valid(&mut st.src, "src").await;
+                        st.dh = next_valid(&mut st.dst, "dst").await;
+                        (sp, Some(s), Some(d))
+                    }
+                },
+            };
+            if st.last.as_ref().is_some_and(|last| out.0 <= *last) {
+                // Duplicate or out-of-order key: a listing bug. Drop it rather than
+                // let it pair against the wrong counterpart (e.g. spurious Delete).
+                tracing::error!(
+                    path = ?out.0,
+                    previous = ?st.last,
+                    "merge_join input duplicate or out of order; dropping item"
+                );
+                continue;
             }
+            st.last = Some(out.0.clone());
+            return Some((out, st));
         }
-        st.last = Some(out.0.clone());
-        Some((out, st))
     })
 }
