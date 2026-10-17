@@ -474,6 +474,12 @@ pub struct SideHooks {
     /// hostile listing).
     #[cfg(feature = "test-hooks")]
     pub inject_listing: Option<ListingHook>,
+    /// Receiver: cap on files in flight instead of the default 4096.
+    #[cfg(feature = "test-hooks")]
+    pub max_inflight: Option<usize>,
+    /// Receiver: the most files it has had in flight at once.
+    #[cfg(feature = "test-hooks")]
+    pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

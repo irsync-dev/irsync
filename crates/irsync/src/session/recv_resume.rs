@@ -50,16 +50,11 @@ impl Receiver {
                 continue;
             }
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
-            self.register(e.file_id, path.clone(), entry, action, None);
-            self.ctx.hooks.event("plan", &path);
-            self.out.send(Msg::Plan(PlanItem {
-                file_id: e.file_id,
-                path: path.as_bytes().to_vec(),
-                action: action as i32,
-            }));
+            self.queued.push_back((e.file_id, path, entry, action));
             requested += 1;
         }
         tracing::info!(requested, "resuming the stored plan");
+        self.pump();
         self.report = Some(PlannerReport {
             skipped: plan.skipped,
             errors: plan
@@ -87,5 +82,22 @@ impl Receiver {
         self.peer_listing_done = true;
         self.peer_listing_incomplete = plan.peer_listing_incomplete;
         self.plan_complete = true;
+    }
+
+    /// Requests queued files of a resumed plan while fewer than the
+    /// in-flight cap are in flight (the planner's bound, for this path).
+    pub(super) fn pump(&mut self) {
+        while self.active < self.inflight_cap {
+            let Some((file_id, path, entry, action)) = self.queued.pop_front() else {
+                return;
+            };
+            self.register(file_id, path.clone(), entry, action, None, None);
+            self.ctx.hooks.event("plan", &path);
+            self.out.send(Msg::Plan(PlanItem {
+                file_id,
+                path: path.as_bytes().to_vec(),
+                action: action as i32,
+            }));
+        }
     }
 }

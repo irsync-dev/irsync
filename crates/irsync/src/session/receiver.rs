@@ -9,7 +9,7 @@
 //! the planner once both listings have ended) or after them, before the
 //! directory metadata pass. A dry run plans and reports but changes nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -30,7 +30,7 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::planner::{parent_of, plan, Linked, Planned, PlannerReport, Prior};
+use super::planner::{inflight_cap, parent_of, plan, Linked, Planned, PlannerReport, Prior};
 use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -124,6 +124,9 @@ struct RFile {
     abandoned: Option<String>,
     /// The current chunk list as native records (set once opened).
     digest: Option<FileDigest>,
+    /// The planner's in-flight slot (none for a resumed plan), released
+    /// when the file leaves `files`.
+    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 struct Receiver {
@@ -162,11 +165,18 @@ struct Receiver {
     links: Vec<Linked>,
     /// Files that failed this session (never linked to).
     failed: HashSet<RelPath>,
+    /// A resumed plan's files not yet requested (see `pump`).
+    queued: VecDeque<(u64, RelPath, FileEntry, Action)>,
+    /// At most this many files in flight.
+    inflight_cap: usize,
 }
 
 impl Receiver {
     fn complete(&self) -> bool {
-        self.report.is_some() && self.peer_listing_done && self.active == 0
+        self.report.is_some()
+            && self.peer_listing_done
+            && self.active == 0
+            && self.queued.is_empty()
     }
 
     /// Once the sender's listing has ended and every path is planned, the
@@ -233,8 +243,13 @@ impl Receiver {
         entry: FileEntry,
         action: Action,
         local_copy: Option<RelPath>,
+        slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
         self.active += 1;
+        #[cfg(feature = "test-hooks")]
+        if let Some(peak) = &self.ctx.hooks.inflight_peak {
+            peak.fetch_max(self.active, Ordering::SeqCst);
+        }
         self.files.insert(
             file_id,
             RFile {
@@ -249,6 +264,7 @@ impl Receiver {
                 pending: None,
                 abandoned: None,
                 digest: None,
+                _slot: slot,
             },
         );
     }
@@ -396,7 +412,15 @@ impl Receiver {
                     whole_hash: p.entry.whole_hash.clone(),
                     entry: Some(p.entry.clone()),
                 });
-                self.register(p.file_id, p.path, p.entry, p.action, p.local_copy);
+                let p = *p;
+                self.register(
+                    p.file_id,
+                    p.path,
+                    p.entry,
+                    p.action,
+                    p.local_copy,
+                    Some(p.slot),
+                );
             }
             Done::PlannerFinished(r) => {
                 self.report = Some(*r);
@@ -732,6 +756,8 @@ pub(super) async fn run(
         tasks: TaskTracker::new(),
         links: Vec::new(),
         failed: HashSet::new(),
+        queued: VecDeque::new(),
+        inflight_cap: inflight_cap(&ctx),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores
@@ -800,7 +826,10 @@ pub(super) async fn run(
         }
         tokio::select! {
             ev = events.recv() => match ev {
-                Some(ev) => if let Err(e) = r.handle(ev).await { break Err(e) },
+                Some(ev) => {
+                    if let Err(e) = r.handle(ev).await { break Err(e) }
+                    r.pump();
+                }
                 None => break Err(anyhow::anyhow!("event channel closed")),
             },
             _ = tick.tick() => {

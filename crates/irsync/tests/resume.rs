@@ -95,6 +95,34 @@ async fn connection_drop_mid_transfer_completes_byte_exact() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_pull_keeps_inflight_cap() {
+    within60(async {
+        let opts = archive_opts();
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(first.is_err());
+        // The restarted client resumes the stored plan with a cap of 2.
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut local = h.local_side();
+        local.hooks.max_inflight = Some(2);
+        local.hooks.inflight_peak = Some(peak.clone());
+        let (second, _) = h.run_reconnect(&opts, flow, fast(), local).await;
+        let second = second.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(second.resumed);
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!((1..=2).contains(&peak), "peak in flight {peak}");
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn client_restart_resumes_same_session() {
     within60(async {
         let opts = archive_opts();

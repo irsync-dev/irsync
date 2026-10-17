@@ -559,3 +559,29 @@ async fn push_emits_events() {
 async fn pull_emits_events() {
     within30(events_during_sync(Flow::Pull)).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inflight_plan_items_are_capped() {
+    within30(async {
+        let h = Harness::new().await;
+        for i in 0..10u32 {
+            fs::write(
+                h.module.path().join(format!("f{i}")),
+                data(64 * KIB + i as usize, i),
+            )
+            .unwrap();
+        }
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut local = h.local_side();
+        local.hooks.max_inflight = Some(2);
+        local.hooks.inflight_peak = Some(peak.clone());
+        let opts = archive_opts();
+        let out = h.run_side(&opts, Flow::Pull, local).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 10);
+        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!((1..=2).contains(&peak), "peak in flight {peak}");
+        assert_trees_equal(h.module.path(), h.local.path(), &opts.preserve);
+    })
+    .await;
+}

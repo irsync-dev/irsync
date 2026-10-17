@@ -26,7 +26,7 @@ use futures::StreamExt;
 use irsync_proto::v1::{
     control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, PlanItem, SessionPlan,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use super::control::{is_own_temp, Ev, Out};
 use super::engine::{blocking, Ctx};
@@ -48,6 +48,25 @@ pub(super) struct Planned {
     /// Rename detection found this local file with the same content (an
     /// index key, i.e. relative to the index root, not the session root).
     pub local_copy: Option<RelPath>,
+    /// One of the session's in-flight slots, released when the file leaves
+    /// the receiver (placed or failed).
+    pub slot: OwnedSemaphorePermit,
+}
+
+/// At most this many requested files are in flight (planned, not yet
+/// acknowledged) per session; the planner waits for a slot before the next.
+pub(super) const MAX_INFLIGHT: usize = 4096;
+
+/// [`MAX_INFLIGHT`], or a test's smaller cap.
+pub(super) fn inflight_cap(ctx: &Ctx) -> usize {
+    #[cfg(feature = "test-hooks")]
+    let cap = ctx.hooks.max_inflight.unwrap_or(MAX_INFLIGHT);
+    #[cfg(not(feature = "test-hooks"))]
+    let cap = {
+        let _ = ctx;
+        MAX_INFLIGHT
+    };
+    cap.max(1)
 }
 
 /// A hard link (`-H`) the planner decided on: placed by the receiver after
@@ -282,6 +301,8 @@ struct Planner {
     /// Regular files this session placed or kept, each under a parent the
     /// planner verified: the only paths a hard link may point at.
     regular_ok: HashSet<RelPath>,
+    /// Slots for files in flight (see [`MAX_INFLIGHT`]).
+    inflight: Arc<Semaphore>,
 }
 
 impl Planner {
@@ -531,6 +552,10 @@ impl Planner {
                     Decision::LocalCopy { from } => (Action::Whole, Some(from)),
                     _ => (Action::Whole, None),
                 };
+                // Bounded in flight: wait until an earlier file is acknowledged.
+                let Ok(slot) = self.inflight.clone().acquire_owned().await else {
+                    return;
+                };
                 // Registered with the main loop before the request can be answered.
                 let _ = self.events.send(Ev::Recv(Done::Planned(Box::new(Planned {
                     file_id,
@@ -538,6 +563,7 @@ impl Planner {
                     entry,
                     action,
                     local_copy,
+                    slot,
                 }))));
                 self.ctx.hooks.event("plan", &path);
                 self.out.send(Msg::Plan(PlanItem {
@@ -679,6 +705,7 @@ pub(super) async fn plan(
     local: mpsc::UnboundedReceiver<Side>,
     prior: Prior,
 ) {
+    let inflight = Arc::new(Semaphore::new(inflight_cap(&ctx)));
     let o = &ctx.opts;
     let deletes = (o.delete != DeleteMode::Off).then(|| {
         DeletePass::new(
@@ -710,6 +737,7 @@ pub(super) async fn plan(
         excluded_dirs: HashSet::new(),
         kept_inodes: HashMap::new(),
         regular_ok: HashSet::new(),
+        inflight,
     };
     let before = p
         .deletes
