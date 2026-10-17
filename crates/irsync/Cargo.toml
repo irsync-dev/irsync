@@ -19,6 +19,9 @@ clap = { workspace = true }
 url = { workspace = true }
 dirs = { workspace = true }
 rand_core = { workspace = true }
+rusqlite = { workspace = true }
+blake3 = { workspace = true }
+prost = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

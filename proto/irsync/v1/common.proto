@@ -36,3 +36,6 @@ message FileEntry {
   bool sparse = 15;
   reserved 16 to 31;                              // later metadata (xattrs)
 }
+
+message Range { uint64 offset = 1; uint64 length = 2; }
+message RangeSet { repeated Range ranges = 1; }
