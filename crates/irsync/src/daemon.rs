@@ -31,6 +31,11 @@ struct Shared {
     indexes: HashMap<String, IndexHandle>,
     #[cfg(feature = "test-hooks")]
     hellos: Arc<std::sync::atomic::AtomicU64>,
+    /// Finished sessions, and files their hashers read.
+    #[cfg(feature = "test-hooks")]
+    sessions: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(feature = "test-hooks")]
+    hashed: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub struct Daemon {
@@ -59,6 +64,10 @@ impl Daemon {
                 indexes,
                 #[cfg(feature = "test-hooks")]
                 hellos: Default::default(),
+                #[cfg(feature = "test-hooks")]
+                sessions: Default::default(),
+                #[cfg(feature = "test-hooks")]
+                hashed: Default::default(),
             }),
         })
     }
@@ -67,6 +76,18 @@ impl Daemon {
     #[cfg(feature = "test-hooks")]
     pub fn hello_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
         self.shared.hellos.clone()
+    }
+
+    /// Counters of finished sessions and of files their hashers read. The
+    /// session counter moves after the hash counter is updated.
+    #[cfg(feature = "test-hooks")]
+    pub fn session_counters(
+        &self,
+    ) -> (
+        Arc<std::sync::atomic::AtomicU64>,
+        Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        (self.shared.sessions.clone(), self.shared.hashed.clone())
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
@@ -128,7 +149,16 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
                 .get(&hello.module)
                 .context("module has no index")?
                 .clone();
-            serve_daemon(conn, send, recv, root, hello, index).await
+            let res = serve_daemon(conn, send, recv, root, hello, index).await;
+            #[cfg(feature = "test-hooks")]
+            {
+                use std::sync::atomic::Ordering::SeqCst;
+                if let Ok(o) = &res {
+                    shared.hashed.fetch_add(o.files_hashed, SeqCst);
+                }
+                shared.sessions.fetch_add(1, SeqCst);
+            }
+            res.map(|_| ())
         }
         Err((code, message)) => {
             tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting session");

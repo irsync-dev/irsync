@@ -1,0 +1,20 @@
+// Local persistence only: session rows in each side's index. Never sent on the wire.
+syntax = "proto3";
+package irsync.v1;
+
+import "irsync/v1/common.proto";
+import "irsync/v1/control.proto";
+
+// One file the session decided to transfer.
+message PlanEntry {
+  uint64 file_id = 1;
+  bytes path = 2;                                 // relative to the session root, raw bytes
+  PlanItem.Action action = 3;
+  uint64 size = 4;                                // source size when planned (0 if unknown)
+  Hash whole_hash = 5;                            // source whole-file hash, when known
+}
+message SessionPlan { repeated PlanEntry entries = 1; }
+message SessionProgress {
+  repeated uint64 done_file_ids = 1;              // files acknowledged DONE
+  uint64 bytes_transferred = 2;
+}

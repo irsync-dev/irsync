@@ -1,5 +1,20 @@
-use irsync::cli::{Args, Command, DaemonArgs, SyncOptions};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{bail, Context};
+use iroh::{EndpointAddr, EndpointId};
+use irsync::cli::location::Location;
+use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
+use irsync::config::client::ClientConfig;
 use irsync::config::daemon::DaemonConfig;
+use irsync::filter::FilterSet;
+use irsync::identity::{load_secret_key, parse_endpoint_id};
+use irsync::index::Index;
+use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
+use irsync::session::{engine::run_client, resolve_roots, LocalSide, Outcome};
+use irsync_proto::chunk::CHUNK_PARAMS;
+use irsync_proto::v1::{hello, Hello};
+use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
 fn main() {
     let args = Args::parse();
@@ -13,10 +28,191 @@ fn main() {
                 println!("{opts:#?}");
                 return;
             }
-            eprintln!("not implemented yet");
+            std::process::exit(run_sync(&args, &opts));
         }
     }
     std::process::exit(1);
+}
+
+fn init_logging(verbose: u8, quiet: bool) {
+    let default = match (quiet, verbose) {
+        (true, _) => "error",
+        (false, 0) => "warn",
+        (false, 1) => "warn,irsync=info",
+        (false, 2) => "info,irsync=debug",
+        _ => "debug,irsync=trace",
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
+/// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial transfer.
+fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
+    init_logging(opts.verbose, opts.quiet);
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("irsync: {e}");
+            return 1;
+        }
+    };
+    match rt.block_on(sync(args, opts)) {
+        Ok(outcome) => {
+            for (path, msg) in &outcome.errors {
+                eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
+            }
+            if !opts.quiet {
+                let mut line = format!(
+                    "{} files transferred, {} bytes",
+                    outcome.files_transferred, outcome.bytes_transferred
+                );
+                // Only the receiving side knows what was already up to date.
+                if outcome.files_skipped > 0 {
+                    line += &format!(", {} up to date", outcome.files_skipped);
+                }
+                if !outcome.errors.is_empty() {
+                    line += &format!(", {} errors", outcome.errors.len());
+                }
+                println!("{line}");
+            }
+            outcome.exit_code()
+        }
+        Err(e) => {
+            eprintln!("irsync: {e:#}");
+            1
+        }
+    }
+}
+
+fn state_dir() -> PathBuf {
+    dirs::state_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("irsync")
+}
+
+/// The daemon's EndpointId: from the client config's `Host` block, else the
+/// host string itself must be an EndpointId.
+fn resolve_target(cfg: &ClientConfig, host: &str) -> anyhow::Result<(EndpointId, Option<PathBuf>)> {
+    let hc = cfg.resolve(host);
+    let id = match hc.endpoint_id {
+        Some(id) => id,
+        None => parse_endpoint_id(host)
+            .with_context(|| format!("{host:?} is neither a configured host nor an EndpointId"))?,
+    };
+    Ok((id, hc.identity_file))
+}
+
+async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
+    let srcs = args
+        .sync
+        .src()
+        .iter()
+        .map(|s| Location::parse(s))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dest = Location::parse(args.sync.dest().context("missing destination")?)?;
+    let direction = validate(&srcs, &dest)?;
+    let remote = match direction {
+        Direction::ClientSends => &dest,
+        Direction::DaemonSends => &srcs[0],
+    };
+    let Location::Remote { host, .. } = remote else {
+        bail!("internal: no remote location");
+    };
+
+    let cfg = ClientConfig::load(opts.config.as_deref())?;
+    let (target, cfg_identity) = resolve_target(&cfg, host)?;
+    let hc = cfg.resolve(host);
+    let identity = opts
+        .identity
+        .clone()
+        .or(cfg_identity)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".ssh/id_ed25519")))
+        .context("no identity file")?;
+    let secret = load_secret_key(&identity, None)
+        .with_context(|| format!("loading identity {}", identity.display()))?;
+    let relay = match (&opts.relay, &hc.relay) {
+        (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
+        (None, Some(u)) => RelayChoice::Custom(u.clone()),
+        (None, None) => RelayChoice::N0Default,
+    };
+    let endpoint = build_endpoint(EndpointOpts {
+        secret,
+        relay,
+        dht: !opts.no_dht && hc.dht.unwrap_or(true),
+        dns: true,
+        mdns: hc.mdns.unwrap_or(true),
+        publish: false,
+        bind_addr: None,
+    })
+    .await?;
+    let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
+
+    // One session per source; several sources only when pushing.
+    let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
+    let mut total = Outcome::default();
+    for (src, dst) in pairs {
+        let (local, remote) = match direction {
+            Direction::ClientSends => (src, dst),
+            Direction::DaemonSends => (dst, src),
+        };
+        let (
+            Location::Local {
+                path,
+                contents_only: local_co,
+            },
+            Location::Remote {
+                module,
+                path: rpath,
+                contents_only: remote_co,
+                ..
+            },
+        ) = (local, remote)
+        else {
+            bail!("internal: unexpected location kinds");
+        };
+        let (root, rpath) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
+        if direction == Direction::DaemonSends {
+            std::fs::create_dir_all(&root)
+                .with_context(|| format!("creating {}", root.display()))?;
+        }
+        let index = Index::open(&state_dir(), &root)
+            .with_context(|| format!("opening index for {}", root.display()))?
+            .into_handle();
+        let side = LocalSide::new(root, *local_co, index, filters.clone());
+        let hello = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: vec![],
+            module: module.clone(),
+            path: rpath.as_bytes().to_vec(),
+            direction: match direction {
+                Direction::ClientSends => hello::Direction::ClientSends,
+                Direction::DaemonSends => hello::Direction::DaemonSends,
+            } as i32,
+            chunk_min: CHUNK_PARAMS.min,
+            chunk_avg: CHUNK_PARAMS.avg,
+            chunk_max: CHUNK_PARAMS.max,
+            contents_only: *remote_co,
+        };
+        let conn = endpoint
+            .connect(EndpointAddr::new(target), ALPN)
+            .await
+            .with_context(|| format!("connecting to {target}"))?;
+        let out = run_client(conn.clone(), hello, side, opts).await;
+        conn.close(0u32.into(), b"done");
+        let out = out?;
+        total.files_transferred += out.files_transferred;
+        total.bytes_transferred += out.bytes_transferred;
+        total.files_skipped += out.files_skipped;
+        total.files_hashed += out.files_hashed;
+        total.errors.extend(out.errors);
+    }
+    endpoint.close().await;
+    Ok(total)
 }
 
 fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {

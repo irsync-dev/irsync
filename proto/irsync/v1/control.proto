@@ -15,7 +15,9 @@ message PlanItem {                                                // receiver ->
 }
 message ChunkList { uint64 file_id = 1; uint64 size = 2; Hash whole_hash = 3; repeated ChunkRecord chunks = 4; } // sender -> receiver
 message NeedChunks { uint64 file_id = 1; repeated uint32 chunk_idx = 2; }  // receiver -> sender; empty = nothing needed (local copy / already have)
-message FileAck { uint64 file_id = 1; enum Status { DONE = 0; HASH_MISMATCH = 1; WRITE_ERROR = 2; } Status status = 2; string message = 3; }
+// receiver -> sender: DONE, HASH_MISMATCH, WRITE_ERROR. sender -> receiver: SOURCE_ERROR
+// (the sender cannot read the file; the receiver drops it without a reply).
+message FileAck { uint64 file_id = 1; enum Status { DONE = 0; HASH_MISMATCH = 1; WRITE_ERROR = 2; SOURCE_ERROR = 3; } Status status = 2; string message = 3; }
 message SessionDone { uint64 files = 1; uint64 bytes = 2; }
 message Control {
   oneof msg {
