@@ -78,6 +78,31 @@ async fn push_checksum_detects_same_mtime_change() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dry_run_verbose_push_lists_files() {
+    within30(async {
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("new.txt"), b"x").unwrap();
+        let local = h.local_side();
+        let mut rx = local.hooks.bus.subscribe();
+        let out = h
+            .run_side(&opts(&["-n", "-v"]), Flow::Push, local)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        let mut listed = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let irsync::session::Event::FileDone(p, _) = e {
+                listed.push(String::from_utf8_lossy(p.as_bytes()).into_owned());
+            }
+        }
+        // What the reporter prints under `-n -v` (FileDone lines).
+        assert_eq!(listed, vec!["new.txt".to_string()]);
+        assert!(!h.module.path().join("new.txt").exists());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_with_partial_dir_is_refused() {
     within30(async {
         let h = Harness::new().await;

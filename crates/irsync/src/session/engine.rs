@@ -179,7 +179,8 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
     hello.max_delete = o.max_delete;
     hello.dry_run = o.dry_run;
     hello.ignore_errors = o.ignore_errors;
-    hello.itemize = o.itemize;
+    // `-n -v` lists what a push would transfer: only the daemon knows.
+    hello.itemize = o.itemize || (o.dry_run && o.verbose > 0);
     hello.update_only = o.update_only;
     hello.checksum = o.checksum;
 }
