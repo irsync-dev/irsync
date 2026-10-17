@@ -173,7 +173,7 @@ async fn parallel_bound_respected() {
     .await;
     within(rx).await.unwrap();
     let max = s.max_concurrency();
-    assert!((1..=2).contains(&max), "max concurrency {max}");
+    assert_eq!(max, 2, "max concurrency");
 }
 
 #[tokio::test]
@@ -209,4 +209,60 @@ async fn changed_file_is_invalid_data() {
         .unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
     assert!(e.to_string().contains("c.bin"));
+}
+
+#[tokio::test]
+async fn peer_stop_is_an_error() {
+    let f = fixture().await;
+    let (p, d) = put(&f, "s.bin", &data(MIB, 6));
+    let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
+    let server = f.server.clone();
+    let rx = tokio::spawn(async move {
+        let mut s = server.accept_uni().await.unwrap();
+        let _: DataStreamHeader = read_msg(&mut s).await.unwrap().unwrap();
+        s.stop(iroh::endpoint::VarInt::from_u32(7)).unwrap();
+        // keep the connection alive until the sender has seen the stop
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    });
+    let r = within(sender(&f, 4, 64 << 20, None).send_chunks(1, &p, &d, &idxs)).await;
+    assert!(r.is_err(), "peer STOP_SENDING must be an error");
+    rx.abort();
+}
+
+#[tokio::test]
+async fn first_error_stops_scheduling() {
+    let f = fixture().await;
+    let bytes = data(5 * MIB, 8);
+    let (p, d) = put(&f, "e.bin", &bytes);
+    assert!(d.chunks.len() >= 8);
+    // Corrupt everything from chunk 1 on, so range 1 fails.
+    let mut bad = bytes.clone();
+    let from = d.chunks[1].offset as usize;
+    for b in &mut bad[from..] {
+        *b = !*b;
+    }
+    std::fs::write(f.root.path().join("e.bin"), bad).unwrap();
+    let server = f.server.clone();
+    let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let c2 = count.clone();
+    let acceptor = tokio::spawn(async move {
+        while let Ok(mut s) = server.accept_uni().await {
+            let c = c2.clone();
+            tokio::spawn(async move {
+                if read_msg::<DataStreamHeader, _>(&mut s).await.is_ok() {
+                    c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                while let Ok(Some(_)) = read_msg::<DataChunk, _>(&mut s).await {}
+            });
+        }
+    });
+    let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
+    let e = within(sender(&f, 1, 1, None).send_chunks(1, &p, &d, &idxs))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let n = count.load(std::sync::atomic::Ordering::SeqCst);
+    acceptor.abort();
+    assert!(n <= 2, "{n} streams opened after the error");
 }
