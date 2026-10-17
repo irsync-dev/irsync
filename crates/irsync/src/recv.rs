@@ -92,6 +92,10 @@ fn native_chunks(expected: &ChunkList) -> io::Result<([u8; 32], Vec<ChunkRecord>
         if c.offset != next || c.len == 0 {
             return Err(invalid("chunk list does not tile the file"));
         }
+        // Chunks are buffered whole: never more than the chunker's maximum.
+        if c.len > MAX_CHUNK_LEN {
+            return Err(invalid(format!("chunk of {} bytes exceeds 1 MiB", c.len)));
+        }
         next += u64::from(c.len);
         chunks.push(c);
     }
@@ -135,6 +139,9 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
 pub fn is_temp_name(name: &[u8]) -> bool {
     name.starts_with(b".irsync.") && (name.ends_with(b".part") || name.ends_with(b".tmp"))
 }
+
+/// The largest chunk a peer's `ChunkList` may describe (FastCDC's maximum).
+pub const MAX_CHUNK_LEN: u32 = 1024 * 1024;
 
 /// The error message when another writer holds the `.part` (`WouldBlock`).
 pub const PART_BUSY: &str = "part file busy";

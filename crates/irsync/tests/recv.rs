@@ -370,6 +370,32 @@ async fn wrong_length_chunk_is_rejected() {
 }
 
 #[tokio::test]
+async fn oversized_chunk_in_list_is_rejected() {
+    let e = env();
+    let data = vec![7u8; 2 * 1024 * 1024];
+    // One 2 MiB "chunk": tiles the file, but exceeds the 1 MiB maximum.
+    let cl = ChunkList {
+        file_id: 1,
+        size: data.len() as u64,
+        whole_hash: Some(v1::Hash {
+            bytes: blake3::hash(&data).as_bytes().to_vec(),
+        }),
+        chunks: vec![v1::ChunkRecord {
+            offset: 0,
+            len: data.len() as u32,
+            hash: Some(v1::Hash {
+                bytes: blake3::hash(&data).as_bytes().to_vec(),
+            }),
+        }],
+    };
+    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+        .err()
+        .expect("oversized chunk must be refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!part_path(&e.root).exists());
+}
+
+#[tokio::test]
 async fn symlink_at_destination_is_replaced_and_target_untouched() {
     let e = env();
     let data = content(59);
