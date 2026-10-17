@@ -1,0 +1,65 @@
+//! Shared helpers for integration tests that need real iroh endpoints.
+#![allow(dead_code)]
+
+use iroh::{Endpoint, EndpointAddr, SecretKey};
+use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
+
+/// Options for a fully offline endpoint: no relay, no address lookup, loopback bind.
+pub fn offline_opts() -> EndpointOpts {
+    EndpointOpts {
+        secret: SecretKey::generate(),
+        relay: RelayChoice::Disabled,
+        dht: false,
+        dns: false,
+        mdns: false,
+        publish: false,
+        bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+    }
+}
+
+/// Binds one offline endpoint on loopback.
+pub async fn loopback_endpoint() -> Endpoint {
+    build_endpoint(offline_opts())
+        .await
+        .expect("bind loopback endpoint")
+}
+
+/// Binds two offline endpoints on loopback. Dial one from the other with [`addr_of`].
+pub async fn loopback_pair() -> (Endpoint, Endpoint) {
+    (loopback_endpoint().await, loopback_endpoint().await)
+}
+
+/// The endpoint's id plus its direct (loopback) addresses: enough to dial it offline.
+pub fn addr_of(ep: &Endpoint) -> EndpointAddr {
+    let addr = ep.addr();
+    assert!(
+        addr.ip_addrs().next().is_some(),
+        "endpoint has no direct addresses"
+    );
+    addr
+}
+
+/// Connects `client` to `server` over loopback and returns both ends of the connection
+/// as `(client_side, server_side)`.
+pub async fn connect_pair(
+    client: &Endpoint,
+    server: &Endpoint,
+) -> (iroh::endpoint::Connection, iroh::endpoint::Connection) {
+    let addr = addr_of(server);
+    let accept = async {
+        server
+            .accept()
+            .await
+            .expect("incoming connection")
+            .await
+            .expect("server handshake")
+    };
+    let connect = async {
+        client
+            .connect(addr, irsync_proto::ALPN)
+            .await
+            .expect("client connect")
+    };
+    let (c, s) = tokio::join!(connect, accept);
+    (c, s)
+}
