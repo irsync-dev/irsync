@@ -241,14 +241,23 @@ impl Harness {
         flow: Flow,
         local: irsync::session::LocalSide,
     ) -> anyhow::Result<irsync::session::Outcome> {
+        self.run_hello(opts, Self::hello(flow), local).await
+    }
+
+    /// Like [`Harness::run_side`] with a caller-built `Hello` (e.g. a sub-path).
+    pub async fn run_hello(
+        &self,
+        opts: &irsync::cli::SyncOptions,
+        hello: irsync_proto::v1::Hello,
+        local: irsync::session::LocalSide,
+    ) -> anyhow::Result<irsync::session::Outcome> {
         use std::sync::atomic::Ordering;
         let before = self.daemon.sessions.load(Ordering::SeqCst);
         let conn = self
             .client
             .connect(self.daemon.addr.clone(), irsync_proto::ALPN)
             .await?;
-        let out =
-            irsync::session::engine::run_client(conn.clone(), Self::hello(flow), local, opts).await;
+        let out = irsync::session::engine::run_client(conn.clone(), hello, local, opts).await;
         conn.close(0u32.into(), b"done");
         // The daemon's side ends right after ours; wait for its bookkeeping.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -260,6 +269,12 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         out
+    }
+
+    /// The daemon's index for module `m` (a second connection to its database).
+    pub fn daemon_index(&self) -> irsync::index::Index {
+        irsync::index::Index::open(self.daemon._state.path(), self.module.path())
+            .expect("open daemon index")
     }
 
     /// Files the daemon's hashers have read so far (all finished sessions).

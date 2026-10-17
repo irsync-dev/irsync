@@ -181,6 +181,54 @@ impl SessionRecord {
     }
 }
 
+/// The index a session uses, and where the session root sits below the root
+/// the index was opened for. Index rows are always relative to that index
+/// root (the module root on the daemon), so `key` maps session-relative paths
+/// to index keys and `strip` maps index keys back.
+#[derive(Clone)]
+pub struct IndexScope {
+    pub handle: IndexHandle,
+    pub prefix: RelPath,
+}
+
+impl IndexScope {
+    pub fn new(handle: IndexHandle, prefix: RelPath) -> IndexScope {
+        IndexScope { handle, prefix }
+    }
+
+    /// The index key for a session-relative path.
+    pub fn key(&self, rel: &RelPath) -> RelPath {
+        join_rel(&self.prefix, rel)
+    }
+
+    /// The session-relative path of an index key, if it lies inside the session root.
+    pub fn strip(&self, key: &RelPath) -> Option<RelPath> {
+        let (k, p) = (key.as_bytes(), self.prefix.as_bytes());
+        if p.is_empty() {
+            return Some(key.clone());
+        }
+        match k.strip_prefix(p) {
+            Some([]) => Some(RelPath::root()),
+            Some([b'/', rest @ ..]) => RelPath::new(rest).ok(),
+            _ => None,
+        }
+    }
+}
+
+/// `a/b` for two canonical relative paths (either may be the root).
+fn join_rel(a: &RelPath, b: &RelPath) -> RelPath {
+    match (a.as_bytes(), b.as_bytes()) {
+        ([], _) => b.clone(),
+        (_, []) => a.clone(),
+        (x, y) => {
+            let mut v = x.to_vec();
+            v.push(b'/');
+            v.extend_from_slice(y);
+            RelPath::new(&v).expect("joining canonical paths stays canonical")
+        }
+    }
+}
+
 /// Called by the sender role after the first chunk of a path went out, before
 /// the rest; lets a test change the file mid-transfer.
 #[cfg(feature = "test-hooks")]
@@ -247,6 +295,9 @@ pub struct Outcome {
     /// Files this side's hashers had to read during the session.
     pub files_hashed: u64,
     pub errors: Vec<(RelPath, String)>,
+    /// Per-file records the role still held when it finished (should be 0).
+    #[cfg(feature = "test-hooks")]
+    pub retained_files: usize,
 }
 
 impl Outcome {
@@ -315,6 +366,27 @@ mod tests {
             false,
         );
         assert_eq!(l, PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn index_scope_maps_session_paths_to_index_keys() {
+        let ix = crate::index::Index::open(
+            tempfile::tempdir().unwrap().path(),
+            tempfile::tempdir().unwrap().path(),
+        )
+        .unwrap()
+        .into_handle();
+        let r = |s: &[u8]| RelPath::new(s).unwrap();
+        let s = IndexScope::new(ix.clone(), r(b"sub/d"));
+        assert_eq!(s.key(&r(b"f")), r(b"sub/d/f"));
+        assert_eq!(s.key(&RelPath::root()), r(b"sub/d"));
+        assert_eq!(s.strip(&r(b"sub/d/x/y")), Some(r(b"x/y")));
+        assert_eq!(s.strip(&r(b"sub/d")), Some(RelPath::root()));
+        assert_eq!(s.strip(&r(b"sub/dd/x")), None);
+        assert_eq!(s.strip(&r(b"other")), None);
+        let root = IndexScope::new(ix, RelPath::root());
+        assert_eq!(root.key(&r(b"f")), r(b"f"));
+        assert_eq!(root.strip(&r(b"f")), Some(r(b"f")));
     }
 
     #[test]

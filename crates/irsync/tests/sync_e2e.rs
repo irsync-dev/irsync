@@ -105,6 +105,8 @@ async fn second_run_transfers_nothing() {
         for flow in [Flow::Push, Flow::Pull] {
             let (first, h) = sync_trees(mixed_tree, |_| {}, &opts, flow).await;
             assert!(first.errors.is_empty(), "{flow:?}: {:?}", first.errors);
+            // Finished files leave no per-file state (chunk lists) behind.
+            assert_eq!(first.retained_files, 0, "{flow:?}: retained per-file state");
             let daemon_hashed = h.daemon_files_hashed();
 
             let second = h.run(&opts, flow).await.unwrap();
@@ -361,6 +363,129 @@ async fn exit_code_23_on_partial_failure() {
         assert_eq!(out.files_transferred, 1);
         assert_eq!(fs::read(h.dst(flow).join("ok.txt")).unwrap(), b"fine");
         assert!(!h.dst(flow).join("secret.txt").exists());
+    })
+    .await;
+}
+
+fn is_root() -> bool {
+    nix::unistd::geteuid().is_root()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_with_unwritable_dest_dir_exits_23() {
+    if is_root() {
+        eprintln!("skipping: root can write into a read-only directory");
+        return;
+    }
+    within30(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (src, dst) = (h.src(flow).to_path_buf(), h.dst(flow).to_path_buf());
+        fs::create_dir_all(src.join("ro/sub")).unwrap();
+        fs::write(src.join("ro/sub/f.txt"), b"under a dir that cannot be made").unwrap();
+        fs::write(src.join("ro/g.txt"), b"cannot be placed").unwrap();
+        fs::write(src.join("ok.txt"), b"fine").unwrap();
+        fs::create_dir(dst.join("ro")).unwrap();
+        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+
+        let out = h.run(&opts, flow).await.unwrap();
+        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+        let failed: Vec<&[u8]> = out.errors.iter().map(|(p, _)| p.as_bytes()).collect();
+        // The mkdir failure and its child are only known to the daemon: they
+        // reach the client through SessionDone.
+        assert!(failed.contains(&&b"ro/sub"[..]), "{:?}", out.errors);
+        assert!(failed.contains(&&b"ro/sub/f.txt"[..]), "{:?}", out.errors);
+        assert!(failed.contains(&&b"ro/g.txt"[..]), "{:?}", out.errors);
+        assert_eq!(fs::read(dst.join("ok.txt")).unwrap(), b"fine");
+        assert!(!dst.join("ro/g.txt").exists());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreadable_source_subdir_exits_23() {
+    if is_root() {
+        eprintln!("skipping: root can read a mode-000 directory");
+        return;
+    }
+    within30(async {
+        let opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let src = h.src(flow).to_path_buf();
+            fs::create_dir(src.join("locked")).unwrap();
+            fs::write(src.join("locked/hidden.txt"), b"x").unwrap();
+            fs::write(src.join("ok.txt"), b"fine").unwrap();
+            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+
+            let out = h.run(&opts, flow).await;
+            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+            let out = out.unwrap();
+
+            assert!(
+                !out.errors.is_empty(),
+                "{flow:?}: incomplete listing not reported"
+            );
+            assert_eq!(out.exit_code(), 23, "{flow:?}");
+            assert_eq!(fs::read(h.dst(flow).join("ok.txt")).unwrap(), b"fine");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_index_rows_are_module_relative() {
+    within30(async {
+        let opts = archive_opts();
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("f.bin"), data(300 * KIB, 5)).unwrap();
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = b"sub".to_vec();
+        let out = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(
+            fs::read(h.module.path().join("sub/f.bin")).unwrap(),
+            data(300 * KIB, 5)
+        );
+
+        let ix = h.daemon_index();
+        let r = |s: &[u8]| RelPath::new(s).unwrap();
+        let row = ix.get_entry(&r(b"sub/f.bin")).unwrap();
+        assert!(
+            row.is_some_and(|e| e.digest.is_some()),
+            "no module-relative row"
+        );
+        assert!(ix.get_entry(&r(b"f.bin")).unwrap().is_none());
+
+        // Pulling the same sub-path reuses those rows: nothing is re-hashed.
+        let before = h.daemon_files_hashed();
+        let mut hello = Harness::hello(Flow::Pull);
+        hello.path = b"sub".to_vec();
+        let pulled = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let index = irsync::index::Index::open(state.path(), pulled.path())
+            .unwrap()
+            .into_handle();
+        let side = irsync::session::LocalSide::new(
+            pulled.path().to_path_buf(),
+            true,
+            index,
+            Arc::new(irsync::filter::FilterSet::new(vec![])),
+        );
+        let out = h.run_hello(&opts, hello, side).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(
+            h.daemon_files_hashed(),
+            before,
+            "daemon re-hashed a known file"
+        );
+        assert_eq!(
+            fs::read(pulled.path().join("f.bin")).unwrap(),
+            data(300 * KIB, 5)
+        );
     })
     .await;
 }

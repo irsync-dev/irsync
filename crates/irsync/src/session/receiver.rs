@@ -18,11 +18,11 @@ use iroh::endpoint::{RecvStream, VarInt};
 use irsync_proto::chunk::{ChunkRecord, FileDigest};
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, plan_item::Action, ChunkList, DataChunk,
-    DataStreamHeader, FileAck, FileEntry, Hash, NeedChunks, PlanEntry, SessionDone,
+    DataStreamHeader, FileAck, FileEntry, Hash, NeedChunks, PathError, PlanEntry, SessionDone,
 };
 use tokio::sync::mpsc;
 
-use super::control::{spawn_listing, Ev, ListingSpec, Out, Persister};
+use super::control::{spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister};
 use super::engine::{blocking, Ctx, Events};
 use super::planner::{plan, Planned, PlannerReport};
 use super::Outcome;
@@ -92,8 +92,6 @@ enum St {
     Opening,
     Receiving,
     Finalizing,
-    Done,
-    Failed,
 }
 
 struct RFile {
@@ -283,7 +281,11 @@ fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
 /// Copies chunk `idx` from a local file if it is still a regular file there.
 /// Failures only mean the chunk has to come over the network.
 async fn try_copy(w: &mut FileWriter, idx: u32, from: PathBuf, offset: u64) {
-    if !is_regular(&from) {
+    let probe = from.clone();
+    if !blocking(move || Ok(is_regular(&probe)))
+        .await
+        .unwrap_or(false)
+    {
         return;
     }
     if let Err(e) = w.copy_local(idx, &from, offset).await {
@@ -302,21 +304,24 @@ async fn open_writer(
     cl: ChunkList,
 ) -> io::Result<Opened> {
     let digest = native_digest(&cl)?;
-    let (root, rel, index, pd) = (
-        ctx.root.clone(),
-        path.clone(),
-        ctx.index.clone(),
+    // The writer works on index keys under the index root, so its partial
+    // record is keyed like every other index row; the file lands at the same place.
+    let key = ctx.key(&path);
+    let (base, rel, index, pd) = (
+        ctx.base.clone(),
+        key.clone(),
+        ctx.index().clone(),
         ctx.opts.partial_dir.clone(),
     );
-    let mut w = blocking(move || FileWriter::open(&root, &rel, &cl, pd.as_deref(), index)).await?;
+    let mut w = blocking(move || FileWriter::open(&base, &rel, &cl, pd.as_deref(), index)).await?;
 
     if action == Action::Delta {
         // Make sure the old file's chunks are indexed (cached if fresh).
-        let (root, rel) = (ctx.root.clone(), path.clone());
-        if let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&root, &rel)).await {
+        let (base, rel) = (ctx.base.clone(), key.clone());
+        if let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
             if entry.kind() == Kind::Regular {
                 let item = ScanItem {
-                    path: path.clone(),
+                    path: key.clone(),
                     entry,
                     ctime,
                 };
@@ -327,7 +332,7 @@ async fn open_writer(
         }
     }
     if let Some(from) = &local_copy {
-        let from = ctx.full(from);
+        let from = ctx.full_key(from);
         for idx in w.missing_chunks() {
             let offset = digest.chunks[idx as usize].offset;
             try_copy(&mut w, idx, from.clone(), offset).await;
@@ -339,7 +344,7 @@ async fn open_writer(
         .map(|i| (i, digest.chunks[i as usize].hash))
         .collect();
     if !wanted.is_empty() {
-        let index = ctx.index.clone();
+        let index = ctx.index().clone();
         let found = blocking(move || {
             let ix = index
                 .lock()
@@ -356,7 +361,7 @@ async fn open_writer(
         match found {
             Ok(found) => {
                 for (idx, p, off) in found {
-                    try_copy(&mut w, idx, ctx.full(&p), off).await;
+                    try_copy(&mut w, idx, ctx.full_key(&p), off).await;
                 }
             }
             Err(e) => tracing::warn!(?path, error = %e, "chunk lookup failed"),
@@ -380,9 +385,9 @@ async fn finalize(
 ) -> Result<(), FinalizeError> {
     let apply = ctx.apply_opts(&entry);
     w.finalize(&entry, &apply).await?;
-    let (root, index) = (ctx.root.clone(), ctx.index.clone());
+    let (base, key, index) = (ctx.base.clone(), ctx.key(&path), ctx.index().clone());
     let rec = blocking(move || {
-        let (mut e, ctime) = lstat_entry_with_ctime(&root, &path)?;
+        let (mut e, ctime) = lstat_entry_with_ctime(&base, &key)?;
         if e.size != digest.size {
             return Ok(());
         }
@@ -392,7 +397,7 @@ async fn finalize(
         index
             .lock()
             .map_err(|_| io::Error::other("index poisoned"))?
-            .put_entry(&path, &e, ctime, Some(&digest))
+            .put_entry(&key, &e, ctime, Some(&digest))
             .map_err(io::Error::other)
     })
     .await;
@@ -408,10 +413,12 @@ struct Receiver {
     events: mpsc::UnboundedSender<Ev>,
     routes: Routes,
     files: HashMap<u64, RFile>,
-    /// Files not yet Done or Failed.
+    /// Files in flight (entries in `files`). A file leaves `files` when it is
+    /// placed or has failed, so no chunk list outlives its file.
     active: usize,
     report: Option<PlannerReport>,
     peer_listing_done: bool,
+    peer_listing_incomplete: bool,
     files_done: u64,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
@@ -447,17 +454,13 @@ impl Receiver {
     /// itself gave up).
     async fn fail(&mut self, file_id: u64, ack: Option<Status>, msg: String) {
         self.retire_writer(file_id).await;
-        let Some(f) = self.files.get_mut(&file_id) else {
+        // Finished files leave the table; late events for them are ignored.
+        let Some(f) = self.files.remove(&file_id) else {
             return;
         };
-        if matches!(f.st, St::Done | St::Failed) {
-            return;
-        }
-        f.st = St::Failed;
-        f.gen += 1;
         self.active -= 1;
         tracing::warn!(path = ?f.path, error = %msg, "file failed");
-        self.errors.push((f.path.clone(), msg.clone()));
+        self.errors.push((f.path, msg.clone()));
         if let Some(status) = ack {
             self.ack(file_id, status, msg);
         }
@@ -466,11 +469,10 @@ impl Receiver {
     async fn on_chunk_list(&mut self, cl: ChunkList) {
         let file_id = cl.file_id;
         let Some(f) = self.files.get_mut(&file_id) else {
-            tracing::warn!(file_id, "chunk list for a file that was not requested");
+            tracing::debug!(file_id, "chunk list for a file not in flight");
             return;
         };
         match f.st {
-            St::Done | St::Failed => return,
             St::Opening | St::Finalizing => {
                 f.pending = Some(cl);
                 return;
@@ -647,8 +649,9 @@ impl Receiver {
         let abandoned = f.abandoned.take();
         match result {
             Ok(()) => {
-                f.st = St::Done;
-                f.pending = None;
+                // Placed: acknowledged DONE even if the sender gave up meanwhile
+                // (it withdraws its error on this ack).
+                self.files.remove(&file_id);
                 self.active -= 1;
                 self.files_done += 1;
                 self.persist.done(file_id);
@@ -690,7 +693,6 @@ impl Receiver {
             return;
         };
         match f.st {
-            St::Done | St::Failed => {}
             // Finalize decides: a verified file is still placed.
             St::Finalizing => f.abandoned = Some(msg),
             _ => self.fail(file_id, None, format!("sender: {msg}")).await,
@@ -708,6 +710,7 @@ impl Receiver {
                 if e.incomplete {
                     tracing::warn!("the sender's listing is incomplete");
                 }
+                self.peer_listing_incomplete = e.incomplete;
                 self.peer_listing_done = true;
             }
             Ev::Ctrl(Msg::Error(e)) => bail!("peer error: {}", e.message),
@@ -777,7 +780,7 @@ pub(super) async fn run(
     peer_listing: mpsc::UnboundedReceiver<Side>,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
-    let persist = Persister::start(ctx.index.clone(), ctx.session_id, ctx.key.clone()).await;
+    let persist = Persister::start(ctx.index().clone(), ctx.session_id, ctx.key.clone()).await;
     let (local_tx, local_rx) = mpsc::unbounded_channel();
     let listing = spawn_listing(
         ListingSpec {
@@ -785,6 +788,7 @@ pub(super) async fn run(
             // The receiver lists everything it has; filters shape the sender's walk.
             filters: Arc::new(FilterSet::new(vec![])),
             hasher: ctx.hasher.clone(),
+            scope: ctx.scope.clone(),
             skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
         },
         out.clone(),
@@ -827,6 +831,7 @@ pub(super) async fn run(
         active: 0,
         report: None,
         peer_listing_done: false,
+        peer_listing_incomplete: false,
         files_done: 0,
         errors: Vec::new(),
         persist,
@@ -860,10 +865,29 @@ pub(super) async fn run(
     let bytes_total = bytes.load(Ordering::Relaxed);
     r.persist.bytes(bytes_total);
     r.persist.flush().await;
+    // Every problem this side recorded: its own walk, the planner (mkdir,
+    // symlink, special, metadata, refused paths), files and directories.
+    // The peer folds them into its outcome, so a push reports them too.
+    let mut errors = match listing.await {
+        Ok(summary) => walk_errors(&summary),
+        Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
+    };
+    errors.append(&mut report.errors);
+    errors.append(&mut r.errors);
     out.send(Msg::Done(SessionDone {
         files: r.files_done,
         bytes: bytes_total,
+        errors: errors
+            .iter()
+            .map(|(p, m)| PathError {
+                path: p.as_bytes().to_vec(),
+                message: m.clone(),
+            })
+            .collect(),
     }));
+    if r.peer_listing_incomplete {
+        errors.push((RelPath::root(), "the sender's listing is incomplete".into()));
+    }
     out.finish();
     // Let the sender read SessionDone and close its side.
     let _ = tokio::time::timeout(CLOSE_TIMEOUT, async {
@@ -875,8 +899,6 @@ pub(super) async fn run(
     })
     .await;
     acceptor.abort();
-    let mut errors = report.errors;
-    errors.append(&mut r.errors);
     Ok(Outcome {
         session_id: ctx.session_id,
         files_transferred: r.files_done,
@@ -884,6 +906,8 @@ pub(super) async fn run(
         files_skipped: report.skipped,
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
+        #[cfg(feature = "test-hooks")]
+        retained_files: r.files.len(),
     })
 }
 

@@ -17,7 +17,7 @@ use irsync_proto::v1::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::SessionRecord;
+use super::{IndexScope, SessionRecord};
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
@@ -157,6 +157,8 @@ pub(super) struct ListingSpec {
     pub root: PathBuf,
     pub filters: Arc<FilterSet>,
     pub hasher: Arc<Hasher>,
+    /// Maps listing paths to index keys for the cached-hash lookup.
+    pub scope: IndexScope,
     /// Entries at or below this path are left out (a relative `--partial-dir`).
     pub skip: Option<RelPath>,
 }
@@ -194,7 +196,11 @@ pub(super) fn spawn_listing(
                 path, mut entry, ..
             } = item.clone();
             let digest = if entry.kind() == Kind::Regular {
-                match spec.hasher.cached(&item) {
+                let keyed = ScanItem {
+                    path: spec.scope.key(&item.path),
+                    ..item.clone()
+                };
+                match spec.hasher.cached(&keyed) {
                     Ok(d) => d,
                     Err(e) => {
                         tracing::warn!(?path, error = %e, "index lookup failed");
@@ -319,6 +325,19 @@ impl Persister {
         self.dirty = false;
         self.last = Instant::now();
     }
+}
+
+/// A walk's problems as per-path errors; an incomplete listing always counts.
+pub(super) fn walk_errors(s: &ScanSummary) -> Vec<(RelPath, String)> {
+    let mut v: Vec<(RelPath, String)> = s
+        .errors
+        .iter()
+        .map(|(p, e)| (p.clone(), format!("walk: {e}")))
+        .collect();
+    if s.incomplete && v.is_empty() {
+        v.push((RelPath::root(), "listing incomplete".into()));
+    }
+    v
 }
 
 pub(super) fn hex(b: &[u8]) -> String {

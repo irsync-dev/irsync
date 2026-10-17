@@ -23,7 +23,9 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 use super::control::{self, Ev};
-use super::{receiver, sender_role, LocalSide, Outcome, SessionKey, SideHooks, HASH_WORKERS};
+use super::{
+    receiver, sender_role, IndexScope, LocalSide, Outcome, SessionKey, SideHooks, HASH_WORKERS,
+};
 use crate::cli::location::Location;
 use crate::cli::{Preserve, SyncOptions};
 use crate::filter::FilterSet;
@@ -89,8 +91,12 @@ pub(super) struct Ctx {
     pub conn: Connection,
     pub session_id: [u8; 16],
     pub key: Vec<u8>,
+    /// The session root: listing paths are relative to it.
     pub root: PathBuf,
-    pub index: IndexHandle,
+    /// The root the index was opened for (`root` = `base` + `scope.prefix`).
+    /// The hashers, `Sender` and `FileWriter` work on `base` + index keys.
+    pub base: PathBuf,
+    pub scope: IndexScope,
     pub hasher: Arc<Hasher>,
     /// A second hasher that always re-reads (used after a file changed).
     pub forced: Arc<Hasher>,
@@ -109,6 +115,24 @@ impl Ctx {
         } else {
             self.root.join(rel.to_os())
         }
+    }
+
+    /// The index key of a session-relative path.
+    pub fn key(&self, rel: &RelPath) -> RelPath {
+        self.scope.key(rel)
+    }
+
+    /// Absolute path of an index key.
+    pub fn full_key(&self, key: &RelPath) -> PathBuf {
+        if key.as_bytes().is_empty() {
+            self.base.clone()
+        } else {
+            self.base.join(key.to_os())
+        }
+    }
+
+    pub fn index(&self) -> &IndexHandle {
+        &self.scope.handle
     }
 
     pub fn files_hashed(&self) -> u64 {
@@ -217,7 +241,13 @@ pub async fn run_client(
         Direction::ClientSends => (&local_loc, &remote_loc),
         Direction::DaemonSends => (&remote_loc, &local_loc),
     };
-    let key = SessionKey::new(conn.remote_id(), src, dst, opts).into_bytes();
+    let key = {
+        let (daemon, src, dst, o) = (conn.remote_id(), src.clone(), dst.clone(), opts.clone());
+        // Canonicalizes the local path: blocking.
+        tokio::task::spawn_blocking(move || SessionKey::new(daemon, &src, &dst, &o).into_bytes())
+            .await?
+    };
+    warn_ignored_options(direction, opts);
 
     let (mut send, mut recv) = conn.open_bi().await.context("opening control stream")?;
     write_msg(&mut send, &hello)
@@ -229,7 +259,9 @@ pub async fn run_client(
 
     let sends = direction == Direction::ClientSends;
     if !sends {
-        std::fs::create_dir_all(&local.root)
+        let root = local.root.clone();
+        blocking(move || std::fs::create_dir_all(&root))
+            .await
             .with_context(|| format!("creating {}", local.root.display()))?;
     }
     let forced = Arc::new(Hasher::new(local.index.clone(), local.root.clone(), 1).with_force(true));
@@ -237,8 +269,9 @@ pub async fn run_client(
         conn,
         session_id,
         key,
+        base: local.root.clone(),
         root: local.root,
-        index: local.index,
+        scope: IndexScope::new(local.index, RelPath::root()),
         hasher: local.hasher,
         forced,
         filters: local.filters,
@@ -247,6 +280,31 @@ pub async fn run_client(
         hooks: local.hooks,
     };
     run_role(Arc::new(ctx), send, recv, sends).await
+}
+
+/// v1 does not negotiate options: say so once when the user set some that
+/// only the daemon side could honour.
+fn warn_ignored_options(direction: Direction, o: &SyncOptions) {
+    let ignored: Vec<&str> = match direction {
+        Direction::DaemonSends => [(!o.filters.is_empty(), "--include/--exclude")]
+            .into_iter()
+            .filter_map(|(set, name)| set.then_some(name))
+            .collect(),
+        Direction::ClientSends => [
+            (o.checksum, "--checksum"),
+            (o.update_only, "--update"),
+            (o.partial_dir.is_some(), "--partial-dir"),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect(),
+    };
+    if !ignored.is_empty() {
+        tracing::warn!(
+            options = %ignored.join(", "),
+            "ignored: the daemon side applies its own defaults in this protocol version"
+        );
+    }
 }
 
 /// Checks the session root below the module root: every existing component
@@ -300,7 +358,11 @@ pub async fn serve_daemon(
     // The daemon sends when the client receives.
     let sends = direction == Direction::DaemonSends;
     let rel = RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid path"))?;
-    let root = match prepare_root(&module_root, &rel, !sends) {
+    let prepared = {
+        let (m, r) = (module_root.clone(), rel.clone());
+        blocking(move || prepare_root(&m, &r, !sends)).await
+    };
+    let root = match prepared {
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
@@ -343,14 +405,21 @@ pub async fn serve_daemon(
         "session started"
     );
     let key = SessionKey::for_daemon(conn.remote_id(), &hello).into_bytes();
-    let hasher = Arc::new(Hasher::new(index.clone(), root.clone(), HASH_WORKERS));
-    let forced = Arc::new(Hasher::new(index.clone(), root.clone(), 1).with_force(true));
+    // The module's index is opened for the module root: hash and key paths
+    // from there, so rows stay module-relative whatever the session path.
+    let hasher = Arc::new(Hasher::new(
+        index.clone(),
+        module_root.clone(),
+        HASH_WORKERS,
+    ));
+    let forced = Arc::new(Hasher::new(index.clone(), module_root.clone(), 1).with_force(true));
     let ctx = Ctx {
         conn,
         session_id,
         key,
         root,
-        index,
+        base: module_root,
+        scope: IndexScope::new(index, rel),
         hasher,
         forced,
         // v1: the client's filters are not transmitted; the daemon walks everything.

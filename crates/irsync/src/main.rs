@@ -5,7 +5,7 @@ use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId};
 use irsync::cli::location::Location;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
-use irsync::config::client::ClientConfig;
+use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
 use irsync::filter::FilterSet;
 use irsync::identity::{load_secret_key, parse_endpoint_id};
@@ -61,7 +61,11 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         }
     };
     match rt.block_on(sync(args, opts)) {
-        Ok(outcome) => {
+        Ok(Totals {
+            outcome,
+            sessions,
+            failed,
+        }) => {
             for (path, msg) in &outcome.errors {
                 eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
             }
@@ -79,7 +83,13 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
                 }
                 println!("{line}");
             }
-            outcome.exit_code()
+            match failed {
+                0 => outcome.exit_code(),
+                // Nothing got through: like a connection or usage error.
+                f if f == sessions => 1,
+                // Some sources synced, others did not: a partial transfer.
+                _ => 23,
+            }
         }
         Err(e) => {
             eprintln!("irsync: {e:#}");
@@ -97,17 +107,23 @@ fn state_dir() -> PathBuf {
 
 /// The daemon's EndpointId: from the client config's `Host` block, else the
 /// host string itself must be an EndpointId.
-fn resolve_target(cfg: &ClientConfig, host: &str) -> anyhow::Result<(EndpointId, Option<PathBuf>)> {
-    let hc = cfg.resolve(host);
-    let id = match hc.endpoint_id {
-        Some(id) => id,
+fn resolve_target(hc: &HostConfig, host: &str) -> anyhow::Result<EndpointId> {
+    match hc.endpoint_id {
+        Some(id) => Ok(id),
         None => parse_endpoint_id(host)
-            .with_context(|| format!("{host:?} is neither a configured host nor an EndpointId"))?,
-    };
-    Ok((id, hc.identity_file))
+            .with_context(|| format!("{host:?} is neither a configured host nor an EndpointId")),
+    }
 }
 
-async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
+/// What all sessions of one invocation did together.
+struct Totals {
+    outcome: Outcome,
+    sessions: usize,
+    /// Sessions that ended in an error (their sources did not sync).
+    failed: usize,
+}
+
+async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
     let srcs = args
         .sync
         .src()
@@ -125,12 +141,12 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
     };
 
     let cfg = ClientConfig::load(opts.config.as_deref())?;
-    let (target, cfg_identity) = resolve_target(&cfg, host)?;
     let hc = cfg.resolve(host);
+    let target = resolve_target(&hc, host)?;
     let identity = opts
         .identity
         .clone()
-        .or(cfg_identity)
+        .or_else(|| hc.identity_file.clone())
         .or_else(|| dirs::home_dir().map(|h| h.join(".ssh/id_ed25519")))
         .context("no identity file")?;
     let secret = load_secret_key(&identity, None)
@@ -155,6 +171,7 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
     // One session per source; several sources only when pushing.
     let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
     let mut total = Outcome::default();
+    let (mut sessions, mut failed) = (0, 0);
     for (src, dst) in pairs {
         let (local, remote) = match direction {
             Direction::ClientSends => (src, dst),
@@ -176,14 +193,6 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
             bail!("internal: unexpected location kinds");
         };
         let (root, rpath) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
-        if direction == Direction::DaemonSends {
-            std::fs::create_dir_all(&root)
-                .with_context(|| format!("creating {}", root.display()))?;
-        }
-        let index = Index::open(&state_dir(), &root)
-            .with_context(|| format!("opening index for {}", root.display()))?
-            .into_handle();
-        let side = LocalSide::new(root, *local_co, index, filters.clone());
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             session_id: vec![],
@@ -198,13 +207,20 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
             chunk_max: CHUNK_PARAMS.max,
             contents_only: *remote_co,
         };
-        let conn = endpoint
-            .connect(EndpointAddr::new(target), ALPN)
-            .await
-            .with_context(|| format!("connecting to {target}"))?;
-        let out = run_client(conn.clone(), hello, side, opts).await;
-        conn.close(0u32.into(), b"done");
-        let out = out?;
+        sessions += 1;
+        let out = match session(
+            &endpoint, target, direction, root, *local_co, hello, &filters, opts,
+        )
+        .await
+        {
+            Ok(out) => out,
+            Err(e) => {
+                // Keep what earlier sources achieved; report this one and go on.
+                eprintln!("irsync: {}: {e:#}", path.display());
+                failed += 1;
+                continue;
+            }
+        };
         total.files_transferred += out.files_transferred;
         total.bytes_transferred += out.bytes_transferred;
         total.files_skipped += out.files_skipped;
@@ -212,7 +228,46 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Outcome> {
         total.errors.extend(out.errors);
     }
     endpoint.close().await;
-    Ok(total)
+    Ok(Totals {
+        outcome: total,
+        sessions,
+        failed,
+    })
+}
+
+/// One source: open the local index, connect, run the session.
+#[allow(clippy::too_many_arguments)]
+async fn session(
+    endpoint: &iroh::Endpoint,
+    target: EndpointId,
+    direction: Direction,
+    root: PathBuf,
+    local_contents_only: bool,
+    hello: Hello,
+    filters: &Arc<FilterSet>,
+    opts: &SyncOptions,
+) -> anyhow::Result<Outcome> {
+    let index = tokio::task::spawn_blocking({
+        let root = root.clone();
+        move || -> anyhow::Result<_> {
+            if direction == Direction::DaemonSends {
+                std::fs::create_dir_all(&root)
+                    .with_context(|| format!("creating {}", root.display()))?;
+            }
+            Ok(Index::open(&state_dir(), &root)
+                .with_context(|| format!("opening index for {}", root.display()))?
+                .into_handle())
+        }
+    })
+    .await??;
+    let side = LocalSide::new(root, local_contents_only, index, filters.clone());
+    let conn = endpoint
+        .connect(EndpointAddr::new(target), ALPN)
+        .await
+        .with_context(|| format!("connecting to {target}"))?;
+    let out = run_client(conn.clone(), hello, side, opts).await;
+    conn.close(0u32.into(), b"done");
+    out
 }
 
 fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {

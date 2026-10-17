@@ -18,7 +18,9 @@ message NeedChunks { uint64 file_id = 1; repeated uint32 chunk_idx = 2; }  // re
 // receiver -> sender: DONE, HASH_MISMATCH, WRITE_ERROR. sender -> receiver: SOURCE_ERROR
 // (the sender cannot read the file; the receiver drops it without a reply).
 message FileAck { uint64 file_id = 1; enum Status { DONE = 0; HASH_MISMATCH = 1; WRITE_ERROR = 2; SOURCE_ERROR = 3; } Status status = 2; string message = 3; }
-message SessionDone { uint64 files = 1; uint64 bytes = 2; }
+// A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
+message PathError { bytes path = 1; string message = 2; }
+message SessionDone { uint64 files = 1; uint64 bytes = 2; repeated PathError errors = 3; }
 message Control {
   oneof msg {
     ListingEntry listing = 1;

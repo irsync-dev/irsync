@@ -69,7 +69,14 @@ fn control_oneof_roundtrips() {
             status: Status::HashMismatch as i32,
             message: "bad".into(),
         }),
-        Msg::Done(SessionDone { files: 1, bytes: 2 }),
+        Msg::Done(SessionDone {
+            files: 1,
+            bytes: 2,
+            errors: vec![irsync_proto::v1::PathError {
+                path: b"d/\xff".to_vec(),
+                message: "mkdir: denied".into(),
+            }],
+        }),
         Msg::Error(Error {
             code: 7,
             message: "boom".into(),

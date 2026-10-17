@@ -28,7 +28,8 @@ pub(super) struct Planned {
     /// The sender's listing entry (metadata applied at finalize).
     pub entry: FileEntry,
     pub action: Action,
-    /// Rename detection found this local file with the same content.
+    /// Rename detection found this local file with the same content (an
+    /// index key, i.e. relative to the index root, not the session root).
     pub local_copy: Option<RelPath>,
 }
 
@@ -146,7 +147,8 @@ impl Planner {
         let Some(d) = src.digest.as_ref().filter(|_| wanted) else {
             return Found(None);
         };
-        let (index, hash, path) = (self.ctx.index.clone(), d.hash, path.clone());
+        // Lookups and results are index keys (relative to the index root).
+        let (index, hash, key) = (self.ctx.index().clone(), d.hash, self.ctx.key(path));
         let found = blocking(move || {
             let ix = index
                 .lock()
@@ -154,7 +156,7 @@ impl Planner {
             let paths = ix
                 .find_paths_by_whole_hash(&hash)
                 .map_err(io::Error::other)?;
-            Ok(paths.into_iter().find(|p| *p != path))
+            Ok(paths.into_iter().find(|p| *p != key))
         })
         .await;
         Found(found.unwrap_or_else(|e| {
@@ -174,6 +176,7 @@ impl Planner {
         } else {
             let parent = parent_of(&path);
             if self.failed_dirs.contains(&parent) {
+                self.error(&path, "not created: its parent directory failed");
                 if is_dir {
                     self.failed_dirs.insert(path);
                 }

@@ -3,8 +3,11 @@
 //! data streams. A file counts as done only at `FileAck DONE`. A file that
 //! changed while being sent, or whose whole-file hash did not match at the
 //! receiver, is re-stat'ed, re-digested and offered once more.
+//!
+//! Per-file state lives only while a file is in flight: it is dropped at its
+//! final ack or when the sender gives up on it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,11 +16,11 @@ use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, ChunkList, FileAck, Hash, NeedChunks,
-    PlanEntry, PlanItem,
+    PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::mpsc;
 
-use super::control::{spawn_listing, Ev, Listed, ListingSpec, Out, Persister};
+use super::control::{spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister};
 use super::engine::{blocking, Ctx, Events};
 use super::receiver::msg_name;
 use super::Outcome;
@@ -28,6 +31,8 @@ use crate::send::{Sender, DEFAULT_SPLIT_THRESHOLD};
 
 /// Re-offers per file after a change or a hash mismatch.
 const MAX_RETRIES: u32 = 1;
+/// How long to wait for in-flight data streams after `SessionDone`.
+const DRAIN_SENDS: Duration = Duration::from_secs(10);
 
 /// Completions of the sender's tasks, delivered to its main loop.
 pub(super) enum Done {
@@ -52,8 +57,6 @@ struct SFile {
     digest: Option<Arc<FileDigest>>,
     /// A `ChunkList` is out and its `NeedChunks` not yet seen.
     awaiting_need: bool,
-    /// Acknowledged or given up: nothing more happens for this file.
-    terminal: bool,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
 }
@@ -64,9 +67,18 @@ struct SenderRole {
     events: mpsc::UnboundedSender<Ev>,
     sender: Arc<Sender>,
     listed: Listed,
+    /// Files in flight (no final ack yet, not given up).
     files: HashMap<u64, SFile>,
+    /// Every file id ever planned (duplicate detection).
+    seen: HashSet<u64>,
+    /// Files given up with `SOURCE_ERROR`, by id, with their path. If
+    /// the receiver still places one (it had every chunk verified when our
+    /// give-up arrived), its DONE withdraws the error.
+    abandoned: HashMap<u64, RelPath>,
     files_done: u64,
     bytes: u64,
+    /// `send_chunks` calls not yet reported back.
+    sending: usize,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
 }
@@ -77,15 +89,21 @@ impl SenderRole {
         tokio::spawn(async move {
             let result = async {
                 // Re-stat: the digest must describe the file as it is now.
-                let (root, rel) = (ctx.root.clone(), path.clone());
-                let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&root, &rel)).await?;
+                // Hashing works on index keys under the index root.
+                let key = ctx.key(&path);
+                let (base, rel) = (ctx.base.clone(), key.clone());
+                let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
                 if entry.kind() != Kind::Regular {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "no longer a regular file",
                     ));
                 }
-                let item = ScanItem { path, entry, ctime };
+                let item = ScanItem {
+                    path: key,
+                    entry,
+                    ctime,
+                };
                 if force {
                     ctx.forced.digest(&item).await
                 } else {
@@ -103,16 +121,12 @@ impl SenderRole {
 
     /// Gives up on the file and tells the receiver to stop waiting for it.
     fn source_error(&mut self, file_id: u64, msg: String) {
-        let Some(f) = self.files.get_mut(&file_id) else {
+        let Some(f) = self.files.remove(&file_id) else {
             return;
         };
-        if f.terminal {
-            return;
-        }
-        f.terminal = true;
-        f.digest = None;
         tracing::warn!(path = ?f.path, error = %msg, "cannot send file");
         self.errors.push((f.path.clone(), msg.clone()));
+        self.abandoned.insert(file_id, f.path);
         self.out.send(Msg::Ack(FileAck {
             file_id,
             status: Status::SourceError as i32,
@@ -141,7 +155,7 @@ impl SenderRole {
 
     fn on_plan(&mut self, p: PlanItem) -> anyhow::Result<()> {
         let file_id = p.file_id;
-        if self.files.contains_key(&file_id) {
+        if !self.seen.insert(file_id) {
             bail!("protocol error: duplicate file id {file_id}");
         }
         let path = RelPath::new(&p.path).unwrap_or_default();
@@ -153,7 +167,6 @@ impl SenderRole {
                 retries: 0,
                 digest: None,
                 awaiting_need: false,
-                terminal: false,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
@@ -184,7 +197,7 @@ impl SenderRole {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
-        if f.terminal || f.gen != gen {
+        if f.gen != gen {
             return;
         }
         match result {
@@ -207,10 +220,10 @@ impl SenderRole {
     fn on_need(&mut self, n: NeedChunks) {
         let file_id = n.file_id;
         let Some(f) = self.files.get_mut(&file_id) else {
-            tracing::warn!(file_id, "NeedChunks for an unknown file");
+            tracing::debug!(file_id, "NeedChunks for a file no longer in flight");
             return;
         };
-        if f.terminal || !f.awaiting_need {
+        if !f.awaiting_need {
             return;
         }
         f.awaiting_need = false;
@@ -227,13 +240,16 @@ impl SenderRole {
             f.hooked = true;
             self.ctx.hooks.on_first_chunk_sent.clone()
         };
-        let (gen, path, sender, events) = (
+        let (gen, key, sender, events) = (
             f.gen,
-            f.path.clone(),
+            self.ctx.key(&f.path),
             self.sender.clone(),
             self.events.clone(),
         );
+        #[cfg(feature = "test-hooks")]
+        let path = f.path.clone();
         let idxs = n.chunk_idx;
+        self.sending += 1;
         tokio::spawn(async move {
             let bytes: u64 = idxs
                 .iter()
@@ -243,23 +259,18 @@ impl SenderRole {
             #[cfg(feature = "test-hooks")]
             let result = match hook {
                 Some(h) if idxs.len() > 1 => {
-                    match sender
-                        .send_chunks(file_id, &path, &digest, &idxs[..1])
-                        .await
-                    {
+                    match sender.send_chunks(file_id, &key, &digest, &idxs[..1]).await {
                         Ok(()) => {
                             h(&path).await;
-                            sender
-                                .send_chunks(file_id, &path, &digest, &idxs[1..])
-                                .await
+                            sender.send_chunks(file_id, &key, &digest, &idxs[1..]).await
                         }
                         Err(e) => Err(e),
                     }
                 }
-                _ => sender.send_chunks(file_id, &path, &digest, &idxs).await,
+                _ => sender.send_chunks(file_id, &key, &digest, &idxs).await,
             };
             #[cfg(not(feature = "test-hooks"))]
-            let result = sender.send_chunks(file_id, &path, &digest, &idxs).await;
+            let result = sender.send_chunks(file_id, &key, &digest, &idxs).await;
             let _ = events.send(Ev::Send(Done::Sent {
                 file_id,
                 gen,
@@ -269,13 +280,15 @@ impl SenderRole {
     }
 
     fn on_sent(&mut self, file_id: u64, gen: u32, result: io::Result<u64>) {
-        let Some(f) = self.files.get_mut(&file_id) else {
-            return;
-        };
+        self.sending -= 1;
         match result {
+            // Counted even if the file was acknowledged meanwhile.
             Ok(b) => self.bytes += b,
             Err(e) => {
-                if f.terminal || f.gen != gen {
+                let Some(f) = self.files.get(&file_id) else {
+                    return;
+                };
+                if f.gen != gen {
                     return;
                 }
                 if e.kind() == io::ErrorKind::InvalidData {
@@ -290,30 +303,49 @@ impl SenderRole {
 
     fn on_ack(&mut self, a: FileAck) {
         let file_id = a.file_id;
-        let Some(f) = self.files.get_mut(&file_id) else {
-            tracing::warn!(file_id, "FileAck for an unknown file");
-            return;
-        };
-        if f.terminal {
+        let status = Status::try_from(a.status);
+        if !self.files.contains_key(&file_id) {
+            // Withdraw our give-up if the receiver placed the file anyway.
+            if status == Ok(Status::Done) {
+                if let Some(path) = self.abandoned.remove(&file_id) {
+                    tracing::info!(?path, "placed by the receiver after all");
+                    if let Some(i) = self.errors.iter().rposition(|(p, _)| *p == path) {
+                        self.errors.remove(i);
+                    }
+                    self.files_done += 1;
+                    self.persist.done(file_id);
+                }
+            }
             return;
         }
-        match Status::try_from(a.status) {
+        match status {
             Ok(Status::Done) => {
-                f.terminal = true;
-                f.digest = None;
+                self.files.remove(&file_id);
                 self.files_done += 1;
                 self.persist.done(file_id);
             }
             Ok(Status::HashMismatch) => self.retry(file_id, "whole-file hash mismatch".into()),
             Ok(Status::WriteError) => {
-                f.terminal = true;
-                f.digest = None;
-                let msg = format!("receiver: {}", a.message);
-                tracing::warn!(path = ?f.path, error = %msg, "file failed");
-                self.errors.push((f.path.clone(), msg));
+                if let Some(f) = self.files.remove(&file_id) {
+                    let msg = format!("receiver: {}", a.message);
+                    tracing::warn!(path = ?f.path, error = %msg, "file failed");
+                    self.errors.push((f.path, msg));
+                }
             }
             Ok(Status::SourceError) | Err(_) => {
                 tracing::warn!(file_id, status = a.status, "unexpected FileAck status");
+            }
+        }
+    }
+
+    /// Folds the receiver's own per-path errors in (those not already known
+    /// from a file ack).
+    fn on_session_done(&mut self, d: SessionDone) {
+        tracing::debug!(files = d.files, bytes = d.bytes, "receiver done");
+        for e in d.errors {
+            let path = RelPath::new(&e.path).unwrap_or_default();
+            if !self.errors.iter().any(|(p, _)| *p == path) {
+                self.errors.push((path, format!("receiver: {}", e.message)));
             }
         }
     }
@@ -327,17 +359,21 @@ pub(super) async fn run(
     mut events: Events,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
-    let root_ok = std::fs::metadata(&ctx.root).is_ok_and(|m| m.is_dir());
+    let root = ctx.root.clone();
+    let root_ok = blocking(move || Ok(std::fs::metadata(&root).is_ok_and(|m| m.is_dir())))
+        .await
+        .unwrap_or(false);
     if !root_ok {
         bail!("source {} is not a directory", ctx.root.display());
     }
-    let persist = Persister::start(ctx.index.clone(), ctx.session_id, ctx.key.clone()).await;
+    let persist = Persister::start(ctx.index().clone(), ctx.session_id, ctx.key.clone()).await;
     let listed: Listed = Arc::default();
     let listing = spawn_listing(
         ListingSpec {
             root: ctx.root.clone(),
             filters: ctx.filters.clone(),
             hasher: ctx.hasher.clone(),
+            scope: ctx.scope.clone(),
             skip: None,
         },
         out.clone(),
@@ -347,7 +383,7 @@ pub(super) async fn run(
     let sender = Arc::new(Sender::new(
         ctx.conn.clone(),
         ctx.session_id,
-        ctx.root.clone(),
+        ctx.base.clone(),
         ctx.hasher.clone(),
         ctx.opts.parallel,
         DEFAULT_SPLIT_THRESHOLD,
@@ -360,8 +396,11 @@ pub(super) async fn run(
         sender,
         listed,
         files: HashMap::new(),
+        seen: HashSet::new(),
+        abandoned: HashMap::new(),
         files_done: 0,
         bytes: 0,
+        sending: 0,
         errors: Vec::new(),
         persist,
     };
@@ -404,9 +443,16 @@ pub(super) async fn run(
                 s.on_ack(a);
                 Ok(())
             }
-            Ev::Ctrl(Msg::ListingEnd(_)) => Ok(()),
+            Ev::Ctrl(Msg::ListingEnd(e)) => {
+                if e.incomplete {
+                    let msg = "the receiver's listing is incomplete".to_string();
+                    tracing::warn!("{msg}");
+                    s.errors.push((RelPath::root(), msg));
+                }
+                Ok(())
+            }
             Ev::Ctrl(Msg::Done(d)) => {
-                tracing::debug!(files = d.files, bytes = d.bytes, "receiver done");
+                s.on_session_done(d);
                 break Ok(());
             }
             Ev::Ctrl(Msg::Error(e)) => Err(anyhow::anyhow!("peer error: {}", e.message)),
@@ -424,6 +470,25 @@ pub(super) async fn run(
             break Err(e);
         }
     };
+    if res.is_ok() {
+        // The receiver can finish before our last streams report back (it
+        // has the data; we wait for the transport's acknowledgement): collect
+        // those results so the byte count is complete.
+        let _ = tokio::time::timeout(DRAIN_SENDS, async {
+            while s.sending > 0 {
+                match events.recv().await {
+                    Some(Ev::Send(Done::Sent {
+                        file_id,
+                        gen,
+                        result,
+                    })) => s.on_sent(file_id, gen, result),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+    }
     s.persist.bytes(s.bytes);
     s.persist.flush().await;
     if let Err(e) = res {
@@ -431,12 +496,20 @@ pub(super) async fn run(
         return Err(e);
     }
     out.finish();
+    // The receiver cannot finish before our ListingEnd, so the walk is over.
+    let mut errors = match listing.await {
+        Ok(summary) => walk_errors(&summary),
+        Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
+    };
+    errors.append(&mut s.errors);
     Ok(Outcome {
         session_id: ctx.session_id,
         files_transferred: s.files_done,
         bytes_transferred: s.bytes,
         files_skipped: 0,
         files_hashed: ctx.files_hashed() - hashed_before,
-        errors: s.errors,
+        errors,
+        #[cfg(feature = "test-hooks")]
+        retained_files: s.files.len(),
     })
 }
