@@ -1,0 +1,431 @@
+//! Receiver write path: verified chunks go into `.irsync.<name>.part`, the whole
+//! file is re-hashed, and only then is it renamed over its final name. Progress
+//! is recorded in the index so a later session can adopt a half-written file.
+
+use crate::fs::meta::{apply_metadata, ApplyOpts};
+use crate::fs::paths::RelPath;
+use crate::index::{IndexHandle, Partial};
+use irsync_proto::chunk::{digest_reader, ChunkRecord};
+use irsync_proto::v1::{ChunkList, FileEntry, Range, RangeSet};
+use std::ffi::OsStr;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Persist the partial record after this many newly verified chunks...
+const PERSIST_EVERY_CHUNKS: u32 = 64;
+/// ...or after this much time, whichever comes first.
+const PERSIST_EVERY: Duration = Duration::from_secs(2);
+
+/// Why `finalize` did not put the file in place.
+#[derive(Debug, thiserror::Error)]
+pub enum FinalizeError {
+    #[error("file is incomplete: chunks still missing")]
+    Incomplete,
+    #[error("whole-file hash mismatch")]
+    HashMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+/// Writes one file's chunks into its `.part` file and finalizes it atomically.
+pub struct FileWriter {
+    rel: RelPath,
+    dest: PathBuf,
+    part: PathBuf,
+    file: Arc<File>,
+    size: u64,
+    whole_hash: [u8; 32],
+    chunks: Vec<ChunkRecord>,
+    verified: Vec<bool>,
+    index: IndexHandle,
+    chunks_since_persist: u32,
+    last_persist: Instant,
+    /// Set once the record must no longer be written back (after finalize).
+    done: bool,
+    #[cfg(feature = "test-hooks")]
+    fail_at: Option<u32>,
+}
+
+fn invalid(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+fn index_err(e: crate::index::IndexError) -> io::Error {
+    io::Error::other(e)
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Validate `expected` into native chunk records that tile `[0, size)` exactly.
+fn native_chunks(expected: &ChunkList) -> io::Result<([u8; 32], Vec<ChunkRecord>)> {
+    let whole_hash: [u8; 32] = expected
+        .whole_hash
+        .as_ref()
+        .ok_or_else(|| invalid("chunk list missing whole_hash"))?
+        .bytes
+        .clone()
+        .try_into()
+        .map_err(|_| invalid("whole_hash is not 32 bytes"))?;
+    let mut chunks = Vec::with_capacity(expected.chunks.len());
+    let mut next = 0u64;
+    for c in &expected.chunks {
+        let c = ChunkRecord::try_from(c.clone())?;
+        if c.offset != next || c.len == 0 {
+            return Err(invalid("chunk list does not tile the file"));
+        }
+        next += u64::from(c.len);
+        chunks.push(c);
+    }
+    if next != expected.size {
+        return Err(invalid("chunk list does not cover the file size"));
+    }
+    Ok((whole_hash, chunks))
+}
+
+/// Paths of the destination and of its `.part` file.
+fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(PathBuf, PathBuf)> {
+    let comps: Vec<&[u8]> = rel.components().collect();
+    let (name, parents) = comps
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty relative path"))?;
+    let mut part_dir = match partial_dir {
+        Some(pd) => root.join(pd),
+        None => root.to_path_buf(),
+    };
+    for p in parents {
+        part_dir.push(OsStr::from_bytes(p));
+    }
+    let mut part_name = b".irsync.".to_vec();
+    part_name.extend_from_slice(name);
+    part_name.extend_from_slice(b".part");
+    Ok((
+        root.join(rel.to_os()),
+        part_dir.join(OsStr::from_bytes(&part_name)),
+    ))
+}
+
+fn hash_at(file: &File, c: &ChunkRecord) -> io::Result<[u8; 32]> {
+    let mut buf = vec![0u8; c.len as usize];
+    file.read_exact_at(&mut buf, c.offset)?;
+    Ok(*blake3::hash(&buf).as_bytes())
+}
+
+/// Normalise ranges: sort by offset and merge overlapping or adjacent ones.
+fn coalesce(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    v.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(v.len());
+    for (start, end) in v {
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+impl FileWriter {
+    /// Open (or create) the `.part` file for `rel` and adopt any verified progress.
+    pub fn open(
+        root: &Path,
+        rel: &RelPath,
+        expected: &ChunkList,
+        partial_dir: Option<&Path>,
+        index: IndexHandle,
+    ) -> io::Result<FileWriter> {
+        let (whole_hash, chunks) = native_chunks(expected)?;
+        let (dest, part) = paths(root, rel, partial_dir)?;
+        if let Some(dir) = part.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&part)?;
+        let mut w = FileWriter {
+            rel: rel.clone(),
+            dest,
+            part,
+            file: Arc::new(file),
+            size: expected.size,
+            whole_hash,
+            verified: vec![false; chunks.len()],
+            chunks,
+            index,
+            chunks_since_persist: 0,
+            last_persist: Instant::now(),
+            done: false,
+            #[cfg(feature = "test-hooks")]
+            fail_at: None,
+        };
+        let adopted_from_record = w.adopt_recorded()?;
+        if !adopted_from_record {
+            w.adopt_unrecorded()?;
+        }
+        w.file.set_len(w.size)?;
+        if !adopted_from_record && w.verified.iter().any(|&v| v) {
+            w.persist_sync()?;
+        }
+        Ok(w)
+    }
+
+    /// Adopt chunks covered by the index record. Returns whether a usable record existed.
+    fn adopt_recorded(&mut self) -> io::Result<bool> {
+        let mut ix = self
+            .index
+            .lock()
+            .map_err(|_| io::Error::other("index poisoned"))?;
+        let Some(p) = ix.partial(&self.rel).map_err(index_err)? else {
+            return Ok(false);
+        };
+        if p.expected_hash != self.whole_hash || p.size != self.size {
+            // A record for a different expected file: it can never be adopted.
+            ix.remove_partial(&self.rel).map_err(index_err)?;
+            return Ok(false);
+        }
+        drop(ix);
+        let ranges = coalesce(
+            p.ranges
+                .ranges
+                .iter()
+                .map(|r| (r.offset, r.offset.saturating_add(r.length)))
+                .collect(),
+        );
+        let file_len = self.file.metadata()?.len();
+        for (i, c) in self.chunks.iter().enumerate() {
+            let end = c.offset + u64::from(c.len);
+            let covered = ranges.iter().any(|&(s, e)| s <= c.offset && end <= e);
+            if covered && end <= file_len && hash_at(&self.file, c)? == c.hash {
+                self.verified[i] = true;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Adopt chunks of a `.part` file that has no index record by re-chunking it.
+    fn adopt_unrecorded(&mut self) -> io::Result<()> {
+        if self.file.metadata()?.len() == 0 {
+            return Ok(());
+        }
+        let found = digest_reader(File::open(&self.part)?)?;
+        for f in found.chunks {
+            if let Ok(i) = self.chunks.binary_search_by_key(&f.offset, |c| c.offset) {
+                if self.chunks[i] == f {
+                    self.verified[i] = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Byte ranges of verified chunks, coalesced.
+    pub fn have(&self) -> RangeSet {
+        let spans = self
+            .chunks
+            .iter()
+            .zip(&self.verified)
+            .filter(|(_, &v)| v)
+            .map(|(c, _)| (c.offset, c.offset + u64::from(c.len)))
+            .collect();
+        RangeSet {
+            ranges: coalesce(spans)
+                .into_iter()
+                .map(|(s, e)| Range {
+                    offset: s,
+                    length: e - s,
+                })
+                .collect(),
+        }
+    }
+
+    /// Indices of chunks not yet verified on disk.
+    pub fn missing_chunks(&self) -> Vec<u32> {
+        (0..self.chunks.len() as u32)
+            .filter(|&i| !self.verified[i as usize])
+            .collect()
+    }
+
+    /// Make the `pwrite` of chunk `idx` fail with `ENOSPC`.
+    #[cfg(feature = "test-hooks")]
+    pub fn fail_write_at(&mut self, idx: u32) {
+        self.fail_at = Some(idx);
+    }
+
+    /// Verify `data` against chunk `idx` and write it at the chunk's offset.
+    pub async fn write_chunk(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
+        let c = *self.chunks.get(idx as usize).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
+        })?;
+        if data.len() != c.len as usize || *blake3::hash(data).as_bytes() != c.hash {
+            return Err(invalid(format!("chunk {idx} does not match its hash")));
+        }
+        #[cfg(feature = "test-hooks")]
+        let inject = self.fail_at == Some(idx);
+        #[cfg(not(feature = "test-hooks"))]
+        let inject = false;
+        let file = self.file.clone();
+        let buf = data.to_vec();
+        let res = tokio::task::spawn_blocking(move || {
+            if inject {
+                return Err(io::Error::from_raw_os_error(nix::libc::ENOSPC));
+            }
+            file.write_all_at(&buf, c.offset)
+        })
+        .await
+        .map_err(io::Error::other)
+        .and_then(|r| r);
+        if let Err(e) = res {
+            if let Err(pe) = self.persist().await {
+                tracing::warn!(path = ?self.part, error = %pe, "persisting partial after write error failed");
+            }
+            return Err(e);
+        }
+        if !self.verified[idx as usize] {
+            self.verified[idx as usize] = true;
+            self.chunks_since_persist += 1;
+        }
+        if self.chunks_since_persist >= PERSIST_EVERY_CHUNKS
+            || self.last_persist.elapsed() >= PERSIST_EVERY
+        {
+            self.persist().await?;
+        }
+        Ok(())
+    }
+
+    /// Read chunk `idx`'s bytes from `from` at `offset`, then write them like `write_chunk`.
+    pub async fn copy_local(&mut self, idx: u32, from: &Path, offset: u64) -> io::Result<()> {
+        let c = *self.chunks.get(idx as usize).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
+        })?;
+        let from = from.to_path_buf();
+        let data = tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; c.len as usize];
+            File::open(&from)?.read_exact_at(&mut buf, offset)?;
+            Ok::<_, io::Error>(buf)
+        })
+        .await
+        .map_err(io::Error::other)??;
+        self.write_chunk(idx, &data).await
+    }
+
+    fn partial_record(&self) -> Partial {
+        Partial {
+            expected_hash: self.whole_hash,
+            size: self.size,
+            ranges: self.have(),
+            updated_at: now_secs(),
+        }
+    }
+
+    /// Write the current progress to the index (synchronous; never call across an await).
+    fn persist_sync(&mut self) -> io::Result<()> {
+        let rec = self.partial_record();
+        self.index
+            .lock()
+            .map_err(|_| io::Error::other("index poisoned"))?
+            .put_partial(&self.rel, &rec)
+            .map_err(index_err)?;
+        self.chunks_since_persist = 0;
+        self.last_persist = Instant::now();
+        Ok(())
+    }
+
+    async fn persist(&mut self) -> io::Result<()> {
+        let rec = self.partial_record();
+        let (index, rel) = (self.index.clone(), self.rel.clone());
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|_| io::Error::other("index poisoned"))?
+                .put_partial(&rel, &rec)
+                .map_err(index_err)
+        })
+        .await
+        .map_err(io::Error::other)??;
+        self.chunks_since_persist = 0;
+        self.last_persist = Instant::now();
+        Ok(())
+    }
+
+    /// Verify the whole `.part`, apply metadata and rename it over the destination.
+    /// On any error the `.part` and its record stay; nothing appears at the final name.
+    pub async fn finalize(
+        mut self,
+        entry: &FileEntry,
+        opts: &ApplyOpts,
+    ) -> Result<(), FinalizeError> {
+        if !self.missing_chunks().is_empty() {
+            return Err(FinalizeError::Incomplete);
+        }
+        self.persist().await?;
+        let (file, part, dest, size, expected) = (
+            self.file.clone(),
+            self.part.clone(),
+            self.dest.clone(),
+            self.size,
+            self.whole_hash,
+        );
+        let (entry, opts) = (entry.clone(), *opts);
+        tokio::task::spawn_blocking(move || {
+            file.set_len(size)?;
+            file.sync_all()?;
+            let actual = digest_reader(File::open(&part)?)?.hash;
+            if actual != expected {
+                return Err(FinalizeError::HashMismatch { expected, actual });
+            }
+            apply_metadata(&part, &entry, &opts)?;
+            match std::fs::symlink_metadata(&dest) {
+                Ok(m) if m.is_dir() => {
+                    return Err(FinalizeError::Io(io::Error::other(format!(
+                        "refusing to replace directory {} with a file",
+                        dest.display()
+                    ))));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            std::fs::rename(&part, &dest)?;
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)??;
+        self.done = true;
+        let (index, rel) = (self.index.clone(), self.rel.clone());
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .map_err(|_| io::Error::other("index poisoned"))?
+                .remove_partial(&rel)
+                .map_err(index_err)
+        })
+        .await
+        .map_err(io::Error::other)??;
+        Ok(())
+    }
+}
+
+impl Drop for FileWriter {
+    /// Record unpersisted progress so a later writer can adopt it.
+    fn drop(&mut self) {
+        if !self.done && self.chunks_since_persist > 0 {
+            if let Err(e) = self.persist_sync() {
+                tracing::warn!(path = ?self.part, error = %e, "persisting partial on drop failed");
+            }
+        }
+    }
+}

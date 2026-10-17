@@ -9,5 +9,6 @@ pub mod identity;
 pub mod index;
 pub mod net;
 pub mod plan;
+pub mod recv;
 pub mod scan;
 pub mod session;
