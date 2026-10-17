@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install rsync (reference implementation for the comparison test)
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # The system rsync is 2.6.9/openrsync; the comparison test needs GNU 3.1+.
+            brew install rsync
+            echo "$(brew --prefix rsync)/bin" >> "$GITHUB_PATH"
+          elif ! command -v rsync >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y rsync
+          fi
+          rsync --version | head -1
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
