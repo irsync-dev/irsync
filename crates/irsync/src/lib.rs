@@ -1,7 +1,9 @@
 pub mod authz;
 pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod fs;
 pub mod identity;
 pub mod index;
 pub mod net;
+pub mod session;

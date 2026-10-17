@@ -1838,12 +1838,14 @@ dependencies = [
 name = "irsync"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "clap",
  "dirs",
  "iroh",
  "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
+ "irsync",
  "irsync-proto",
  "nix",
  "noq-proto",
@@ -1855,8 +1857,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "url",
 ]
 

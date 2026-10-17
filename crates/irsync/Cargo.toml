@@ -23,6 +23,9 @@ rusqlite = { workspace = true }
 blake3 = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+anyhow = { workspace = true }
 noq-proto = { workspace = true }
 iroh-mainline-address-lookup = { workspace = true }
 iroh-mdns-address-lookup = { workspace = true }
@@ -30,3 +33,4 @@ iroh-mdns-address-lookup = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rand_core = { workspace = true }
+irsync = { path = ".", features = ["test-hooks"] }

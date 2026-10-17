@@ -77,3 +77,49 @@ pub async fn connect_pair(
     let (c, s) = within(async { tokio::join!(connect, accept) }).await;
     (c, s)
 }
+
+/// A running in-process daemon: its dialable address, its id, and the task running it.
+pub struct DaemonHandle {
+    pub addr: EndpointAddr,
+    pub id: iroh::EndpointId,
+    pub task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    pub shutdown: tokio_util::sync::CancellationToken,
+    pub hellos: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub _state: tempfile::TempDir,
+}
+
+/// Starts a daemon on a loopback endpoint serving `modules` (name -> (path, read_only)).
+pub async fn spawn_daemon(
+    modules: Vec<(&str, std::path::PathBuf, bool)>,
+    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+) -> DaemonHandle {
+    use irsync::config::daemon::{DaemonConfig, Module};
+    let state = tempfile::tempdir().unwrap();
+    let mut cfg = DaemonConfig {
+        state_dir: state.path().to_path_buf(),
+        ..DaemonConfig::default()
+    };
+    for (name, path, read_only) in modules {
+        cfg.modules
+            .insert(name.to_string(), Module { path, read_only });
+    }
+    let ep = loopback_endpoint().await;
+    let (addr, id) = (addr_of(&ep), ep.id());
+    let daemon = irsync::daemon::Daemon::new(cfg, authz, ep).expect("daemon");
+    let hellos = daemon.hello_counter();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(daemon.run(shutdown.clone()));
+    DaemonHandle {
+        addr,
+        id,
+        task,
+        shutdown,
+        hellos,
+        _state: state,
+    }
+}
+
+/// A client endpoint with its own fresh identity, offline on loopback.
+pub async fn client_endpoint() -> Endpoint {
+    loopback_endpoint().await
+}
