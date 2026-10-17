@@ -1,0 +1,17 @@
+syntax = "proto3";
+package irsync.v1;
+
+message Hash { bytes bytes = 1; }                 // 32-byte BLAKE3
+
+message Hello {
+  uint32 protocol_version = 1;                    // 1
+  bytes  session_id = 2;                          // 16 bytes; empty = new session
+  string module = 3;
+  bytes  path = 4;                                // relative to module root
+  enum Direction { CLIENT_SENDS = 0; DAEMON_SENDS = 1; }
+  Direction direction = 5;
+  uint32 chunk_min = 6; uint32 chunk_avg = 7; uint32 chunk_max = 8;  // must equal protocol constants
+  bool contents_only = 9;                         // rsync trailing-slash rule applied to the remote path
+}
+message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
+message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }

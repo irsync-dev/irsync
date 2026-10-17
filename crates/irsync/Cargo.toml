@@ -1,0 +1,7 @@
+[package]
+name = "irsync"
+version.workspace = true
+edition.workspace = true
+
+[features]
+test-hooks = []
