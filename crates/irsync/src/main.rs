@@ -25,10 +25,6 @@ fn main() {
         Some(Command::Gc { .. }) => eprintln!("gc: not implemented yet"),
         None => {
             let opts = SyncOptions::from_args(&args);
-            if opts.dry_run {
-                println!("{opts:#?}");
-                return;
-            }
             std::process::exit(run_sync(&args, &opts));
         }
     }
@@ -51,7 +47,8 @@ fn init_logging(verbose: u8, quiet: bool) {
         .init();
 }
 
-/// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial transfer.
+/// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial
+/// transfer, 25 deletions stopped at `--max-delete`.
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     init_logging(opts.verbose, opts.quiet);
     let rt = match tokio::runtime::Runtime::new() {
@@ -71,6 +68,19 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
                 eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
             }
             if !opts.quiet {
+                for p in &outcome.would_delete {
+                    println!("would delete {}", p.to_os().to_string_lossy());
+                }
+                if opts.verbose > 0 {
+                    for p in &outcome.deleted {
+                        println!("deleting {}", p.to_os().to_string_lossy());
+                    }
+                }
+            }
+            if outcome.max_delete_reached {
+                eprintln!("irsync: deletions stopped due to the --max-delete limit");
+            }
+            if !opts.quiet {
                 let mut line = format!(
                     "{} files transferred, {} bytes",
                     outcome.files_transferred, outcome.bytes_transferred
@@ -78,6 +88,12 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
                 // Only the receiving side knows what was already up to date.
                 if outcome.files_skipped > 0 {
                     line += &format!(", {} up to date", outcome.files_skipped);
+                }
+                if !outcome.deleted.is_empty() {
+                    line += &format!(", {} deleted", outcome.deleted.len());
+                }
+                if opts.dry_run {
+                    line += " (dry run)";
                 }
                 if !outcome.errors.is_empty() {
                     line += &format!(", {} errors", outcome.errors.len());
@@ -207,6 +223,8 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
             chunk_avg: CHUNK_PARAMS.avg,
             chunk_max: CHUNK_PARAMS.max,
             contents_only: *remote_co,
+            // The receiver-side options are filled in from `opts` by the session.
+            ..Hello::default()
         };
         let ropts = ReconnectOpts {
             max: opts
@@ -234,6 +252,9 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
         total.files_skipped += out.files_skipped;
         total.files_hashed += out.files_hashed;
         total.errors.extend(out.errors);
+        total.deleted.extend(out.deleted);
+        total.would_delete.extend(out.would_delete);
+        total.max_delete_reached |= out.max_delete_reached;
     }
     endpoint.close().await;
     Ok(Totals {
@@ -257,10 +278,12 @@ async fn session(
     opts: &SyncOptions,
     ropts: ReconnectOpts,
 ) -> anyhow::Result<Outcome> {
+    let dry_run = opts.dry_run;
     let index = tokio::task::spawn_blocking({
         let root = root.clone();
         move || -> anyhow::Result<_> {
-            if direction == Direction::DaemonSends {
+            // A dry run creates nothing (the receiver lists a missing root as empty).
+            if direction == Direction::DaemonSends && !dry_run {
                 std::fs::create_dir_all(&root)
                     .with_context(|| format!("creating {}", root.display()))?;
             }

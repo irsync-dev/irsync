@@ -30,4 +30,5 @@ message SessionPlan {
 message SessionProgress {
   repeated uint64 done_file_ids = 1;              // files acknowledged DONE
   uint64 bytes_transferred = 2;                   // cumulative over all connections
+  uint64 deleted = 3;                             // deletions so far (counts against --max-delete)
 }

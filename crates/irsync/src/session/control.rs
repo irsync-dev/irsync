@@ -351,6 +351,18 @@ impl Persister {
         self.dirty = true;
     }
 
+    /// Deletions made by every connection of this session so far.
+    pub fn deleted(&self) -> u64 {
+        self.rec.progress.deleted
+    }
+
+    pub fn add_deleted(&mut self, n: u64) {
+        if n > 0 {
+            self.rec.progress.deleted += n;
+            self.dirty = true;
+        }
+    }
+
     pub fn done(&mut self, file_id: u64) {
         if self.done.insert(file_id) {
             self.rec.progress.done_file_ids.push(file_id);

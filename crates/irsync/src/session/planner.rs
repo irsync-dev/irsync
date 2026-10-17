@@ -3,25 +3,40 @@
 //! Directories, symlinks, specials and metadata-only changes are applied
 //! here; regular files that need data are requested with `PlanItem` and
 //! handed to the receiver's main loop.
+//!
+//! With a delete mode, destination-only paths become deletion candidates
+//! (excluded ones only with `delete_excluded`; the receiver's own walk is
+//! unfiltered, so its filters are applied here). `--delete-before` buffers the
+//! merged listing until both listings have ended, has the main loop run the
+//! deletion pass, and only then acts on the source paths. `--delete-during`
+//! runs like `--delete-after`: whether the sender's listing is complete is
+//! only known at its `ListingEnd`, so no deletion may run before that, and
+//! deleting per directory as the merge leaves it could act on a listing
+//! that later turns out to be incomplete. On a dry run nothing is created,
+//! changed or requested.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::StreamExt;
 use irsync_proto::v1::{
     control::Msg, file_entry::Kind, plan_item::Action, FileEntry, PlanItem, SessionPlan,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::control::{Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
+use crate::cli::DeleteMode;
+use crate::delete::DeletePass;
+use crate::filter::Verdict;
 use crate::fs::meta::{apply_metadata, create_special};
 use crate::fs::paths::RelPath;
-use crate::plan::{decide, merge_join, Decision, HashLookup, PlanOpts, Side};
+use crate::plan::{decide, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -50,6 +65,9 @@ pub(super) struct PlannerReport {
     pub dirs: Vec<DirEntry>,
     /// Directories whose contents this session changes (their mtime moves).
     pub touched: HashSet<RelPath>,
+    /// The deletion candidates, for the receiver to delete after the
+    /// transfers (`None` without a delete mode or once run before them).
+    pub deletes: Option<DeletePass>,
 }
 
 /// What an earlier connection of a resumed session already planned: its file
@@ -76,7 +94,7 @@ impl Prior {
     }
 }
 
-fn parent_of(p: &RelPath) -> RelPath {
+pub(super) fn parent_of(p: &RelPath) -> RelPath {
     let b = p.as_bytes();
     match b.iter().rposition(|&c| c == b'/') {
         Some(i) => RelPath::new(&b[..i]).unwrap_or_default(),
@@ -135,6 +153,24 @@ impl HashLookup for Found {
     }
 }
 
+/// Passes a listing through, setting `flag` if it is not strictly sorted
+/// (`merge_join` then drops entries, which could make a source path look
+/// absent and its destination copy extraneous).
+fn checked_order(
+    s: impl futures::Stream<Item = Side> + Send,
+    flag: Arc<AtomicBool>,
+) -> impl futures::Stream<Item = Side> + Send {
+    let mut last: Option<RelPath> = None;
+    s.inspect(move |side| {
+        if let Ok(p) = RelPath::new(&side.entry.path) {
+            if last.as_ref().is_some_and(|l| p <= *l) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            last = Some(p);
+        }
+    })
+}
+
 fn stream_of<T: Send + 'static>(
     rx: mpsc::UnboundedReceiver<T>,
 ) -> impl futures::Stream<Item = T> + Send {
@@ -151,6 +187,9 @@ struct Planner {
     failed_dirs: HashSet<RelPath>,
     next_id: u64,
     prior: Prior,
+    deletes: Option<DeletePass>,
+    /// Directories the receiver's filters exclude (so is everything below).
+    excluded_dirs: HashSet<RelPath>,
 }
 
 impl Planner {
@@ -223,6 +262,15 @@ impl Planner {
         }
         let found = self.lookup(&path, &src, dst.as_ref()).await;
         let decision = decide(Some(&src), dst.as_ref(), &self.popts, &found);
+        if self.ctx.opts.dry_run {
+            // Decide only: nothing is created, changed or requested.
+            if is_dir {
+                self.ok_dirs.insert(path);
+            } else if src.entry.kind() == Kind::Regular && decision == Decision::Skip {
+                self.report.skipped += 1;
+            }
+            return;
+        }
         let full = self.ctx.full(&path);
         let apply = self.ctx.apply_opts(&src.entry);
         let entry = src.entry.clone();
@@ -318,6 +366,7 @@ impl Planner {
                     action,
                     local_copy,
                 }))));
+                self.ctx.hooks.event("plan", &path);
                 self.out.send(Msg::Plan(PlanItem {
                     file_id,
                     path: path.as_bytes().to_vec(),
@@ -328,6 +377,77 @@ impl Planner {
         };
         if let Err(e) = res {
             self.error(&path, e.to_string());
+        }
+    }
+
+    /// Whether the receiver's filters exclude `path` (or a directory above
+    /// it). Called for every merged path, in order, while deleting.
+    fn excluded(&mut self, path: &RelPath, is_dir: bool) -> bool {
+        if path.as_bytes().is_empty() {
+            return false;
+        }
+        let ex = self.excluded_dirs.contains(&parent_of(path))
+            || self.ctx.filters.matches(path, is_dir) == Verdict::Exclude;
+        if ex && is_dir {
+            self.excluded_dirs.insert(path.clone());
+        }
+        ex
+    }
+
+    /// Deletion bookkeeping for one merged path, in merge order: a
+    /// destination-only path becomes a candidate (or is protected).
+    fn consider(&mut self, path: &RelPath, src: Option<&Side>, dst: Option<&Side>) {
+        if self.deletes.is_none() {
+            return;
+        }
+        let is_dir = dst
+            .or(src)
+            .is_some_and(|s| s.entry.kind() == Kind::Directory);
+        let excluded = self.excluded(path, is_dir);
+        if let (None, Some(d)) = (src, dst) {
+            self.extraneous(path.clone(), d, excluded);
+        }
+    }
+
+    fn extraneous(&mut self, path: RelPath, dst: &Side, excluded: bool) {
+        let Some(pass) = self.deletes.as_mut() else {
+            return;
+        };
+        if decide(None, Some(dst), &self.popts, &NoLookup) != Decision::Delete {
+            return;
+        }
+        if excluded && !pass.delete_excluded() {
+            pass.protect(&path);
+        } else {
+            pass.plan(path, dst.entry.kind());
+        }
+    }
+
+    /// A listing out of order makes the candidates unreliable: no deletions.
+    fn check_order(&mut self, disordered: &AtomicBool) {
+        if disordered.load(Ordering::Relaxed) {
+            if let Some(pass) = self.deletes.as_mut() {
+                tracing::error!("a listing was out of order: no deletions");
+                pass.mark_unreliable();
+            }
+        }
+    }
+
+    /// `--delete-before`: hands the candidates to the receiver's main loop,
+    /// which deletes once both listings have ended, and waits for it.
+    async fn delete_before(&mut self) {
+        let Some(pass) = self.deletes.take() else {
+            return;
+        };
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .events
+            .send(Ev::Recv(Done::DeleteBefore(Box::new(pass), tx)));
+        // A dropped reply means the session failed (this task is aborted).
+        if let Ok(deleted) = rx.await {
+            for p in &deleted {
+                self.touch_parent(p);
+            }
         }
     }
 }
@@ -341,11 +461,20 @@ pub(super) async fn plan(
     local: mpsc::UnboundedReceiver<Side>,
     prior: Prior,
 ) {
+    let o = &ctx.opts;
+    let deletes = (o.delete != DeleteMode::Off).then(|| {
+        DeletePass::new(
+            o.delete,
+            o.max_delete,
+            o.delete_excluded,
+            o.dry_run,
+            o.ignore_errors,
+        )
+    });
     let popts = PlanOpts {
         checksum: ctx.opts.checksum,
         update_only: ctx.opts.update_only,
-        // Deletions are a later pass (not in this engine yet).
-        delete: false,
+        delete: deletes.is_some(),
         rename_detection: ctx.opts.rename_detection,
         preserve: ctx.opts.preserve,
     };
@@ -359,13 +488,42 @@ pub(super) async fn plan(
         failed_dirs: HashSet::new(),
         next_id: prior.max_id,
         prior,
+        deletes,
+        excluded_dirs: HashSet::new(),
     };
-    let joined = merge_join(stream_of(peer), stream_of(local));
+    let before = p
+        .deletes
+        .as_ref()
+        .is_some_and(|d| d.mode() == DeleteMode::Before);
+    let disordered = Arc::new(AtomicBool::new(false));
+    let joined = merge_join(
+        checked_order(stream_of(peer), disordered.clone()),
+        checked_order(stream_of(local), disordered.clone()),
+    );
     futures::pin_mut!(joined);
-    while let Some((path, src, dst)) = joined.next().await {
-        if let Some(src) = src {
+    if before {
+        // Every candidate is known only once both listings have ended.
+        let mut sources = Vec::new();
+        while let Some((path, src, dst)) = joined.next().await {
+            p.consider(&path, src.as_ref(), dst.as_ref());
+            if let Some(src) = src {
+                sources.push((path, src, dst));
+            }
+        }
+        p.check_order(&disordered);
+        p.delete_before().await;
+        for (path, src, dst) in sources {
             p.one(path, src, dst).await;
         }
+    } else {
+        while let Some((path, src, dst)) = joined.next().await {
+            p.consider(&path, src.as_ref(), dst.as_ref());
+            if let Some(src) = src {
+                p.one(path, src, dst).await;
+            }
+        }
     }
+    p.check_order(&disordered);
+    p.report.deletes = p.deletes.take();
     let _ = events.send(Ev::Recv(Done::PlannerFinished(Box::new(p.report))));
 }

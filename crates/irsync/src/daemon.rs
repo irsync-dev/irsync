@@ -112,6 +112,12 @@ impl Daemon {
         self.shared.hosting.rerequests.clone()
     }
 
+    /// The event log every daemon receiver writes to.
+    #[cfg(feature = "test-hooks")]
+    pub fn receiver_events(&self) -> crate::session::EventLog {
+        self.shared.hosting.events.clone()
+    }
+
     /// Ids of every session hosted so far (fresh or resumed), in order.
     #[cfg(feature = "test-hooks")]
     pub fn hosted_sessions(&self) -> Arc<std::sync::Mutex<Vec<[u8; 16]>>> {

@@ -12,6 +12,11 @@ fn hello_roundtrips() {
         chunk_avg: 262144,
         chunk_max: 1048576,
         contents_only: true,
+        delete_mode: irsync_proto::v1::hello::DeleteMode::DeleteAfter as i32,
+        delete_excluded: true,
+        max_delete: Some(0),
+        dry_run: true,
+        ignore_errors: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);
@@ -76,6 +81,11 @@ fn control_oneof_roundtrips() {
                 path: b"d/\xff".to_vec(),
                 message: "mkdir: denied".into(),
             }],
+            deleted: vec![b"old".to_vec()],
+            would_delete: vec![b"x/\xff".to_vec()],
+            max_delete_reached: true,
+            deleted_omitted: 3,
+            would_delete_omitted: 4,
         }),
         Msg::Error(Error {
             code: 7,

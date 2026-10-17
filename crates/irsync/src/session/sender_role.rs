@@ -99,6 +99,10 @@ struct SenderRole {
     sending: usize,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
+    /// What the receiver deleted (or would have, on a dry run).
+    deleted: Vec<RelPath>,
+    would_delete: Vec<RelPath>,
+    max_delete_reached: bool,
 }
 
 impl SenderRole {
@@ -412,6 +416,19 @@ impl SenderRole {
                 self.errors.push((path, format!("receiver: {}", e.message)));
             }
         }
+        let paths = |v: &[Vec<u8>]| -> Vec<RelPath> {
+            v.iter().filter_map(|p| RelPath::new(p).ok()).collect()
+        };
+        self.deleted = paths(&d.deleted);
+        self.would_delete = paths(&d.would_delete);
+        self.max_delete_reached = d.max_delete_reached;
+        if d.deleted_omitted + d.would_delete_omitted > 0 {
+            tracing::info!(
+                deleted = d.deleted_omitted,
+                would_delete = d.would_delete_omitted,
+                "the receiver reported more deleted paths than listed"
+            );
+        }
     }
 }
 
@@ -489,6 +506,9 @@ pub(super) async fn run(
         sending: 0,
         errors: Vec::new(),
         persist,
+        deleted: Vec::new(),
+        would_delete: Vec::new(),
+        max_delete_reached: false,
     };
     if !ctx.resumed {
         s.start_listing();
@@ -620,6 +640,9 @@ pub(super) async fn run(
         files_skipped: 0,
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
+        deleted: s.deleted,
+        would_delete: s.would_delete,
+        max_delete_reached: s.max_delete_reached,
         #[cfg(feature = "test-hooks")]
         retained_files: s.files.len(),
     })

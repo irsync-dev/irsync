@@ -94,6 +94,8 @@ pub struct DaemonHandle {
     /// `NeedChunks` re-requests sent by the daemon's receivers.
     pub rerequests: std::sync::Arc<std::sync::atomic::AtomicU64>,
     hosted: std::sync::Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
+    /// The daemon receivers' event log (`delete:<path>`, `plan:<path>`).
+    pub events: irsync::session::EventLog,
     pub _state: tempfile::TempDir,
 }
 
@@ -146,6 +148,7 @@ pub async fn spawn_daemon(
     let fault = daemon.fault_injector();
     let rerequests = daemon.rerequest_counter();
     let hosted = daemon.hosted_sessions();
+    let events = daemon.receiver_events();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -159,6 +162,7 @@ pub async fn spawn_daemon(
         fault,
         rerequests,
         hosted,
+        events,
         _state: state,
     }
 }
@@ -256,6 +260,7 @@ impl Harness {
             chunk_avg: CHUNK_PARAMS.avg,
             chunk_max: CHUNK_PARAMS.max,
             contents_only: true,
+            ..Default::default()
         }
     }
 

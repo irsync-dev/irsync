@@ -110,6 +110,8 @@ impl SessionKey {
             DeleteMode::After => 3,
         };
         field(&mut h, b"delete", &[delete, opts.delete_excluded as u8]);
+        // A dry run's record must never be resumed by a real run (or back).
+        field(&mut h, b"dry-run", &[opts.dry_run as u8]);
         for r in &opts.filters {
             use std::os::unix::ffi::OsStrExt;
             match r {
@@ -137,6 +139,15 @@ impl SessionKey {
             &mut h,
             b"flags",
             &[hello.direction as u8, hello.contents_only as u8],
+        );
+        field(
+            &mut h,
+            b"receiver",
+            &[
+                hello.delete_mode as u8,
+                hello.delete_excluded as u8,
+                hello.dry_run as u8,
+            ],
         );
         SessionKey(h.finalize().as_bytes().to_vec())
     }
@@ -374,7 +385,14 @@ pub struct DaemonSessions {
     /// `NeedChunks` re-requests sent by daemon receivers (test hook).
     #[cfg(feature = "test-hooks")]
     pub rerequests: Arc<std::sync::atomic::AtomicU64>,
+    /// The event log of every daemon receiver (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub events: EventLog,
 }
+
+/// What a receiver did, in order: `delete:<path>` per deletion and
+/// `plan:<path>` per requested file (test hook).
+pub type EventLog = Arc<std::sync::Mutex<Vec<String>>>;
 
 /// Called by the sender role after the first chunk of a path went out, before
 /// the rest; lets a test change the file mid-transfer.
@@ -390,6 +408,23 @@ pub struct SideHooks {
     /// Cuts data streams short (see [`crate::send::TruncateHook`]).
     #[cfg(feature = "test-hooks")]
     pub truncate_streams: Option<Arc<crate::send::TruncateHook>>,
+    /// Receives the receiver role's events (see [`EventLog`]).
+    #[cfg(feature = "test-hooks")]
+    pub events: Option<EventLog>,
+}
+
+impl SideHooks {
+    /// Records one receiver event (test hook; a no-op otherwise).
+    #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+    pub(crate) fn event(&self, what: &str, path: &RelPath) {
+        #[cfg(feature = "test-hooks")]
+        if let Some(log) = &self.events {
+            log.lock().unwrap_or_else(|e| e.into_inner()).push(format!(
+                "{what}:{}",
+                String::from_utf8_lossy(path.as_bytes())
+            ));
+        }
+    }
 }
 
 impl std::fmt::Debug for SideHooks {
@@ -447,15 +482,25 @@ pub struct Outcome {
     /// Files this side's hashers had to read during the session.
     pub files_hashed: u64,
     pub errors: Vec<(RelPath, String)>,
+    /// Paths the receiver deleted (`--delete*`), deepest first. A pushing
+    /// client gets at most 1000 of them from the daemon.
+    pub deleted: Vec<RelPath>,
+    /// `--dry-run`: paths the receiver would have deleted.
+    pub would_delete: Vec<RelPath>,
+    /// Deletions stopped at `--max-delete` with candidates left.
+    pub max_delete_reached: bool,
     /// Per-file records the role still held when it finished (should be 0).
     #[cfg(feature = "test-hooks")]
     pub retained_files: usize,
 }
 
 impl Outcome {
-    /// rsync's convention: 0 ok, 23 partial transfer due to error.
+    /// rsync's convention: 0 ok, 23 partial transfer due to error, 25
+    /// deletions stopped at `--max-delete` (which takes precedence).
     pub fn exit_code(&self) -> i32 {
-        if self.errors.is_empty() {
+        if self.max_delete_reached {
+            25
+        } else if self.errors.is_empty() {
             0
         } else {
             23
@@ -563,6 +608,7 @@ mod tests {
             progress: SessionProgress {
                 done_file_ids: vec![1],
                 bytes_transferred: 9,
+                deleted: 3,
             },
             created_at: 1,
             updated_at: 2,
@@ -586,6 +632,7 @@ mod tests {
         assert_eq!(base, k(&args(&["-v", "--progress"])));
         assert_ne!(base, k(&args(&["-c"])));
         assert_ne!(base, k(&args(&["--delete"])));
+        assert_ne!(base, k(&args(&["-n"])));
         assert_ne!(base, k(&args(&["--exclude", "*.o"])));
         let other = Location::parse("h:m/sub").unwrap();
         assert_ne!(base, SessionKey::new(id, &src, &other, &args(&[])));

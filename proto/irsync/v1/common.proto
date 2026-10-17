@@ -12,6 +12,14 @@ message Hello {
   Direction direction = 5;
   uint32 chunk_min = 6; uint32 chunk_avg = 7; uint32 chunk_max = 8;  // must equal protocol constants
   bool contents_only = 9;                         // rsync trailing-slash rule applied to the remote path
+  // Receiver-side options, honoured by the daemon only when it receives
+  // (CLIENT_SENDS, which already requires write access to a writable module).
+  enum DeleteMode { DELETE_OFF = 0; DELETE_BEFORE = 1; DELETE_DURING = 2; DELETE_AFTER = 3; }
+  DeleteMode delete_mode = 10;
+  bool delete_excluded = 11;
+  optional uint64 max_delete = 12;                // absent = unlimited; 0 = delete nothing
+  bool dry_run = 13;                              // the receiver changes nothing
+  bool ignore_errors = 14;                        // delete even if a listing was incomplete
 }
 message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
 message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }

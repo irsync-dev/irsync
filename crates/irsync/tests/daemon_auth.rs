@@ -21,6 +21,7 @@ fn hello(module: &str, path: &[u8], dir: Direction) -> Hello {
         chunk_avg: CHUNK_PARAMS.avg,
         chunk_max: CHUNK_PARAMS.max,
         contents_only: false,
+        ..Default::default()
     }
 }
 

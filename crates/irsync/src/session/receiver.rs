@@ -4,6 +4,10 @@
 //! requested with `PlanItem`, opened as verified `.part` writers when their
 //! `ChunkList` arrives, filled from local copies and data streams, and
 //! acknowledged only after `finalize` has verified and renamed them.
+//!
+//! Deletions (`--delete*`) run here too: before the transfers (asked for by
+//! the planner once both listings have ended) or after them, before the
+//! directory metadata pass. A dry run plans and reports but changes nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -15,18 +19,20 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, NeedChunks,
-    PathError, PlanEntry, PlanItem, SessionDone, SessionPlan,
+    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, ListingEnd,
+    NeedChunks, PathError, PlanEntry, PlanItem, SessionDone, SessionPlan,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
 use super::control::{capped_errors, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister};
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::planner::{mkdir_replacing, plan, DirEntry, Planned, PlannerReport, Prior};
+use super::planner::{mkdir_replacing, parent_of, plan, DirEntry, Planned, PlannerReport, Prior};
 use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
 use super::Outcome;
+use crate::cli::DeleteMode;
+use crate::delete::DeletePass;
 use crate::filter::FilterSet;
 use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
@@ -46,6 +52,9 @@ const TASK_DRAIN: Duration = Duration::from_secs(10);
 pub(super) enum Done {
     Planned(Box<Planned>),
     PlannerFinished(Box<PlannerReport>),
+    /// `--delete-before`: every candidate is known; delete once both
+    /// listings have ended and reply with what was deleted.
+    DeleteBefore(Box<DeletePass>, oneshot::Sender<Vec<RelPath>>),
     Opened {
         file_id: u64,
         gen: u32,
@@ -121,6 +130,13 @@ struct Receiver {
     listing: Option<JoinHandle<crate::scan::ScanSummary>>,
     /// Problems of this side's walk, known once it ended.
     walk_errors: Vec<(RelPath, String)>,
+    /// This side's walk was incomplete (known once it ended).
+    local_listing_incomplete: bool,
+    /// A `--delete-before` pass waiting for the sender's `ListingEnd`.
+    pending_before: Option<(DeletePass, oneshot::Sender<Vec<RelPath>>)>,
+    deleted: Vec<RelPath>,
+    would_delete: Vec<RelPath>,
+    max_delete_reached: bool,
     /// The stored plan says every path is planned.
     plan_complete: bool,
     files_done: u64,
@@ -141,15 +157,13 @@ impl Receiver {
         if self.plan_complete || !self.peer_listing_done {
             return;
         }
+        if self.report.is_none() {
+            return;
+        }
+        self.await_own_walk().await;
         let Some(report) = &self.report else {
             return;
         };
-        if let Some(listing) = self.listing.take() {
-            self.walk_errors = match listing.await {
-                Ok(summary) => walk_errors(&summary),
-                Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
-            };
-        }
         let dirs = report
             .dirs
             .iter()
@@ -175,6 +189,59 @@ impl Receiver {
         self.persist
             .complete(dirs, errors, report.skipped, self.peer_listing_incomplete);
         self.plan_complete = true;
+    }
+
+    /// Waits for this side's walk to end and records its problems.
+    async fn await_own_walk(&mut self) {
+        if let Some(listing) = self.listing.take() {
+            match listing.await {
+                Ok(summary) => {
+                    self.walk_errors = walk_errors(&summary);
+                    self.local_listing_incomplete = summary.incomplete;
+                }
+                Err(e) => {
+                    self.walk_errors = vec![(RelPath::root(), format!("listing failed: {e}"))];
+                    self.local_listing_incomplete = true;
+                }
+            }
+        }
+    }
+
+    /// Runs a deletion pass under the session root: refused when either
+    /// listing was incomplete (unless `--ignore-errors`). Returns the paths
+    /// deleted.
+    async fn run_deletes(&mut self, mut pass: DeletePass) -> Vec<RelPath> {
+        self.await_own_walk().await;
+        pass.set_spent(self.persist.deleted());
+        let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
+        match pass.execute(self.ctx.root.clone(), incomplete).await {
+            Ok(rep) => {
+                for p in &rep.deleted {
+                    self.ctx.hooks.event("delete", p);
+                }
+                self.persist.add_deleted(rep.deleted.len() as u64);
+                self.max_delete_reached |= rep.stopped_at_max;
+                self.errors.extend(rep.errors);
+                self.would_delete.extend(rep.would_delete);
+                self.deleted.extend(rep.deleted.iter().cloned());
+                rep.deleted
+            }
+            Err(refused) => {
+                self.errors.push((RelPath::root(), refused.to_string()));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Runs a waiting `--delete-before` pass once the sender's listing has ended.
+    async fn maybe_delete_before(&mut self) {
+        if !self.peer_listing_done {
+            return;
+        }
+        if let Some((pass, reply)) = self.pending_before.take() {
+            let deleted = self.run_deletes(pass).await;
+            let _ = reply.send(deleted);
+        }
     }
 
     /// Resumes from a complete stored plan: makes sure the planned
@@ -213,6 +280,7 @@ impl Receiver {
             };
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
             self.register(e.file_id, path.clone(), entry, action, None);
+            self.ctx.hooks.event("plan", &path);
             self.out.send(Msg::Plan(PlanItem {
                 file_id: e.file_id,
                 path: path.as_bytes().to_vec(),
@@ -241,6 +309,7 @@ impl Receiver {
                 })
                 .collect(),
             touched: HashSet::new(),
+            deletes: None,
         });
         self.peer_listing_done = true;
         self.peer_listing_incomplete = plan.peer_listing_incomplete;
@@ -421,6 +490,10 @@ impl Receiver {
                 self.report = Some(*r);
                 self.maybe_mark_complete().await;
             }
+            Done::DeleteBefore(pass, reply) => {
+                self.pending_before = Some((*pass, reply));
+                self.maybe_delete_before().await;
+            }
             Done::Drained { file_id, gen } => self.on_drained(file_id, gen).await,
             Done::Opened {
                 file_id,
@@ -593,6 +666,7 @@ impl Receiver {
                 }
                 self.peer_listing_incomplete = e.incomplete;
                 self.peer_listing_done = true;
+                self.maybe_delete_before().await;
                 self.maybe_mark_complete().await;
             }
             Ev::Ctrl(Msg::Error(e)) => return Err(PeerError(e.message).into()),
@@ -690,6 +764,16 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
     }
 }
 
+/// At most this many deleted (or would-delete) paths travel in `SessionDone`.
+const MAX_DONE_PATHS: usize = 1000;
+
+fn capped_paths(v: &[RelPath]) -> Vec<Vec<u8>> {
+    v.iter()
+        .take(MAX_DONE_PATHS)
+        .map(|p| p.as_bytes().to_vec())
+        .collect()
+}
+
 /// `--partial-dir` inside the root, as a path to leave out of the listing.
 fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
     let pd = pd.filter(|p| p.is_relative())?;
@@ -733,6 +817,11 @@ pub(super) async fn run(
         peer_listing_incomplete: false,
         listing: None,
         walk_errors: Vec::new(),
+        local_listing_incomplete: false,
+        pending_before: None,
+        deleted: Vec::new(),
+        would_delete: Vec::new(),
+        max_delete_reached: false,
         plan_complete: false,
         files_done: 0,
         errors: Vec::new(),
@@ -740,24 +829,41 @@ pub(super) async fn run(
         tasks: TaskTracker::new(),
     };
     let mut planner_abort = None;
-    if ctx.resumed && stored.plan_complete {
+    // A stored plan holds no deletion candidates, and a dry run stores
+    // nothing worth resuming: both list afresh.
+    let reuse_plan = ctx.opts.delete == DeleteMode::Off && !ctx.opts.dry_run;
+    if ctx.resumed && stored.plan_complete && reuse_plan {
         r.resume_plan(stored).await;
     } else {
         let prior = Prior::new(&stored, |id| r.persist.is_done(id));
         let (local_tx, local_rx) = mpsc::unbounded_channel();
-        r.listing = Some(spawn_listing(
-            ListingSpec {
-                root: ctx.root.clone(),
-                // The receiver lists everything it has; filters shape the sender's walk.
-                filters: Arc::new(FilterSet::new(vec![])),
-                hasher: ctx.hasher.clone(),
-                scope: ctx.scope.clone(),
-                skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
-            },
-            out.clone(),
-            Some(local_tx),
-            None,
-        ));
+        let root = ctx.root.clone();
+        let root_missing = blocking(move || Ok(std::fs::symlink_metadata(&root).is_err()))
+            .await
+            .unwrap_or(false);
+        if ctx.opts.dry_run && root_missing {
+            // A dry run does not create the root: there is nothing to list.
+            drop(local_tx);
+            out.send(Msg::ListingEnd(ListingEnd {
+                incomplete: false,
+                count: 0,
+            }));
+        } else {
+            r.listing = Some(spawn_listing(
+                ListingSpec {
+                    root: ctx.root.clone(),
+                    // Everything this side has: filters shape the sender's
+                    // walk, and the planner applies them for deletions.
+                    filters: Arc::new(FilterSet::new(vec![])),
+                    hasher: ctx.hasher.clone(),
+                    scope: ctx.scope.clone(),
+                    skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
+                },
+                out.clone(),
+                Some(local_tx),
+                None,
+            ));
+        }
         let planner = tokio::spawn(plan(
             ctx.clone(),
             out.clone(),
@@ -808,7 +914,17 @@ pub(super) async fn run(
         return Err(e);
     }
     let mut report = r.report.take().unwrap_or_default();
-    r.directory_pass(&mut report).await;
+    // `--delete-after` (and `--delete-during`): after every file is placed,
+    // before the directory pass so directories that lost entries get their
+    // metadata (mtime) applied again.
+    if let Some(pass) = report.deletes.take() {
+        for p in r.run_deletes(pass).await {
+            report.touched.insert(parent_of(&p));
+        }
+    }
+    if !ctx.opts.dry_run {
+        r.directory_pass(&mut report).await;
+    }
     let bytes_total = bytes.load(Ordering::Relaxed);
     // Every problem this side recorded: its own walk, the planner (mkdir,
     // symlink, special, metadata, refused paths), files and directories.
@@ -820,6 +936,11 @@ pub(super) async fn run(
         files: r.files_done,
         bytes: bytes_total,
         errors: capped_errors(&errors),
+        deleted: capped_paths(&r.deleted),
+        would_delete: capped_paths(&r.would_delete),
+        max_delete_reached: r.max_delete_reached,
+        deleted_omitted: r.deleted.len().saturating_sub(MAX_DONE_PATHS) as u64,
+        would_delete_omitted: r.would_delete.len().saturating_sub(MAX_DONE_PATHS) as u64,
     }));
     // Finished: a later run with the same key starts a new session.
     r.persist.finish().await;
@@ -845,6 +966,9 @@ pub(super) async fn run(
         files_skipped: report.skipped,
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
+        deleted: r.deleted,
+        would_delete: r.would_delete,
+        max_delete_reached: r.max_delete_reached,
         #[cfg(feature = "test-hooks")]
         retained_files: r.files.len(),
     })

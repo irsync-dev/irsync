@@ -2,6 +2,7 @@ pub mod authz;
 pub mod cli;
 pub mod config;
 pub mod daemon;
+pub mod delete;
 pub mod filter;
 pub mod fs;
 pub mod hasher;

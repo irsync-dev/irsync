@@ -17,7 +17,8 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
-use irsync_proto::v1::{error::Code, hello::Direction, Error, FileEntry, Hello, HelloAck};
+use irsync_proto::v1::hello::{DeleteMode as WireDeleteMode, Direction};
+use irsync_proto::v1::{error::Code, Error, FileEntry, Hello, HelloAck};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use rand_core::{OsRng, RngCore};
@@ -30,7 +31,7 @@ use super::{
     SessionRecord, SideHooks, HASH_WORKERS,
 };
 use crate::cli::location::Location;
-use crate::cli::{Preserve, SyncOptions};
+use crate::cli::{DeleteMode, Preserve, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
@@ -93,6 +94,14 @@ pub(super) struct RoleOpts {
     pub partial_dir: Option<PathBuf>,
     pub parallel: usize,
     pub bwlimit: Option<u64>,
+    /// Receiver only: when (and whether) to delete extraneous paths.
+    pub delete: DeleteMode,
+    pub delete_excluded: bool,
+    pub max_delete: Option<u64>,
+    /// Receiver only: decide and report, change nothing.
+    pub dry_run: bool,
+    /// Delete even when a listing was incomplete.
+    pub ignore_errors: bool,
 }
 
 impl RoleOpts {
@@ -105,12 +114,27 @@ impl RoleOpts {
             partial_dir: o.partial_dir.clone(),
             parallel: o.parallel.map_or(DEFAULT_PARALLEL, |p| p.max(1) as usize),
             bwlimit: o.bwlimit,
+            delete: o.delete,
+            delete_excluded: o.delete_excluded,
+            max_delete: o.max_delete,
+            dry_run: o.dry_run,
+            ignore_errors: o.ignore_errors,
         }
     }
 
-    /// v1: options not negotiated. The client's flags never reach the daemon,
-    /// so the daemon preserves everything it can and trusts the quick check.
-    fn daemon() -> RoleOpts {
+    /// v1: transfer options are not negotiated, so the daemon preserves
+    /// everything it can and trusts the quick check. Only the receiver-side
+    /// options carried in `Hello` (deletion, dry run) are honoured, and only
+    /// when the daemon `receives` (the client pushes, which already requires
+    /// write access to a writable module).
+    fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
+        let delete = match hello.delete_mode() {
+            _ if !receives => DeleteMode::Off,
+            WireDeleteMode::DeleteOff => DeleteMode::Off,
+            WireDeleteMode::DeleteBefore => DeleteMode::Before,
+            WireDeleteMode::DeleteDuring => DeleteMode::During,
+            WireDeleteMode::DeleteAfter => DeleteMode::After,
+        };
         RoleOpts {
             preserve: Preserve {
                 recursive: true,
@@ -129,8 +153,49 @@ impl RoleOpts {
             partial_dir: None,
             parallel: DEFAULT_PARALLEL,
             bwlimit: None,
+            delete,
+            delete_excluded: receives && hello.delete_excluded,
+            max_delete: hello.max_delete,
+            dry_run: receives && hello.dry_run,
+            ignore_errors: hello.ignore_errors,
         }
     }
+}
+
+/// Puts the client's receiver-side options into `Hello` (Ruling 19): the
+/// daemon honours them when it receives.
+pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
+    hello.delete_mode = match o.delete {
+        DeleteMode::Off => WireDeleteMode::DeleteOff,
+        DeleteMode::Before => WireDeleteMode::DeleteBefore,
+        DeleteMode::During => WireDeleteMode::DeleteDuring,
+        DeleteMode::After => WireDeleteMode::DeleteAfter,
+    } as i32;
+    hello.delete_excluded = o.delete_excluded;
+    hello.max_delete = o.max_delete;
+    hello.dry_run = o.dry_run;
+    hello.ignore_errors = o.ignore_errors;
+}
+
+/// Option combinations this protocol version cannot honour safely.
+///
+/// Filters are not sent to the daemon, so a receiving daemon would see every
+/// destination path the client's filters exclude as extraneous and delete
+/// it: with `--delete` that breaks rsync's rule that excluded files are
+/// protected. Only `--delete-excluded` (which deletes them anyway) is allowed.
+pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
+    if direction == Direction::ClientSends
+        && o.delete != DeleteMode::Off
+        && !o.filters.is_empty()
+        && !o.delete_excluded
+    {
+        bail!(
+            "--delete with --include/--exclude is not supported when pushing: the daemon \
+             does not see the filters and would delete excluded files; add \
+             --delete-excluded to delete them deliberately"
+        );
+    }
+    Ok(())
 }
 
 /// Everything a role works with.
@@ -366,7 +431,10 @@ pub(super) async fn run_client_inner(
     opts: &SyncOptions,
     attempt: &mut Attempt,
 ) -> anyhow::Result<Outcome> {
+    let mut hello = hello;
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
+    check_options(direction, opts)?;
+    set_hello_options(&mut hello, opts);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
     warn_ignored_options(direction, opts);
 
@@ -393,7 +461,7 @@ pub(super) async fn run_client_inner(
     };
 
     let sends = direction == Direction::ClientSends;
-    if !sends {
+    if !sends && !opts.dry_run {
         let root = local.root.clone();
         blocking(move || std::fs::create_dir_all(&root))
             .await
@@ -450,10 +518,21 @@ fn warn_ignored_options(direction: Direction, o: &SyncOptions) {
     }
 }
 
+/// What [`prepare_root`] does with missing components of the session root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// Sending: the root must exist.
+    Refuse,
+    /// Receiving: create them.
+    Create,
+    /// Receiving on a dry run: leave them missing (the receiver lists nothing).
+    Allow,
+}
+
 /// Checks the session root below the module root: every existing component
 /// must be a real directory (never a symlink, which could lead outside the
-/// module); missing ones are created when `create` (receiving) is set.
-fn prepare_root(module_root: &Path, rel: &RelPath, create: bool) -> io::Result<PathBuf> {
+/// module); missing ones are handled as `missing` says.
+fn prepare_root(module_root: &Path, rel: &RelPath, missing: Missing) -> io::Result<PathBuf> {
     let mut p = module_root.to_path_buf();
     let check = |p: &Path| -> io::Result<bool> {
         match std::fs::symlink_metadata(p) {
@@ -475,13 +554,21 @@ fn prepare_root(module_root: &Path, rel: &RelPath, create: bool) -> io::Result<P
     for c in rel.components() {
         p.push(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(c));
         if !check(&p)? {
-            if !create {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("{} does not exist", p.display()),
-                ));
+            match missing {
+                Missing::Refuse => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{} does not exist", p.display()),
+                    ))
+                }
+                Missing::Create => std::fs::create_dir(&p)?,
+                Missing::Allow => {
+                    // Nothing below a missing component can exist.
+                    p = module_root.to_path_buf();
+                    p.push(rel.to_os());
+                    return Ok(p);
+                }
             }
-            std::fs::create_dir(&p)?;
         }
     }
     Ok(p)
@@ -502,9 +589,14 @@ pub async fn serve_daemon(
     // The daemon sends when the client receives.
     let sends = direction == Direction::DaemonSends;
     let rel = RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid path"))?;
+    let missing = match (sends, hello.dry_run) {
+        (true, _) => Missing::Refuse,
+        (false, false) => Missing::Create,
+        (false, true) => Missing::Allow,
+    };
     let prepared = {
         let (m, r) = (module_root.clone(), rel.clone());
-        blocking(move || prepare_root(&m, &r, !sends)).await
+        blocking(move || prepare_root(&m, &r, missing)).await
     };
     let root = match prepared {
         Ok(r) => r,
@@ -599,9 +691,13 @@ pub async fn serve_daemon(
         forced,
         // v1: the client's filters are not transmitted; the daemon walks everything.
         filters: Arc::new(FilterSet::new(vec![])),
-        opts: RoleOpts::daemon(),
+        opts: RoleOpts::daemon(&hello, !sends),
         privs: Privs::current(),
-        hooks: SideHooks::default(),
+        hooks: SideHooks {
+            #[cfg(feature = "test-hooks")]
+            events: Some(shared.events.clone()),
+            ..SideHooks::default()
+        },
     };
     run_role(Arc::new(ctx), send, recv, sends).await
 }
@@ -694,16 +790,20 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), m.path().join("link")).unwrap();
         let rel = |s: &[u8]| RelPath::new(s).unwrap();
-        assert!(prepare_root(m.path(), &rel(b"link"), true).is_err());
-        assert!(prepare_root(m.path(), &rel(b"link/sub"), true).is_err());
+        assert!(prepare_root(m.path(), &rel(b"link"), Missing::Create).is_err());
+        assert!(prepare_root(m.path(), &rel(b"link/sub"), Missing::Create).is_err());
+        assert!(prepare_root(m.path(), &rel(b"link/sub"), Missing::Allow).is_err());
         assert!(!outside.path().join("sub").exists());
-        // Missing components are created only when receiving.
-        assert!(prepare_root(m.path(), &rel(b"new/dir"), false).is_err());
-        let p = prepare_root(m.path(), &rel(b"new/dir"), true).unwrap();
+        // Missing components are created only when receiving, and not on a dry run.
+        assert!(prepare_root(m.path(), &rel(b"new/dir"), Missing::Refuse).is_err());
+        let p = prepare_root(m.path(), &rel(b"new/dir"), Missing::Allow).unwrap();
+        assert_eq!(p, m.path().join("new/dir"));
+        assert!(!m.path().join("new").exists());
+        let p = prepare_root(m.path(), &rel(b"new/dir"), Missing::Create).unwrap();
         assert_eq!(p, m.path().join("new/dir"));
         assert!(p.is_dir());
         assert_eq!(
-            prepare_root(m.path(), &RelPath::root(), false).unwrap(),
+            prepare_root(m.path(), &RelPath::root(), Missing::Refuse).unwrap(),
             m.path()
         );
     }
