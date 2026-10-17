@@ -145,40 +145,76 @@ fn place_via_temp(
     res
 }
 
-/// Places `full` as a hard link to the regular file `target` (`link`), or,
-/// without `-H` on this side, as an independent copy of it with `entry`'s
-/// metadata. Whatever is at `full` is replaced (never followed); a directory
-/// in the way is an error.
+/// Places `root/path` as a hard link to the regular file `root/target`
+/// (`link`), or, without `-H` on this side, as an independent copy of it
+/// with `entry`'s metadata. Both parents are resolved from `root` without
+/// following any symlink, and every operation is relative to those
+/// directory descriptors, so neither name can lead out of `root`. Whatever
+/// is at `path` is replaced (never followed); a directory in the way is an
+/// error.
 pub(super) fn place_hardlink(
-    target: &Path,
-    full: &Path,
+    root: &Path,
+    target: &RelPath,
+    path: &RelPath,
     link: bool,
     entry: &FileEntry,
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let tm = std::fs::symlink_metadata(target)
-        .map_err(|e| io::Error::new(e.kind(), format!("hard link target: {e}")))?;
-    if !tm.is_file() {
+    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
+    use nix::fcntl::{renameat, AtFlags, OFlag};
+    use nix::sys::stat::{fstatat, Mode};
+    use nix::unistd::{linkat, unlinkat, UnlinkatFlags};
+    use std::ffi::OsStr;
+
+    let ctx = |what: &str, e: io::Error| io::Error::new(e.kind(), format!("{what}: {e}"));
+    let (tdir, tname) = split_last(target)?;
+    let (ldir, lname) = split_last(path)?;
+    let (tname, lname) = (OsStr::from_bytes(&tname), OsStr::from_bytes(&lname));
+    let tfd = open_dir_beneath(root, &tdir).map_err(|e| ctx("hard link target", e))?;
+    let lfd = open_dir_beneath(root, &ldir)?;
+    let tm = fstatat(&tfd, tname, AtFlags::AT_SYMLINK_NOFOLLOW)
+        .map_err(|e| ctx("hard link target", errno(e)))?;
+    if !is_regular_mode(tm.st_mode as u32) {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    if !link {
-        return place_via_temp(
-            full,
-            |tmp| std::fs::copy(target, tmp).map(drop),
-            entry,
-            apply,
-        );
+    let mut tmp = b".irsync.".to_vec();
+    tmp.extend_from_slice(lname.as_bytes());
+    tmp.extend_from_slice(b".tmp");
+    let tmp = OsStr::from_bytes(&tmp);
+    match unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(nix::Error::ENOENT) => {}
+        Err(e) => return Err(errno(e)),
     }
-    if let Ok(m) = std::fs::symlink_metadata(full) {
-        // Already linked (renaming a link over itself would leave the temp).
-        if m.dev() == tm.dev() && m.ino() == tm.ino() {
-            return Ok(());
+    let made = if link {
+        if let Ok(m) = fstatat(&lfd, lname, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            // Already linked (renaming a link over itself would leave the temp).
+            if m.st_dev == tm.st_dev && m.st_ino == tm.st_ino {
+                return Ok(());
+            }
         }
+        // The link shares the target's inode and with it the target's
+        // metadata; no flags: a symlink at the target name is never followed.
+        linkat(&tfd, tname, &lfd, tmp, AtFlags::empty()).map_err(errno)
+    } else {
+        (|| {
+            let nofollow = OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+            let src = nix::fcntl::openat(&tfd, tname, OFlag::O_RDONLY | nofollow, Mode::empty())
+                .map_err(errno)?;
+            let mut src = std::fs::File::from(src);
+            crate::fs::safe::require_regular(&src, Path::new(tname))?;
+            let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | nofollow;
+            let dst = nix::fcntl::openat(&lfd, tmp, flags, Mode::from_bits_truncate(0o600))
+                .map_err(errno)?;
+            let mut dst = std::fs::File::from(dst);
+            io::copy(&mut src, &mut dst)?;
+            crate::fs::meta::apply_metadata_fd(&dst, entry, apply)
+        })()
+    };
+    let res = made.and_then(|()| renameat(&lfd, tmp, &lfd, lname).map_err(errno));
+    if res.is_err() {
+        let _ = unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir);
     }
-    // The link shares the target's inode and with it the target's metadata.
-    let none = crate::fs::meta::ApplyOpts::default();
-    place_via_temp(full, |tmp| std::fs::hard_link(target, tmp), entry, &none)
+    res
 }
 
 /// Makes `full` a directory, replacing a non-directory in the way.
@@ -243,6 +279,9 @@ struct Planner {
     /// `-H`: the destination inode of each multiply-linked regular file
     /// this session leaves in place, so links to it already there are kept.
     kept_inodes: HashMap<RelPath, (u64, u64)>,
+    /// Regular files this session placed or kept, each under a parent the
+    /// planner verified: the only paths a hard link may point at.
+    regular_ok: HashSet<RelPath>,
 }
 
 impl Planner {
@@ -335,6 +374,23 @@ impl Planner {
         let mut decision = decide(Some(&src), dst.as_ref(), &self.popts, &found);
         if let Decision::Hardlink { target } = &decision {
             decision = self.link_decision(target, &src, dst.as_ref());
+        }
+        if let Decision::Hardlink { target } = &decision {
+            // Only to a file this session handles as a regular file under a
+            // verified parent: never to a peer-chosen path elsewhere (through
+            // a symlink, out of the root), nor to one that failed planning.
+            if !self.regular_ok.contains(target) {
+                let msg = format!(
+                    "hard link: target {} is not a regular file received in this session",
+                    String::from_utf8_lossy(target.as_bytes())
+                );
+                self.error(&path, msg);
+                return;
+            }
+        }
+        if src.entry.kind() == Kind::Regular {
+            // Withdrawn again if applying its metadata fails below.
+            self.regular_ok.insert(path.clone());
         }
         if src.entry.kind() == Kind::Regular && src.entry.nlink > 1 {
             if let (Decision::Skip | Decision::MetaOnly, Some(d)) = (&decision, &dst) {
@@ -493,6 +549,7 @@ impl Planner {
             }
         };
         if let Err(e) = res {
+            self.regular_ok.remove(&path);
             self.error(&path, e.to_string());
         }
     }
@@ -652,6 +709,7 @@ pub(super) async fn plan(
         deletes,
         excluded_dirs: HashSet::new(),
         kept_inodes: HashMap::new(),
+        regular_ok: HashSet::new(),
     };
     let before = p
         .deletes
@@ -688,4 +746,56 @@ pub(super) async fn plan(
     p.check_order(&disordered);
     p.report.deletes = p.deletes.take();
     let _ = events.send(Ev::Recv(Done::PlannerFinished(Box::new(p.report))));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs::meta::ApplyOpts;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn place_hardlink_never_follows_symlinked_components() {
+        let root = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        std::fs::write(out.path().join("secret"), b"s").unwrap();
+        std::fs::write(root.path().join("t"), b"t").unwrap();
+        std::os::unix::fs::symlink(out.path(), root.path().join("esc")).unwrap();
+        let r = |s: &[u8]| RelPath::new(s).unwrap();
+        let e = FileEntry::default();
+        let none = ApplyOpts::default();
+        for link in [true, false] {
+            // Target through a symlinked directory.
+            let err = place_hardlink(root.path(), &r(b"esc/secret"), &r(b"l"), link, &e, &none)
+                .unwrap_err();
+            assert!(err.to_string().contains("symlink"), "{err}");
+            assert!(!root.path().join("l").exists());
+            // Link name through a symlinked directory.
+            assert!(place_hardlink(root.path(), &r(b"t"), &r(b"esc/l"), link, &e, &none).is_err());
+            assert!(!out.path().join("l").exists());
+        }
+        // A symlink as the target itself is not a regular file.
+        std::os::unix::fs::symlink(out.path().join("secret"), root.path().join("s")).unwrap();
+        assert!(place_hardlink(root.path(), &r(b"s"), &r(b"l"), true, &e, &none).is_err());
+        assert_eq!(
+            std::fs::metadata(out.path().join("secret"))
+                .unwrap()
+                .nlink(),
+            1
+        );
+        // The normal case links, and a second run keeps the link.
+        place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
+        place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
+        let (a, b) = (
+            std::fs::metadata(root.path().join("t")).unwrap(),
+            std::fs::metadata(root.path().join("l")).unwrap(),
+        );
+        assert_eq!(a.ino(), b.ino());
+        place_hardlink(root.path(), &r(b"t"), &r(b"c"), false, &e, &none).unwrap();
+        assert_eq!(std::fs::read(root.path().join("c")).unwrap(), b"t");
+        assert_ne!(
+            std::fs::metadata(root.path().join("c")).unwrap().ino(),
+            a.ino()
+        );
+    }
 }

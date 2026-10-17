@@ -45,7 +45,9 @@ impl Receiver {
 
     /// Places every recorded hard link. Runs once no file is in flight, so
     /// each target is final; a target that failed this session is not
-    /// linked to (its old content would be).
+    /// linked to (its old content would be). The planner only records links
+    /// whose target it handled as a regular file, and the placement resolves
+    /// both names without following symlinks.
     pub(super) async fn link_pass(&mut self) {
         let links = std::mem::take(&mut self.links);
         if links.is_empty() {
@@ -62,8 +64,7 @@ impl Receiver {
                         Err(std::io::Error::other("hard link target failed"))
                     } else {
                         let apply = ctx.apply_opts(&l.entry);
-                        let (target, full) = (ctx.full(&l.target), ctx.full(&l.path));
-                        place_hardlink(&target, &full, link, &l.entry, &apply)
+                        place_hardlink(&ctx.root, &l.target, &l.path, link, &l.entry, &apply)
                     };
                     (l.file_id, l.path, l.target, res)
                 })

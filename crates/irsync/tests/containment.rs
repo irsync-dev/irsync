@@ -5,6 +5,7 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::{symlink, MetadataExt};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -93,4 +94,50 @@ async fn peer_listing_temp_name_is_rejected() {
     );
     assert_eq!(fs::read(&victim).unwrap(), b"keep me");
     assert_eq!(out.exit_code(), 23);
+}
+
+#[tokio::test]
+async fn hardlink_target_outside_root_rejected() {
+    let h = Harness::new().await;
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret"), b"private key").unwrap();
+    // A symlink inside the module leading out of it.
+    symlink(outside.path(), h.module.path().join("esc")).unwrap();
+    fs::write(h.local.path().join("a"), b"a").unwrap();
+    let out = push_with(
+        &h,
+        b"a",
+        vec![entry(b"b", Kind::Hardlink, 11, b"esc/secret")],
+    )
+    .await;
+    assert!(has_error(&out, b"b", "hard link"), "{:?}", out.errors);
+    assert!(fs::symlink_metadata(h.module.path().join("b")).is_err());
+    assert_eq!(
+        fs::metadata(outside.path().join("secret")).unwrap().nlink(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn hardlink_to_failed_target_rejected() {
+    let h = Harness::new().await;
+    // Stale content at the target path on the receiver.
+    fs::create_dir(h.module.path().join("zz")).unwrap();
+    fs::write(h.module.path().join("zz/t"), b"stale").unwrap();
+    fs::write(h.local.path().join("a"), b"a").unwrap();
+    // `zz/t` is listed without its parent directory (a planner error), then
+    // a link to it.
+    let out = push_with(
+        &h,
+        b"a",
+        vec![
+            entry(b"zz/t", Kind::Regular, 5, b""),
+            entry(b"zzz", Kind::Hardlink, 5, b"zz/t"),
+        ],
+    )
+    .await;
+    assert!(has_error(&out, b"zz/t", "parent"), "{:?}", out.errors);
+    assert!(has_error(&out, b"zzz", "hard link"), "{:?}", out.errors);
+    assert!(fs::symlink_metadata(h.module.path().join("zzz")).is_err());
+    assert_eq!(fs::read(h.module.path().join("zz/t")).unwrap(), b"stale");
 }
