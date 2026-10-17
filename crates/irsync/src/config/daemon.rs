@@ -14,7 +14,7 @@ pub enum RelayMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Discovery {
     pub dht: bool,
     pub dns: bool,
@@ -32,6 +32,7 @@ impl Default for Discovery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Module {
     pub path: PathBuf,
     #[serde(default)]
@@ -39,7 +40,7 @@ pub struct Module {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
     pub identity: PathBuf,
     pub authorized_keys: PathBuf,
@@ -53,8 +54,16 @@ pub struct DaemonConfig {
 }
 
 fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
-    let s = String::deserialize(d)?;
-    duration::parse(&s).map_err(serde::de::Error::custom)
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Secs(u64),
+        Text(String),
+    }
+    match Raw::deserialize(d)? {
+        Raw::Secs(n) => Ok(Duration::from_secs(n)),
+        Raw::Text(s) => duration::parse(&s).map_err(serde::de::Error::custom),
+    }
 }
 
 impl Default for DaemonConfig {
@@ -81,6 +90,9 @@ impl DaemonConfig {
             &mut cfg.state_dir,
         ] {
             *p = expand_tilde(&p.to_string_lossy());
+        }
+        for m in cfg.modules.values_mut() {
+            m.path = expand_tilde(&m.path.to_string_lossy());
         }
         Ok(cfg)
     }

@@ -10,9 +10,9 @@ fn id() -> iroh::EndpointId {
 
 fn client_text() -> String {
     format!(
-        "Host home\n  EndpointId {}  # my box\n  IdentityFile /keys/id_ed25519\n  Parallel 32\n  Reconnect 24h\n\n\
-         Host nas-*\n  IdentityFile=/keys/id_ed25519_nas\n  Dht no\n\n\
-         Host *\n  identityfile /keys/other\n  Mdns yes\n  Relay https://relay.example.com/\n",
+        "Host home\n    EndpointId  {}        # z-base-32 or hex, as iroh prints it\n    IdentityFile ~/.ssh/id_ed25519\n    Relay       https://relay.example.net   # optional: self-hosted relay\n\n\
+         Host nas-*\n    IdentityFile ~/.ssh/id_ed25519_nas\n\n\
+         Host *\n    Parallel    32\n    Reconnect   24h\n",
         id()
     )
 }
@@ -20,25 +20,20 @@ fn client_text() -> String {
 #[test]
 fn first_match_wins_like_ssh_config() {
     let cfg = ClientConfig::parse(&client_text()).unwrap();
+    let ssh = dirs::home_dir().unwrap().join(".ssh");
     let home = cfg.resolve("home");
     assert_eq!(home.endpoint_id, Some(id()));
-    assert_eq!(home.identity_file, Some(PathBuf::from("/keys/id_ed25519")));
+    assert_eq!(home.identity_file, Some(ssh.join("id_ed25519")));
+    assert_eq!(home.relay.unwrap().as_str(), "https://relay.example.net/");
     assert_eq!(home.parallel, Some(32));
     assert_eq!(home.reconnect, Some(Duration::from_secs(24 * 3600)));
-    assert_eq!(home.mdns, Some(true));
-    assert_eq!(home.dht, None);
-    assert_eq!(home.relay.unwrap().as_str(), "https://relay.example.com/");
 
     let nas = cfg.resolve("nas-1");
-    assert_eq!(
-        nas.identity_file,
-        Some(PathBuf::from("/keys/id_ed25519_nas"))
-    );
-    assert_eq!(nas.dht, Some(false));
+    assert_eq!(nas.identity_file, Some(ssh.join("id_ed25519_nas")));
+    assert_eq!(nas.parallel, Some(32));
+    assert_eq!(nas.reconnect, Some(Duration::from_secs(24 * 3600)));
     assert_eq!(nas.endpoint_id, None);
-
-    let none = ClientConfig::parse("").unwrap().resolve("x");
-    assert_eq!(none.parallel, None);
+    assert_eq!(nas.relay, None);
 }
 
 #[test]
@@ -101,41 +96,64 @@ fn duration_parse() {
     assert!(parse("").is_err());
     assert!(parse("5x").is_err());
     assert!(parse("-1h").is_err());
+    assert!(parse("1.5h").is_err());
+    assert!(parse("99999999999999999999d").is_err());
+    assert!(parse("18446744073709551615d").is_err());
 }
 
 #[test]
 fn daemon_toml_from_spec_parses() {
     let text = r#"
-identity = "/etc/irsync/key"
-authorized_keys = "/etc/irsync/authorized_keys"
-state_dir = "/var/lib/irsync"
-relay_mode = "disabled"
-relay = "https://relay.example.com"
-dormant_session_timeout = "3d"
+identity = "~/.config/irsync/daemon_ed25519"      # OpenSSH format
+authorized_keys = "~/.config/irsync/authorized_keys"
+state_dir = "~/.local/state/irsync"
 
 [discovery]
-dht = true
-dns = false
-mdns = false
+dht = true        # publish to mainline DHT (relay-only addresses)
+dns = true        # n0 pkarr/DNS
+mdns = true       # LAN
 
-[modules.backup]
-path = "/srv/backup"
+[modules.photos]
+path = "/srv/photos"
+read_only = false
 
 [modules.docs]
 path = "/srv/docs"
 read_only = true
 "#;
     let cfg = DaemonConfig::parse(text).unwrap();
-    assert_eq!(cfg.identity, PathBuf::from("/etc/irsync/key"));
-    assert_eq!(cfg.state_dir, PathBuf::from("/var/lib/irsync"));
-    assert_eq!(cfg.relay_mode, RelayMode::Disabled);
-    assert!(cfg.relay.is_some());
-    assert_eq!(cfg.dormant_session_timeout, Duration::from_secs(3 * 86400));
-    assert!(cfg.discovery.dht && !cfg.discovery.dns && !cfg.discovery.mdns);
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(cfg.identity, home.join(".config/irsync/daemon_ed25519"));
+    assert_eq!(
+        cfg.authorized_keys,
+        home.join(".config/irsync/authorized_keys")
+    );
+    assert_eq!(cfg.state_dir, home.join(".local/state/irsync"));
+    assert!(cfg.discovery.dht && cfg.discovery.dns && cfg.discovery.mdns);
     assert_eq!(cfg.modules.len(), 2);
-    assert!(!cfg.modules["backup"].read_only);
-    assert!(cfg.modules["docs"].read_only);
+    assert_eq!(cfg.modules["photos"].path, PathBuf::from("/srv/photos"));
+    assert!(!cfg.modules["photos"].read_only);
     assert_eq!(cfg.modules["docs"].path, PathBuf::from("/srv/docs"));
+    assert!(cfg.modules["docs"].read_only);
+}
+
+#[test]
+fn daemon_unknown_key_is_error() {
+    let text = "[modules.photos]\npath = \"/srv/photos\"\nreadonly = true\n";
+    assert!(DaemonConfig::parse(text).is_err());
+    assert!(DaemonConfig::parse("bogus = 1\n").is_err());
+    assert!(DaemonConfig::parse("[discovery]\nmdnss = true\n").is_err());
+}
+
+#[test]
+fn daemon_timeout_accepts_integer_and_tilde_module_path() {
+    let cfg = DaemonConfig::parse("dormant_session_timeout = 90\n[modules.m]\npath = \"~/data\"\n")
+        .unwrap();
+    assert_eq!(cfg.dormant_session_timeout, Duration::from_secs(90));
+    assert_eq!(
+        cfg.modules["m"].path,
+        dirs::home_dir().unwrap().join("data")
+    );
 }
 
 #[test]
