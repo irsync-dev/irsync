@@ -50,6 +50,16 @@ pub(super) struct Planned {
     pub local_copy: Option<RelPath>,
 }
 
+/// A hard link (`-H`) the planner decided on: placed by the receiver after
+/// every regular file, since its target may still be in flight.
+pub(super) struct Linked {
+    pub file_id: u64,
+    pub path: RelPath,
+    /// The sender's listing entry (kind `HARDLINK`, `link_target` = target).
+    pub entry: FileEntry,
+    pub target: RelPath,
+}
+
 pub(super) struct DirEntry {
     pub path: RelPath,
     pub entry: FileEntry,
@@ -131,6 +141,42 @@ fn place_via_temp(
     res
 }
 
+/// Places `full` as a hard link to the regular file `target` (`link`), or,
+/// without `-H` on this side, as an independent copy of it with `entry`'s
+/// metadata. Whatever is at `full` is replaced (never followed); a directory
+/// in the way is an error.
+pub(super) fn place_hardlink(
+    target: &Path,
+    full: &Path,
+    link: bool,
+    entry: &FileEntry,
+    apply: &crate::fs::meta::ApplyOpts,
+) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let tm = std::fs::symlink_metadata(target)
+        .map_err(|e| io::Error::new(e.kind(), format!("hard link target: {e}")))?;
+    if !tm.is_file() {
+        return Err(io::Error::other("hard link target is not a regular file"));
+    }
+    if !link {
+        return place_via_temp(
+            full,
+            |tmp| std::fs::copy(target, tmp).map(drop),
+            entry,
+            apply,
+        );
+    }
+    if let Ok(m) = std::fs::symlink_metadata(full) {
+        // Already linked (renaming a link over itself would leave the temp).
+        if m.dev() == tm.dev() && m.ino() == tm.ino() {
+            return Ok(());
+        }
+    }
+    // The link shares the target's inode and with it the target's metadata.
+    let none = crate::fs::meta::ApplyOpts::default();
+    place_via_temp(full, |tmp| std::fs::hard_link(target, tmp), entry, &none)
+}
+
 /// Makes `full` a directory, replacing a non-directory in the way.
 pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(full) {
@@ -190,6 +236,9 @@ struct Planner {
     deletes: Option<DeletePass>,
     /// Directories the receiver's filters exclude (so is everything below).
     excluded_dirs: HashSet<RelPath>,
+    /// `-H`: the destination inode of each multiply-linked regular file
+    /// this session leaves in place, so links to it already there are kept.
+    kept_inodes: HashMap<RelPath, (u64, u64)>,
 }
 
 impl Planner {
@@ -260,8 +309,24 @@ impl Planner {
             tracing::debug!(?path, "skipping symlink (links not preserved)");
             return;
         }
+        if src.entry.kind() == Kind::Socket {
+            // rsync's behaviour: sockets are not transferred.
+            tracing::warn!(?path, "skipping socket");
+            return;
+        }
         let found = self.lookup(&path, &src, dst.as_ref()).await;
-        let decision = decide(Some(&src), dst.as_ref(), &self.popts, &found);
+        let mut decision = decide(Some(&src), dst.as_ref(), &self.popts, &found);
+        if let Decision::Hardlink { target } = &decision {
+            decision = self.link_decision(target, &src, dst.as_ref());
+        }
+        if src.entry.kind() == Kind::Regular && src.entry.nlink > 1 {
+            if let (Decision::Skip | Decision::MetaOnly, Some(d)) = (&decision, &dst) {
+                if d.entry.kind() == Kind::Regular {
+                    self.kept_inodes
+                        .insert(path.clone(), (d.entry.dev, d.entry.inode));
+                }
+            }
+        }
         if self.ctx.opts.dry_run {
             // Decide only: nothing is created, changed or requested.
             if is_dir {
@@ -283,9 +348,23 @@ impl Planner {
                         entry,
                         apply: false,
                     });
-                } else if entry.kind() == Kind::Regular {
+                } else if matches!(entry.kind(), Kind::Regular | Kind::Hardlink) {
                     self.report.skipped += 1;
                 }
+                return;
+            }
+            Decision::Hardlink { target } => {
+                self.touch_parent(&path);
+                let Some(file_id) = self.file_id(&path) else {
+                    return;
+                };
+                // Placed after every regular file (the target may be in flight).
+                let _ = self.events.send(Ev::Recv(Done::Linked(Box::new(Linked {
+                    file_id,
+                    path,
+                    entry,
+                    target,
+                }))));
                 return;
             }
             Decision::Mkdir => {
@@ -341,17 +420,8 @@ impl Planner {
             Decision::Whole | Decision::Delta | Decision::LocalCopy { .. } => {
                 // Placing it (now or on an earlier connection) moved the parent's mtime.
                 self.touch_parent(&path);
-                let file_id = match self.prior.by_path.get(&path) {
-                    // Placed by an earlier connection of this session.
-                    Some(&(_, true)) => {
-                        self.report.skipped += 1;
-                        return;
-                    }
-                    Some(&(id, false)) => id,
-                    None => {
-                        self.next_id += 1;
-                        self.next_id
-                    }
+                let Some(file_id) = self.file_id(&path) else {
+                    return;
                 };
                 let (action, local_copy) = match decision {
                     Decision::Delta => (Action::Delta, None),
@@ -377,6 +447,50 @@ impl Planner {
         };
         if let Err(e) = res {
             self.error(&path, e.to_string());
+        }
+    }
+
+    /// The id for a planned path: kept from an earlier connection of this
+    /// session, or new. `None` (counted as skipped) if that connection
+    /// already placed it.
+    fn file_id(&mut self, path: &RelPath) -> Option<u64> {
+        match self.prior.by_path.get(path) {
+            Some(&(_, true)) => {
+                self.report.skipped += 1;
+                None
+            }
+            Some(&(id, false)) => Some(id),
+            None => {
+                self.next_id += 1;
+                Some(self.next_id)
+            }
+        }
+    }
+
+    /// A hard link in the sender's listing. With `-H`, a destination that
+    /// already shares the (unchanged) target's inode is kept. Without `-H`
+    /// on this side it is an independent file, compared like one.
+    fn link_decision(&self, target: &RelPath, src: &Side, dst: Option<&Side>) -> Decision {
+        let linked = Decision::Hardlink {
+            target: target.clone(),
+        };
+        let Some(d) = dst.filter(|d| d.entry.kind() == Kind::Regular) else {
+            return linked;
+        };
+        if self.popts.preserve.hard_links {
+            let same = self.kept_inodes.get(target) == Some(&(d.entry.dev, d.entry.inode));
+            return if same { Decision::Skip } else { linked };
+        }
+        let as_file = Side {
+            entry: FileEntry {
+                kind: Kind::Regular as i32,
+                ..src.entry.clone()
+            },
+            digest: None,
+        };
+        match decide(Some(&as_file), Some(d), &self.popts, &NoLookup) {
+            d @ (Decision::Skip | Decision::MetaOnly) => d,
+            _ => linked,
         }
     }
 
@@ -490,6 +604,7 @@ pub(super) async fn plan(
         prior,
         deletes,
         excluded_dirs: HashSet::new(),
+        kept_inodes: HashMap::new(),
     };
     let before = p
         .deletes

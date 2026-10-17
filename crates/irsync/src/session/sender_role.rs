@@ -115,6 +115,7 @@ impl SenderRole {
                 hasher: self.ctx.hasher.clone(),
                 scope: self.ctx.scope.clone(),
                 skip: None,
+                hard_links: self.ctx.opts.preserve.hard_links,
             },
             self.out.clone(),
             None,

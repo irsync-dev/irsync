@@ -27,7 +27,9 @@ message ChunkRecord { uint64 offset = 1; uint32 len = 2; Hash hash = 3; }
 
 message FileEntry {
   bytes path = 1;                                 // relative to root, '/'-separated, raw bytes
-  enum Kind { REGULAR = 0; DIRECTORY = 1; SYMLINK = 2; CHAR_DEV = 3; BLOCK_DEV = 4; FIFO = 5; SOCKET = 6; }
+  // HARDLINK: a regular file sharing the inode of the earlier listed regular
+  // file at `link_target` (sent only with -H; same size/mtime/mode).
+  enum Kind { REGULAR = 0; DIRECTORY = 1; SYMLINK = 2; CHAR_DEV = 3; BLOCK_DEV = 4; FIFO = 5; SOCKET = 6; HARDLINK = 7; }
   Kind kind = 2;
   uint64 size = 3;
   int64 mtime_sec = 4;

@@ -171,6 +171,9 @@ pub(super) struct ListingSpec {
     pub scope: IndexScope,
     /// Entries at or below this path are left out (a relative `--partial-dir`).
     pub skip: Option<RelPath>,
+    /// `-H` (sender): later names of a multiply-linked regular file are
+    /// listed as `HARDLINK`s to the first one.
+    pub hard_links: bool,
 }
 
 /// Walks `spec.root` and streams the listing to the peer (with cached hashes
@@ -198,6 +201,8 @@ pub(super) fn spawn_listing(
             })
         };
         let mut count = 0u64;
+        // `-H`: the first listed name of each (dev, inode) with nlink > 1.
+        let mut first_names: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
         while let Some(item) = rx.blocking_recv() {
             if is_own_temp(&item.path) || under_skip(&item.path) {
                 continue;
@@ -205,6 +210,18 @@ pub(super) fn spawn_listing(
             let ScanItem {
                 path, mut entry, ..
             } = item.clone();
+            if spec.hard_links && entry.kind() == Kind::Regular && entry.nlink > 1 {
+                match first_names.entry((entry.dev, entry.inode)) {
+                    std::collections::hash_map::Entry::Occupied(first) => {
+                        // Transferred once, under the first name; never requested here.
+                        entry.kind = Kind::Hardlink as i32;
+                        entry.link_target = first.get().clone();
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(entry.path.clone());
+                    }
+                }
+            }
             let digest = if entry.kind() == Kind::Regular {
                 let keyed = ScanItem {
                     path: spec.scope.key(&item.path),

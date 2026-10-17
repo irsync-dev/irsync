@@ -50,6 +50,11 @@ pub struct FileWriter {
     last_persist: Instant,
     /// Set once the record must no longer be written back (after finalize).
     done: bool,
+    /// `-S` / sparse source: all-zero chunks are not written (left as holes).
+    sparse: bool,
+    /// Length of the `.part` when opened: everything from here on is a hole
+    /// (never written by an earlier writer), so it already reads as zeros.
+    hole_from: u64,
     #[cfg(feature = "test-hooks")]
     fail_at: Option<u32>,
 }
@@ -184,6 +189,7 @@ impl FileWriter {
             std::fs::create_dir_all(dir)?;
         }
         let file = open_part(&part)?;
+        let hole_from = file.metadata()?.len();
         let mut w = FileWriter {
             rel: rel.clone(),
             dest,
@@ -197,6 +203,8 @@ impl FileWriter {
             chunks_since_persist: 0,
             last_persist: Instant::now(),
             done: false,
+            sparse: false,
+            hole_from,
             #[cfg(feature = "test-hooks")]
             fail_at: None,
         };
@@ -287,6 +295,12 @@ impl FileWriter {
             .collect()
     }
 
+    /// Leave all-zero chunks as holes instead of writing them (`-S`, or a
+    /// sparse source file). Chunk-granular: only whole zero chunks are skipped.
+    pub fn set_sparse(&mut self, sparse: bool) {
+        self.sparse = sparse;
+    }
+
     /// Make the `pwrite` of chunk `idx` fail with `ENOSPC`.
     #[cfg(feature = "test-hooks")]
     pub fn fail_write_at(&mut self, idx: u32) {
@@ -305,17 +319,24 @@ impl FileWriter {
         let inject = self.fail_at == Some(idx);
         #[cfg(not(feature = "test-hooks"))]
         let inject = false;
-        let file = self.file.clone();
-        let buf = data.to_vec();
-        let res = tokio::task::spawn_blocking(move || {
-            if inject {
-                return Err(io::Error::from_raw_os_error(nix::libc::ENOSPC));
-            }
-            file.write_all_at(&buf, c.offset)
-        })
-        .await
-        .map_err(io::Error::other)
-        .and_then(|r| r);
+        // A hole (`set_len` past the opened length) already reads as zeros;
+        // below `hole_from` an earlier writer's bytes may be there.
+        let hole = self.sparse && c.offset >= self.hole_from && data.iter().all(|&b| b == 0);
+        let res = if hole && !inject {
+            Ok(())
+        } else {
+            let file = self.file.clone();
+            let buf = data.to_vec();
+            tokio::task::spawn_blocking(move || {
+                if inject {
+                    return Err(io::Error::from_raw_os_error(nix::libc::ENOSPC));
+                }
+                file.write_all_at(&buf, c.offset)
+            })
+            .await
+            .map_err(io::Error::other)
+            .and_then(|r| r)
+        };
         if let Err(e) = res {
             if let Err(pe) = self.persist().await {
                 tracing::warn!(path = ?self.part, error = %pe, "persisting partial after write error failed");

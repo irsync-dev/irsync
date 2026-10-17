@@ -46,6 +46,9 @@ impl Receiver {
                     .push((path, "not resumed: unusable stored plan entry".into()));
                 continue;
             };
+            if self.resume_link(e.file_id, &path, &entry) {
+                continue;
+            }
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
             self.register(e.file_id, path.clone(), entry, action, None);
             self.ctx.hooks.event("plan", &path);

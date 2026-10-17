@@ -90,6 +90,7 @@ pub(super) async fn open_writer(
     action: Action,
     local_copy: Option<RelPath>,
     cl: ChunkList,
+    sparse: bool,
 ) -> io::Result<Opened> {
     let digest = native_digest(&cl)?;
     // The writer works on index keys under the index root, so its partial
@@ -102,6 +103,7 @@ pub(super) async fn open_writer(
         ctx.opts.partial_dir.clone(),
     );
     let mut w = blocking(move || FileWriter::open(&base, &rel, &cl, pd.as_deref(), index)).await?;
+    w.set_sparse(sparse);
 
     if action == Action::Delta {
         // Make sure the old file's chunks are indexed (cached if fresh).

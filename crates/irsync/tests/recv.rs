@@ -397,3 +397,47 @@ async fn zero_size_file_finalizes_empty() {
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), b"");
     assert!(!part_path(&e.root).exists());
 }
+
+/// Random data with a 3 MiB zero run in the middle: at least a MiB of it
+/// falls in whole zero chunks (FastCDC max is 1 MiB).
+fn with_zero_run() -> Vec<u8> {
+    let mut data = content(5);
+    data.extend(std::iter::repeat_n(0u8, 3 * 1024 * 1024));
+    data.extend(content(6));
+    data
+}
+
+#[tokio::test]
+async fn sparse_skips_zero_chunks_of_a_fresh_part() {
+    let e = env();
+    let data = with_zero_run();
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    w.set_sparse(true);
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert!(fs::read(final_path(&e.root)).unwrap() == data);
+    let m = fs::metadata(final_path(&e.root)).unwrap();
+    assert!(
+        m.blocks() * 512 < data.len() as u64 - 1024 * 1024,
+        "zero run was written: {} bytes allocated",
+        m.blocks() * 512
+    );
+}
+
+#[tokio::test]
+async fn sparse_never_leaves_stale_bytes_of_an_old_part() {
+    // A `.part` from a different expected file (no record): its bytes lie
+    // where the new file has zero chunks, so those must still be written.
+    let e = env();
+    let data = with_zero_run();
+    let stale = content(99).repeat(3);
+    fs::write(part_path(&e.root), &stale).unwrap();
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    w.set_sparse(true);
+    let missing = w.missing_chunks();
+    write_all(&mut w, &data, &cl, &missing).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert!(fs::read(final_path(&e.root)).unwrap() == data);
+}

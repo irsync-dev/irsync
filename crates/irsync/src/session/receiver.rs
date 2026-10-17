@@ -9,7 +9,7 @@
 //! the planner once both listings have ended) or after them, before the
 //! directory metadata pass. A dry run plans and reports but changes nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -30,7 +30,7 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::planner::{parent_of, plan, Planned, PlannerReport, Prior};
+use super::planner::{parent_of, plan, Linked, Planned, PlannerReport, Prior};
 use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -44,6 +44,8 @@ use recv_delete::{capped_paths, MAX_DONE_PATHS};
 
 #[path = "recv_delete.rs"]
 mod recv_delete;
+#[path = "recv_links.rs"]
+mod recv_links;
 #[path = "recv_resume.rs"]
 mod recv_resume;
 
@@ -59,6 +61,8 @@ const TASK_DRAIN: Duration = Duration::from_secs(10);
 /// Completions of the receiver's tasks, delivered to its main loop.
 pub(super) enum Done {
     Planned(Box<Planned>),
+    /// A hard link to place once every regular file is placed.
+    Linked(Box<Linked>),
     PlannerFinished(Box<PlannerReport>),
     /// `--delete-before`: every candidate is known; delete once both
     /// listings have ended and reply with what was deleted.
@@ -152,6 +156,10 @@ struct Receiver {
     persist: Persister,
     /// Open and finalize tasks, waited for when the session fails.
     tasks: TaskTracker,
+    /// Hard links waiting for the final pass.
+    links: Vec<Linked>,
+    /// Files that failed this session (never linked to).
+    failed: HashSet<RelPath>,
 }
 
 impl Receiver {
@@ -317,6 +325,7 @@ impl Receiver {
         };
         self.active -= 1;
         tracing::warn!(path = ?f.path, error = %msg, "file failed");
+        self.failed.insert(f.path.clone());
         self.errors.push((f.path, msg.clone()));
         if let Some(status) = ack {
             self.ack(file_id, status, msg);
@@ -340,12 +349,13 @@ impl Receiver {
         f.st = St::Opening;
         let (gen, path, action, local_copy) =
             (f.gen, f.path.clone(), f.action, f.local_copy.clone());
+        let sparse = f.entry.sparse || self.ctx.opts.preserve.sparse;
         // A new chunk list replaces the previous writer; it must be gone
         // before the next one opens the same `.part`.
         self.retire_writer(file_id).await;
         let (ctx, events) = (self.ctx.clone(), self.events.clone());
         self.tasks.spawn(async move {
-            let result = open_writer(ctx, path, action, local_copy, cl).await;
+            let result = open_writer(ctx, path, action, local_copy, cl, sparse).await;
             let _ = events.send(Ev::Recv(Done::Opened {
                 file_id,
                 gen,
@@ -374,6 +384,7 @@ impl Receiver {
 
     async fn on_done(&mut self, d: Done) {
         match d {
+            Done::Linked(l) => self.on_linked(*l),
             Done::Planned(p) => {
                 self.persist.plan(PlanEntry {
                     file_id: p.file_id,
@@ -703,6 +714,8 @@ pub(super) async fn run(
         errors: Vec::new(),
         persist,
         tasks: TaskTracker::new(),
+        links: Vec::new(),
+        failed: HashSet::new(),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores
@@ -734,6 +747,7 @@ pub(super) async fn run(
                     hasher: ctx.hasher.clone(),
                     scope: ctx.scope.clone(),
                     skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
+                    hard_links: false,
                 },
                 out.clone(),
                 Some(local_tx),
@@ -788,6 +802,9 @@ pub(super) async fn run(
         r.persist.bytes(bytes.load(Ordering::Relaxed));
         r.persist.flush().await;
         return Err(e);
+    }
+    if !ctx.opts.dry_run {
+        r.link_pass().await;
     }
     let mut report = r.report.take().unwrap_or_default();
     // `--delete-after` (and `--delete-during`): after every file is placed,

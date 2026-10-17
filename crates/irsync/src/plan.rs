@@ -24,7 +24,14 @@ pub enum Decision {
     Special,
     Whole,
     Delta,
-    LocalCopy { from: RelPath },
+    LocalCopy {
+        from: RelPath,
+    },
+    /// Link to the earlier listed regular file `target` (`-H`), once every
+    /// regular file is placed.
+    Hardlink {
+        target: RelPath,
+    },
     Delete,
 }
 
@@ -91,6 +98,16 @@ fn create(src: &Side, opts: &PlanOpts, lookup: Option<&dyn HashLookup>) -> Decis
                 Decision::Skip
             }
         }
+        Some(Kind::Hardlink) => match RelPath::new(&src.entry.link_target) {
+            Ok(target) if !target.as_bytes().is_empty() => Decision::Hardlink { target },
+            _ => {
+                tracing::warn!(
+                    target = %String::from_utf8_lossy(&src.entry.link_target),
+                    "hard link with an invalid target; skipping"
+                );
+                Decision::Skip
+            }
+        },
         Some(Kind::Regular) => {
             if opts.rename_detection {
                 if let (Some(d), Some(lookup)) = (&src.digest, lookup) {
@@ -164,6 +181,9 @@ pub fn decide(
                 Decision::Delta
             }
         }
+        // Only ever in the sender's listing; whether the destination already
+        // shares the target's inode is for the receiver's planner to see.
+        Some(Kind::Hardlink) => create(src, opts, None),
         None => Decision::Skip,
     }
 }

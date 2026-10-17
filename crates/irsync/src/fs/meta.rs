@@ -87,12 +87,26 @@ fn errno(e: nix::Error) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
 
+/// Whether this process may chown to `gid`: as root, or as a member of it.
+fn may_chgrp(gid: u32) -> bool {
+    use nix::unistd::{getegid, geteuid, getgroups};
+    geteuid().is_root()
+        || getegid().as_raw() == gid
+        || getgroups().is_ok_and(|g| g.iter().any(|g| g.as_raw() == gid))
+}
+
 /// Apply the selected metadata of `e` to `path`, without following symlinks.
 /// Ownership is applied first (chown clears setuid bits), then mode, then times.
+///
+/// Ids are numeric (`--numeric-ids` is always on in v1). Like rsync without
+/// privilege, the owner is set only when running as root and the group only
+/// as root or a member of it; otherwise they are silently left alone.
 pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
-    if opts.owner || opts.group {
-        let uid = opts.owner.then(|| Uid::from_raw(e.uid));
-        let gid = opts.group.then(|| Gid::from_raw(e.gid));
+    let owner = opts.owner && nix::unistd::geteuid().is_root();
+    let group = opts.group && may_chgrp(e.gid);
+    if owner || group {
+        let uid = owner.then(|| Uid::from_raw(e.uid));
+        let gid = group.then(|| Gid::from_raw(e.gid));
         fchownat(AT_FDCWD, path, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
     }
     if opts.perms && e.kind() != Kind::Symlink {
