@@ -35,6 +35,14 @@ read-write modules), to the identity and `authorized_keys` files, and write
 access to `state_dir`. Then `systemctl enable --now irsync` and
 `journalctl -u irsync -f`.
 
+**Do not run the daemon as root.** A receiving daemon applies the archive
+metadata the client sends (permissions, owner, group, device nodes): as root
+that means any client with write access to a module can create setuid files
+owned by root, files owned by other users, and device nodes in it. Run it as a
+dedicated unprivileged account (`irsync` above) that owns the module trees;
+ownership is then applied only where that account may (its own groups), as
+rsync does without privilege.
+
 ## launchd (macOS)
 
 `~/Library/LaunchAgents/net.irsync.daemon.plist` (use `/Library/LaunchDaemons`
