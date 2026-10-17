@@ -1,0 +1,358 @@
+pub mod location;
+
+use crate::config::duration;
+use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
+use location::Location;
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::time::Duration;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct UsageError(pub String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    ClientSends,
+    DaemonSends,
+}
+
+/// Exactly one side must be remote; several sources only for local -> remote.
+pub fn validate(src: &[Location], dest: &Location) -> Result<Direction, UsageError> {
+    if src.is_empty() {
+        return Err(UsageError("missing source argument".into()));
+    }
+    let remote_srcs = src.iter().filter(|l| l.is_remote()).count();
+    match (remote_srcs, dest.is_remote()) {
+        (0, true) => Ok(Direction::ClientSends),
+        (0, false) => Err(UsageError(
+            "neither source nor destination is remote; irsync needs one remote side".into(),
+        )),
+        (_, true) => Err(UsageError(
+            "source and destination cannot both be remote".into(),
+        )),
+        (1, false) if src.len() == 1 => Ok(Direction::DaemonSends),
+        _ => Err(UsageError(
+            "multiple sources are only supported from local paths to a remote destination".into(),
+        )),
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "irsync",
+    version,
+    about = "rsync-like directory sync over iroh"
+)]
+#[command(args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
+pub struct Args {
+    #[command(subcommand)]
+    pub cmd: Option<Command>,
+    #[command(flatten)]
+    pub sync: SyncArgs,
+}
+
+impl Args {
+    /// Like `Parser::try_parse_from`, but also records the command-line order
+    /// of the include/exclude options, which clap keeps per option.
+    pub fn try_parse_from<I, T>(it: I) -> Result<Args, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let m = Args::command().try_get_matches_from(it)?;
+        let mut args = Args::from_arg_matches(&m)?;
+        if args.cmd.is_none() && (args.sync.paths.len() < 2) {
+            return Err(Args::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "the following required arguments were not provided:\n  <SRC>... <DEST>",
+            ));
+        }
+        args.sync.filters = ordered_filters(&m);
+        Ok(args)
+    }
+
+    pub fn parse() -> Args {
+        Args::try_parse_from(std::env::args_os()).unwrap_or_else(|e| e.exit())
+    }
+}
+
+fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
+    let mut v: Vec<(usize, FilterRule)> = Vec::new();
+    let mut collect = |id: &str, mk: fn(String) -> FilterRule| {
+        if let (Some(vals), Some(idx)) = (m.get_many::<String>(id), m.indices_of(id)) {
+            v.extend(idx.zip(vals).map(|(i, s)| (i, mk(s.clone()))));
+        }
+    };
+    collect("exclude", FilterRule::Exclude);
+    collect("include", FilterRule::Include);
+    collect("exclude_from", |s| FilterRule::ExcludeFrom(s.into()));
+    collect("include_from", |s| FilterRule::IncludeFrom(s.into()));
+    v.sort_by_key(|(i, _)| *i);
+    v.into_iter().map(|(_, r)| r).collect()
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run the daemon.
+    Daemon(DaemonArgs),
+    /// Generate an Ed25519 identity.
+    Keygen {
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Garbage-collect resume state.
+    Gc {
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DaemonArgs {
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long)]
+    pub show_id: bool,
+    #[arg(long)]
+    pub foreground: bool,
+}
+
+fn parse_bwlimit(s: &str) -> Result<u64, String> {
+    let bad = || format!("invalid rate {s:?}");
+    let lower = s.to_ascii_lowercase();
+    let t = lower.strip_suffix('b').unwrap_or(&lower);
+    let (digits, mult) = match t.chars().last() {
+        Some('k') => (&t[..t.len() - 1], 1024u64),
+        Some('m') => (&t[..t.len() - 1], 1024 * 1024),
+        Some('g') => (&t[..t.len() - 1], 1024 * 1024 * 1024),
+        _ => (t, 1024),
+    };
+    let n: u64 = digits.parse().map_err(|_| bad())?;
+    n.checked_mul(mult).ok_or_else(bad)
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SyncArgs {
+    /// `SRC... DEST`
+    #[arg(value_name = "SRC... DEST")]
+    pub paths: Vec<String>,
+
+    #[arg(short, long)]
+    pub archive: bool,
+    #[arg(short = 'r', long = "recursive")]
+    pub recursive: bool,
+    #[arg(short = 'l', long = "links")]
+    pub links: bool,
+    #[arg(short = 'p', long = "perms")]
+    pub perms: bool,
+    #[arg(short = 't', long = "times")]
+    pub times: bool,
+    #[arg(short = 'g', long = "group")]
+    pub group: bool,
+    #[arg(short = 'o', long = "owner")]
+    pub owner: bool,
+    #[arg(short = 'D')]
+    pub devices: bool,
+    #[arg(short = 'H', long = "hard-links")]
+    pub hard_links: bool,
+    #[arg(short = 'S', long = "sparse")]
+    pub sparse: bool,
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+    #[arg(short, long)]
+    pub quiet: bool,
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    #[arg(short, long)]
+    pub checksum: bool,
+    #[arg(short, long = "update")]
+    pub update: bool,
+    #[arg(long)]
+    pub delete: bool,
+    #[arg(long)]
+    pub delete_before: bool,
+    #[arg(long)]
+    pub delete_during: bool,
+    #[arg(long)]
+    pub delete_after: bool,
+    #[arg(long)]
+    pub delete_excluded: bool,
+    #[arg(long, value_name = "N")]
+    pub max_delete: Option<u64>,
+    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
+    pub exclude: Vec<String>,
+    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
+    pub include: Vec<String>,
+    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
+    pub exclude_from: Vec<String>,
+    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
+    pub include_from: Vec<String>,
+    /// Bytes/s limit: KiB/s by default, or with k/m/g suffix; 0 = unlimited.
+    #[arg(long, value_name = "RATE", value_parser = parse_bwlimit)]
+    pub bwlimit: Option<u64>,
+    #[arg(long)]
+    pub numeric_ids: bool,
+    #[arg(long, value_name = "DIR")]
+    pub partial_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub ignore_errors: bool,
+    #[arg(long)]
+    pub stats: bool,
+    #[arg(long)]
+    pub progress: bool,
+    #[arg(long, value_name = "SPEC")]
+    pub info: Option<String>,
+    #[arg(short = 'i', long)]
+    pub itemize_changes: bool,
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
+    #[arg(long, value_name = "N")]
+    pub parallel: Option<u32>,
+    #[arg(long, value_name = "DUR", value_parser = duration::parse)]
+    pub reconnect: Option<Duration>,
+    #[arg(long, value_name = "URL")]
+    pub relay: Option<String>,
+    #[arg(long)]
+    pub no_dht: bool,
+    /// Client config file.
+    #[arg(short = 'F', value_name = "FILE")]
+    pub config: Option<PathBuf>,
+    #[arg(long, value_name = "FILE")]
+    pub identity: Option<PathBuf>,
+    #[arg(long)]
+    pub no_resume: bool,
+    #[arg(long)]
+    pub no_rename_detection: bool,
+
+    /// Include/exclude rules in command-line order (filled after parsing).
+    #[arg(skip)]
+    pub filters: Vec<FilterRule>,
+}
+
+impl SyncArgs {
+    /// All positionals but the last.
+    pub fn src(&self) -> &[String] {
+        self.paths.split_last().map_or(&[], |(_, s)| s)
+    }
+
+    pub fn dest(&self) -> Option<&str> {
+        self.paths.last().map(String::as_str)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterRule {
+    Include(String),
+    Exclude(String),
+    IncludeFrom(PathBuf),
+    ExcludeFrom(PathBuf),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    Off,
+    Before,
+    During,
+    After,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Preserve {
+    pub recursive: bool,
+    pub links: bool,
+    pub perms: bool,
+    pub times: bool,
+    pub group: bool,
+    pub owner: bool,
+    pub devices: bool,
+    pub hard_links: bool,
+    pub sparse: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncOptions {
+    pub preserve: Preserve,
+    pub delete: DeleteMode,
+    pub delete_excluded: bool,
+    pub max_delete: Option<u64>,
+    pub dry_run: bool,
+    pub checksum: bool,
+    pub update_only: bool,
+    pub filters: Vec<FilterRule>,
+    pub bwlimit: Option<u64>,
+    pub numeric_ids: bool,
+    pub partial_dir: Option<PathBuf>,
+    pub ignore_errors: bool,
+    pub stats: bool,
+    pub progress: bool,
+    pub info: Option<String>,
+    pub itemize: bool,
+    pub timeout: Option<Duration>,
+    pub parallel: Option<u32>,
+    pub reconnect: Option<Duration>,
+    pub relay: Option<String>,
+    pub no_dht: bool,
+    pub config: Option<PathBuf>,
+    pub identity: Option<PathBuf>,
+    pub no_resume: bool,
+    pub no_rename_detection: bool,
+    pub verbose: u8,
+    pub quiet: bool,
+}
+
+impl SyncOptions {
+    pub fn from_args(args: &Args) -> SyncOptions {
+        let a = &args.sync;
+        let preserve = Preserve {
+            recursive: a.archive || a.recursive,
+            links: a.archive || a.links,
+            perms: a.archive || a.perms,
+            times: a.archive || a.times,
+            group: a.archive || a.group,
+            owner: a.archive || a.owner,
+            devices: a.archive || a.devices,
+            hard_links: a.hard_links,
+            sparse: a.sparse,
+        };
+        let delete = if a.delete_before {
+            DeleteMode::Before
+        } else if a.delete_during {
+            DeleteMode::During
+        } else if a.delete_after || a.delete || a.delete_excluded {
+            DeleteMode::After
+        } else {
+            DeleteMode::Off
+        };
+        SyncOptions {
+            preserve,
+            delete,
+            delete_excluded: a.delete_excluded,
+            max_delete: a.max_delete,
+            dry_run: a.dry_run,
+            checksum: a.checksum,
+            update_only: a.update,
+            filters: a.filters.clone(),
+            bwlimit: a.bwlimit.filter(|&b| b != 0),
+            // Ids are always numeric in v1; --numeric-ids is accepted as a no-op.
+            numeric_ids: true,
+            partial_dir: a.partial_dir.clone(),
+            ignore_errors: a.ignore_errors,
+            stats: a.stats,
+            progress: a.progress,
+            info: a.info.clone(),
+            itemize: a.itemize_changes,
+            timeout: a.timeout.map(Duration::from_secs),
+            parallel: a.parallel,
+            reconnect: a.reconnect,
+            relay: a.relay.clone(),
+            no_dht: a.no_dht,
+            config: a.config.clone(),
+            identity: a.identity.clone(),
+            no_resume: a.no_resume,
+            no_rename_detection: a.no_rename_detection,
+            verbose: a.verbose,
+            quiet: a.quiet,
+        }
+    }
+}
