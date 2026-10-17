@@ -24,6 +24,10 @@ pub enum IndexError {
     Decode(#[from] prost::DecodeError),
     #[error("index was built with different chunking parameters")]
     ChunkParamsChanged,
+    #[error("index schema version differs from this build")]
+    SchemaVersionChanged,
+    #[error("invalid argument: {0}")]
+    BadArgument(&'static str),
     #[error("corrupt index: {0}")]
     Corrupt(&'static str),
 }
@@ -45,7 +49,7 @@ pub struct Partial {
     pub expected_hash: [u8; 32],
     pub size: u64,
     pub ranges: RangeSet,
-    /// Set to the current time by `put_partial`; the supplied value is ignored.
+    /// Unix seconds of the last progress update; stored as given.
     pub updated_at: i64,
 }
 
@@ -57,6 +61,11 @@ pub struct SessionRow {
     pub progress: Vec<u8>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+enum SessionBy {
+    Id,
+    Key,
 }
 
 pub struct Index {
@@ -95,6 +104,7 @@ impl Index {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.busy_timeout(Duration::from_secs(5))?;
         let mut ix = Index { conn };
         ix.init()?;
         Ok(ix)
@@ -115,7 +125,7 @@ impl Index {
                inode INTEGER NOT NULL, dev INTEGER NOT NULL, mode INTEGER NOT NULL,
                uid INTEGER NOT NULL, gid INTEGER NOT NULL, nlink INTEGER NOT NULL,
                rdev INTEGER NOT NULL, link_target BLOB NOT NULL, sparse INTEGER NOT NULL,
-               whole_hash BLOB);
+               whole_hash BLOB, has_digest INTEGER NOT NULL);
              CREATE INDEX IF NOT EXISTS entries_whole_hash ON entries(whole_hash);
              CREATE TABLE IF NOT EXISTS chunks (
                path BLOB NOT NULL REFERENCES entries(path) ON DELETE CASCADE,
@@ -129,8 +139,25 @@ impl Index {
                id BLOB PRIMARY KEY, key BLOB NOT NULL UNIQUE, plan BLOB NOT NULL,
                progress BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
         )?;
+        let have_v: Option<i64> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match have_v {
+            None => {
+                tx.execute(
+                    "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+                    [SCHEMA_VERSION],
+                )?;
+            }
+            Some(v) if v != SCHEMA_VERSION => return Err(IndexError::SchemaVersionChanged),
+            Some(_) => {}
+        }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         let want = [
-            ("schema_version", SCHEMA_VERSION),
             ("chunk_min", CHUNK_PARAMS.min as i64),
             ("chunk_avg", CHUNK_PARAMS.avg as i64),
             ("chunk_max", CHUNK_PARAMS.max as i64),
@@ -160,11 +187,12 @@ impl Index {
             .conn
             .query_row(
                 "SELECT kind, size, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec, inode, dev,
-                        mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash
+                        mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash, has_digest
                  FROM entries WHERE path = ?1",
                 [p],
                 |r| {
                     let whole: Option<Vec<u8>> = r.get(15)?;
+                    let has_digest: bool = r.get(16)?;
                     Ok((
                         FileEntry {
                             path: p.to_vec(),
@@ -185,14 +213,15 @@ impl Index {
                         },
                         (r.get::<_, i64>(4)?, r.get::<_, u32>(5)?),
                         whole,
+                        has_digest,
                     ))
                 },
             )
             .optional()?;
-        let Some((entry, ctime, whole)) = row else {
+        let Some((entry, ctime, whole, has_digest)) = row else {
             return Ok(None);
         };
-        let digest = match whole {
+        let digest = match whole.filter(|_| has_digest) {
             None => None,
             Some(w) => {
                 let mut st = self
@@ -244,12 +273,24 @@ impl Index {
             .as_ref()
             .map(|h| h.bytes.clone())
             .or_else(|| digest.map(|d| d.hash.to_vec()));
+        if let Some(w) = &whole {
+            if w.len() != 32 {
+                return Err(IndexError::BadArgument("whole_hash must be 32 bytes"));
+            }
+        }
+        if let Some(d) = digest {
+            if whole.as_deref() != Some(&d.hash[..]) {
+                return Err(IndexError::BadArgument(
+                    "whole_hash differs from digest hash",
+                ));
+            }
+        }
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM chunks WHERE path = ?1", [p])?;
         tx.execute(
             "INSERT OR REPLACE INTO entries (path, kind, size, mtime_sec, mtime_nsec, ctime_sec,
-               ctime_nsec, inode, dev, mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+               ctime_nsec, inode, dev, mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash, has_digest)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 p,
                 entry.kind,
@@ -268,6 +309,7 @@ impl Index {
                 entry.link_target,
                 entry.sparse,
                 whole,
+                digest.is_some(),
             ],
         )?;
         if let Some(d) = digest {
@@ -339,7 +381,7 @@ impl Index {
                 &p.expected_hash[..],
                 p.size as i64,
                 p.ranges.encode_to_vec(),
-                now()
+                p.updated_at
             ],
         )?;
         Ok(())
@@ -359,9 +401,17 @@ impl Index {
         rows.map(|r| relpath(&r?)).collect()
     }
 
-    /// Upsert by id. A different id holding the same `key` is replaced.
-    pub fn save_session(&mut self, s: &SessionRow) -> Result<()> {
+    /// Upsert by id; newest wins on `key`. If a row with a different id holds the
+    /// same `key` it is evicted, and its id is returned (`None` if nothing was evicted).
+    pub fn save_session(&mut self, s: &SessionRow) -> Result<Option<[u8; 16]>> {
         let tx = self.conn.transaction()?;
+        let evicted: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT id FROM sessions WHERE key = ?1 AND id != ?2",
+                params![s.key, &s.id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
         tx.execute(
             "DELETE FROM sessions WHERE key = ?1 AND id != ?2",
             params![s.key, &s.id[..]],
@@ -382,24 +432,29 @@ impl Index {
             ],
         )?;
         tx.commit()?;
-        Ok(())
+        evicted.map(|id| arr(id, "session id")).transpose()
     }
 
     pub fn load_session_by_id(&self, id: &[u8; 16]) -> Result<Option<SessionRow>> {
-        self.load_session("id", &id[..])
+        self.load_session(SessionBy::Id, &id[..])
     }
 
     pub fn load_session_by_key(&self, key: &[u8]) -> Result<Option<SessionRow>> {
-        self.load_session("key", key)
+        self.load_session(SessionBy::Key, key)
     }
 
-    fn load_session(&self, col: &str, v: &[u8]) -> Result<Option<SessionRow>> {
-        let sql = format!(
-            "SELECT id, key, plan, progress, created_at, updated_at FROM sessions WHERE {col} = ?1"
-        );
+    fn load_session(&self, by: SessionBy, v: &[u8]) -> Result<Option<SessionRow>> {
+        let sql = match by {
+            SessionBy::Id => {
+                "SELECT id, key, plan, progress, created_at, updated_at FROM sessions WHERE id = ?1"
+            }
+            SessionBy::Key => {
+                "SELECT id, key, plan, progress, created_at, updated_at FROM sessions WHERE key = ?1"
+            }
+        };
         let row = self
             .conn
-            .query_row(&sql, [v], |r| {
+            .query_row(sql, [v], |r| {
                 Ok((
                     r.get::<_, Vec<u8>>(0)?,
                     SessionRow {

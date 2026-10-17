@@ -43,6 +43,25 @@ fn open_creates_file_and_reopens() {
         .iter()
         .any(|f| f.as_ref().unwrap().path().extension().unwrap() == "sqlite"));
     let ix = Index::open(d.path(), &root).unwrap();
+    let pragma = |n: &str| -> String {
+        let f = std::fs::read_dir(d.path().join("index"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().unwrap() == "sqlite")
+            .unwrap();
+        let c = rusqlite::Connection::open(f).unwrap();
+        c.query_row(&format!("PRAGMA {n}"), [], |r| {
+            r.get::<_, rusqlite::types::Value>(0)
+        })
+        .map(|v| match v {
+            rusqlite::types::Value::Integer(i) => i.to_string(),
+            rusqlite::types::Value::Text(t) => t,
+            _ => String::new(),
+        })
+        .unwrap()
+    };
+    assert_eq!(pragma("user_version"), "1");
+    assert_eq!(pragma("journal_mode"), "wal");
     let got = ix.get_entry(&rp("a")).unwrap().unwrap();
     assert_eq!(got.ctime, (1, 2));
     assert!(got.digest.is_none());
@@ -76,6 +95,30 @@ fn entry_roundtrip_with_digest() {
 }
 
 #[test]
+fn hash_only_entry_has_no_digest() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ix = Index::open(d.path(), d.path()).unwrap();
+    let h = [5u8; 32];
+    ix.put_entry(&rp("h"), &entry("h", Some(h)), (0, 0), None)
+        .unwrap();
+    assert!(ix.get_entry(&rp("h")).unwrap().unwrap().digest.is_none());
+    assert_eq!(ix.find_paths_by_whole_hash(&h).unwrap(), vec![rp("h")]);
+    // an explicit empty digest is distinguishable
+    let dg = digest_bytes(b"");
+    ix.put_entry(&rp("e"), &entry("e", Some(dg.hash)), (0, 0), Some(&dg))
+        .unwrap();
+    let got = ix.get_entry(&rp("e")).unwrap().unwrap().digest.unwrap();
+    assert!(got.chunks.is_empty());
+    // mismatched hash and bad length are rejected
+    assert!(ix
+        .put_entry(&rp("m"), &entry("m", Some([1; 32])), (0, 0), Some(&dg))
+        .is_err());
+    let mut bad = entry("b", None);
+    bad.whole_hash = Some(Hash { bytes: vec![1; 5] });
+    assert!(ix.put_entry(&rp("b"), &bad, (0, 0), None).is_err());
+}
+
+#[test]
 fn find_by_whole_hash_returns_all_paths() {
     let d = tempfile::tempdir().unwrap();
     let mut ix = Index::open(d.path(), d.path()).unwrap();
@@ -93,6 +136,10 @@ fn find_by_whole_hash_returns_all_paths() {
 
 #[test]
 fn partial_roundtrip() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let d = tempfile::tempdir().unwrap();
     let p = Partial {
         expected_hash: [1; 32],
@@ -109,25 +156,26 @@ fn partial_roundtrip() {
                 },
             ],
         },
-        updated_at: 0,
+        updated_at: now - 10 * 86400,
     };
     {
         let mut ix = Index::open(d.path(), d.path()).unwrap();
         ix.put_partial(&rp("p"), &p).unwrap();
+        let fresh = Partial {
+            updated_at: now,
+            ..p.clone()
+        };
+        ix.put_partial(&rp("q"), &fresh).unwrap();
     }
     let mut ix = Index::open(d.path(), d.path()).unwrap();
     let got = ix.partial(&rp("p")).unwrap().unwrap();
     assert_eq!(got.expected_hash, [1; 32]);
     assert_eq!(got.size, 100);
     assert_eq!(got.ranges, p.ranges);
-    assert!(got.updated_at > 1_700_000_000);
-    assert!(ix
-        .partials_older_than(Duration::from_secs(3600))
-        .unwrap()
-        .is_empty());
-    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(got.updated_at, now - 10 * 86400);
     assert_eq!(
-        ix.partials_older_than(Duration::ZERO).unwrap(),
+        ix.partials_older_than(Duration::from_secs(7 * 86400))
+            .unwrap(),
         vec![rp("p")]
     );
     ix.remove_partial(&rp("p")).unwrap();
@@ -146,9 +194,27 @@ fn session_lookup_by_key_and_id() {
         created_at: 10,
         updated_at: 20,
     };
-    ix.save_session(&s).unwrap();
+    assert_eq!(ix.save_session(&s).unwrap(), None);
     s.progress = vec![3];
-    ix.save_session(&s).unwrap();
+    assert_eq!(ix.save_session(&s).unwrap(), None);
+    let other = SessionRow {
+        id: [8; 16],
+        updated_at: 30,
+        ..s.clone()
+    };
+    assert_eq!(ix.save_session(&other).unwrap(), Some([7; 16]));
+    assert!(ix.load_session_by_id(&[7; 16]).unwrap().is_none());
+    assert_eq!(ix.save_session(&s).unwrap(), Some([8; 16]));
+    let recent = SessionRow {
+        id: [9; 16],
+        key: b"r".to_vec(),
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+        ..s.clone()
+    };
+    ix.save_session(&recent).unwrap();
     assert_eq!(ix.load_session_by_id(&[7; 16]).unwrap().unwrap(), s);
     assert_eq!(
         ix.load_session_by_key(b"k").unwrap().unwrap().progress,
@@ -163,6 +229,7 @@ fn session_lookup_by_key_and_id() {
         vec![[7; 16]]
     );
     assert!(ix.load_session_by_id(&[7; 16]).unwrap().is_none());
+    assert!(ix.load_session_by_id(&[9; 16]).unwrap().is_some());
 }
 
 #[test]
