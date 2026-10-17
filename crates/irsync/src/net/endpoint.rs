@@ -37,9 +37,11 @@ pub struct EndpointOpts {
     pub dns: bool,
     /// Local-network mDNS address lookup.
     pub mdns: bool,
-    /// Publish our address (daemon) or only resolve others (client).
+    /// Publish our address (daemon) or only resolve others (client). Applies to
+    /// DHT and DNS publishing and also controls whether mDNS advertises us.
     pub publish: bool,
-    /// Bind to this address instead of the unspecified default (tests use loopback).
+    /// Bind only this address instead of the unspecified IPv4/IPv6 defaults
+    /// (tests use loopback).
     pub bind_addr: Option<SocketAddr>,
 }
 
@@ -109,7 +111,7 @@ pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
         builder = builder.address_lookup(MdnsAddressLookup::builder().advertise(opts.publish));
     }
     if let Some(addr) = opts.bind_addr {
-        builder = builder.bind_addr(addr)?;
+        builder = builder.clear_ip_transports().bind_addr(addr)?;
     }
 
     Ok(builder.bind().await?)

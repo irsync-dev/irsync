@@ -1,8 +1,18 @@
 //! Shared helpers for integration tests that need real iroh endpoints.
 #![allow(dead_code)]
 
+use std::future::Future;
+use std::time::Duration;
+
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
+
+/// Awaits `fut`, panicking after 10 s so a regression fails instead of hanging.
+pub async fn within<F: Future>(fut: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(10), fut)
+        .await
+        .expect("timed out after 10 s")
+}
 
 /// Options for a fully offline endpoint: no relay, no address lookup, loopback bind.
 pub fn offline_opts() -> EndpointOpts {
@@ -36,6 +46,10 @@ pub fn addr_of(ep: &Endpoint) -> EndpointAddr {
         addr.ip_addrs().next().is_some(),
         "endpoint has no direct addresses"
     );
+    assert!(
+        addr.ip_addrs().all(|a| a.ip().is_loopback()),
+        "offline endpoint bound beyond loopback: {addr:?}"
+    );
     addr
 }
 
@@ -60,6 +74,6 @@ pub async fn connect_pair(
             .await
             .expect("client connect")
     };
-    let (c, s) = tokio::join!(connect, accept);
+    let (c, s) = within(async { tokio::join!(connect, accept) }).await;
     (c, s)
 }
