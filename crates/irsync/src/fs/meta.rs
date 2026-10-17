@@ -43,6 +43,11 @@ fn kind_of(mode: u32) -> Kind {
 /// `lstat` the entry at `root/rel` (never following a final symlink).
 /// Fills everything except `whole_hash`.
 pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
+    lstat_entry_with_ctime(root, rel).map(|(e, _)| e)
+}
+
+/// Like [`lstat_entry`], also returning the inode change time `(sec, nsec)`.
+pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
     let full = if rel.as_bytes().is_empty() {
         root.to_path_buf()
     } else {
@@ -57,7 +62,8 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
         Vec::new()
     };
     // Linux and macOS both expose st_mtime / st_mtime_nsec through nix's libc FileStat.
-    Ok(FileEntry {
+    let ctime = (st.st_ctime as i64, st.st_ctime_nsec as u32);
+    let entry = FileEntry {
         path: rel.as_bytes().to_vec(),
         kind: kind as i32,
         size: st.st_size as u64,
@@ -73,7 +79,8 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
         nlink: st.st_nlink as u32,
         whole_hash: None,
         sparse: kind == Kind::Regular && (st.st_blocks as i64) * 512 < st.st_size as i64,
-    })
+    };
+    Ok((entry, ctime))
 }
 
 fn errno(e: nix::Error) -> io::Error {

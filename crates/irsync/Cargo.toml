@@ -21,6 +21,7 @@ dirs = { workspace = true }
 rand_core = { workspace = true }
 rusqlite = { workspace = true }
 blake3 = { workspace = true }
+jwalk = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
