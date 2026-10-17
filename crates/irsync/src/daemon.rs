@@ -2,6 +2,7 @@
 //! anything, resolves and validates the requested module, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,15 +17,24 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Authorizer, FileAuthorizer, Grants};
 use crate::config::daemon::{DaemonConfig, Module, RelayMode};
-use crate::fs::paths::is_contained;
+use crate::filter::FilterSet;
+use crate::fs::paths::{is_contained, RelPath};
 use crate::identity::{generate_openssh, load_secret_key};
 use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, EndpointOpts, RelayChoice};
+use crate::scan::WalkOpts;
 use crate::session::engine::serve_daemon;
 use crate::session::DaemonSessions;
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
+use irsync_proto::v1::SessionPlan;
+use prost::Message;
+
+/// How often each module is garbage-collected, and the delay before the first
+/// run (so startup stays quick).
+const GC_INTERVAL: Duration = Duration::from_secs(3600);
+const GC_FIRST_RUN: Duration = Duration::from_secs(60);
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -32,6 +42,8 @@ struct Shared {
     authz: Arc<dyn Authorizer>,
     modules: BTreeMap<String, Module>,
     indexes: HashMap<String, IndexHandle>,
+    /// Age after which dormant sessions and abandoned partial files are collected.
+    dormant: Duration,
     /// Hosted sessions (one connection per session id) and test hooks.
     hosting: DaemonSessions,
     #[cfg(feature = "test-hooks")]
@@ -67,6 +79,7 @@ impl Daemon {
                 authz,
                 modules: cfg.modules,
                 indexes,
+                dormant: cfg.dormant_session_timeout,
                 hosting: DaemonSessions {
                     #[cfg(feature = "test-hooks")]
                     fault: Some(Arc::default()),
@@ -125,6 +138,33 @@ impl Daemon {
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
+        for (name, module) in &self.shared.modules {
+            let Some(index) = self.shared.indexes.get(name).cloned() else {
+                continue;
+            };
+            let (name, root) = (name.clone(), module.path.clone());
+            let (dormant, stop) = (self.shared.dormant, shutdown.clone());
+            tokio::spawn(async move {
+                let first = tokio::time::Instant::now() + GC_FIRST_RUN;
+                let mut tick = tokio::time::interval_at(first, GC_INTERVAL);
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = tick.tick() => {}
+                    }
+                    match gc(index.clone(), &root, dormant, false).await {
+                        Ok(r) => tracing::info!(
+                            module = %name,
+                            parts_removed = r.parts_removed.len(),
+                            parts_kept = r.parts_kept,
+                            sessions_removed = r.sessions_removed,
+                            "gc finished"
+                        ),
+                        Err(e) => tracing::warn!(module = %name, "gc failed: {e}"),
+                    }
+                }
+            });
+        }
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -316,4 +356,172 @@ pub async fn run_from_config(cfg: DaemonConfig, shutdown: CancellationToken) -> 
     .await?;
     println!("endpoint id: {}", endpoint.id());
     Daemon::new(cfg, authz, endpoint)?.run(shutdown).await
+}
+
+/// What a [`gc`] run removed (or, on a dry run, would remove).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GcReport {
+    /// Relative paths of the removed `.irsync.<name>.part` files.
+    pub parts_removed: Vec<RelPath>,
+    /// Stale-looking partial records kept because a session still references them.
+    pub parts_kept: usize,
+    pub sessions_removed: u32,
+}
+
+fn io_err(e: impl std::fmt::Display) -> io::Error {
+    io::Error::other(e.to_string())
+}
+
+/// True for the exact name pattern the receiver gives its partial files.
+fn is_part_name(name: &[u8]) -> bool {
+    name.len() > ".irsync.".len() + ".part".len()
+        && name.starts_with(b".irsync.")
+        && name.ends_with(b".part")
+}
+
+/// The `.part` file the receiver keeps for destination `rel`.
+fn part_of(rel: &RelPath) -> Option<RelPath> {
+    let b = rel.as_bytes();
+    let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
+    let mut p = b[..i].to_vec();
+    p.extend_from_slice(b".irsync.");
+    p.extend_from_slice(&b[i..]);
+    p.extend_from_slice(b".part");
+    RelPath::new(&p).ok()
+}
+
+/// The destination a `.part` path belongs to.
+fn dest_of(part: &RelPath) -> Option<RelPath> {
+    let b = part.as_bytes();
+    let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
+    let name = &b[i..];
+    if !is_part_name(name) {
+        return None;
+    }
+    let mut d = b[..i].to_vec();
+    d.extend_from_slice(&name[".irsync.".len()..name.len() - ".part".len()]);
+    RelPath::new(&d).ok()
+}
+
+/// Removes `root/rel` if its name is a part name and it is a regular file
+/// (never follows a symlink, never touches anything else).
+fn remove_part(root: &Path, rel: &RelPath) -> io::Result<()> {
+    if !rel.components().last().is_some_and(is_part_name) {
+        return Ok(());
+    }
+    let full = root.join(rel.to_os());
+    match std::fs::symlink_metadata(&full) {
+        Ok(m) if m.file_type().is_file() => std::fs::remove_file(&full),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Garbage-collects resume state under `root`: abandoned `.part` files and
+/// their `partials` rows, then dormant sessions, all older than `older_than`.
+/// A part is only removed when no session plan references its path and its
+/// record (or, for an orphan without a record, its mtime) is stale. With
+/// `dry_run` nothing is changed. Parts are collected before sessions, so a
+/// part freed by an expiring session goes on the next run.
+pub async fn gc(
+    index: IndexHandle,
+    root: &Path,
+    older_than: Duration,
+    dry_run: bool,
+) -> io::Result<GcReport> {
+    let cutoff = unix_now().saturating_sub(older_than.as_secs().min(i64::MAX as u64) as i64);
+
+    // Orphan candidates: stale `.part` files on disk (the walk never follows symlinks).
+    let (mut rx, summary) = crate::scan::walk(
+        root.to_path_buf(),
+        Arc::new(FilterSet::new(vec![])),
+        WalkOpts {
+            follow_root_symlink: false,
+            threads: 2,
+        },
+    );
+    let mut on_disk = Vec::new();
+    while let Some(item) = rx.recv().await {
+        let is_reg = item.entry.kind() == irsync_proto::v1::file_entry::Kind::Regular;
+        let named = item.path.components().last().is_some_and(is_part_name);
+        if is_reg && named && item.entry.mtime_sec <= cutoff {
+            on_disk.push(item.path);
+        }
+    }
+    let _ = summary.await;
+
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || -> io::Result<GcReport> {
+        let mut ix = index.lock().map_err(|_| io_err("index lock poisoned"))?;
+        let mut referenced: Vec<Vec<u8>> = Vec::new();
+        for row in ix.all_sessions().map_err(io_err)? {
+            let plan = SessionPlan::decode(&row.plan[..]).map_err(io_err)?;
+            referenced.extend(plan.entries.into_iter().map(|e| e.path));
+        }
+        // Plan paths are relative to the session root, which may sit below the
+        // index root: match on a whole-component suffix to stay conservative.
+        let is_ref = |rel: &RelPath| {
+            let b = rel.as_bytes();
+            referenced.iter().any(|p| {
+                !p.is_empty()
+                    && (b == &p[..]
+                        || (b.len() > p.len()
+                            && b.ends_with(p)
+                            && b[b.len() - p.len() - 1] == b'/'))
+            })
+        };
+        let mut report = GcReport::default();
+        let mut handled = std::collections::HashSet::new();
+
+        // Stale records, with their part files. The index lock is held, so a
+        // live receiver cannot refresh a record between check and removal.
+        for dest in ix.partials_older_than(older_than).map_err(io_err)? {
+            if is_ref(&dest) {
+                report.parts_kept += 1;
+                continue;
+            }
+            let Some(part) = part_of(&dest) else { continue };
+            handled.insert(part.clone());
+            if !dry_run {
+                remove_part(&root, &part)?;
+                ix.remove_partial(&dest).map_err(io_err)?;
+            }
+            report.parts_removed.push(part);
+        }
+        // Orphans: stale files with no record.
+        for part in on_disk {
+            if handled.contains(&part) {
+                continue;
+            }
+            let Some(dest) = dest_of(&part) else { continue };
+            if ix.partial(&dest).map_err(io_err)?.is_some() {
+                continue;
+            }
+            if is_ref(&dest) || is_ref(&part) {
+                report.parts_kept += 1;
+                continue;
+            }
+            if !dry_run {
+                remove_part(&root, &part)?;
+            }
+            report.parts_removed.push(part);
+        }
+        report.parts_removed.sort();
+        if !dry_run {
+            report.sessions_removed = ix
+                .delete_sessions_older_than(older_than)
+                .map_err(io_err)?
+                .len() as u32;
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(io_err)?
 }

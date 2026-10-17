@@ -107,7 +107,42 @@ impl Index {
         conn.busy_timeout(Duration::from_secs(5))?;
         let mut ix = Index { conn };
         ix.init()?;
+        // Remember which root this (hash-named) file belongs to, so `irsync gc` can find it.
+        ix.conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('root_path', ?1)",
+            [canon.as_os_str().as_bytes()],
+        )?;
         Ok(ix)
+    }
+
+    /// The canonical root recorded in the index file at `file`, if any
+    /// (indexes from before the key existed have none).
+    pub fn root_of_file(file: &Path) -> Result<Option<std::path::PathBuf>> {
+        use std::os::unix::ffi::OsStringExt;
+        let conn = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let v: Option<Vec<u8>> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'root_path'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(v.map(|b| std::path::PathBuf::from(std::ffi::OsString::from_vec(b))))
+    }
+
+    /// Every session row (for GC reference checks).
+    pub fn all_sessions(&self) -> Result<Vec<SessionRow>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM sessions ORDER BY created_at")?;
+        let ids = st
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(s) = self.load_session(SessionBy::Id, &id)? {
+                out.push(s);
+            }
+        }
+        Ok(out)
     }
 
     pub fn into_handle(self) -> IndexHandle {

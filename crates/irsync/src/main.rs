@@ -24,14 +24,13 @@ fn main() {
     let args = Args::parse();
     match &args.cmd {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d, args.sync.verbose)),
-        Some(Command::Keygen { .. }) => eprintln!("keygen: not implemented yet"),
-        Some(Command::Gc { .. }) => eprintln!("gc: not implemented yet"),
+        Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
+        Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, args.sync.verbose)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
         }
     }
-    std::process::exit(1);
 }
 
 fn init_logging(verbose: u8, quiet: bool) {
@@ -129,6 +128,115 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
         23
     } else {
         0
+    }
+}
+
+/// Partial files and sessions untouched for this long are collected.
+const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+
+/// `irsync keygen`: writes the key pair, prints the public key line and the
+/// EndpointId (both on stdout, one per line).
+fn run_keygen(out: Option<&std::path::Path>) -> i32 {
+    let result = (|| -> anyhow::Result<()> {
+        let path = match out {
+            Some(p) => p.to_path_buf(),
+            None => dirs::home_dir()
+                .context("no home directory; use --out")?
+                .join(".config/irsync/id_ed25519"),
+        };
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        let secret = irsync::identity::generate_openssh(&path, "irsync")?;
+        let mut pub_path = path.as_os_str().to_owned();
+        pub_path.push(".pub");
+        let line = std::fs::read_to_string(&pub_path)
+            .with_context(|| format!("reading {}", std::path::Path::new(&pub_path).display()))?;
+        eprintln!(
+            "wrote {} and {}",
+            path.display(),
+            std::path::Path::new(&pub_path).display()
+        );
+        println!("{}", line.trim());
+        println!("{}", secret.public());
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("irsync keygen: {e:#}");
+            1
+        }
+    }
+}
+
+/// `irsync gc`: collects stale resume state for every root with an index
+/// under the state directory.
+fn run_gc(dry_run: bool, verbose: u8) -> i32 {
+    init_logging(verbose, false);
+    let result = (|| -> anyhow::Result<()> {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            let dir = state_dir();
+            let (mut parts, mut sessions) = (0usize, 0u32);
+            let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
+                println!("0 part file(s), 0 session(s) {}", verb(dry_run));
+                return Ok(());
+            };
+            let mut files: Vec<PathBuf> = rd
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "sqlite"))
+                .collect();
+            files.sort();
+            for file in files {
+                let root = match Index::root_of_file(&file) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        eprintln!("irsync: {}: {e}", file.display());
+                        continue;
+                    }
+                };
+                let index = match Index::open(&dir, &root) {
+                    Ok(i) => i.into_handle(),
+                    Err(e) => {
+                        eprintln!("irsync: {}: {e}", root.display());
+                        continue;
+                    }
+                };
+                match irsync::daemon::gc(index, &root, CLIENT_GC_AGE, dry_run).await {
+                    Ok(r) => {
+                        for p in &r.parts_removed {
+                            println!("{}", root.join(p.to_os()).display());
+                        }
+                        parts += r.parts_removed.len();
+                        sessions += r.sessions_removed;
+                    }
+                    Err(e) => eprintln!("irsync: {}: {e}", root.display()),
+                }
+            }
+            println!(
+                "{parts} part file(s), {sessions} session(s) {}",
+                verb(dry_run)
+            );
+            Ok(())
+        })
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("irsync gc: {e:#}");
+            1
+        }
+    }
+}
+
+fn verb(dry_run: bool) -> &'static str {
+    if dry_run {
+        "would be removed"
+    } else {
+        "removed"
     }
 }
 
@@ -304,6 +412,17 @@ async fn session(
         }
     })
     .await??;
+    if !dry_run {
+        // Housekeeping for this root; never fatal.
+        match irsync::daemon::gc(index.clone(), &root, CLIENT_GC_AGE, false).await {
+            Ok(r) => tracing::debug!(
+                parts_removed = r.parts_removed.len(),
+                sessions_removed = r.sessions_removed,
+                "gc finished"
+            ),
+            Err(e) => tracing::debug!("gc failed: {e}"),
+        }
+    }
     let mut side = LocalSide::new(root, local_contents_only, index, filters.clone());
     side.hooks.bus = bus.clone();
     let hello_for = |id: Option<[u8; 16]>| Hello {
