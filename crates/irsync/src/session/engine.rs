@@ -126,9 +126,9 @@ impl RoleOpts {
     }
 
     /// v1: transfer options are not negotiated, so the daemon preserves
-    /// everything it can and trusts the quick check. Only the receiver-side
-    /// options carried in `Hello` (deletion, dry run) are honoured, and only
-    /// when the daemon `receives` (the client pushes, which already requires
+    /// everything it can. Only the receiver-side options carried in `Hello`
+    /// (deletion, dry run, `-u`, `-c`, itemize) are honoured, and only when
+    /// the daemon `receives` (the client pushes, which already requires
     /// write access to a writable module).
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
@@ -150,8 +150,8 @@ impl RoleOpts {
                 hard_links: true,
                 sparse: true,
             },
-            checksum: false,
-            update_only: false,
+            checksum: receives && hello.checksum,
+            update_only: receives && hello.update_only,
             rename_detection: true,
             partial_dir: None,
             parallel: DEFAULT_PARALLEL,
@@ -180,6 +180,8 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
     hello.dry_run = o.dry_run;
     hello.ignore_errors = o.ignore_errors;
     hello.itemize = o.itemize;
+    hello.update_only = o.update_only;
+    hello.checksum = o.checksum;
 }
 
 /// Option combinations this protocol version cannot honour safely.
@@ -188,7 +190,16 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
 /// destination path the client's filters exclude as extraneous and delete
 /// it: with `--delete` that breaks rsync's rule that excluded files are
 /// protected. Only `--delete-excluded` (which deletes them anyway) is allowed.
+///
+/// `--partial-dir` names a directory on the receiving side: on a push that
+/// is the daemon's filesystem, which a client must not choose.
 pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
+    if direction == Direction::ClientSends && o.partial_dir.is_some() {
+        bail!(
+            "--partial-dir is not supported when pushing: it would name a directory on the \
+             daemon's side"
+        );
+    }
     if direction == Direction::ClientSends
         && o.delete != DeleteMode::Off
         && !o.filters.is_empty()
@@ -498,26 +509,12 @@ pub(super) async fn run_client_inner(
     run_role(Arc::new(ctx), send, recv, sends).await
 }
 
-/// v1 does not negotiate options: say so once when the user set some that
-/// only the daemon side could honour.
+/// v1 does not send filters: say so once when a pull sets some that only
+/// the daemon's (sending) walk could honour.
 fn warn_ignored_options(direction: Direction, o: &SyncOptions) {
-    let ignored: Vec<&str> = match direction {
-        Direction::DaemonSends => [(!o.filters.is_empty(), "--include/--exclude")]
-            .into_iter()
-            .filter_map(|(set, name)| set.then_some(name))
-            .collect(),
-        Direction::ClientSends => [
-            (o.checksum, "--checksum"),
-            (o.update_only, "--update"),
-            (o.partial_dir.is_some(), "--partial-dir"),
-        ]
-        .into_iter()
-        .filter_map(|(set, name)| set.then_some(name))
-        .collect(),
-    };
-    if !ignored.is_empty() {
+    if direction == Direction::DaemonSends && !o.filters.is_empty() {
         tracing::warn!(
-            options = %ignored.join(", "),
+            options = "--include/--exclude",
             "ignored: the daemon side applies its own defaults in this protocol version"
         );
     }

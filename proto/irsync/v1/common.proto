@@ -21,6 +21,8 @@ message Hello {
   bool dry_run = 13;                              // the receiver changes nothing
   bool ignore_errors = 14;                        // delete even if a listing was incomplete
   bool itemize = 15;                              // the receiver sends Itemized codes (-i)
+  bool update_only = 16;                          // -u: keep destination files newer than the source
+  bool checksum = 17;                             // -c: equal size+mtime is not enough, compare content
 }
 message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
 message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }

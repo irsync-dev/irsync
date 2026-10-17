@@ -18,6 +18,8 @@ fn hello_roundtrips() {
         dry_run: true,
         ignore_errors: true,
         itemize: true,
+        update_only: true,
+        checksum: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

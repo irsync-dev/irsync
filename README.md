@@ -152,7 +152,7 @@ rsync-compatible, same spelling and semantics:
 | `--exclude`, `--include`, `--exclude-from`, `--include-from` | filter rules, in command-line order |
 | `--bwlimit` | rate limit (KiB/s, or `k`/`m`/`g` suffix) |
 | `--numeric-ids` | accepted; always on |
-| `--partial-dir` | where partial files live |
+| `--partial-dir` | where partial files live (pull only) |
 | `--ignore-errors` | delete even after I/O errors |
 | `--stats`, `--progress`, `--info=progress2`, `-i` / `--itemize-changes` | reporting |
 | `--timeout` | I/O timeout in seconds |
@@ -179,10 +179,15 @@ daemon hourly.
 ## Known limitations in version one
 
 - `--delete-during` runs as `--delete-after`.
-- Only the delete, dry-run and itemize options are sent to the daemon. Filters
-  (`--exclude`, `--include`, ...) apply only on the sending side, so a push with
-  `--delete` plus filters also needs `--delete-excluded`, otherwise the daemon
-  would delete files your filters merely hid.
+- Only the delete, dry-run, itemize, `-u` and `-c` options are sent to the
+  daemon. Filters (`--exclude`, `--include`, ...) apply only on the sending
+  side, so a push with `--delete` plus filters also needs `--delete-excluded`,
+  otherwise the daemon would delete files your filters merely hid.
+- On a push the daemon applies full archive metadata (permissions, times,
+  owner and group where it may, symlinks, devices, hard links) whatever the
+  client's `-p -t -o -g -l -D` say.
+- `--partial-dir` is not supported on a push (it would name a directory on the
+  daemon); a push with it is refused.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used; generate an irsync-specific key with `irsync keygen` or
   `ssh-keygen -t ed25519`.

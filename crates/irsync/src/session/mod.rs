@@ -147,6 +147,8 @@ impl SessionKey {
                 hello.delete_mode as u8,
                 hello.delete_excluded as u8,
                 hello.dry_run as u8,
+                hello.update_only as u8,
+                hello.checksum as u8,
             ],
         );
         SessionKey(h.finalize().as_bytes().to_vec())
