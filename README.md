@@ -167,6 +167,7 @@ irsync-specific:
 | `--no-dht` | do not use the mainline DHT for lookup |
 | `-F FILE` | client config file |
 | `--identity PATH` | private key to use |
+| `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`) |
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 

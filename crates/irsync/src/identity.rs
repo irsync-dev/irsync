@@ -15,6 +15,13 @@ pub enum IdentityError {
     Ssh(#[from] ssh_key::Error),
     #[error("private key is encrypted; a passphrase is required")]
     PassphraseRequired,
+    #[error(
+        "private key {0} is encrypted and no passphrase is available: set IRSYNC_PASSPHRASE, \
+         use --passphrase-file, or run from a terminal"
+    )]
+    NoPassphraseSource(PathBuf),
+    #[error("wrong passphrase for {0}")]
+    BadPassphrase(PathBuf),
     #[error("only Ed25519 keys can be used as irsync identities")]
     NotEd25519,
     #[error("refusing to overwrite existing file {0}")]
@@ -36,6 +43,67 @@ pub fn load_secret_key(path: &Path, passphrase: Option<&str>) -> Result<SecretKe
         key = key.decrypt(pass)?;
     }
     secret_of(&key)
+}
+
+/// Where the passphrase for an encrypted identity may come from, in order:
+/// a file, the environment, then an interactive prompt.
+#[derive(Debug, Clone, Default)]
+pub struct PassphraseSource {
+    /// `--passphrase-file`: the first line of this file.
+    pub file: Option<PathBuf>,
+    /// `IRSYNC_PASSPHRASE`.
+    pub env: Option<String>,
+    /// Prompt (without echo) on the terminal; only when stdin is a tty.
+    pub prompt: bool,
+}
+
+impl PassphraseSource {
+    /// `--passphrase-file`, `IRSYNC_PASSPHRASE`, and a prompt if stdin is a terminal.
+    pub fn from_env(file: Option<PathBuf>) -> PassphraseSource {
+        use std::io::IsTerminal;
+        PassphraseSource {
+            file,
+            env: std::env::var("IRSYNC_PASSPHRASE").ok(),
+            prompt: std::io::stdin().is_terminal(),
+        }
+    }
+
+    fn passphrase(&self, key: &Path) -> Result<String, IdentityError> {
+        if let Some(f) = &self.file {
+            let text = std::fs::read_to_string(f)?;
+            let line = text.lines().next().unwrap_or("");
+            return Ok(line.to_string());
+        }
+        if let Some(p) = &self.env {
+            return Ok(p.clone());
+        }
+        if self.prompt {
+            return Ok(rpassword::prompt_password(format!(
+                "Enter passphrase for {}: ",
+                key.display()
+            ))?);
+        }
+        Err(IdentityError::NoPassphraseSource(key.to_path_buf()))
+    }
+}
+
+/// Loads an identity, asking `src` for a passphrase only if the key is
+/// encrypted.
+pub fn load_identity_interactive(
+    path: &Path,
+    src: &PassphraseSource,
+) -> Result<SecretKey, IdentityError> {
+    match load_secret_key(path, None) {
+        Err(IdentityError::PassphraseRequired) => {}
+        r => return r,
+    }
+    let pass = src.passphrase(path)?;
+    match load_secret_key(path, Some(&pass)) {
+        Err(IdentityError::Ssh(ssh_key::Error::Crypto)) => {
+            Err(IdentityError::BadPassphrase(path.to_path_buf()))
+        }
+        r => r,
+    }
 }
 
 /// Generate a new Ed25519 key, writing `path` (mode 0600) and `path.pub`.

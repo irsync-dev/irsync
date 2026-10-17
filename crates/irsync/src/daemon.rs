@@ -19,7 +19,7 @@ use crate::authz::{Authorizer, FileAuthorizer, Grants};
 use crate::config::daemon::{DaemonConfig, Module, RelayMode};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
-use crate::identity::{generate_openssh, load_secret_key};
+use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
 use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, EndpointOpts, RelayChoice};
@@ -316,7 +316,7 @@ async fn reject(
     Ok(())
 }
 
-fn load_or_generate_identity(path: &Path) -> Result<SecretKey> {
+fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<SecretKey> {
     if !path.exists() {
         tracing::info!(path = %path.display(), "generating daemon identity");
         if let Some(parent) = path.parent() {
@@ -324,18 +324,23 @@ fn load_or_generate_identity(path: &Path) -> Result<SecretKey> {
         }
         return Ok(generate_openssh(path, "irsync-daemon")?);
     }
-    Ok(load_secret_key(path, None)?)
+    Ok(load_identity_interactive(path, pass)?)
 }
 
 /// The daemon's EndpointId as a string, generating the identity if missing.
-pub fn show_id(cfg: &DaemonConfig) -> Result<String> {
-    Ok(load_or_generate_identity(&cfg.identity)?
+/// `pass` unlocks an encrypted identity.
+pub fn show_id(cfg: &DaemonConfig, pass: &PassphraseSource) -> Result<String> {
+    Ok(load_or_generate_identity(&cfg.identity, pass)?
         .public()
         .to_string())
 }
 
-pub async fn run_from_config(cfg: DaemonConfig, shutdown: CancellationToken) -> Result<()> {
-    let secret = load_or_generate_identity(&cfg.identity)?;
+pub async fn run_from_config(
+    cfg: DaemonConfig,
+    pass: &PassphraseSource,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    let secret = load_or_generate_identity(&cfg.identity, pass)?;
     let authz = Arc::new(FileAuthorizer::load(&cfg.authorized_keys)?);
     let relay = match (&cfg.relay_mode, &cfg.relay) {
         (RelayMode::Disabled, _) => RelayChoice::Disabled,

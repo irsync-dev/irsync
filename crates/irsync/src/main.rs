@@ -11,7 +11,7 @@ use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
 use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
 use irsync::filter::FilterSet;
-use irsync::identity::{load_secret_key, parse_endpoint_id};
+use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
 use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
@@ -302,7 +302,8 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         .or_else(|| hc.identity_file.clone())
         .or_else(|| dirs::home_dir().map(|h| h.join(".ssh/id_ed25519")))
         .context("no identity file")?;
-    let secret = load_secret_key(&identity, None)
+    let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
+    let secret = load_identity_interactive(&identity, &pass)
         .with_context(|| format!("loading identity {}", identity.display()))?;
     let relay = match (&opts.relay, &hc.relay) {
         (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
@@ -478,8 +479,9 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
 
     let result = (|| -> anyhow::Result<()> {
         let cfg = DaemonConfig::load(d.config.as_deref())?;
+        let pass = PassphraseSource::from_env(d.passphrase_file.clone());
         if d.show_id {
-            println!("{}", irsync::daemon::show_id(&cfg)?);
+            println!("{}", irsync::daemon::show_id(&cfg, &pass)?);
             return Ok(());
         }
         let rt = tokio::runtime::Runtime::new()?;
@@ -490,7 +492,7 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
                 let _ = tokio::signal::ctrl_c().await;
                 token.cancel();
             });
-            irsync::daemon::run_from_config(cfg, shutdown).await
+            irsync::daemon::run_from_config(cfg, &pass, shutdown).await
         })
     })();
     match result {

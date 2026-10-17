@@ -1,5 +1,6 @@
 use irsync::identity::{
-    endpoint_id_of_public_key, generate_openssh, load_secret_key, parse_endpoint_id, IdentityError,
+    endpoint_id_of_public_key, generate_openssh, load_identity_interactive, load_secret_key,
+    parse_endpoint_id, IdentityError, PassphraseSource,
 };
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -87,4 +88,99 @@ fn parse_endpoint_id_accepts_z32_and_hex() {
     assert_eq!(parse_endpoint_id(&id.to_string()).unwrap(), id);
     assert_eq!(parse_endpoint_id(&id.to_z32()).unwrap(), id);
     assert!(parse_endpoint_id("nonsense").is_err());
+}
+
+#[test]
+fn encrypted_identity_via_env_and_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("enc");
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut OsRng, "hunter2")
+        .unwrap()
+        .write_openssh_file(&path, LineEnding::LF)
+        .unwrap();
+    let want = key.key_data().ed25519().unwrap().public.0;
+    // A non-interactive source (no tty): nothing to ask.
+    let none = PassphraseSource::default();
+    assert!(matches!(
+        load_identity_interactive(&path, &none),
+        Err(IdentityError::NoPassphraseSource(_))
+    ));
+    // From the environment.
+    let env = PassphraseSource {
+        env: Some("hunter2".into()),
+        ..PassphraseSource::default()
+    };
+    let sk = load_identity_interactive(&path, &env).unwrap();
+    assert_eq!(sk.public().as_bytes(), &want);
+    // From a file (first line, trailing newline ignored); it wins over env.
+    let file = dir.path().join("pass");
+    std::fs::write(&file, "hunter2\n").unwrap();
+    let from_file = PassphraseSource {
+        file: Some(file),
+        env: Some("wrong".into()),
+        prompt: false,
+    };
+    let sk = load_identity_interactive(&path, &from_file).unwrap();
+    assert_eq!(sk.public().as_bytes(), &want);
+    // A wrong passphrase says so.
+    let wrong = PassphraseSource {
+        env: Some("wrong".into()),
+        ..PassphraseSource::default()
+    };
+    assert!(matches!(
+        load_identity_interactive(&path, &wrong),
+        Err(IdentityError::BadPassphrase(_))
+    ));
+    // An unencrypted key never asks.
+    let plain = dir.path().join("plain");
+    generate_openssh(&plain, "x").unwrap();
+    assert!(load_identity_interactive(&plain, &none).is_ok());
+}
+
+#[test]
+fn daemon_show_id_unlocks_encrypted_identity_from_env_without_tty() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = dir.path().join("id");
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut OsRng, "s3cret")
+        .unwrap()
+        .write_openssh_file(&id, LineEnding::LF)
+        .unwrap();
+    let cfg = dir.path().join("d.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n",
+            id,
+            dir.path().join("ak"),
+            dir.path().join("state")
+        ),
+    )
+    .unwrap();
+    let run = |pass: Option<&str>| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"));
+        c.args(["daemon", "--show-id", "--config"])
+            .arg(&cfg)
+            .env_remove("IRSYNC_PASSPHRASE")
+            .stdin(std::process::Stdio::null());
+        if let Some(p) = pass {
+            c.env("IRSYNC_PASSPHRASE", p);
+        }
+        c.output().unwrap()
+    };
+    let o = run(Some("s3cret"));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let shown = parse_endpoint_id(String::from_utf8(o.stdout).unwrap().trim()).unwrap();
+    assert_eq!(
+        shown.as_bytes(),
+        &key.key_data().ed25519().unwrap().public.0
+    );
+    let o = run(None);
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("IRSYNC_PASSPHRASE"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }

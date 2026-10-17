@@ -117,6 +117,10 @@ pub struct DaemonArgs {
     pub show_id: bool,
     #[arg(long)]
     pub foreground: bool,
+    /// Read the identity's passphrase from the first line of this file
+    /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
+    #[arg(long, value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
 }
 
 fn parse_bwlimit(s: &str) -> Result<u64, String> {
@@ -228,6 +232,10 @@ pub struct SyncArgs {
     pub config: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
+    /// Read the identity's passphrase from the first line of this file
+    /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
+    #[arg(long, value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
     #[arg(long)]
     pub no_resume: bool,
     #[arg(long)]
@@ -303,6 +311,7 @@ pub struct SyncOptions {
     pub no_dht: bool,
     pub config: Option<PathBuf>,
     pub identity: Option<PathBuf>,
+    pub passphrase_file: Option<PathBuf>,
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub verbose: u8,
@@ -358,6 +367,7 @@ impl SyncOptions {
             no_dht: a.no_dht,
             config: a.config.clone(),
             identity: a.identity.clone(),
+            passphrase_file: a.passphrase_file.clone(),
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             verbose: a.verbose,
