@@ -1,0 +1,125 @@
+//! Quick check and index-cached hashing of regular files.
+//!
+//! A cached digest is reused only if the index has a digest for the path and
+//! size, mtime (sec+nsec), ctime and inode all match the scanned item.
+//! `force` (`--checksum`) bypasses the cache and re-reads every file.
+
+use crate::index::IndexHandle;
+use crate::scan::ScanItem;
+use irsync_proto::chunk::{digest_reader, FileDigest};
+use irsync_proto::v1::file_entry::Kind;
+use irsync_proto::v1::Hash;
+use std::fs::File;
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Counters of work actually done (cache hits are not counted). Read the
+/// fields directly with `load`.
+#[derive(Debug, Default)]
+pub struct HashStats {
+    pub files_hashed: AtomicU64,
+    pub bytes_hashed: AtomicU64,
+}
+
+pub struct Hasher {
+    index: IndexHandle,
+    root: PathBuf,
+    sem: Arc<Semaphore>,
+    force: bool,
+    stats: Arc<HashStats>,
+}
+
+fn io_err(e: crate::index::IndexError) -> io::Error {
+    io::Error::other(e)
+}
+
+fn lookup(index: &IndexHandle, item: &ScanItem) -> io::Result<Option<FileDigest>> {
+    let found = index
+        .lock()
+        .map_err(|_| io::Error::other("index mutex poisoned"))?
+        .get_entry(&item.path)
+        .map_err(io_err)?;
+    let Some(ie) = found else { return Ok(None) };
+    let (a, b) = (&ie.entry, &item.entry);
+    let fresh = a.size == b.size
+        && a.mtime_sec == b.mtime_sec
+        && a.mtime_nsec == b.mtime_nsec
+        && ie.ctime == item.ctime
+        && a.inode == b.inode;
+    Ok(if fresh { ie.digest } else { None })
+}
+
+impl Hasher {
+    /// `workers` bounds how many files are read concurrently (minimum 1).
+    pub fn new(index: IndexHandle, root: PathBuf, workers: usize) -> Hasher {
+        Hasher {
+            index,
+            root,
+            sem: Arc::new(Semaphore::new(workers.max(1))),
+            force: false,
+            stats: Arc::new(HashStats::default()),
+        }
+    }
+
+    /// When `force` is set the quick check is bypassed (`--checksum`).
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
+        self
+    }
+
+    pub fn stats(&self) -> &HashStats {
+        &self.stats
+    }
+
+    /// Cached digest if the quick check passes; never reads the file. Ignores
+    /// `force` (it only describes what the index holds).
+    pub fn cached(&self, item: &ScanItem) -> io::Result<Option<FileDigest>> {
+        lookup(&self.index, item)
+    }
+
+    /// Digest of a regular file: from the index when the quick check passes,
+    /// otherwise read, chunked, and stored in the index.
+    pub async fn digest(&self, item: &ScanItem) -> io::Result<FileDigest> {
+        if item.entry.kind() != Kind::Regular {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "digest requires a regular file",
+            ));
+        }
+        let _permit = self
+            .sem
+            .acquire()
+            .await
+            .map_err(|_| io::Error::other("hasher closed"))?;
+        let index = self.index.clone();
+        let stats = self.stats.clone();
+        let full = self.root.join(item.path.to_os());
+        let item = item.clone();
+        let force = self.force;
+        tokio::task::spawn_blocking(move || {
+            if !force {
+                if let Some(d) = lookup(&index, &item)? {
+                    return Ok(d);
+                }
+            }
+            let d = digest_reader(File::open(&full)?)?;
+            stats.files_hashed.fetch_add(1, Ordering::Relaxed);
+            stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
+            let mut entry = item.entry;
+            entry.whole_hash = Some(Hash {
+                bytes: d.hash.to_vec(),
+            });
+            index
+                .lock()
+                .map_err(|_| io::Error::other("index mutex poisoned"))?
+                .put_entry(&item.path, &entry, item.ctime, Some(&d))
+                .map_err(io_err)?;
+            Ok(d)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+}

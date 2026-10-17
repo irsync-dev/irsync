@@ -4,6 +4,7 @@ pub mod config;
 pub mod daemon;
 pub mod filter;
 pub mod fs;
+pub mod hasher;
 pub mod identity;
 pub mod index;
 pub mod net;
