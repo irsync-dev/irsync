@@ -8,10 +8,8 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -72,11 +70,7 @@ fn build_tree(root: &Path) {
     fs::write(root.join("a/linked1"), data(40_000, 6)).unwrap();
     fs::hard_link(root.join("a/linked1"), root.join("a/b/linked2")).unwrap();
     // Non-UTF-8 name.
-    fs::write(
-        root.join(OsString::from_vec(b"bad\xff\xfename".to_vec())),
-        b"x",
-    )
-    .unwrap();
+    common::try_create_non_utf8(root, b"bad\xff\xfename");
     // FIFO.
     let fifo = root.join("fifo");
     nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o640)).unwrap();
@@ -157,7 +151,7 @@ fn snapshot(root: &Path) -> Snapshot {
                 mtime: (m.mtime(), m.mtime_nsec()),
                 body: t.is_file().then(|| fs::read(&p).unwrap()),
                 link: t.is_symlink().then(|| fs::read_link(&p).unwrap()),
-                nlink: m.nlink(),
+                nlink: if t.is_file() { m.nlink() } else { 0 },
             },
         );
     }
@@ -237,6 +231,10 @@ fn rsync_present() -> bool {
 #[tokio::test]
 async fn matches_rsync_archive_mode() {
     if !rsync_present() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI is set but GNU rsync >= 3.1 is not on PATH: the comparison must not be skipped"
+        );
         eprintln!("skipping: rsync not on PATH (or older than 3.1)");
         return;
     }

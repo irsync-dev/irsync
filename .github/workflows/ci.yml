@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 env:
@@ -31,7 +32,8 @@ jobs:
           elif ! command -v rsync >/dev/null; then
             sudo apt-get update && sudo apt-get install -y rsync
           fi
-          rsync --version | head -1
+      - name: Show rsync version the tests will use
+        run: rsync --version | head -1
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

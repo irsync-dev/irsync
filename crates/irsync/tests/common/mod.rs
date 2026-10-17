@@ -1,6 +1,30 @@
 //! Shared helpers for integration tests that need real iroh endpoints.
 #![allow(dead_code)]
 
+/// Creates a file named with raw non-UTF-8 `name` bytes in `dir`. Returns `None`
+/// (after a note on stderr) when the filesystem refuses such names (e.g. APFS),
+/// so callers can skip; panics on any other error.
+pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let p = dir.join(std::ffi::OsStr::from_bytes(name));
+    match std::fs::write(&p, b"x") {
+        Ok(()) => Some(p),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
+            ) || matches!(
+                e.raw_os_error(),
+                Some(x) if x == nix::libc::EILSEQ || x == nix::libc::EINVAL
+            ) =>
+        {
+            eprintln!("skipping non-UTF-8 name: filesystem refused");
+            None
+        }
+        Err(e) => panic!("creating non-UTF-8 name failed: {e}"),
+    }
+}
+
 use std::future::Future;
 use std::time::Duration;
 

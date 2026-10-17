@@ -196,6 +196,10 @@ async fn renamed_file_is_local_copy() {
 async fn sync_non_utf8_filename() {
     within30(async {
         let opts = archive_opts();
+        let probe = tempfile::tempdir().unwrap();
+        if common::try_create_non_utf8(probe.path(), b"caf\xe9.txt").is_none() {
+            return;
+        }
         let dir = OsStr::from_bytes(b"d\xff\xfe");
         let file = OsStr::from_bytes(b"caf\xe9.txt");
         for flow in [Flow::Push, Flow::Pull] {

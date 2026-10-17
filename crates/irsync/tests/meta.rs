@@ -1,11 +1,11 @@
+mod common;
+
 use irsync::fs::meta::{apply_metadata, create_special, lstat_entry, ApplyOpts};
 use irsync::fs::paths::{is_contained, RelPath};
 use irsync_proto::v1::file_entry::Kind;
 use nix::sys::stat::{utimensat, UtimensatFlags};
 use nix::sys::time::TimeSpec;
-use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::Path;
 
@@ -168,7 +168,9 @@ fn apply_metadata_on_symlink_does_not_follow() {
 fn non_utf8_path_roundtrips() {
     let d = tempfile::tempdir().unwrap();
     let name = b"caf\xe9";
-    fs::write(d.path().join(OsStr::from_bytes(name)), b"x").unwrap();
+    if common::try_create_non_utf8(d.path(), name).is_none() {
+        return;
+    }
     let rel = rp(name);
     let e = lstat_entry(d.path(), &rel).unwrap();
     assert_eq!(e.path, name);

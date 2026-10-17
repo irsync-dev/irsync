@@ -1,3 +1,5 @@
+mod common;
+
 use irsync::cli::FilterRule;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
@@ -37,7 +39,10 @@ async fn walk_emits_sorted_relpaths() {
         x ^= x << 17;
         x
     };
-    let alpha = [b'a', b'b', b'-', b'.', b'_', b'Z', 0xff, 0x80, b'0'];
+    let probe = tempfile::tempdir().unwrap();
+    let ok = common::try_create_non_utf8(probe.path(), b"\xff\x80").is_some();
+    let hi = |b: u8| if ok { b } else { b'q' };
+    let alpha = [b'a', b'b', b'-', b'.', b'_', b'Z', hi(0xff), hi(0x80), b'0'];
     for _ in 0..200 {
         let depth = 1 + rnd() % 3;
         let mut p = d.path().to_path_buf();
