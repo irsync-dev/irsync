@@ -518,3 +518,22 @@ async fn temp_named_destination_is_refused() {
     }
     assert_eq!(fs::read_dir(e.root.join("dir")).unwrap().count(), 0);
 }
+
+#[tokio::test]
+async fn second_writer_on_same_part_is_refused() {
+    let e = env();
+    let data = content(89);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+        .err()
+        .expect("a second writer on the same .part must be refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(err.to_string(), irsync::recv::PART_BUSY);
+    // The first writer is unaffected and finishes; afterwards the name is free.
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
+    let w2 = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    drop(w2);
+}

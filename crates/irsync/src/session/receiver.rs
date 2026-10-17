@@ -471,7 +471,13 @@ impl Receiver {
         let o = match result {
             Ok(o) => o,
             Err(e) => {
-                let msg = format!("opening partial file: {e}");
+                let msg = if e.kind() == io::ErrorKind::WouldBlock {
+                    // Another session writes the same destination; a later
+                    // run (or this session's resume) retries it.
+                    crate::recv::PART_BUSY.to_string()
+                } else {
+                    format!("opening partial file: {e}")
+                };
                 self.fail(file_id, Some(Status::WriteError), msg).await;
                 return;
             }

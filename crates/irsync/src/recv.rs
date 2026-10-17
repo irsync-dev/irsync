@@ -136,6 +136,9 @@ pub fn is_temp_name(name: &[u8]) -> bool {
     name.starts_with(b".irsync.") && (name.ends_with(b".part") || name.ends_with(b".tmp"))
 }
 
+/// The error message when another writer holds the `.part` (`WouldBlock`).
+pub const PART_BUSY: &str = "part file busy";
+
 /// Never follow a symlink at the `.part` name, never block on a FIFO there.
 const PART_FLAGS: i32 = nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC;
 
@@ -260,6 +263,16 @@ impl FileWriter {
             std::fs::create_dir_all(dir)?;
         }
         let file = open_part(&part)?;
+        // One writer per `.part`: a second (another session on the same
+        // destination) could otherwise interleave unverified bytes with ours
+        // between our re-hash and rename. Held until the file is closed.
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, PART_BUSY))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
         let hole_from = file.metadata()?.len();
         let mut w = FileWriter {
             rel: rel.clone(),
