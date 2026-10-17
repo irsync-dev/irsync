@@ -86,3 +86,18 @@ async fn cached_returns_none_before_first_digest() {
     assert_eq!(h.cached(&it).unwrap(), Some(d));
     assert_eq!(h.stats().files_hashed.load(Relaxed), 1);
 }
+
+#[tokio::test]
+async fn hasher_refuses_symlink() {
+    let (root, _s, h) = setup();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret"), b"private").unwrap();
+    fs::write(root.path().join("f"), b"data").unwrap();
+    let it = item(root.path(), b"f");
+    // Swapped for a symlink after the walk saw a regular file.
+    fs::remove_file(root.path().join("f")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("f")).unwrap();
+    let e = h.digest(&it).await.unwrap_err();
+    assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
+    assert_eq!(h.stats().files_hashed.load(Relaxed), 0);
+}

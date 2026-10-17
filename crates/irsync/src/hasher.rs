@@ -9,7 +9,6 @@ use crate::scan::ScanItem;
 use irsync_proto::chunk::{digest_reader, FileDigest};
 use irsync_proto::v1::file_entry::Kind;
 use irsync_proto::v1::Hash;
-use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -105,7 +104,8 @@ impl Hasher {
                     return Ok(d);
                 }
             }
-            let d = digest_reader(File::open(&full)?)?;
+            // Never follow a symlink swapped in since the walk lstat'ed it.
+            let d = digest_reader(crate::fs::safe::open_regular_nofollow(&full)?)?;
             stats.files_hashed.fetch_add(1, Ordering::Relaxed);
             stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
             let mut entry = item.entry;

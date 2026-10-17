@@ -315,8 +315,10 @@ impl Inner {
         r: Range,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
+        // Never follow a symlink swapped in since the file was listed.
         let file = Arc::new(
-            File::open(full).map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?,
+            crate::fs::safe::open_regular_nofollow(full)
+                .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?,
         );
         // Verify the first chunk before opening a stream: the common
         // "file changed" case then never touches the wire.

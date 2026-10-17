@@ -266,3 +266,20 @@ async fn first_error_stops_scheduling() {
     acceptor.abort();
     assert!(n <= 2, "{n} streams opened after the error");
 }
+
+#[tokio::test]
+async fn sender_refuses_symlink() {
+    let f = fixture().await;
+    let bytes = data(MIB / 2, 9);
+    let (p, d) = put(&f, "s.bin", &bytes);
+    // Same bytes elsewhere, swapped in as a symlink after hashing.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret"), &bytes).unwrap();
+    std::fs::remove_file(f.root.path().join("s.bin")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret"), f.root.path().join("s.bin")).unwrap();
+    let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
+    let e = within(sender(&f, 4, 64 << 20, None).send_chunks(1, &p, &d, &idxs))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
+}

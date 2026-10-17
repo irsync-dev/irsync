@@ -434,7 +434,7 @@ impl FileWriter {
         let from = from.to_path_buf();
         let data = tokio::task::spawn_blocking(move || {
             let mut buf = vec![0u8; c.len as usize];
-            File::open(&from)?.read_exact_at(&mut buf, offset)?;
+            crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
             Ok::<_, io::Error>(buf)
         })
         .await
