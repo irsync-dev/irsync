@@ -11,7 +11,7 @@ use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -117,6 +117,36 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
     ))
 }
 
+fn open_rw(part: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(part)
+}
+
+/// Add owner read/write to our own `.part` file (best effort).
+fn make_owner_writable(part: &Path) -> io::Result<()> {
+    let mode = std::fs::symlink_metadata(part)?.permissions().mode();
+    std::fs::set_permissions(part, std::fs::Permissions::from_mode(mode | 0o600))
+}
+
+/// Open the `.part` read/write. A previous `finalize` may have applied a read-only
+/// mode to it before failing; the file is ours (`.irsync.<name>.part`), so restore
+/// owner read/write and retry once.
+fn open_part(part: &Path) -> io::Result<File> {
+    match open_rw(part) {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            if make_owner_writable(part).is_err() {
+                return Err(e);
+            }
+            open_rw(part)
+        }
+        r => r,
+    }
+}
+
 fn hash_at(file: &File, c: &ChunkRecord) -> io::Result<[u8; 32]> {
     let mut buf = vec![0u8; c.len as usize];
     file.read_exact_at(&mut buf, c.offset)?;
@@ -138,6 +168,9 @@ fn coalesce(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 
 impl FileWriter {
     /// Open (or create) the `.part` file for `rel` and adopt any verified progress.
+    ///
+    /// This does blocking I/O and may re-hash a large `.part` file; async callers
+    /// should run it inside `tokio::task::spawn_blocking`.
     pub fn open(
         root: &Path,
         rel: &RelPath,
@@ -150,12 +183,7 @@ impl FileWriter {
         if let Some(dir) = part.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&part)?;
+        let file = open_part(&part)?;
         let mut w = FileWriter {
             rel: rel.clone(),
             dest,
@@ -387,7 +415,6 @@ impl FileWriter {
             if actual != expected {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
-            apply_metadata(&part, &entry, &opts)?;
             match std::fs::symlink_metadata(&dest) {
                 Ok(m) if m.is_dir() => {
                     return Err(FinalizeError::Io(io::Error::other(format!(
@@ -399,14 +426,28 @@ impl FileWriter {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-            std::fs::rename(&part, &dest)?;
+            let placed = apply_metadata(&part, &entry, &opts).and_then(|()| {
+                std::fs::rename(&part, &dest).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!("rename {} -> {}: {e}", part.display(), dest.display()),
+                    )
+                })
+            });
+            if let Err(e) = placed {
+                // The applied mode may lack owner write; keep the .part resumable.
+                if let Err(pe) = make_owner_writable(&part) {
+                    tracing::warn!(path = ?part, error = %pe, "restoring u+w on .part failed");
+                }
+                return Err(e.into());
+            }
             Ok(())
         })
         .await
         .map_err(io::Error::other)??;
         self.done = true;
         let (index, rel) = (self.index.clone(), self.rel.clone());
-        tokio::task::spawn_blocking(move || {
+        let removed = tokio::task::spawn_blocking(move || {
             index
                 .lock()
                 .map_err(|_| io::Error::other("index poisoned"))?
@@ -414,7 +455,12 @@ impl FileWriter {
                 .map_err(index_err)
         })
         .await
-        .map_err(io::Error::other)??;
+        .map_err(io::Error::other)
+        .and_then(|r| r);
+        if let Err(e) = removed {
+            // The verified file is already in place; a stale record is harmless.
+            tracing::warn!(path = ?self.dest, error = %e, "removing partial record failed");
+        }
         Ok(())
     }
 }
@@ -422,9 +468,19 @@ impl FileWriter {
 impl Drop for FileWriter {
     /// Record unpersisted progress so a later writer can adopt it.
     fn drop(&mut self) {
-        if !self.done && self.chunks_since_persist > 0 {
-            if let Err(e) = self.persist_sync() {
-                tracing::warn!(path = ?self.part, error = %e, "persisting partial on drop failed");
+        if self.done || self.chunks_since_persist == 0 {
+            return;
+        }
+        let rec = self.partial_record();
+        // try_lock: never block (or self-deadlock) in Drop.
+        match self.index.try_lock() {
+            Ok(mut ix) => {
+                if let Err(e) = ix.put_partial(&self.rel, &rec) {
+                    tracing::warn!(path = ?self.part, error = %e, "persisting partial on drop failed");
+                }
+            }
+            Err(_) => {
+                tracing::warn!(path = ?self.part, "index busy or poisoned; partial not persisted on drop");
             }
         }
     }

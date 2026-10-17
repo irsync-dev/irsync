@@ -5,6 +5,7 @@ use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::digest_bytes;
 use irsync_proto::v1::{self, file_entry::Kind, ChunkList, FileEntry};
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -277,6 +278,8 @@ async fn finalize_refuses_incomplete_and_directory_destination() {
         .unwrap_err();
     assert!(matches!(err, FinalizeError::Io(_)), "{err:?}");
     assert!(final_path(&e.root).join("sub").is_dir());
+    assert!(part_path(&e.root).exists());
+    assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -298,4 +301,99 @@ async fn partial_dir_and_copy_local() {
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
     assert!(!pd.join("dir/.irsync.f.bin.part").exists());
+}
+
+#[tokio::test]
+async fn read_only_mode_with_dir_dest_stays_resumable() {
+    let e = env();
+    let data = content(43);
+    let cl = chunk_list(&data);
+    fs::create_dir_all(final_path(&e.root)).unwrap();
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    let mut ent = entry(data.len() as u64);
+    ent.mode = 0o100444;
+    let err = w.finalize(&ent, &OPTS).await.unwrap_err();
+    assert!(matches!(err, FinalizeError::Io(_)), "{err:?}");
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert!(w.missing_chunks().is_empty());
+    // Even a .part left read-only by an older failure is reopened.
+    drop(w);
+    fs::set_permissions(part_path(&e.root), fs::Permissions::from_mode(0o444)).unwrap();
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert!(w.missing_chunks().is_empty());
+}
+
+#[tokio::test]
+async fn record_covering_part_of_a_chunk_does_not_adopt_it() {
+    let e = env();
+    let data = content(47);
+    let cl = chunk_list(&data);
+    fs::write(part_path(&e.root), &data).unwrap();
+    let c1 = &cl.chunks[1];
+    let ranges = v1::RangeSet {
+        ranges: vec![v1::Range {
+            offset: 0,
+            length: c1.offset + u64::from(c1.len) - 1,
+        }],
+    };
+    e.index
+        .lock()
+        .unwrap()
+        .put_partial(
+            &rel(),
+            &irsync::index::Partial {
+                expected_hash: *blake3::hash(&data).as_bytes(),
+                size: data.len() as u64,
+                ranges,
+                updated_at: 0,
+            },
+        )
+        .unwrap();
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert_eq!(
+        w.missing_chunks(),
+        (1..cl.chunks.len() as u32).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn wrong_length_chunk_is_rejected() {
+    let e = env();
+    let data = content(53);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let p = piece(&data, &cl, 0);
+    let err = w.write_chunk(0, &p[..p.len() - 1]).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(w.missing_chunks(), all(&cl));
+}
+
+#[tokio::test]
+async fn symlink_at_destination_is_replaced_and_target_untouched() {
+    let e = env();
+    let data = content(59);
+    let cl = chunk_list(&data);
+    let target = e.root.join("target.txt");
+    fs::write(&target, b"keep me").unwrap();
+    symlink(&target, final_path(&e.root)).unwrap();
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    let m = fs::symlink_metadata(final_path(&e.root)).unwrap();
+    assert!(m.file_type().is_file());
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
+    assert_eq!(fs::read(&target).unwrap(), b"keep me");
+}
+
+#[tokio::test]
+async fn zero_size_file_finalizes_empty() {
+    let e = env();
+    let cl = chunk_list(b"");
+    assert!(cl.chunks.is_empty());
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert!(w.missing_chunks().is_empty());
+    w.finalize(&entry(0), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), b"");
+    assert!(!part_path(&e.root).exists());
 }
