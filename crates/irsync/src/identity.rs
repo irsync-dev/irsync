@@ -3,7 +3,8 @@
 use iroh::{EndpointId, SecretKey};
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +17,8 @@ pub enum IdentityError {
     PassphraseRequired,
     #[error("only Ed25519 keys can be used as irsync identities")]
     NotEd25519,
+    #[error("refusing to overwrite existing file {0}")]
+    AlreadyExists(PathBuf),
     #[error("invalid endpoint id: {0}")]
     BadEndpointId(String),
 }
@@ -37,12 +40,19 @@ pub fn load_secret_key(path: &Path, passphrase: Option<&str>) -> Result<SecretKe
 
 /// Generate a new Ed25519 key, writing `path` (mode 0600) and `path.pub`.
 pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, IdentityError> {
+    let mut pub_path = path.as_os_str().to_owned();
+    pub_path.push(".pub");
+    let pub_path = PathBuf::from(pub_path);
+    for p in [path, pub_path.as_path()] {
+        if p.symlink_metadata().is_ok() {
+            return Err(IdentityError::AlreadyExists(p.to_path_buf()));
+        }
+    }
     let mut key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)?;
     key.set_comment(comment);
     key.write_openssh_file(path, LineEnding::LF)?;
-    let mut pub_path = path.as_os_str().to_owned();
-    pub_path.push(".pub");
-    key.public_key().write_openssh_file(Path::new(&pub_path))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    key.public_key().write_openssh_file(&pub_path)?;
     secret_of(&key)
 }
 

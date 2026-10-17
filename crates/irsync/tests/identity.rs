@@ -49,14 +49,34 @@ fn encrypted_key_needs_passphrase() {
 fn rsa_key_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rsa");
-    let kp = ssh_key::private::RsaKeypair::random(&mut OsRng, 2048).unwrap();
-    let key = PrivateKey::from(kp);
-    key.write_openssh_file(&path, LineEnding::LF).unwrap();
+    std::fs::write(&path, include_str!("fixtures/rsa_test_key")).unwrap();
     assert!(matches!(
         load_secret_key(&path, None),
         Err(IdentityError::NotEd25519)
     ));
-    assert!(endpoint_id_of_public_key(key.public_key()).is_none());
+    let pk = ssh_key::PublicKey::from_openssh(include_str!("fixtures/rsa_test_key.pub")).unwrap();
+    assert!(endpoint_id_of_public_key(&pk).is_none());
+}
+
+#[test]
+fn generate_refuses_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("id");
+    std::fs::write(&path, "precious").unwrap();
+    assert!(matches!(
+        generate_openssh(&path, "c"),
+        Err(IdentityError::AlreadyExists(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious");
+    assert!(!dir.path().join("id.pub").exists());
+
+    let path2 = dir.path().join("id2");
+    std::fs::write(dir.path().join("id2.pub"), "x").unwrap();
+    assert!(matches!(
+        generate_openssh(&path2, "c"),
+        Err(IdentityError::AlreadyExists(_))
+    ));
+    assert!(!path2.exists());
 }
 
 #[test]

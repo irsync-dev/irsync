@@ -36,16 +36,18 @@ impl Grants {
     }
 
     fn parse(spec: &str) -> Result<Self, AuthzError> {
+        let bad = || AuthzError::BadModules(spec.to_string());
         let mut grants = Grants::default();
-        for item in spec.split(',').filter(|i| !i.trim().is_empty()) {
-            let (name, mode) = item
-                .trim()
-                .rsplit_once(':')
-                .ok_or_else(|| AuthzError::BadModules(item.to_string()))?;
+        for item in spec.split(',') {
+            let (name, mode) = item.rsplit_once(':').ok_or_else(bad)?;
+            let (name, mode) = (name.trim(), mode.trim());
+            if name.is_empty() {
+                return Err(bad());
+            }
             let access = match mode {
                 "ro" => Access::ReadOnly,
                 "rw" => Access::ReadWrite,
-                _ => return Err(AuthzError::BadModules(item.to_string())),
+                _ => return Err(bad()),
             };
             if name == "*" {
                 grants.all = Some(access);
@@ -95,6 +97,10 @@ impl FileAuthorizer {
                 Some(spec) => Grants::parse(&spec)?,
                 None => Grants::default(),
             };
+            if map.contains_key(&id) {
+                tracing::warn!(%id, "duplicate key in authorized_keys; first entry wins");
+                continue;
+            }
             map.insert(id, grants);
         }
         Ok(Self { map })
@@ -105,33 +111,33 @@ impl FileAuthorizer {
 ///
 /// `ssh_key::authorized_keys::Entry` mis-reads `options type base64` (no
 /// comment) as a bare key, so fall back to splitting off the options.
-fn parse_line(line: &str) -> Result<(String, PublicKey), AuthzError> {
+fn parse_line(line: &str) -> Result<(ConfigOpts, PublicKey), AuthzError> {
     if let Ok(entry) = line.parse::<Entry>() {
-        return Ok((entry.config_opts().to_string(), entry.public_key().clone()));
+        return Ok((entry.config_opts().clone(), entry.public_key().clone()));
     }
     let (opts, key) = line.split_once(' ').ok_or(ssh_key::Error::FormatEncoding)?;
     let opts = ConfigOpts::new(opts)?;
-    Ok((opts.to_string(), PublicKey::from_openssh(key)?))
+    Ok((opts, PublicKey::from_openssh(key)?))
 }
 
-/// Extract the `modules="..."` value from an OpenSSH option string.
-fn modules_option(opts: &str) -> Option<String> {
-    let mut rest = opts;
-    while !rest.is_empty() {
-        let (key, after) = rest.split_once('=').unwrap_or((rest, ""));
-        let key = key.trim_start_matches(',').trim();
-        if let Some(quoted) = after.strip_prefix('"') {
-            let end = quoted.find('"')?;
-            if key == "modules" {
-                return Some(quoted[..end].to_string());
-            }
-            rest = &quoted[end + 1..];
-        } else {
-            let end = after.find(',').unwrap_or(after.len());
-            rest = &after[end..];
+/// Extract the `modules="..."` value from an OpenSSH option string, warning
+/// about every other option because irsync does not enforce them.
+fn modules_option(opts: &ConfigOpts) -> Option<String> {
+    let mut modules = None;
+    let mut ignored = Vec::new();
+    for opt in opts.iter() {
+        match opt.strip_prefix("modules=") {
+            Some(v) => modules = Some(v.trim_matches('"').to_string()),
+            None => ignored.push(opt),
         }
     }
-    None
+    if !ignored.is_empty() {
+        tracing::warn!(
+            options = %ignored.join(","),
+            "authorized_keys options other than `modules` are not enforced"
+        );
+    }
+    modules
 }
 
 impl Authorizer for FileAuthorizer {
