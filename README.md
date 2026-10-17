@@ -173,8 +173,10 @@ irsync-specific:
 Subcommands: `irsync daemon [--config PATH] [--show-id]`,
 `irsync keygen [--out PATH]`, and `irsync gc [-n]`, which removes abandoned
 partial files and dormant sessions (older than 7 days) for every local root
-irsync has synced. The client also does this for each root it syncs, and the
-daemon hourly.
+irsync has synced. The client also does this for each root it syncs (at most
+daily, or sooner once a partial file has been left untouched for an hour), and
+the daemon checks hourly but walks a module at most daily unless collectable
+partial files are waiting.
 
 ## Known limitations in version one
 

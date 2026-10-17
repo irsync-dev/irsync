@@ -133,6 +133,8 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
 
 /// Partial files and sessions untouched for this long are collected.
 const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+/// A partial record untouched this long makes the next run's GC walk due.
+const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// `irsync keygen`: writes the key pair, prints the public key line and the
 /// EndpointId (both on stdout, one per line).
@@ -422,13 +424,16 @@ async fn session(
     })
     .await??;
     if !dry_run {
-        // Housekeeping for this root; never fatal.
-        match irsync::daemon::gc(index.clone(), &root, CLIENT_GC_AGE, false).await {
-            Ok(r) => tracing::debug!(
+        // Housekeeping for this root, at most daily unless partial records
+        // have gone stale (an hour untouched); never fatal.
+        match irsync::daemon::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await
+        {
+            Ok(Some(r)) => tracing::debug!(
                 parts_removed = r.parts_removed.len(),
                 sessions_removed = r.sessions_removed,
                 "gc finished"
             ),
+            Ok(None) => tracing::debug!("gc not due"),
             Err(e) => tracing::debug!("gc failed: {e}"),
         }
     }

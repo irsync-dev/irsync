@@ -152,14 +152,17 @@ impl Daemon {
                         _ = stop.cancelled() => break,
                         _ = tick.tick() => {}
                     }
-                    match gc(index.clone(), &root, dormant, false).await {
-                        Ok(r) => tracing::info!(
+                    // Walks the module only when a day has passed or
+                    // collectable (dormant) partial records exist.
+                    match gc_if_due(index.clone(), &root, dormant, dormant).await {
+                        Ok(Some(r)) => tracing::info!(
                             module = %name,
                             parts_removed = r.parts_removed.len(),
                             parts_kept = r.parts_kept,
                             sessions_removed = r.sessions_removed,
                             "gc finished"
                         ),
+                        Ok(None) => tracing::debug!(module = %name, "gc not due"),
                         Err(e) => tracing::warn!(module = %name, "gc failed: {e}"),
                     }
                 }
@@ -563,8 +566,46 @@ pub async fn gc(
                 .len() as u32
         };
         report.errors.extend(walk_errors);
+        if !dry_run {
+            ix.set_last_gc_at(unix_now()).map_err(io_err)?;
+        }
         Ok(report)
     })
     .await
     .map_err(io_err)?
+}
+
+/// A full GC walk is due at most this often, unless stale partials wait.
+pub const GC_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+/// Whether a GC walk is due: never walked, the last walk is [`GC_EVERY`]
+/// old, or partial records have gone stale since (Ruling 32).
+pub fn gc_due(last_gc_at: Option<i64>, now: i64, stale_partials: bool) -> bool {
+    stale_partials || last_gc_at.is_none_or(|t| now.saturating_sub(t) >= GC_EVERY.as_secs() as i64)
+}
+
+/// Runs [`gc`] only when [`gc_due`] says so; `stale_after` is the age at
+/// which a partial record counts as stale. `None` when skipped.
+pub async fn gc_if_due(
+    index: IndexHandle,
+    root: &Path,
+    older_than: Duration,
+    stale_after: Duration,
+) -> io::Result<Option<GcReport>> {
+    let ix = index.clone();
+    let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
+        let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
+        let last = ix.last_gc_at().map_err(io_err)?;
+        let stale = !ix
+            .partials_older_than(stale_after)
+            .map_err(io_err)?
+            .is_empty();
+        Ok(gc_due(last, unix_now(), stale))
+    })
+    .await
+    .map_err(io_err)??;
+    if !due {
+        return Ok(None);
+    }
+    gc(index, root, older_than, false).await.map(Some)
 }

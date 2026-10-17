@@ -130,6 +130,24 @@ impl Index {
         Ok(v.map(|b| std::path::PathBuf::from(std::ffi::OsString::from_vec(b))))
     }
 
+    /// When garbage collection last walked this root (seconds since the epoch).
+    pub fn last_gc_at(&self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'last_gc_at'", [], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_last_gc_at(&mut self, secs: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_gc_at', ?1)",
+            [secs],
+        )?;
+        Ok(())
+    }
+
     /// Every session row (for GC reference checks).
     pub fn all_sessions(&self) -> Result<Vec<SessionRow>> {
         let mut st = self

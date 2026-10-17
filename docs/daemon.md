@@ -86,8 +86,9 @@ session records. It is safe to delete; the next sync rebuilds it, at the cost
 of re-hashing and of losing resumable sessions.
 
 Interrupted transfers leave `.irsync.<name>.part` files next to their
-destinations. The daemon collects, per module, once an hour (first run a minute
-after start):
+destinations. The daemon checks each module once an hour (first check a minute
+after start) and walks it only when its last collection is a day old or
+partial-file records older than `dormant_session_timeout` exist; it collects:
 
 - partial-file records and `.irsync.*.part` files untouched for longer than
   `dormant_session_timeout`, unless a stored session still lists the file;

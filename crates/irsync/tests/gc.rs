@@ -328,4 +328,44 @@ async fn gc_dry_run_counts_sessions() {
         .load_session_by_id(&[5; 16])
         .unwrap()
         .is_some());
+    // A dry run is not a collection: it does not postpone the next one.
+    assert_eq!(f.ix.lock().unwrap().last_gc_at().unwrap(), None);
+}
+
+#[test]
+fn client_gc_skipped_within_24h() {
+    use irsync::daemon::gc_due;
+    let t = 1_700_000_000;
+    assert!(gc_due(None, t, false), "never collected");
+    assert!(!gc_due(Some(t), t + 3600, false));
+    assert!(!gc_due(Some(t), t + DAY as i64 - 1, false));
+    assert!(gc_due(Some(t), t + DAY as i64, false));
+    assert!(gc_due(Some(t), t + 60, true), "stale partials make it due");
+}
+
+#[tokio::test]
+async fn gc_if_due_records_and_skips() {
+    use irsync::daemon::gc_if_due;
+    let f = fixture();
+    let (age, stale) = (Duration::from_secs(7 * DAY), Duration::from_secs(3600));
+    let first = gc_if_due(f.ix.clone(), f.root.path(), age, stale)
+        .await
+        .unwrap();
+    assert!(first.is_some(), "first run walks");
+    let at = f.ix.lock().unwrap().last_gc_at().unwrap().unwrap();
+    assert!((now() - at).abs() < 60);
+    // Within a day and nothing stale: skipped.
+    assert!(gc_if_due(f.ix.clone(), f.root.path(), age, stale)
+        .await
+        .unwrap()
+        .is_none());
+    // A partial record untouched for two hours makes it due again.
+    f.ix.lock()
+        .unwrap()
+        .put_partial(&rel("p"), &partial(now() - 7200))
+        .unwrap();
+    assert!(gc_if_due(f.ix.clone(), f.root.path(), age, stale)
+        .await
+        .unwrap()
+        .is_some());
 }
