@@ -237,6 +237,11 @@ pub async fn run_with_reconnect(
     opts: ReconnectOpts,
     mut on_state: impl FnMut(ConnState),
 ) -> anyhow::Result<Outcome> {
+    let bus = local.hooks.bus.clone();
+    let mut on_state = move |s: ConnState| {
+        bus.emit(super::Event::Conn(s));
+        on_state(s);
+    };
     let target: EndpointAddr = target.into();
     let key = client_session_key(target.id, &hello_for(None), &local, sync_opts).await?;
     let mut session = match stored_session(&local, key).await {

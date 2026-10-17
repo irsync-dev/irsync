@@ -67,6 +67,9 @@ impl Bucket {
     }
 }
 
+/// A callback for bytes sent.
+pub type ProgressFn = Arc<dyn Fn(u64) + Send + Sync>;
+
 struct Inner {
     conn: Connection,
     session_id: Vec<u8>,
@@ -77,6 +80,8 @@ struct Inner {
     bucket: Option<Mutex<Bucket>>,
     active: AtomicU32,
     max_active: AtomicU32,
+    /// Told of every chunk put on the wire (its length).
+    progress: std::sync::OnceLock<ProgressFn>,
     #[cfg(feature = "test-hooks")]
     truncate: std::sync::OnceLock<Arc<TruncateHook>>,
 }
@@ -164,6 +169,7 @@ impl Sender {
                 bucket: bwlimit.map(|b| Mutex::new(Bucket::new(b))),
                 active: AtomicU32::new(0),
                 max_active: AtomicU32::new(0),
+                progress: std::sync::OnceLock::new(),
                 #[cfg(feature = "test-hooks")]
                 truncate: std::sync::OnceLock::new(),
             }),
@@ -173,6 +179,11 @@ impl Sender {
     /// The hashing step before a `ChunkList` is sent.
     pub async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<FileDigest> {
         self.inner.hasher.digest(item).await
+    }
+
+    /// Installs (once) a callback told the length of every chunk sent.
+    pub fn set_progress(&self, f: ProgressFn) {
+        let _ = self.inner.progress.set(f);
     }
 
     /// Installs (once) a hook that cuts data streams short.
@@ -354,7 +365,11 @@ impl Inner {
                 None => read_chunk(file, c, name, r.first + k).await?,
             };
             self.throttle(c.len as u64).await;
+            let n = data.len() as u64;
             write_msg(send, &DataChunk { data }).await?;
+            if let Some(p) = self.progress.get() {
+                p(n);
+            }
         }
         send.finish().map_err(io::Error::other)?;
         match tokio::time::timeout(STOPPED_TIMEOUT, send.stopped()).await {

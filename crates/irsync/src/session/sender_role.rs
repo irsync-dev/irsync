@@ -85,6 +85,10 @@ struct SenderRole {
     sender: Arc<Sender>,
     listed: Listed,
     listing: Listing,
+    /// Summed size of the files acknowledged placed.
+    transferred_size: u64,
+    /// Items the receiver reported creating.
+    created: u64,
     /// Files in flight (no final ack yet, not given up).
     files: HashMap<u64, SFile>,
     /// Every file id ever planned (duplicate detection).
@@ -116,6 +120,7 @@ impl SenderRole {
                 scope: self.ctx.scope.clone(),
                 skip: None,
                 hard_links: self.ctx.opts.preserve.hard_links,
+                bus: Some(self.ctx.hooks.bus.clone()),
             },
             self.out.clone(),
             None,
@@ -219,6 +224,19 @@ impl SenderRole {
                 hooked: false,
             },
         );
+        self.ctx
+            .hooks
+            .bus
+            .emit(super::Event::FileStart(path.clone()));
+        let code = if p.action == irsync_proto::v1::plan_item::Action::Whole as i32 {
+            "<f+++++++++"
+        } else {
+            "<fc........"
+        };
+        self.ctx
+            .hooks
+            .bus
+            .emit(super::Event::Itemized(path.clone(), code.into()));
         self.persist.plan(PlanEntry {
             file_id,
             path: p.path,
@@ -389,7 +407,14 @@ impl SenderRole {
                 self.ctx
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.files.remove(&file_id);
+                if let Some(f) = self.files.remove(&file_id) {
+                    let size = f.digest.as_ref().map_or(0, |d| d.size);
+                    self.transferred_size += size;
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(super::Event::FileDone(f.path, size));
+                }
                 self.files_done += 1;
                 self.persist.done(file_id);
             }
@@ -422,6 +447,20 @@ impl SenderRole {
         };
         self.deleted = paths(&d.deleted);
         self.would_delete = paths(&d.would_delete);
+        for p in &self.deleted {
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::Itemized(p.clone(), "*deleting   ".into()));
+            self.ctx.hooks.bus.emit(super::Event::Deleted(p.clone()));
+        }
+        for p in &self.would_delete {
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::WouldDelete(p.clone()));
+        }
+        self.created = d.created;
         self.max_delete_reached = d.max_delete_reached;
         if d.deleted_omitted + d.would_delete_omitted > 0 {
             tracing::info!(
@@ -488,6 +527,10 @@ pub(super) async fn run(
         DEFAULT_SPLIT_THRESHOLD,
         ctx.opts.bwlimit,
     ));
+    {
+        let bus = ctx.hooks.bus.clone();
+        sender.set_progress(Arc::new(move |n| bus.emit(super::Event::Bytes(n))));
+    }
     #[cfg(feature = "test-hooks")]
     if let Some(t) = ctx.hooks.truncate_streams.clone() {
         sender.set_truncate(t);
@@ -504,6 +547,8 @@ pub(super) async fn run(
         abandoned: HashMap::new(),
         files_done: 0,
         bytes: 0,
+        transferred_size: 0,
+        created: 0,
         sending: 0,
         errors: Vec::new(),
         persist,
@@ -625,9 +670,13 @@ pub(super) async fn run(
     s.persist.finish().await;
     out.finish();
     // The receiver cannot finish before our ListingEnd, so the walk is over.
+    let mut listed = crate::scan::ListStats::default();
     let mut errors = match listing {
         Listing::Running(l) => match l.await {
-            Ok(summary) => walk_errors(&summary),
+            Ok(summary) => {
+                listed = summary.listed;
+                walk_errors(&summary)
+            }
             Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
         },
         Listing::Undecided | Listing::FromPlan => Vec::new(),
@@ -639,6 +688,11 @@ pub(super) async fn run(
         files_transferred: s.files_done,
         bytes_transferred: s.bytes,
         files_skipped: 0,
+        listed,
+        created: s.created,
+        transferred_size: s.transferred_size,
+        bytes_sent: ctx.conn.stats().udp_tx.bytes,
+        bytes_received: ctx.conn.stats().udp_rx.bytes,
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
         deleted: s.deleted,

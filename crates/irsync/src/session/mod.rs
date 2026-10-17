@@ -400,9 +400,61 @@ pub type EventLog = Arc<std::sync::Mutex<Vec<String>>>;
 pub type FirstChunkHook =
     Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
-/// Test-only hooks; empty in normal builds.
+/// Something worth telling the user about, emitted as a session runs.
+/// Events are best-effort: a slow reporter loses some (`Lagged`), and the
+/// final [`Outcome`] is authoritative for totals.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// A file's transfer began.
+    FileStart(RelPath),
+    /// A file was placed (receiver) or acknowledged (sender); its size.
+    FileDone(RelPath, u64),
+    /// File data bytes moved on a data stream.
+    Bytes(u64),
+    /// Entries listed so far (every 1000).
+    Scanned(u64),
+    Conn(reconnect::ConnState),
+    Deleted(RelPath),
+    /// `--dry-run`: this path would be deleted.
+    WouldDelete(RelPath),
+    /// rsync's `-i` code for an item (see [`crate::plan::itemize`]).
+    Itemized(RelPath, String),
+    /// A hard link `path` to `target` was made.
+    Hardlinked(RelPath, RelPath),
+}
+
+/// The channel events travel on. Sending never blocks; with nobody
+/// listening it is a cheap no-op.
+#[derive(Clone)]
+pub struct EventBus(tokio::sync::broadcast::Sender<Event>);
+
+impl EventBus {
+    pub fn new(capacity: usize) -> EventBus {
+        EventBus(tokio::sync::broadcast::channel(capacity).0)
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Event> {
+        self.0.subscribe()
+    }
+
+    pub fn emit(&self, ev: Event) {
+        if self.0.receiver_count() > 0 {
+            let _ = self.0.send(ev);
+        }
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        EventBus::new(4096)
+    }
+}
+
+/// Test-only hooks (plus the event bus); the hooks are empty in normal builds.
 #[derive(Clone, Default)]
 pub struct SideHooks {
+    /// Progress events for the user interface.
+    pub bus: EventBus,
     #[cfg(feature = "test-hooks")]
     pub on_first_chunk_sent: Option<FirstChunkHook>,
     /// Cuts data streams short (see [`crate::send::TruncateHook`]).
@@ -482,6 +534,15 @@ pub struct Outcome {
     /// Files this side's hashers had to read during the session.
     pub files_hashed: u64,
     pub errors: Vec<(RelPath, String)>,
+    /// Source entries by kind and their total size (`--stats`).
+    pub listed: crate::scan::ListStats,
+    /// Items created new at the destination (files, dirs, links, specials).
+    pub created: u64,
+    /// Sum of the sizes of the regular files transferred.
+    pub transferred_size: u64,
+    /// Bytes this side's connection sent and received (QUIC level).
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
     /// Paths the receiver deleted (`--delete*`), deepest first. A pushing
     /// client gets at most 1000 of them from the daemon.
     pub deleted: Vec<RelPath>,
@@ -495,6 +556,23 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// Adds another session's counts (several sources in one run).
+    pub fn absorb(&mut self, o: Outcome) {
+        self.files_transferred += o.files_transferred;
+        self.bytes_transferred += o.bytes_transferred;
+        self.files_skipped += o.files_skipped;
+        self.files_hashed += o.files_hashed;
+        self.listed.add(&o.listed);
+        self.created += o.created;
+        self.transferred_size += o.transferred_size;
+        self.bytes_sent += o.bytes_sent;
+        self.bytes_received += o.bytes_received;
+        self.errors.extend(o.errors);
+        self.deleted.extend(o.deleted);
+        self.would_delete.extend(o.would_delete);
+        self.max_delete_reached |= o.max_delete_reached;
+    }
+
     /// rsync's convention: 0 ok, 23 partial transfer due to error, 25
     /// deletions stopped at `--max-delete` (which takes precedence).
     pub fn exit_code(&self) -> i32 {

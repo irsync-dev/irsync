@@ -86,6 +86,8 @@ fn control_oneof_roundtrips() {
             max_delete_reached: true,
             deleted_omitted: 3,
             would_delete_omitted: 4,
+            created: 5,
+            transferred_size: 6,
         }),
         Msg::Error(Error {
             code: 7,

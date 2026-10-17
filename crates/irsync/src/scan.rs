@@ -17,8 +17,48 @@ pub struct ScanItem {
     pub ctime: (i64, u32),
 }
 
+/// Entries seen by kind, for `--stats`. Hard links count as regular files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListStats {
+    pub reg: u64,
+    pub dir: u64,
+    pub link: u64,
+    pub special: u64,
+    /// Sum of the sizes of the regular files.
+    pub total_size: u64,
+}
+
+impl ListStats {
+    pub fn count(&mut self, e: &irsync_proto::v1::FileEntry) {
+        use irsync_proto::v1::file_entry::Kind;
+        match e.kind() {
+            Kind::Regular | Kind::Hardlink => {
+                self.reg += 1;
+                self.total_size += e.size;
+            }
+            Kind::Directory => self.dir += 1,
+            Kind::Symlink => self.link += 1,
+            _ => self.special += 1,
+        }
+    }
+
+    pub fn add(&mut self, o: &ListStats) {
+        self.reg += o.reg;
+        self.dir += o.dir;
+        self.link += o.link;
+        self.special += o.special;
+        self.total_size += o.total_size;
+    }
+
+    pub fn files(&self) -> u64 {
+        self.reg + self.dir + self.link + self.special
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ScanSummary {
+    /// Filled by the session's listing (not by the walk itself).
+    pub listed: ListStats,
     pub entries: u64,
     pub incomplete: bool,
     pub errors: Vec<(RelPath, String)>,

@@ -152,6 +152,8 @@ struct Receiver {
     /// The stored plan says every path is planned.
     plan_complete: bool,
     files_done: u64,
+    /// Summed size of the files placed.
+    transferred_size: u64,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
     /// Open and finalize tasks, waited for when the session fails.
@@ -475,6 +477,10 @@ impl Receiver {
             }
         };
         f.digest = Some(o.digest.clone());
+        self.ctx
+            .hooks
+            .bus
+            .emit(super::Event::FileStart(f.path.clone()));
         let missing = o.missing.clone();
         if missing.is_empty() {
             f.st = St::Finalizing;
@@ -512,6 +518,9 @@ impl Receiver {
         let abandoned = f.abandoned.take();
         match result {
             Ok(()) => {
+                let (path, size) = (f.path.clone(), f.entry.size);
+                self.transferred_size += size;
+                self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
                 // Placed: acknowledged DONE even if the sender gave up meanwhile
                 // (it withdraws its error on this ack).
                 self.files.remove(&file_id);
@@ -711,6 +720,7 @@ pub(super) async fn run(
         max_delete_reached: false,
         plan_complete: false,
         files_done: 0,
+        transferred_size: 0,
         errors: Vec::new(),
         persist,
         tasks: TaskTracker::new(),
@@ -748,6 +758,7 @@ pub(super) async fn run(
                     scope: ctx.scope.clone(),
                     skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
                     hard_links: false,
+                    bus: None,
                 },
                 out.clone(),
                 Some(local_tx),
@@ -832,6 +843,8 @@ pub(super) async fn run(
         deleted: capped_paths(&r.deleted),
         would_delete: capped_paths(&r.would_delete),
         max_delete_reached: r.max_delete_reached,
+        created: report.created,
+        transferred_size: r.transferred_size,
         deleted_omitted: r.deleted.len().saturating_sub(MAX_DONE_PATHS) as u64,
         would_delete_omitted: r.would_delete.len().saturating_sub(MAX_DONE_PATHS) as u64,
     }));
@@ -857,6 +870,11 @@ pub(super) async fn run(
         files_transferred: r.files_done,
         bytes_transferred: bytes_total,
         files_skipped: report.skipped,
+        listed: report.listed,
+        created: report.created,
+        transferred_size: r.transferred_size,
+        bytes_sent: ctx.conn.stats().udp_tx.bytes,
+        bytes_received: ctx.conn.stats().udp_rx.bytes,
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
         deleted: r.deleted,

@@ -65,15 +65,21 @@ impl Receiver {
                         let (target, full) = (ctx.full(&l.target), ctx.full(&l.path));
                         place_hardlink(&target, &full, link, &l.entry, &apply)
                     };
-                    (l.file_id, l.path, res)
+                    (l.file_id, l.path, l.target, res)
                 })
                 .collect::<Vec<_>>())
         })
         .await
-        .unwrap_or_else(|e| vec![(0, RelPath::root(), Err(e))]);
-        for (file_id, path, res) in results {
+        .unwrap_or_else(|e| vec![(0, RelPath::root(), RelPath::root(), Err(e))]);
+        for (file_id, path, target, res) in results {
             match res {
-                Ok(()) => self.persist.done(file_id),
+                Ok(()) => {
+                    self.persist.done(file_id);
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(super::super::Event::Hardlinked(path, target));
+                }
                 Err(e) => {
                     tracing::warn!(?path, error = %e, "hard link failed");
                     self.errors.push((path, format!("hard link: {e}")));

@@ -174,6 +174,8 @@ pub(super) struct ListingSpec {
     /// `-H` (sender): later names of a multiply-linked regular file are
     /// listed as `HARDLINK`s to the first one.
     pub hard_links: bool,
+    /// Where to report scan progress (the sender's walk only).
+    pub bus: Option<super::EventBus>,
 }
 
 /// Walks `spec.root` and streams the listing to the peer (with cached hashes
@@ -201,6 +203,7 @@ pub(super) fn spawn_listing(
             })
         };
         let mut count = 0u64;
+        let mut stats = crate::scan::ListStats::default();
         // `-H`: the first listed name of each (dev, inode) with nlink > 1.
         let mut first_names: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
         while let Some(item) = rx.blocking_recv() {
@@ -250,15 +253,22 @@ pub(super) fn spawn_listing(
             out.send(Msg::Listing(ListingEntry {
                 entry: Some(entry.clone()),
             }));
+            stats.count(&entry);
             if let Some(tx) = &local {
                 let _ = tx.send(Side { entry, digest });
             }
             count += 1;
+            if count.is_multiple_of(1000) {
+                if let Some(b) = &spec.bus {
+                    b.emit(super::Event::Scanned(count));
+                }
+            }
         }
-        let summary = summary.blocking_recv().unwrap_or_else(|_| ScanSummary {
+        let mut summary = summary.blocking_recv().unwrap_or_else(|_| ScanSummary {
             incomplete: true,
             ..ScanSummary::default()
         });
+        summary.listed = stats;
         for (p, e) in &summary.errors {
             tracing::warn!(path = ?p, error = %e, "walk error");
         }

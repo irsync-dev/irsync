@@ -1,9 +1,12 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId};
 use irsync::cli::location::Location;
+use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
 use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
@@ -12,7 +15,7 @@ use irsync::identity::{load_secret_key, parse_endpoint_id};
 use irsync::index::Index;
 use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
-use irsync::session::{resolve_roots, LocalSide, Outcome};
+use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -58,7 +61,38 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
-    match rt.block_on(sync(args, opts)) {
+    let (result, reporter, elapsed) = rt.block_on(async {
+        let bus = EventBus::default();
+        // `-q` silences everything but errors. The live progress line is
+        // drawn only on a terminal and only when asked for.
+        let progress = opts.progress
+            || opts
+                .info
+                .as_deref()
+                .is_some_and(|i| i.split(',').any(|f| f.starts_with("progress")));
+        let tty = progress && std::io::stdout().is_terminal();
+        let task = (!opts.quiet).then(|| {
+            let r = Reporter::new(
+                Box::new(std::io::stdout()),
+                tty,
+                opts.verbose,
+                opts.stats,
+                opts.itemize,
+                opts.dry_run,
+            );
+            tokio::spawn(r.run(bus.subscribe(), None))
+        });
+        let start = Instant::now();
+        let result = sync(args, opts, &bus).await;
+        // Every session has dropped its sender clone: the reporter drains and stops.
+        drop(bus);
+        let reporter = match task {
+            Some(t) => t.await.ok(),
+            None => None,
+        };
+        (result, reporter, start.elapsed())
+    });
+    match result {
         Ok(Totals {
             outcome,
             sessions,
@@ -67,45 +101,23 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             for (path, msg) in &outcome.errors {
                 eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
             }
-            if !opts.quiet {
-                for p in &outcome.would_delete {
-                    println!("would delete {}", p.to_os().to_string_lossy());
-                }
-                if opts.verbose > 0 {
-                    for p in &outcome.deleted {
-                        println!("deleting {}", p.to_os().to_string_lossy());
-                    }
-                }
-            }
             if outcome.max_delete_reached {
                 eprintln!("irsync: deletions stopped due to the --max-delete limit");
             }
-            if !opts.quiet {
-                let mut line = format!(
-                    "{} files transferred, {} bytes",
-                    outcome.files_transferred, outcome.bytes_transferred
-                );
-                // Only the receiving side knows what was already up to date.
-                if outcome.files_skipped > 0 {
-                    line += &format!(", {} up to date", outcome.files_skipped);
-                }
-                if !outcome.deleted.is_empty() {
-                    line += &format!(", {} deleted", outcome.deleted.len());
-                }
-                if opts.dry_run {
-                    line += " (dry run)";
-                }
-                if !outcome.errors.is_empty() {
-                    line += &format!(", {} errors", outcome.errors.len());
-                }
-                println!("{line}");
+            if let Some(mut r) = reporter {
+                r.finish(&outcome, elapsed);
             }
-            match failed {
-                0 => outcome.exit_code(),
+            if failed == 0 {
+                outcome.exit_code()
+            } else if failed == sessions {
                 // Nothing got through: like a connection or usage error.
-                f if f == sessions => 1,
-                // Some sources synced, others did not: a partial transfer.
-                _ => 23,
+                1
+            } else if outcome.max_delete_reached {
+                // Some sources synced, others did not; 25 outranks 23.
+                25
+            } else {
+                // A partial transfer.
+                23
             }
         }
         Err(e) => {
@@ -140,7 +152,7 @@ struct Totals {
     failed: usize,
 }
 
-async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
+async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result<Totals> {
     let srcs = args
         .sync
         .src()
@@ -235,7 +247,7 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
         };
         sessions += 1;
         let out = match session(
-            &endpoint, target, direction, root, *local_co, hello, &filters, opts, ropts,
+            &endpoint, target, direction, root, *local_co, hello, &filters, opts, ropts, bus,
         )
         .await
         {
@@ -247,14 +259,7 @@ async fn sync(args: &Args, opts: &SyncOptions) -> anyhow::Result<Totals> {
                 continue;
             }
         };
-        total.files_transferred += out.files_transferred;
-        total.bytes_transferred += out.bytes_transferred;
-        total.files_skipped += out.files_skipped;
-        total.files_hashed += out.files_hashed;
-        total.errors.extend(out.errors);
-        total.deleted.extend(out.deleted);
-        total.would_delete.extend(out.would_delete);
-        total.max_delete_reached |= out.max_delete_reached;
+        total.absorb(out);
     }
     endpoint.close().await;
     Ok(Totals {
@@ -277,6 +282,7 @@ async fn session(
     filters: &Arc<FilterSet>,
     opts: &SyncOptions,
     ropts: ReconnectOpts,
+    bus: &EventBus,
 ) -> anyhow::Result<Outcome> {
     let dry_run = opts.dry_run;
     let index = tokio::task::spawn_blocking({
@@ -293,7 +299,8 @@ async fn session(
         }
     })
     .await??;
-    let side = LocalSide::new(root, local_contents_only, index, filters.clone());
+    let mut side = LocalSide::new(root, local_contents_only, index, filters.clone());
+    side.hooks.bus = bus.clone();
     let hello_for = |id: Option<[u8; 16]>| Hello {
         session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
         ..hello.clone()

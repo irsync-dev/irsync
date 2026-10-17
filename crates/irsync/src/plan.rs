@@ -277,3 +277,62 @@ pub fn merge_join(
         }
     })
 }
+
+/// rsync's `-i` code for one planned item: `YXcstpoguax` (11 characters).
+///
+/// `Y` is `dir` (`>` received by this host, `<` sent from it) for a data
+/// transfer, `c` for a local creation (directory, symlink, special), `h` for
+/// a hard link and `.` when only attributes change. `X` is the file type.
+/// A new item has `+` in every attribute position; otherwise a letter marks
+/// each attribute that differs between `src` and `dst` (`c` content, `s`
+/// size, `t` mtime, `p` permissions, `o` owner, `g` group; `u a x` stay
+/// dots as irsync has no atimes or ACLs). `c` is only shown when size and
+/// mtime match but the content (checksum) differs. A deletion is
+/// `*deleting   `.
+pub fn itemize(decision: &Decision, src: Option<&Side>, dst: Option<&Side>, dir: char) -> String {
+    if *decision == Decision::Delete {
+        return "*deleting   ".to_string();
+    }
+    let kind = src.and_then(|s| kind_of(&s.entry));
+    let letter = match kind {
+        Some(Kind::Directory) => 'd',
+        Some(Kind::Symlink) => 'L',
+        Some(Kind::CharDev | Kind::BlockDev) => 'D',
+        Some(Kind::Fifo | Kind::Socket) => 'S',
+        _ => 'f',
+    };
+    let update = match decision {
+        Decision::Whole | Decision::Delta | Decision::LocalCopy { .. } => dir,
+        Decision::Hardlink { .. } => 'h',
+        Decision::Mkdir | Decision::Symlink | Decision::Special => 'c',
+        Decision::MetaOnly | Decision::Skip | Decision::Delete => '.',
+    };
+    let attrs = match (src, dst) {
+        (Some(s), Some(d)) if !matches!(decision, Decision::Hardlink { .. }) => {
+            let (se, de) = (&s.entry, &d.entry);
+            let regular = kind == Some(Kind::Regular);
+            let flag = |on: bool, ch: char| if on { ch } else { '.' };
+            [
+                flag(
+                    regular
+                        && *decision == Decision::Delta
+                        && se.size == de.size
+                        && mtime(se) == mtime(de),
+                    'c',
+                ),
+                flag(regular && se.size != de.size, 's'),
+                flag(mtime(se) != mtime(de), 't'),
+                flag(se.mode & 0o7777 != de.mode & 0o7777, 'p'),
+                flag(se.uid != de.uid, 'o'),
+                flag(se.gid != de.gid, 'g'),
+                '.',
+                '.',
+                '.',
+            ]
+            .iter()
+            .collect::<String>()
+        }
+        _ => "+++++++++".to_string(),
+    };
+    format!("{update}{letter}{attrs}")
+}

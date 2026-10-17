@@ -81,6 +81,8 @@ impl Receiver {
                 .collect(),
             touched: HashSet::new(),
             deletes: None,
+            listed: Default::default(),
+            created: 0,
         });
         self.peer_listing_done = true;
         self.peer_listing_incomplete = plan.peer_listing_incomplete;

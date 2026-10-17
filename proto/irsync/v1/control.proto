@@ -27,6 +27,8 @@ message SessionDone {
   bool max_delete_reached = 6;                    // deletions stopped at --max-delete
   uint64 deleted_omitted = 7;                     // deleted paths beyond the cap
   uint64 would_delete_omitted = 8;                // would-delete paths beyond the cap
+  uint64 created = 9;                             // items the receiver created new (for --stats)
+  uint64 transferred_size = 10;                   // summed size of the files it placed
 }
 message Control {
   oneof msg {

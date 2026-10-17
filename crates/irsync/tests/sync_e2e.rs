@@ -490,3 +490,66 @@ async fn daemon_index_rows_are_module_relative() {
     })
     .await;
 }
+
+/// Events are really emitted during a session: every placed file, its bytes,
+/// itemize codes on a pull, and the connection state.
+async fn events_during_sync(flow: Flow) {
+    use irsync::session::reconnect::{ConnState, ReconnectOpts};
+    use irsync::session::Event;
+    let opts = archive_opts();
+    let h = Harness::new().await;
+    mixed_tree(h.src(flow));
+    let local = h.local_side();
+    let mut rx = local.hooks.bus.subscribe();
+    let (out, _) = h
+        .run_reconnect(&opts, flow, ReconnectOpts::default(), local)
+        .await;
+    let out = out.expect("sync session");
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    let done = events
+        .iter()
+        .filter(|e| matches!(e, Event::FileDone(..)))
+        .count() as u64;
+    assert!(done >= 1, "no FileDone in {events:?}");
+    assert_eq!(done, out.files_transferred);
+    let bytes: u64 = events
+        .iter()
+        .map(|e| if let Event::Bytes(n) = e { *n } else { 0 })
+        .sum();
+    assert_eq!(bytes, out.bytes_transferred);
+    let last_conn = events.iter().rev().find_map(|e| match e {
+        Event::Conn(c) => Some(*c),
+        _ => None,
+    });
+    assert_eq!(last_conn, Some(ConnState::Direct), "{events:?}");
+    let new_file = match flow {
+        Flow::Pull => ">f+++++++++",
+        Flow::Push => "<f+++++++++",
+    };
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::Itemized(p, c) if p.as_bytes() == b"small.txt" && c == new_file
+        )),
+        "no itemize for small.txt in {events:?}"
+    );
+    assert_eq!(
+        out.listed.reg,
+        regular_files(h.src(flow)),
+        "{:?}",
+        out.listed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_emits_events() {
+    within30(events_during_sync(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_emits_events() {
+    within30(events_during_sync(Flow::Pull)).await;
+}

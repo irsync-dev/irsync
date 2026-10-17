@@ -18,10 +18,22 @@ impl Receiver {
             Ok(rep) => {
                 for p in &rep.deleted {
                     self.ctx.hooks.event("delete", p);
+                    let bus = &self.ctx.hooks.bus;
+                    bus.emit(super::super::Event::Itemized(
+                        p.clone(),
+                        "*deleting   ".into(),
+                    ));
+                    bus.emit(super::super::Event::Deleted(p.clone()));
                 }
                 self.persist.add_deleted(rep.deleted.len() as u64);
                 self.max_delete_reached |= rep.stopped_at_max;
                 self.errors.extend(rep.errors);
+                for p in &rep.would_delete {
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(super::super::Event::WouldDelete(p.clone()));
+                }
                 self.would_delete.extend(rep.would_delete);
                 self.deleted.extend(rep.deleted.iter().cloned());
                 rep.deleted

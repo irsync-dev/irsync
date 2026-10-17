@@ -1,4 +1,5 @@
 pub mod location;
+pub mod progress;
 
 use crate::config::duration;
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -172,6 +173,7 @@ pub struct SyncArgs {
     pub delete: bool,
     #[arg(long)]
     pub delete_before: bool,
+    /// Accepted for rsync compatibility; irsync runs it like --delete-after.
     #[arg(long)]
     pub delete_during: bool,
     #[arg(long)]

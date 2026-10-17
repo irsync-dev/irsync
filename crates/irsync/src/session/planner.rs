@@ -36,7 +36,7 @@ use crate::delete::DeletePass;
 use crate::filter::Verdict;
 use crate::fs::meta::{apply_metadata, create_special};
 use crate::fs::paths::RelPath;
-use crate::plan::{decide, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
+use crate::plan::{decide, itemize, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -70,6 +70,10 @@ pub(super) struct DirEntry {
 #[derive(Default)]
 pub(super) struct PlannerReport {
     pub skipped: u64,
+    /// Source entries by kind (`--stats`).
+    pub listed: crate::scan::ListStats,
+    /// Items planned that did not exist at the destination.
+    pub created: u64,
     pub errors: Vec<(RelPath, String)>,
     /// Source directories in path order (applied in reverse at the end).
     pub dirs: Vec<DirEntry>,
@@ -281,6 +285,7 @@ impl Planner {
     }
 
     async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
+        self.report.listed.count(&src.entry);
         let is_dir = src.entry.kind() == Kind::Directory;
         if path.as_bytes().is_empty() {
             if !is_dir {
@@ -326,6 +331,16 @@ impl Planner {
                         .insert(path.clone(), (d.entry.dev, d.entry.inode));
                 }
             }
+        }
+        if decision != Decision::Skip {
+            if dst.is_none() {
+                self.report.created += 1;
+            }
+            let code = itemize(&decision, Some(&src), dst.as_ref(), '>');
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::Itemized(path.clone(), code));
         }
         if self.ctx.opts.dry_run {
             // Decide only: nothing is created, changed or requested.
