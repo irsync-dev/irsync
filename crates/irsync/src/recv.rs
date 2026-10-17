@@ -2,16 +2,17 @@
 //! file is re-hashed, and only then is it renamed over its final name. Progress
 //! is recorded in the index so a later session can adopt a half-written file.
 
-use crate::fs::meta::{apply_metadata, ApplyOpts};
+use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
+use crate::fs::safe::{nofollow_error, require_regular};
 use crate::index::{IndexHandle, Partial};
-use irsync_proto::chunk::{digest_reader, ChunkRecord};
+use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{ChunkList, FileEntry, Range, RangeSet};
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -113,6 +114,12 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
     for p in parents {
         part_dir.push(OsStr::from_bytes(p));
     }
+    if is_temp_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing a name reserved for irsync's temporary files",
+        ));
+    }
     let mut part_name = b".irsync.".to_vec();
     part_name.extend_from_slice(name);
     part_name.extend_from_slice(b".part");
@@ -122,34 +129,98 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
     ))
 }
 
+/// Whether a final path component is one of irsync's own temporary names
+/// (`.irsync.<name>.part` / `.irsync.<name>.tmp`). Such names are never
+/// listed, never accepted from a peer and never created as destinations.
+pub fn is_temp_name(name: &[u8]) -> bool {
+    name.starts_with(b".irsync.") && (name.ends_with(b".part") || name.ends_with(b".tmp"))
+}
+
+/// Never follow a symlink at the `.part` name, never block on a FIFO there.
+const PART_FLAGS: i32 = nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC;
+
 fn open_rw(part: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
+        .custom_flags(PART_FLAGS)
         .open(part)
+        .map_err(|e| nofollow_error(e, part))
 }
 
-/// Add owner read/write to our own `.part` file (best effort).
-fn make_owner_writable(part: &Path) -> io::Result<()> {
-    let mode = std::fs::symlink_metadata(part)?.permissions().mode();
-    std::fs::set_permissions(part, std::fs::Permissions::from_mode(mode | 0o600))
+/// Add owner read/write to our own open `.part` file (`fchmod`).
+fn make_owner_writable(file: &File) -> io::Result<()> {
+    let mode = file.metadata()?.permissions().mode();
+    file.set_permissions(std::fs::Permissions::from_mode(mode | 0o600))
 }
 
-/// Open the `.part` read/write. A previous `finalize` may have applied a read-only
-/// mode to it before failing; the file is ours (`.irsync.<name>.part`), so restore
-/// owner read/write and retry once.
+/// A previous `finalize` may have applied a read-only mode to the `.part`
+/// before failing: open it with whatever access the mode still allows
+/// (never following a symlink) and restore owner read/write on that fd.
+fn restore_owner_rw(part: &Path) -> io::Result<()> {
+    let open = |read: bool| {
+        OpenOptions::new()
+            .read(read)
+            .write(!read)
+            .custom_flags(PART_FLAGS)
+            .open(part)
+    };
+    let f = open(true).or_else(|_| open(false))?;
+    require_regular(&f, part)?;
+    make_owner_writable(&f)
+}
+
+/// Open the `.part` read/write without following a symlink at its name, and
+/// require a regular file. The file is ours (`.irsync.<name>.part`): if a
+/// read-only mode left by a failed finalize is in the way, restore owner
+/// read/write through a descriptor and retry once.
 fn open_part(part: &Path) -> io::Result<File> {
-    match open_rw(part) {
+    let file = match open_rw(part) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            if make_owner_writable(part).is_err() {
+            if restore_owner_rw(part).is_err() {
                 return Err(e);
             }
-            open_rw(part)
+            open_rw(part)?
         }
-        r => r,
+        r => r?,
+    };
+    require_regular(&file, part)?;
+    Ok(file)
+}
+
+/// Fails unless the `.part` path still names the file we hold open, so a
+/// rename by path can only move the file that was verified.
+fn still_same_file(file: &File, part: &Path) -> io::Result<()> {
+    let held = file.metadata()?;
+    let now = std::fs::symlink_metadata(part)?;
+    if !now.file_type().is_file() || now.dev() != held.dev() || now.ino() != held.ino() {
+        return Err(io::Error::other(format!(
+            "{} was replaced while it was written; not placing it",
+            part.display()
+        )));
     }
+    Ok(())
+}
+
+/// Reads a held file from its start with `pread` (no shared cursor).
+struct AtReader<'a> {
+    file: &'a File,
+    pos: u64,
+}
+
+impl Read for AtReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.file.read_at(buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+/// Chunks and hashes the held file (never re-opened by path).
+fn digest_held(file: &File) -> io::Result<FileDigest> {
+    digest_reader(AtReader { file, pos: 0 })
 }
 
 fn hash_at(file: &File, c: &ChunkRecord) -> io::Result<[u8; 32]> {
@@ -257,7 +328,7 @@ impl FileWriter {
         if self.file.metadata()?.len() == 0 {
             return Ok(());
         }
-        let found = digest_reader(File::open(&self.part)?)?;
+        let found = digest_held(&self.file)?;
         for f in found.chunks {
             if let Ok(i) = self.chunks.binary_search_by_key(&f.offset, |c| c.offset) {
                 if self.chunks[i] == f {
@@ -432,7 +503,7 @@ impl FileWriter {
         tokio::task::spawn_blocking(move || {
             file.set_len(size)?;
             file.sync_all()?;
-            let actual = digest_reader(File::open(&part)?)?.hash;
+            let actual = digest_held(&file)?.hash;
             if actual != expected {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
@@ -447,17 +518,21 @@ impl FileWriter {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-            let placed = apply_metadata(&part, &entry, &opts).and_then(|()| {
-                std::fs::rename(&part, &dest).map_err(|e| {
-                    io::Error::new(
-                        e.kind(),
-                        format!("rename {} -> {}: {e}", part.display(), dest.display()),
-                    )
-                })
-            });
+            // Metadata goes through the held descriptor; the rename (by
+            // path) only once the path still names that very file.
+            let placed = apply_metadata_fd(&*file, &entry, &opts)
+                .and_then(|()| still_same_file(&file, &part))
+                .and_then(|()| {
+                    std::fs::rename(&part, &dest).map_err(|e| {
+                        io::Error::new(
+                            e.kind(),
+                            format!("rename {} -> {}: {e}", part.display(), dest.display()),
+                        )
+                    })
+                });
             if let Err(e) = placed {
                 // The applied mode may lack owner write; keep the .part resumable.
-                if let Err(pe) = make_owner_writable(&part) {
+                if let Err(pe) = make_owner_writable(&file) {
                     tracing::warn!(path = ?part, error = %pe, "restoring u+w on .part failed");
                 }
                 return Err(e.into());

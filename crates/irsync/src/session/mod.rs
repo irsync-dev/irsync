@@ -468,7 +468,16 @@ pub struct SideHooks {
     /// Receives the receiver role's events (see [`EventLog`]).
     #[cfg(feature = "test-hooks")]
     pub events: Option<EventLog>,
+    /// The sender role lists these extra entries after an entry (crafts a
+    /// hostile listing).
+    #[cfg(feature = "test-hooks")]
+    pub inject_listing: Option<ListingHook>,
 }
+
+/// Test hook: entries to list right after `entry` (see [`SideHooks`]).
+#[cfg(feature = "test-hooks")]
+pub type ListingHook =
+    Arc<dyn Fn(&irsync_proto::v1::FileEntry) -> Vec<irsync_proto::v1::FileEntry> + Send + Sync>;
 
 impl SideHooks {
     /// Records one receiver event (test hook; a no-op otherwise).

@@ -441,3 +441,80 @@ async fn sparse_never_leaves_stale_bytes_of_an_old_part() {
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
     assert!(fs::read(final_path(&e.root)).unwrap() == data);
 }
+
+#[tokio::test]
+async fn part_symlink_is_refused() {
+    let e = env();
+    let data = content(71);
+    let cl = chunk_list(&data);
+    // A symlink planted at the `.part` name, to an existing file and to a
+    // name that does not exist yet: the writer must neither write through
+    // it, chmod its target, nor create the target.
+    let target = e.root.join("victim.txt");
+    fs::write(&target, b"keep me").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+    symlink(&target, part_path(&e.root)).unwrap();
+    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+        .err()
+        .expect("open through a symlinked .part must fail");
+    assert!(err.to_string().contains("symlink"), "{err}");
+    assert_eq!(fs::read(&target).unwrap(), b"keep me");
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+    assert!(!final_path(&e.root).exists());
+
+    fs::remove_file(part_path(&e.root)).unwrap();
+    let absent = e.root.join("created-through-link");
+    symlink(&absent, part_path(&e.root)).unwrap();
+    assert!(FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).is_err());
+    assert!(fs::symlink_metadata(&absent).is_err());
+    assert!(fs::symlink_metadata(part_path(&e.root))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[tokio::test]
+async fn part_that_is_not_a_regular_file_is_refused() {
+    let e = env();
+    let data = content(73);
+    let cl = chunk_list(&data);
+    nix::unistd::mkfifo(&part_path(&e.root), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+        .err()
+        .expect("a FIFO at the .part name must be refused");
+    assert!(err.to_string().contains("not a regular file"), "{err}");
+}
+
+#[tokio::test]
+async fn part_swapped_before_rename_is_not_placed() {
+    let e = env();
+    let data = content(79);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    // Someone replaces the `.part` path while the writer holds the file.
+    fs::remove_file(part_path(&e.root)).unwrap();
+    fs::write(part_path(&e.root), b"unverified bytes").unwrap();
+    let err = w
+        .finalize(&entry(data.len() as u64), &OPTS)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("replaced"), "{err}");
+    assert!(!final_path(&e.root).exists());
+    assert_eq!(fs::read(part_path(&e.root)).unwrap(), b"unverified bytes");
+}
+
+#[tokio::test]
+async fn temp_named_destination_is_refused() {
+    let e = env();
+    let data = content(83);
+    let cl = chunk_list(&data);
+    for name in [&b"dir/.irsync.x.part"[..], b"dir/.irsync.x.tmp"] {
+        let rel = RelPath::new(name).unwrap();
+        assert!(FileWriter::open(&e.root, &rel, &cl, None, e.index.clone()).is_err());
+    }
+    assert_eq!(fs::read_dir(e.root.join("dir")).unwrap().count(), 0);
+}

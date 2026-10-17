@@ -163,11 +163,11 @@ pub(super) fn spawn_reader(
 }
 
 /// irsync's own temporary files (`.irsync.<name>.part` / `.tmp`) never appear
-/// in a listing.
+/// in a listing, and a receiver refuses them in a peer's.
 pub(super) fn is_own_temp(path: &RelPath) -> bool {
-    path.components().last().is_some_and(|n| {
-        n.starts_with(b".irsync.") && (n.ends_with(b".part") || n.ends_with(b".tmp"))
-    })
+    path.components()
+        .last()
+        .is_some_and(crate::recv::is_temp_name)
 }
 
 /// Paths of regular files this side has listed: the only paths it will send.
@@ -186,6 +186,9 @@ pub(super) struct ListingSpec {
     pub hard_links: bool,
     /// Where to report scan progress (the sender's walk only).
     pub bus: Option<super::EventBus>,
+    /// Test hook: extra entries to list right after an entry.
+    #[cfg(feature = "test-hooks")]
+    pub inject: Option<super::ListingHook>,
 }
 
 /// Walks `spec.root` and streams the listing to the peer (with cached hashes
@@ -263,6 +266,12 @@ pub(super) fn spawn_listing(
             out.send(Msg::Listing(ListingEntry {
                 entry: Some(entry.clone()),
             }));
+            #[cfg(feature = "test-hooks")]
+            if let Some(inject) = &spec.inject {
+                for e in inject(&entry) {
+                    out.send(Msg::Listing(ListingEntry { entry: Some(e) }));
+                }
+            }
             stats.count(&entry);
             if let Some(tx) = &local {
                 let _ = tx.send(Side { entry, digest });

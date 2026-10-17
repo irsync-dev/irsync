@@ -120,6 +120,33 @@ pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Resul
     Ok(())
 }
 
+/// [`apply_metadata`] through an open descriptor of a regular file (never
+/// by path, so nothing can be swapped in underneath).
+pub fn apply_metadata_fd(
+    fd: impl std::os::fd::AsFd,
+    e: &FileEntry,
+    opts: &ApplyOpts,
+) -> io::Result<()> {
+    use nix::sys::stat::{fchmod, futimens};
+    use nix::unistd::fchown;
+    let fd = fd.as_fd();
+    let owner = opts.owner && nix::unistd::geteuid().is_root();
+    let group = opts.group && may_chgrp(e.gid);
+    if owner || group {
+        let uid = owner.then(|| Uid::from_raw(e.uid));
+        let gid = group.then(|| Gid::from_raw(e.gid));
+        fchown(fd, uid, gid).map_err(errno)?;
+    }
+    if opts.perms {
+        fchmod(fd, Mode::from_bits_truncate((e.mode & 0o7777) as _)).map_err(errno)?;
+    }
+    if opts.times {
+        let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
+        futimens(fd, &t, &t).map_err(errno)?;
+    }
+    Ok(())
+}
+
 /// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
 /// `mknod` is umask-subject, so callers follow with `apply_metadata` to set exact mode.
 pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {

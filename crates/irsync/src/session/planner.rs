@@ -28,7 +28,7 @@ use irsync_proto::v1::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use super::control::{Ev, Out};
+use super::control::{is_own_temp, Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
 use crate::cli::DeleteMode;
@@ -287,6 +287,18 @@ impl Planner {
     async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
         self.report.listed.count(&src.entry);
         let is_dir = src.entry.kind() == Kind::Directory;
+        if is_own_temp(&path) {
+            // Never a sender's real entry (listings leave them out): a peer
+            // naming one tries to make us write through our own temp files.
+            self.error(
+                &path,
+                "refusing a name reserved for irsync's temporary files",
+            );
+            if is_dir {
+                self.failed_dirs.insert(path);
+            }
+            return;
+        }
         if path.as_bytes().is_empty() {
             if !is_dir {
                 self.error(&path, "source root is not a directory");
