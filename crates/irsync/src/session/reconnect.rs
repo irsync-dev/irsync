@@ -246,11 +246,13 @@ pub async fn run_with_reconnect(
     let key = client_session_key(target.id, &hello_for(None), &local, sync_opts).await?;
     let mut session = match stored_session(&local, key).await {
         Some(rec) if !sync_opts.no_resume => {
-            eprintln!(
-                "resuming session {} from {}",
-                hex(&rec.id[..4]),
-                local_time(rec.updated_at)
-            );
+            if !sync_opts.quiet {
+                eprintln!(
+                    "resuming session {} from {}",
+                    hex(&rec.id[..4]),
+                    local_time(rec.updated_at)
+                );
+            }
             Some(rec.id)
         }
         Some(rec) => {
