@@ -77,6 +77,60 @@ struct Inner {
     bucket: Option<Mutex<Bucket>>,
     active: AtomicU32,
     max_active: AtomicU32,
+    #[cfg(feature = "test-hooks")]
+    truncate: std::sync::OnceLock<Arc<TruncateHook>>,
+}
+
+/// Test hook: finishes a data stream early, after `after_chunks` chunks,
+/// as if it had been cut short (once, or every time).
+#[cfg(feature = "test-hooks")]
+#[derive(Debug)]
+pub struct TruncateHook {
+    after_chunks: usize,
+    always: bool,
+    fired: AtomicU32,
+}
+
+#[cfg(feature = "test-hooks")]
+impl TruncateHook {
+    /// Cuts the first stream with more than `k` chunks.
+    pub fn once(k: usize) -> Arc<TruncateHook> {
+        Arc::new(TruncateHook {
+            after_chunks: k,
+            always: false,
+            fired: AtomicU32::new(0),
+        })
+    }
+
+    /// Cuts every stream with more than `k` chunks.
+    pub fn always(k: usize) -> Arc<TruncateHook> {
+        Arc::new(TruncateHook {
+            after_chunks: k,
+            always: true,
+            fired: AtomicU32::new(0),
+        })
+    }
+
+    /// Streams cut so far.
+    pub fn fired(&self) -> u32 {
+        self.fired.load(Ordering::SeqCst)
+    }
+
+    /// Where to cut a stream of `chunks` chunks, if at all.
+    fn cut(&self, chunks: usize) -> Option<usize> {
+        if chunks <= self.after_chunks {
+            return None;
+        }
+        let take = if self.always {
+            self.fired.fetch_add(1, Ordering::SeqCst);
+            true
+        } else {
+            self.fired
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        };
+        take.then_some(self.after_chunks)
+    }
 }
 
 pub struct Sender {
@@ -110,6 +164,8 @@ impl Sender {
                 bucket: bwlimit.map(|b| Mutex::new(Bucket::new(b))),
                 active: AtomicU32::new(0),
                 max_active: AtomicU32::new(0),
+                #[cfg(feature = "test-hooks")]
+                truncate: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -117,6 +173,12 @@ impl Sender {
     /// The hashing step before a `ChunkList` is sent.
     pub async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<FileDigest> {
         self.inner.hasher.digest(item).await
+    }
+
+    /// Installs (once) a hook that cuts data streams short.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_truncate(&self, hook: Arc<TruncateHook>) {
+        let _ = self.inner.truncate.set(hook);
     }
 
     /// High-water mark of simultaneously open data streams.
@@ -278,8 +340,15 @@ impl Inner {
             first_chunk_idx: r.first as u32,
         };
         write_msg(send, &header).await?;
+        #[cfg(feature = "test-hooks")]
+        let cut = self.truncate.get().and_then(|t| t.cut(chunks.len()));
         let mut next = Some(first);
         for (k, c) in chunks.iter().enumerate() {
+            #[cfg(feature = "test-hooks")]
+            if cut == Some(k) {
+                send.finish().map_err(io::Error::other)?;
+                return Ok(());
+            }
             let data = match next.take() {
                 Some(d) => d,
                 None => read_chunk(file, c, name, r.first + k).await?,

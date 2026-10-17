@@ -282,6 +282,7 @@ async fn file_changed_during_transfer_is_resent() {
                     })
                 })
             }),
+            ..SideHooks::default()
         };
 
         let out = h.run_side(&opts, flow, local).await.unwrap();

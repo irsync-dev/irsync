@@ -91,6 +91,8 @@ pub struct DaemonHandle {
     pub hashed: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Drops a connection once the daemon's data byte count crosses a limit.
     pub fault: std::sync::Arc<irsync::session::FaultInjector>,
+    /// `NeedChunks` re-requests sent by the daemon's receivers.
+    pub rerequests: std::sync::Arc<std::sync::atomic::AtomicU64>,
     hosted: std::sync::Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
     pub _state: tempfile::TempDir,
 }
@@ -142,6 +144,7 @@ pub async fn spawn_daemon(
     let hellos = daemon.hello_counter();
     let (sessions, hashed) = daemon.session_counters();
     let fault = daemon.fault_injector();
+    let rerequests = daemon.rerequest_counter();
     let hosted = daemon.hosted_sessions();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
@@ -154,6 +157,7 @@ pub async fn spawn_daemon(
         sessions,
         hashed,
         fault,
+        rerequests,
         hosted,
         _state: state,
     }

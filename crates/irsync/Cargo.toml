@@ -28,7 +28,6 @@ tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow = { workspace = true }
 futures = { workspace = true }
-libc = { workspace = true }
 noq-proto = { workspace = true }
 iroh-mainline-address-lookup = { workspace = true }
 iroh-mdns-address-lookup = { workspace = true }

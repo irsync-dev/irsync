@@ -4,6 +4,7 @@
 //! session stored by an earlier client process with the same key is resumed
 //! on start unless `--no-resume` was given.
 
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -13,7 +14,7 @@ use irsync_proto::v1::{error::Code, Hello};
 use rand_core::{OsRng, RngCore};
 
 use super::engine::{
-    client_session_key, run_client_inner, PeerError, SessionRefused, TransportError,
+    client_session_key, run_client_inner, Attempt, PeerError, SessionRefused, TransportError,
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, CLOSE_SUPERSEDED};
 use crate::cli::SyncOptions;
@@ -21,8 +22,8 @@ use crate::cli::SyncOptions;
 /// How long to keep trying, and how long to wait between attempts.
 #[derive(Debug, Clone, Copy)]
 pub struct ReconnectOpts {
-    /// Give up once this much time has passed since the first attempt
-    /// (zero: never reconnect).
+    /// Give up once an outage (time since the session last made progress)
+    /// lasts this long (zero: never reconnect).
     pub max: Duration,
     /// The first wait; it doubles per attempt up to `backoff_max`, jittered.
     pub backoff_min: Duration,
@@ -40,15 +41,52 @@ impl Default for ReconnectOpts {
 }
 
 impl ReconnectOpts {
-    /// The wait before reconnect `attempt` (1-based): exponential, capped,
-    /// plus up to a quarter of jitter, never below `backoff_min`.
+    /// The wait before reconnect `attempt` (1-based): exponential, capped
+    /// at `backoff_max`, then up to a quarter of jitter on top (so clients
+    /// at the cap do not synchronise); never below `backoff_min`.
     fn delay(&self, attempt: u32) -> Duration {
         let exp = self
             .backoff_min
             .saturating_mul(1u32 << attempt.saturating_sub(1).min(16));
         let base = exp.min(self.backoff_max).max(self.backoff_min);
-        let jitter = base.mul_f64(f64::from(OsRng.next_u32() % 1000) / 4000.0);
-        (base + jitter).min(self.backoff_max.max(self.backoff_min))
+        base + base.mul_f64(f64::from(OsRng.next_u32() % 1000) / 4000.0)
+    }
+}
+
+/// One outage: from the last connection that made progress (or the start)
+/// until the session moves again. A connection the daemon acknowledged but
+/// that moved no data and placed no file does not end it, so a daemon that
+/// accepts and then drops every connection cannot keep the client retrying
+/// past `max`.
+#[derive(Debug, Clone, Copy)]
+struct Outage {
+    start: Instant,
+    /// Failed connections since the last progress (sets the backoff).
+    failures: u32,
+}
+
+impl Outage {
+    fn new(now: Instant) -> Outage {
+        Outage {
+            start: now,
+            failures: 0,
+        }
+    }
+
+    /// A connection failed at `now`; `progress`: it moved data or placed a file.
+    fn failed(&mut self, now: Instant, progress: bool) {
+        if progress {
+            *self = Outage::new(now);
+        }
+        self.failures += 1;
+    }
+
+    fn remaining(&self, now: Instant, max: Duration) -> Duration {
+        max.saturating_sub(now.saturating_duration_since(self.start))
+    }
+
+    fn expired(&self, now: Instant, max: Duration) -> bool {
+        now.saturating_duration_since(self.start) >= max
     }
 }
 
@@ -108,11 +146,11 @@ fn classify(err: &anyhow::Error, conn: Option<&Connection>) -> Next {
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`.
 fn local_time(secs: i64) -> String {
-    let t = secs as libc::time_t;
+    let t = secs as nix::libc::time_t;
     // SAFETY: an all-zero `tm` is a valid value; `localtime_r` only writes
     // into the `tm` it is given and reads `t`.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let ok = unsafe { !libc::localtime_r(&t, &mut tm).is_null() };
+    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    let ok = unsafe { !nix::libc::localtime_r(&t, &mut tm).is_null() };
     if !ok {
         return format!("@{secs}");
     }
@@ -216,18 +254,14 @@ pub async fn run_with_reconnect(
         }
         None => None,
     };
-    // `max` bounds one outage: it starts when a connection that carried the
-    // session is lost and ends when a new one is acknowledged.
-    let mut outage_start = Instant::now();
-    // Reconnects so far (reported) and failures since the last acknowledged
-    // connection (sets the backoff).
-    let (mut attempt, mut failures) = (0u32, 0u32);
+    let mut outage = Outage::new(Instant::now());
+    let mut attempt = 0u32;
     loop {
         on_state(match attempt {
             0 => ConnState::Connecting,
             n => ConnState::Reconnecting { attempt: n },
         });
-        let mut acked = None;
+        let mut tried = Attempt::default();
         let (res, conn) = match endpoint.connect(target.clone(), irsync_proto::ALPN).await {
             Ok(conn) => {
                 let run = run_client_inner(
@@ -235,7 +269,7 @@ pub async fn run_with_reconnect(
                     hello_for(session),
                     local.clone(),
                     sync_opts,
-                    &mut acked,
+                    &mut tried,
                 );
                 let res = watch_paths(&conn, run, &mut on_state).await;
                 (res, Some(conn))
@@ -256,11 +290,10 @@ pub async fn run_with_reconnect(
             Ok(out) => return Ok(out),
             Err(e) => e,
         };
-        if acked.is_some() {
-            session = acked;
-            outage_start = Instant::now();
-            failures = 0;
+        if tried.acked.is_some() {
+            session = tried.acked;
         }
+        let progress = tried.progress.load(Ordering::Relaxed);
         match next {
             Some(Next::Fresh) if session.is_some() => {
                 // Gone on the daemon (finished or expired): start over at once.
@@ -271,12 +304,16 @@ pub async fn run_with_reconnect(
             Some(Next::Retry) => {}
             _ => return Err(err),
         }
-        if outage_start.elapsed() >= opts.max {
+        let now = Instant::now();
+        outage.failed(now, progress);
+        if outage.expired(now, opts.max) {
             return Err(err);
         }
         attempt += 1;
-        failures += 1;
-        let wait = opts.delay(failures);
+        // Never sleep past the end of the outage budget: one last try then.
+        let wait = opts
+            .delay(outage.failures)
+            .min(outage.remaining(now, opts.max));
         tracing::warn!(
             error = %format!("{err:#}"),
             attempt,
@@ -297,10 +334,29 @@ mod tests {
         for attempt in 1..40 {
             let d = o.delay(attempt);
             assert!(d >= Duration::from_secs(1), "{attempt}: {d:?}");
-            assert!(d <= Duration::from_secs(60), "{attempt}: {d:?}");
+            assert!(d <= Duration::from_secs(75), "{attempt}: {d:?}");
         }
         assert!(o.delay(1) < Duration::from_millis(1300));
         assert!(o.delay(20) >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn acked_without_progress_does_not_reset_outage() {
+        let max = Duration::from_secs(3);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut o = Outage::new(t0);
+        // Every connection is acknowledged and dropped before moving data.
+        for i in 1..=20u64 {
+            o.failed(at(i * 200), false);
+        }
+        assert_eq!(o.failures, 20);
+        assert!(o.expired(at(4000), max), "acks alone kept the outage open");
+        // A connection that moved data ends the outage and the backoff.
+        o.failed(at(4000), true);
+        assert_eq!(o.failures, 1);
+        assert!(!o.expired(at(5000), max));
+        assert!(o.expired(at(7000), max));
     }
 
     #[test]

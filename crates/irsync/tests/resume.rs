@@ -53,6 +53,14 @@ fn twenty_files(root: &Path) {
 fn no_reconnect() -> ReconnectOpts {
     ReconnectOpts {
         max: Duration::ZERO,
+        ..fast()
+    }
+}
+
+/// Default reconnect options with a 100 ms first backoff.
+fn fast() -> ReconnectOpts {
+    ReconnectOpts {
+        backoff_min: Duration::from_millis(100),
         ..ReconnectOpts::default()
     }
 }
@@ -66,9 +74,7 @@ async fn connection_drop_mid_transfer_completes_byte_exact() {
             twenty_files(h.src(flow));
             h.daemon.fault.drop_after_bytes(10 * MIB as u64);
 
-            let (out, reconnects) = h
-                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-                .await;
+            let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
             let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
             assert!(h.daemon.fault.fired(), "{flow:?}: the fault never fired");
             assert_eq!(reconnects, 1, "{flow:?}");
@@ -107,9 +113,7 @@ async fn client_restart_resumes_same_session() {
             assert_eq!(ids.len(), 1, "{flow:?}");
 
             // Second "process": a fresh LocalSide over the same dirs and state.
-            let (second, reconnects) = h
-                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-                .await;
+            let (second, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
             let second = second.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
             assert_eq!(reconnects, 0, "{flow:?}");
             assert!(second.resumed, "{flow:?}: HelloAck.resumed was false");
@@ -123,9 +127,7 @@ async fn client_restart_resumes_same_session() {
             assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
 
             // A finished session is gone: the next run starts fresh.
-            let (third, _) = h
-                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-                .await;
+            let (third, _) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
             let third = third.unwrap();
             assert!(!third.resumed, "{flow:?}: finished session resumed again");
             assert_eq!(third.bytes_transferred, 0, "{flow:?}");
@@ -149,9 +151,7 @@ async fn no_resume_flag_starts_fresh() {
             assert!(first.is_err(), "{flow:?}: first run should fail");
 
             opts.no_resume = true;
-            let (second, _) = h
-                .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-                .await;
+            let (second, _) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
             opts.no_resume = false;
             let second = second.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
             assert!(!second.resumed, "{flow:?}: --no-resume resumed");
@@ -206,9 +206,7 @@ async fn foreign_client_cannot_resume_session() {
         assert!(!h.module.path().join("evil.txt").exists());
 
         // The owner can still resume it.
-        let (again, _) = h
-            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-            .await;
+        let (again, _) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
         let again = again.unwrap();
         assert!(again.resumed);
         assert_eq!(again.session_id, id);
@@ -245,9 +243,7 @@ async fn incomplete_plan_resumes_with_fresh_listing() {
         ix.save_session(&rec.to_row()).unwrap();
         drop(ix);
 
-        let (out, _) = h
-            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-            .await;
+        let (out, _) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
         let out = out.unwrap_or_else(|e| panic!("{e:#}"));
         assert!(out.resumed);
         assert_eq!(out.session_id, id);
@@ -279,14 +275,111 @@ async fn unknown_session_falls_back_to_fresh() {
             .unwrap();
         assert_eq!(gone.len(), 1);
 
-        let (out, reconnects) = h
-            .run_reconnect(&opts, flow, ReconnectOpts::default(), h.local_side())
-            .await;
+        let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
         let out = out.unwrap_or_else(|e| panic!("{e:#}"));
         assert_eq!(reconnects, 0, "BAD_SESSION is not a reconnect");
         assert!(!out.resumed);
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_that_drops_after_ack_respects_max() {
+    within60(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_ack();
+        let ropts = ReconnectOpts {
+            max: Duration::from_secs(3),
+            ..fast()
+        };
+        let started = std::time::Instant::now();
+        let (out, reconnects) = h.run_reconnect(&opts, flow, ropts, h.local_side()).await;
+        let took = started.elapsed();
+        let err = out.expect_err("a daemon that never lets data through cannot succeed");
+        assert!(
+            took < Duration::from_secs(10),
+            "gave up after {took:?}: {err:#}"
+        );
+        assert!(
+            took >= Duration::from_secs(3),
+            "gave up early ({took:?}): {err:#}"
+        );
+        assert!(reconnects >= 2, "only {reconnects} reconnects");
+        let hellos = h.daemon.hellos.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(hellos >= 3, "only {hellos} connections reached the daemon");
+    })
+    .await;
+}
+
+/// Pushes one multi-chunk file with the client's data streams cut short by `hook`.
+async fn push_with_truncation(
+    hook: std::sync::Arc<irsync::send::TruncateHook>,
+) -> (anyhow::Result<irsync::session::Outcome>, Harness) {
+    let opts = archive_opts();
+    let flow = Flow::Push;
+    let h = Harness::new().await;
+    fs::write(h.src(flow).join("big.bin"), data(4 * MIB, 77)).unwrap();
+    fs::write(h.src(flow).join("small.txt"), b"fine").unwrap();
+    let mut local = h.local_side();
+    local.hooks.truncate_streams = Some(hook);
+    let out = h.run_side(&opts, flow, local).await;
+    (out, h)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn short_stream_is_re_requested_and_completes() {
+    within60(async {
+        let hook = irsync::send::TruncateHook::once(2);
+        let (out, h) = push_with_truncation(hook.clone()).await;
+        let out = out.unwrap();
+        assert_eq!(hook.fired(), 1, "the stream was never cut");
+        assert_eq!(
+            h.daemon
+                .rerequests
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 2);
+        assert_trees_equal(
+            h.src(Flow::Push),
+            h.dst(Flow::Push),
+            &archive_opts().preserve,
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn four_short_streams_give_write_error() {
+    within60(async {
+        let hook = irsync::send::TruncateHook::always(2);
+        let (out, h) = push_with_truncation(hook.clone()).await;
+        let out = out.unwrap();
+        // The first stream and three re-requests, all cut short.
+        assert_eq!(hook.fired(), 4);
+        assert_eq!(
+            h.daemon
+                .rerequests
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        assert_eq!(out.exit_code(), 23);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"big.bin");
+        assert!(msg.contains("incomplete after retries"), "{msg}");
+        assert_eq!(out.files_transferred, 1);
+        assert!(!h.dst(Flow::Push).join("big.bin").exists());
+        assert_eq!(
+            fs::read(h.dst(Flow::Push).join("small.txt")).unwrap(),
+            b"fine"
+        );
     })
     .await;
 }

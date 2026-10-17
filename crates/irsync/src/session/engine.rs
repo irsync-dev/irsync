@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -143,8 +144,13 @@ pub(super) struct Ctx {
     pub record: Option<SessionRecord>,
     /// Daemon: the client's EndpointId, stored with the session.
     pub remote_id: Option<Vec<u8>>,
+    /// Set once file data crossed or a file was acknowledged DONE.
+    pub progress: Arc<AtomicBool>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<super::FaultInjector>>,
+    /// Counts `NeedChunks` re-requests (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// The session root: listing paths are relative to it.
     pub root: PathBuf,
     /// The root the index was opened for (`root` = `base` + `scope.prefix`).
@@ -340,17 +346,25 @@ pub async fn run_client(
     local: LocalSide,
     opts: &SyncOptions,
 ) -> anyhow::Result<Outcome> {
-    run_client_inner(conn, hello, local, opts, &mut None).await
+    run_client_inner(conn, hello, local, opts, &mut Attempt::default()).await
 }
 
-/// [`run_client`], also reporting the session id as soon as the daemon has
-/// acknowledged it (so a failed run can be resumed).
+/// What one connection of a client session achieved, known even when it failed.
+#[derive(Debug, Default)]
+pub(super) struct Attempt {
+    /// The session id, once the daemon acknowledged it (so a failed run can be resumed).
+    pub acked: Option<[u8; 16]>,
+    /// Set once file data crossed or a file was acknowledged DONE.
+    pub progress: Arc<AtomicBool>,
+}
+
+/// [`run_client`], also reporting what the connection achieved in `attempt`.
 pub(super) async fn run_client_inner(
     conn: Connection,
     hello: Hello,
     local: LocalSide,
     opts: &SyncOptions,
-    acked: &mut Option<[u8; 16]>,
+    attempt: &mut Attempt,
 ) -> anyhow::Result<Outcome> {
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
@@ -365,7 +379,7 @@ pub(super) async fn run_client_inner(
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     let ack = read_hello_reply(&mut recv).await?;
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
-    *acked = Some(session_id);
+    attempt.acked = Some(session_id);
     tracing::info!(
         session = %control::hex(&session_id),
         resumed = ack.resumed,
@@ -393,8 +407,11 @@ pub(super) async fn run_client_inner(
         resumed: ack.resumed,
         record,
         remote_id: None,
+        progress: attempt.progress.clone(),
         #[cfg(feature = "test-hooks")]
         fault: None,
+        #[cfg(feature = "test-hooks")]
+        rerequests: None,
         base: local.root.clone(),
         root: local.root,
         scope: IndexScope::new(local.index, RelPath::root()),
@@ -534,6 +551,19 @@ pub async fn serve_daemon(
         },
     )
     .await?;
+    #[cfg(feature = "test-hooks")]
+    if shared.fault.as_ref().is_some_and(|f| f.drops_after_ack()) {
+        let mut recv = recv;
+        let mut byte = [0u8; 1];
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            AsyncReadExt::read(&mut recv, &mut byte),
+        )
+        .await;
+        tracing::warn!("fault injection: dropping the connection after HelloAck");
+        conn.close(99u32.into(), b"fault");
+        bail!("fault injection");
+    }
     tracing::info!(
         session = %control::hex(&session_id),
         peer = %remote.fmt_short(),
@@ -557,8 +587,11 @@ pub async fn serve_daemon(
         resumed,
         record,
         remote_id: Some(remote.as_bytes().to_vec()),
+        progress: Arc::default(),
         #[cfg(feature = "test-hooks")]
         fault: shared.fault.clone(),
+        #[cfg(feature = "test-hooks")]
+        rerequests: Some(shared.rerequests.clone()),
         root,
         base: module_root,
         scope: IndexScope::new(index, rel),

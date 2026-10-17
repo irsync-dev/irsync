@@ -205,7 +205,10 @@ impl Receiver {
                 continue;
             }
             let (Ok(path), Some(entry)) = (RelPath::new(&e.path), e.entry) else {
-                tracing::warn!(file_id = e.file_id, "unusable stored plan entry; skipped");
+                let path = RelPath::new(&e.path).unwrap_or_default();
+                tracing::warn!(?path, file_id = e.file_id, "unusable stored plan entry");
+                self.errors
+                    .push((path, "not resumed: unusable stored plan entry".into()));
                 continue;
             };
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
@@ -303,6 +306,10 @@ impl Receiver {
             return;
         }
         f.rerequests += 1;
+        #[cfg(feature = "test-hooks")]
+        if let Some(c) = &self.ctx.rerequests {
+            c.fetch_add(1, Ordering::SeqCst);
+        }
         tracing::info!(path = ?f.path, missing = missing.len(), "re-requesting chunks");
         route.pending.fetch_add(missing.len(), Ordering::SeqCst);
         self.out.send(Msg::Need(NeedChunks {
@@ -528,6 +535,7 @@ impl Receiver {
                 self.active -= 1;
                 self.files_done += 1;
                 self.persist.done(file_id);
+                self.ctx.progress.store(true, Ordering::Relaxed);
                 self.ack(file_id, Status::Done, String::new());
             }
             Err(e) if abandoned.is_some() => {

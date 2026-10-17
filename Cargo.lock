@@ -1905,7 +1905,6 @@ dependencies = [
  "irsync",
  "irsync-proto",
  "jwalk",
- "libc",
  "nix",
  "noq-proto",
  "prost",

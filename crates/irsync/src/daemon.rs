@@ -106,6 +106,12 @@ impl Daemon {
         self.shared.hosting.fault.clone().unwrap_or_default()
     }
 
+    /// `NeedChunks` re-requests sent by this daemon's receivers.
+    #[cfg(feature = "test-hooks")]
+    pub fn rerequest_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.shared.hosting.rerequests.clone()
+    }
+
     /// Ids of every session hosted so far (fresh or resumed), in order.
     #[cfg(feature = "test-hooks")]
     pub fn hosted_sessions(&self) -> Arc<std::sync::Mutex<Vec<[u8; 16]>>> {

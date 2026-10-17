@@ -337,6 +337,9 @@ impl SenderRole {
             // Counted even if the file was acknowledged meanwhile.
             Ok(b) => {
                 self.bytes += b;
+                self.ctx
+                    .progress
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 #[cfg(feature = "test-hooks")]
                 if let Some(f) = &self.ctx.fault {
                     f.observe(self.bytes, &self.ctx.conn);
@@ -378,6 +381,9 @@ impl SenderRole {
         }
         match status {
             Ok(Status::Done) => {
+                self.ctx
+                    .progress
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 self.files.remove(&file_id);
                 self.files_done += 1;
                 self.persist.done(file_id);
@@ -464,6 +470,10 @@ pub(super) async fn run(
         DEFAULT_SPLIT_THRESHOLD,
         ctx.opts.bwlimit,
     ));
+    #[cfg(feature = "test-hooks")]
+    if let Some(t) = ctx.hooks.truncate_streams.clone() {
+        sender.set_truncate(t);
+    }
     let mut s = SenderRole {
         ctx: ctx.clone(),
         out: out.clone(),

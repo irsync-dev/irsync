@@ -325,6 +325,7 @@ pub struct FaultInjector {
     limit: std::sync::atomic::AtomicU64,
     armed: std::sync::atomic::AtomicBool,
     fired: std::sync::atomic::AtomicBool,
+    after_ack: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "test-hooks")]
@@ -333,6 +334,18 @@ impl FaultInjector {
         use std::sync::atomic::Ordering::SeqCst;
         self.limit.store(n, SeqCst);
         self.armed.store(true, SeqCst);
+    }
+
+    /// Every session from now on: close the connection as soon as the
+    /// client has the `HelloAck` (its first frame after it arrives), before
+    /// any file data moves. Repeatedly, not once.
+    pub fn drop_after_ack(&self) {
+        self.after_ack
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn drops_after_ack(&self) -> bool {
+        self.after_ack.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn fired(&self) -> bool {
@@ -358,6 +371,9 @@ pub struct DaemonSessions {
     pub registry: Arc<SessionRegistry>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<FaultInjector>>,
+    /// `NeedChunks` re-requests sent by daemon receivers (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub rerequests: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Called by the sender role after the first chunk of a path went out, before
@@ -371,6 +387,9 @@ pub type FirstChunkHook =
 pub struct SideHooks {
     #[cfg(feature = "test-hooks")]
     pub on_first_chunk_sent: Option<FirstChunkHook>,
+    /// Cuts data streams short (see [`crate::send::TruncateHook`]).
+    #[cfg(feature = "test-hooks")]
+    pub truncate_streams: Option<Arc<crate::send::TruncateHook>>,
 }
 
 impl std::fmt::Debug for SideHooks {

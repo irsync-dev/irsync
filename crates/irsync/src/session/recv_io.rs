@@ -216,7 +216,9 @@ fn range_len(chunks: &[ChunkRecord], first: usize, offset: u64, length: u64) -> 
 
 /// Reads one data stream into the current writer of its file. Chunks are
 /// verified one by one; a stream that ends early (EOF or reset) leaves its
-/// remaining chunks missing, so the file can never complete from it.
+/// remaining chunks missing, so the file can never complete from it. Every
+/// stream routed to a file is accounted against the file's pending request,
+/// whatever way it ends, so the request always drains.
 async fn read_stream(
     ctx: Arc<Ctx>,
     routes: Routes,
@@ -224,9 +226,6 @@ async fn read_stream(
     bytes: Arc<AtomicU64>,
     mut s: RecvStream,
 ) {
-    let stop = |s: &mut RecvStream, code: u32| {
-        let _ = s.stop(VarInt::from_u32(code));
-    };
     let header: DataStreamHeader = match read_msg(&mut s).await {
         Ok(Some(h)) => h,
         Ok(None) => return,
@@ -249,76 +248,15 @@ async fn read_stream(
         tracing::debug!(file_id, "data stream for a file not being received");
         return stop(&mut s, 0);
     };
-    let first = header.first_chunk_idx as usize;
-    let Some(n) = range_len(&route.chunks, first, header.offset, header.length) else {
-        tracing::warn!(file_id, "data stream range does not match the chunk list");
-        return stop(&mut s, 1);
-    };
-    let mut arrived = 0;
-    for k in 0..n {
-        let data = match read_msg::<DataChunk, _>(&mut s).await {
-            Ok(Some(c)) => c.data,
-            Ok(None) => break,
-            Err(e) => {
-                tracing::debug!(file_id, error = %e, "data stream failed");
-                break;
-            }
-        };
-        arrived += 1;
-        let _total = bytes.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
-        #[cfg(feature = "test-hooks")]
-        if let Some(f) = &ctx.fault {
-            f.observe(_total, &ctx.conn);
-        }
-        let mut guard = route.slot.lock().await;
-        let Some(w) = guard.as_mut() else {
-            // The writer was retired (new chunk list, failure): drop the rest.
-            drop(guard);
-            return stop(&mut s, 0);
-        };
-        match w.write_chunk((first + k) as u32, &data).await {
-            Ok(()) => {}
-            // Stale or corrupt data never verifies; the chunk stays missing.
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
-            }
-            Err(e) => {
-                drop(guard);
-                let _ = events.send(Ev::Recv(Done::StreamFailed {
-                    file_id,
-                    gen: route.gen,
-                    msg: e.to_string(),
-                }));
-                return stop(&mut s, 0);
-            }
-        }
-    }
-    if arrived < n {
-        tracing::debug!(
-            file_id,
-            arrived,
-            promised = n,
-            "incomplete range; its missing chunks stay missing"
-        );
-    } else {
-        // Read to the end so the sender sees a clean finish rather than STOP.
-        match read_msg::<DataChunk, _>(&mut s).await {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                tracing::warn!(file_id, "data stream carries more chunks than its header");
-                stop(&mut s, 1);
-            }
-            Err(e) => tracing::debug!(file_id, error = %e, "data stream end"),
-        }
-    }
+    let accounted = read_range(&ctx, &route, &events, &bytes, &header, &mut s).await;
     // This stream's range is accounted for, delivered or not.
     let before = route
         .pending
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| {
-            Some(p.saturating_sub(n))
+            Some(p.saturating_sub(accounted))
         })
         .unwrap_or(0);
-    let drained = before <= n;
+    let drained = before <= accounted;
     let mut guard = route.slot.lock().await;
     let Some(complete) = guard.as_ref().map(|w| w.missing_chunks().is_empty()) else {
         return;
@@ -337,6 +275,90 @@ async fn read_stream(
             gen: route.gen,
         }));
     }
+}
+
+fn stop(s: &mut RecvStream, code: u32) {
+    let _ = s.stop(VarInt::from_u32(code));
+}
+
+/// Writes the stream's chunks; returns how many requested chunks the stream
+/// accounts for (all outstanding ones when its range is unusable).
+async fn read_range(
+    ctx: &Ctx,
+    route: &Route,
+    events: &mpsc::UnboundedSender<Ev>,
+    bytes: &AtomicU64,
+    header: &DataStreamHeader,
+    s: &mut RecvStream,
+) -> usize {
+    let file_id = header.file_id;
+    let first = header.first_chunk_idx as usize;
+    let Some(n) = range_len(&route.chunks, first, header.offset, header.length) else {
+        tracing::warn!(file_id, "data stream range does not match the chunk list");
+        stop(s, 1);
+        return usize::MAX;
+    };
+    let mut arrived = 0;
+    for k in 0..n {
+        let data = match read_msg::<DataChunk, _>(s).await {
+            Ok(Some(c)) => c.data,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::debug!(file_id, error = %e, "data stream failed");
+                break;
+            }
+        };
+        arrived += 1;
+        ctx.progress.store(true, Ordering::Relaxed);
+        let _total = bytes.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
+        #[cfg(feature = "test-hooks")]
+        if let Some(f) = &ctx.fault {
+            f.observe(_total, &ctx.conn);
+        }
+        let mut guard = route.slot.lock().await;
+        let Some(w) = guard.as_mut() else {
+            // The writer was retired (new chunk list, failure): drop the rest.
+            drop(guard);
+            stop(s, 0);
+            return n;
+        };
+        match w.write_chunk((first + k) as u32, &data).await {
+            Ok(()) => {}
+            // Stale or corrupt data never verifies; the chunk stays missing.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
+            }
+            Err(e) => {
+                drop(guard);
+                let _ = events.send(Ev::Recv(Done::StreamFailed {
+                    file_id,
+                    gen: route.gen,
+                    msg: e.to_string(),
+                }));
+                stop(s, 0);
+                return n;
+            }
+        }
+    }
+    if arrived < n {
+        tracing::debug!(
+            file_id,
+            arrived,
+            promised = n,
+            "incomplete range; its missing chunks stay missing"
+        );
+    } else {
+        // Read to the end so the sender sees a clean finish rather than STOP.
+        match read_msg::<DataChunk, _>(s).await {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                tracing::warn!(file_id, "data stream carries more chunks than its header");
+                stop(s, 1);
+            }
+            Err(e) => tracing::debug!(file_id, error = %e, "data stream end"),
+        }
+    }
+    n
 }
 
 pub(super) async fn accept_streams(
