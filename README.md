@@ -155,13 +155,13 @@ rsync-compatible, same spelling and semantics:
 | `--partial-dir` | where partial files live (pull only) |
 | `--ignore-errors` | delete even after I/O errors |
 | `--stats`, `--progress`, `--info=progress2`, `-i` / `--itemize-changes` | reporting |
-| `--timeout` | I/O timeout in seconds |
+| `--timeout` | inactivity timeout in seconds: a connection that moves nothing for this long is dropped and the session reconnects |
 
 irsync-specific:
 
 | Flag | Meaning |
 | --- | --- |
-| `--parallel N` | files in flight at once |
+| `--parallel N` | files in flight at once (default: the host's `Parallel`, else 32) |
 | `--reconnect DURATION` | how long to keep redialling (`0` = give up like rsync) |
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
 | `--no-dht` | do not use the mainline DHT for lookup |
@@ -179,6 +179,9 @@ daemon hourly.
 ## Known limitations in version one
 
 - `--delete-during` runs as `--delete-after`.
+- irsync always recurses: `-r` is accepted and implied, with or without `-a`.
+- The daemon drops an authenticated connection that has been idle for 10
+  minutes (the client reconnects and resumes).
 - Only the delete, dry-run, itemize, `-u` and `-c` options are sent to the
   daemon. Filters (`--exclude`, `--include`, ...) apply only on the sending
   side, so a push with `--delete` plus filters also needs `--delete-excluded`,

@@ -110,13 +110,16 @@ pub(super) fn spawn_reader(
     mut listing: Option<mpsc::UnboundedSender<Side>>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
+    activity: Arc<std::sync::atomic::AtomicU64>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut announced = false;
         // Receiver role: what the peer lists, reported at its `ListingEnd`.
         let mut seen = crate::scan::ListStats::default();
         loop {
-            match read_msg::<Control, _>(&mut recv).await {
+            let frame = read_msg::<Control, _>(&mut recv).await;
+            activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match frame {
                 Ok(Some(Control { msg: Some(msg) })) => match msg {
                     Msg::Listing(ListingEntry { entry: Some(e) }) => match &listing {
                         Some(tx) => {

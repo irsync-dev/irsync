@@ -95,6 +95,34 @@ async fn connection_drop_mid_transfer_completes_byte_exact() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stalled_connection_is_dropped_after_timeout() {
+    within60(async {
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            fs::write(h.src(flow).join("f"), data(100 * 1024, 3)).unwrap();
+            // The daemon acknowledges Hello, then goes silent.
+            h.daemon.fault.stall_after_ack_once();
+            let mut opts = archive_opts();
+            opts.timeout = Some(Duration::from_secs(2));
+            let start = std::time::Instant::now();
+            let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
+            let elapsed = start.elapsed();
+            let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            // Redialled (the stalled session was never stored, so the
+            // daemon answers BAD_SESSION and a fresh one follows at once).
+            assert!(reconnects >= 1, "{flow:?}");
+            assert!(
+                elapsed < Duration::from_secs(6),
+                "{flow:?}: took {elapsed:?}"
+            );
+            assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn resumed_pull_keeps_inflight_cap() {
     within60(async {
         let opts = archive_opts();

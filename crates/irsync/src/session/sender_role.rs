@@ -541,8 +541,11 @@ pub(super) async fn run(
         ctx.opts.bwlimit,
     ));
     {
-        let bus = ctx.hooks.bus.clone();
-        sender.set_progress(Arc::new(move |n| bus.emit(super::Event::Bytes(n))));
+        let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
+        sender.set_progress(Arc::new(move |n| {
+            activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            bus.emit(super::Event::Bytes(n))
+        }));
     }
     #[cfg(feature = "test-hooks")]
     if let Some(t) = ctx.hooks.truncate_streams.clone() {

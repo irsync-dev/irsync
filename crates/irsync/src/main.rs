@@ -287,6 +287,12 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
 
     let cfg = ClientConfig::load(opts.config.as_deref())?;
     let hc = cfg.resolve(host);
+    // The host's config fills in what the command line left out.
+    let mut opts = opts.clone();
+    if opts.parallel.is_none() {
+        opts.parallel = hc.parallel;
+    }
+    let opts = &opts;
     let target = resolve_target(&hc, host)?;
     let identity = opts
         .identity

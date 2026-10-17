@@ -339,6 +339,7 @@ pub struct FaultInjector {
     armed: std::sync::atomic::AtomicBool,
     fired: std::sync::atomic::AtomicBool,
     after_ack: std::sync::atomic::AtomicBool,
+    stall: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "test-hooks")]
@@ -359,6 +360,16 @@ impl FaultInjector {
 
     pub(crate) fn drops_after_ack(&self) -> bool {
         self.after_ack.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The next session only: after `HelloAck`, send and read nothing more
+    /// (the connection stays open) until the client gives up on it.
+    pub fn stall_after_ack_once(&self) {
+        self.stall.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn take_stall(&self) -> bool {
+        self.stall.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn fired(&self) -> bool {
@@ -382,6 +393,9 @@ impl FaultInjector {
 #[derive(Clone, Default)]
 pub struct DaemonSessions {
     pub registry: Arc<SessionRegistry>,
+    /// How long an authenticated session may go without activity (default
+    /// [`engine::DAEMON_IDLE_TIMEOUT`]).
+    pub idle_timeout: Option<Duration>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<FaultInjector>>,
     /// `NeedChunks` re-requests sent by daemon receivers (test hook).

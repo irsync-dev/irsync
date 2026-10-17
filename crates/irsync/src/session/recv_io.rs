@@ -312,6 +312,7 @@ async fn read_range(
         };
         arrived += 1;
         ctx.progress.store(true, Ordering::Relaxed);
+        ctx.activity.fetch_add(1, Ordering::Relaxed);
         ctx.hooks.bus.emit(super::Event::Bytes(data.len() as u64));
         let _total = bytes.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
         #[cfg(feature = "test-hooks")]

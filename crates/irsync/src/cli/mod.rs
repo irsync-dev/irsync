@@ -141,6 +141,8 @@ pub struct SyncArgs {
 
     #[arg(short, long)]
     pub archive: bool,
+    /// Accepted for rsync compatibility: irsync always recurses into
+    /// directories, with or without -r/-a.
     #[arg(short = 'r', long = "recursive")]
     pub recursive: bool,
     #[arg(short = 'l', long = "links")]
@@ -207,8 +209,12 @@ pub struct SyncArgs {
     pub info: Option<String>,
     #[arg(short = 'i', long)]
     pub itemize_changes: bool,
+    /// Inactivity timeout: a connection that moves no data and no control
+    /// message for this long is dropped and the session reconnects.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
+    /// Files in flight at once (default: `Parallel` from the client
+    /// config, else 32).
     #[arg(long, value_name = "N")]
     pub parallel: Option<u32>,
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
@@ -307,7 +313,8 @@ impl SyncOptions {
     pub fn from_args(args: &Args) -> SyncOptions {
         let a = &args.sync;
         let preserve = Preserve {
-            recursive: a.archive || a.recursive,
+            // Always: irsync syncs directory trees (-r is implied).
+            recursive: true,
             links: a.archive || a.links,
             perms: a.archive || a.perms,
             times: a.archive || a.times,

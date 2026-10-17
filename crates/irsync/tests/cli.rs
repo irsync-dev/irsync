@@ -25,6 +25,12 @@ fn archive_expands_to_rlptgod() {
 }
 
 #[test]
+fn recursion_is_implied_without_r_or_a() {
+    assert!(opts(&["-t", "src", "h:m/"]).preserve.recursive);
+    assert!(opts(&["src", "h:m/"]).preserve.recursive);
+}
+
+#[test]
 fn individual_flags_and_combined_short() {
     let p = opts(&["-rtHS", "src", "h:m/"]).preserve;
     assert!(p.recursive && p.times && p.hard_links && p.sparse);

@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -228,6 +229,10 @@ pub(super) struct Ctx {
     pub remote_id: Option<Vec<u8>>,
     /// Set once file data crossed or a file was acknowledged DONE.
     pub progress: Arc<AtomicBool>,
+    /// Bumped for every control frame received and every data chunk moved.
+    pub activity: Arc<AtomicU64>,
+    /// Drop the connection after this long without activity.
+    pub idle_timeout: Option<Duration>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<super::FaultInjector>>,
     /// Counts `NeedChunks` re-requests (test hook).
@@ -462,7 +467,12 @@ pub(super) async fn run_client_inner(
     write_msg(&mut send, &hello)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
-    let ack = read_hello_reply(&mut recv).await?;
+    let ack = match opts.timeout.filter(|t| !t.is_zero()) {
+        Some(t) => tokio::time::timeout(t, read_hello_reply(&mut recv))
+            .await
+            .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
+        None => read_hello_reply(&mut recv).await?,
+    };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
     tracing::info!(
@@ -493,6 +503,8 @@ pub(super) async fn run_client_inner(
         record,
         remote_id: None,
         progress: attempt.progress.clone(),
+        activity: Arc::default(),
+        idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
         fault: None,
         #[cfg(feature = "test-hooks")]
@@ -659,6 +671,12 @@ pub async fn serve_daemon(
         conn.close(99u32.into(), b"fault");
         bail!("fault injection");
     }
+    #[cfg(feature = "test-hooks")]
+    if shared.fault.as_ref().is_some_and(|f| f.take_stall()) {
+        tracing::warn!("fault injection: stalling after HelloAck");
+        conn.closed().await;
+        bail!("fault injection: stalled");
+    }
     tracing::info!(
         session = %control::hex(&session_id),
         peer = %remote.fmt_short(),
@@ -683,6 +701,8 @@ pub async fn serve_daemon(
         record,
         remote_id: Some(remote.as_bytes().to_vec()),
         progress: Arc::default(),
+        activity: Arc::default(),
+        idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT)),
         #[cfg(feature = "test-hooks")]
         fault: shared.fault.clone(),
         #[cfg(feature = "test-hooks")]
@@ -744,11 +764,30 @@ async fn run_role(
         (!sends).then_some(listing_tx),
         ev_tx.clone(),
         ctx.hooks.bus.clone(),
+        ctx.activity.clone(),
     );
+    let idle = Arc::new(AtomicBool::new(false));
+    let watchdog = ctx
+        .idle_timeout
+        .map(|t| tokio::spawn(watch_idle(ctx.clone(), t, idle.clone())));
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {
         receiver::run(ctx.clone(), out.clone(), ev_tx, ev_rx, listing_rx).await
+    };
+    if let Some(w) = watchdog {
+        w.abort();
+    }
+    // The role failed because the watchdog closed the connection: a
+    // transport failure (the client reconnects and resumes).
+    let res = match res {
+        Err(e) if idle.load(Ordering::SeqCst) => {
+            let secs = ctx.idle_timeout.unwrap_or_default().as_secs();
+            Err(anyhow::Error::new(TransportError(format!(
+                "no activity for {secs} s: {e:#}"
+            ))))
+        }
+        r => r,
     };
     match res {
         Ok(o) => {
@@ -772,6 +811,36 @@ async fn run_role(
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
             reader.abort();
             Err(e)
+        }
+    }
+}
+
+/// How long a daemon session may go without activity before the daemon
+/// drops the connection (the client can resume).
+pub const DAEMON_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Close code for a connection dropped for inactivity.
+const CLOSE_IDLE: u32 = 4;
+
+/// Closes the connection once `ctx.activity` has not moved for `timeout`
+/// (no control frame received, no data chunk moved), and sets `fired`.
+async fn watch_idle(ctx: Arc<Ctx>, timeout: Duration, fired: Arc<AtomicBool>) {
+    let tick = (timeout / 4).clamp(Duration::from_millis(50), Duration::from_secs(1));
+    let mut seen = ctx.activity.load(Ordering::Relaxed);
+    let mut since = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(tick).await;
+        let now = ctx.activity.load(Ordering::Relaxed);
+        if now != seen {
+            (seen, since) = (now, tokio::time::Instant::now());
+        } else if since.elapsed() >= timeout {
+            tracing::warn!(
+                secs = timeout.as_secs(),
+                "no activity; dropping the connection"
+            );
+            fired.store(true, Ordering::SeqCst);
+            ctx.conn.close(CLOSE_IDLE.into(), b"idle");
+            return;
         }
     }
 }
