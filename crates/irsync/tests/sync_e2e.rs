@@ -496,7 +496,9 @@ async fn daemon_index_rows_are_module_relative() {
 async fn events_during_sync(flow: Flow) {
     use irsync::session::reconnect::{ConnState, ReconnectOpts};
     use irsync::session::Event;
-    let opts = archive_opts();
+    let opts = irsync::cli::SyncOptions::from_args(
+        &irsync::cli::Args::try_parse_from(["irsync", "-a", "-i", "src/", "host:m/"]).unwrap(),
+    );
     let h = Harness::new().await;
     mixed_tree(h.src(flow));
     let local = h.local_side();

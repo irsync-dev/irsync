@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irsync::cli::progress::{escape_path, human, Reporter};
+use irsync::cli::Preserve;
 use irsync::fs::paths::RelPath;
 use irsync::plan::{itemize, Decision, Side};
 use irsync::scan::ListStats;
@@ -29,6 +30,16 @@ impl Write for Buf {
 impl Buf {
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+fn arch() -> Preserve {
+    Preserve {
+        perms: true,
+        times: true,
+        owner: true,
+        group: true,
+        ..Preserve::default()
     }
 }
 
@@ -113,6 +124,7 @@ async fn itemize_new_file_code_is_gt_f_plus() {
         Some(&side(Kind::Regular, 3, 1)),
         None,
         '>',
+        &arch(),
     );
     assert_eq!(code, ">f+++++++++");
     feed(
@@ -130,7 +142,7 @@ async fn itemize_new_file_code_is_gt_f_plus() {
 async fn itemize_mtime_size_change_code() {
     let src = side(Kind::Regular, 20, 200);
     let dst = side(Kind::Regular, 10, 100);
-    let code = itemize(&Decision::Delta, Some(&src), Some(&dst), '>');
+    let code = itemize(&Decision::Delta, Some(&src), Some(&dst), '>', &arch());
     assert_eq!(code, ">f.st......");
     let buf = Buf::default();
     let r = reporter(&buf, false, 0, false, true);
@@ -142,28 +154,31 @@ async fn itemize_mtime_size_change_code() {
 fn itemize_codes_for_other_kinds() {
     let d = side(Kind::Directory, 0, 1);
     assert_eq!(
-        itemize(&Decision::Mkdir, Some(&d), None, '>'),
+        itemize(&Decision::Mkdir, Some(&d), None, '>', &arch()),
         "cd+++++++++"
     );
     let l = side(Kind::Symlink, 0, 1);
     assert_eq!(
-        itemize(&Decision::Symlink, Some(&l), None, '>'),
+        itemize(&Decision::Symlink, Some(&l), None, '>', &arch()),
         "cL+++++++++"
     );
     let h = side(Kind::Hardlink, 0, 1);
     let hl = Decision::Hardlink { target: rp("t") };
-    assert_eq!(itemize(&hl, Some(&h), None, '>'), "hf+++++++++");
-    assert_eq!(itemize(&Decision::Delete, None, None, '>'), "*deleting   ");
+    assert_eq!(itemize(&hl, Some(&h), None, '>', &arch()), "hf+++++++++");
+    assert_eq!(
+        itemize(&Decision::Delete, None, None, '>', &arch()),
+        "*deleting  "
+    );
     // Push: `<`; checksum-only difference: `c`; permissions: `p`.
     let a = side(Kind::Regular, 5, 1);
     let mut b = side(Kind::Regular, 5, 1);
     assert_eq!(
-        itemize(&Decision::Delta, Some(&a), Some(&b), '<'),
+        itemize(&Decision::Delta, Some(&a), Some(&b), '<', &arch()),
         "<fc........"
     );
     b.entry.mode = 0o600;
     assert_eq!(
-        itemize(&Decision::MetaOnly, Some(&a), Some(&b), '>'),
+        itemize(&Decision::MetaOnly, Some(&a), Some(&b), '>', &arch()),
         ".f...p....."
     );
 }
@@ -252,4 +267,92 @@ async fn lagging_reporter_survives() {
     drop(tx);
     let buf = Buf::default();
     reporter(&buf, false, 1, false, false).run(rx, None).await;
+}
+
+#[test]
+fn itemize_letters_only_for_preserved_attributes() {
+    let mut src = side(Kind::Regular, 5, 200);
+    let mut dst = side(Kind::Regular, 5, 100);
+    src.entry.uid = 1;
+    dst.entry.uid = 2;
+    // uid differs but -o is off: no `o`; mtime differs and -t is on: `t`.
+    let p = Preserve {
+        times: true,
+        ..Preserve::default()
+    };
+    assert_eq!(
+        itemize(&Decision::MetaOnly, Some(&src), Some(&dst), '>', &p),
+        ".f..t......"
+    );
+    let none = Preserve::default();
+    assert_eq!(
+        itemize(&Decision::MetaOnly, Some(&src), Some(&dst), '>', &none),
+        ".f........."
+    );
+    let o = Preserve {
+        owner: true,
+        ..Preserve::default()
+    };
+    assert_eq!(
+        itemize(&Decision::MetaOnly, Some(&src), Some(&dst), '>', &o),
+        ".f....o...."
+    );
+}
+
+#[test]
+fn deleting_code_is_eleven_chars_and_lines_match() {
+    assert_eq!(irsync::plan::DELETING.len(), 11);
+    let buf = Buf::default();
+    let mut r = reporter(&buf, false, 0, false, true);
+    r.handle(Event::Itemized(rp("x"), irsync::plan::DELETING.into()));
+    r.handle(Event::WouldDelete(rp("y")));
+    assert_eq!(buf.text(), "*deleting   x\n*deleting   y\n");
+}
+
+#[test]
+fn root_item_prints_dot_slash() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, false, 0, false, true);
+    r.handle(Event::Itemized(RelPath::root(), ".d..t......".into()));
+    assert_eq!(buf.text(), ".d..t...... ./\n");
+}
+
+#[test]
+fn progress_line_shows_percentage_after_total() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, true, 0, false, false);
+    r.handle(Event::Bytes(500));
+    let before = r.progress_line(Duration::from_secs(1));
+    assert!(
+        !before.contains('%') && !before.contains("to-chk"),
+        "{before}"
+    );
+    r.handle(Event::Total {
+        files: 10,
+        bytes: 1000,
+    });
+    // Only the first Total counts.
+    r.handle(Event::Total {
+        files: 99,
+        bytes: 99,
+    });
+    r.handle(Event::FileDone(rp("a"), 500));
+    let line = r.progress_line(Duration::from_secs(1));
+    assert!(line.contains(" 50%"), "{line}");
+    assert!(line.contains("(xfr#1, to-chk=9/10)"), "{line}");
+}
+
+#[tokio::test]
+async fn reporter_task_terminates_when_bus_dropped() {
+    let bus = irsync::session::EventBus::default();
+    let buf = Buf::default();
+    let task = tokio::spawn(reporter(&buf, true, 1, false, false).run(bus.subscribe(), None));
+    let clone = bus.clone();
+    clone.emit(Event::Bytes(1));
+    drop(clone);
+    drop(bus);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("reporter did not stop")
+        .unwrap();
 }

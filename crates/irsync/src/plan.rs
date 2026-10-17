@@ -278,6 +278,9 @@ pub fn merge_join(
     })
 }
 
+/// The `-i` code of a deletion (11 characters).
+pub const DELETING: &str = "*deleting  ";
+
 /// rsync's `-i` code for one planned item: `YXcstpoguax` (11 characters).
 ///
 /// `Y` is `dir` (`>` received by this host, `<` sent from it) for a data
@@ -287,11 +290,18 @@ pub fn merge_join(
 /// each attribute that differs between `src` and `dst` (`c` content, `s`
 /// size, `t` mtime, `p` permissions, `o` owner, `g` group; `u a x` stay
 /// dots as irsync has no atimes or ACLs). `c` is only shown when size and
-/// mtime match but the content (checksum) differs. A deletion is
-/// `*deleting   `.
-pub fn itemize(decision: &Decision, src: Option<&Side>, dst: Option<&Side>, dir: char) -> String {
+/// mtime match but the content (checksum) differs. A letter for `t p o g`
+/// only shows when `preserve` asks for that attribute. A deletion is
+/// [`DELETING`].
+pub fn itemize(
+    decision: &Decision,
+    src: Option<&Side>,
+    dst: Option<&Side>,
+    dir: char,
+    preserve: &Preserve,
+) -> String {
     if *decision == Decision::Delete {
-        return "*deleting   ".to_string();
+        return DELETING.to_string();
     }
     let kind = src.and_then(|s| kind_of(&s.entry));
     let letter = match kind {
@@ -321,10 +331,10 @@ pub fn itemize(decision: &Decision, src: Option<&Side>, dst: Option<&Side>, dir:
                     'c',
                 ),
                 flag(regular && se.size != de.size, 's'),
-                flag(mtime(se) != mtime(de), 't'),
-                flag(se.mode & 0o7777 != de.mode & 0o7777, 'p'),
-                flag(se.uid != de.uid, 'o'),
-                flag(se.gid != de.gid, 'g'),
+                flag(preserve.times && mtime(se) != mtime(de), 't'),
+                flag(preserve.perms && se.mode & 0o7777 != de.mode & 0o7777, 'p'),
+                flag(preserve.owner && se.uid != de.uid, 'o'),
+                flag(preserve.group && se.gid != de.gid, 'g'),
                 '.',
                 '.',
                 '.',

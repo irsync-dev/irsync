@@ -78,7 +78,7 @@ impl Receiver {
                     self.ctx
                         .hooks
                         .bus
-                        .emit(super::super::Event::Hardlinked(path, target));
+                        .emit(crate::session::Event::Hardlinked(path, target));
                 }
                 Err(e) => {
                     tracing::warn!(?path, error = %e, "hard link failed");

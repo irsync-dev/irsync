@@ -30,6 +30,7 @@ message SessionDone {
   uint64 created = 9;                             // items the receiver created new (for --stats)
   uint64 transferred_size = 10;                   // summed size of the files it placed
 }
+message Itemized { bytes path = 1; string code = 2; }  // receiver -> sender, rsync -i code (`>` = received)
 message Control {
   oneof msg {
     ListingEntry listing = 1;
@@ -40,5 +41,6 @@ message Control {
     FileAck ack = 6;
     SessionDone done = 7;
     Error error = 8;
+    Itemized itemized = 9;
   }
 }

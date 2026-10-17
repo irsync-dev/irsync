@@ -109,14 +109,18 @@ pub(super) fn spawn_reader(
     mut recv: RecvStream,
     mut listing: Option<mpsc::UnboundedSender<Side>>,
     events: mpsc::UnboundedSender<Ev>,
+    bus: super::EventBus,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut announced = false;
+        // Receiver role: what the peer lists, reported at its `ListingEnd`.
+        let mut seen = crate::scan::ListStats::default();
         loop {
             match read_msg::<Control, _>(&mut recv).await {
                 Ok(Some(Control { msg: Some(msg) })) => match msg {
                     Msg::Listing(ListingEntry { entry: Some(e) }) => match &listing {
                         Some(tx) => {
+                            seen.count(&e);
                             let _ = tx.send(side_of(e));
                         }
                         None if !announced => {
@@ -129,6 +133,12 @@ pub(super) fn spawn_reader(
                         tracing::warn!("listing frame without entry; ignored");
                     }
                     m @ Msg::ListingEnd(_) => {
+                        if listing.is_some() {
+                            bus.emit(crate::session::Event::Total {
+                                files: seen.reg,
+                                bytes: seen.total_size,
+                            });
+                        }
                         listing = None;
                         let _ = events.send(Ev::Ctrl(m));
                     }
@@ -269,6 +279,12 @@ pub(super) fn spawn_listing(
             ..ScanSummary::default()
         });
         summary.listed = stats;
+        if let Some(b) = &spec.bus {
+            b.emit(crate::session::Event::Total {
+                files: stats.reg,
+                bytes: stats.total_size,
+            });
+        }
         for (p, e) in &summary.errors {
             tracing::warn!(path = ?p, error = %e, "walk error");
         }
@@ -503,6 +519,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Ack(_) => "FileAck",
         Msg::Done(_) => "SessionDone",
         Msg::Error(_) => "Error",
+        Msg::Itemized(_) => "Itemized",
     }
 }
 

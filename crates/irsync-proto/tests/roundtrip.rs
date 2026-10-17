@@ -17,6 +17,7 @@ fn hello_roundtrips() {
         max_delete: Some(0),
         dry_run: true,
         ignore_errors: true,
+        itemize: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

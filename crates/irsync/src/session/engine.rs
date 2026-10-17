@@ -102,6 +102,8 @@ pub(super) struct RoleOpts {
     pub dry_run: bool,
     /// Delete even when a listing was incomplete.
     pub ignore_errors: bool,
+    /// `-i`: a receiving daemon sends `Itemized` frames.
+    pub itemize: bool,
 }
 
 impl RoleOpts {
@@ -119,6 +121,7 @@ impl RoleOpts {
             max_delete: o.max_delete,
             dry_run: o.dry_run,
             ignore_errors: o.ignore_errors,
+            itemize: o.itemize,
         }
     }
 
@@ -158,6 +161,7 @@ impl RoleOpts {
             max_delete: hello.max_delete,
             dry_run: receives && hello.dry_run,
             ignore_errors: hello.ignore_errors,
+            itemize: hello.itemize,
         }
     }
 }
@@ -175,6 +179,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
     hello.max_delete = o.max_delete;
     hello.dry_run = o.dry_run;
     hello.ignore_errors = o.ignore_errors;
+    hello.itemize = o.itemize;
 }
 
 /// Option combinations this protocol version cannot honour safely.
@@ -736,7 +741,12 @@ async fn run_role(
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (out, writer) = control::spawn_writer(send, ev_tx.clone());
     let (listing_tx, listing_rx) = mpsc::unbounded_channel();
-    let reader = control::spawn_reader(recv, (!sends).then_some(listing_tx), ev_tx.clone());
+    let reader = control::spawn_reader(
+        recv,
+        (!sends).then_some(listing_tx),
+        ev_tx.clone(),
+        ctx.hooks.bus.clone(),
+    );
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {

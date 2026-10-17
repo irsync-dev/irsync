@@ -228,15 +228,6 @@ impl SenderRole {
             .hooks
             .bus
             .emit(super::Event::FileStart(path.clone()));
-        let code = if p.action == irsync_proto::v1::plan_item::Action::Whole as i32 {
-            "<f+++++++++"
-        } else {
-            "<fc........"
-        };
-        self.ctx
-            .hooks
-            .bus
-            .emit(super::Event::Itemized(path.clone(), code.into()));
         self.persist.plan(PlanEntry {
             file_id,
             path: p.path,
@@ -264,6 +255,26 @@ impl SenderRole {
         }
         self.spawn_digest(file_id, 0, path, false, false);
         Ok(())
+    }
+
+    /// The receiver's itemize code for a path, shown from the sender's side
+    /// (`>` received becomes `<` sent).
+    fn on_itemized(&mut self, i: irsync_proto::v1::Itemized) {
+        let Ok(path) = RelPath::new(&i.path) else {
+            return;
+        };
+        // `-n -v` lists the files that would be transferred.
+        if self.ctx.opts.dry_run && i.code.starts_with('>') && i.code[1..].starts_with('f') {
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::FileDone(path.clone(), 0));
+        }
+        let code = match i.code.strip_prefix('>') {
+            Some(rest) => format!("<{rest}"),
+            None => i.code,
+        };
+        self.ctx.hooks.bus.emit(super::Event::Itemized(path, code));
     }
 
     fn on_digested(&mut self, file_id: u64, gen: u32, result: io::Result<FileDigest>) {
@@ -448,10 +459,10 @@ impl SenderRole {
         self.deleted = paths(&d.deleted);
         self.would_delete = paths(&d.would_delete);
         for p in &self.deleted {
-            self.ctx
-                .hooks
-                .bus
-                .emit(super::Event::Itemized(p.clone(), "*deleting   ".into()));
+            self.ctx.hooks.bus.emit(super::Event::Itemized(
+                p.clone(),
+                crate::plan::DELETING.into(),
+            ));
             self.ctx.hooks.bus.emit(super::Event::Deleted(p.clone()));
         }
         for p in &self.would_delete {
@@ -600,6 +611,10 @@ pub(super) async fn run(
                 Ok(())
             }
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
+            Ev::Ctrl(Msg::Itemized(i)) => {
+                s.on_itemized(i);
+                Ok(())
+            }
             Ev::Ctrl(Msg::Need(n)) => {
                 s.on_need(n);
                 Ok(())

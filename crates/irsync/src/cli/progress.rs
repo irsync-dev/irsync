@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast;
 
+use crate::fs::paths::RelPath;
+use crate::plan::DELETING;
 use crate::session::reconnect::ConnState;
 use crate::session::{Event, Outcome};
 
@@ -30,6 +32,10 @@ pub struct Reporter {
     scanned: u64,
     conn: ConnState,
     hint: Option<(u64, u64)>,
+    /// The hint came from the caller or a `Total` event: later ones are ignored.
+    hint_fixed: bool,
+    /// Events lost because this reporter lagged.
+    lagged: u64,
     start: Instant,
     last_draw: Option<Instant>,
     /// A progress line is on screen (no newline yet).
@@ -73,6 +79,10 @@ fn commas(n: u64) -> String {
 
 /// A path as rsync prints it: bytes that are not valid UTF-8, control
 /// characters and backslashes become `\ooo` (octal); never fails.
+fn octal(out: &mut String, b: u8) {
+    out.push_str(&format!("\\{b:03o}"));
+}
+
 pub fn escape_path(p: &[u8]) -> String {
     let mut out = String::new();
     let mut rest = p;
@@ -92,20 +102,27 @@ pub fn escape_path(p: &[u8]) -> String {
             if c.is_control() || c == '\\' {
                 // Control characters and `\` are all ASCII or C1 (2 bytes).
                 let mut buf = [0u8; 4];
-                for b in c.encode_utf8(&mut buf).bytes() {
-                    out.push_str(&format!("\\{b:03o}"));
-                }
+                c.encode_utf8(&mut buf)
+                    .bytes()
+                    .for_each(|b| octal(&mut out, b));
             } else {
                 out.push(c);
             }
         }
         rest = &rest[good.len()..];
-        for b in &rest[..bad] {
-            out.push_str(&format!("\\{b:03o}"));
-        }
+        rest[..bad].iter().for_each(|&b| octal(&mut out, b));
         rest = &rest[bad..];
     }
     out
+}
+
+/// A path as shown in a line: `./` for the session root.
+fn shown(p: &RelPath) -> String {
+    if p.as_bytes().is_empty() {
+        "./".to_string()
+    } else {
+        escape_path(p.as_bytes())
+    }
 }
 
 fn conn_label(c: ConnState) -> String {
@@ -141,6 +158,8 @@ impl Reporter {
             scanned: 0,
             conn: ConnState::Connecting,
             hint: None,
+            hint_fixed: false,
+            lagged: 0,
             start: Instant::now(),
             last_draw: None,
             drawn: false,
@@ -155,7 +174,10 @@ impl Reporter {
         mut rx: broadcast::Receiver<Event>,
         total_hint: Option<(u64, u64)>,
     ) -> Reporter {
-        self.hint = total_hint;
+        if total_hint.is_some() {
+            self.hint = total_hint;
+            self.hint_fixed = true;
+        }
         self.start = Instant::now();
         let mut tick = tokio::time::interval(REDRAW);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -164,7 +186,7 @@ impl Reporter {
                 ev = rx.recv() => match ev {
                     Ok(ev) => self.handle(ev),
                     // Lost some events: carry on; totals come from the Outcome.
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => self.lagged += n,
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
                 _ = tick.tick(), if self.tty => self.draw(false),
@@ -182,39 +204,41 @@ impl Reporter {
             Event::FileDone(p, _) => {
                 self.xfr += 1;
                 if self.verbosity >= 1 && !self.itemize {
-                    self.line(&escape_path(p.as_bytes()));
+                    self.line(&shown(&p));
                 }
             }
             Event::Scanned(n) => self.scanned = n,
+            Event::Total { files, bytes } => {
+                if !self.hint_fixed {
+                    self.hint = Some((files, bytes));
+                    self.hint_fixed = true;
+                }
+            }
             Event::Conn(c) => {
                 self.conn = c;
                 self.draw(true);
             }
             Event::Deleted(p) => {
                 if self.verbosity >= 1 && !self.itemize {
-                    self.line(&format!("deleting {}", escape_path(p.as_bytes())));
+                    self.line(&format!("deleting {}", shown(&p)));
                 }
             }
             Event::WouldDelete(p) => {
-                let path = escape_path(p.as_bytes());
+                let path = shown(&p);
                 if self.itemize {
-                    self.line(&format!("*deleting   {path}"));
+                    self.line(&format!("{DELETING} {path}"));
                 } else {
                     self.line(&format!("would delete {path}"));
                 }
             }
             Event::Itemized(p, code) => {
                 if self.itemize {
-                    self.line(&format!("{code} {}", escape_path(p.as_bytes())));
+                    self.line(&format!("{code} {}", shown(&p)));
                 }
             }
             Event::Hardlinked(p, target) => {
                 if self.verbosity >= 1 && !self.itemize {
-                    self.line(&format!(
-                        "{} => {}",
-                        escape_path(p.as_bytes()),
-                        escape_path(target.as_bytes())
-                    ));
+                    self.line(&format!("{} => {}", shown(&p), shown(&target)));
                 }
             }
         }
@@ -279,6 +303,12 @@ impl Reporter {
         if self.drawn {
             let _ = writeln!(self.out);
             self.drawn = false;
+        }
+        if self.lagged > 0 {
+            eprintln!(
+                "irsync: note: {} progress events were dropped (output may be incomplete)",
+                self.lagged
+            );
         }
         let o = outcome;
         if self.stats {

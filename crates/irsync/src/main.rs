@@ -66,10 +66,10 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         // `-q` silences everything but errors. The live progress line is
         // drawn only on a terminal and only when asked for.
         let progress = opts.progress
-            || opts
-                .info
-                .as_deref()
-                .is_some_and(|i| i.split(',').any(|f| f.starts_with("progress")));
+            || opts.info.as_deref().is_some_and(|i| {
+                i.split(',')
+                    .any(|f| matches!(f.trim(), "progress1" | "progress2"))
+            });
         let tty = progress && std::io::stdout().is_terminal();
         let task = (!opts.quiet).then(|| {
             let r = Reporter::new(
@@ -107,23 +107,28 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             if let Some(mut r) = reporter {
                 r.finish(&outcome, elapsed);
             }
-            if failed == 0 {
-                outcome.exit_code()
-            } else if failed == sessions {
-                // Nothing got through: like a connection or usage error.
-                1
-            } else if outcome.max_delete_reached {
-                // Some sources synced, others did not; 25 outranks 23.
-                25
-            } else {
-                // A partial transfer.
-                23
-            }
+            combine_exit_codes(&[outcome], failed, sessions)
         }
         Err(e) => {
             eprintln!("irsync: {e:#}");
             1
         }
+    }
+}
+
+/// The process exit code for `total` sessions of which `failed` errored:
+/// all failed = 1 (nothing got through); otherwise 25 (deletions stopped at
+/// `--max-delete`) outranks 23 (partial transfer, per-file errors or some
+/// sources failed) outranks 0.
+fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 {
+    if failed > 0 && failed >= total {
+        1
+    } else if outcomes.iter().any(|o| o.max_delete_reached) {
+        25
+    } else if failed > 0 || outcomes.iter().any(|o| !o.errors.is_empty()) {
+        23
+    } else {
+        0
     }
 }
 
@@ -361,5 +366,33 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
             eprintln!("irsync daemon: {e:#}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out(max_delete: bool, errors: usize) -> Outcome {
+        Outcome {
+            max_delete_reached: max_delete,
+            errors: (0..errors)
+                .map(|_| (irsync::fs::paths::RelPath::root(), "e".to_string()))
+                .collect(),
+            ..Outcome::default()
+        }
+    }
+
+    #[test]
+    fn exit_codes_rank_25_over_23_over_1_over_0() {
+        assert_eq!(combine_exit_codes(&[out(false, 0)], 0, 1), 0);
+        assert_eq!(combine_exit_codes(&[out(false, 2)], 0, 1), 23);
+        assert_eq!(combine_exit_codes(&[out(true, 2)], 0, 1), 25);
+        // Several sources: one failed, the rest synced.
+        assert_eq!(combine_exit_codes(&[out(false, 0)], 1, 3), 23);
+        assert_eq!(combine_exit_codes(&[out(true, 0)], 1, 3), 25);
+        assert_eq!(combine_exit_codes(&[out(true, 1), out(false, 3)], 0, 2), 25);
+        // Nothing got through.
+        assert_eq!(combine_exit_codes(&[out(false, 0)], 2, 2), 1);
     }
 }

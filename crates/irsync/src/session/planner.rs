@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use irsync_proto::v1::{
-    control::Msg, file_entry::Kind, plan_item::Action, FileEntry, PlanItem, SessionPlan,
+    control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, PlanItem, SessionPlan,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -336,11 +336,31 @@ impl Planner {
             if dst.is_none() {
                 self.report.created += 1;
             }
-            let code = itemize(&decision, Some(&src), dst.as_ref(), '>');
-            self.ctx
-                .hooks
-                .bus
-                .emit(super::Event::Itemized(path.clone(), code));
+            let code = itemize(
+                &decision,
+                Some(&src),
+                dst.as_ref(),
+                '>',
+                &self.popts.preserve,
+            );
+            // A receiving daemon tells the (sending) client what it plans.
+            if self.ctx.opts.itemize && self.ctx.remote_id.is_some() {
+                self.out.send(Msg::Itemized(Itemized {
+                    path: path.as_bytes().to_vec(),
+                    code: code.clone(),
+                }));
+            }
+            let bus = &self.ctx.hooks.bus;
+            bus.emit(crate::session::Event::Itemized(path.clone(), code));
+            // rsync -n -v lists what would be transferred.
+            if self.ctx.opts.dry_run
+                && matches!(
+                    decision,
+                    Decision::Whole | Decision::Delta | Decision::LocalCopy { .. }
+                )
+            {
+                bus.emit(crate::session::Event::FileDone(path.clone(), 0));
+            }
         }
         if self.ctx.opts.dry_run {
             // Decide only: nothing is created, changed or requested.

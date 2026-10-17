@@ -421,6 +421,11 @@ pub enum Event {
     Itemized(RelPath, String),
     /// A hard link `path` to `target` was made.
     Hardlinked(RelPath, RelPath),
+    /// The listing is complete: regular files and their total size.
+    Total {
+        files: u64,
+        bytes: u64,
+    },
 }
 
 /// The channel events travel on. Sending never blocks; with nobody

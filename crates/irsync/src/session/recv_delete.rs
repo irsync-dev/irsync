@@ -19,11 +19,11 @@ impl Receiver {
                 for p in &rep.deleted {
                     self.ctx.hooks.event("delete", p);
                     let bus = &self.ctx.hooks.bus;
-                    bus.emit(super::super::Event::Itemized(
+                    bus.emit(crate::session::Event::Itemized(
                         p.clone(),
-                        "*deleting   ".into(),
+                        crate::plan::DELETING.into(),
                     ));
-                    bus.emit(super::super::Event::Deleted(p.clone()));
+                    bus.emit(crate::session::Event::Deleted(p.clone()));
                 }
                 self.persist.add_deleted(rep.deleted.len() as u64);
                 self.max_delete_reached |= rep.stopped_at_max;
@@ -32,7 +32,7 @@ impl Receiver {
                     self.ctx
                         .hooks
                         .bus
-                        .emit(super::super::Event::WouldDelete(p.clone()));
+                        .emit(crate::session::Event::WouldDelete(p.clone()));
                 }
                 self.would_delete.extend(rep.would_delete);
                 self.deleted.extend(rep.deleted.iter().cloned());
