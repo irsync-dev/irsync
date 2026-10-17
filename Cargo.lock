@@ -1898,6 +1898,7 @@ dependencies = [
  "blake3",
  "clap",
  "dirs",
+ "futures",
  "iroh",
  "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",

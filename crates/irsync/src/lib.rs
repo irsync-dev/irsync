@@ -8,5 +8,6 @@ pub mod hasher;
 pub mod identity;
 pub mod index;
 pub mod net;
+pub mod plan;
 pub mod scan;
 pub mod session;
