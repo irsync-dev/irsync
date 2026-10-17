@@ -365,7 +365,14 @@ pub struct GcReport {
     pub parts_removed: Vec<RelPath>,
     /// Stale-looking partial records kept because a session still references them.
     pub parts_kept: usize,
+    /// Sessions removed (on a dry run: that would be removed).
     pub sessions_removed: u32,
+    /// Stale records whose in-place `.part` file does not exist (for example
+    /// it lives in a `--partial-dir`, which records do not remember). The
+    /// record is dropped; the file, if any, is collected as an orphan later.
+    pub rows_without_file: usize,
+    /// Paths that could not be removed or walked; the pass carries on.
+    pub errors: Vec<(RelPath, String)>,
 }
 
 fn io_err(e: impl std::fmt::Display) -> io::Error {
@@ -403,17 +410,33 @@ fn dest_of(part: &RelPath) -> Option<RelPath> {
     RelPath::new(&d).ok()
 }
 
-/// Removes `root/rel` if its name is a part name and it is a regular file
-/// (never follows a symlink, never touches anything else).
-fn remove_part(root: &Path, rel: &RelPath) -> io::Result<()> {
+/// What [`remove_part`] did.
+#[derive(Debug, PartialEq, Eq)]
+enum Removal {
+    Removed,
+    Missing,
+    /// Not ours to remove: wrong name, not a regular file, or touched since.
+    Skipped,
+}
+
+/// Removes `root/rel` if its name is a part name, it is a regular file
+/// (never follows a symlink) and its mtime is not newer than `cutoff`. With
+/// `dry_run` only classifies.
+fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
+    use std::os::unix::fs::MetadataExt;
     if !rel.components().last().is_some_and(is_part_name) {
-        return Ok(());
+        return Ok(Removal::Skipped);
     }
     let full = root.join(rel.to_os());
     match std::fs::symlink_metadata(&full) {
-        Ok(m) if m.file_type().is_file() => std::fs::remove_file(&full),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(m) if m.file_type().is_file() && m.mtime() <= cutoff => {
+            if !dry_run {
+                std::fs::remove_file(&full)?;
+            }
+            Ok(Removal::Removed)
+        }
+        Ok(_) => Ok(Removal::Skipped),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Removal::Missing),
         Err(e) => Err(e),
     }
 }
@@ -455,7 +478,10 @@ pub async fn gc(
             on_disk.push(item.path);
         }
     }
-    let _ = summary.await;
+    let mut walk_errors = Vec::new();
+    if let Ok(sum) = summary.await {
+        walk_errors = sum.errors;
+    }
 
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || -> io::Result<GcReport> {
@@ -489,11 +515,22 @@ pub async fn gc(
             }
             let Some(part) = part_of(&dest) else { continue };
             handled.insert(part.clone());
+            match remove_part(&root, &part, cutoff, dry_run) {
+                Ok(Removal::Removed) => report.parts_removed.push(part),
+                Ok(Removal::Missing) => report.rows_without_file += 1,
+                Ok(Removal::Skipped) => {
+                    report.parts_kept += 1;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
+                    report.errors.push((part, e.to_string()));
+                    continue;
+                }
+            }
             if !dry_run {
-                remove_part(&root, &part)?;
                 ix.remove_partial(&dest).map_err(io_err)?;
             }
-            report.parts_removed.push(part);
         }
         // Orphans: stale files with no record.
         for part in on_disk {
@@ -508,18 +545,24 @@ pub async fn gc(
                 report.parts_kept += 1;
                 continue;
             }
-            if !dry_run {
-                remove_part(&root, &part)?;
+            match remove_part(&root, &part, cutoff, dry_run) {
+                Ok(Removal::Removed) => report.parts_removed.push(part),
+                Ok(Removal::Missing | Removal::Skipped) => {}
+                Err(e) => {
+                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
+                    report.errors.push((part, e.to_string()));
+                }
             }
-            report.parts_removed.push(part);
         }
         report.parts_removed.sort();
-        if !dry_run {
-            report.sessions_removed = ix
-                .delete_sessions_older_than(older_than)
+        report.sessions_removed = if dry_run {
+            ix.count_sessions_older_than(older_than).map_err(io_err)?
+        } else {
+            ix.delete_sessions_older_than(older_than)
                 .map_err(io_err)?
-                .len() as u32;
-        }
+                .len() as u32
+        };
+        report.errors.extend(walk_errors);
         Ok(report)
     })
     .await

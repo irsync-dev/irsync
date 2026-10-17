@@ -107,6 +107,8 @@ impl Index {
         conn.busy_timeout(Duration::from_secs(5))?;
         let mut ix = Index { conn };
         ix.init()?;
+        // `meta.value` is declared INTEGER but SQLite is dynamically typed:
+        // `root_path` is stored (and read back) as a BLOB of the path bytes.
         // Remember which root this (hash-named) file belongs to, so `irsync gc` can find it.
         ix.conn.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('root_path', ?1)",
@@ -523,6 +525,15 @@ impl Index {
         }
         tx.commit()?;
         Ok(ids)
+    }
+
+    /// How many sessions `delete_sessions_older_than(age)` would remove.
+    pub fn count_sessions_older_than(&self, age: Duration) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE updated_at <= ?1",
+            [cutoff(age)],
+            |r| r.get(0),
+        )?)
     }
 
     /// Removes one session row (a finished session). Returns whether it existed.

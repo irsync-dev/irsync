@@ -129,6 +129,7 @@ async fn gc_collects_stale_partial_rows_and_dormant_sessions() {
         let mut ix = f.ix.lock().unwrap();
         // Stale unreferenced record with its file; fresh record; stale but referenced.
         std::fs::write(r.join(".irsync.rec.part"), b"x").unwrap();
+        touch_ago(&r.join(".irsync.rec.part"), 9);
         ix.put_partial(&rel("rec"), &partial(now() - 9 * DAY as i64))
             .unwrap();
         std::fs::write(r.join(".irsync.live.part"), b"x").unwrap();
@@ -233,4 +234,98 @@ fn daemon_show_id_prints_only_the_id() {
     let out = String::from_utf8(o.stdout).unwrap();
     assert_eq!(out.lines().count(), 1, "{out}");
     irsync::identity::parse_endpoint_id(out.trim()).unwrap();
+}
+
+#[tokio::test]
+async fn gc_continues_after_one_removal_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let f = fixture();
+    let r = f.root.path();
+    std::fs::create_dir(r.join("ro")).unwrap();
+    std::fs::write(r.join("ro/.irsync.stuck.part"), b"x").unwrap();
+    touch_ago(&r.join("ro/.irsync.stuck.part"), 8);
+    std::fs::set_permissions(r.join("ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    f.ix.lock()
+        .unwrap()
+        .save_session(&session(9, "gone", 9))
+        .unwrap();
+    let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    std::fs::set_permissions(r.join("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(rep.errors.len(), 1, "{rep:?}");
+    assert_eq!(rep.errors[0].0, rel("ro/.irsync.stuck.part"));
+    assert!(!r.join("d/.irsync.old.part").exists());
+    assert_eq!(rep.sessions_removed, 1, "session pass still ran");
+}
+
+#[tokio::test]
+async fn gc_keeps_part_referenced_by_module_relative_plan() {
+    for (plan_path, kept) in [("b/x", true), ("c/x", false)] {
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let ix = Index::open(state.path(), root.path())
+            .unwrap()
+            .into_handle();
+        std::fs::create_dir_all(root.path().join("a/b")).unwrap();
+        let part = root.path().join("a/b/.irsync.x.part");
+        std::fs::write(&part, b"x").unwrap();
+        touch_ago(&part, 8);
+        ix.lock()
+            .unwrap()
+            .save_session(&session(3, plan_path, 1))
+            .unwrap();
+        gc(ix, root.path(), Duration::from_secs(7 * DAY), false)
+            .await
+            .unwrap();
+        assert_eq!(part.exists(), kept, "plan path {plan_path}");
+    }
+}
+
+#[tokio::test]
+async fn gc_row_without_inplace_file_is_not_counted_as_removed() {
+    let f = fixture();
+    f.ix.lock()
+        .unwrap()
+        .put_partial(&rel("pd"), &partial(now() - 9 * DAY as i64))
+        .unwrap();
+    let rep = gc(
+        f.ix.clone(),
+        f.root.path(),
+        Duration::from_secs(7 * DAY),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.rows_without_file, 1);
+    assert!(!rep.parts_removed.contains(&rel(".irsync.pd.part")));
+    assert!(f.ix.lock().unwrap().partial(&rel("pd")).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn gc_dry_run_counts_sessions() {
+    let f = fixture();
+    f.ix.lock()
+        .unwrap()
+        .save_session(&session(5, "gone", 9))
+        .unwrap();
+    let rep = gc(
+        f.ix.clone(),
+        f.root.path(),
+        Duration::from_secs(7 * DAY),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rep.sessions_removed, 1);
+    assert!(f
+        .ix
+        .lock()
+        .unwrap()
+        .load_session_by_id(&[5; 16])
+        .unwrap()
+        .is_some());
 }

@@ -210,6 +210,9 @@ fn run_gc(dry_run: bool, verbose: u8) -> i32 {
                         for p in &r.parts_removed {
                             println!("{}", root.join(p.to_os()).display());
                         }
+                        for (p, msg) in &r.errors {
+                            eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
+                        }
                         parts += r.parts_removed.len();
                         sessions += r.sessions_removed;
                     }

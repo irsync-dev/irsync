@@ -93,6 +93,12 @@ after start):
   `dormant_session_timeout`, unless a stored session still lists the file;
 - dormant sessions not touched for `dormant_session_timeout`.
 
+A failure to remove one file is logged and reported, and the pass carries on.
+Partial-file records do not remember a `--partial-dir`: a stale record whose
+`.part` file is not next to its destination is simply dropped (reported as a
+record without a file), and the file itself, if it exists, is collected on a
+later pass as an orphan by its age.
+
 `dormant_session_timeout` defaults to 7 days (a number of seconds, or a
 duration string as in the config). A live transfer is never affected: its
 partial record is refreshed as chunks arrive and its session lists its files.
