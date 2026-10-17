@@ -46,6 +46,7 @@ Only file-based Ed25519 keys work; an existing `~/.ssh/id_ed25519` is fine too.
 identity = "~/.config/irsync/daemon_ed25519"      # OpenSSH format
 authorized_keys = "~/.config/irsync/authorized_keys"
 state_dir = "~/.local/state/irsync"
+idle_timeout = "30m"  # drop a connection idle this long (no traffic, no local work); "0" disables
 
 [discovery]
 dht = true        # publish to mainline DHT (relay-only addresses)
@@ -183,8 +184,9 @@ partial files are waiting.
 
 - `--delete-during` runs as `--delete-after`.
 - irsync always recurses: `-r` is accepted and implied, with or without `-a`.
-- The daemon drops an authenticated connection that has been idle for 10
-  minutes (the client reconnects and resumes).
+- The daemon drops an authenticated connection that has been idle (no traffic
+  and no local progress such as hashing or writing) for `idle_timeout`,
+  30 minutes by default (the client reconnects and resumes).
 - Only the delete, dry-run, itemize, `-u` and `-c` options are sent to the
   daemon. Filters (`--exclude`, `--include`, ...) apply only on the sending
   side, so a push with `--delete` plus filters also needs `--delete-excluded`,

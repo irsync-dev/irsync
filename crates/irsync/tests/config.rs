@@ -157,6 +157,19 @@ fn daemon_timeout_accepts_integer_and_tilde_module_path() {
 }
 
 #[test]
+fn daemon_idle_timeout_is_configurable() {
+    let cfg = DaemonConfig::parse("idle_timeout = \"0\"\n").unwrap();
+    assert_eq!(cfg.idle_timeout, Duration::ZERO, "0 disables");
+    let cfg = DaemonConfig::parse("idle_timeout = \"5m\"\n").unwrap();
+    assert_eq!(cfg.idle_timeout, Duration::from_secs(300));
+    let cfg = DaemonConfig::parse("idle_timeout = 90\n").unwrap();
+    assert_eq!(cfg.idle_timeout, Duration::from_secs(90));
+    let cfg = DaemonConfig::parse("").unwrap();
+    assert_eq!(cfg.idle_timeout, Duration::from_secs(30 * 60));
+    assert!(DaemonConfig::parse("idle_timeout = \"soon\"\n").is_err());
+}
+
+#[test]
 fn daemon_defaults_when_sections_missing() {
     let cfg = DaemonConfig::parse("").unwrap();
     let home = dirs::home_dir().unwrap();

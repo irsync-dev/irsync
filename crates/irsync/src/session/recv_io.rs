@@ -96,13 +96,17 @@ pub(super) async fn open_writer(
     // The writer works on index keys under the index root, so its partial
     // record is keyed like every other index row; the file lands at the same place.
     let key = ctx.key(&path);
-    let (base, rel, index, pd) = (
+    let (base, rel, index, pd, activity) = (
         ctx.base.clone(),
         key.clone(),
         ctx.index().clone(),
         ctx.opts.partial_dir.clone(),
+        ctx.activity.clone(),
     );
-    let mut w = blocking(move || FileWriter::open(&base, &rel, &cl, pd.as_deref(), index)).await?;
+    let mut w = blocking(move || {
+        FileWriter::open_tracked(&base, &rel, &cl, pd.as_deref(), index, activity)
+    })
+    .await?;
     w.set_sparse(sparse);
 
     if action == Action::Delta {
@@ -174,6 +178,12 @@ pub(super) async fn finalize(
     digest: FileDigest,
 ) -> Result<(), FinalizeError> {
     let apply = ctx.apply_opts(&entry);
+    #[cfg(feature = "test-hooks")]
+    let mut w = w;
+    #[cfg(feature = "test-hooks")]
+    if let Some(d) = ctx.hooks.slow_finalize {
+        w.slow_finalize(d);
+    }
     w.finalize(&entry, &apply).await?;
     let (base, key, index) = (ctx.base.clone(), ctx.key(&path), ctx.index().clone());
     let rec = blocking(move || {

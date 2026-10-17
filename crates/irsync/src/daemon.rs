@@ -81,6 +81,7 @@ impl Daemon {
                 indexes,
                 dormant: cfg.dormant_session_timeout,
                 hosting: DaemonSessions {
+                    idle_timeout: Some(cfg.idle_timeout),
                     #[cfg(feature = "test-hooks")]
                     fault: Some(Arc::default()),
                     ..DaemonSessions::default()

@@ -13,6 +13,7 @@ impl Receiver {
     pub(super) async fn run_deletes(&mut self, mut pass: DeletePass) -> Vec<RelPath> {
         self.await_own_walk().await;
         pass.set_spent(self.persist.deleted());
+        pass.set_activity(self.ctx.activity.clone());
         let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
         match pass.execute(self.ctx.root.clone(), incomplete).await {
             Ok(rep) => {

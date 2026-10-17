@@ -29,6 +29,43 @@ pub struct Hasher {
     sem: Arc<Semaphore>,
     force: bool,
     stats: Arc<HashStats>,
+    /// The session's activity marker: bumped on every digest completion and
+    /// every [`TICK_BYTES`] read, so long local hashing keeps the inactivity
+    /// watchdogs quiet.
+    activity: Arc<AtomicU64>,
+}
+
+/// While hashing, bump the activity marker after this many bytes read.
+pub const TICK_BYTES: u64 = 64 << 20;
+
+/// A reader that bumps an activity marker every [`TICK_BYTES`] read (a single
+/// file can take many minutes to hash).
+pub struct Ticking<'a, R> {
+    inner: R,
+    activity: &'a AtomicU64,
+    since: u64,
+}
+
+impl<'a, R> Ticking<'a, R> {
+    pub fn new(inner: R, activity: &'a AtomicU64) -> Self {
+        Ticking {
+            inner,
+            activity,
+            since: 0,
+        }
+    }
+}
+
+impl<R: io::Read> io::Read for Ticking<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.since += n as u64;
+        if self.since >= TICK_BYTES {
+            self.since = 0;
+            self.activity.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(n)
+    }
 }
 
 fn io_err(e: crate::index::IndexError) -> io::Error {
@@ -60,7 +97,19 @@ impl Hasher {
             sem: Arc::new(Semaphore::new(workers.max(1))),
             force: false,
             stats: Arc::new(HashStats::default()),
+            activity: Arc::default(),
         }
+    }
+
+    /// Share `activity` as this hasher's activity marker.
+    pub fn with_activity(mut self, activity: Arc<AtomicU64>) -> Self {
+        self.activity = activity;
+        self
+    }
+
+    /// The marker bumped by this hasher's local work.
+    pub fn activity(&self) -> &Arc<AtomicU64> {
+        &self.activity
     }
 
     /// When `force` is set the quick check is bypassed (`--checksum`).
@@ -98,14 +147,16 @@ impl Hasher {
         let full = self.root.join(item.path.to_os());
         let item = item.clone();
         let force = self.force;
-        tokio::task::spawn_blocking(move || {
+        let activity = self.activity.clone();
+        let res = tokio::task::spawn_blocking(move || {
             if !force {
                 if let Some(d) = lookup(&index, &item)? {
                     return Ok(d);
                 }
             }
             // Never follow a symlink swapped in since the walk lstat'ed it.
-            let d = digest_reader(crate::fs::safe::open_regular_nofollow(&full)?)?;
+            let file = crate::fs::safe::open_regular_nofollow(&full)?;
+            let d = digest_reader(Ticking::new(file, &activity))?;
             stats.files_hashed.fetch_add(1, Ordering::Relaxed);
             stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
             let mut entry = item.entry;
@@ -120,6 +171,8 @@ impl Hasher {
             Ok(d)
         })
         .await
-        .map_err(io::Error::other)?
+        .map_err(io::Error::other)?;
+        self.activity.fetch_add(1, Ordering::Relaxed);
+        res
     }
 }

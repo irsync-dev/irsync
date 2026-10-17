@@ -86,6 +86,21 @@ The default level is `info`; `-v` raises it to `debug`, `-vv` to `trace`, and
 `RUST_LOG` (standard `tracing` filter syntax, e.g. `RUST_LOG=irsync=debug`)
 overrides both.
 
+## Idle connections
+
+`idle_timeout` (default `"30m"`; a number of seconds or a duration string such
+as `"90s"`, `"30m"`, `"2h"`) is how long an authenticated session may go
+without activity before the daemon drops its connection; the client then
+reconnects and resumes. Activity is any control message or file data on the
+wire, and also local progress on either side: chunks written or copied,
+hashing (bumped every 64 MiB of a large file), finalizing (the `sync` and
+whole-file re-hash of a large `.part`), and each deletion. Set
+`idle_timeout = "0"` to disable the limit.
+
+A connection dropped while a large file is being finalized does not fail that
+file: the resumed session waits up to 60 s for the earlier connection's
+finalize to release the `.part` file before reporting it busy.
+
 ## State directory and garbage collection
 
 `state_dir` (default `~/.local/state/irsync`) holds one SQLite index per module

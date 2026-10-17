@@ -394,7 +394,7 @@ impl FaultInjector {
 pub struct DaemonSessions {
     pub registry: Arc<SessionRegistry>,
     /// How long an authenticated session may go without activity (default
-    /// [`engine::DAEMON_IDLE_TIMEOUT`]).
+    /// [`engine::DAEMON_IDLE_TIMEOUT`]; zero disables the limit).
     pub idle_timeout: Option<Duration>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<FaultInjector>>,
@@ -494,6 +494,9 @@ pub struct SideHooks {
     /// Receiver: the most files it has had in flight at once.
     #[cfg(feature = "test-hooks")]
     pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Receiver: every finalize takes this much longer (slow storage).
+    #[cfg(feature = "test-hooks")]
+    pub slow_finalize: Option<std::time::Duration>,
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

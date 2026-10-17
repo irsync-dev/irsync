@@ -14,6 +14,7 @@ use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +22,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const PERSIST_EVERY_CHUNKS: u32 = 64;
 /// ...or after this much time, whichever comes first.
 const PERSIST_EVERY: Duration = Duration::from_secs(2);
+
+/// How long `open` waits for another holder of the `.part` lock (typically
+/// this session's own previous connection, still finalizing) to let go.
+const BUSY_WAIT: Duration = Duration::from_secs(60);
+/// Pause between lock attempts while waiting.
+const BUSY_RETRY: Duration = Duration::from_millis(200);
 
 /// Why `finalize` did not put the file in place.
 #[derive(Debug, thiserror::Error)]
@@ -56,8 +63,13 @@ pub struct FileWriter {
     /// Length of the `.part` when opened: everything from here on is a hole
     /// (never written by an earlier writer), so it already reads as zeros.
     hole_from: u64,
+    /// The session's activity marker: bumped by local progress (chunks
+    /// written, finalize, re-hashing) so the inactivity watchdogs see it.
+    activity: Arc<AtomicU64>,
     #[cfg(feature = "test-hooks")]
     fail_at: Option<u32>,
+    #[cfg(feature = "test-hooks")]
+    finalize_delay: Duration,
 }
 
 fn invalid(msg: impl Into<String>) -> io::Error {
@@ -228,9 +240,47 @@ impl Read for AtReader<'_> {
     }
 }
 
-/// Chunks and hashes the held file (never re-opened by path).
-fn digest_held(file: &File) -> io::Result<FileDigest> {
-    digest_reader(AtReader { file, pos: 0 })
+/// Chunks and hashes the held file (never re-opened by path), bumping
+/// `activity` as it goes (a large file can take many minutes).
+fn digest_held(file: &File, activity: &AtomicU64) -> io::Result<FileDigest> {
+    digest_reader(crate::hasher::Ticking::new(
+        AtReader { file, pos: 0 },
+        activity,
+    ))
+}
+
+/// Whether `part` still names the file held open.
+fn names_file(file: &File, part: &Path) -> io::Result<bool> {
+    let held = file.metadata()?;
+    Ok(match std::fs::symlink_metadata(part) {
+        Ok(now) => now.file_type().is_file() && now.dev() == held.dev() && now.ino() == held.ino(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e),
+    })
+}
+
+/// Opens and locks the `.part`, waiting up to [`BUSY_WAIT`] for another
+/// holder: a finalize that outlived its connection releases the lock when it
+/// finishes. The lock is only kept on a file the path still names (a
+/// finalize renames its `.part` away; then a fresh one is opened).
+fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
+    let start = Instant::now();
+    loop {
+        let file = open_part(part)?;
+        match file.try_lock() {
+            Ok(()) if names_file(&file, part)? => return Ok(file),
+            Ok(()) => continue,
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < BUSY_WAIT => {
+                drop(file);
+                activity.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(BUSY_RETRY);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, PART_BUSY))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
 }
 
 fn hash_at(file: &File, c: &ChunkRecord) -> io::Result<[u8; 32]> {
@@ -264,22 +314,28 @@ impl FileWriter {
         partial_dir: Option<&Path>,
         index: IndexHandle,
     ) -> io::Result<FileWriter> {
+        Self::open_tracked(root, rel, expected, partial_dir, index, Arc::default())
+    }
+
+    /// [`FileWriter::open`], bumping `activity` on local progress (see the
+    /// `activity` field). Waits up to 60 s for a busy `.part` lock.
+    pub fn open_tracked(
+        root: &Path,
+        rel: &RelPath,
+        expected: &ChunkList,
+        partial_dir: Option<&Path>,
+        index: IndexHandle,
+        activity: Arc<AtomicU64>,
+    ) -> io::Result<FileWriter> {
         let (whole_hash, chunks) = native_chunks(expected)?;
         let (dest, part) = paths(root, rel, partial_dir)?;
         if let Some(dir) = part.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let file = open_part(&part)?;
         // One writer per `.part`: a second (another session on the same
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, PART_BUSY))
-            }
-            Err(std::fs::TryLockError::Error(e)) => return Err(e),
-        }
+        let file = open_locked_part(&part, &activity)?;
         let hole_from = file.metadata()?.len();
         let mut w = FileWriter {
             rel: rel.clone(),
@@ -296,8 +352,11 @@ impl FileWriter {
             done: false,
             sparse: false,
             hole_from,
+            activity,
             #[cfg(feature = "test-hooks")]
             fail_at: None,
+            #[cfg(feature = "test-hooks")]
+            finalize_delay: Duration::ZERO,
         };
         let adopted_from_record = w.adopt_recorded()?;
         if !adopted_from_record {
@@ -348,7 +407,7 @@ impl FileWriter {
         if self.file.metadata()?.len() == 0 {
             return Ok(());
         }
-        let found = digest_held(&self.file)?;
+        let found = digest_held(&self.file, &self.activity)?;
         for f in found.chunks {
             if let Ok(i) = self.chunks.binary_search_by_key(&f.offset, |c| c.offset) {
                 if self.chunks[i] == f {
@@ -398,6 +457,13 @@ impl FileWriter {
         self.fail_at = Some(idx);
     }
 
+    /// Make `finalize` take `delay` longer, as slow storage would (reporting
+    /// progress every 250 ms like a long re-hash does).
+    #[cfg(feature = "test-hooks")]
+    pub fn slow_finalize(&mut self, delay: Duration) {
+        self.finalize_delay = delay;
+    }
+
     /// Verify `data` against chunk `idx` and write it at the chunk's offset.
     pub async fn write_chunk(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
         let c = *self.chunks.get(idx as usize).ok_or_else(|| {
@@ -434,6 +500,7 @@ impl FileWriter {
             }
             return Err(e);
         }
+        self.activity.fetch_add(1, Ordering::Relaxed);
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
             self.chunks_since_persist += 1;
@@ -511,6 +578,7 @@ impl FileWriter {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
+        self.activity.fetch_add(1, Ordering::Relaxed);
         self.persist().await?;
         let (file, part, dest, size, expected) = (
             self.file.clone(),
@@ -520,10 +588,25 @@ impl FileWriter {
             self.whole_hash,
         );
         let (entry, opts) = (entry.clone(), *opts);
+        let activity = self.activity.clone();
+        #[cfg(feature = "test-hooks")]
+        let delay = self.finalize_delay;
         tokio::task::spawn_blocking(move || {
+            // Simulated slow storage: local work that reports progress.
+            #[cfg(feature = "test-hooks")]
+            {
+                let step = Duration::from_millis(250);
+                let mut left = delay;
+                while !left.is_zero() {
+                    std::thread::sleep(left.min(step));
+                    left = left.saturating_sub(step);
+                    activity.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             file.set_len(size)?;
             file.sync_all()?;
-            let actual = digest_held(&file)?.hash;
+            activity.fetch_add(1, Ordering::Relaxed);
+            let actual = digest_held(&file, &activity)?.hash;
             if actual != expected {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
@@ -561,6 +644,7 @@ impl FileWriter {
         })
         .await
         .map_err(io::Error::other)??;
+        self.activity.fetch_add(1, Ordering::Relaxed);
         self.done = true;
         let (index, rel) = (self.index.clone(), self.rel.clone());
         let removed = tokio::task::spawn_blocking(move || {

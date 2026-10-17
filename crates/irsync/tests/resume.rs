@@ -439,3 +439,27 @@ async fn four_short_streams_give_write_error() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_progress_resets_idle_watchdog() {
+    within60(async {
+        // A pull whose finalize (sync + re-hash on slow storage) takes 3 s
+        // with nothing on the wire: local progress keeps the client's 2 s
+        // inactivity watchdog quiet, so no reconnect.
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("f"), data(FILE_SIZE, 7)).unwrap();
+        let mut opts = archive_opts();
+        opts.timeout = Some(Duration::from_secs(2));
+        let mut local = h.local_side();
+        local.hooks.slow_finalize = Some(Duration::from_secs(3));
+        let start = std::time::Instant::now();
+        let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), local).await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(start.elapsed() >= Duration::from_secs(3));
+        assert_eq!(reconnects, 0);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}

@@ -50,6 +50,10 @@ pub struct DaemonConfig {
     pub relay_mode: RelayMode,
     #[serde(deserialize_with = "de_duration")]
     pub dormant_session_timeout: Duration,
+    /// Drop a session's connection after this long without activity (wire
+    /// traffic or local progress); the client resumes. Zero disables.
+    #[serde(deserialize_with = "de_duration")]
+    pub idle_timeout: Duration,
     pub modules: BTreeMap<String, Module>,
 }
 
@@ -76,6 +80,7 @@ impl Default for DaemonConfig {
             relay: None,
             relay_mode: RelayMode::Default,
             dormant_session_timeout: Duration::from_secs(7 * 86400),
+            idle_timeout: crate::session::engine::DAEMON_IDLE_TIMEOUT,
             modules: BTreeMap::new(),
         }
     }

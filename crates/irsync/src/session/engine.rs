@@ -229,7 +229,8 @@ pub(super) struct Ctx {
     pub remote_id: Option<Vec<u8>>,
     /// Set once file data crossed or a file was acknowledged DONE.
     pub progress: Arc<AtomicBool>,
-    /// Bumped for every control frame received and every data chunk moved.
+    /// Bumped for every control frame received, every data chunk moved, and
+    /// local progress (hashing, chunk writes, finalize, deletions).
     pub activity: Arc<AtomicU64>,
     /// Drop the connection after this long without activity.
     pub idle_timeout: Option<Duration>,
@@ -494,7 +495,14 @@ pub(super) async fn run_client_inner(
             .await
             .with_context(|| format!("creating {}", local.root.display()))?;
     }
-    let forced = Arc::new(Hasher::new(local.index.clone(), local.root.clone(), 1).with_force(true));
+    // Local work (hashing, writing, finalizing) bumps the same marker the
+    // inactivity watchdog reads, as received and sent traffic does.
+    let activity = local.hasher.activity().clone();
+    let forced = Arc::new(
+        Hasher::new(local.index.clone(), local.root.clone(), 1)
+            .with_force(true)
+            .with_activity(activity.clone()),
+    );
     let ctx = Ctx {
         conn,
         session_id,
@@ -503,7 +511,7 @@ pub(super) async fn run_client_inner(
         record,
         remote_id: None,
         progress: attempt.progress.clone(),
-        activity: Arc::default(),
+        activity,
         idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
         fault: None,
@@ -687,12 +695,18 @@ pub async fn serve_daemon(
     );
     // The module's index is opened for the module root: hash and key paths
     // from there, so rows stay module-relative whatever the session path.
-    let hasher = Arc::new(Hasher::new(
-        index.clone(),
-        module_root.clone(),
-        HASH_WORKERS,
-    ));
-    let forced = Arc::new(Hasher::new(index.clone(), module_root.clone(), 1).with_force(true));
+    // Local work (hashing, writing, finalizing) bumps the same marker the
+    // inactivity watchdog reads, as received and sent traffic does.
+    let activity = Arc::new(AtomicU64::new(0));
+    let hasher = Arc::new(
+        Hasher::new(index.clone(), module_root.clone(), HASH_WORKERS)
+            .with_activity(activity.clone()),
+    );
+    let forced = Arc::new(
+        Hasher::new(index.clone(), module_root.clone(), 1)
+            .with_force(true)
+            .with_activity(activity.clone()),
+    );
     let ctx = Ctx {
         conn,
         session_id,
@@ -701,8 +715,9 @@ pub async fn serve_daemon(
         record,
         remote_id: Some(remote.as_bytes().to_vec()),
         progress: Arc::default(),
-        activity: Arc::default(),
-        idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT)),
+        activity,
+        idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT))
+            .filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
         fault: shared.fault.clone(),
         #[cfg(feature = "test-hooks")]
@@ -816,14 +831,16 @@ async fn run_role(
 }
 
 /// How long a daemon session may go without activity before the daemon
-/// drops the connection (the client can resume).
-pub const DAEMON_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+/// drops the connection (the client can resume), unless the daemon config
+/// sets `idle_timeout`.
+pub const DAEMON_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Close code for a connection dropped for inactivity.
 const CLOSE_IDLE: u32 = 4;
 
 /// Closes the connection once `ctx.activity` has not moved for `timeout`
-/// (no control frame received, no data chunk moved), and sets `fired`.
+/// (no control frame received, no data chunk moved, no local progress such
+/// as hashing, writing, finalizing or deleting), and sets `fired`.
 async fn watch_idle(ctx: Arc<Ctx>, timeout: Duration, fired: Arc<AtomicBool>) {
     let tick = (timeout / 4).clamp(Duration::from_millis(50), Duration::from_secs(1));
     let mut seen = ctx.activity.load(Ordering::Relaxed);

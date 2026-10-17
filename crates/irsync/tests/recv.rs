@@ -545,21 +545,51 @@ async fn temp_named_destination_is_refused() {
     assert_eq!(fs::read_dir(e.root.join("dir")).unwrap().count(), 0);
 }
 
-#[tokio::test]
-async fn second_writer_on_same_part_is_refused() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_writer_waits_and_never_takes_a_placed_file() {
     let e = env();
     let data = content(89);
     let cl = chunk_list(&data);
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
-    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
-        .err()
-        .expect("a second writer on the same .part must be refused");
-    assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
-    assert_eq!(err.to_string(), irsync::recv::PART_BUSY);
-    // The first writer is unaffected and finishes; afterwards the name is free.
+    // A second writer on the same .part waits for the lock...
+    let (root, cl2, index) = (e.root.clone(), cl.clone(), e.index.clone());
+    let second =
+        tokio::task::spawn_blocking(move || FileWriter::open(&root, &rel(), &cl2, None, index));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!second.is_finished(), "the second writer must wait");
+    // ...while the first finishes; it then gets a fresh .part, never the
+    // file the first one renamed into place.
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    let w2 = second.await.unwrap().unwrap();
+    assert_eq!(w2.missing_chunks().len(), cl.chunks.len());
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
-    let w2 = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    drop(w2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn busy_part_waits_for_previous_holder() {
+    let e = env();
+    let data = content(97);
+    let cl = chunk_list(&data);
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    // The previous connection's writer (e.g. a finalize that outlived it)
+    // lets go after 2 s.
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        drop(w);
+    });
+    let start = std::time::Instant::now();
+    let (root, index) = (e.root.clone(), e.index.clone());
+    let w2 = tokio::task::spawn_blocking(move || FileWriter::open(&root, &rel(), &cl, None, index))
+        .await
+        .unwrap()
+        .expect("the second writer gets the .part once the first lets go");
+    let waited = start.elapsed();
+    assert!(
+        waited >= std::time::Duration::from_millis(1500),
+        "{waited:?}"
+    );
+    assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
     drop(w2);
 }

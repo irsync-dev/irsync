@@ -17,6 +17,8 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
 
@@ -69,6 +71,8 @@ pub struct DeletePass {
     unreliable: bool,
     /// Directories that hold a protected (excluded) path: never removed.
     kept: HashSet<RelPath>,
+    /// Bumped per path handled (the session's inactivity watchdogs read it).
+    activity: Arc<AtomicU64>,
 }
 
 impl DeletePass {
@@ -89,6 +93,7 @@ impl DeletePass {
             candidates: Vec::new(),
             unreliable: false,
             kept: HashSet::new(),
+            activity: Arc::default(),
         }
     }
 
@@ -99,6 +104,11 @@ impl DeletePass {
     /// Whether destination paths the receiver's filters exclude are deleted too.
     pub fn delete_excluded(&self) -> bool {
         self.delete_excluded
+    }
+
+    /// Share the session's activity marker: a long pass counts as progress.
+    pub fn set_activity(&mut self, activity: Arc<AtomicU64>) {
+        self.activity = activity;
     }
 
     /// Deletions already made by earlier connections of this session.
@@ -172,6 +182,7 @@ impl DeletePass {
         let mut count = self.spent;
         let mut real_dirs: HashSet<PathBuf> = HashSet::new();
         for (path, _) in std::mem::take(&mut self.candidates) {
+            self.activity.fetch_add(1, Ordering::Relaxed);
             if self.kept.contains(&path) {
                 tracing::info!(?path, "not deleting a directory that holds excluded files");
                 continue;
