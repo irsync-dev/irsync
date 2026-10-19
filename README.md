@@ -211,3 +211,10 @@ partial files are waiting.
 
 More: [docs/daemon.md](docs/daemon.md) for running the daemon,
 [docs/protocol.md](docs/protocol.md) for the wire protocol.
+
+## fileset
+
+This workspace also contains `fileset`, an independent manifest-and-verify tool
+that shares no code with irsync. It records a directory tree in a manifest and
+later checks the tree against it, for example to validate an irsync transfer.
+See [crates/fileset/README.md](crates/fileset/README.md).
