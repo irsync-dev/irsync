@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod compare;
 pub mod escape;
 pub mod hash;
 pub mod model;
