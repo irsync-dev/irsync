@@ -69,7 +69,9 @@ pub fn tier(t: Tier) -> &'static [Field] {
     match t {
         Tier::Relaxed => &[Blake3, Target, Rdev],
         Tier::Default => &[Blake3, Target, Rdev, Mode, Mtime, Size],
-        Tier::Paranoid => &[Blake3, Target, Rdev, Mode, Mtime, Size, Uid, Gid, Nlink, Xattr],
+        Tier::Paranoid => &[
+            Blake3, Target, Rdev, Mode, Mtime, Size, Uid, Gid, Nlink, Xattr,
+        ],
     }
 }
 
@@ -98,7 +100,11 @@ impl Selection {
 }
 
 fn d(name: &str, old: String, new: String) -> FieldDiff {
-    FieldDiff { name: name.to_string(), old, new }
+    FieldDiff {
+        name: name.to_string(),
+        old,
+        new,
+    }
 }
 
 fn num<T: ToString + PartialEq>(out: &mut Vec<FieldDiff>, name: &str, old: T, new: T) {
@@ -111,7 +117,11 @@ fn num<T: ToString + PartialEq>(out: &mut Vec<FieldDiff>, name: &str, old: T, ne
 /// differs the result is exactly one diff named "kind".
 pub fn diff(path: &[u8], stored: &Entry, observed: &Entry, sel: &Selection) -> Vec<FieldDiff> {
     if stored.kind != observed.kind {
-        return vec![d("kind", stored.kind.name().into(), observed.kind.name().into())];
+        return vec![d(
+            "kind",
+            stored.kind.name().into(),
+            observed.kind.name().into(),
+        )];
     }
     let mut out = Vec::new();
     if stored.flags.contains(Flags::STORE) {
@@ -152,7 +162,11 @@ pub fn diff(path: &[u8], stored: &Entry, observed: &Entry, sel: &Selection) -> V
             }
             Field::Mtime => {
                 if path != b"." && stored.mtime != observed.mtime {
-                    out.push(d("mtime", fmt_mtime(stored.mtime), fmt_mtime(observed.mtime)));
+                    out.push(d(
+                        "mtime",
+                        fmt_mtime(stored.mtime),
+                        fmt_mtime(observed.mtime),
+                    ));
                 }
             }
             Field::Size => {
@@ -246,7 +260,10 @@ mod tests {
     fn tiers_contain_spec_fields() {
         use Field::*;
         assert_eq!(tier(Tier::Relaxed), &[Blake3, Target, Rdev]);
-        assert_eq!(tier(Tier::Default), &[Blake3, Target, Rdev, Mode, Mtime, Size]);
+        assert_eq!(
+            tier(Tier::Default),
+            &[Blake3, Target, Rdev, Mode, Mtime, Size]
+        );
         assert_eq!(
             tier(Tier::Paranoid),
             &[Blake3, Target, Rdev, Mode, Mtime, Size, Uid, Gid, Nlink, Xattr]
@@ -282,7 +299,14 @@ mod tests {
         let mut b = ent(Kind::Dir);
         b.mode = 0o755;
         let v = diff(b"a", &a, &b, &sel(Tier::Paranoid));
-        assert_eq!(v, vec![FieldDiff { name: "kind".into(), old: "file".into(), new: "dir".into() }]);
+        assert_eq!(
+            v,
+            vec![FieldDiff {
+                name: "kind".into(),
+                old: "file".into(),
+                new: "dir".into()
+            }]
+        );
     }
 
     #[test]
@@ -309,7 +333,11 @@ mod tests {
         let v = diff(b"a", &a, &b, &sel(Tier::Default));
         assert_eq!(
             v,
-            vec![FieldDiff { name: "blake3".into(), old: fmt_blake3(&[1; 32]), new: "unreadable".into() }]
+            vec![FieldDiff {
+                name: "blake3".into(),
+                old: fmt_blake3(&[1; 32]),
+                new: "unreadable".into()
+            }]
         );
     }
 
@@ -365,13 +393,24 @@ mod tests {
         let mut a = ent(Kind::File);
         a.xattrs = vec![(b"user.b".to_vec(), b"x".to_vec())];
         let mut b = a.clone();
-        b.xattrs = vec![(b"user.a".to_vec(), b"1".to_vec()), (b"user.b".to_vec(), b"y".to_vec())];
+        b.xattrs = vec![
+            (b"user.a".to_vec(), b"1".to_vec()),
+            (b"user.b".to_vec(), b"y".to_vec()),
+        ];
         let v = diff(b"f", &a, &b, &sel(Tier::Paranoid));
         assert_eq!(
             v,
             vec![
-                FieldDiff { name: "xattr:user.a".into(), old: "-".into(), new: fmt_bytes_value(b"1") },
-                FieldDiff { name: "xattr:user.b".into(), old: fmt_bytes_value(b"x"), new: fmt_bytes_value(b"y") },
+                FieldDiff {
+                    name: "xattr:user.a".into(),
+                    old: "-".into(),
+                    new: fmt_bytes_value(b"1")
+                },
+                FieldDiff {
+                    name: "xattr:user.b".into(),
+                    old: fmt_bytes_value(b"x"),
+                    new: fmt_bytes_value(b"y")
+                },
             ]
         );
     }
@@ -392,6 +431,13 @@ mod tests {
         assert!(diff(b"f", &a, &b, &sel(Tier::Default)).is_empty());
         let s = Selection::new(Tier::Default, &[], &[Field::Uid]);
         let v = diff(b"f", &a, &b, &s);
-        assert_eq!(v, vec![FieldDiff { name: "uid".into(), old: "1000".into(), new: "0".into() }]);
+        assert_eq!(
+            v,
+            vec![FieldDiff {
+                name: "uid".into(),
+                old: "1000".into(),
+                new: "0".into()
+            }]
+        );
     }
 }

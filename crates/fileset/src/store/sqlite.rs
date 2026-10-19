@@ -92,9 +92,11 @@ fn now() -> i64 {
 
 fn read_meta(conn: &Connection) -> Result<Meta> {
     let get = |key: &str| -> Result<String> {
-        conn.query_row("SELECT value FROM meta WHERE key = ?", [key], |r| r.get::<_, String>(0))
-            .optional()?
-            .ok_or_else(|| anyhow!("manifest meta key '{key}' missing"))
+        conn.query_row("SELECT value FROM meta WHERE key = ?", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .ok_or_else(|| anyhow!("manifest meta key '{key}' missing"))
     };
     Ok(Meta {
         schema_version: get("schema_version")?.parse()?,
@@ -145,8 +147,14 @@ fn row_to_entry(row: &Row, base: usize) -> rusqlite::Result<Entry> {
         ino: row.get::<_, i64>(base + 6)? as u64,
         dev: row.get::<_, i64>(base + 7)? as u64,
         rdev: row.get::<_, i64>(base + 8)? as u64,
-        mtime: Timespec { sec: row.get(base + 9)?, nsec: row.get::<_, i64>(base + 10)? as u32 },
-        ctime: Timespec { sec: row.get(base + 11)?, nsec: row.get::<_, i64>(base + 12)? as u32 },
+        mtime: Timespec {
+            sec: row.get(base + 9)?,
+            nsec: row.get::<_, i64>(base + 10)? as u32,
+        },
+        ctime: Timespec {
+            sec: row.get(base + 11)?,
+            nsec: row.get::<_, i64>(base + 12)? as u32,
+        },
         blake3,
         target: row.get(base + 14)?,
         xattrs: Vec::new(),
@@ -156,7 +164,8 @@ fn row_to_entry(row: &Row, base: usize) -> rusqlite::Result<Entry> {
 }
 
 fn load_xattrs(conn: &Connection, path: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let mut st = conn.prepare_cached("SELECT name, value FROM xattrs WHERE path = ? ORDER BY name")?;
+    let mut st =
+        conn.prepare_cached("SELECT name, value FROM xattrs WHERE path = ? ORDER BY name")?;
     let rows = st.query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -222,7 +231,10 @@ impl Store for SqliteStore {
 
     fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
         let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE path = ?");
-        let e = self.conn.query_row(&sql, [path], |r| row_to_entry(r, 0)).optional()?;
+        let e = self
+            .conn
+            .query_row(&sql, [path], |r| row_to_entry(r, 0))
+            .optional()?;
         match e {
             Some(mut e) => {
                 e.xattrs = load_xattrs(&self.conn, path)?;
@@ -303,8 +315,10 @@ impl Store for SqliteStore {
 
     fn close(self: Box<Self>) -> Result<()> {
         if self.mode != OpenMode::ReadOnly {
-            self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-            self.conn.query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))?;
+            self.conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+            self.conn
+                .query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))?;
         }
         self.conn.close().map_err(|(_, e)| e)?;
         Ok(())
@@ -334,10 +348,14 @@ mod tests {
     #[test]
     fn failed_migration_leaves_nothing_behind() {
         let conn = Connection::open_in_memory().unwrap();
-        let scripts = ["CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)", "NOT VALID SQL"];
+        let scripts = [
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)",
+            "NOT VALID SQL",
+        ];
         assert!(apply_migrations(&conn, &scripts, 0).is_err());
-        let n: i64 =
-            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -347,7 +365,11 @@ mod tests {
         let scripts = ["CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)"];
         assert_eq!(apply_migrations(&conn, &scripts, 0).unwrap(), 1);
         let v: String = conn
-            .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v, "1");
     }
@@ -389,9 +411,16 @@ mod tests {
     fn readonly_refuses_old_schema() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("m.sqlite");
-        open(&p, Backend::Sqlite, OpenMode::Create).unwrap().close().unwrap();
+        open(&p, Backend::Sqlite, OpenMode::Create)
+            .unwrap()
+            .close()
+            .unwrap();
         let conn = Connection::open(&p).unwrap();
-        conn.execute("UPDATE meta SET value = '0' WHERE key = 'schema_version'", []).unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '0' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
         drop(conn);
         let err = open(&p, Backend::Sqlite, OpenMode::ReadOnly).err().unwrap();
         assert!(err.to_string().contains("run 'fileset update'"), "{err}");

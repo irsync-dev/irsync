@@ -80,10 +80,16 @@ fn update_records_every_kind(b: Backend) {
     assert_eq!(err, "entries=6 hashed=1 reused=0 warnings=0\n");
 
     let store = open_ro(dir.path(), b);
-    assert_eq!(keys(&*store), sorted(vec![".", "d", "d/f", "l", "p", store_name(b)]));
+    assert_eq!(
+        keys(&*store),
+        sorted(vec![".", "d", "d/f", "l", "p", store_name(b)])
+    );
     let f = store.get(b"d/f").unwrap().unwrap();
     assert_eq!(f.blake3, Some(*blake3::hash(b"x").as_bytes()));
-    assert_eq!(store.get(b"l").unwrap().unwrap().target.as_deref(), Some(&b"f"[..]));
+    assert_eq!(
+        store.get(b"l").unwrap().unwrap().target.as_deref(),
+        Some(&b"f"[..])
+    );
     assert_eq!(store.get(b"p").unwrap().unwrap().kind, Kind::Fifo);
     let s = store.get(store_name(b).as_bytes()).unwrap().unwrap();
     assert!(s.flags.contains(Flags::STORE));
@@ -111,7 +117,10 @@ fn update_reuses_hash_when_unchanged(b: Backend) {
     let meta = store.meta().unwrap();
     assert_eq!(meta.generation, 2);
     assert_eq!(meta.created_at, created);
-    assert_eq!(store.get(b"f").unwrap().unwrap().blake3, Some(*blake3::hash(b"x").as_bytes()));
+    assert_eq!(
+        store.get(b"f").unwrap().unwrap().blake3,
+        Some(*blake3::hash(b"x").as_bytes())
+    );
 }
 
 fn update_rehash_forces(b: Backend) {
@@ -143,7 +152,10 @@ fn update_sweeps_stale_generation(b: Backend) {
     assert!(keys(&*open_ro(dir.path(), b)).contains(&"ghost".to_string()));
 
     run_update(dir.path(), b, false, false);
-    assert_eq!(keys(&*open_ro(dir.path(), b)), sorted(vec![".", "f", store_name(b)]));
+    assert_eq!(
+        keys(&*open_ro(dir.path(), b)),
+        sorted(vec![".", "f", store_name(b)])
+    );
 }
 
 fn update_warns_on_unreadable(b: Backend) {
@@ -156,7 +168,10 @@ fn update_warns_on_unreadable(b: Backend) {
     let (outcome, err) = run_update(dir.path(), b, false, false);
     assert_eq!(outcome, Outcome::Clean);
     assert!(err.starts_with("WARN cannot hash f: "), "{err}");
-    assert!(err.ends_with("\nentries=3 hashed=1 reused=0 warnings=1\n"), "{err}");
+    assert!(
+        err.ends_with("\nentries=3 hashed=1 reused=0 warnings=1\n"),
+        "{err}"
+    );
     let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
     assert!(e.flags.contains(Flags::UNREADABLE));
     assert_eq!(e.blake3, None);
@@ -169,7 +184,10 @@ fn update_warns_on_nested_manifest(b: Backend) {
     let dir = tree(&[("sub/.fileset.sqlite", "not a manifest")]);
     let (outcome, err) = run_update(dir.path(), b, false, false);
     assert_eq!(outcome, Outcome::Clean);
-    assert!(err.starts_with("WARN nested manifest at sub/.fileset.sqlite\n"), "{err}");
+    assert!(
+        err.starts_with("WARN nested manifest at sub/.fileset.sqlite\n"),
+        "{err}"
+    );
     let (outcome, _) = run_update(dir.path(), b, false, true);
     assert_eq!(outcome, Outcome::Differences);
 }
@@ -179,7 +197,10 @@ fn update_rejects_wrong_store_flag(b: Backend) {
     run_update(dir.path(), b, false, false);
     let e = run_update_opts(&update_opts(dir.path(), other(b), false, false))
         .expect_err("a conflicting --store backend must fail");
-    assert!(format!("{e:#}").contains("conflicts with the requested --store"), "{e:#}");
+    assert!(
+        format!("{e:#}").contains("conflicts with the requested --store"),
+        "{e:#}"
+    );
 }
 
 fn update_with_external_manifest_flags_nothing(b: Backend) {
@@ -234,7 +255,11 @@ fn check_reports_add_del_chg(b: Backend) {
     assert_eq!(l[1], "ADD n kind=file");
     let old = fmt_blake3(blake3::hash(b"1").as_bytes());
     let new = fmt_blake3(blake3::hash(b"12").as_bytes());
-    assert!(l[2].starts_with(&format!("CHG x blake3={old}→{new} mtime=")), "{}", l[2]);
+    assert!(
+        l[2].starts_with(&format!("CHG x blake3={old}→{new} mtime=")),
+        "{}",
+        l[2]
+    );
     assert!(l[2].ends_with(" size=1→2"), "{}", l[2]);
     assert_eq!(l[3], "DEL d/f");
     assert_eq!(err, "added=1 deleted=1 changed=2 unchanged=3 warnings=0\n");
@@ -294,7 +319,11 @@ fn check_symlink_retarget(b: Backend) {
     let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     let l = lines(&out);
     assert_eq!(l.len(), 1, "{out}");
-    assert!(l[0] == "CHG l target=f→g" || l[0].starts_with("CHG l target=f→g mtime="), "{}", l[0]);
+    assert!(
+        l[0] == "CHG l target=f→g" || l[0].starts_with("CHG l target=f→g mtime="),
+        "{}",
+        l[0]
+    );
     assert_eq!(outcome, Outcome::Differences);
     let (_, out, _) = run_check(dir.path(), Tier::Default, &[Field::Mtime], &[], false);
     assert_eq!(out, "CHG l target=f→g\n");
@@ -336,7 +365,10 @@ fn check_warns_no_stored_checksum(b: Backend) {
     // The mode necessarily changed; this test is about the missing checksum.
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[Field::Mode], &[], false);
     assert_eq!(out, "");
-    assert_eq!(err, "WARN no stored checksum for f\nadded=0 deleted=0 changed=0 unchanged=3 warnings=1\n");
+    assert_eq!(
+        err,
+        "WARN no stored checksum for f\nadded=0 deleted=0 changed=0 unchanged=3 warnings=1\n"
+    );
     assert_eq!(outcome, Outcome::Clean);
     let (outcome, _, _) = run_check(dir.path(), Tier::Default, &[Field::Mode], &[], true);
     assert_eq!(outcome, Outcome::Differences);
@@ -390,6 +422,9 @@ fn check_output_is_deterministic(b: Backend) {
     std::fs::write(dir.path().join("z"), "z").unwrap();
     let (_, first, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     let (_, second, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
-    assert!(first.contains("DEL a/1\n") && first.contains("ADD z kind=file\n"), "{first}");
+    assert!(
+        first.contains("DEL a/1\n") && first.contains("ADD z kind=file\n"),
+        "{first}"
+    );
     assert_eq!(first, second);
 }

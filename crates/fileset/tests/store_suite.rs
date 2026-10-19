@@ -15,11 +15,17 @@ fn entry(generation: u64) -> Entry {
         ino: 42,
         dev: 7,
         rdev: 0,
-        mtime: Timespec { sec: 1_700_000_000, nsec: 123 },
+        mtime: Timespec {
+            sec: 1_700_000_000,
+            nsec: 123,
+        },
         ctime: Timespec { sec: -5, nsec: 999 },
         blake3: Some([9u8; 32]),
         target: Some(b"tgt".to_vec()),
-        xattrs: vec![(b"user.a".to_vec(), b"1".to_vec()), (b"user.b".to_vec(), vec![0, 255])],
+        xattrs: vec![
+            (b"user.a".to_vec(), b"1".to_vec()),
+            (b"user.b".to_vec(), vec![0, 255]),
+        ],
         flags: Flags::STORE,
         generation,
     }
@@ -60,7 +66,10 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
         Ok(())
     })
     .unwrap();
-    assert_eq!(keys, vec![b"a".to_vec(), b"a/c".to_vec(), b"b".to_vec(), b"x".to_vec()]);
+    assert_eq!(
+        keys,
+        vec![b"a".to_vec(), b"a/c".to_vec(), b"b".to_vec(), b"x".to_vec()]
+    );
 
     // sweep: x is generation 1, others 2
     assert_eq!(s.sweep(2).unwrap(), 1);
@@ -96,10 +105,14 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
 
 #[test]
 fn sqlite_suite() {
-    suite(Backend::Sqlite, |p, mode| store::open(p, Backend::Sqlite, mode).unwrap());
+    suite(Backend::Sqlite, |p, mode| {
+        store::open(p, Backend::Sqlite, mode).unwrap()
+    });
 }
 
 #[test]
 fn fjall_suite() {
-    suite(Backend::Fjall, |p, mode| store::open(p, Backend::Fjall, mode).unwrap());
+    suite(Backend::Fjall, |p, mode| {
+        store::open(p, Backend::Fjall, mode).unwrap()
+    });
 }

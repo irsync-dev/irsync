@@ -32,7 +32,11 @@ pub fn update(
     let common = &opts.common;
     let root = canonical_root(&common.root)?;
     let loc = store::locate(&root, common.manifest.as_deref(), opts.backend, true)?;
-    let mode = if loc.exists { OpenMode::ReadWrite } else { OpenMode::Create };
+    let mode = if loc.exists {
+        OpenMode::ReadWrite
+    } else {
+        OpenMode::Create
+    };
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
     let generation = old_meta.generation + 1;
@@ -45,7 +49,12 @@ pub fn update(
     };
 
     let mut warnings = Warnings::new(err);
-    let mut summary = UpdateSummary { entries: 0, hashed: 0, reused: 0, warnings: 0 };
+    let mut summary = UpdateSummary {
+        entries: 0,
+        hashed: 0,
+        reused: 0,
+        warnings: 0,
+    };
     let mut lookup_error: Option<anyhow::Error> = None;
     // One flag per entry, in walk order: whether `decide` sent it to be hashed.
     let sent_to_hash: RefCell<VecDeque<bool>> = RefCell::new(VecDeque::new());
@@ -56,7 +65,9 @@ pub fn update(
         if matches!(decision, Decision::Skip) && obs.entry.blake3.is_some() {
             summary.reused += 1;
         }
-        sent_to_hash.borrow_mut().push_back(matches!(decision, Decision::Hash));
+        sent_to_hash
+            .borrow_mut()
+            .push_back(matches!(decision, Decision::Hash));
         decision
     };
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
@@ -81,7 +92,12 @@ pub fn update(
         }
         Ok(())
     };
-    pipeline::run(common.jobs, move |emit| walk::walk(&cfg, emit), decide, sink)?;
+    pipeline::run(
+        common.jobs,
+        move |emit| walk::walk(&cfg, emit),
+        decide,
+        sink,
+    )?;
     if let Some(e) = lookup_error {
         return Err(e);
     }

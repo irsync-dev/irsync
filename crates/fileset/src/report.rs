@@ -108,7 +108,10 @@ mod tests {
     }
     #[test]
     fn mtime_rfc3339_nanos() {
-        assert_eq!(fmt_mtime(Timespec { sec: 0, nsec: 5 }), "1970-01-01T00:00:00.000000005Z");
+        assert_eq!(
+            fmt_mtime(Timespec { sec: 0, nsec: 5 }),
+            "1970-01-01T00:00:00.000000005Z"
+        );
     }
     #[test]
     fn blake3_hex() {
@@ -135,7 +138,11 @@ mod tests {
     }
     #[test]
     fn chg_line_format() {
-        let d = vec![FieldDiff { name: "mode".into(), old: "0644".into(), new: "0600".into() }];
+        let d = vec![FieldDiff {
+            name: "mode".into(),
+            old: "0644".into(),
+            new: "0600".into(),
+        }];
         assert_eq!(line_chg(b"a/b", &d), "CHG a/b mode=0644→0600");
     }
     #[test]
@@ -148,12 +155,26 @@ mod tests {
     }
     #[test]
     fn check_summary_display() {
-        let s = CheckSummary { added: 1, deleted: 2, changed: 3, unchanged: 4, warnings: 5 };
-        assert_eq!(s.to_string(), "added=1 deleted=2 changed=3 unchanged=4 warnings=5");
+        let s = CheckSummary {
+            added: 1,
+            deleted: 2,
+            changed: 3,
+            unchanged: 4,
+            warnings: 5,
+        };
+        assert_eq!(
+            s.to_string(),
+            "added=1 deleted=2 changed=3 unchanged=4 warnings=5"
+        );
     }
     #[test]
     fn update_summary_display() {
-        let s = UpdateSummary { entries: 1, hashed: 2, reused: 3, warnings: 4 };
+        let s = UpdateSummary {
+            entries: 1,
+            hashed: 2,
+            reused: 3,
+            warnings: 4,
+        };
         assert_eq!(s.to_string(), "entries=1 hashed=2 reused=3 warnings=4");
     }
 }

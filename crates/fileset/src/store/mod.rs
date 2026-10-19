@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 
 pub const SQLITE_NAME: &str = ".fileset.sqlite";
 pub const FJALL_NAME: &str = ".fileset.fjall";
-pub const SQLITE_SIDECARS: [&str; 3] =
-    [".fileset.sqlite-wal", ".fileset.sqlite-shm", ".fileset.sqlite-journal"];
+pub const SQLITE_SIDECARS: [&str; 3] = [
+    ".fileset.sqlite-wal",
+    ".fileset.sqlite-shm",
+    ".fileset.sqlite-journal",
+];
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,7 +43,10 @@ pub trait Store: Send {
     fn meta(&self) -> anyhow::Result<Meta>;
     fn get(&self, path: &[u8]) -> anyhow::Result<Option<Entry>>;
     /// Visits every entry in byte-wise key order.
-    fn for_each(&self, f: &mut dyn FnMut(&[u8], &Entry) -> anyhow::Result<()>) -> anyhow::Result<()>;
+    fn for_each(
+        &self,
+        f: &mut dyn FnMut(&[u8], &Entry) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()>;
     /// Atomic upsert of all items (xattrs replaced wholesale).
     fn put_batch(&mut self, items: &[(Vec<u8>, Entry)]) -> anyhow::Result<()>;
     /// Deletes every entry whose generation != keep. Returns count deleted.
@@ -110,7 +116,11 @@ pub fn locate(
                     m.display()
                 );
             }
-            return Ok(Location { backend, path: m.to_path_buf(), exists: true });
+            return Ok(Location {
+                backend,
+                path: m.to_path_buf(),
+                exists: true,
+            });
         }
         if !for_update {
             anyhow::bail!("no manifest at {}", m.display());
@@ -131,15 +141,22 @@ pub fn locate(
             root.display()
         ),
         (true, false) | (false, true) => {
-            let (backend, path) =
-                if has_s { (Backend::Sqlite, sqlite) } else { (Backend::Fjall, fjall) };
+            let (backend, path) = if has_s {
+                (Backend::Sqlite, sqlite)
+            } else {
+                (Backend::Fjall, fjall)
+            };
             if requested.is_some_and(|r| r != backend) {
                 anyhow::bail!(
                     "{} already exists, which conflicts with the requested --store backend",
                     path.display()
                 );
             }
-            Ok(Location { backend, path, exists: true })
+            Ok(Location {
+                backend,
+                path,
+                exists: true,
+            })
         }
         (false, false) => {
             if !for_update {
@@ -153,7 +170,11 @@ pub fn locate(
                 Backend::Sqlite => sqlite,
                 Backend::Fjall => fjall,
             };
-            Ok(Location { backend, path, exists: false })
+            Ok(Location {
+                backend,
+                path,
+                exists: false,
+            })
         }
     }
 }
@@ -162,7 +183,11 @@ pub fn locate(
 pub fn store_path_inside(root: &Path, loc: &Location) -> Option<PathBuf> {
     let abs = match (loc.path.parent(), loc.path.file_name()) {
         (Some(parent), Some(name)) => {
-            let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             match parent.canonicalize() {
                 Ok(p) => p.join(name),
                 Err(_) => loc.path.clone(),
@@ -196,7 +221,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
         let err = locate(&root, None, None, false).unwrap_err().to_string();
-        assert!(err.contains(".fileset.sqlite") && err.contains(".fileset.fjall"), "{err}");
+        assert!(
+            err.contains(".fileset.sqlite") && err.contains(".fileset.fjall"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -214,7 +242,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
         std::fs::write(root.join(SQLITE_NAME), b"").unwrap();
-        let err = locate(&root, None, Some(Backend::Fjall), true).unwrap_err().to_string();
+        let err = locate(&root, None, Some(Backend::Fjall), true)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("already exists"), "{err}");
     }
 
@@ -235,7 +265,9 @@ mod tests {
         let root = canon(&d);
         let m = root.join("m");
         std::fs::create_dir(&m).unwrap();
-        let err = locate(&root, Some(&m), Some(Backend::Sqlite), true).unwrap_err().to_string();
+        let err = locate(&root, Some(&m), Some(Backend::Sqlite), true)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("already exists"), "{err}");
     }
 
@@ -244,7 +276,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
         let m = root.join("nope");
-        let err = locate(&root, Some(&m), None, false).unwrap_err().to_string();
+        let err = locate(&root, Some(&m), None, false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no manifest at"), "{err}");
     }
 

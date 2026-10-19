@@ -45,9 +45,7 @@ pub fn check(
     let mut summary = CheckSummary::default();
     let mut lookup_error: Option<anyhow::Error> = None;
 
-    let decide = |obs: &mut Observed| {
-        hash_or_skip(&**store.borrow(), obs, &sel, &mut lookup_error)
-    };
+    let decide = |obs: &mut Observed| hash_or_skip(&**store.borrow(), obs, &sel, &mut lookup_error);
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
         let obs = match ev {
             WalkEvent::Warning(text) => return Ok(warnings.emit(&text)?),
@@ -77,7 +75,12 @@ pub fn check(
         }
         Ok(())
     };
-    pipeline::run(common.jobs, move |emit| walk::walk(&cfg, emit), decide, sink)?;
+    pipeline::run(
+        common.jobs,
+        move |emit| walk::walk(&cfg, emit),
+        decide,
+        sink,
+    )?;
     if let Some(e) = lookup_error {
         return Err(e);
     }
@@ -102,11 +105,13 @@ pub fn check(
     summary.warnings = warnings.count();
     writeln!(err, "{summary}")?;
     let differs = summary.added + summary.deleted + summary.changed > 0;
-    Ok(if differs || (common.fail_on_warnings && summary.warnings > 0) {
-        Outcome::Differences
-    } else {
-        Outcome::Clean
-    })
+    Ok(
+        if differs || (common.fail_on_warnings && summary.warnings > 0) {
+            Outcome::Differences
+        } else {
+            Outcome::Clean
+        },
+    )
 }
 
 /// Hashes a regular file only when there is a stored entry to compare its checksum with.

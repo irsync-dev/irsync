@@ -133,8 +133,14 @@ impl Entry {
             ino: md.ino(),
             dev: md.dev(),
             rdev: md.rdev(),
-            mtime: Timespec { sec: md.mtime(), nsec: md.mtime_nsec() as u32 },
-            ctime: Timespec { sec: md.ctime(), nsec: md.ctime_nsec() as u32 },
+            mtime: Timespec {
+                sec: md.mtime(),
+                nsec: md.mtime_nsec() as u32,
+            },
+            ctime: Timespec {
+                sec: md.ctime(),
+                nsec: md.ctime_nsec() as u32,
+            },
             blake3: None,
             target,
             xattrs,
@@ -254,14 +260,19 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("f");
         std::fs::write(&p, b"x").unwrap();
-        if let Err(err) = xattr::set(&p, "user.b", b"2").and_then(|_| xattr::set(&p, "user.a", b"1")) {
+        if let Err(err) =
+            xattr::set(&p, "user.b", b"2").and_then(|_| xattr::set(&p, "user.a", b"1"))
+        {
             eprintln!("skipped xattrs_sorted_by_name: xattr set failed: {err}");
             return;
         }
         let got = read_xattrs(&p).unwrap();
         assert_eq!(
             got,
-            vec![(b"user.a".to_vec(), b"1".to_vec()), (b"user.b".to_vec(), b"2".to_vec())]
+            vec![
+                (b"user.a".to_vec(), b"1".to_vec()),
+                (b"user.b".to_vec(), b"2".to_vec())
+            ]
         );
         assert_eq!(Entry::from_path(&p).unwrap().xattrs, got);
     }

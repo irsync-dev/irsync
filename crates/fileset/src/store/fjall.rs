@@ -45,7 +45,10 @@ fn to_pb(e: &Entry) -> pb::Entry {
         xattrs: e
             .xattrs
             .iter()
-            .map(|(n, v)| pb::Xattr { name: n.clone(), value: v.clone() })
+            .map(|(n, v)| pb::Xattr {
+                name: n.clone(),
+                value: v.clone(),
+            })
             .collect(),
         flags: e.flags.0,
         generation: e.generation,
@@ -70,8 +73,14 @@ fn from_pb(p: pb::Entry) -> Result<Entry> {
         ino: p.ino,
         dev: p.dev,
         rdev: p.rdev,
-        mtime: Timespec { sec: p.mtime_sec, nsec: p.mtime_nsec },
-        ctime: Timespec { sec: p.ctime_sec, nsec: p.ctime_nsec },
+        mtime: Timespec {
+            sec: p.mtime_sec,
+            nsec: p.mtime_nsec,
+        },
+        ctime: Timespec {
+            sec: p.ctime_sec,
+            nsec: p.ctime_nsec,
+        },
         blake3,
         target: p.target,
         xattrs: p.xattrs.into_iter().map(|x| (x.name, x.value)).collect(),
@@ -225,7 +234,10 @@ mod tests {
             ctime: Timespec { sec: 9, nsec: 10 },
             blake3: Some([0xab; 32]),
             target: Some(b"t".to_vec()),
-            xattrs: vec![(b"user.a".to_vec(), b"1".to_vec()), (b"user.b".to_vec(), vec![0, 255])],
+            xattrs: vec![
+                (b"user.a".to_vec(), b"1".to_vec()),
+                (b"user.b".to_vec(), vec![0, 255]),
+            ],
             flags: Flags(3),
             generation,
         }

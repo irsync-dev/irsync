@@ -49,7 +49,12 @@ pub fn mkfifo(path: &Path) {
     assert!(status.success(), "mkfifo {} failed", path.display());
 }
 
-pub fn update_opts(root: &Path, backend: Backend, rehash: bool, fail_on_warnings: bool) -> UpdateOpts {
+pub fn update_opts(
+    root: &Path,
+    backend: Backend,
+    rehash: bool,
+    fail_on_warnings: bool,
+) -> UpdateOpts {
     UpdateOpts {
         common: CommonOpts {
             root: root.to_path_buf(),
@@ -69,15 +74,30 @@ pub fn run_update_opts(opts: &UpdateOpts) -> anyhow::Result<(Outcome, String)> {
     let mut out = Vec::new();
     let mut err = Vec::new();
     let outcome = update(opts, &mut out, &mut err, &NoProgress)?;
-    assert!(out.is_empty(), "update wrote to stdout: {}", String::from_utf8_lossy(&out));
+    assert!(
+        out.is_empty(),
+        "update wrote to stdout: {}",
+        String::from_utf8_lossy(&out)
+    );
     Ok((outcome, String::from_utf8(err).unwrap()))
 }
 
-pub fn run_update(root: &Path, backend: Backend, rehash: bool, fail_on_warnings: bool) -> (Outcome, String) {
+pub fn run_update(
+    root: &Path,
+    backend: Backend,
+    rehash: bool,
+    fail_on_warnings: bool,
+) -> (Outcome, String) {
     run_update_opts(&update_opts(root, backend, rehash, fail_on_warnings)).unwrap()
 }
 
-pub fn check_opts(root: &Path, tier: Tier, ignore: &[Field], require: &[Field], fail_on_warnings: bool) -> CheckOpts {
+pub fn check_opts(
+    root: &Path,
+    tier: Tier,
+    ignore: &[Field],
+    require: &[Field],
+    fail_on_warnings: bool,
+) -> CheckOpts {
     CheckOpts {
         common: CommonOpts {
             root: root.to_path_buf(),
@@ -98,7 +118,11 @@ pub fn run_check_opts(opts: &CheckOpts) -> anyhow::Result<(Outcome, String, Stri
     let mut out = Vec::new();
     let mut err = Vec::new();
     let outcome = check(opts, &mut out, &mut err, &NoProgress)?;
-    Ok((outcome, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap()))
+    Ok((
+        outcome,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    ))
 }
 
 pub fn run_check(
@@ -113,7 +137,10 @@ pub fn run_check(
 
 /// Sets the mtime of a file or directory the caller owns, without needing write access.
 pub fn set_mtime_ro(path: &Path, t: SystemTime) {
-    File::open(path).unwrap().set_times(FileTimes::new().set_modified(t)).unwrap();
+    File::open(path)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(t))
+        .unwrap();
 }
 
 pub fn store_name(backend: Backend) -> &'static str {

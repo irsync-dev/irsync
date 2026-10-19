@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(name = "fileset", version, about = "Manifest and verify a directory tree")]
+#[command(
+    name = "fileset",
+    version,
+    about = "Manifest and verify a directory tree"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
