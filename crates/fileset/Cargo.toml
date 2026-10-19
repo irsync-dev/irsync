@@ -1,0 +1,28 @@
+[package]
+name = "fileset"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fileset"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+blake3 = { workspace = true }
+rusqlite = { workspace = true }
+fjall = { workspace = true }
+prost = { workspace = true }
+xattr = { workspace = true }
+crossbeam-channel = { workspace = true }
+indicatif = { workspace = true }
+jiff = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+protox = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
