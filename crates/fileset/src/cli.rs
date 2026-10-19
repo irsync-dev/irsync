@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use clap::builder::TypedValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
@@ -44,7 +45,7 @@ pub struct CommonArgs {
     #[arg(long)]
     pub no_dir_sort: bool,
     /// Number of worker threads
-    #[arg(short = 'j', long, value_name = "N")]
+    #[arg(short = 'j', long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..).map(|n| n as usize))]
     pub jobs: Option<usize>,
     /// Suppress progress output
     #[arg(short = 'q', long)]
