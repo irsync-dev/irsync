@@ -1,6 +1,8 @@
 pub mod cli;
 pub mod escape;
+pub mod hash;
 pub mod model;
+pub mod pipeline;
 pub mod report;
 pub mod store;
 pub mod walk;
