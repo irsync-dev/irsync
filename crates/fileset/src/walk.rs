@@ -45,7 +45,10 @@ pub enum WalkEvent {
 type Sink<'a> = dyn FnMut(WalkEvent) -> anyhow::Result<()> + 'a;
 
 pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
-    let entry = Entry::from_path(&cfg.root)?;
+    let (entry, partial) = Entry::from_path(&cfg.root)?;
+    for p in &partial {
+        sink(WalkEvent::Warning(p.warning(".")))?;
+    }
     let root_dev = entry.dev;
     let is_dir = entry.kind == crate::model::Kind::Dir;
     sink(WalkEvent::Entry(Observed {
@@ -131,7 +134,12 @@ fn walk_dir(
             r
         };
         let mut entry = match Entry::from_path(&abs) {
-            Ok(e) => e,
+            Ok((e, partial)) => {
+                for p in &partial {
+                    sink(WalkEvent::Warning(p.warning(&escape(&rel))))?;
+                }
+                e
+            }
             Err(err) => {
                 sink(WalkEvent::Warning(format!(
                     "cannot stat {}: {}",

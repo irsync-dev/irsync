@@ -172,7 +172,7 @@ mod tests {
         Observed {
             path: rel.as_bytes().to_vec(),
             abs: abs.to_path_buf(),
-            entry: Entry::from_path(abs).unwrap(),
+            entry: Entry::from_path(abs).unwrap().0,
             hash_error: None,
         }
     }

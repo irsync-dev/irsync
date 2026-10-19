@@ -1,5 +1,6 @@
 //! Entry model and lstat/xattr capture.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -95,9 +96,29 @@ pub struct Entry {
     pub generation: u64,
 }
 
+/// Metadata of an entry that could not be read; the entry is recorded without it.
+#[derive(Debug)]
+pub enum Partial {
+    /// Listing or reading extended attributes failed; the entry keeps those read before.
+    Xattrs(io::Error),
+    /// Reading a symlink's target failed; the entry has no target.
+    Target(io::Error),
+}
+
+impl Partial {
+    /// Warning text for this failure at the (escaped) relative `path`.
+    pub fn warning(&self, path: &str) -> String {
+        match self {
+            Partial::Xattrs(e) => format!("cannot read xattrs of {path}: {e}"),
+            Partial::Target(e) => format!("cannot read link target of {path}: {e}"),
+        }
+    }
+}
+
 impl Entry {
-    /// Captures metadata of `abs` without following a final symlink.
-    pub fn from_path(abs: &Path) -> io::Result<Entry> {
+    /// Captures metadata of `abs` without following a final symlink. Only an lstat failure
+    /// is an error; anything else that cannot be read is returned as a `Partial`.
+    pub fn from_path(abs: &Path) -> io::Result<(Entry, Vec<Partial>)> {
         let md = std::fs::symlink_metadata(abs)?;
         let ft = md.file_type();
         let kind = if ft.is_dir() {
@@ -117,13 +138,23 @@ impl Entry {
         } else {
             Kind::Other
         };
+        let mut partial = Vec::new();
         let target = if kind == Kind::Symlink {
-            Some(std::fs::read_link(abs)?.into_os_string().into_vec())
+            match std::fs::read_link(abs) {
+                Ok(t) => Some(t.into_os_string().into_vec()),
+                Err(e) => {
+                    partial.push(Partial::Target(e));
+                    None
+                }
+            }
         } else {
             None
         };
-        let xattrs = read_xattrs(abs)?;
-        Ok(Entry {
+        let (xattrs, xattr_err) = read_xattrs(abs);
+        if let Some(e) = xattr_err {
+            partial.push(Partial::Xattrs(e));
+        }
+        let entry = Entry {
             kind,
             mode: md.mode() & 0o7777,
             uid: md.uid(),
@@ -146,7 +177,8 @@ impl Entry {
             xattrs,
             flags: Flags::default(),
             generation: 0,
-        })
+        };
+        Ok((entry, partial))
     }
 }
 
@@ -155,24 +187,43 @@ fn is_unsupported(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::Unsupported || matches!(e.raw_os_error(), Some(95) | Some(45))
 }
 
-/// Reads all extended attributes of `abs` (not following symlinks), sorted by name.
-pub fn read_xattrs(abs: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let names = match xattr::list(abs) {
+type Xattrs = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Reads the extended attributes of `abs` (not following symlinks), sorted by name, with
+/// the first failure other than "not supported", if any.
+pub fn read_xattrs(abs: &Path) -> (Xattrs, Option<io::Error>) {
+    collect_xattrs(xattr::list(abs), |name| xattr::get(abs, name))
+}
+
+/// Gathers xattrs from a listing and a getter. "Not supported" ends the gathering silently;
+/// any other failure ends it and is returned. Either way the attributes read so far are kept.
+fn collect_xattrs<I>(
+    names: io::Result<I>,
+    mut get: impl FnMut(&OsStr) -> io::Result<Option<Vec<u8>>>,
+) -> (Xattrs, Option<io::Error>)
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let names = match names {
         Ok(n) => n,
-        Err(e) if is_unsupported(&e) => return Ok(Vec::new()),
-        Err(e) => return Err(e),
+        Err(e) if is_unsupported(&e) => return (Vec::new(), None),
+        Err(e) => return (Vec::new(), Some(e)),
     };
     let mut out = Vec::new();
+    let mut err = None;
     for name in names {
-        match xattr::get(abs, &name) {
+        match get(&name) {
             Ok(Some(v)) => out.push((name.into_vec(), v)),
             Ok(None) => {}
-            Err(e) if is_unsupported(&e) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
+            Err(e) if is_unsupported(&e) => break,
+            Err(e) => {
+                err = Some(e);
+                break;
+            }
         }
     }
     out.sort();
-    Ok(out)
+    (out, err)
 }
 
 #[cfg(test)]
@@ -226,7 +277,7 @@ mod tests {
         let p = d.path().join("f");
         std::fs::write(&p, b"abc").unwrap();
         std::fs::set_permissions(&p, PermissionsExt::from_mode(0o640)).unwrap();
-        let e = Entry::from_path(&p).unwrap();
+        let e = Entry::from_path(&p).unwrap().0;
         assert_eq!(e.kind, Kind::File);
         assert_eq!(e.mode, 0o640);
         assert_eq!(e.size, 3);
@@ -242,7 +293,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("l");
         std::os::unix::fs::symlink("missing", &p).unwrap();
-        let e = Entry::from_path(&p).unwrap();
+        let e = Entry::from_path(&p).unwrap().0;
         assert_eq!(e.kind, Kind::Symlink);
         assert_eq!(e.target.as_deref(), Some(&b"missing"[..]));
     }
@@ -250,7 +301,7 @@ mod tests {
     #[test]
     fn from_path_dir_has_no_target() {
         let d = tempfile::tempdir().unwrap();
-        let e = Entry::from_path(d.path()).unwrap();
+        let e = Entry::from_path(d.path()).unwrap().0;
         assert_eq!(e.kind, Kind::Dir);
         assert!(e.target.is_none());
     }
@@ -266,7 +317,8 @@ mod tests {
             eprintln!("skipped xattrs_sorted_by_name: xattr set failed: {err}");
             return;
         }
-        let got = read_xattrs(&p).unwrap();
+        let (got, err) = read_xattrs(&p);
+        assert!(err.is_none(), "{err:?}");
         assert_eq!(
             got,
             vec![
@@ -274,6 +326,73 @@ mod tests {
                 (b"user.b".to_vec(), b"2".to_vec())
             ]
         );
-        assert_eq!(Entry::from_path(&p).unwrap().xattrs, got);
+        assert_eq!(Entry::from_path(&p).unwrap().0.xattrs, got);
+    }
+
+    /// `/proc/1/cwd` is a symlink anyone can lstat but only root can readlink.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_link_target_keeps_the_entry() {
+        let p = Path::new("/proc/1/cwd");
+        if std::fs::read_link(p).is_ok() || std::fs::symlink_metadata(p).is_err() {
+            eprintln!("skipping: /proc/1/cwd is readable here (root) or absent");
+            return;
+        }
+        let (e, partial) = Entry::from_path(p).expect("a readlink failure must not drop the entry");
+        assert_eq!(e.kind, Kind::Symlink);
+        assert!(e.target.is_none());
+        assert_eq!(partial.len(), 1, "{partial:?}");
+        let w = partial[0].warning("l");
+        assert!(w.starts_with("cannot read link target of l: "), "{w}");
+    }
+
+    fn names(v: &[&str]) -> io::Result<Vec<OsString>> {
+        Ok(v.iter().map(OsString::from).collect())
+    }
+
+    fn val(name: &OsStr) -> io::Result<Option<Vec<u8>>> {
+        Ok(Some(name.as_encoded_bytes().to_vec()))
+    }
+
+    #[test]
+    fn xattr_list_failure_is_reported() {
+        let (got, err) = collect_xattrs(
+            Err::<Vec<OsString>, _>(io::Error::from_raw_os_error(5)),
+            val,
+        );
+        assert!(got.is_empty());
+        assert_eq!(err.unwrap().raw_os_error(), Some(5));
+    }
+
+    #[test]
+    fn xattr_get_failure_keeps_those_read_before() {
+        let (got, err) = collect_xattrs(names(&["user.b", "user.a", "user.c"]), |n| {
+            if n == "user.c" {
+                Err(io::Error::from_raw_os_error(13))
+            } else {
+                val(n)
+            }
+        });
+        assert_eq!(
+            got,
+            vec![
+                (b"user.a".to_vec(), b"user.a".to_vec()),
+                (b"user.b".to_vec(), b"user.b".to_vec())
+            ]
+        );
+        assert_eq!(err.unwrap().raw_os_error(), Some(13));
+    }
+
+    #[test]
+    fn xattr_unsupported_midway_keeps_those_read_before() {
+        let (got, err) = collect_xattrs(names(&["user.a", "user.b"]), |n| {
+            if n == "user.b" {
+                Err(io::Error::from_raw_os_error(95))
+            } else {
+                val(n)
+            }
+        });
+        assert_eq!(got, vec![(b"user.a".to_vec(), b"user.a".to_vec())]);
+        assert!(err.is_none());
     }
 }
