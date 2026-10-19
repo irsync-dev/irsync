@@ -2,8 +2,10 @@ mod common;
 
 use common::*;
 use fileset::compare::{Field, Tier};
+use fileset::engine::update::update;
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
+use fileset::progress::NoProgress;
 use fileset::report::fmt_blake3;
 use fileset::store::{self, Backend, OpenMode};
 use std::path::Path;
@@ -49,6 +51,7 @@ for_both_backends! {
     check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall;
     check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
     check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
+    update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
 }
 
 fn other(b: Backend) -> Backend {
@@ -452,4 +455,44 @@ fn check_unreadable_directory_is_a_difference(b: Backend) {
         "{err}"
     );
     assert_eq!(outcome, Outcome::Differences);
+}
+
+/// Accepts nothing: the first warning aborts the run that writes to it.
+struct FailingWriter;
+
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("stderr closed"))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_sweeps_entries_of_interrupted_run(b: Backend) {
+    // More entries than one put_batch, then a warning (nested manifest under "zz") whose
+    // write fails, so the run dies after committing a batch and before finishing.
+    let names: Vec<String> = (0..2000).map(|i| format!("f{i:04}")).collect();
+    let mut spec: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "x")).collect();
+    spec.push(("zz/.fileset.sqlite", "not a manifest"));
+    let dir = tree(&spec);
+    run_update(dir.path(), b, false, false);
+    let err = update(
+        &update_opts(dir.path(), b, false, false),
+        &mut Vec::new(),
+        &mut FailingWriter,
+        &NoProgress,
+    )
+    .expect_err("a failing warning write must abort update");
+    assert!(format!("{err:#}").contains("stderr closed"), "{err:#}");
+
+    // f0000 was committed by the interrupted run; it must not survive the next one.
+    std::fs::remove_file(dir.path().join("f0000")).unwrap();
+    run_update(dir.path(), b, false, false);
+    let k = keys(&*open_ro(dir.path(), b));
+    assert!(!k.contains(&"f0000".to_string()), "ghost f0000 survived");
+    assert_eq!(k.len(), 2000 + 3, "{k:?}");
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
 }

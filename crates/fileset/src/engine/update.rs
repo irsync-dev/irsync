@@ -40,6 +40,12 @@ pub fn update(
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
     let generation = old_meta.generation + 1;
+    // Claim the generation before writing any entry with it, so entries committed by a
+    // run that dies midway carry a generation the next run does not reuse and sweeps.
+    store.borrow_mut().set_meta(&Meta {
+        generation,
+        ..old_meta.clone()
+    })?;
 
     let cfg = WalkConfig {
         root: root.clone(),
