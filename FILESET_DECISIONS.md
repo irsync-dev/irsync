@@ -1,0 +1,133 @@
+# fileset: implementation decisions
+
+This file records the rulings made while implementing the `fileset` crate
+from `docs/superpowers/specs/2026-10-19-fileset-design.md` and
+`docs/superpowers/plans/2026-10-19-fileset.md`. Design-level decisions live
+in the spec; this file covers the calls made during execution that the spec
+and plan did not settle, or that amended them. Each entry names what was
+decided, why, and what it costs if the ruling turns out to be wrong.
+
+Behavioral amendments to the spec are also recorded in the spec's
+"Amendments made during implementation" section. Review findings that were
+deferred rather than fixed are listed in
+`docs/superpowers/plans/2026-10-19-fileset-deferred.md`.
+
+## Pre-flight (before Task 1)
+
+1. **`WalkConfig` is `Clone + Send`.** The engines clone it into the walker
+   thread instead of sharing it by reference. Why: the producer runs on its
+   own thread and the config is small. Cost if wrong: a trivial refactor.
+
+2. **Engines hold the store in `RefCell<Box<dyn Store>>`.** The `decide` and
+   `sink` closures handed to the pipeline both need the store, and both run
+   on the calling thread. Why: avoids a `Mutex` for single-threaded access.
+   Cost if wrong: a runtime borrow panic, which the tests would surface
+   immediately.
+
+3. **Task 10 created only the `Progress` trait and `NoProgress`.** The
+   terminal spinner (`TermProgress`) came with Task 12. Why: Task 10's tests
+   did not need a terminal. Cost if wrong: none.
+
+## Task 6 (store location)
+
+4. **The `--store` mismatch error also applies when the manifest is found
+   via `--manifest`.** The implementer only checked the in-tree branch; the
+   spec says the backend must match the manifest wherever it lives. Why:
+   spec is binding. Cost if wrong: a spurious error only when the two flags
+   disagree, which is a user mistake anyway.
+
+## Task 8 (pipeline)
+
+5. **The reorder buffer is a `BTreeMap` with a window cap of
+   `JOB_CAPACITY + jobs`.** Hashed results arrive out of order and must be
+   emitted in walk order. Why: the cap bounds memory regardless of tree
+   size, which is a hard requirement; traced deadlock-free because the
+   walker cannot be more than `JOB_CAPACITY` entries ahead of the slowest
+   hasher plus one in-flight job per thread. Cost if wrong: none observed;
+   a bug here would show as a hang under load.
+
+## Task 11 (check engine)
+
+6. **In the add/del/chg test, sorted walk order puts `CHG m` before
+   `ADD n`.** The plan's expected output listed them the other way. Why:
+   byte-wise directory sorting is the spec'd behavior and the plan's order
+   was a transcription slip. Cost if wrong: none.
+
+7. **Deleting `d/f` changes `d`'s mtime, and that is a legitimate change.**
+   The test restores `d`'s mtime after the delete rather than loosening the
+   comparator. Why: the comparator is correct; the test setup was
+   incomplete. Cost if wrong: none.
+
+## Task 13 (CLI wiring)
+
+8. **The `--manifest` hint on a failed read-only open was unimplemented.**
+   The spec promised that a missing manifest error suggests `--manifest`;
+   the implementer missed it. Carried into the final fix wave rather than
+   reopening Task 13. Cost if wrong: none now; it is implemented.
+
+## Final review (spec amendments)
+
+9. **Content `check` cannot observe is a difference, not a warning.** When
+   the second pass finds a stored entry under a directory the walk could
+   not descend into, or lstat fails for a reason other than not-found,
+   `check` prints `CHG <path> kind=<kind>→unverified` and exits 1. Why: the
+   original spec text let `check` exit 0 while a rotted directory hid its
+   contents, which defeats the archival purpose. Cost if wrong: a stricter
+   check than the spec first described; `--relaxed` does not soften this.
+
+10. **The store's parent directory is mtime-exempt, like the root.** Writing
+    the manifest updates its parent's mtime, so comparing it would always
+    report a change. Why: unavoidable self-interference. Cost if wrong: one
+    directory's mtime drift goes unreported; content and mode are still
+    compared.
+
+11. **No nested-manifest warning for direct children of the root.** The
+    manifest at depth 0 is the tree's own and is not "nested". Why: the
+    original walker warned on its own manifest. Cost if wrong: none.
+
+12. **Robustness changes bundled into the final wave:**
+    - fjall marker check (`version` file and `keyspaces/` directory) before
+      opening, so a non-fjall directory errors cleanly instead of being
+      created or corrupted;
+    - fjall sweep processes stale entries in chunks of 2000 so memory stays
+      bounded during `update`;
+    - the walker thread gets a 256 MiB stack so deep trees do not overflow
+      the recursive DFS;
+    - xattr and readlink failures on an entry produce a warning and keep the
+      entry rather than dropping the subtree.
+    Cost if wrong: small; each is conservative.
+
+13. **`update` claims its generation number before the walk.** The new
+    generation is written to meta first, so an interrupted run cannot leave
+    entries that a later sweep mistakes for current. The regression test
+    interrupts a real update after a committed batch rather than planting a
+    ghost entry, because the fixed binary can no longer produce one. Cost if
+    wrong: none.
+
+14. **The deep-tree test uses depth 2000.** The plan said 2500, which
+    exceeds `PATH_MAX` on Linux. Why: the test must create the tree it
+    walks. Cost if wrong: none; 2000 is well past the default stack limit.
+
+## Parked (real, deferred, not fixed)
+
+15. **An unreadable fjall manifest directory reports "not a manifest"
+    instead of "permission denied".** The marker check runs before the
+    permission error is distinguishable. Misleading text only.
+
+16. **A race between `check`'s two passes.** A file created or deleted
+    between the walk and the store sweep can appear once too often or not
+    at all in the output for that run. Harmless on quiescent trees, which is
+    the intended use.
+
+17. **One README sentence about mount points** is only accurate when
+    `update` was run with `--cross-mount-points`. Documentation only.
+
+## Process notes
+
+- Every commit on the branch ends with the trailer
+  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Eleven
+  commits were rewritten after the fact because subagents running on a
+  different model used their own name in the trailer.
+- The fjall backend preallocates a sparse 64 MiB journal on open. This is
+  noted in `crates/fileset/README.md` for the planned sqlite-vs-fjall
+  benchmark, since on-disk size is one of its measures.
