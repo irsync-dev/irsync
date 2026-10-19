@@ -89,7 +89,7 @@ pub fn check(
         }
         match root.join(OsStr::from_bytes(path)).symlink_metadata() {
             Ok(_) => {}
-            Err(e) if e.kind() == ErrorKind::NotFound => {
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
                 writeln!(out, "{}", line_del(path))?;
                 summary.deleted += 1;
             }

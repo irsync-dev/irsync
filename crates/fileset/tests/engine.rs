@@ -42,6 +42,7 @@ for_both_backends! {
     check_require_uid_stays_clean_same_user => check_require_uid_stays_clean_same_user_sqlite, check_require_uid_stays_clean_same_user_fjall;
     check_symlink_retarget => check_symlink_retarget_sqlite, check_symlink_retarget_fjall;
     check_kind_change => check_kind_change_sqlite, check_kind_change_fjall;
+    check_dir_replaced_by_file_deletes_children => check_dir_replaced_by_file_deletes_children_sqlite, check_dir_replaced_by_file_deletes_children_fjall;
     check_warns_no_stored_checksum => check_warns_no_stored_checksum_sqlite, check_warns_no_stored_checksum_fjall;
     check_unreadable_at_check_time => check_unreadable_at_check_time_sqlite, check_unreadable_at_check_time_fjall;
     check_missing_manifest_is_error => check_missing_manifest_is_error_sqlite, check_missing_manifest_is_error_fjall;
@@ -307,6 +308,19 @@ fn check_kind_change(b: Backend) {
     std::fs::create_dir(&f).unwrap();
     let (outcome, out, _) = run_check(dir.path(), Tier::Paranoid, &[], &[], false);
     assert_eq!(out, "CHG f kind=file→dir\n");
+    assert_eq!(outcome, Outcome::Differences);
+}
+
+fn check_dir_replaced_by_file_deletes_children(b: Backend) {
+    let dir = tree(&[("d/x", "x")]);
+    run_update(dir.path(), b, false, false);
+    let d = dir.path().join("d");
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::write(&d, "now a file").unwrap();
+    let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "CHG d kind=dir→file\nDEL d/x\n");
+    assert!(err.contains("deleted=1 changed=1 "), "{err}");
+    assert!(err.ends_with(" warnings=0\n"), "{err}");
     assert_eq!(outcome, Outcome::Differences);
 }
 
