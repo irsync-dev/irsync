@@ -33,6 +33,10 @@ pub struct Observed {
 pub enum WalkEvent {
     Entry(Observed),
     Warning(String),
+    /// Relative path of a directory the walker did not descend, or of an object it could
+    /// not stat; emitted right after the corresponding `Warning`. Nothing stored at or
+    /// below it was observed.
+    NotDescended(Vec<u8>),
 }
 
 type Sink<'a> = dyn FnMut(WalkEvent) -> anyhow::Result<()> + 'a;
@@ -92,11 +96,12 @@ fn walk_dir(
             names
         }
         Err(err) => {
-            return sink(WalkEvent::Warning(format!(
+            sink(WalkEvent::Warning(format!(
                 "cannot read directory {}: {}",
                 escape(dir_rel),
                 err
-            )));
+            )))?;
+            return sink(WalkEvent::NotDescended(dir_rel.to_vec()));
         }
     };
     if cfg.sort {
@@ -124,6 +129,7 @@ fn walk_dir(
                     escape(&rel),
                     err
                 )))?;
+                sink(WalkEvent::NotDescended(rel))?;
                 continue;
             }
         };
@@ -152,6 +158,7 @@ fn walk_dir(
                 "not crossing mount point at {}",
                 escape(&rel)
             )))?;
+            sink(WalkEvent::NotDescended(rel))?;
             continue;
         }
         walk_dir(cfg, root_dev, &abs, &rel, sink)?;
@@ -167,17 +174,25 @@ mod tests {
     use std::path::Path;
 
     fn run(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>) {
+        let (entries, warnings, _) = run_all(cfg);
+        (entries, warnings)
+    }
+
+    /// Entries, warnings and not-descended paths.
+    fn run_all(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>, Vec<Vec<u8>>) {
         let mut entries = Vec::new();
         let mut warnings = Vec::new();
+        let mut skipped = Vec::new();
         walk(cfg, &mut |ev| {
             match ev {
                 WalkEvent::Entry(o) => entries.push(o),
                 WalkEvent::Warning(w) => warnings.push(w),
+                WalkEvent::NotDescended(p) => skipped.push(p),
             }
             Ok(())
         })
         .unwrap();
-        (entries, warnings)
+        (entries, warnings, skipped)
     }
 
     fn cfg(root: &Path, store: Option<PathBuf>) -> WalkConfig {
@@ -271,6 +286,29 @@ mod tests {
         std::fs::write(r.join(std::ffi::OsStr::from_bytes(b"bad\xff")), b"").unwrap();
         let (e, _) = run(&cfg(&r, None));
         assert!(paths(&e).contains(&b"bad\xff".to_vec()));
+    }
+
+    #[test]
+    fn walk_unreadable_dir_warns_and_reports_not_descended() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join("d")).unwrap();
+        std::fs::write(r.join("d/f"), b"").unwrap();
+        std::fs::write(r.join("e"), b"").unwrap();
+        let mode = |m| std::fs::set_permissions(r.join("d"), std::fs::Permissions::from_mode(m));
+        mode(0o000).unwrap();
+        if std::fs::read_dir(r.join("d")).is_ok() {
+            mode(0o755).unwrap();
+            eprintln!("skipping: running with privileges that bypass directory permissions");
+            return;
+        }
+        let (e, w, skipped) = run_all(&cfg(&r, None));
+        mode(0o755).unwrap();
+        assert_eq!(paths(&e), strs(&[".", "d", "e"]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("cannot read directory d: "), "{}", w[0]);
+        assert_eq!(skipped, strs(&["d"]));
     }
 
     #[test]

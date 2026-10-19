@@ -73,6 +73,8 @@ pub fn update(
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
         let mut obs = match ev {
             WalkEvent::Warning(text) => return Ok(warnings.emit(&text)?),
+            // Already warned; the sweep drops what the walk did not see, as for any absence.
+            WalkEvent::NotDescended(_) => return Ok(()),
             WalkEvent::Entry(obs) => obs,
         };
         if sent_to_hash.borrow_mut().pop_front().unwrap_or(false) {

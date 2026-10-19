@@ -130,8 +130,8 @@ where
                                     ready.insert(seq, WalkEvent::Entry(obs));
                                 }
                             },
-                            warning @ WalkEvent::Warning(_) => {
-                                ready.insert(seq, warning);
+                            other => {
+                                ready.insert(seq, other);
                             }
                         }
                         continue;
@@ -212,6 +212,7 @@ mod tests {
                     assert_eq!(i, 51);
                     assert_eq!(w, "after 50");
                 }
+                WalkEvent::NotDescended(p) => panic!("unexpected NotDescended {p:?}"),
                 WalkEvent::Entry(obs) => {
                     assert_ne!(i, 51);
                     assert_eq!(obs.path, format!("f{file_idx:03}").into_bytes());

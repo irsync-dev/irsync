@@ -48,6 +48,7 @@ for_both_backends! {
     check_missing_manifest_is_error => check_missing_manifest_is_error_sqlite, check_missing_manifest_is_error_fjall;
     check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall;
     check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
+    check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
 }
 
 fn other(b: Backend) -> Backend {
@@ -427,4 +428,28 @@ fn check_output_is_deterministic(b: Backend) {
         "{first}"
     );
     assert_eq!(first, second);
+}
+
+fn check_unreadable_directory_is_a_difference(b: Backend) {
+    let dir = tree(&[("d/f", "x"), ("e", "e")]);
+    run_update(dir.path(), b, false, false);
+    let d = dir.path().join("d");
+    // Corrupt the content, then make the directory searchable but not listable.
+    std::fs::write(d.join("f"), "y").unwrap();
+    chmod(&d, 0o311);
+    if std::fs::read_dir(&d).is_ok() {
+        chmod(&d, 0o755);
+        eprintln!("skipping: running with privileges that bypass directory permissions");
+        return;
+    }
+    let result = run_check_opts(&check_opts(dir.path(), Tier::Relaxed, &[], &[], false));
+    chmod(&d, 0o755);
+    let (outcome, out, err) = result.unwrap();
+    assert_eq!(out, "CHG d/f kind=file→unverified\n");
+    assert!(err.starts_with("WARN cannot read directory d: "), "{err}");
+    assert!(
+        err.ends_with("\nadded=0 deleted=0 changed=1 unchanged=4 warnings=1\n"),
+        "{err}"
+    );
+    assert_eq!(outcome, Outcome::Differences);
 }
