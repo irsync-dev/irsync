@@ -28,6 +28,7 @@ pub struct Observed {
 }
 
 #[derive(Debug)]
+// The enum shape is fixed by the design.
 #[allow(clippy::large_enum_variant)]
 pub enum WalkEvent {
     Entry(Observed),
@@ -71,7 +72,25 @@ fn walk_dir(
     sink: &mut Sink<'_>,
 ) -> anyhow::Result<()> {
     let mut names: Vec<OsString> = match std::fs::read_dir(dir_abs) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.file_name()).collect(),
+        Ok(rd) => {
+            let mut names = Vec::new();
+            let mut warned = false;
+            for item in rd {
+                match item {
+                    Ok(e) => names.push(e.file_name()),
+                    Err(err) if !warned => {
+                        warned = true;
+                        sink(WalkEvent::Warning(format!(
+                            "cannot read directory {}: {}",
+                            escape(dir_rel),
+                            err
+                        )))?;
+                    }
+                    Err(_) => {}
+                }
+            }
+            names
+        }
         Err(err) => {
             return sink(WalkEvent::Warning(format!(
                 "cannot read directory {}: {}",
