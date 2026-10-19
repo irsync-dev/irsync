@@ -12,6 +12,9 @@ pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/fileset.v1.rs"));
 }
 
+/// Keys deleted per batch by `sweep`.
+const SWEEP_CHUNK: usize = 2000;
+
 pub struct FjallStore {
     db: Database,
     entries: Keyspace,
@@ -129,6 +132,16 @@ impl FjallStore {
             OpenMode::ReadWrite | OpenMode::ReadOnly if !path.exists() => {
                 bail!("manifest not found: {}", path.display())
             }
+            // fjall creates a database in any directory it is pointed at; refuse before
+            // that, so a wrong --manifest never writes into it.
+            OpenMode::ReadWrite | OpenMode::ReadOnly
+                if !path.join("version").is_file() || !path.join("keyspaces").is_dir() =>
+            {
+                bail!(
+                    "{} is not a fileset manifest (no fjall database found)",
+                    path.display()
+                )
+            }
             _ => {}
         }
         let db = Database::builder(path)
@@ -189,19 +202,31 @@ impl Store for FjallStore {
     }
 
     fn sweep(&mut self, keep: u64) -> Result<u64> {
-        let mut doomed: Vec<Vec<u8>> = Vec::new();
+        // Deletes as it goes, one bounded batch at a time, so memory does not grow with
+        // the tree. Removing keys behind the iterator does not disturb it (snapshot read).
+        let mut deleted = 0u64;
+        let mut chunk: Vec<Vec<u8>> = Vec::with_capacity(SWEEP_CHUNK);
+        let commit = |db: &Database, entries: &Keyspace, chunk: &mut Vec<Vec<u8>>| {
+            let mut b = db.batch();
+            for k in chunk.drain(..) {
+                b.remove(entries, k);
+            }
+            b.commit()
+        };
         for guard in self.entries.range::<&[u8], _>(..) {
             let (k, v) = guard.into_inner()?;
             if decode(&v)?.generation != keep {
-                doomed.push(k.to_vec());
+                chunk.push(k.to_vec());
+                deleted += 1;
+                if chunk.len() >= SWEEP_CHUNK {
+                    commit(&self.db, &self.entries, &mut chunk)?;
+                }
             }
         }
-        let mut b = self.db.batch();
-        for k in &doomed {
-            b.remove(&self.entries, k.as_slice());
+        if !chunk.is_empty() {
+            commit(&self.db, &self.entries, &mut chunk)?;
         }
-        b.commit()?;
-        Ok(doomed.len() as u64)
+        Ok(deleted)
     }
 
     fn set_meta(&mut self, meta: &Meta) -> Result<()> {
@@ -276,5 +301,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(keys, vec![b"c".to_vec()]);
+    }
+
+    #[test]
+    fn open_refuses_a_plain_directory_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [OpenMode::ReadOnly, OpenMode::ReadWrite] {
+            let err = open(dir.path(), Backend::Fjall, mode).err().unwrap();
+            assert!(
+                format!("{err:#}").contains("not a fileset manifest"),
+                "{mode:?}: {err:#}"
+            );
+            let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+            assert!(left.is_empty(), "{mode:?} wrote {left:?}");
+        }
+    }
+
+    #[test]
+    fn sweep_count_is_exact_across_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(&dir.path().join("m"), Backend::Fjall, OpenMode::Create).unwrap();
+        let items: Vec<_> = (0..5000u32)
+            .map(|i| {
+                (
+                    format!("k{i:05}").into_bytes(),
+                    full_entry(1 + (i % 3 == 0) as u64),
+                )
+            })
+            .collect();
+        s.put_batch(&items).unwrap();
+        let kept = items.iter().filter(|(_, e)| e.generation == 2).count();
+        assert_eq!(s.sweep(2).unwrap(), (5000 - kept) as u64);
+        let mut n = 0;
+        s.for_each(&mut |_, e| {
+            assert_eq!(e.generation, 2);
+            n += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n, kept);
     }
 }
