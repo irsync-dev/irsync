@@ -8,6 +8,7 @@ use fileset::model::{Flags, Kind};
 use fileset::progress::NoProgress;
 use fileset::report::fmt_blake3;
 use fileset::store::{self, Backend, OpenMode};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Invokes each backend-generic test once per backend.
@@ -51,6 +52,8 @@ for_both_backends! {
     check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall;
     check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
     check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
+    check_no_stored_checksum_warning_needs_blake3_and_a_file => check_no_stored_checksum_warning_needs_blake3_and_a_file_sqlite, check_no_stored_checksum_warning_needs_blake3_and_a_file_fjall;
+    check_unopenable_manifest_suggests_manifest_flag => check_unopenable_manifest_suggests_manifest_flag_sqlite, check_unopenable_manifest_suggests_manifest_flag_fjall;
     update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
     external_manifest_ignores_root_level_manifest_names => external_manifest_ignores_root_level_manifest_names_sqlite, external_manifest_ignores_root_level_manifest_names_fjall;
     in_tree_manifest_with_custom_name_is_clean => in_tree_manifest_with_custom_name_is_clean_sqlite, in_tree_manifest_with_custom_name_is_clean_fjall;
@@ -568,4 +571,55 @@ fn deep_tree_does_not_overflow_the_stack() {
     let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     assert_eq!(out, "");
     assert_eq!(outcome, Outcome::Clean);
+}
+
+fn check_no_stored_checksum_warning_needs_blake3_and_a_file(b: Backend) {
+    let dir = tree(&[("f", "secret")]);
+    let f = dir.path().join("f");
+    chmod(&f, 0o000);
+    if permissions_bypassed(&f) {
+        return;
+    }
+    run_update(dir.path(), b, false, false);
+    chmod(&f, 0o644);
+    // Content is not compared: no checksum is missed.
+    let (outcome, out, err) = run_check(
+        dir.path(),
+        Tier::Default,
+        &[Field::Mode, Field::Blake3],
+        &[],
+        true,
+    );
+    assert_eq!(out, "");
+    assert_eq!(err, "added=0 deleted=0 changed=0 unchanged=3 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+    // No longer a file: the kind change is the report, not a missing checksum.
+    std::fs::remove_file(&f).unwrap();
+    std::fs::create_dir(&f).unwrap();
+    let (_, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "CHG f kind=file→dir\n");
+    assert!(!err.contains("WARN"), "{err}");
+}
+
+fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let m = dir.path().join(store_name(b));
+    let mode = std::fs::metadata(&m).unwrap().permissions().mode();
+    chmod(&m, 0o000);
+    let readable = match b {
+        Backend::Sqlite => std::fs::read(&m).is_ok(),
+        Backend::Fjall => std::fs::read_dir(&m).is_ok(),
+    };
+    if readable {
+        chmod(&m, mode);
+        eprintln!("skipping: running with privileges that bypass file permissions");
+        return;
+    }
+    let result = run_check_opts(&check_opts(dir.path(), Tier::Default, &[], &[], false));
+    chmod(&m, mode);
+    let e = result.expect_err("an unopenable manifest must fail check");
+    let text = format!("{e:#}");
+    assert!(text.contains("cannot open manifest at "), "{text}");
+    assert!(text.contains("--manifest"), "{text}");
 }

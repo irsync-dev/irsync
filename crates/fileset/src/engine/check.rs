@@ -8,6 +8,8 @@ use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use anyhow::Context;
+
 use super::{canonical_root, CommonOpts, Outcome, Warnings};
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
@@ -34,7 +36,14 @@ pub fn check(
     let common = &opts.common;
     let root = canonical_root(&common.root)?;
     let loc = store::locate(&root, common.manifest.as_deref(), None, false)?;
-    let store = RefCell::new(store::open(&loc.path, loc.backend, OpenMode::ReadOnly)?);
+    let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly).with_context(|| {
+        format!(
+            "cannot open manifest at {}; if it is on read-only media, copy it elsewhere \
+             and pass --manifest",
+            loc.path.display()
+        )
+    })?;
+    let store = RefCell::new(store);
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
     let store_path = store::store_path_inside(&root, &loc);
@@ -82,7 +91,9 @@ pub fn check(
             summary.added += 1;
             return Ok(());
         };
-        if stored.kind == Kind::File
+        if sel.contains(Field::Blake3)
+            && stored.kind == Kind::File
+            && obs.entry.kind == Kind::File
             && stored.blake3.is_none()
             && !stored.flags.contains(Flags::STORE)
         {
