@@ -104,6 +104,12 @@ pub fn locate(
             } else {
                 anyhow::bail!("manifest {} is neither a file nor a directory", m.display());
             };
+            if requested.is_some_and(|r| r != backend) {
+                anyhow::bail!(
+                    "{} already exists, which conflicts with the requested --store backend",
+                    m.display()
+                );
+            }
             return Ok(Location { backend, path: m.to_path_buf(), exists: true });
         }
         if !for_update {
@@ -221,6 +227,16 @@ mod tests {
         let loc = locate(&root, Some(&m), None, false).unwrap();
         assert_eq!(loc.backend, Backend::Fjall);
         assert!(loc.exists);
+    }
+
+    #[test]
+    fn locate_manifest_rejects_store_flag_mismatch() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let m = root.join("m");
+        std::fs::create_dir(&m).unwrap();
+        let err = locate(&root, Some(&m), Some(Backend::Sqlite), true).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
     }
 
     #[test]
