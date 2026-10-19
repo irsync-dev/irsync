@@ -1,5 +1,6 @@
 //! Storage abstraction over the manifest database.
 
+pub mod fjall;
 pub mod sqlite;
 
 use crate::model::Entry;
@@ -71,6 +72,6 @@ pub(crate) fn check_schema(meta: &Meta, mode: OpenMode) -> anyhow::Result<()> {
 pub fn open(path: &Path, backend: Backend, mode: OpenMode) -> anyhow::Result<Box<dyn Store>> {
     match backend {
         Backend::Sqlite => Ok(Box::new(sqlite::SqliteStore::open(path, mode)?)),
-        Backend::Fjall => anyhow::bail!("fjall backend not built yet"),
+        Backend::Fjall => Ok(Box::new(fjall::FjallStore::open(path, mode)?)),
     }
 }

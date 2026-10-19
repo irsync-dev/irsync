@@ -25,7 +25,7 @@ fn entry(generation: u64) -> Entry {
     }
 }
 
-fn suite(open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
+fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("m");
 
@@ -90,11 +90,16 @@ fn suite(open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
     m3.schema_version = SCHEMA_VERSION + 1;
     s.set_meta(&m3).unwrap();
     s.close().unwrap();
-    let err = store::open(&p, Backend::Sqlite, OpenMode::ReadOnly).err().unwrap();
+    let err = store::open(&p, backend, OpenMode::ReadOnly).err().unwrap();
     assert!(err.to_string().contains("newer"), "{err}");
 }
 
 #[test]
 fn sqlite_suite() {
-    suite(|p, mode| store::open(p, Backend::Sqlite, mode).unwrap());
+    suite(Backend::Sqlite, |p, mode| store::open(p, Backend::Sqlite, mode).unwrap());
+}
+
+#[test]
+fn fjall_suite() {
+    suite(Backend::Fjall, |p, mode| store::open(p, Backend::Fjall, mode).unwrap());
 }
