@@ -443,3 +443,32 @@ Left to the builder in detail, but the plan should cover at least:
 - Detecting mount points via the mount table instead of `st_dev`, for
   btrfs subvolumes.
 - Whether fjall or SQLite wins the benchmark and becomes the sole backend.
+
+## Amendments made during implementation
+
+Rulings taken during the build, recorded here so the spec matches the
+shipped behaviour. The ledger line for each is in git history of the
+implementation branch.
+
+- **Unverifiable content is a difference.** Stored entries that `check`
+  cannot observe, because their directory could not be read or was not
+  descended (mount point, see `--cross-mount-points`), or because their
+  own `lstat` fails with an error other than "not found", are reported as
+  `CHG <path> kind=<kind>→unverified` and counted as changed, so the run
+  exits 1. The anti-goal "a check that passes while content differs"
+  outranks the rule that warnings alone never change the exit code.
+- **The store's parent directory is mtime-exempt**, exactly as the root
+  is, because writing the manifest and its sidecars changes that
+  directory's mtime. The root is simply the default store's parent.
+- **No nested-manifest warning at the root level.** A `.fileset.sqlite`
+  or `.fileset.fjall` that is a direct child of the root is not "below
+  the root"; it is tracked as an ordinary object without a warning. This
+  keeps the documented read-only workflow (`--manifest` pointing at a
+  copy) free of warnings.
+- **`update` claims its generation before writing entries**, so an
+  interrupted run cannot leave entries that the next run would mistake
+  for current.
+- **fjall manifests are never created by `check`**: opening in read-only
+  or read-write mode requires fjall's own marker files to exist.
+- **xattr and symlink-target read failures** keep the entry (with a
+  warning) instead of dropping it and its subtree.
