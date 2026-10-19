@@ -43,13 +43,39 @@ const ENTRY_COLS: &str = "kind, mode, uid, gid, size, nlink, ino, dev, rdev, mti
      mtime_nsec, ctime_sec, ctime_nsec, blake3, target, flags, generation";
 
 /// Runs `scripts[from..]` in one transaction and returns the new version.
+/// The resulting `schema_version` is persisted in the same transaction when a
+/// `meta` table exists afterwards.
 pub(crate) fn apply_migrations(conn: &Connection, scripts: &[&str], from: u32) -> Result<u32> {
+    migrate_with(conn, scripts, from, |_| Ok(()))
+}
+
+/// Like `apply_migrations`, but runs `extra` inside the same transaction, after the scripts
+/// and before the version bump.
+fn migrate_with(
+    conn: &Connection,
+    scripts: &[&str],
+    from: u32,
+    extra: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<u32> {
     let tx = conn.unchecked_transaction()?;
     for script in scripts.iter().skip(from as usize) {
         tx.execute_batch(script)?;
     }
+    extra(&tx)?;
+    let version = scripts.len().max(from as usize) as u32;
+    let has_meta: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_meta {
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+            [version.to_string()],
+        )?;
+    }
     tx.commit()?;
-    Ok(scripts.len().max(from as usize) as u32)
+    Ok(version)
 }
 
 pub struct SqliteStore {
@@ -79,16 +105,20 @@ fn read_meta(conn: &Connection) -> Result<Meta> {
     })
 }
 
+/// Writes all meta rows; the caller supplies the transaction.
+fn write_meta_rows(conn: &Connection, m: &Meta) -> Result<()> {
+    let mut st = conn.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)")?;
+    st.execute(params!["schema_version", m.schema_version.to_string()])?;
+    st.execute(params!["generation", m.generation.to_string()])?;
+    st.execute(params!["tool_version", m.tool_version])?;
+    st.execute(params!["created_at", m.created_at.to_string()])?;
+    st.execute(params!["updated_at", m.updated_at.to_string()])?;
+    Ok(())
+}
+
 fn write_meta(conn: &Connection, m: &Meta) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    {
-        let mut st = tx.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)")?;
-        st.execute(params!["schema_version", m.schema_version.to_string()])?;
-        st.execute(params!["generation", m.generation.to_string()])?;
-        st.execute(params!["tool_version", m.tool_version])?;
-        st.execute(params!["created_at", m.created_at.to_string()])?;
-        st.execute(params!["updated_at", m.updated_at.to_string()])?;
-    }
+    write_meta_rows(&tx, m)?;
     tx.commit()?;
     Ok(())
 }
@@ -141,18 +171,15 @@ impl SqliteStore {
                 let conn = Connection::open(path)
                     .with_context(|| format!("creating {}", path.display()))?;
                 Self::configure(&conn)?;
-                apply_migrations(&conn, MIGRATIONS, 0)?;
                 let t = now();
-                write_meta(
-                    &conn,
-                    &Meta {
-                        schema_version: SCHEMA_VERSION,
-                        generation: 0,
-                        tool_version: env!("CARGO_PKG_VERSION").to_string(),
-                        created_at: t,
-                        updated_at: t,
-                    },
-                )?;
+                let initial = Meta {
+                    schema_version: SCHEMA_VERSION,
+                    generation: 0,
+                    tool_version: env!("CARGO_PKG_VERSION").to_string(),
+                    created_at: t,
+                    updated_at: t,
+                };
+                migrate_with(&conn, MIGRATIONS, 0, |tx| write_meta_rows(tx, &initial))?;
                 Ok(SqliteStore { conn, mode })
             }
             OpenMode::ReadWrite => {
@@ -165,8 +192,7 @@ impl SqliteStore {
                 let meta = read_meta(&conn)?;
                 check_schema(&meta, mode)?;
                 if meta.schema_version < SCHEMA_VERSION {
-                    let v = apply_migrations(&conn, MIGRATIONS, meta.schema_version)?;
-                    write_meta(&conn, &Meta { schema_version: v, ..meta })?;
+                    apply_migrations(&conn, MIGRATIONS, meta.schema_version)?;
                 }
                 Ok(SqliteStore { conn, mode })
             }
@@ -303,6 +329,27 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(tables, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn failed_migration_leaves_nothing_behind() {
+        let conn = Connection::open_in_memory().unwrap();
+        let scripts = ["CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)", "NOT VALID SQL"];
+        assert!(apply_migrations(&conn, &scripts, 0).is_err());
+        let n: i64 =
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn migration_persists_version_with_scripts() {
+        let conn = Connection::open_in_memory().unwrap();
+        let scripts = ["CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)"];
+        assert_eq!(apply_migrations(&conn, &scripts, 0).unwrap(), 1);
+        let v: String = conn
+            .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, "1");
     }
 
     #[test]
