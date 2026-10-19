@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use fileset::compare::{Field, Tier};
+use fileset::engine::check::{check, CheckOpts};
 use fileset::engine::update::{update, UpdateOpts};
 use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::NoProgress;
@@ -8,7 +10,7 @@ use std::fs::{File, FileTimes};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
 /// Creates a temp dir holding `spec` files (`"a/b.txt" => content`); parents are created.
@@ -73,6 +75,45 @@ pub fn run_update_opts(opts: &UpdateOpts) -> anyhow::Result<(Outcome, String)> {
 
 pub fn run_update(root: &Path, backend: Backend, rehash: bool, fail_on_warnings: bool) -> (Outcome, String) {
     run_update_opts(&update_opts(root, backend, rehash, fail_on_warnings)).unwrap()
+}
+
+pub fn check_opts(root: &Path, tier: Tier, ignore: &[Field], require: &[Field], fail_on_warnings: bool) -> CheckOpts {
+    CheckOpts {
+        common: CommonOpts {
+            root: root.to_path_buf(),
+            manifest: None,
+            cross_mount_points: false,
+            sort: true,
+            jobs: 2,
+            fail_on_warnings,
+        },
+        tier,
+        ignore: ignore.to_vec(),
+        require: require.to_vec(),
+    }
+}
+
+/// Runs `check`; returns the outcome, captured stdout and captured stderr.
+pub fn run_check_opts(opts: &CheckOpts) -> anyhow::Result<(Outcome, String, String)> {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let outcome = check(opts, &mut out, &mut err, &NoProgress)?;
+    Ok((outcome, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap()))
+}
+
+pub fn run_check(
+    root: &Path,
+    tier: Tier,
+    ignore: &[Field],
+    require: &[Field],
+    fail_on_warnings: bool,
+) -> (Outcome, String, String) {
+    run_check_opts(&check_opts(root, tier, ignore, require, fail_on_warnings)).unwrap()
+}
+
+/// Sets the mtime of a file or directory the caller owns, without needing write access.
+pub fn set_mtime_ro(path: &Path, t: SystemTime) {
+    File::open(path).unwrap().set_times(FileTimes::new().set_modified(t)).unwrap();
 }
 
 pub fn store_name(backend: Backend) -> &'static str {

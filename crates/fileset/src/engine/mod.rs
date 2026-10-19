@@ -1,5 +1,6 @@
 //! Engines behind the `update` and `check` verbs.
 
+pub mod check;
 pub mod update;
 
 use std::io::{self, Write};
