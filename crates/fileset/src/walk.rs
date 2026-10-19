@@ -76,6 +76,7 @@ fn is_sidecar(cfg: &WalkConfig, abs: &Path) -> bool {
     abs.parent() == store.parent() && [&b"-wal"[..], b"-shm", b"-journal"].contains(&suffix)
 }
 
+// Recursion depth equals tree depth; the producer thread's stack is sized for it (pipeline).
 fn walk_dir(
     cfg: &WalkConfig,
     root_dev: u64,

@@ -550,3 +550,22 @@ fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
     assert_eq!(err, "added=0 deleted=0 changed=0 unchanged=5 warnings=0\n");
     assert_eq!(outcome, Outcome::Clean);
 }
+
+/// Recursion depth equals tree depth; the walk thread's stack must hold it. 2000 levels of
+/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096).
+#[test]
+fn deep_tree_does_not_overflow_the_stack() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut deepest = dir.path().to_path_buf();
+    for _ in 0..2000 {
+        deepest.push("d");
+    }
+    std::fs::create_dir_all(&deepest).unwrap();
+    std::fs::write(deepest.join("f"), "x").unwrap();
+    let (outcome, err) = run_update(dir.path(), Backend::Sqlite, false, false);
+    assert_eq!(err, "entries=2003 hashed=1 reused=0 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
+}
