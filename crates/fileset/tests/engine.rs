@@ -254,6 +254,8 @@ fn check_reports_add_del_chg(b: Backend) {
     std::fs::remove_file(d.join("f")).unwrap();
     set_mtime_ro(&d, d_mtime);
     std::fs::write(dir.path().join("x"), "12").unwrap();
+    // An explicit mtime, so the change shows even where timestamps are coarse.
+    set_mtime(&dir.path().join("x"), 1_000_000, 0);
     chmod(&m, 0o600);
 
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);

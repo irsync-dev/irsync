@@ -12,6 +12,22 @@ fn help_lists_both_verbs() {
 }
 
 #[test]
+fn check_help_describes_comparison_flags() {
+    let out = bin().args(["check", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    for text in [
+        "Compare only type, content and symlink target",
+        "Compare everything that is recorded and comparable",
+        "Add one field to the comparison (repeatable)",
+        "Drop one field from the comparison (repeatable)",
+        "may be outside the tree",
+    ] {
+        assert!(s.contains(text), "missing {text:?} in:\n{s}");
+    }
+}
+
+#[test]
 fn check_rejects_relaxed_with_paranoid() {
     let out = bin()
         .args(["check", "--relaxed", "--paranoid", "."])

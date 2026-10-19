@@ -32,7 +32,7 @@ pub enum BackendArg {
 pub struct CommonArgs {
     /// Root of the tree
     pub path: PathBuf,
-    /// Manifest path
+    /// Location of the manifest instead of <PATH>/.fileset.sqlite or <PATH>/.fileset.fjall; may be outside the tree
     #[arg(long, value_name = "MPATH")]
     pub manifest: Option<PathBuf>,
     /// Treat warnings as failures
@@ -68,16 +68,16 @@ pub struct UpdateArgs {
 pub struct CheckArgs {
     #[command(flatten)]
     pub common: CommonArgs,
-    /// Relaxed comparison
+    /// Compare only type, content and symlink target
     #[arg(long, conflicts_with = "paranoid")]
     pub relaxed: bool,
-    /// Paranoid comparison
+    /// Compare everything that is recorded and comparable
     #[arg(long, conflicts_with = "relaxed")]
     pub paranoid: bool,
-    /// Ignore a field when comparing
+    /// Drop one field from the comparison (repeatable)
     #[arg(long, value_name = "FIELD")]
     pub ignore: Vec<String>,
-    /// Require a field to be present
+    /// Add one field to the comparison (repeatable)
     #[arg(long, value_name = "FIELD")]
     pub require: Vec<String>,
 }

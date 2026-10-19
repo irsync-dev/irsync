@@ -17,7 +17,9 @@ fileset check  [OPTIONS] <PATH>
 ```
 
 `update` scans the tree and brings the manifest up to date. `check` scans the
-tree and reports every difference between it and the manifest; it never writes.
+tree and reports every difference between it and the manifest; it never
+modifies the tree's entries or the manifest's contents. (Opening a fjall
+manifest does touch its journal and lock files.)
 
 Both verbs:
 
@@ -70,6 +72,11 @@ CHG docs/a.txt mode=0644→0600 size=12→13
 - `CHG`: in both, with at least one compared field differing; each field is
   shown as `field=<stored>→<observed>`. If the type differs, only `kind=` is
   shown.
+- `CHG <path> kind=<stored kind>→unverified`: recorded in the manifest, but
+  `check` could not observe it: it lies below a directory that could not be
+  read or a mount point that was not crossed, or it could not be stat'ed.
+  Content that cannot be verified counts as a difference (exit 1), not just a
+  warning.
 
 Warnings go to stderr prefixed `WARN `. Progress goes to stderr only when
 stderr is a terminal and `-q` is not given. A summary line goes to stderr at
@@ -83,8 +90,8 @@ entries=43 hashed=3 reused=40 warnings=0                (update)
 ## Exit codes
 
 - `0`: clean
-- `1`: differences found (or, with `--fail-on-warnings`, warnings in a run that
-  would otherwise exit 0)
+- `1`: `check` found differences; or, with `--fail-on-warnings`, the run
+  produced warnings (this is the only way `update` returns 1)
 - `2`: the run itself failed (manifest unreadable, root not a directory,
   schema too new, ...)
 
@@ -94,9 +101,20 @@ To check a read-only mounted backup or a snapshot, copy the manifest off it and
 point `--manifest` at the copy. `check` with the manifest inside a read-only
 tree may fail with exit 2 and a message suggesting `--manifest`.
 
-## Limitation: btrfs subvolumes
+## Known limitations
 
-Mount points are not crossed unless `--cross-mount-points` is given. On btrfs
-every subvolume reports its own device number, so a tree containing subvolumes
-or snapshots is cut short by default (with a warning naming the directory) and
-needs `--cross-mount-points`.
+- Symlink permission bits differ between Linux (always `0777`) and macOS
+  (set from the umask, often `0755`), so a tree carried between them shows
+  `mode=` changes on symlinks; use `--ignore mode` or `--relaxed`.
+- `mtime` is compared to the nanosecond, so copying to a filesystem with
+  coarser timestamps shows `mtime=` changes; use `--ignore mtime` or
+  `--relaxed`.
+- macOS ACLs are not recorded.
+- btrfs subvolumes: mount points are not crossed unless
+  `--cross-mount-points` is given, and on btrfs every subvolume reports its
+  own device number, so a tree containing subvolumes or snapshots is cut short
+  by default (with a warning naming the directory, and `check` reporting what
+  lies below it as `unverified`) and needs `--cross-mount-points`.
+- fjall preallocates a sparse 64 MiB journal in the manifest directory; copy a
+  fjall manifest with a sparse-aware tool (for example `cp --sparse=always` or
+  `rsync --sparse`) to avoid writing 64 MiB of zeros.
