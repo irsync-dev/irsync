@@ -47,11 +47,13 @@ pub fn update(
         ..old_meta.clone()
     })?;
 
+    let store_path = store::store_path_inside(&root, &loc);
     let cfg = WalkConfig {
         root: root.clone(),
         cross_mount_points: common.cross_mount_points,
         sort: common.sort,
-        store_path: store::store_path_inside(&root, &loc),
+        store_path,
+        sqlite_store: loc.backend == Backend::Sqlite,
     };
 
     let mut warnings = Warnings::new(err);

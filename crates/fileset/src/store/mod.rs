@@ -8,11 +8,6 @@ use std::path::{Path, PathBuf};
 
 pub const SQLITE_NAME: &str = ".fileset.sqlite";
 pub const FJALL_NAME: &str = ".fileset.fjall";
-pub const SQLITE_SIDECARS: [&str; 3] = [
-    ".fileset.sqlite-wal",
-    ".fileset.sqlite-shm",
-    ".fileset.sqlite-journal",
-];
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

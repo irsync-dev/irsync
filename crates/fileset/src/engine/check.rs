@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 use super::{canonical_root, CommonOpts, Outcome, Warnings};
 use crate::compare::{diff, Field, Selection, Tier};
@@ -14,7 +15,7 @@ use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
 use crate::report::{line_add, line_chg, line_del, CheckSummary, FieldDiff};
-use crate::store::{self, OpenMode, Store};
+use crate::store::{self, Backend, OpenMode, Store};
 use crate::walk::{self, Observed, WalkConfig, WalkEvent};
 
 pub struct CheckOpts {
@@ -36,12 +37,24 @@ pub fn check(
     let store = RefCell::new(store::open(&loc.path, loc.backend, OpenMode::ReadOnly)?);
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
+    let store_path = store::store_path_inside(&root, &loc);
     let cfg = WalkConfig {
         root: root.clone(),
         cross_mount_points: common.cross_mount_points,
         sort: common.sort,
-        store_path: store::store_path_inside(&root, &loc),
+        store_path: store_path.clone(),
+        sqlite_store: loc.backend == Backend::Sqlite,
     };
+    // The root's mtime is not compared, nor that of the directory holding an in-tree store:
+    // writing the manifest (and its sidecars) changes both.
+    let store_parent: Option<Vec<u8>> = store_path
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|p| p.strip_prefix(&root).ok())
+        .map(|rel| match rel.as_os_str().as_bytes() {
+            b"" => b".".to_vec(),
+            r => r.to_vec(),
+        });
 
     let mut warnings = Warnings::new(err);
     let mut summary = CheckSummary::default();
@@ -75,7 +88,8 @@ pub fn check(
         {
             warnings.emit(&format!("no stored checksum for {}", escape(&obs.path)))?;
         }
-        let diffs = diff(&obs.path, &stored, &obs.entry, &sel);
+        let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
+        let diffs = diff(mtime_exempt, &stored, &obs.entry, &sel);
         if diffs.is_empty() {
             summary.unchanged += 1;
         } else {

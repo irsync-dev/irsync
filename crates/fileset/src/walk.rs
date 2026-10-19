@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::escape::escape;
 use crate::model::{Entry, Flags};
-use crate::store::{FJALL_NAME, SQLITE_NAME, SQLITE_SIDECARS};
+use crate::store::{FJALL_NAME, SQLITE_NAME};
 
 #[derive(Clone, Debug)]
 pub struct WalkConfig {
@@ -16,6 +16,9 @@ pub struct WalkConfig {
     pub sort: bool,
     /// Absolute path of the store inside the tree, if any.
     pub store_path: Option<PathBuf>,
+    /// The store is a SQLite file: its `-wal`, `-shm` and `-journal` sidecars, whatever
+    /// the store is named, are skipped silently.
+    pub sqlite_store: bool,
 }
 
 #[derive(Debug)]
@@ -58,14 +61,19 @@ pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
 }
 
 fn is_sidecar(cfg: &WalkConfig, abs: &Path) -> bool {
+    if !cfg.sqlite_store {
+        return false;
+    }
     let Some(store) = cfg.store_path.as_deref() else {
         return false;
     };
-    if store.file_name().map(|n| n.as_bytes()) != Some(SQLITE_NAME.as_bytes()) {
+    let (Some(store_name), Some(name)) = (store.file_name(), abs.file_name()) else {
         return false;
-    }
-    let name = abs.file_name().map(|n| n.as_bytes()).unwrap_or(b"");
-    abs.parent() == store.parent() && SQLITE_SIDECARS.iter().any(|s| s.as_bytes() == name)
+    };
+    let Some(suffix) = name.as_bytes().strip_prefix(store_name.as_bytes()) else {
+        return false;
+    };
+    abs.parent() == store.parent() && [&b"-wal"[..], b"-shm", b"-journal"].contains(&suffix)
 }
 
 fn walk_dir(
@@ -136,7 +144,11 @@ fn walk_dir(
         let is_store = cfg.store_path.as_deref() == Some(abs.as_path());
         if is_store {
             entry.flags.insert(Flags::STORE);
-        } else if name_bytes == SQLITE_NAME.as_bytes() || name_bytes == FJALL_NAME.as_bytes() {
+        } else if dir_rel != b"."
+            && (name_bytes == SQLITE_NAME.as_bytes() || name_bytes == FJALL_NAME.as_bytes())
+        {
+            // Below the root only: a root-level manifest is the tree's own, merely not the
+            // one in use (--manifest points elsewhere).
             sink(WalkEvent::Warning(format!(
                 "nested manifest at {}",
                 escape(&rel)
@@ -200,6 +212,9 @@ mod tests {
             root: root.to_path_buf(),
             cross_mount_points: false,
             sort: true,
+            sqlite_store: store
+                .as_deref()
+                .is_some_and(|p| !p.to_string_lossy().ends_with(".fjall")),
             store_path: store,
         }
     }
@@ -246,11 +261,32 @@ mod tests {
         let r = std::fs::canonicalize(t.path()).unwrap();
         std::fs::create_dir(r.join("sub")).unwrap();
         std::fs::write(r.join("sub/.fileset.sqlite"), b"").unwrap();
+        // Directly below the root is not nested: a store elsewhere leaves it unflagged.
+        std::fs::write(r.join(".fileset.fjall"), b"").unwrap();
         let (e, w) = run(&cfg(&r, Some(r.join(".fileset.sqlite"))));
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("nested manifest at sub/.fileset.sqlite"));
         let n = e.iter().find(|o| o.path == b"sub/.fileset.sqlite").unwrap();
         assert!(!n.entry.flags.contains(Flags::STORE));
+    }
+
+    #[test]
+    fn walk_skips_sidecars_of_custom_named_sqlite_store() {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join("sub")).unwrap();
+        for n in [
+            "m.sqlite",
+            "m.sqlite-wal",
+            "m.sqlite-shm",
+            "m.sqlite-journal",
+            "x-wal",
+        ] {
+            std::fs::write(r.join("sub").join(n), b"").unwrap();
+        }
+        let (e, w) = run(&cfg(&r, Some(r.join("sub/m.sqlite"))));
+        assert_eq!(paths(&e), strs(&[".", "sub", "sub/m.sqlite", "sub/x-wal"]));
+        assert!(w.is_empty());
     }
 
     #[test]

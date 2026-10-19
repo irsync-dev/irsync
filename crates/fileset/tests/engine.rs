@@ -52,6 +52,8 @@ for_both_backends! {
     check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
     check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
     update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
+    external_manifest_ignores_root_level_manifest_names => external_manifest_ignores_root_level_manifest_names_sqlite, external_manifest_ignores_root_level_manifest_names_fjall;
+    in_tree_manifest_with_custom_name_is_clean => in_tree_manifest_with_custom_name_is_clean_sqlite, in_tree_manifest_with_custom_name_is_clean_fjall;
 }
 
 fn other(b: Backend) -> Backend {
@@ -494,5 +496,57 @@ fn update_sweeps_entries_of_interrupted_run(b: Backend) {
     assert_eq!(k.len(), 2000 + 3, "{k:?}");
     let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
+}
+
+fn external_manifest_ignores_root_level_manifest_names(b: Backend) {
+    // The read-only workflow: the tree still holds its own manifest (here stand-ins with the
+    // default names) while --manifest points at a copy elsewhere.
+    let dir = tree(&[
+        (".fileset.sqlite", "in-tree"),
+        (".fileset.fjall", "in-tree"),
+        ("f", "x"),
+    ]);
+    let outside = tempfile::tempdir().unwrap();
+    let manifest = outside.path().join("m");
+    let mut uopts = update_opts(dir.path(), b, false, true);
+    uopts.common.manifest = Some(manifest.clone());
+    let (outcome, err) = run_update_opts(&uopts).unwrap();
+    assert_eq!(err, "entries=4 hashed=3 reused=0 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+    let mut copts = check_opts(dir.path(), Tier::Default, &[], &[], true);
+    copts.common.manifest = Some(manifest);
+    let (outcome, out, err) = run_check_opts(&copts).unwrap();
+    assert_eq!(out, "");
+    assert_eq!(err, "added=0 deleted=0 changed=0 unchanged=4 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+}
+
+fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
+    let dir = tree(&[("sub/g", "g"), ("f", "x")]);
+    let name = match b {
+        Backend::Sqlite => "m.sqlite",
+        Backend::Fjall => "m.fjall",
+    };
+    let manifest = dir.path().join("sub").join(name);
+    let mut uopts = update_opts(dir.path(), b, false, true);
+    uopts.common.manifest = Some(manifest.clone());
+    let (outcome, err) = run_update_opts(&uopts).unwrap();
+    assert!(err.ends_with(" warnings=0\n"), "{err}");
+    assert_eq!(outcome, Outcome::Clean);
+    let st = store::open(&manifest, b, OpenMode::ReadOnly).unwrap();
+    let mut k = keys(&*st);
+    drop(st);
+    k.sort();
+    assert_eq!(
+        k,
+        sorted(vec![".", "f", "sub", "sub/g", &format!("sub/{name}")])
+    );
+
+    let mut copts = check_opts(dir.path(), Tier::Default, &[], &[], true);
+    copts.common.manifest = Some(manifest);
+    let (outcome, out, err) = run_check_opts(&copts).unwrap();
+    assert_eq!(out, "");
+    assert_eq!(err, "added=0 deleted=0 changed=0 unchanged=5 warnings=0\n");
     assert_eq!(outcome, Outcome::Clean);
 }

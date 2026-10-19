@@ -114,8 +114,14 @@ fn num<T: ToString + PartialEq>(out: &mut Vec<FieldDiff>, name: &str, old: T, ne
 }
 
 /// Compares stored vs observed under `sel`. Kind is always compared; if it
-/// differs the result is exactly one diff named "kind".
-pub fn diff(path: &[u8], stored: &Entry, observed: &Entry, sel: &Selection) -> Vec<FieldDiff> {
+/// differs the result is exactly one diff named "kind". `mtime_exempt` skips mtime
+/// (for the root and the directory holding an in-tree store).
+pub fn diff(
+    mtime_exempt: bool,
+    stored: &Entry,
+    observed: &Entry,
+    sel: &Selection,
+) -> Vec<FieldDiff> {
     if stored.kind != observed.kind {
         return vec![d(
             "kind",
@@ -161,7 +167,7 @@ pub fn diff(path: &[u8], stored: &Entry, observed: &Entry, sel: &Selection) -> V
                 }
             }
             Field::Mtime => {
-                if path != b"." && stored.mtime != observed.mtime {
+                if !mtime_exempt && stored.mtime != observed.mtime {
                     out.push(d(
                         "mtime",
                         fmt_mtime(stored.mtime),
@@ -290,7 +296,7 @@ mod tests {
     #[test]
     fn diff_equal_entries_is_empty() {
         let e = ent(Kind::File);
-        assert!(diff(b"a", &e, &e.clone(), &sel(Tier::Paranoid)).is_empty());
+        assert!(diff(false, &e, &e.clone(), &sel(Tier::Paranoid)).is_empty());
     }
 
     #[test]
@@ -298,7 +304,7 @@ mod tests {
         let a = ent(Kind::File);
         let mut b = ent(Kind::Dir);
         b.mode = 0o755;
-        let v = diff(b"a", &a, &b, &sel(Tier::Paranoid));
+        let v = diff(false, &a, &b, &sel(Tier::Paranoid));
         assert_eq!(
             v,
             vec![FieldDiff {
@@ -315,7 +321,7 @@ mod tests {
         let mut b = a.clone();
         b.mode = 0o600;
         b.mtime = Timespec { sec: 200, nsec: 0 };
-        let v = diff(b"a", &a, &b, &sel(Tier::Default));
+        let v = diff(false, &a, &b, &sel(Tier::Default));
         assert_eq!(names(&v), ["mode", "mtime"]);
         assert_eq!(v[0].old, fmt_mode(0o644));
         assert_eq!(v[0].new, fmt_mode(0o600));
@@ -330,7 +336,7 @@ mod tests {
         let mut b = a.clone();
         b.blake3 = None;
         b.flags.insert(Flags::UNREADABLE);
-        let v = diff(b"a", &a, &b, &sel(Tier::Default));
+        let v = diff(false, &a, &b, &sel(Tier::Default));
         assert_eq!(
             v,
             vec![FieldDiff {
@@ -347,7 +353,7 @@ mod tests {
         a.blake3 = Some([1; 32]);
         let mut b = a.clone();
         b.blake3 = Some([2; 32]);
-        let v = diff(b"a", &a, &b, &sel(Tier::Relaxed));
+        let v = diff(false, &a, &b, &sel(Tier::Relaxed));
         assert_eq!(v[0].new, fmt_blake3(&[2; 32]));
     }
 
@@ -356,7 +362,7 @@ mod tests {
         let a = ent(Kind::File);
         let mut b = a.clone();
         b.blake3 = Some([2; 32]);
-        assert!(diff(b"a", &a, &b, &sel(Tier::Default)).is_empty());
+        assert!(diff(false, &a, &b, &sel(Tier::Default)).is_empty());
     }
 
     #[test]
@@ -365,16 +371,16 @@ mod tests {
         let mut b = a.clone();
         b.size = 4096;
         b.nlink = 5;
-        assert!(diff(b"d", &a, &b, &sel(Tier::Paranoid)).is_empty());
+        assert!(diff(false, &a, &b, &sel(Tier::Paranoid)).is_empty());
     }
 
     #[test]
-    fn diff_root_ignores_mtime() {
+    fn diff_mtime_exempt_ignores_mtime() {
         let a = ent(Kind::Dir);
         let mut b = a.clone();
         b.mtime = Timespec { sec: 999, nsec: 0 };
-        assert!(diff(b".", &a, &b, &sel(Tier::Default)).is_empty());
-        assert_eq!(names(&diff(b"x", &a, &b, &sel(Tier::Default))), ["mtime"]);
+        assert!(diff(true, &a, &b, &sel(Tier::Default)).is_empty());
+        assert_eq!(names(&diff(false, &a, &b, &sel(Tier::Default))), ["mtime"]);
     }
 
     #[test]
@@ -385,7 +391,7 @@ mod tests {
         b.mode = 0o700;
         b.uid = 5;
         b.mtime = Timespec { sec: 1, nsec: 1 };
-        assert!(diff(b"s", &a, &b, &sel(Tier::Paranoid)).is_empty());
+        assert!(diff(false, &a, &b, &sel(Tier::Paranoid)).is_empty());
     }
 
     #[test]
@@ -397,7 +403,7 @@ mod tests {
             (b"user.a".to_vec(), b"1".to_vec()),
             (b"user.b".to_vec(), b"y".to_vec()),
         ];
-        let v = diff(b"f", &a, &b, &sel(Tier::Paranoid));
+        let v = diff(false, &a, &b, &sel(Tier::Paranoid));
         assert_eq!(
             v,
             vec![
@@ -420,7 +426,7 @@ mod tests {
         let a = ent(Kind::File);
         let mut b = a.clone();
         b.xattrs = vec![(b"user.a".to_vec(), b"1".to_vec())];
-        assert!(diff(b"f", &a, &b, &sel(Tier::Default)).is_empty());
+        assert!(diff(false, &a, &b, &sel(Tier::Default)).is_empty());
     }
 
     #[test]
@@ -428,9 +434,9 @@ mod tests {
         let a = ent(Kind::File);
         let mut b = a.clone();
         b.uid = 0;
-        assert!(diff(b"f", &a, &b, &sel(Tier::Default)).is_empty());
+        assert!(diff(false, &a, &b, &sel(Tier::Default)).is_empty());
         let s = Selection::new(Tier::Default, &[], &[Field::Uid]);
-        let v = diff(b"f", &a, &b, &s);
+        let v = diff(false, &a, &b, &s);
         assert_eq!(
             v,
             vec![FieldDiff {
