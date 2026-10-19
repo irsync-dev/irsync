@@ -5,32 +5,66 @@ package irsync.v1;
 import "irsync/v1/common.proto";
 
 // On the single bidirectional control stream, both directions.
-message ListingEntry { FileEntry entry = 1; }                    // path order ascending
-message ListingEnd { bool incomplete = 1; uint64 count = 2; }
-message PlanItem {                                                // receiver -> sender
+message ListingEntry {
+  FileEntry entry = 1;
+} // path order ascending
+message ListingEnd {
+  bool incomplete = 1;
+  uint64 count = 2;
+}
+message PlanItem { // receiver -> sender
   uint64 file_id = 1;
   bytes path = 2;
-  enum Action { WHOLE = 0; DELTA = 1; }
+  enum Action {
+    WHOLE = 0;
+    DELTA = 1;
+  }
   Action action = 3;
 }
-message ChunkList { uint64 file_id = 1; uint64 size = 2; Hash whole_hash = 3; repeated ChunkRecord chunks = 4; } // sender -> receiver
-message NeedChunks { uint64 file_id = 1; repeated uint32 chunk_idx = 2; }  // receiver -> sender; empty = nothing needed (local copy / already have)
+message ChunkList {
+  uint64 file_id = 1;
+  uint64 size = 2;
+  Hash whole_hash = 3;
+  repeated ChunkRecord chunks = 4;
+} // sender -> receiver
+message NeedChunks {
+  uint64 file_id = 1;
+  repeated uint32 chunk_idx = 2;
+} // receiver -> sender; empty = nothing needed (local copy / already have)
 // receiver -> sender: DONE, HASH_MISMATCH, WRITE_ERROR. sender -> receiver: SOURCE_ERROR
 // (the sender cannot read the file; the receiver drops it without a reply).
-message FileAck { uint64 file_id = 1; enum Status { DONE = 0; HASH_MISMATCH = 1; WRITE_ERROR = 2; SOURCE_ERROR = 3; } Status status = 2; string message = 3; }
-// A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
-message PathError { bytes path = 1; string message = 2; }
-message SessionDone {
-  uint64 files = 1; uint64 bytes = 2; repeated PathError errors = 3;
-  repeated bytes deleted = 4;                     // paths the receiver deleted (capped)
-  repeated bytes would_delete = 5;                // dry run: paths it would delete (capped)
-  bool max_delete_reached = 6;                    // deletions stopped at --max-delete
-  uint64 deleted_omitted = 7;                     // deleted paths beyond the cap
-  uint64 would_delete_omitted = 8;                // would-delete paths beyond the cap
-  uint64 created = 9;                             // items the receiver created new (for --stats)
-  uint64 transferred_size = 10;                   // summed size of the files it placed
+message FileAck {
+  uint64 file_id = 1;
+  enum Status {
+    DONE = 0;
+    HASH_MISMATCH = 1;
+    WRITE_ERROR = 2;
+    SOURCE_ERROR = 3;
+  }
+  Status status = 2;
+  string message = 3;
 }
-message Itemized { bytes path = 1; string code = 2; }  // receiver -> sender, rsync -i code (`>` = received)
+// A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
+message PathError {
+  bytes path = 1;
+  string message = 2;
+}
+message SessionDone {
+  uint64 files = 1;
+  uint64 bytes = 2;
+  repeated PathError errors = 3;
+  repeated bytes deleted = 4; // paths the receiver deleted (capped)
+  repeated bytes would_delete = 5; // dry run: paths it would delete (capped)
+  bool max_delete_reached = 6; // deletions stopped at --max-delete
+  uint64 deleted_omitted = 7; // deleted paths beyond the cap
+  uint64 would_delete_omitted = 8; // would-delete paths beyond the cap
+  uint64 created = 9; // items the receiver created new (for --stats)
+  uint64 transferred_size = 10; // summed size of the files it placed
+}
+message Itemized {
+  bytes path = 1;
+  string code = 2;
+} // receiver -> sender, rsync -i code (`>` = received)
 message Control {
   oneof msg {
     ListingEntry listing = 1;

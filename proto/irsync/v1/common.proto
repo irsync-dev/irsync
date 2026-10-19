@@ -1,38 +1,80 @@
 syntax = "proto3";
 package irsync.v1;
 
-message Hash { bytes bytes = 1; }                 // 32-byte BLAKE3
+message Hash {
+  bytes bytes = 1;
+} // 32-byte BLAKE3
 
 message Hello {
-  uint32 protocol_version = 1;                    // 1
-  bytes  session_id = 2;                          // 16 bytes; empty = new session
+  uint32 protocol_version = 1; // 1
+  bytes session_id = 2; // 16 bytes; empty = new session
   string module = 3;
-  bytes  path = 4;                                // relative to module root
-  enum Direction { CLIENT_SENDS = 0; DAEMON_SENDS = 1; }
+  bytes path = 4; // relative to module root
+  enum Direction {
+    CLIENT_SENDS = 0;
+    DAEMON_SENDS = 1;
+  }
   Direction direction = 5;
-  uint32 chunk_min = 6; uint32 chunk_avg = 7; uint32 chunk_max = 8;  // must equal protocol constants
-  bool contents_only = 9;                         // rsync trailing-slash rule applied to the remote path
+  uint32 chunk_min = 6;
+  uint32 chunk_avg = 7;
+  uint32 chunk_max = 8; // must equal protocol constants
+  bool contents_only = 9; // rsync trailing-slash rule applied to the remote path
   // Receiver-side options, honoured by the daemon only when it receives
   // (CLIENT_SENDS, which already requires write access to a writable module).
-  enum DeleteMode { DELETE_OFF = 0; DELETE_BEFORE = 1; DELETE_DURING = 2; DELETE_AFTER = 3; }
+  enum DeleteMode {
+    DELETE_OFF = 0;
+    DELETE_BEFORE = 1;
+    DELETE_DURING = 2;
+    DELETE_AFTER = 3;
+  }
   DeleteMode delete_mode = 10;
   bool delete_excluded = 11;
-  optional uint64 max_delete = 12;                // absent = unlimited; 0 = delete nothing
-  bool dry_run = 13;                              // the receiver changes nothing
-  bool ignore_errors = 14;                        // delete even if a listing was incomplete
-  bool itemize = 15;                              // the receiver sends Itemized codes (-i)
-  bool update_only = 16;                          // -u: keep destination files newer than the source
-  bool checksum = 17;                             // -c: equal size+mtime is not enough, compare content
+  optional uint64 max_delete = 12; // absent = unlimited; 0 = delete nothing
+  bool dry_run = 13; // the receiver changes nothing
+  bool ignore_errors = 14; // delete even if a listing was incomplete
+  bool itemize = 15; // the receiver sends Itemized codes (-i)
+  bool update_only = 16; // -u: keep destination files newer than the source
+  bool checksum = 17; // -c: equal size+mtime is not enough, compare content
 }
-message HelloAck { bytes session_id = 1; bool resumed = 2; uint32 protocol_version = 3; }
-message Error { enum Code { UNKNOWN = 0; UNAUTHORIZED = 1; NO_SUCH_MODULE = 2; READ_ONLY = 3; BAD_PATH = 4; VERSION_MISMATCH = 5; BAD_SESSION = 6; INTERNAL = 7; } Code code = 1; string message = 2; }
-message ChunkRecord { uint64 offset = 1; uint32 len = 2; Hash hash = 3; }
+message HelloAck {
+  bytes session_id = 1;
+  bool resumed = 2;
+  uint32 protocol_version = 3;
+}
+message Error {
+  enum Code {
+    UNKNOWN = 0;
+    UNAUTHORIZED = 1;
+    NO_SUCH_MODULE = 2;
+    READ_ONLY = 3;
+    BAD_PATH = 4;
+    VERSION_MISMATCH = 5;
+    BAD_SESSION = 6;
+    INTERNAL = 7;
+  }
+  Code code = 1;
+  string message = 2;
+}
+message ChunkRecord {
+  uint64 offset = 1;
+  uint32 len = 2;
+  Hash hash = 3;
+}
 
 message FileEntry {
-  bytes path = 1;                                 // relative to root, '/'-separated, raw bytes
+  bytes path = 1; // relative to root, '/'-separated, raw bytes
   // HARDLINK: a regular file sharing the inode of the earlier listed regular
   // file at `link_target` (sent only with -H; same size/mtime/mode).
-  enum Kind { REGULAR = 0; DIRECTORY = 1; SYMLINK = 2; CHAR_DEV = 3; BLOCK_DEV = 4; FIFO = 5; SOCKET = 6; HARDLINK = 7; }
+  enum Kind {
+    REGULAR = 0;
+    DIRECTORY = 1;
+    SYMLINK = 2;
+    CHAR_DEV = 3;
+    BLOCK_DEV = 4;
+    FIFO = 5;
+    SOCKET = 6;
+    HARDLINK = 7;
+  }
   Kind kind = 2;
   uint64 size = 3;
   int64 mtime_sec = 4;
@@ -45,10 +87,15 @@ message FileEntry {
   uint64 dev = 11;
   uint64 inode = 12;
   uint32 nlink = 13;
-  optional Hash whole_hash = 14;                  // lazy: absent until computed
+  optional Hash whole_hash = 14; // lazy: absent until computed
   bool sparse = 15;
-  reserved 16 to 31;                              // later metadata (xattrs)
+  reserved 16 to 31; // later metadata (xattrs)
 }
 
-message Range { uint64 offset = 1; uint64 length = 2; }
-message RangeSet { repeated Range ranges = 1; }
+message Range {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+message RangeSet {
+  repeated Range ranges = 1;
+}

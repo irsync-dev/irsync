@@ -3,6 +3,14 @@ syntax = "proto3";
 package irsync.v1;
 
 // One unidirectional stream per range, sender -> receiver.
-message DataStreamHeader { bytes session_id = 1; uint64 file_id = 2; uint64 offset = 3; uint64 length = 4; uint32 first_chunk_idx = 5; }
-message DataChunk { bytes data = 1; }                             // <= 1 MiB, exactly one chunk per frame
+message DataStreamHeader {
+  bytes session_id = 1;
+  uint64 file_id = 2;
+  uint64 offset = 3;
+  uint64 length = 4;
+  uint32 first_chunk_idx = 5;
+}
+message DataChunk {
+  bytes data = 1;
+} // <= 1 MiB, exactly one chunk per frame
 // RangeSet/Range (persisted partial progress) live in common.proto.
