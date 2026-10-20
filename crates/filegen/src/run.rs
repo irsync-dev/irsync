@@ -18,7 +18,7 @@ use crate::kind::OpKind;
 use crate::log::{Footer, Header, LogWriter, Stats};
 use crate::model::{Model, NodeId};
 use crate::ops::file::create_file;
-use crate::ops::{dispatch, OpCtx, OpOutcome};
+use crate::ops::{dispatch, Applied, OpCtx, OpOutcome};
 use crate::pick::anchor_of;
 use crate::signals;
 use crate::state::{self, ChainState, LastRun, State, StateError, TreeInfo, FORMAT_VERSION};
@@ -142,11 +142,26 @@ impl Runner {
             (Start::Seed(seed), None) => *seed,
             (Start::Resume(_), None) => unreachable!("a resume reads its state"),
         };
-        let out_dir = cli::resolve_out_dir(
-            opts.flags.out_dir.as_deref(),
-            cfg.out_dir.as_deref(),
-            &|k| std::env::var_os(k),
-        );
+        // A resume without an explicit out dir or prefix keeps appending to
+        // the history its state file belongs to, whatever the environment
+        // says now.
+        let resume_file = match &opts.start {
+            Start::Resume(path) => Some(path.as_path()),
+            Start::Seed(_) => None,
+        };
+        let out_dir = match resume_file {
+            Some(path) if opts.flags.out_dir.is_none() && cfg.out_dir.is_none() => {
+                match path.parent() {
+                    Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+                    _ => PathBuf::from("."),
+                }
+            }
+            _ => cli::resolve_out_dir(
+                opts.flags.out_dir.as_deref(),
+                cfg.out_dir.as_deref(),
+                &|k| std::env::var_os(k),
+            ),
+        };
         let out_dir = lenient_canonical(&out_dir).map_err(RunError::Io)?;
         if out_dir.starts_with(&root) {
             return Err(RunError::Usage(format!(
@@ -170,27 +185,37 @@ impl Runner {
             .prefix
             .clone()
             .or_else(|| cfg.prefix.clone())
+            .or_else(|| resume_file.and_then(prefix_of))
             .unwrap_or_else(|| format!("filegen-{seed}"));
+        if prefix.is_empty() || prefix == "." || prefix == ".." || prefix.contains('/') {
+            return Err(RunError::Usage(format!(
+                "invalid prefix {prefix:?}: it names files in the output directory, \
+                 so it must not be empty, `.`, `..` or contain `/`"
+            )));
+        }
         let dry = if opts.dry_run { ".dry" } else { "" };
         let log_path = out_dir.join(format!("{prefix}{dry}.log"));
         let state_path = out_dir.join(format!("{prefix}{dry}.state.yaml"));
-        if resumed.is_none() && (log_path.exists() || state_path.exists()) {
-            if !opts.force {
-                return Err(RunError::Usage(format!(
-                    "{} or {} already exists; pass --resume {} to continue that run, \
-                     --prefix to start a separate one, or --force to truncate both",
-                    log_path.display(),
-                    state_path.display(),
-                    state_path.display()
-                )));
-            }
-            for p in [&log_path, &state_path] {
-                File::create(p).map_err(RunError::Io)?;
-            }
+        let truncate = resumed.is_none() && (log_path.exists() || state_path.exists());
+        if truncate && !opts.force {
+            return Err(RunError::Usage(format!(
+                "{} or {} already exists; pass --resume {} to continue that run, \
+                 --prefix to start a separate one, or --force to truncate both",
+                log_path.display(),
+                state_path.display(),
+                state_path.display()
+            )));
         }
         fs::create_dir_all(&out_dir).map_err(RunError::Io)?;
 
         let model = walk::from_disk(&root).map_err(RunError::Io)?;
+        // Only now that the walk succeeded: a failed start must not
+        // destroy the previous history.
+        if truncate {
+            for p in [&log_path, &state_path] {
+                File::create(p).map_err(RunError::Io)?;
+            }
+        }
         let (rng, last_kind, anchor, steps_done) = match resumed {
             Some(s) => {
                 let anchor = unescape(&s.chain_state.anchor)
@@ -244,9 +269,29 @@ impl Runner {
     /// same row while it has no target, then falling back to
     /// `create_file` in the root), applies it, and logs it. Every
     /// `checkpoint_steps` steps the state is written and the log flushed.
-    /// A failed operation is logged (an `EINTR` is left to the caller)
-    /// and returned.
+    /// A failed operation is logged and returned, with the generator
+    /// rewound to where it was before the step, so a state written
+    /// afterwards is at the last logged step. (`last_kind`, `anchor` and
+    /// the model change only once an operation succeeds.)
     pub fn step(&mut self) -> Result<StepResult, io::Error> {
+        let rng_before = self.rng.clone();
+        match self.apply() {
+            Ok(applied) => applied.map_or(Ok(StepResult::Retry), |(pressure, kind, a)| {
+                self.commit(pressure, kind, a)
+            }),
+            Err((kind, e)) => {
+                self.rng = rng_before;
+                let _ = self.log.failure(self.steps_done + 1, kind, b"", &e);
+                let _ = self.log.flush();
+                Err(e)
+            }
+        }
+    }
+
+    /// Draws and applies one operation; `None` if not even the fallback
+    /// found a target. On failure, the kind that failed.
+    #[allow(clippy::type_complexity)]
+    fn apply(&mut self) -> Result<Option<(f64, OpKind, Applied)>, (OpKind, io::Error)> {
         let pressure = cap_pressure(self.model.total_bytes(), self.cfg.max_total_size.0);
         let mut ctx = OpCtx {
             root: &self.root,
@@ -257,27 +302,26 @@ impl Runner {
             dry: self.dry,
             fsync: self.cfg.fsync,
         };
-        let mut outcome = None;
         for _ in 0..REDRAWS {
             let kind = self.chain.next(ctx.rng, self.last_kind, pressure);
             match dispatch(kind)(&mut ctx) {
-                Ok(OpOutcome::Done(a)) => {
-                    outcome = Some((kind, a));
-                    break;
-                }
+                Ok(OpOutcome::Done(a)) => return Ok(Some((pressure, kind, a))),
                 Ok(OpOutcome::NoTarget) => {}
-                Err(e) => return Err(self.failed(kind, e)),
+                Err(e) => return Err((kind, e)),
             }
         }
-        if outcome.is_none() {
-            ctx.anchor = ctx.model.root();
-            match create_file(&mut ctx) {
-                Ok(OpOutcome::Done(a)) => outcome = Some((OpKind::CreateFile, a)),
-                Ok(OpOutcome::NoTarget) => return Ok(StepResult::Retry),
-                Err(e) => return Err(self.failed(OpKind::CreateFile, e)),
-            }
+        ctx.anchor = ctx.model.root();
+        match create_file(&mut ctx) {
+            Ok(OpOutcome::Done(a)) => Ok(Some((pressure, OpKind::CreateFile, a))),
+            Ok(OpOutcome::NoTarget) => Ok(None),
+            Err(e) => Err((OpKind::CreateFile, e)),
         }
-        let (kind, a) = outcome.expect("set above");
+    }
+
+    /// Counts, logs and records an applied operation; checkpoints when
+    /// due. The step has happened on disk, so an error here (writing the
+    /// log or the checkpoint) does not rewind anything.
+    fn commit(&mut self, pressure: f64, kind: OpKind, a: Applied) -> io::Result<StepResult> {
         self.steps_done += 1;
         let step = self.steps_done;
         self.log.step(
@@ -297,14 +341,6 @@ impl Runner {
             self.log.flush()?;
         }
         Ok(StepResult::Done { step, kind })
-    }
-
-    /// Logs a failed step and hands the error back. The path is not known
-    /// here (the operation drew it), so it is logged empty.
-    fn failed(&mut self, kind: OpKind, e: io::Error) -> io::Error {
-        let _ = self.log.failure(self.steps_done + 1, kind, b"", &e);
-        let _ = self.log.flush();
-        e
     }
 
     /// Steps completed over every run of this seed.
@@ -370,6 +406,15 @@ impl Runner {
             },
         }
     }
+}
+
+/// The prefix a state file's name implies: its name without
+/// `.dry.state.yaml` or `.state.yaml`.
+fn prefix_of(state_file: &Path) -> Option<String> {
+    let name = state_file.file_name()?.to_str()?;
+    name.strip_suffix(".dry.state.yaml")
+        .or_else(|| name.strip_suffix(".state.yaml"))
+        .map(str::to_string)
 }
 
 /// The canonical root; a usage error unless it exists and is a directory.
@@ -441,15 +486,9 @@ pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
                 bar.inc(1);
                 bar.set_message(HumanBytes(runner.bytes_written()).to_string());
             }
-            Err(e) => {
-                // A syscall cut short by SIGINT/SIGTERM (no SA_RESTART) is
-                // an interrupt, not a failure; its step is still logged.
-                let sig = signal.load(Ordering::SeqCst);
-                if e.kind() == io::ErrorKind::Interrupted && sig != 0 {
-                    break Outcome::Interrupted(sig);
-                }
-                break Outcome::Failed(e.to_string());
-            }
+            // Handlers use SA_RESTART, so a signal never cuts a step
+            // short; it is only seen between steps, above.
+            Err(e) => break Outcome::Failed(e.to_string()),
         }
     };
     bar.finish_and_clear();
@@ -825,6 +864,88 @@ mod tests {
         let end = log.lines().find(|l| l.starts_with("# end")).unwrap();
         assert!(end.contains("steps_done=20 outcome=\"failed: "), "{end}");
         assert!(log.lines().last().unwrap().starts_with('#'));
+
+        // The failed step's draws were rewound: the state is exactly that
+        // of a run that stopped after 20 steps.
+        let (t2, root2) = base();
+        let out2 = t2.path().join("out");
+        let mut clean = Runner::new(opts(&root2, &out2, 20, Start::Seed(20))).unwrap();
+        for _ in 0..20 {
+            clean.step().unwrap();
+        }
+        let clean_state = clean.paths().1.to_path_buf();
+        clean.finish(Outcome::Ok).unwrap();
+        let c = state::read(&clean_state).unwrap();
+        assert_eq!(s.rng, c.rng);
+        assert_eq!(s.chain_state, c.chain_state);
+    }
+
+    #[test]
+    fn run_force_keeps_history_when_the_walk_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            eprintln!("skipping: root can list an unreadable dir");
+            return;
+        }
+        let (t, root) = base();
+        let out = t.path().join("out");
+        run_ok(opts(&root, &out, 10, Start::Seed(26)));
+        let log_before = text(&out.join("filegen-26.log"));
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut o = opts(&root, &out, 10, Start::Seed(26));
+        o.force = true;
+        let r = run(o);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(r, Err(RunError::Io(_))), "{r:?}");
+        assert_eq!(text(&out.join("filegen-26.log")), log_before);
+        assert_eq!(
+            state::read(&out.join("filegen-26.state.yaml"))
+                .unwrap()
+                .steps_done,
+            10
+        );
+    }
+
+    #[test]
+    fn run_rejects_prefixes_naming_other_dirs() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        for bad in ["../root/x", "a/b", "", ".", ".."] {
+            let mut o = opts(&root, &out, 1, Start::Seed(24));
+            o.flags.prefix = Some(bad.into());
+            let msg = usage(run(o));
+            assert!(msg.contains("prefix"), "{bad:?}: {msg}");
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn run_resume_keeps_the_state_files_history() {
+        // Without --out-dir or --prefix, a resume writes next to its state
+        // file under the state file's prefix, wherever the defaults point.
+        let (t, root) = base();
+        let out = t.path().join("out");
+        let mut o = opts(&root, &out, 30, Start::Seed(25));
+        o.flags.prefix = Some("hist".into());
+        let mut r = Runner::new(o).unwrap();
+        let state_path = r.paths().1.to_path_buf();
+        for _ in 0..30 {
+            r.step().unwrap();
+        }
+        r.finish(Outcome::Ok).unwrap();
+        // The saved config carries out_dir and prefix from the flags; drop
+        // them to model a first run that found both by default.
+        let mut s = state::read(&state_path).unwrap();
+        s.config.out_dir = None;
+        s.config.prefix = None;
+        state::write_atomic(&state_path, &s).unwrap();
+        let mut o = opts(&root, &out, 20, Start::Resume(state_path.clone()));
+        o.flags.out_dir = None;
+        run_ok(o);
+        assert_eq!(state::read(&state_path).unwrap().steps_done, 50);
+        let log = text(&out.join("hist.log"));
+        assert_eq!(log.lines().filter(|l| l.starts_with("# run")).count(), 2);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 2);
     }
 
     #[test]

@@ -28,14 +28,14 @@ extern "C" fn handler(sig: libc::c_int) {
 /// Installs the SIGINT and SIGTERM handlers and returns the flag they
 /// set: 0 until a signal arrives, then that signal's number (the first
 /// one wins). A second SIGINT while the flag is set exits the process at
-/// once with status 130. Each call clears the flag. No `SA_RESTART`, so a
-/// blocking syscall in flight returns `EINTR`.
+/// once with status 130. Each call clears the flag. With `SA_RESTART`,
+/// so the step in flight finishes rather than failing with `EINTR`.
 pub fn install() -> Arc<AtomicI32> {
     let flag = FLAG.get_or_init(|| Arc::new(AtomicI32::new(0)));
     flag.store(0, Ordering::SeqCst);
     let action = SigAction::new(
         SigHandler::Handler(handler),
-        SaFlags::empty(),
+        SaFlags::SA_RESTART,
         SigSet::empty(),
     );
     for sig in [Signal::SIGINT, Signal::SIGTERM] {

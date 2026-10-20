@@ -1,14 +1,25 @@
 //! Signal flag behaviour. A test binary of its own: raising signals in the
-//! library's test process would interrupt its concurrent runs.
+//! library's test process would interrupt its concurrent runs. One test,
+//! so nothing else in this process races the handlers.
 
 use std::sync::atomic::Ordering;
 
-use nix::sys::signal::{raise, Signal};
+use nix::sys::signal::{raise, sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 
 #[test]
-fn first_signal_wins_and_install_clears() {
+fn first_signal_wins_install_clears_and_syscalls_restart() {
     let flag = filegen::signals::install();
     assert_eq!(flag.load(Ordering::SeqCst), 0);
+
+    // SA_RESTART: a step in flight finishes instead of failing with EINTR.
+    for sig in [Signal::SIGINT, Signal::SIGTERM] {
+        let probe = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        // SAFETY: the installed action is put straight back.
+        let installed = unsafe { sigaction(sig, &probe) }.unwrap();
+        unsafe { sigaction(sig, &installed) }.unwrap();
+        assert!(installed.flags().contains(SaFlags::SA_RESTART), "{sig:?}");
+    }
+
     raise(Signal::SIGTERM).unwrap();
     assert_eq!(flag.load(Ordering::SeqCst), libc::SIGTERM);
     raise(Signal::SIGTERM).unwrap();
