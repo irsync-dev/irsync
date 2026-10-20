@@ -45,3 +45,10 @@ rand_chacha = { version = "0.3", features = ["serde1"] }
 serde_yaml_ng = "0.10"
 unicode-normalization = "0.1"
 libc = "0.2"
+
+[profile.dev.package.rand_chacha]
+opt-level = 3
+[profile.dev.package.ppv-lite86]
+opt-level = 3
+[profile.dev.package.rand_core]
+opt-level = 3

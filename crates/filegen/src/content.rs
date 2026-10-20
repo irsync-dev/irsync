@@ -105,10 +105,9 @@ impl Content {
                     *carry_len -= 1;
                     done += 1;
                 }
-                while n - done >= 8 {
-                    out[done..done + 8].copy_from_slice(&rng.next_u64().to_le_bytes());
-                    done += 8;
-                }
+                let aligned = (n - done) & !7;
+                rng.fill_bytes(&mut out[done..done + aligned]);
+                done += aligned;
                 if done < n {
                     *carry = rng.next_u64().to_le_bytes();
                     let rest = n - done;
