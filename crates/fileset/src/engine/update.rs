@@ -1,4 +1,6 @@
-//! `update`: walk the tree, hash what changed, record it, sweep what disappeared.
+//! `init` and `update`: walk the tree, hash what changed, record it, sweep what
+//! disappeared. The two verbs share this engine and differ only in whether the manifest
+//! must already exist.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -17,10 +19,17 @@ use crate::walk::{self, Observed, WalkConfig, WalkEvent};
 /// Entries buffered before each `put_batch`.
 const BATCH_SIZE: usize = 2000;
 
+/// Which verb is running. `Init` creates the manifest and refuses an existing one;
+/// `Update` requires an existing manifest and refuses to create one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Init { backend: Option<Backend> },
+    Update { rehash: bool },
+}
+
 pub struct UpdateOpts {
     pub common: CommonOpts,
-    pub backend: Option<Backend>,
-    pub rehash: bool,
+    pub mode: Mode,
 }
 
 pub fn update(
@@ -31,11 +40,31 @@ pub fn update(
 ) -> anyhow::Result<Outcome> {
     let common = &opts.common;
     let root = canonical_root(&common.root)?;
-    let loc = store::locate(&root, common.manifest.as_deref(), opts.backend, true)?;
-    let mode = if loc.exists {
-        OpenMode::ReadWrite
-    } else {
-        OpenMode::Create
+    let (requested, rehash) = match opts.mode {
+        Mode::Init { backend } => (backend, false),
+        Mode::Update { rehash } => (None, rehash),
+    };
+    let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
+    let mode = match (opts.mode, loc.exists) {
+        (Mode::Init { .. }, true) => anyhow::bail!(
+            "manifest already exists at {}; run 'fileset update' to bring it up to date",
+            loc.path.display()
+        ),
+        (Mode::Update { .. }, false) => match common.manifest.as_deref() {
+            Some(m) => anyhow::bail!(
+                "no manifest at {}; run 'fileset init' to create one",
+                m.display()
+            ),
+            None => anyhow::bail!(
+                "no manifest found in {}: neither {} nor {} exists; run 'fileset init' to \
+                 create one",
+                root.display(),
+                store::SQLITE_NAME,
+                store::FJALL_NAME
+            ),
+        },
+        (_, true) => OpenMode::ReadWrite,
+        (_, false) => OpenMode::Create,
     };
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
@@ -69,7 +98,7 @@ pub fn update(
     let mut batch: Vec<(Vec<u8>, Entry)> = Vec::with_capacity(BATCH_SIZE);
 
     let decide = |obs: &mut Observed| {
-        let decision = reuse_or_hash(&**store.borrow(), obs, opts.rehash, &mut lookup_error);
+        let decision = reuse_or_hash(&**store.borrow(), obs, rehash, &mut lookup_error);
         if matches!(decision, Decision::Skip) && obs.entry.blake3.is_some() {
             summary.reused += 1;
         }

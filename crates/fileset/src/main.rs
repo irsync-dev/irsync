@@ -4,7 +4,7 @@ use clap::Parser;
 use fileset::cli::{BackendArg, Cli, Command, CommonArgs};
 use fileset::compare::{Field, Tier};
 use fileset::engine::check::{check, CheckOpts};
-use fileset::engine::update::{update, UpdateOpts};
+use fileset::engine::update::{update, Mode, UpdateOpts};
 use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::{NoProgress, Progress, TermProgress};
 use fileset::store::Backend;
@@ -54,15 +54,23 @@ fn main() {
     let mut out = BufWriter::new(std::io::stdout().lock());
     let mut err = std::io::stderr();
     let result: anyhow::Result<Outcome> = match cli.command {
+        Command::Init(a) => {
+            let (common, quiet) = common_opts(a.common);
+            let backend = a.store.map(|b| match b {
+                BackendArg::Sqlite => Backend::Sqlite,
+                BackendArg::Fjall => Backend::Fjall,
+            });
+            let opts = UpdateOpts {
+                common,
+                mode: Mode::Init { backend },
+            };
+            update(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
+        }
         Command::Update(a) => {
             let (common, quiet) = common_opts(a.common);
             let opts = UpdateOpts {
                 common,
-                backend: a.store.map(|b| match b {
-                    BackendArg::Sqlite => Backend::Sqlite,
-                    BackendArg::Fjall => Backend::Fjall,
-                }),
-                rehash: a.rehash,
+                mode: Mode::Update { rehash: a.rehash },
             };
             update(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
         }

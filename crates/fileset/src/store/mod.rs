@@ -85,7 +85,8 @@ pub struct Location {
 }
 
 /// Decides where the manifest lives and which backend it uses, without opening it.
-/// `root` must already be canonical; `requested` is the `--store` value (update only).
+/// `root` must already be canonical; `requested` is the `--store` value (init only);
+/// `for_update` is true for init and update, which may create the manifest.
 pub fn locate(
     root: &Path,
     manifest: Option<&Path>,

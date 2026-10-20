@@ -16,7 +16,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Create or update the manifest for a directory tree
+    /// Create the manifest for a directory tree (fails if one exists)
+    Init(InitArgs),
+    /// Bring an existing manifest up to date (fails if none exists)
     Update(UpdateArgs),
     /// Verify a directory tree against its manifest
     Check(CheckArgs),
@@ -53,12 +55,18 @@ pub struct CommonArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct UpdateArgs {
+pub struct InitArgs {
     #[command(flatten)]
     pub common: CommonArgs,
     /// Manifest storage backend
     #[arg(long, value_enum)]
     pub store: Option<BackendArg>,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
     /// Rehash all files regardless of cached metadata
     #[arg(long)]
     pub rehash: bool,

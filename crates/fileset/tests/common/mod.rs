@@ -2,7 +2,7 @@
 
 use fileset::compare::{Field, Tier};
 use fileset::engine::check::{check, CheckOpts};
-use fileset::engine::update::{update, UpdateOpts};
+use fileset::engine::update::{update, Mode, UpdateOpts};
 use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::NoProgress;
 use fileset::store::{self, Backend, OpenMode, Store};
@@ -49,12 +49,21 @@ pub fn mkfifo(path: &Path) {
     assert!(status.success(), "mkfifo {} failed", path.display());
 }
 
+/// Options for `init` when `root` holds no manifest for `backend` yet, else for `update`;
+/// mirrors what a user would type on a fresh tree versus a tracked one.
 pub fn update_opts(
     root: &Path,
     backend: Backend,
     rehash: bool,
     fail_on_warnings: bool,
 ) -> UpdateOpts {
+    let mode = if root.join(store_name(backend)).symlink_metadata().is_ok() {
+        Mode::Update { rehash }
+    } else {
+        Mode::Init {
+            backend: Some(backend),
+        }
+    };
     UpdateOpts {
         common: CommonOpts {
             root: root.to_path_buf(),
@@ -64,8 +73,7 @@ pub fn update_opts(
             jobs: 2,
             fail_on_warnings,
         },
-        backend: Some(backend),
-        rehash,
+        mode,
     }
 }
 

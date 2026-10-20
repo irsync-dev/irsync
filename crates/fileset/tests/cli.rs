@@ -4,11 +4,30 @@ fn bin() -> Command {
 }
 
 #[test]
-fn help_lists_both_verbs() {
+fn help_lists_all_verbs() {
     let out = bin().arg("--help").output().unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("update") && s.contains("check"));
+    assert!(s.contains("init") && s.contains("update") && s.contains("check"));
+}
+
+#[test]
+fn only_init_takes_store_and_only_update_takes_rehash() {
+    let help = |verb: &str| {
+        let out = bin().args([verb, "--help"]).output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let init = help("init");
+    let update = help("update");
+    assert!(
+        init.contains("--store") && !init.contains("--rehash"),
+        "{init}"
+    );
+    assert!(
+        update.contains("--rehash") && !update.contains("--store"),
+        "{update}"
+    );
 }
 
 #[test]
@@ -51,10 +70,11 @@ fn code(args: &[&std::ffi::OsStr]) -> i32 {
 }
 
 #[test]
-fn cli_update_then_check_exit_codes() {
+fn cli_init_update_check_exit_codes() {
     let d = tree();
     let t = d.path().join("tree");
     let t = t.as_os_str();
+    assert_eq!(code(&["init".as_ref(), t]), 0);
     assert_eq!(code(&["update".as_ref(), t]), 0);
     assert_eq!(code(&["check".as_ref(), t]), 0);
     let mut f = std::fs::OpenOptions::new()
@@ -66,6 +86,40 @@ fn cli_update_then_check_exit_codes() {
     let out = bin().args(["check".as_ref(), t]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("CHG "));
+}
+
+#[test]
+fn cli_init_twice_exits_2() {
+    let d = tree();
+    let t = d.path().join("tree");
+    assert_eq!(code(&["init".as_ref(), t.as_os_str()]), 0);
+    let out = bin()
+        .args(["init".as_ref(), t.as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.starts_with("error: ") && e.contains("already exists") && e.contains("fileset update"),
+        "{e}"
+    );
+}
+
+#[test]
+fn cli_update_missing_manifest_exits_2() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let out = bin()
+        .args(["update".as_ref(), t.as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.starts_with("error: ") && e.contains("no manifest") && e.contains("fileset init"),
+        "{e}"
+    );
+    assert!(!t.join(".fileset.sqlite").exists());
 }
 
 #[test]
@@ -107,7 +161,7 @@ fn cli_fail_on_warnings() {
         return; // running as root: chmod 000 does not block reads
     }
     let t = d.path().join("tree");
-    assert_eq!(code(&["update".as_ref(), t.as_os_str()]), 0);
+    assert_eq!(code(&["init".as_ref(), t.as_os_str()]), 0);
     assert_eq!(
         code(&[
             "update".as_ref(),
@@ -124,7 +178,7 @@ fn cli_store_fjall_creates_directory() {
     let t = d.path().join("tree");
     assert_eq!(
         code(&[
-            "update".as_ref(),
+            "init".as_ref(),
             "--store".as_ref(),
             "fjall".as_ref(),
             t.as_os_str()
@@ -139,7 +193,7 @@ fn cli_store_fjall_creates_directory() {
 fn cli_no_dir_sort_still_checks_clean() {
     let d = tree();
     let t = d.path().join("tree");
-    assert_eq!(code(&["update".as_ref(), t.as_os_str()]), 0);
+    assert_eq!(code(&["init".as_ref(), t.as_os_str()]), 0);
     assert_eq!(
         code(&["check".as_ref(), "--no-dir-sort".as_ref(), t.as_os_str()]),
         0
@@ -158,6 +212,7 @@ fn cli_relative_path_with_trailing_slash() {
             .status
             .code()
     };
+    assert_eq!(run("init"), Some(0));
     assert_eq!(run("update"), Some(0));
     assert_eq!(run("check"), Some(0));
 }

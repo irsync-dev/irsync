@@ -7,9 +7,13 @@ Status: draft, awaiting approval
 
 `fileset` is a standalone command-line tool that records the state of a
 directory tree in a manifest stored at the root of that tree, and later
-verifies the tree against it. It has two verbs sharing one engine:
+verifies the tree against it. It has three verbs; the first two share one
+engine:
 
-- `fileset update <PATH>` scans the tree and brings the manifest up to date.
+- `fileset init <PATH>` scans the tree and creates its manifest. It refuses
+  to run if a manifest already exists.
+- `fileset update <PATH>` scans the tree and brings the existing manifest up
+  to date. It refuses to run if no manifest exists.
 - `fileset check <PATH>` scans the tree and reports every difference
   between it and the manifest.
 
@@ -74,11 +78,15 @@ These were decided in conversation and are not open to the builder.
 ### Commands and flags
 
 ```
-fileset update [OPTIONS] <PATH>
-    --store <sqlite|fjall>   backend to create if no manifest exists yet (default: sqlite)
-    --rehash                 re-hash every regular file even if size, mtime and inode are unchanged
+fileset init [OPTIONS] <PATH>
+    --store <sqlite|fjall>   backend to create (default: sqlite)
     --cross-mount-points     descend into directories on other filesystems
     --no-dir-sort            do not sort directory entries before iterating
+
+fileset update [OPTIONS] <PATH>
+    --rehash                 re-hash every regular file even if size, mtime and inode are unchanged
+    --cross-mount-points     as above
+    --no-dir-sort            as above
 
 fileset check [OPTIONS] <PATH>
     --relaxed                compare only type, content and symlink target
@@ -89,7 +97,7 @@ fileset check [OPTIONS] <PATH>
     --no-dir-sort            as above
 ```
 
-Both verbs also take:
+All verbs also take:
 
 ```
     --manifest <MPATH>       location of the manifest instead of <PATH>/.fileset.sqlite
@@ -118,9 +126,11 @@ Names of `--relaxed`, `--paranoid`, `--ignore`, `--require`, `--manifest`,
   before doing anything else. `check` never writes; on an older schema it
   exits with code 2 and tells the user to run `update`. Both backends
   refuse a manifest written by a newer schema version.
-- `--store` only matters when no manifest exists yet. If one exists and
-  `--store` names a different backend, that is an error. If both backends'
-  files exist at the root, that is an error.
+- `--store` belongs to `init`. If a manifest already exists, `init` is an
+  error whatever `--store` says; a `--store` that names a different backend
+  than the existing manifest is reported as the conflict. `update` detects
+  the backend from the existing manifest. If both backends' files exist at
+  the root, that is an error.
 - `check` auto-detects the backend by which of the two exists. With
   `--manifest`, a directory is fjall and a regular file is SQLite.
 - `--manifest <MPATH>` moves the manifest anywhere. The point is read-only
@@ -472,3 +482,10 @@ implementation branch.
   or read-write mode requires fjall's own marker files to exist.
 - **xattr and symlink-target read failures** keep the entry (with a
   warning) instead of dropping it and its subtree.
+- **`init` and `update` are separate verbs** (2026-10-20). Originally
+  `update` created the manifest when none existed. Now `init` creates it
+  and refuses an existing one; `update` requires one and refuses to create
+  it, pointing at `init`. Both run the same engine. `--store` moved to
+  `init`; `--rehash` stays on `update`. The `check` schema message still
+  says to run `update`, which is right: a manifest with an old schema
+  exists.

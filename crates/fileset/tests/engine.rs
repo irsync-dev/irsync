@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use fileset::compare::{Field, Tier};
-use fileset::engine::update::update;
+use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
 use fileset::progress::NoProgress;
@@ -35,7 +35,10 @@ for_both_backends! {
     update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall;
     update_warns_on_unreadable => update_warns_on_unreadable_sqlite, update_warns_on_unreadable_fjall;
     update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall;
-    update_rejects_wrong_store_flag => update_rejects_wrong_store_flag_sqlite, update_rejects_wrong_store_flag_fjall;
+    init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
+    init_refuses_existing_manifest => init_refuses_existing_manifest_sqlite, init_refuses_existing_manifest_fjall;
+    update_requires_existing_manifest => update_requires_existing_manifest_sqlite, update_requires_existing_manifest_fjall;
+    update_requires_existing_external_manifest => update_requires_existing_external_manifest_sqlite, update_requires_existing_external_manifest_fjall;
     update_with_external_manifest_flags_nothing => update_with_external_manifest_flags_nothing_sqlite, update_with_external_manifest_flags_nothing_fjall;
     check_clean_after_update => check_clean_after_update_sqlite, check_clean_after_update_fjall;
     check_reports_add_del_chg => check_reports_add_del_chg_sqlite, check_reports_add_del_chg_fjall;
@@ -201,7 +204,7 @@ fn update_warns_on_nested_manifest(b: Backend) {
     assert_eq!(outcome, Outcome::Differences);
 }
 
-fn update_rejects_wrong_store_flag(b: Backend) {
+fn init_rejects_wrong_store_flag(b: Backend) {
     let dir = tree(&[("f", "x")]);
     run_update(dir.path(), b, false, false);
     let e = run_update_opts(&update_opts(dir.path(), other(b), false, false))
@@ -209,6 +212,63 @@ fn update_rejects_wrong_store_flag(b: Backend) {
     assert!(
         format!("{e:#}").contains("conflicts with the requested --store"),
         "{e:#}"
+    );
+}
+
+fn init_refuses_existing_manifest(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let before = keys(&*open_ro(dir.path(), b));
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.mode = Mode::Init { backend: None };
+    let e = run_update_opts(&opts).expect_err("init over an existing manifest must fail");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("already exists") && msg.contains("fileset update"),
+        "{msg}"
+    );
+    assert_eq!(
+        keys(&*open_ro(dir.path(), b)),
+        before,
+        "init touched the manifest"
+    );
+}
+
+fn update_requires_existing_manifest(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.mode = Mode::Update { rehash: false };
+    let e = run_update_opts(&opts).expect_err("update without a manifest must fail");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("no manifest found")
+            && msg.contains(".fileset.sqlite")
+            && msg.contains(".fileset.fjall")
+            && msg.contains("fileset init"),
+        "{msg}"
+    );
+    assert!(
+        dir.path().join(store_name(b)).symlink_metadata().is_err(),
+        "update created a manifest"
+    );
+}
+
+fn update_requires_existing_external_manifest(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    let outside = tempfile::tempdir().unwrap();
+    let manifest = outside.path().join("m");
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.common.manifest = Some(manifest.clone());
+    opts.mode = Mode::Update { rehash: false };
+    let e = run_update_opts(&opts).expect_err("update without a manifest must fail");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("no manifest at") && msg.contains("fileset init"),
+        "{msg}"
+    );
+    assert!(
+        manifest.symlink_metadata().is_err(),
+        "update created a manifest"
     );
 }
 
@@ -516,6 +576,8 @@ fn external_manifest_ignores_root_level_manifest_names(b: Backend) {
     let manifest = outside.path().join("m");
     let mut uopts = update_opts(dir.path(), b, false, true);
     uopts.common.manifest = Some(manifest.clone());
+    // The stand-ins make the helper pick `update`; the external manifest is new.
+    uopts.mode = Mode::Init { backend: Some(b) };
     let (outcome, err) = run_update_opts(&uopts).unwrap();
     assert_eq!(err, "entries=4 hashed=3 reused=0 warnings=0\n");
     assert_eq!(outcome, Outcome::Clean);

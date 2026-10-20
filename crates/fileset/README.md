@@ -2,9 +2,9 @@
 
 `fileset` records the state of a directory tree in a manifest stored at the
 root of that tree, and later verifies the tree against it. It serves two jobs:
-archival integrity (run `update` once, run `check` months or years later, and
+archival integrity (run `init` once, run `check` months or years later, and
 learn whether any file was lost, any byte flipped or any metadata drifted), and
-independent validation of irsync (`update` on the source, let irsync carry the
+independent validation of irsync (`init` on the source, let irsync carry the
 tree and its manifest to the destination, `check` there), using code that
 shares nothing with irsync. Full design:
 [docs/superpowers/specs/2026-10-19-fileset-design.md](../../docs/superpowers/specs/2026-10-19-fileset-design.md).
@@ -12,16 +12,20 @@ shares nothing with irsync. Full design:
 ## Commands
 
 ```
+fileset init   [OPTIONS] <PATH>
 fileset update [OPTIONS] <PATH>
 fileset check  [OPTIONS] <PATH>
 ```
 
-`update` scans the tree and brings the manifest up to date. `check` scans the
-tree and reports every difference between it and the manifest; it never
-modifies the tree's entries or the manifest's contents. (Opening a fjall
-manifest does touch its journal and lock files.)
+`init` scans the tree and creates its manifest; it refuses to run if one
+already exists. `update` scans the tree and brings an existing manifest up to
+date; it refuses to run if none exists. The two share one engine and differ
+only in that precondition. `check` scans the tree and reports every
+difference between it and the manifest; it never modifies the tree's entries
+or the manifest's contents. (Opening a fjall manifest does touch its journal
+and lock files.)
 
-Both verbs:
+All verbs:
 
 - `--manifest <MPATH>`: location of the manifest instead of
   `<PATH>/.fileset.sqlite` or `<PATH>/.fileset.fjall`; may be outside the tree
@@ -31,10 +35,12 @@ Both verbs:
 - `-j, --jobs <N>`: hashing threads (default: CPU count); `N` must be at least 1
 - `-q, --quiet`: suppress progress
 
+`init` only:
+
+- `--store <sqlite|fjall>`: backend to create (default: sqlite)
+
 `update` only:
 
-- `--store <sqlite|fjall>`: backend to create if no manifest exists yet
-  (default: sqlite)
 - `--rehash`: re-hash every regular file even if size, mtime and inode are
   unchanged
 
@@ -84,16 +90,17 @@ the end:
 
 ```
 added=1 deleted=1 changed=1 unchanged=40 warnings=0     (check)
-entries=43 hashed=3 reused=40 warnings=0                (update)
+entries=43 hashed=3 reused=40 warnings=0                (init, update)
 ```
 
 ## Exit codes
 
 - `0`: clean
 - `1`: `check` found differences; or, with `--fail-on-warnings`, the run
-  produced warnings (this is the only way `update` returns 1)
+  produced warnings (this is the only way `init` and `update` return 1)
 - `2`: the run itself failed (manifest unreadable, root not a directory,
-  schema too new, ...)
+  schema too new, `init` on a tree that already has a manifest, `update` on
+  one that has none, ...)
 
 ## Read-only media
 

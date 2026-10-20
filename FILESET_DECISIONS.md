@@ -108,6 +108,28 @@ deferred rather than fixed are listed in
     exceeds `PATH_MAX` on Linux. Why: the test must create the tree it
     walks. Cost if wrong: none; 2000 is well past the default stack limit.
 
+## Follow-up: `init` split from `update` (2026-10-20)
+
+18. **`--store` moved to `init`; `--rehash` stayed on `update`.** The user
+    asked for the verb split without saying where the flags go. Why: the
+    backend is chosen at creation and detected afterwards, so `--store` on
+    `update` could only ever trigger the mismatch error; `--rehash` has no
+    effect on a first scan, which hashes everything anyway. Cost if wrong:
+    adding a flag back to a verb is a few lines and breaks nothing.
+
+19. **The split lives in the engine, not the CLI.** `UpdateOpts` carries a
+    `Mode` enum and the engine refuses the wrong precondition after
+    `locate` and before opening the store. Why: both the CLI and the test
+    helpers construct the options, and the precondition belongs with the
+    code that would otherwise create the store. Cost if wrong: none.
+
+20. **The test helper picks the mode by whether the manifest exists.**
+    `update_opts` returns `Init` on a fresh tree and `Update` on a tracked
+    one, so the existing sixty-odd engine tests keep reading as a user
+    would type them. Tests that need the other mode set it explicitly.
+    Cost if wrong: a test could silently exercise `init` where `update` was
+    meant; the dedicated precondition tests cover both directions.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
