@@ -1,0 +1,26 @@
+[package]
+name = "filegen"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "filegen"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+nix = { workspace = true, features = ["fs", "signal", "user"] }
+libc = { workspace = true }
+xattr = { workspace = true }
+unicode-normalization = { workspace = true }
+jiff = { workspace = true, features = ["serde"] }
+indicatif = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
