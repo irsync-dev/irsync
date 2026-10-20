@@ -9,6 +9,8 @@ pub mod model;
 pub mod names;
 pub mod ops;
 pub mod pick;
+pub mod run;
+pub mod signals;
 pub mod sizes;
 pub mod state;
 pub mod walk;
