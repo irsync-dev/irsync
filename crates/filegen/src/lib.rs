@@ -1,6 +1,7 @@
 pub mod chain;
 pub mod cli;
 pub mod config;
+pub mod content;
 pub mod escape;
 pub mod kind;
 pub mod model;
