@@ -4,4 +4,6 @@ pub mod config;
 pub mod escape;
 pub mod kind;
 pub mod model;
+pub mod names;
+pub mod sizes;
 pub mod walk;
