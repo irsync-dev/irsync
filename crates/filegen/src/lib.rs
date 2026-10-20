@@ -4,6 +4,7 @@ pub mod config;
 pub mod content;
 pub mod escape;
 pub mod kind;
+pub mod log;
 pub mod model;
 pub mod names;
 pub mod pick;
