@@ -82,6 +82,9 @@ pub struct Model {
     total_bytes: u64,
     /// Next inode handed out by [`Model::synthetic_ino`].
     next_synthetic_ino: u64,
+    /// Inode -> every live `File` node with it (inode 0, unknown, is
+    /// never indexed), sorted; more than one id means hard links.
+    by_ino: BTreeMap<u64, Vec<NodeId>>,
 }
 
 impl Default for Model {
@@ -100,6 +103,7 @@ impl Model {
             live: 1,
             total_bytes: 0,
             next_synthetic_ino: SYNTHETIC_INO_BASE,
+            by_ino: BTreeMap::new(),
         }
     }
 
@@ -298,6 +302,11 @@ impl Model {
         self.live += 1;
         if kind == NodeKind::File {
             self.total_bytes += size;
+            if ino != 0 {
+                let ids = self.by_ino.entry(ino).or_default();
+                let pos = ids.binary_search(&id).unwrap_err();
+                ids.insert(pos, id);
+            }
         }
         id
     }
@@ -326,6 +335,12 @@ impl Model {
             );
             if node.kind == NodeKind::File {
                 self.total_bytes -= node.size;
+                if let Some(ids) = self.by_ino.get_mut(&node.ino) {
+                    ids.retain(|&i| i != n);
+                    if ids.is_empty() {
+                        self.by_ino.remove(&node.ino);
+                    }
+                }
             }
             stack.extend(node.children);
             self.folds[n as usize].clear();
@@ -354,6 +369,42 @@ impl Model {
             self.total_bytes = self.total_bytes - node.size + size;
         }
         node.size = size;
+    }
+
+    /// Every live `File` node sharing `id`'s inode, `id` included, sorted;
+    /// just `[id]` when unshared, not a file, or inode 0 (unknown).
+    pub fn linked(&self, id: NodeId) -> Vec<NodeId> {
+        let n = self.node(id);
+        if n.kind == NodeKind::File && n.ino != 0 {
+            if let Some(ids) = self.by_ino.get(&n.ino) {
+                return ids.clone();
+            }
+        }
+        vec![id]
+    }
+
+    /// Sets `size` on `id` and every hard link to it (see
+    /// [`Model::linked`]), keeping [`Model::total_bytes`] in step.
+    pub fn set_size_linked(&mut self, id: NodeId, size: u64) {
+        for l in self.linked(id) {
+            self.set_size(l, size);
+        }
+    }
+
+    /// Depth of the deepest `Dir` in `id`'s subtree, relative to `id`
+    /// (0 if no dir lies below it).
+    pub fn max_dir_depth_in(&self, id: NodeId) -> u32 {
+        let mut max = 0;
+        let mut stack = vec![(id, 0)];
+        while let Some((n, d)) = stack.pop() {
+            max = max.max(d);
+            for &c in &self.node(n).children {
+                if self.node(c).kind == NodeKind::Dir {
+                    stack.push((c, d + 1));
+                }
+            }
+        }
+        max
     }
 
     /// Whether `a` is a strict ancestor of `b`.
@@ -552,6 +603,67 @@ mod tests {
         m.set_size(f, 9);
         assert_eq!(m.node(f).size, 9);
         assert_eq!(m.total_bytes(), 9);
+    }
+
+    #[test]
+    fn linked_tracks_shared_inodes() {
+        let mut m = Model::new();
+        let r = m.root();
+        let d = m.insert(r, b"d".to_vec(), NodeKind::Dir, 0, 7);
+        let a = m.insert(r, b"a".to_vec(), NodeKind::File, 5, 7);
+        let lone = m.insert(r, b"lone".to_vec(), NodeKind::File, 3, 8);
+        let zero = m.insert(r, b"zero".to_vec(), NodeKind::File, 1, 0);
+        // A directory sharing the number is not a link.
+        assert_eq!(m.linked(a), [a]);
+        let b = m.insert(d, b"b".to_vec(), NodeKind::File, 5, 7);
+        let c = m.insert(r, b"c".to_vec(), NodeKind::File, 5, 7);
+        let mut want = vec![a, b, c];
+        want.sort();
+        assert_eq!(m.linked(a), want);
+        assert_eq!(m.linked(b), want);
+        assert_eq!(m.linked(lone), [lone]);
+        assert_eq!(m.linked(zero), [zero]);
+        assert_eq!(m.linked(d), [d]);
+        assert_eq!(m.total_bytes(), 5 + 3 + 1 + 5 + 5);
+
+        m.set_size_linked(b, 9);
+        for id in [a, b, c] {
+            assert_eq!(m.node(id).size, 9);
+        }
+        assert_eq!(m.total_bytes(), 9 * 3 + 3 + 1);
+        m.set_size_linked(lone, 4);
+        assert_eq!(m.total_bytes(), 9 * 3 + 4 + 1);
+
+        // Removal prunes the index, also through remove_subtree.
+        m.remove(c);
+        assert_eq!(m.linked(a), {
+            let mut v = vec![a, b];
+            v.sort();
+            v
+        });
+        m.remove_subtree(d);
+        assert_eq!(m.linked(a), [a]);
+        m.set_size_linked(a, 2);
+        assert_eq!(m.total_bytes(), 2 + 4 + 1);
+        // A freed slot reused for an unrelated file does not inherit links.
+        let e = m.insert(r, b"e".to_vec(), NodeKind::File, 0, 99);
+        assert_eq!(m.linked(e), [e]);
+        assert_eq!(m.linked(a), [a]);
+    }
+
+    #[test]
+    fn max_dir_depth_in_counts_dirs_only() {
+        let mut m = Model::new();
+        let r = m.root();
+        let a = m.insert(r, b"a".to_vec(), NodeKind::Dir, 0, 0);
+        assert_eq!(m.max_dir_depth_in(a), 0);
+        let b = m.insert(a, b"b".to_vec(), NodeKind::Dir, 0, 0);
+        m.insert(b, b"f".to_vec(), NodeKind::File, 0, 0);
+        assert_eq!(m.max_dir_depth_in(a), 1);
+        assert_eq!(m.max_dir_depth_in(r), 2);
+        m.insert(b, b"c".to_vec(), NodeKind::Dir, 0, 0);
+        assert_eq!(m.max_dir_depth_in(a), 2);
+        assert_eq!(m.max_dir_depth_in(b), 1);
     }
 
     #[test]

@@ -147,6 +147,25 @@ mod tests {
         assert_eq!(m.total_bytes(), 7);
     }
 
+    #[test]
+    fn walk_links_hard_linked_files() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir(t.path().join("d")).unwrap();
+        fs::write(t.path().join("a"), b"12345").unwrap();
+        fs::hard_link(t.path().join("a"), t.path().join("d/b")).unwrap();
+        fs::write(t.path().join("c"), b"1").unwrap();
+        let m = from_disk(t.path()).unwrap();
+        let a = m.resolve(b"a").unwrap();
+        let b = m.resolve(b"d/b").unwrap();
+        let c = m.resolve(b"c").unwrap();
+        let mut both = vec![a, b];
+        both.sort();
+        assert_eq!(m.linked(a), both);
+        assert_eq!(m.linked(b), both);
+        assert_eq!(m.linked(c), [c]);
+        assert_eq!(m.total_bytes(), 11);
+    }
+
     #[cfg(unix)]
     #[test]
     fn walk_marks_off_limits() {

@@ -5,65 +5,31 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
-use std::time::Duration;
 
 use rand::Rng;
 
 use crate::content::Content;
 use crate::kind::OpKind;
-use crate::log::OpRecord;
 use crate::model::{NodeId, NodeKind};
-use crate::ops::{budget, maybe_fsync, new_name, timed, Applied, OpCtx, OpOutcome};
-use crate::pick::{anchor_of, pick, pick_dir_or_root};
+use crate::ops::{
+    applied, budget, draw_kind, maybe_fsync, new_name, pick_kind, removed, syscalls, OpCtx,
+    OpOutcome,
+};
+use crate::pick::pick_dir_or_root;
 use crate::sizes::{draw_delta, draw_file_size, draw_range, draw_truncate};
 
 /// Probability that `punch_hole` extends the file instead.
 const EXTEND_PROBABILITY: f64 = 0.3;
 
-/// Runs the syscalls `f` unless in a dry run; returns its value (the
-/// default in a dry run) and the time it took (zero in a dry run).
-fn syscalls<T: Default>(
-    ctx: &OpCtx,
-    f: impl FnOnce(&OpCtx) -> io::Result<T>,
-) -> io::Result<(T, Duration)> {
-    if ctx.dry {
-        Ok((T::default(), Duration::ZERO))
-    } else {
-        timed(|| f(ctx))
-    }
-}
-
-/// The outcome of an operation on the live node `id`.
-fn applied(
-    ctx: &OpCtx,
-    kind: OpKind,
-    id: NodeId,
-    bytes: u64,
-    details: Vec<(&'static str, String)>,
-    dur: Duration,
-) -> OpOutcome {
-    OpOutcome::Done(Applied {
-        rec: OpRecord {
-            kind,
-            path: ctx.model.rel_path(id),
-            to: None,
-            bytes,
-            details,
-        },
-        anchor: anchor_of(ctx.model, id),
-        dur,
-    })
-}
-
 /// A regular file near the anchor.
 fn pick_file(ctx: &mut OpCtx) -> Option<NodeId> {
-    pick(
-        ctx.rng,
-        ctx.model,
-        &ctx.cfg.locality,
-        ctx.anchor,
-        NodeKind::File,
-    )
+    pick_kind(ctx, NodeKind::File)
+}
+
+/// How many links share `id`'s inode: every content change resizes them
+/// all, so growth per link is bounded by `budget / links`.
+fn links(ctx: &OpCtx, id: NodeId) -> u64 {
+    ctx.model.linked(id).len() as u64
 }
 
 /// New regular file in a drawn dir, size from the distribution.
@@ -105,13 +71,14 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     Ok(applied(ctx, OpKind::CreateFile, id, size, details, dur))
 }
 
-/// Grow a file by a drawn amount, within both caps.
+/// Grow a file (and so every hard link to it) by a drawn amount, within
+/// both caps.
 pub fn append(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(id) = pick_file(ctx) else {
         return Ok(OpOutcome::NoTarget);
     };
     let old = ctx.model.node(id).size;
-    let budget = budget(ctx);
+    let budget = budget(ctx) / links(ctx, id);
     let delta = draw_delta(
         ctx.rng,
         &ctx.cfg.size_distribution,
@@ -128,7 +95,7 @@ pub fn append(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         maybe_fsync(ctx, &f)
     })?;
     let size = old + delta;
-    ctx.model.set_size(id, size);
+    ctx.model.set_size_linked(id, size);
     let details = vec![("size", size.to_string()), ("content", label.into())];
     Ok(applied(ctx, OpKind::Append, id, delta, details, dur))
 }
@@ -145,7 +112,7 @@ pub fn truncate(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         f.set_len(size)?;
         maybe_fsync(ctx, &f)
     })?;
-    ctx.model.set_size(id, size);
+    ctx.model.set_size_linked(id, size);
     let details = vec![("size", size.to_string())];
     Ok(applied(ctx, OpKind::Truncate, id, 0, details, dur))
 }
@@ -173,13 +140,15 @@ pub fn overwrite_range(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     Ok(applied(ctx, OpKind::OverwriteRange, id, len, details, dur))
 }
 
-/// Replace a file's content with a new drawn size. The old bytes are
-/// freed first, so they count toward the budget.
+/// Replace a file's content with a new drawn size. The old bytes of every
+/// link are freed first, so they count toward the budget, which the new
+/// size then takes once per link.
 pub fn rewrite(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(id) = pick_file(ctx) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let budget = budget(ctx) + ctx.model.node(id).size;
+    let links = links(ctx, id);
+    let budget = (budget(ctx) + ctx.model.node(id).size * links) / links;
     let size = draw_file_size(
         ctx.rng,
         &ctx.cfg.size_distribution,
@@ -194,7 +163,7 @@ pub fn rewrite(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
     })?;
-    ctx.model.set_size(id, size);
+    ctx.model.set_size_linked(id, size);
     let details = vec![("size", size.to_string()), ("content", label.into())];
     Ok(applied(ctx, OpKind::Rewrite, id, size, details, dur))
 }
@@ -212,7 +181,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     }
     let path = ctx.model.abs_path(ctx.root, id);
     if ctx.rng.gen::<f64>() < EXTEND_PROBABILITY {
-        let budget = budget(ctx);
+        let budget = budget(ctx) / links(ctx, id);
         let extend = draw_delta(
             ctx.rng,
             &ctx.cfg.size_distribution,
@@ -227,7 +196,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
                 f.set_len(size)?;
                 maybe_fsync(ctx, &f)
             })?;
-            ctx.model.set_size(id, size);
+            ctx.model.set_size_linked(id, size);
             let details = vec![
                 ("offset", old.to_string()),
                 ("len", extend.to_string()),
@@ -324,43 +293,21 @@ fn write_zeros(f: &mut File, offset: u64, len: u64) -> io::Result<()> {
 /// Unlink a regular file, FIFO or device node: the kind is drawn by how
 /// many of each the tree holds, then one of that kind is picked.
 pub fn delete_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
-    const KINDS: [(NodeKind, &str); 3] = [
-        (NodeKind::File, "file"),
-        (NodeKind::Fifo, "fifo"),
-        (NodeKind::Device, "device"),
-    ];
-    let counts = ctx.model.node(ctx.model.root()).counts;
-    let weights = KINDS.map(|(k, _)| u64::from(counts[k.index()]));
-    let total: u64 = weights.iter().sum();
-    if total == 0 {
+    let Some(kind) = draw_kind(ctx, &[NodeKind::File, NodeKind::Fifo, NodeKind::Device]) else {
         return Ok(OpOutcome::NoTarget);
-    }
-    let mut r = ctx.rng.gen_range(0..total);
-    let mut chosen = 0;
-    while r >= weights[chosen] {
-        r -= weights[chosen];
-        chosen += 1;
-    }
-    let (kind, label) = KINDS[chosen];
-    let Some(id) = pick(ctx.rng, ctx.model, &ctx.cfg.locality, ctx.anchor, kind) else {
+    };
+    let label = match kind {
+        NodeKind::File => "file",
+        NodeKind::Fifo => "fifo",
+        _ => "device",
+    };
+    let Some(id) = pick_kind(ctx, kind) else {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, id);
     let ((), dur) = syscalls(ctx, |_| fs::remove_file(&path))?;
-    let parent = ctx.model.node(id).parent.expect("a live node has a parent");
-    let rec = OpRecord {
-        kind: OpKind::DeleteFile,
-        path: ctx.model.rel_path(id),
-        to: None,
-        bytes: 0,
-        details: vec![("kind", label.into())],
-    };
-    ctx.model.remove(id);
-    Ok(OpOutcome::Done(Applied {
-        rec,
-        anchor: anchor_of(ctx.model, parent),
-        dur,
-    }))
+    let details = vec![("kind", label.into())];
+    Ok(removed(ctx, OpKind::DeleteFile, id, details, dur))
 }
 
 #[cfg(test)]
@@ -377,19 +324,12 @@ mod tests {
     use rand_chacha::ChaCha8Rng;
     use tempfile::TempDir;
 
-    use crate::config::{load, Config};
+    use crate::config::Config;
     use crate::kind::OpKind;
     use crate::log::OpRecord;
     use crate::model::{Model, NodeKind};
-    use crate::ops::{dispatch, Applied, OpCtx, OpFn, OpOutcome};
-
-    fn config(sets: &[(&str, &str)]) -> Config {
-        let sets: Vec<(String, String)> = sets
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        load(None, None, &sets).unwrap()
-    }
+    use crate::ops::testutil::{config, detail, done};
+    use crate::ops::{dispatch, OpFn, OpOutcome};
 
     fn small() -> Config {
         config(&[("max_file_size", "64K"), ("max_total_size", "1M")])
@@ -397,34 +337,6 @@ mod tests {
 
     fn ctx_in(_tmp: &TempDir, _cfg: &Config, seed: u64) -> (Model, ChaCha8Rng) {
         (Model::new(), ChaCha8Rng::seed_from_u64(seed))
-    }
-
-    macro_rules! ctx {
-        ($tmp:expr, $cfg:expr, $model:expr, $rng:expr) => {
-            OpCtx {
-                root: $tmp.path(),
-                cfg: &$cfg,
-                model: &mut $model,
-                rng: &mut $rng,
-                anchor: 0,
-                dry: false,
-                fsync: false,
-            }
-        };
-    }
-
-    fn done(o: OpOutcome) -> Applied {
-        match o {
-            OpOutcome::Done(a) => a,
-            OpOutcome::NoTarget => panic!("expected Done, got NoTarget"),
-        }
-    }
-
-    fn detail<'a>(rec: &'a OpRecord, key: &str) -> Option<&'a str> {
-        rec.details
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| v.as_str())
     }
 
     /// Every entry on disk below `root`: files map to their length, every
