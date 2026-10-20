@@ -218,3 +218,14 @@ This workspace also contains `fileset`, an independent manifest-and-verify tool
 that shares no code with irsync. It records a directory tree in a manifest and
 later checks the tree against it, for example to validate an irsync transfer.
 See [crates/fileset/README.md](crates/fileset/README.md).
+
+## filegen
+
+`filegen`, also in this workspace and also sharing no code with irsync, is a
+deterministic, resumable filesystem workload generator: from a seed it
+applies a reproducible sequence of creates, writes, renames, links, deletes
+and metadata changes to a directory tree, logging and timing every step. It
+is the mutating half of a stress loop: filegen changes a tree, `fileset
+update` records it, irsync carries it to another host, and `fileset check`
+there confirms every change arrived.
+See [crates/filegen/README.md](crates/filegen/README.md).
