@@ -7,6 +7,7 @@ pub mod kind;
 pub mod log;
 pub mod model;
 pub mod names;
+pub mod ops;
 pub mod pick;
 pub mod sizes;
 pub mod state;

@@ -1,0 +1,739 @@
+//! File content operations: create, grow, shrink, overwrite, rewrite,
+//! sparsify and delete regular files (delete also takes FIFOs and device
+//! nodes).
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
+use std::time::Duration;
+
+use rand::Rng;
+
+use crate::content::Content;
+use crate::kind::OpKind;
+use crate::log::OpRecord;
+use crate::model::{NodeId, NodeKind};
+use crate::ops::{budget, maybe_fsync, new_name, timed, Applied, OpCtx, OpOutcome};
+use crate::pick::{anchor_of, pick, pick_dir_or_root};
+use crate::sizes::{draw_delta, draw_file_size, draw_range, draw_truncate};
+
+/// Probability that `punch_hole` extends the file instead.
+const EXTEND_PROBABILITY: f64 = 0.3;
+
+/// Runs the syscalls `f` unless in a dry run; returns its value (the
+/// default in a dry run) and the time it took (zero in a dry run).
+fn syscalls<T: Default>(
+    ctx: &OpCtx,
+    f: impl FnOnce(&OpCtx) -> io::Result<T>,
+) -> io::Result<(T, Duration)> {
+    if ctx.dry {
+        Ok((T::default(), Duration::ZERO))
+    } else {
+        timed(|| f(ctx))
+    }
+}
+
+/// The outcome of an operation on the live node `id`.
+fn applied(
+    ctx: &OpCtx,
+    kind: OpKind,
+    id: NodeId,
+    bytes: u64,
+    details: Vec<(&'static str, String)>,
+    dur: Duration,
+) -> OpOutcome {
+    OpOutcome::Done(Applied {
+        rec: OpRecord {
+            kind,
+            path: ctx.model.rel_path(id),
+            to: None,
+            bytes,
+            details,
+        },
+        anchor: anchor_of(ctx.model, id),
+        dur,
+    })
+}
+
+/// A regular file near the anchor.
+fn pick_file(ctx: &mut OpCtx) -> Option<NodeId> {
+    pick(
+        ctx.rng,
+        ctx.model,
+        &ctx.cfg.locality,
+        ctx.anchor,
+        NodeKind::File,
+    )
+}
+
+/// New regular file in a drawn dir, size from the distribution.
+pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let dir = pick_dir_or_root(ctx.rng, ctx.model, &ctx.cfg.locality, ctx.anchor);
+    let Some(name) = new_name(ctx, dir) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let budget = budget(ctx);
+    let size = draw_file_size(
+        ctx.rng,
+        &ctx.cfg.size_distribution,
+        ctx.cfg.max_file_size.0,
+        budget,
+    );
+    let mut content = Content::draw(ctx.rng, &ctx.cfg.content, size);
+    let label = content.label();
+    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let (ino, dur) = syscalls(ctx, |ctx| {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        content.write_to(&mut f)?;
+        maybe_fsync(ctx, &f)?;
+        Ok(f.metadata()?.ino())
+    })?;
+    let id = ctx
+        .model
+        .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
+    let details = vec![("size", size.to_string()), ("content", label.into())];
+    Ok(applied(ctx, OpKind::CreateFile, id, size, details, dur))
+}
+
+/// Grow a file by a drawn amount, within both caps.
+pub fn append(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let Some(id) = pick_file(ctx) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let old = ctx.model.node(id).size;
+    let budget = budget(ctx);
+    let delta = draw_delta(
+        ctx.rng,
+        &ctx.cfg.size_distribution,
+        ctx.cfg.max_file_size.0,
+        old,
+        budget,
+    );
+    let mut content = Content::draw(ctx.rng, &ctx.cfg.content, delta);
+    let label = content.label();
+    let path = ctx.model.abs_path(ctx.root, id);
+    let ((), dur) = syscalls(ctx, |ctx| {
+        let mut f = OpenOptions::new().append(true).open(&path)?;
+        content.write_to(&mut f)?;
+        maybe_fsync(ctx, &f)
+    })?;
+    let size = old + delta;
+    ctx.model.set_size(id, size);
+    let details = vec![("size", size.to_string()), ("content", label.into())];
+    Ok(applied(ctx, OpKind::Append, id, delta, details, dur))
+}
+
+/// Shorten a file to a drawn length, possibly zero.
+pub fn truncate(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let Some(id) = pick_file(ctx) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let size = draw_truncate(ctx.rng, ctx.model.node(id).size);
+    let path = ctx.model.abs_path(ctx.root, id);
+    let ((), dur) = syscalls(ctx, |ctx| {
+        let f = OpenOptions::new().write(true).open(&path)?;
+        f.set_len(size)?;
+        maybe_fsync(ctx, &f)
+    })?;
+    ctx.model.set_size(id, size);
+    let details = vec![("size", size.to_string())];
+    Ok(applied(ctx, OpKind::Truncate, id, 0, details, dur))
+}
+
+/// Rewrite a drawn byte range in place; the size is unchanged.
+pub fn overwrite_range(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let Some(id) = pick_file(ctx) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let (offset, len) = draw_range(ctx.rng, ctx.model.node(id).size);
+    let mut content = Content::draw(ctx.rng, &ctx.cfg.content, len);
+    let label = content.label();
+    let path = ctx.model.abs_path(ctx.root, id);
+    let ((), dur) = syscalls(ctx, |ctx| {
+        let mut f = OpenOptions::new().write(true).open(&path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        content.write_to(&mut f)?;
+        maybe_fsync(ctx, &f)
+    })?;
+    let details = vec![
+        ("offset", offset.to_string()),
+        ("len", len.to_string()),
+        ("content", label.into()),
+    ];
+    Ok(applied(ctx, OpKind::OverwriteRange, id, len, details, dur))
+}
+
+/// Replace a file's content with a new drawn size. The old bytes are
+/// freed first, so they count toward the budget.
+pub fn rewrite(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let Some(id) = pick_file(ctx) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let budget = budget(ctx) + ctx.model.node(id).size;
+    let size = draw_file_size(
+        ctx.rng,
+        &ctx.cfg.size_distribution,
+        ctx.cfg.max_file_size.0,
+        budget,
+    );
+    let mut content = Content::draw(ctx.rng, &ctx.cfg.content, size);
+    let label = content.label();
+    let path = ctx.model.abs_path(ctx.root, id);
+    let ((), dur) = syscalls(ctx, |ctx| {
+        let mut f = File::create(&path)?;
+        content.write_to(&mut f)?;
+        maybe_fsync(ctx, &f)
+    })?;
+    ctx.model.set_size(id, size);
+    let details = vec![("size", size.to_string()), ("content", label.into())];
+    Ok(applied(ctx, OpKind::Rewrite, id, size, details, dur))
+}
+
+/// Make a drawn range of a file of at least 2 bytes sparse, or (with
+/// probability [`EXTEND_PROBABILITY`], when the caps allow) extend it with
+/// a trailing hole.
+pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    let Some(id) = pick_file(ctx) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let old = ctx.model.node(id).size;
+    if old < 2 {
+        return Ok(OpOutcome::NoTarget);
+    }
+    let path = ctx.model.abs_path(ctx.root, id);
+    if ctx.rng.gen::<f64>() < EXTEND_PROBABILITY {
+        let budget = budget(ctx);
+        let extend = draw_delta(
+            ctx.rng,
+            &ctx.cfg.size_distribution,
+            ctx.cfg.max_file_size.0,
+            old,
+            budget,
+        );
+        if extend > 0 {
+            let size = old + extend;
+            let ((), dur) = syscalls(ctx, |ctx| {
+                let f = OpenOptions::new().write(true).open(&path)?;
+                f.set_len(size)?;
+                maybe_fsync(ctx, &f)
+            })?;
+            ctx.model.set_size(id, size);
+            let details = vec![
+                ("offset", old.to_string()),
+                ("len", extend.to_string()),
+                ("mode", "extend".into()),
+                ("size", size.to_string()),
+            ];
+            return Ok(applied(ctx, OpKind::PunchHole, id, 0, details, dur));
+        }
+    }
+    let (offset, len) = draw_range(ctx.rng, old);
+    let (emulated, dur) = syscalls(ctx, |ctx| {
+        let mut f = OpenOptions::new().write(true).open(&path)?;
+        let emulated = !punch(&f, offset, len)?;
+        if emulated {
+            write_zeros(&mut f, offset, len)?;
+        }
+        maybe_fsync(ctx, &f)?;
+        Ok(emulated)
+    })?;
+    let mut details = vec![("offset", offset.to_string()), ("len", len.to_string())];
+    if emulated {
+        details.push(("emulated", "1".into()));
+    }
+    let bytes = if emulated { len } else { 0 };
+    Ok(applied(ctx, OpKind::PunchHole, id, bytes, details, dur))
+}
+
+/// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
+/// if the filesystem cannot.
+#[cfg(target_os = "linux")]
+fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+    use nix::errno::Errno;
+    use nix::fcntl::{fallocate, FallocateFlags};
+    let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
+    match fallocate(f, flags, offset as libc::off_t, len as libc::off_t) {
+        Ok(()) => Ok(true),
+        Err(Errno::EOPNOTSUPP | Errno::ENOSYS) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let arg = libc::fpunchhole_t {
+        fp_flags: 0,
+        reserved: 0,
+        fp_offset: offset as libc::off_t,
+        fp_length: len as libc::off_t,
+    };
+    // SAFETY: `arg` is a valid fpunchhole_t that outlives the call.
+    let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_PUNCHHOLE, &arg) };
+    Ok(r == 0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn punch(_: &File, _: u64, _: u64) -> io::Result<bool> {
+    Ok(false)
+}
+
+/// Overwrites `[offset, offset + len)` of `f` with zeros.
+fn write_zeros(f: &mut File, offset: u64, len: u64) -> io::Result<()> {
+    const CHUNK: u64 = 1 << 20;
+    let zeros = vec![0u8; CHUNK.min(len) as usize];
+    f.seek(SeekFrom::Start(offset))?;
+    let mut left = len;
+    while left > 0 {
+        let n = CHUNK.min(left) as usize;
+        f.write_all(&zeros[..n])?;
+        left -= n as u64;
+    }
+    Ok(())
+}
+
+/// Unlink a regular file, FIFO or device node: the kind is drawn by how
+/// many of each the tree holds, then one of that kind is picked.
+pub fn delete_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
+    const KINDS: [(NodeKind, &str); 3] = [
+        (NodeKind::File, "file"),
+        (NodeKind::Fifo, "fifo"),
+        (NodeKind::Device, "device"),
+    ];
+    let counts = ctx.model.node(ctx.model.root()).counts;
+    let weights = KINDS.map(|(k, _)| u64::from(counts[k.index()]));
+    let total: u64 = weights.iter().sum();
+    if total == 0 {
+        return Ok(OpOutcome::NoTarget);
+    }
+    let mut r = ctx.rng.gen_range(0..total);
+    let mut chosen = 0;
+    while r >= weights[chosen] {
+        r -= weights[chosen];
+        chosen += 1;
+    }
+    let (kind, label) = KINDS[chosen];
+    let Some(id) = pick(ctx.rng, ctx.model, &ctx.cfg.locality, ctx.anchor, kind) else {
+        return Ok(OpOutcome::NoTarget);
+    };
+    let path = ctx.model.abs_path(ctx.root, id);
+    let ((), dur) = syscalls(ctx, |_| fs::remove_file(&path))?;
+    let parent = ctx.model.node(id).parent.expect("a live node has a parent");
+    let rec = OpRecord {
+        kind: OpKind::DeleteFile,
+        path: ctx.model.rel_path(id),
+        to: None,
+        bytes: 0,
+        details: vec![("kind", label.into())],
+    };
+    ctx.model.remove(id);
+    Ok(OpOutcome::Done(Applied {
+        rec,
+        anchor: anchor_of(ctx.model, parent),
+        dur,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+    use tempfile::TempDir;
+
+    use crate::config::{load, Config};
+    use crate::kind::OpKind;
+    use crate::log::OpRecord;
+    use crate::model::{Model, NodeKind};
+    use crate::ops::{dispatch, Applied, OpCtx, OpFn, OpOutcome};
+
+    fn config(sets: &[(&str, &str)]) -> Config {
+        let sets: Vec<(String, String)> = sets
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        load(None, None, &sets).unwrap()
+    }
+
+    fn small() -> Config {
+        config(&[("max_file_size", "64K"), ("max_total_size", "1M")])
+    }
+
+    fn ctx_in(_tmp: &TempDir, _cfg: &Config, seed: u64) -> (Model, ChaCha8Rng) {
+        (Model::new(), ChaCha8Rng::seed_from_u64(seed))
+    }
+
+    macro_rules! ctx {
+        ($tmp:expr, $cfg:expr, $model:expr, $rng:expr) => {
+            OpCtx {
+                root: $tmp.path(),
+                cfg: &$cfg,
+                model: &mut $model,
+                rng: &mut $rng,
+                anchor: 0,
+                dry: false,
+                fsync: false,
+            }
+        };
+    }
+
+    fn done(o: OpOutcome) -> Applied {
+        match o {
+            OpOutcome::Done(a) => a,
+            OpOutcome::NoTarget => panic!("expected Done, got NoTarget"),
+        }
+    }
+
+    fn detail<'a>(rec: &'a OpRecord, key: &str) -> Option<&'a str> {
+        rec.details
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every entry on disk below `root`: files map to their length, every
+    /// other kind to 0.
+    fn tree_sizes(root: &Path) -> BTreeMap<Vec<u8>, u64> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<Vec<u8>, u64>) {
+            for e in fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                let md = fs::symlink_metadata(&p).unwrap();
+                let rel = p.strip_prefix(root).unwrap().as_os_str().as_bytes();
+                out.insert(rel.to_vec(), if md.is_file() { md.len() } else { 0 });
+                if md.is_dir() {
+                    walk(root, &p, out);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    /// The model in the shape of [`tree_sizes`].
+    fn model_sizes(m: &Model) -> BTreeMap<Vec<u8>, u64> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![m.root()];
+        while let Some(id) = stack.pop() {
+            for &c in &m.node(id).children {
+                let n = m.node(c);
+                let size = if n.kind == NodeKind::File { n.size } else { 0 };
+                out.insert(m.rel_path(c), size);
+                stack.push(c);
+            }
+        }
+        out
+    }
+
+    /// Disk equals model, and both caps hold.
+    fn assert_consistent(tmp: &TempDir, cfg: &Config, m: &Model) {
+        let disk = tree_sizes(tmp.path());
+        assert_eq!(disk, model_sizes(m));
+        assert_eq!(disk.values().sum::<u64>(), m.total_bytes());
+        assert!(m.total_bytes() <= cfg.max_total_size.0);
+        assert!(disk.values().all(|&v| v <= cfg.max_file_size.0));
+    }
+
+    /// Writes a file of `len` bytes of 0xab at the root, on disk and in
+    /// the model.
+    fn put_file(tmp: &TempDir, m: &mut Model, name: &str, len: u64) {
+        fs::write(tmp.path().join(name), vec![0xab; len as usize]).unwrap();
+        let root = m.root();
+        m.insert(root, name.into(), NodeKind::File, len, 0);
+    }
+
+    #[test]
+    fn create_file_writes_content_and_updates_model() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 1);
+        for _ in 0..10 {
+            let a = done(create_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::CreateFile);
+            let id = m.resolve(&a.rec.path).expect("created node in model");
+            assert_eq!(m.node(id).kind, NodeKind::File);
+            let p = tmp.path().join(OsStr::from_bytes(&a.rec.path));
+            let len = fs::metadata(&p).unwrap().len();
+            assert_eq!(len, m.node(id).size);
+            assert_eq!(detail(&a.rec, "size"), Some(len.to_string().as_str()));
+            assert!(detail(&a.rec, "content").is_some());
+            assert_eq!(a.rec.bytes, len);
+            assert_eq!(m.node(a.anchor).kind, NodeKind::Dir);
+            assert_consistent(&tmp, &cfg, &m);
+        }
+        assert_eq!(m.entries(), 10);
+    }
+
+    #[test]
+    fn create_file_respects_budget() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = config(&[("max_file_size", "60"), ("max_total_size", "100")]);
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 2);
+        for _ in 0..20 {
+            done(create_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert!(m.total_bytes() <= 100);
+            assert!(tree_sizes(tmp.path()).values().sum::<u64>() <= 100);
+            assert_consistent(&tmp, &cfg, &m);
+        }
+        assert!(m.total_bytes() > 0);
+    }
+
+    #[test]
+    fn append_truncate_overwrite_rewrite_track_size() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 3);
+        put_file(&tmp, &mut m, "f", 1000);
+        let path = tmp.path().join("f");
+        let size = |m: &Model| m.node(m.resolve(b"f").unwrap()).size;
+        let mut shrunk = 0;
+        for _ in 0..20 {
+            let before = size(&m);
+            let a = done(append(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::Append);
+            assert_eq!(a.rec.bytes, size(&m) - before);
+            assert_eq!(detail(&a.rec, "size"), Some(size(&m).to_string().as_str()));
+            assert!(detail(&a.rec, "content").is_some());
+            assert_consistent(&tmp, &cfg, &m);
+
+            let old = fs::read(&path).unwrap();
+            let a = done(overwrite_range(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::OverwriteRange);
+            let off: usize = detail(&a.rec, "offset").unwrap().parse().unwrap();
+            let len: usize = detail(&a.rec, "len").unwrap().parse().unwrap();
+            assert!(detail(&a.rec, "content").is_some());
+            let new = fs::read(&path).unwrap();
+            assert_eq!(new.len(), old.len());
+            assert!(off + len <= old.len());
+            assert_eq!(new[..off], old[..off]);
+            assert_eq!(new[off + len..], old[off + len..]);
+            assert_consistent(&tmp, &cfg, &m);
+
+            let before = size(&m);
+            let a = done(truncate(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::Truncate);
+            assert!(before == 0 || size(&m) < before);
+            if size(&m) < before {
+                shrunk += 1;
+            }
+            assert_eq!(detail(&a.rec, "size"), Some(size(&m).to_string().as_str()));
+            assert_consistent(&tmp, &cfg, &m);
+
+            let a = done(rewrite(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::Rewrite);
+            assert_eq!(detail(&a.rec, "size"), Some(size(&m).to_string().as_str()));
+            assert_eq!(a.rec.bytes, size(&m));
+            assert!(detail(&a.rec, "content").is_some());
+            assert_consistent(&tmp, &cfg, &m);
+        }
+        assert!(shrunk > 0);
+        assert_eq!(m.entries(), 1);
+    }
+
+    #[test]
+    fn delete_file_removes_fifo_too() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 4);
+        nix::unistd::mkfifo(
+            &tmp.path().join("p"),
+            nix::sys::stat::Mode::from_bits_truncate(0o644),
+        )
+        .unwrap();
+        let root = m.root();
+        m.insert(root, b"p".to_vec(), NodeKind::Fifo, 0, 0);
+        let a = done(delete_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+        assert_eq!(a.rec.kind, OpKind::DeleteFile);
+        assert_eq!(a.rec.path, b"p");
+        assert_eq!(detail(&a.rec, "kind"), Some("fifo"));
+        assert!(fs::symlink_metadata(tmp.path().join("p")).is_err());
+        assert_eq!(m.entries(), 0);
+        assert!(matches!(
+            delete_file(&mut ctx!(tmp, cfg, m, rng)).unwrap(),
+            OpOutcome::NoTarget
+        ));
+
+        put_file(&tmp, &mut m, "f", 10);
+        let a = done(delete_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+        assert_eq!(detail(&a.rec, "kind"), Some("file"));
+        assert_eq!(m.total_bytes(), 0);
+        assert_consistent(&tmp, &cfg, &m);
+    }
+
+    #[test]
+    fn punch_hole_keeps_size_or_extends_within_cap() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 5);
+        put_file(&tmp, &mut m, "f", 40 << 10);
+        let path = tmp.path().join("f");
+        let (mut plain, mut extend) = (0, 0);
+        for _ in 0..40 {
+            let before = fs::metadata(&path).unwrap().len();
+            let a = done(punch_hole(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+            assert_eq!(a.rec.kind, OpKind::PunchHole);
+            let after = fs::metadata(&path).unwrap().len();
+            let data = fs::read(&path).unwrap();
+            if detail(&a.rec, "mode") == Some("extend") {
+                extend += 1;
+                assert!(after > before);
+                assert_eq!(detail(&a.rec, "size"), Some(after.to_string().as_str()));
+                assert!(data[before as usize..].iter().all(|&b| b == 0));
+            } else {
+                plain += 1;
+                assert_eq!(after, before);
+                let off: usize = detail(&a.rec, "offset").unwrap().parse().unwrap();
+                let len: usize = detail(&a.rec, "len").unwrap().parse().unwrap();
+                assert!(len >= 1 && off + len <= before as usize);
+                assert!(data[off..off + len].iter().all(|&b| b == 0));
+            }
+            assert!(after <= cfg.max_file_size.0);
+            assert_consistent(&tmp, &cfg, &m);
+        }
+        assert!(plain > 0 && extend > 0, "plain={plain} extend={extend}");
+    }
+
+    #[test]
+    fn punch_hole_skips_tiny_files() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 6);
+        put_file(&tmp, &mut m, "f", 1);
+        assert!(matches!(
+            punch_hole(&mut ctx!(tmp, cfg, m, rng)).unwrap(),
+            OpOutcome::NoTarget
+        ));
+        assert_eq!(fs::read(tmp.path().join("f")).unwrap(), vec![0xab]);
+    }
+
+    #[test]
+    fn no_target_when_empty() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 7);
+        let ops: [OpFn; 6] = [
+            append,
+            truncate,
+            overwrite_range,
+            rewrite,
+            punch_hole,
+            delete_file,
+        ];
+        for op in ops {
+            assert!(matches!(
+                op(&mut ctx!(tmp, cfg, m, rng)).unwrap(),
+                OpOutcome::NoTarget
+            ));
+        }
+        assert!(tree_sizes(tmp.path()).is_empty());
+        assert_eq!(m.entries(), 0);
+    }
+
+    #[test]
+    fn dry_run_touches_nothing_but_updates_model() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 8);
+        let mut ctx = ctx!(tmp, cfg, m, rng);
+        ctx.dry = true;
+        let a = done(create_file(&mut ctx).unwrap());
+        assert_eq!(a.dur, Duration::ZERO);
+        assert!(tree_sizes(tmp.path()).is_empty());
+        let id = m.resolve(&a.rec.path).unwrap();
+        assert_eq!(m.node(id).kind, NodeKind::File);
+        assert_eq!(m.entries(), 1);
+
+        let ops: [OpFn; 7] = [
+            create_file,
+            append,
+            overwrite_range,
+            punch_hole,
+            truncate,
+            rewrite,
+            delete_file,
+        ];
+        for op in ops.iter().cycle().take(70) {
+            let mut ctx = ctx!(tmp, cfg, m, rng);
+            ctx.dry = true;
+            if let OpOutcome::Done(a) = op(&mut ctx).unwrap() {
+                assert_eq!(a.dur, Duration::ZERO);
+            }
+            assert!(tree_sizes(tmp.path()).is_empty());
+            assert!(m.total_bytes() <= cfg.max_total_size.0);
+        }
+    }
+
+    /// Runs 60 operations cycling through all seven kinds, real or dry;
+    /// returns one line per step, the model and the next rng output.
+    fn run(tmp: &TempDir, cfg: &Config, seed: u64, dry: bool) -> (Vec<String>, Model, u64) {
+        use rand::RngCore;
+        let (mut m, mut rng) = ctx_in(tmp, cfg, seed);
+        let kinds = [
+            OpKind::CreateFile,
+            OpKind::CreateFile,
+            OpKind::Append,
+            OpKind::Truncate,
+            OpKind::OverwriteRange,
+            OpKind::CreateFile,
+            OpKind::Rewrite,
+            OpKind::PunchHole,
+            OpKind::DeleteFile,
+        ];
+        let mut anchor = m.root();
+        let mut lines = Vec::new();
+        for &kind in kinds.iter().cycle().take(60) {
+            let mut ctx = ctx!(tmp, cfg, m, rng);
+            ctx.anchor = anchor;
+            ctx.dry = dry;
+            match dispatch(kind)(&mut ctx).unwrap() {
+                OpOutcome::Done(a) => {
+                    anchor = a.anchor;
+                    lines.push(format!(
+                        "{:?} {:?} {:?} {} {:?}",
+                        a.rec.kind, a.rec.path, a.rec.to, a.rec.bytes, a.rec.details
+                    ));
+                }
+                OpOutcome::NoTarget => lines.push("none".into()),
+            }
+        }
+        let tail = rng.next_u64();
+        (lines, m, tail)
+    }
+
+    #[test]
+    fn ops_are_deterministic() {
+        let cfg = config(&[("max_file_size", "16K"), ("max_total_size", "64K")]);
+        let (t1, t2, t3) = (
+            TempDir::new().unwrap(),
+            TempDir::new().unwrap(),
+            TempDir::new().unwrap(),
+        );
+        let (l1, m1, r1) = run(&t1, &cfg, 42, false);
+        let (l2, m2, r2) = run(&t2, &cfg, 42, false);
+        assert_eq!(l1, l2);
+        assert_eq!(r1, r2);
+        assert_eq!(tree_sizes(t1.path()), tree_sizes(t2.path()));
+        assert_consistent(&t1, &cfg, &m1);
+        assert!(m1.entries() > 1);
+        for kind in OpKind::ALL.iter().take(7) {
+            let tag = format!("{kind:?} ");
+            assert!(l1.iter().any(|l| l.starts_with(&tag)), "{kind:?} never ran");
+        }
+        // A dry run makes the same decisions and ends in the same model.
+        let (l3, m3, r3) = run(&t3, &cfg, 42, true);
+        assert_eq!(l1, l3);
+        assert_eq!(r1, r3);
+        assert_eq!(model_sizes(&m3), model_sizes(&m2));
+        assert!(tree_sizes(t3.path()).is_empty());
+    }
+}
