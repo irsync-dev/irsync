@@ -1,9 +1,13 @@
 //! Deterministic file content streams.
+//!
+//! Content bytes come from Xoshiro256++ seeded by one draw from the chain
+//! generator; the chain itself stays on ChaCha8 so its state serializes.
 
 use std::io::{self, Write};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::config::{ContentConfig, Pattern};
 
@@ -12,7 +16,7 @@ const WRITE_BUF: usize = 1 << 20;
 #[derive(Debug)]
 enum Source {
     Random {
-        rng: Box<ChaCha8Rng>,
+        rng: Xoshiro256PlusPlus,
         carry: [u8; 8],
         carry_len: usize,
     },
@@ -47,13 +51,13 @@ impl Content {
                         .unwrap_or(usize::MAX)
                         .max(1);
                     let mut block = vec![0u8; n];
-                    ChaCha8Rng::seed_from_u64(d2).fill_bytes(&mut block);
+                    Xoshiro256PlusPlus::seed_from_u64(d2).fill_bytes(&mut block);
                     Source::RepeatBlock { block, pos: 0 }
                 }
             }
         } else {
             Source::Random {
-                rng: Box::new(ChaCha8Rng::seed_from_u64(d2)),
+                rng: Xoshiro256PlusPlus::seed_from_u64(d2),
                 carry: [0; 8],
                 carry_len: 0,
             }

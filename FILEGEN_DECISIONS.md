@@ -358,6 +358,32 @@ code disagree, the code is what shipped and the entry says so.
     The immediate exit on a second SIGINT is still not exercised: two
     signals sent back to back can coalesce into one.
 
+## After merge (performance)
+
+48. **File bytes come from Xoshiro256++ (`rand_xoshiro 0.6`), seeded per
+    operation by one draw from the ChaCha8 chain generator; the chain stays
+    on ChaCha8.** Why: content needs determinism, a platform-independent
+    stream and speed, not cryptographic strength; `rand_xoshiro` is a
+    rust-random crate with the same stream-stability guarantee as
+    `rand_chacha`, and about three times the throughput, which shrinks the
+    generator's share of each step's recorded duration. The chain keeps
+    ChaCha8 because its state is what the state file serializes. Cost if
+    wrong: every seed's file bytes changed, so `format_version` moved from
+    1 to 2 and version-1 state files are refused rather than resumed with
+    different content; nobody depended on the old stream.
+
+49. **No dev-profile overrides.** The override of `rand_chacha`,
+    `ppv-lite86` and `rand_core` added after the merge cut a debug run of
+    seed 1 for 1000 steps from 81 s to 2 s while content came from ChaCha8.
+    With Xoshiro256++ it is useless: `rand_xoshiro` marks `next_u64` and
+    `fill_bytes` `#[inline]` and the latter goes through a generic
+    `rand_core` helper, so both are compiled inside filegen's own
+    unoptimised code wherever the profile puts the crates (measured: 7.4 s
+    with the overrides, 7.9 s without, 4.9 s with filegen itself at
+    opt-level 1, 1.0 s in release). Why: a profile knob that changes
+    nothing is misleading. Cost if wrong: none; a debug run of seed 1 takes
+    about 8 s and release is the way to run filegen for real.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer

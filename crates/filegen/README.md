@@ -90,7 +90,9 @@ filegen refuses to start (exit 2) when:
   separate one, `--force` to truncate both. With `--force` the files are
   truncated only after the initial walk of the tree succeeded;
 - a dry-run state file is resumed without `--dry-run`, or a real one with it;
-- the state file's `format_version` is not 1;
+- the state file's `format_version` is not 2 (version 1 files were written
+  before the content generator changed; the same seed no longer produces
+  the same bytes, so they are not resumed);
 - the canonical root length plus `max_path_len` reaches `PATH_MAX`.
 
 ## Log
@@ -141,10 +143,12 @@ says how many steps were skipped.
 
 A YAML document, written to a temporary file and renamed into place:
 
-- `format_version`: 1
+- `format_version`: 2
 - `seed`: the seed the history started from
 - `steps_done`: steps completed over all runs of this history
-- `rng`: the ChaCha8 generator state (`seed`, `stream`, `word_pos`)
+- `rng`: the ChaCha8 chain generator state (`seed`, `stream`, `word_pos`);
+  file bytes come from Xoshiro256++ seeded by a draw from it, so they need
+  no state of their own
 - `chain_state`: `last_kind` (the previous operation) and `anchor` (the
   escaped relative path of the directory it touched; `''` is the root)
 - `dry_run`: whether a dry run wrote it
