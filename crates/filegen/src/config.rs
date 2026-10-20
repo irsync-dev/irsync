@@ -336,14 +336,52 @@ impl Default for MknodConfig {
     }
 }
 
-/// The default transition table. Placeholder: 1.0 to every
-/// enabled-by-default kind, 0.0 to the rest, from every row.
+/// The built-in generic workload. Row = previous kind, column = next kind;
+/// both in `OpKind::ALL` order:
+/// Cr Ap Tr Ov Rw Pu Df Mk Rd Rt Rn Ro Sy Rp Ds Hl Mf Ch Mt Sx Co Mn
+/// (create_file append truncate overwrite_range rewrite punch_hole
+/// delete_file mkdir rmdir remove_tree rename rename_over symlink
+/// repoint_symlink delete_symlink hardlink mkfifo chmod set_mtime set_xattr
+/// chown mknod). The last three columns are 0: those kinds are off by default.
+#[rustfmt::skip]
+const DEFAULT_TABLE: [[f64; 22]; 22] = [
+    // Cr  Ap  Tr  Ov  Rw  Pu  Df  Mk  Rd  Rt  Rn  Ro  Sy  Rp  Ds  Hl  Mf  Ch  Mt  Sx  Co  Mn
+    [15., 30., 3., 20., 3., 0.7, 2., 3., 1., 0.5, 3., 1., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.], // create_file
+    [25., 20., 4., 15., 3., 1., 4., 5., 3., 1., 3., 2., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.],    // append
+    [20., 20., 2., 15., 5., 1., 4., 4., 2., 1., 3., 2., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.],    // truncate
+    [20., 20., 4., 15., 3., 1., 4., 4., 2., 1., 3., 2., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.],    // overwrite_range
+    [20., 18., 4., 15., 3., 1., 4., 4., 2., 1., 3., 2., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.],    // rewrite
+    [20., 18., 4., 15., 3., 1., 4., 4., 2., 1., 3., 2., 2., 1., 1., 1., 0.5, 3., 3., 0., 0., 0.],    // punch_hole
+    [25., 12., 2., 10., 3., 0.7, 6., 6., 3., 2., 4., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // delete_file
+    [45., 2., 1., 2., 1., 0.5, 1., 20., 2., 1., 3., 1., 3., 1., 1., 0.5, 0.5, 3., 3., 0., 0., 0.],   // mkdir
+    [20., 8., 2., 6., 2., 0.5, 4., 12., 4., 3., 4., 2., 3., 1., 1., 0.5, 0.5, 3., 3., 0., 0., 0.],   // rmdir
+    [20., 8., 2., 6., 2., 0.5, 4., 12., 3., 3., 4., 2., 3., 1., 1., 0.5, 0.5, 3., 3., 0., 0., 0.],   // remove_tree
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // rename
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // rename_over
+    [15., 10., 2., 8., 2., 0.5, 3., 5., 2., 1., 3., 2., 6., 5., 4., 0.5, 0.5, 3., 3., 0., 0., 0.],   // symlink
+    [15., 10., 2., 8., 2., 0.5, 3., 5., 2., 1., 3., 2., 6., 5., 4., 0.5, 0.5, 3., 3., 0., 0., 0.],   // repoint_symlink
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // delete_symlink
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // hardlink
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // mkfifo
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // chmod
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // set_mtime
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // set_xattr
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // chown
+    [20., 15., 4., 12., 3., 0.7, 6., 5., 2., 1., 3., 2., 2., 1., 1., 0.7, 0.5, 3., 3., 0., 0., 0.],  // mknod
+];
+
+/// The default transition table, built from [`DEFAULT_TABLE`].
 pub fn default_weights() -> Weights {
-    let row: BTreeMap<OpKind, f64> = OpKind::ALL
+    OpKind::ALL
         .iter()
-        .map(|&k| (k, if k.default_enabled() { 1.0 } else { 0.0 }))
-        .collect();
-    OpKind::ALL.iter().map(|&k| (k, row.clone())).collect()
+        .map(|&from| {
+            let row = OpKind::ALL
+                .iter()
+                .map(|&to| (to, DEFAULT_TABLE[from.index()][to.index()]))
+                .collect();
+            (from, row)
+        })
+        .collect()
 }
 
 /// Build the effective config from defaults, `base`, `file` and `sets`.
