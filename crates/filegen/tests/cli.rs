@@ -429,3 +429,35 @@ fn cli_verbose_echoes_steps_quiet_silences() {
     assert!(o.stderr.is_empty(), "{}", stderr(&o));
     assert!(o.stdout.is_empty());
 }
+
+#[test]
+fn cli_read_only_files_do_not_stop_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_t, root, out) = dirs();
+    // As in a git checkout: files without owner write. Unless running as
+    // root (which may write them anyway), the walk puts them off limits.
+    fs::create_dir(root.join("sub")).unwrap();
+    let planted: Vec<PathBuf> = (0..20)
+        .map(|i| {
+            let dir = if i % 2 == 0 { "" } else { "sub/" };
+            let p = root.join(format!("{dir}ro{i}.txt"));
+            fs::write(&p, format!("read only {i}")).unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o444)).unwrap();
+            p
+        })
+        .collect();
+    let o = bin()
+        .args(["run", "-q", "--seed", "13", "--steps", "500", "--out-dir"])
+        .arg(&out)
+        .args(["--set", "max_file_size=16K", "--set", "max_total_size=4M"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(steps_done(&out.join("filegen-13.state.yaml")), 500);
+    if !nix::unistd::geteuid().is_root() {
+        for (i, p) in planted.iter().enumerate() {
+            assert_eq!(fs::read_to_string(p).unwrap(), format!("read only {i}"));
+        }
+    }
+}

@@ -22,9 +22,14 @@ pub fn is_off_limits_name(name: &[u8]) -> bool {
 /// Iterative with an explicit stack. Listings are sorted bytewise so the
 /// resulting ids are deterministic. `.fileset*` names, entries on another
 /// device, sockets and unknown types become `OffLimits` and are not
-/// descended. A subdirectory that cannot be listed (permission denied, or
-/// vanished) is kept as an empty `Dir`; an entry that is listed but cannot
-/// be stat'ed for the same reasons becomes `OffLimits`.
+/// descended. An entry that is listed but cannot be stat'ed (permission
+/// denied, or vanished) becomes `OffLimits` too.
+///
+/// Unless running as root, so are the entries filegen could not safely
+/// change (see [`Guard`]): a subdirectory it cannot list, any entry not
+/// owned by the effective uid, a regular file without owner read and
+/// write, and a directory without owner read, write and search. As root, a
+/// subdirectory that cannot be listed (it vanished) stays an empty `Dir`.
 pub fn from_disk(root: &Path) -> io::Result<Model> {
     let root_meta = fs::symlink_metadata(root)?;
     if !root_meta.is_dir() {
@@ -34,13 +39,18 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
         ));
     }
     let root_dev = root_meta.dev();
+    let guard = Guard::current();
     let mut model = Model::new();
     let mut stack: Vec<(PathBuf, NodeId)> = vec![(root.to_path_buf(), model.root())];
     while let Some((dir_path, dir_id)) = stack.pop() {
         let names = match list_sorted(&dir_path) {
             Ok(names) => names,
-            // An unlistable (or vanished) subdirectory stays an empty Dir.
-            Err(e) if tolerated(&e) && dir_id != model.root() => continue,
+            Err(e) if tolerated(&e) && dir_id != model.root() => {
+                if guard.is_some() {
+                    mark_off_limits(&mut model, dir_id);
+                }
+                continue;
+            }
             Err(e) => return Err(e),
         };
         for name in names {
@@ -76,6 +86,10 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
             } else {
                 NodeKind::OffLimits
             };
+            let kind = match guard {
+                Some(g) if !g.may_change(&meta, kind) => NodeKind::OffLimits,
+                _ => kind,
+            };
             let size = if kind == NodeKind::File {
                 meta.len()
             } else {
@@ -88,6 +102,55 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
         }
     }
     Ok(model)
+}
+
+/// Turns the (still empty) directory `id` into an off-limits entry of the
+/// same name. The id just freed is the next one handed out and children
+/// stay sorted by name, so every id is as if the entry had been classified
+/// off limits when it was listed.
+fn mark_off_limits(model: &mut Model, id: NodeId) {
+    let node = model.node(id);
+    let parent = node.parent.expect("a subdirectory has a parent");
+    let (name, ino) = (node.name.to_vec(), node.ino);
+    model.remove(id);
+    let again = model.insert(parent, name, NodeKind::OffLimits, 0, ino);
+    debug_assert_eq!(again, id);
+}
+
+/// What an unprivileged filegen may change; `None` when running as root,
+/// which may change anything.
+///
+/// The rules look only at ownership and the owner's permission bits, which
+/// filegen's own operations never take away (`chmod` always keeps owner
+/// rw, rwx on directories; giving an entry to another uid needs root), so a
+/// later walk never puts an entry filegen made off limits.
+#[derive(Clone, Copy)]
+struct Guard {
+    euid: u32,
+}
+
+impl Guard {
+    fn current() -> Option<Guard> {
+        let euid = nix::unistd::geteuid();
+        (!euid.is_root()).then(|| Guard {
+            euid: euid.as_raw(),
+        })
+    }
+
+    /// Whether an entry of `kind` may be a target: owned by the effective
+    /// uid, with owner read and write on a file and read, write and search
+    /// on a directory. Without them an operation fails, and since a failed
+    /// step rewinds the generator, fails again on every resume; and a
+    /// rename into a directory filegen cannot list could replace entries
+    /// the walk never saw.
+    fn may_change(self, meta: &fs::Metadata, kind: NodeKind) -> bool {
+        let need = match kind {
+            NodeKind::File => 0o600,
+            NodeKind::Dir => 0o700,
+            _ => 0,
+        };
+        meta.uid() == self.euid && meta.mode() & need == need
+    }
 }
 
 /// Names in `dir`, sorted bytewise. Any failure, opening the directory or
@@ -195,44 +258,82 @@ mod tests {
     }
 
     #[test]
-    fn walk_keeps_unreadable_dir_as_empty_dir() {
+    fn walk_marks_unlistable_dir_off_limits() {
         use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let locked = t.path().join("locked");
         fs::create_dir(&locked).unwrap();
         fs::write(locked.join("hidden"), b"z").unwrap();
+        fs::write(t.path().join("z"), b"after").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let readable = fs::read_dir(&locked).is_ok(); // true when running as root
         let m = from_disk(t.path());
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         let m = m.unwrap();
         let id = m.resolve(b"locked").unwrap();
-        assert_eq!(m.node(id).kind, NodeKind::Dir);
-        assert_eq!(m.node(id).children.is_empty(), !readable);
+        if nix::unistd::geteuid().is_root() {
+            // Root lists it and may change anything: nothing is guarded.
+            assert_eq!(m.node(id).kind, NodeKind::Dir);
+            assert!(m.resolve(b"locked/hidden").is_some());
+        } else {
+            assert_eq!(m.node(id).kind, NodeKind::OffLimits);
+            assert!(m.node(id).children.is_empty());
+            assert!(m.has_off_limits_below(m.root()));
+            assert_eq!(child_names(&m, m.root()), [&b"locked"[..], b"z"]);
+            assert_eq!(m.total_bytes(), 5);
+        }
     }
 
     #[test]
-    fn walk_marks_unstatable_entry_off_limits() {
+    fn walk_marks_entries_it_cannot_safely_change_off_limits() {
         use std::os::unix::fs::PermissionsExt;
         if nix::unistd::geteuid().is_root() {
-            eprintln!("skipping walk_marks_unstatable_entry_off_limits: running as root");
+            eprintln!("skipping walk_marks_entries_it_cannot_safely_change_off_limits: root");
             return;
         }
         let t = tempfile::tempdir().unwrap();
-        let listable = t.path().join("listable");
-        fs::create_dir(&listable).unwrap();
-        fs::write(listable.join("f"), b"z").unwrap();
-        // Readable but not searchable: listing works, lstat of entries fails.
-        fs::set_permissions(&listable, fs::Permissions::from_mode(0o644)).unwrap();
+        let mode = |rel: &str, m: u32| {
+            fs::set_permissions(t.path().join(rel), fs::Permissions::from_mode(m)).unwrap()
+        };
+        let dir = |rel: &str| {
+            fs::create_dir(t.path().join(rel)).unwrap();
+            fs::write(t.path().join(rel).join("f"), b"f").unwrap();
+        };
+        // Files without owner read and write, as in a git checkout.
+        fs::write(t.path().join("ro"), b"read only").unwrap();
+        mode("ro", 0o444);
+        fs::write(t.path().join("wo"), b"w").unwrap();
+        mode("wo", 0o200);
+        fs::write(t.path().join("rw"), b"rw").unwrap();
+        mode("rw", 0o600);
+        // Search but no write: entries could not be created or removed.
+        dir("rx");
+        mode("rx", 0o555);
+        // Write and search but no read: a rename into it could replace
+        // entries the walk cannot see.
+        dir("wx");
+        mode("wx", 0o300);
+        // Read and write but no search: listable, its entries not statable.
+        dir("rw_dir");
+        mode("rw_dir", 0o600);
+        dir("ok");
+        mode("ok", 0o700);
         let m = from_disk(t.path());
-        fs::set_permissions(&listable, fs::Permissions::from_mode(0o755)).unwrap();
+        for d in ["rx", "wx", "rw_dir"] {
+            mode(d, 0o755);
+        }
         let m = m.unwrap();
-        let dir = m.resolve(b"listable").unwrap();
-        assert_eq!(m.node(dir).kind, NodeKind::Dir);
-        let f = m.resolve(b"listable/f").unwrap();
-        assert_eq!(m.node(f).kind, NodeKind::OffLimits);
-        assert!(m.has_off_limits_below(dir));
-        assert_eq!(m.total_bytes(), 0);
+        for p in [&b"ro"[..], b"wo", b"rx", b"wx", b"rw_dir"] {
+            let id = m.resolve(p).unwrap();
+            assert_eq!(m.node(id).kind, NodeKind::OffLimits, "{p:?}");
+            assert!(m.node(id).children.is_empty(), "{p:?}");
+        }
+        assert_eq!(m.node(m.resolve(b"rw").unwrap()).kind, NodeKind::File);
+        let ok = m.resolve(b"ok").unwrap();
+        assert_eq!(m.node(ok).kind, NodeKind::Dir);
+        assert_eq!(m.node(m.resolve(b"ok/f").unwrap()).kind, NodeKind::File);
+        // Off-limits files carry no bytes in the model.
+        assert_eq!(m.total_bytes(), 3);
+        assert_eq!(m.entries(), 8);
     }
 
     #[cfg(target_os = "linux")]

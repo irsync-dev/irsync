@@ -171,12 +171,26 @@ hold a few step numbers twice, and the tree is in the "altered" case above.
 ## Safety
 
 filegen never writes outside the root: every target comes from its model of
-the tree, and the output directory may not lie inside it. Entries named
-`.fileset*` at any depth, entries on another filesystem (mount points),
-sockets, and entries the start-up walk cannot stat or list are off limits:
-never targets, never descended into, and a directory holding one is never
-removed or renamed. Absolute symlink targets may point outside the root,
-but filegen only creates the link.
+the tree, and the output directory may not lie inside it. Some entries are
+off limits: never targets, never descended into, and a directory holding
+one is never removed or renamed. They are entries named `.fileset*` at any
+depth, entries on another filesystem (mount points), sockets and other
+unknown file types, and entries the start-up walk cannot stat. Unless
+filegen runs as root, they are also:
+
+- any directory it cannot list;
+- any entry not owned by its effective uid;
+- any regular file without owner read and write (`mode & 0o600 != 0o600`,
+  such as the `0444` files of a git checkout);
+- any directory without owner read, write and search
+  (`mode & 0o700 != 0o700`).
+
+As root these four do not apply, and a directory that cannot be listed
+(because it vanished during the walk) is kept as an empty directory.
+filegen's own `chmod` always keeps owner read and write (and search on
+directories), so nothing filegen creates ever becomes off limits. Absolute
+symlink targets may point outside the root, but filegen only creates the
+link.
 
 ## Configuration
 

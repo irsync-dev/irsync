@@ -262,6 +262,30 @@ code disagree, the code is what shipped and the entry says so.
     (2026-10-20), a drawn `recent` time can land in that hour and is then
     not compared by the determinism tests.
 
+## Final fix wave (whole-branch review)
+
+40. **Unless running as root, the walk puts off limits every entry filegen
+    could not safely change**: a directory it cannot list, an entry not
+    owned by the effective uid, a regular file without owner read and write
+    (`mode & 0o600 != 0o600`), and a directory without owner read, write
+    and search (`mode & 0o700 != 0o700`). Before, a tree with `0444` files
+    (a git checkout) failed within a few steps with `Permission denied`,
+    and since a failed step rewinds the generator, every `--resume`
+    replayed the same operation on the same file and failed again; a `-wx`
+    directory let filegen rename into it over entries it could not see; an
+    unlistable directory was kept as an empty `Dir`. Why it stays
+    deterministic: the rules read only ownership and owner permission bits,
+    which filegen never removes (`chmod` keeps owner rw, rwx on
+    directories; giving an entry to another uid needs root), so an entry
+    filegen made is never put off limits by a later walk, and a resume
+    rebuilds the same model. An unlistable directory is first inserted as a
+    `Dir` and then replaced by an off-limits entry of the same name, which
+    reuses its id, so ids are as if it had been classified so at once. As
+    root nothing changes (root may write anything; a directory that
+    vanished mid-walk still stays an empty `Dir`). Cost if wrong: an
+    unprivileged run over a tree of foreign or read-only entries works on
+    fewer targets, which is the point.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer
