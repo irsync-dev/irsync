@@ -100,7 +100,7 @@ filegen refuses to start (exit 2) when:
 One line per step, `key=value` pairs in a fixed order:
 
 ```
-step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [pressure=<0.xx>] dur_us=<n>
+step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [pressure=<0.xx>] dur_us=<n> [gen_us=<n>]
 ```
 
 `step` counts across resumes. Paths are relative to the root, quoted and
@@ -111,7 +111,11 @@ include `size`, `content` (`random`, `zeros`, `repeat_byte`,
 `target_kind`, `absolute`, `entries` and `emulated=1` (a hole written as
 zeros). `pressure` appears while the total-size reweighting is in effect.
 `dur_us` times the filesystem syscalls only (including `fsync` if enabled),
-not the choice of operation. A failed step is logged as
+not the choice of operation. An operation that writes drawn content
+(`create_file`, `append`, `overwrite_range`, `rewrite`) generates the bytes
+in 1 MiB chunks between its writes; that time is taken out of `dur_us` and
+reported as `gen_us`, so `dur_us` measures the filesystem whatever the
+generator costs. A failed step is logged as
 `step=<n> ts=... op=<kind> path="<rel>" [to="<rel>"] error="<os error>"`,
 naming the path the failing call acted on (for a create, the new entry;
 `to` for a rename or hard link).
@@ -120,17 +124,19 @@ From a real run (paths shortened):
 
 ```
 # run seed=42 start_step=0 steps=1000 log="/tmp/fg/filegen-42.log" state="/tmp/fg/filegen-42.state.yaml" config="-" dry_run=0 started=2026-10-20T14:24:51.569059Z
-step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl66u7pmc1e.bin" bytes=30165 size=44002 content=random dur_us=1220
+step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl66u7pmc1e.bin" bytes=30165 size=44002 content=random dur_us=1208 gen_us=12
 ...
 # end steps_done=1000 outcome=ok elapsed_ms=7638
-# stat op=create_file count=219 bytes=117340131 p50_us=109 p99_us=156217 max_us=156975
-# stat op=append count=183 bytes=74836731 p50_us=27 p99_us=156299 max_us=156307
+# stat op=create_file count=219 bytes=117340131 p50_us=109 p99_us=156217 max_us=156975 gen_total_us=48112
+# stat op=append count=183 bytes=74836731 p50_us=27 p99_us=156299 max_us=156307 gen_total_us=30577
 ```
 
 The `# end` line is followed by one `# stat` line per kind seen in this
-invocation. `outcome` is `ok`, `"failed: <message>"` or
+invocation; the percentiles are over `dur_us`, and kinds that write drawn
+content add `gen_total_us`, the sum of their `gen_us`. `outcome` is `ok`, `"failed: <message>"` or
 `"interrupted: SIGINT"` / `"interrupted: SIGTERM"`. A dry run marks each
-step line `dry=1` and logs `dur_us=0`.
+step line `dry=1` and logs `dur_us=0` (and `gen_us=0` where the kind
+reports it).
 
 A step whose drawn kinds all lack a target, and where even the fallback,
 `create_file` in the root, finds no name that fits (for example with a tiny

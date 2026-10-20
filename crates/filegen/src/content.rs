@@ -4,6 +4,7 @@
 //! generator; the chain itself stays on ChaCha8 so its state serializes.
 
 use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -33,6 +34,7 @@ enum Source {
 pub struct Content {
     source: Source,
     remaining: u64,
+    generated: Duration,
 }
 
 impl Content {
@@ -65,6 +67,7 @@ impl Content {
         Content {
             source,
             remaining: len,
+            generated: Duration::ZERO,
         }
     }
 
@@ -124,12 +127,20 @@ impl Content {
         n
     }
 
+    /// Time spent generating bytes in [`Content::write_to`] so far, so a
+    /// caller can separate it from the time its writes took.
+    pub fn generated(&self) -> Duration {
+        self.generated
+    }
+
     /// Writes the whole remaining stream; returns the bytes written.
     pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<u64> {
         let mut buf = vec![0u8; WRITE_BUF.min(self.remaining.max(1) as usize)];
         let mut total = 0u64;
         while self.remaining > 0 {
+            let start = Instant::now();
             let n = self.fill(&mut buf);
+            self.generated += start.elapsed();
             w.write_all(&buf[..n])?;
             total += n as u64;
         }
@@ -225,6 +236,18 @@ mod tests {
             seen[b as usize] = true;
         }
         assert!(seen.iter().filter(|&&s| s).count() >= 250);
+    }
+
+    #[test]
+    fn write_to_accounts_generation_time() {
+        let cfg = cfg(0.0, ContentConfig::default().patterns, 4096);
+        let mut c = Content::draw(&mut ChaCha8Rng::seed_from_u64(8), &cfg, 8 << 20);
+        assert_eq!(c.generated(), Duration::ZERO);
+        let start = Instant::now();
+        c.write_to(&mut io::sink()).unwrap();
+        let total = start.elapsed();
+        assert!(c.generated() > Duration::ZERO);
+        assert!(c.generated() <= total);
     }
 
     #[test]

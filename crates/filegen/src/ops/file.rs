@@ -5,6 +5,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
+use std::time::Duration;
 
 use rand::Rng;
 
@@ -57,6 +58,7 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         maybe_fsync(ctx, &f)?;
         Ok(f.metadata()?.ino())
     })?;
+    let (dur, gen) = content_timing(dur, &content);
     // A dry run has no real inode; give it a unique one, since hard links
     // are keyed by inode.
     let ino = if ctx.dry {
@@ -68,7 +70,10 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         .model
         .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
     let details = vec![("size", size.to_string()), ("content", label.into())];
-    Ok(applied(ctx, OpKind::CreateFile, id, size, details, dur))
+    Ok(with_gen(
+        applied(ctx, OpKind::CreateFile, id, size, details, dur),
+        gen,
+    ))
 }
 
 /// Grow a file (and so every hard link to it) by a drawn amount, within
@@ -94,10 +99,14 @@ pub fn append(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
     })?;
+    let (dur, gen) = content_timing(dur, &content);
     let size = old + delta;
     ctx.model.set_size_linked(id, size);
     let details = vec![("size", size.to_string()), ("content", label.into())];
-    Ok(applied(ctx, OpKind::Append, id, delta, details, dur))
+    Ok(with_gen(
+        applied(ctx, OpKind::Append, id, delta, details, dur),
+        gen,
+    ))
 }
 
 /// Shorten a file to a drawn length, possibly zero.
@@ -132,12 +141,16 @@ pub fn overwrite_range(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
     })?;
+    let (dur, gen) = content_timing(dur, &content);
     let details = vec![
         ("offset", offset.to_string()),
         ("len", len.to_string()),
         ("content", label.into()),
     ];
-    Ok(applied(ctx, OpKind::OverwriteRange, id, len, details, dur))
+    Ok(with_gen(
+        applied(ctx, OpKind::OverwriteRange, id, len, details, dur),
+        gen,
+    ))
 }
 
 /// Replace a file's content with a new drawn size. The old bytes of every
@@ -163,9 +176,13 @@ pub fn rewrite(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
     })?;
+    let (dur, gen) = content_timing(dur, &content);
     ctx.model.set_size_linked(id, size);
     let details = vec![("size", size.to_string()), ("content", label.into())];
-    Ok(applied(ctx, OpKind::Rewrite, id, size, details, dur))
+    Ok(with_gen(
+        applied(ctx, OpKind::Rewrite, id, size, details, dur),
+        gen,
+    ))
 }
 
 /// Make a drawn range of a file of at least 2 bytes sparse, or (with
@@ -274,6 +291,24 @@ fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn punch(_: &File, _: u64, _: u64) -> io::Result<bool> {
     Ok(false)
+}
+
+/// Splits the timed span of a content write into the syscall part and the
+/// part `Content::write_to` spent generating bytes.
+fn content_timing(dur: Duration, content: &Content) -> (Duration, Duration) {
+    let gen = content.generated();
+    (dur.saturating_sub(gen), gen)
+}
+
+/// Attaches the generation time to an applied content write.
+fn with_gen(outcome: OpOutcome, gen: Duration) -> OpOutcome {
+    match outcome {
+        OpOutcome::Done(mut a) => {
+            a.gen = Some(gen);
+            OpOutcome::Done(a)
+        }
+        other => other,
+    }
 }
 
 /// Overwrites `[offset, offset + len)` of `f` with zeros.
@@ -587,6 +622,21 @@ mod tests {
         }
         assert!(tree_sizes(tmp.path()).is_empty());
         assert_eq!(m.entries(), 0);
+    }
+
+    #[test]
+    fn content_ops_report_generation_time() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = small();
+        let (mut m, mut rng) = ctx_in(&tmp, &cfg, 21);
+        let a = done(create_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+        assert!(a.gen.is_some(), "a content write reports generation time");
+        let a = done(truncate(&mut ctx!(tmp, cfg, m, rng)).unwrap());
+        assert_eq!(a.gen, None, "a non-content op reports none");
+        let mut ctx = ctx!(tmp, cfg, m, rng);
+        ctx.dry = true;
+        let a = done(create_file(&mut ctx).unwrap());
+        assert_eq!((a.dur, a.gen), (Duration::ZERO, Some(Duration::ZERO)));
     }
 
     #[test]

@@ -62,8 +62,13 @@ pub struct Applied {
     pub rec: OpRecord,
     /// The directory this operation touched; the next one's anchor.
     pub anchor: NodeId,
-    /// Time spent in the filesystem syscalls; zero in a dry run.
+    /// Time spent in the filesystem syscalls; zero in a dry run. For an
+    /// operation that writes drawn content, the time spent generating the
+    /// bytes is excluded here and reported in `gen`.
     pub dur: Duration,
+    /// Time spent generating content bytes, for operations that write
+    /// drawn content (`Some`, zero in a dry run); `None` for the rest.
+    pub gen: Option<Duration>,
 }
 
 pub enum OpOutcome {
@@ -103,8 +108,8 @@ pub fn dispatch(kind: OpKind) -> OpFn {
 }
 
 /// Runs `f`, returning its result and how long it took. Everything inside
-/// `f` is timed, so for content writes this includes generating the bytes
-/// in `Content::write_to`, not only the syscalls.
+/// `f` is timed; a content write subtracts what `Content::write_to` spent
+/// generating bytes (see `file::with_gen`).
 pub fn timed<T>(f: impl FnOnce() -> io::Result<T>) -> io::Result<(T, Duration)> {
     let start = Instant::now();
     let v = f()?;
@@ -231,6 +236,7 @@ pub(crate) fn applied(
         },
         anchor: anchor_of(ctx.model, id),
         dur,
+        gen: None,
     })
 }
 
@@ -257,6 +263,7 @@ pub(crate) fn removed(
         rec,
         anchor: anchor_of(ctx.model, parent),
         dur,
+        gen: None,
     })
 }
 

@@ -51,6 +51,7 @@ fn moved(ctx: &OpCtx, kind: OpKind, path: Vec<u8>, id: NodeId, dur: Duration) ->
         },
         anchor: anchor_of(ctx.model, dir),
         dur,
+        gen: None,
     })
 }
 
@@ -227,6 +228,7 @@ pub fn hardlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         },
         anchor: anchor_of(ctx.model, dir),
         dur,
+        gen: None,
     }))
 }
 

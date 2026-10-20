@@ -21,6 +21,16 @@ pub struct OpRecord {
     pub details: Vec<(&'static str, String)>,
 }
 
+/// How long a step took, as the operation measured it.
+#[derive(Clone, Copy, Debug)]
+pub struct Timing {
+    /// Time in the filesystem syscalls; zero in a dry run.
+    pub dur: Duration,
+    /// Time generating content bytes, for operations that write drawn
+    /// content; `None` for the rest.
+    pub gen: Option<Duration>,
+}
+
 /// Run parameters written as the `# run` line.
 pub struct Header {
     pub seed: u64,
@@ -48,6 +58,9 @@ pub struct KindStats {
     pub count: u64,
     pub bytes: u64,
     durs_us: Vec<u32>,
+    /// Summed content-generation time; `Some` once any step of the kind
+    /// reported one.
+    gen_us: Option<u64>,
 }
 
 /// Statistics over all recorded steps, keyed by kind.
@@ -62,15 +75,22 @@ pub struct KindSummary {
     pub p50_us: u32,
     pub p99_us: u32,
     pub max_us: u32,
+    /// Total time spent generating content bytes, for kinds that write
+    /// drawn content; absent for the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen_total_us: Option<u64>,
 }
 
 impl Stats {
-    pub fn record(&mut self, kind: OpKind, bytes: u64, dur: Duration) {
+    pub fn record(&mut self, kind: OpKind, bytes: u64, dur: Duration, gen: Option<Duration>) {
         let k = self.0.entry(kind).or_default();
         k.count += 1;
         k.bytes += bytes;
         k.durs_us
             .push(u32::try_from(dur.as_micros()).unwrap_or(u32::MAX));
+        if let Some(g) = gen {
+            *k.gen_us.get_or_insert(0) += u64::try_from(g.as_micros()).unwrap_or(u64::MAX);
+        }
     }
 
     /// One summary per kind seen, in `OpKind::ALL` order.
@@ -89,6 +109,7 @@ impl Stats {
                     p50_us: d[(n - 1) / 2],
                     p99_us: d[((n - 1) * 99).div_ceil(100)],
                     max_us: d[n - 1],
+                    gen_total_us: k.gen_us,
                 })
             })
             .collect()
@@ -167,7 +188,7 @@ impl LogWriter {
         step: u64,
         ts: jiff::Timestamp,
         rec: &OpRecord,
-        dur: Duration,
+        timing: Timing,
         dry: bool,
         pressure: f64,
     ) -> io::Result<()> {
@@ -192,7 +213,10 @@ impl LogWriter {
         if pressure > 0.0 {
             s.push_str(&format!(" pressure={pressure:.2}"));
         }
-        s.push_str(&format!(" dur_us={}", dur.as_micros()));
+        s.push_str(&format!(" dur_us={}", timing.dur.as_micros()));
+        if let Some(g) = timing.gen {
+            s.push_str(&format!(" gen_us={}", g.as_micros()));
+        }
         self.line(&s)
     }
 
@@ -229,7 +253,7 @@ impl LogWriter {
         }
         self.line(&s)?;
         for k in summary {
-            let s = format!(
+            let mut s = format!(
                 "# stat op={} count={} bytes={} p50_us={} p99_us={} max_us={}",
                 k.kind.name(),
                 k.count,
@@ -238,6 +262,9 @@ impl LogWriter {
                 k.p99_us,
                 k.max_us
             );
+            if let Some(g) = k.gen_total_us {
+                s.push_str(&format!(" gen_total_us={g}"));
+            }
             self.line(&s)?;
         }
         self.flush()
@@ -277,8 +304,18 @@ mod tests {
             bytes: 0,
             details: vec![("size", "12".into())],
         };
-        w.step(7, ts(), &rec, Duration::from_micros(812), false, 0.0)
-            .unwrap();
+        w.step(
+            7,
+            ts(),
+            &rec,
+            Timing {
+                dur: Duration::from_micros(812),
+                gen: None,
+            },
+            false,
+            0.0,
+        )
+        .unwrap();
         w.flush().unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
@@ -297,7 +334,18 @@ mod tests {
             bytes: 5,
             details: vec![("note", "has space".into())],
         };
-        w.step(1, ts(), &rec, Duration::ZERO, true, 0.25).unwrap();
+        w.step(
+            1,
+            ts(),
+            &rec,
+            Timing {
+                dur: Duration::ZERO,
+                gen: None,
+            },
+            true,
+            0.25,
+        )
+        .unwrap();
         w.flush().unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
@@ -350,10 +398,20 @@ mod tests {
             bytes: 0,
             details: vec![],
         };
-        w.step(0, ts(), &rec, Duration::from_micros(9), false, 0.0)
-            .unwrap();
+        w.step(
+            0,
+            ts(),
+            &rec,
+            Timing {
+                dur: Duration::from_micros(9),
+                gen: None,
+            },
+            false,
+            0.0,
+        )
+        .unwrap();
         let mut st = Stats::default();
-        st.record(OpKind::Mkdir, 0, Duration::from_micros(9));
+        st.record(OpKind::Mkdir, 0, Duration::from_micros(9), None);
         w.footer(
             &Footer {
                 steps_done: 1,
@@ -380,10 +438,67 @@ mod tests {
     }
 
     #[test]
+    fn gen_us_follows_dur_us_when_reported() {
+        let (_d, p) = tmp_path("x.log");
+        let mut w = LogWriter::open_append(&p, false).unwrap();
+        let rec = OpRecord {
+            kind: OpKind::CreateFile,
+            path: b"f".to_vec(),
+            to: None,
+            bytes: 5,
+            details: Vec::new(),
+        };
+        let gen = Some(Duration::from_micros(5));
+        w.step(
+            1,
+            ts(),
+            &rec,
+            Timing {
+                dur: Duration::from_micros(812),
+                gen,
+            },
+            false,
+            0.0,
+        )
+        .unwrap();
+        w.flush().unwrap();
+        assert!(fs::read_to_string(&p)
+            .unwrap()
+            .ends_with(" bytes=5 dur_us=812 gen_us=5\n"));
+    }
+
+    #[test]
+    fn stats_total_generation_time_per_kind() {
+        let mut s = Stats::default();
+        let us = Duration::from_micros;
+        s.record(OpKind::CreateFile, 1, us(9), Some(us(2)));
+        s.record(OpKind::CreateFile, 1, us(9), Some(us(3)));
+        s.record(OpKind::Mkdir, 0, us(1), None);
+        let sum = s.summary();
+        assert_eq!(sum[0].kind, OpKind::CreateFile);
+        assert_eq!(sum[0].gen_total_us, Some(5));
+        assert_eq!(sum[1].gen_total_us, None);
+        let (_d, p) = tmp_path("x.log");
+        let mut w = LogWriter::open_append(&p, false).unwrap();
+        let f = Footer {
+            steps_done: 3,
+            outcome: "ok".into(),
+            elapsed: Duration::from_millis(1),
+            skipped: 0,
+        };
+        w.footer(&f, &sum).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains(
+            "# stat op=create_file count=2 bytes=2 p50_us=9 p99_us=9 max_us=9 gen_total_us=5\n"
+        ));
+        assert!(text.contains("# stat op=mkdir count=1 bytes=0 p50_us=1 p99_us=1 max_us=1\n"));
+    }
+
+    #[test]
     fn stats_percentiles() {
         let mut s = Stats::default();
         for d in [5u64, 1, 3, 2, 4] {
-            s.record(OpKind::Mkdir, 1, Duration::from_micros(d));
+            s.record(OpKind::Mkdir, 1, Duration::from_micros(d), None);
         }
         let k = &s.summary()[0];
         assert_eq!(
@@ -395,8 +510,8 @@ mod tests {
     #[test]
     fn summary_in_all_order_and_only_seen() {
         let mut s = Stats::default();
-        s.record(OpKind::Rename, 0, Duration::from_micros(1));
-        s.record(OpKind::CreateFile, 0, Duration::from_micros(1));
+        s.record(OpKind::Rename, 0, Duration::from_micros(1), None);
+        s.record(OpKind::CreateFile, 0, Duration::from_micros(1), None);
         let kinds: Vec<_> = s.summary().iter().map(|k| k.kind).collect();
         assert_eq!(kinds, vec![OpKind::CreateFile, OpKind::Rename]);
     }

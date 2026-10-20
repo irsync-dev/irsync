@@ -384,6 +384,21 @@ code disagree, the code is what shipped and the entry says so.
     nothing is misleading. Cost if wrong: none; a debug run of seed 1 takes
     about 8 s and release is the way to run filegen for real.
 
+50. **Content generation is timed separately from the write syscalls.**
+    `Content::write_to` accumulates the time its `fill` calls take; the
+    four operations that write drawn content subtract it from the timed
+    span and report it as `gen_us` after `dur_us`, and the `# stat` line
+    of such a kind adds `gen_total_us`. `Applied` carries it as
+    `gen: Option<Duration>` next to `dur`, outside the record's dry/real
+    identity like `dur` itself (a dry run reports `gen_us=0`). Why: the
+    README already promised that `dur_us` times the syscalls only, and
+    with the generator interleaved with the writes it did not; for the
+    performance-tester role the split must be visible rather than folded
+    into one number. Cost if wrong: one `Instant` read per 1 MiB chunk
+    (negligible), and `rsplit_once(" dur_us=")` in log-normalising code
+    must keep stripping the trailing `gen_us` too, which placing `gen_us`
+    last guarantees.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer

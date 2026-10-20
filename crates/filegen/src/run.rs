@@ -15,7 +15,7 @@ use crate::cli::{self, RunArgs};
 use crate::config::{self, Config, ConfigError};
 use crate::escape::{escape, unescape};
 use crate::kind::OpKind;
-use crate::log::{Footer, Header, LogWriter, Stats};
+use crate::log::{Footer, Header, LogWriter, Stats, Timing};
 use crate::model::{Model, NodeId};
 use crate::ops::file::create_file;
 use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
@@ -348,11 +348,14 @@ impl Runner {
             step,
             jiff::Timestamp::now(),
             &a.rec,
-            a.dur,
+            Timing {
+                dur: a.dur,
+                gen: a.gen,
+            },
             self.dry,
             pressure,
         )?;
-        self.stats.record(kind, a.rec.bytes, a.dur);
+        self.stats.record(kind, a.rec.bytes, a.dur, a.gen);
         self.bytes_written += a.rec.bytes;
         self.last_kind = kind;
         self.anchor = a.anchor;
