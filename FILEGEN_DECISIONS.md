@@ -360,9 +360,9 @@ code disagree, the code is what shipped and the entry says so.
 
 ## Process notes
 
-- Every commit on the branch up to the final fix wave ends with the trailer
-  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; one
-  implementer commit was amended to it after the fact. The final fix
-  wave's commits (entries 40 to 47) were made by Claude Opus 5.5 and carry
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, the
-  attribution of the model that wrote them.
+- Every commit on the branch ends with the trailer
+  `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Six commits
+  (one from the configuration task and the five of the final fix wave)
+  were written by subagents running on Claude Opus 5.5 and were reworded
+  to that trailer afterwards by the controlling session, as was done on
+  the fileset branch.
