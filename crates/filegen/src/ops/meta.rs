@@ -60,7 +60,7 @@ pub fn chmod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         mode = (mode | 0o600) & !0o1000;
     }
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         fs::set_permissions(&path, Permissions::from_mode(mode))
     })?;
     let details = vec![("mode", format!("{mode:04o}"))];
@@ -97,7 +97,7 @@ pub fn set_mtime(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let secs = (MTIME_REFERENCE.as_second() + sign * offset).max(0);
     let ts = jiff::Timestamp::new(secs, nanos).expect("within jiff's range");
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         let spec = TimeSpec::new(secs as libc::time_t, nanos.into());
         utimensat(
             AT_FDCWD,
@@ -135,7 +135,7 @@ pub fn set_xattr(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let mut value = vec![0u8; len];
     ctx.rng.fill_bytes(&mut value);
     let path = ctx.model.abs_path(ctx.root, id);
-    let (taken, dur) = syscalls(ctx, |_| {
+    let (taken, dur) = syscalls(ctx, &path, None, |_| {
         let exists = drawn != "set" && xattr::get(&path, &name)?.is_some();
         Ok(Some(match drawn {
             "remove" if exists => {
@@ -183,7 +183,7 @@ pub fn chown(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let uid = (!uids.is_empty()).then(|| uids[ctx.rng.gen_range(0..uids.len())]);
     let gid = (!gids.is_empty()).then(|| gids[ctx.rng.gen_range(0..gids.len())]);
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         fchownat(
             AT_FDCWD,
             &path,
@@ -219,7 +219,7 @@ pub fn mknod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         (SFlag::S_IFBLK, "block")
     };
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         let rdev = libc::makedev(major as _, minor as _);
         nix::sys::stat::mknod(&path, kind, Mode::from_bits_truncate(0o644), rdev)
             .map_err(io::Error::from)

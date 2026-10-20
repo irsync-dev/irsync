@@ -199,15 +199,19 @@ impl LogWriter {
         step: u64,
         kind: OpKind,
         path: &[u8],
+        to: Option<&[u8]>,
         err: &io::Error,
     ) -> io::Result<()> {
-        let s = format!(
-            "step={step} ts={} op={} path={} error={}",
+        let mut s = format!(
+            "step={step} ts={} op={} path={}",
             fmt_ts(jiff::Timestamp::now()),
             kind.name(),
             quoted(path),
-            quoted(err.to_string().as_bytes())
         );
+        if let Some(to) = to {
+            s.push_str(&format!(" to={}", quoted(to)));
+        }
+        s.push_str(&format!(" error={}", quoted(err.to_string().as_bytes())));
         self.line(&s)
     }
 
@@ -301,11 +305,15 @@ mod tests {
         let (_d, p) = tmp_path("x.log");
         let mut w = LogWriter::open_append(&p, false).unwrap();
         let err = io::Error::other("boom \"x\"");
-        w.failure(3, OpKind::Mkdir, b"d", &err).unwrap();
+        w.failure(3, OpKind::Mkdir, b"d", None, &err).unwrap();
+        w.failure(4, OpKind::Rename, b"a", Some(b"b c"), &err)
+            .unwrap();
         w.flush().unwrap();
         let s = fs::read_to_string(&p).unwrap();
-        assert!(s.starts_with("step=3 ts="));
-        assert!(s.ends_with(" op=mkdir path=\"d\" error=\"boom \\\"x\\\"\"\n"));
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].starts_with("step=3 ts="));
+        assert!(lines[0].ends_with(" op=mkdir path=\"d\" error=\"boom \\\"x\\\"\""));
+        assert!(lines[1].ends_with(" op=rename path=\"a\" to=\"b c\" error=\"boom \\\"x\\\"\""));
         let t = s.split(' ').nth(1).unwrap().strip_prefix("ts=").unwrap();
         assert_eq!(t.len(), "2026-10-20T12:00:00.123456Z".len());
         assert!(t.parse::<jiff::Timestamp>().is_ok());

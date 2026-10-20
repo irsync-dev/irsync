@@ -103,7 +103,9 @@ include `size`, `content` (`random`, `zeros`, `repeat_byte`,
 zeros). `pressure` appears while the total-size reweighting is in effect.
 `dur_us` times the filesystem syscalls only (including `fsync` if enabled),
 not the choice of operation. A failed step is logged as
-`step=<n> ts=... op=<kind> path="" error="<os error>"`.
+`step=<n> ts=... op=<kind> path="<rel>" [to="<rel>"] error="<os error>"`,
+naming the path the failing call acted on (for a create, the new entry;
+`to` for a rename or hard link).
 
 From a real run (paths shortened):
 

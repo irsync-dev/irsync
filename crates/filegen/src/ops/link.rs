@@ -47,7 +47,7 @@ pub fn symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     };
     let target = draw_target(ctx, dir);
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         unix_fs::symlink(OsStr::from_bytes(&target.bytes), &path)
     })?;
     let ino = new_ino(ctx, &path)?;
@@ -66,7 +66,7 @@ pub fn repoint_symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let dir = ctx.model.node(id).parent.expect("a live node has a parent");
     let target = draw_target(ctx, dir);
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         fs::remove_file(&path)?;
         unix_fs::symlink(OsStr::from_bytes(&target.bytes), &path)
     })?;
@@ -86,7 +86,7 @@ pub fn delete_symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| fs::remove_file(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| fs::remove_file(&path))?;
     Ok(removed(ctx, OpKind::DeleteSymlink, id, Vec::new(), dur))
 }
 

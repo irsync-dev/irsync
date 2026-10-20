@@ -65,7 +65,7 @@ pub fn mkdir(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| fs::create_dir(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| fs::create_dir(&path))?;
     let ino = new_ino(ctx, &path)?;
     let id = ctx
         .model
@@ -92,7 +92,7 @@ pub fn rmdir(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         }
     }
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| fs::remove_dir(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| fs::remove_dir(&path))?;
     Ok(removed(ctx, OpKind::Rmdir, id, Vec::new(), dur))
 }
 
@@ -108,7 +108,7 @@ pub fn remove_tree(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| fs::remove_dir_all(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| fs::remove_dir_all(&path))?;
     let details = vec![("entries", (below + 1).to_string())];
     Ok(removed(ctx, OpKind::RemoveTree, id, details, dur))
 }
@@ -145,7 +145,7 @@ pub fn rename(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     }
     let from = ctx.model.abs_path(ctx.root, id);
     let to = ctx.model.abs_path(ctx.root, new_dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| fs::rename(&from, &to))?;
+    let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::rename(&from, &to))?;
     let path = ctx.model.rel_path(id);
     ctx.model.rename(id, new_dir, name.into_bytes());
     Ok(moved(ctx, OpKind::Rename, path, id, dur))
@@ -182,7 +182,7 @@ pub fn rename_over(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     }
     let from = ctx.model.abs_path(ctx.root, src);
     let to = ctx.model.abs_path(ctx.root, dst);
-    let ((), dur) = syscalls(ctx, |_| fs::rename(&from, &to))?;
+    let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::rename(&from, &to))?;
     let path = ctx.model.rel_path(src);
     let dst_dir = ctx
         .model
@@ -212,7 +212,7 @@ pub fn hardlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     }
     let from = ctx.model.abs_path(ctx.root, src);
     let to = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| fs::hard_link(&from, &to))?;
+    let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::hard_link(&from, &to))?;
     let ino = ctx.model.node(src).ino;
     let id = ctx
         .model
@@ -237,7 +237,7 @@ pub fn mkfifo(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, |_| {
+    let ((), dur) = syscalls(ctx, &path, None, |_| {
         nix::unistd::mkfifo(&path, Mode::from_bits_truncate(0o644)).map_err(io::Error::from)
     })?;
     let ino = new_ino(ctx, &path)?;

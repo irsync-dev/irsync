@@ -18,7 +18,7 @@ use crate::kind::OpKind;
 use crate::log::{Footer, Header, LogWriter, Stats};
 use crate::model::{Model, NodeId};
 use crate::ops::file::create_file;
-use crate::ops::{dispatch, Applied, OpCtx, OpOutcome};
+use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
 use crate::pick::anchor_of;
 use crate::signals;
 use crate::state::{self, ChainState, LastRun, State, StateError, TreeInfo, FORMAT_VERSION};
@@ -281,7 +281,9 @@ impl Runner {
             }),
             Err((kind, e)) => {
                 self.rng = rng_before;
-                let _ = self.log.failure(self.steps_done + 1, kind, b"", &e);
+                let (path, to) = OpError::of(&e)
+                    .map_or((&[][..], None), |o| (o.path.as_slice(), o.to.as_deref()));
+                let _ = self.log.failure(self.steps_done + 1, kind, path, to, &e);
                 let _ = self.log.flush();
                 Err(e)
             }
@@ -509,6 +511,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::ops::testutil::triples;
     use crate::state;
     use crate::walk::from_disk;
 
@@ -596,6 +599,21 @@ mod tests {
 
     fn text(p: &Path) -> String {
         fs::read_to_string(p).unwrap()
+    }
+
+    /// The value of `key="..."` in a log line, escapes kept.
+    fn quoted_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        let start = line.find(&format!(" {key}=\""))? + key.len() + 3;
+        let rest = &line[start..];
+        let mut escaped = false;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '\\' if !escaped => escaped = true,
+                '"' if !escaped => return Some(&rest[..i]),
+                _ => escaped = false,
+            }
+        }
+        panic!("unterminated {key} value in {line:?}");
     }
 
     /// The step lines of a log without their timestamps and durations.
@@ -845,6 +863,12 @@ mod tests {
             assert!(matches!(r.step().unwrap(), StepResult::Done { step, .. } if step == i + 1));
         }
         assert_eq!(r.steps_done(), 20);
+        // Every path the model knows, escaped as in the log; "" is the root.
+        let known: std::collections::BTreeSet<String> = triples(r.model())
+            .into_iter()
+            .map(|(p, _, _)| escape(&p))
+            .chain([String::new()])
+            .collect();
         fs::remove_dir_all(&root).unwrap();
         let e = r.step().unwrap_err();
         assert_eq!(r.steps_done(), 20);
@@ -861,6 +885,19 @@ mod tests {
         assert_eq!(log.lines().filter(|l| l.contains(" error=")).count(), 1);
         let err = log.lines().find(|l| l.contains(" error=")).unwrap();
         assert!(err.starts_with("step=21 "), "{err}");
+        // The failure names the path it acted on: one the model held, or a
+        // new name in a directory it held.
+        let path = quoted_value(err, "path").expect("a path on the failure line");
+        assert!(!path.is_empty(), "{err}");
+        let parent = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        assert!(
+            known.contains(path) || known.contains(parent),
+            "{path:?} is not a path in the tree: {err}"
+        );
+        if let Some(to) = quoted_value(err, "to") {
+            let to_parent = to.rsplit_once('/').map_or("", |(dir, _)| dir);
+            assert!(known.contains(to) || known.contains(to_parent), "{err}");
+        }
         let end = log.lines().find(|l| l.starts_with("# end")).unwrap();
         assert!(end.contains("steps_done=20 outcome=\"failed: "), "{end}");
         assert!(log.lines().last().unwrap().starts_with('#'));

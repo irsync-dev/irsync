@@ -30,6 +30,7 @@ pub mod tree;
 
 use std::fs::File;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -140,16 +141,73 @@ pub fn budget(ctx: &OpCtx) -> u64 {
         .saturating_sub(ctx.model.total_bytes())
 }
 
-/// Runs the syscalls `f` unless in a dry run; returns its value (the
-/// default in a dry run) and the time it took (zero in a dry run).
+/// The paths a failed operation acted on, carried inside the
+/// [`io::Error`] it returns (see [`OpError::wrap`]) so the failure line can
+/// name them. Displays as the OS error alone.
+#[derive(Debug)]
+pub struct OpError {
+    /// The primary path, relative to the root.
+    pub path: Vec<u8>,
+    /// The second path of a rename or hard link, relative to the root.
+    pub to: Option<Vec<u8>>,
+    pub source: io::Error,
+}
+
+impl OpError {
+    /// `source` with the paths attached: an [`io::Error`] of the same kind
+    /// and message holding an `OpError`. `path` and `to` are absolute
+    /// paths under `root`.
+    pub fn wrap(root: &Path, path: &Path, to: Option<&Path>, source: io::Error) -> io::Error {
+        let rel = |p: &Path| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .as_os_str()
+                .as_bytes()
+                .to_vec()
+        };
+        let kind = source.kind();
+        io::Error::new(
+            kind,
+            OpError {
+                path: rel(path),
+                to: to.map(rel),
+                source,
+            },
+        )
+    }
+
+    /// The `OpError` inside `e`, if an operation attached one.
+    pub fn of(e: &io::Error) -> Option<&OpError> {
+        e.get_ref().and_then(|r| r.downcast_ref::<OpError>())
+    }
+}
+
+impl std::fmt::Display for OpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::error::Error for OpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Runs the syscalls `f` on `path` (and `to`, for a rename or link) unless
+/// in a dry run; returns its value (the default in a dry run) and the time
+/// it took (zero in a dry run). An error carries both paths as an
+/// [`OpError`].
 pub(crate) fn syscalls<T: Default>(
     ctx: &OpCtx,
+    path: &Path,
+    to: Option<&Path>,
     f: impl FnOnce(&OpCtx) -> io::Result<T>,
 ) -> io::Result<(T, Duration)> {
     if ctx.dry {
         Ok((T::default(), Duration::ZERO))
     } else {
-        timed(|| f(ctx))
+        timed(|| f(ctx)).map_err(|e| OpError::wrap(ctx.root, path, to, e))
     }
 }
 
@@ -231,7 +289,9 @@ pub(crate) fn new_ino(ctx: &mut OpCtx, path: &Path) -> io::Result<u64> {
     if ctx.dry {
         Ok(ctx.model.synthetic_ino())
     } else {
-        Ok(std::fs::symlink_metadata(path)?.ino())
+        std::fs::symlink_metadata(path)
+            .map(|m| m.ino())
+            .map_err(|e| OpError::wrap(ctx.root, path, None, e))
     }
 }
 

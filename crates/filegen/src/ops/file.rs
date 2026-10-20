@@ -48,7 +48,7 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let mut content = Content::draw(ctx.rng, &ctx.cfg.content, size);
     let label = content.label();
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let (ino, dur) = syscalls(ctx, |ctx| {
+    let (ino, dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -89,7 +89,7 @@ pub fn append(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let mut content = Content::draw(ctx.rng, &ctx.cfg.content, delta);
     let label = content.label();
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |ctx| {
+    let ((), dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new().append(true).open(&path)?;
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
@@ -107,7 +107,7 @@ pub fn truncate(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     };
     let size = draw_truncate(ctx.rng, ctx.model.node(id).size);
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |ctx| {
+    let ((), dur) = syscalls(ctx, &path, None, |ctx| {
         let f = OpenOptions::new().write(true).open(&path)?;
         f.set_len(size)?;
         maybe_fsync(ctx, &f)
@@ -126,7 +126,7 @@ pub fn overwrite_range(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let mut content = Content::draw(ctx.rng, &ctx.cfg.content, len);
     let label = content.label();
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |ctx| {
+    let ((), dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new().write(true).open(&path)?;
         f.seek(SeekFrom::Start(offset))?;
         content.write_to(&mut f)?;
@@ -158,7 +158,7 @@ pub fn rewrite(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let mut content = Content::draw(ctx.rng, &ctx.cfg.content, size);
     let label = content.label();
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |ctx| {
+    let ((), dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = File::create(&path)?;
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)
@@ -191,7 +191,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         );
         if extend > 0 {
             let size = old + extend;
-            let ((), dur) = syscalls(ctx, |ctx| {
+            let ((), dur) = syscalls(ctx, &path, None, |ctx| {
                 let f = OpenOptions::new().write(true).open(&path)?;
                 f.set_len(size)?;
                 maybe_fsync(ctx, &f)
@@ -207,7 +207,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         }
     }
     let (offset, len) = align_range(draw_range(ctx.rng, old), old);
-    let (emulated, dur) = syscalls(ctx, |ctx| {
+    let (emulated, dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new().write(true).open(&path)?;
         let emulated = !punch(&f, offset, len)?;
         if emulated {
@@ -305,7 +305,7 @@ pub fn delete_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, |_| fs::remove_file(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| fs::remove_file(&path))?;
     let details = vec![("kind", label.into())];
     Ok(removed(ctx, OpKind::DeleteFile, id, details, dur))
 }

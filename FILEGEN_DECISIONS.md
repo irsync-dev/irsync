@@ -230,8 +230,10 @@ code disagree, the code is what shipped and the entry says so.
     (`outcome="interrupted: SIGTERM"`), while `ok` stays bare. Consistent
     with the quoting rule, but easy to trip over when parsing.
 
-32. **Failure lines carry an empty path**, and some errors end the run
-    without a failure line at all (only the footer's outcome names them).
+32. **Some errors end the run without a failure line** (writing the log or
+    a checkpoint after a step succeeded): only the footer's outcome names
+    them. Failure lines used to carry an empty path too; entry 41 fixed
+    that.
 
 33. **No signal handlers during the start-up walk.** The plan installs them
     after the walk and the log header. SIGINT or SIGTERM before that kills
@@ -285,6 +287,17 @@ code disagree, the code is what shipped and the entry says so.
     vanished mid-walk still stays an empty `Dir`). Cost if wrong: an
     unprivileged run over a tree of foreign or read-only entries works on
     fewer targets, which is the point.
+
+41. **A failed operation's error carries its paths.** The `syscalls`
+    helper (and `new_ino`) wrap the OS error as
+    `io::Error::new(kind, OpError { path, to, source })`, with both paths
+    made relative to the root; `Runner::step` downcasts it and the failure
+    line logs `path=` and, for a rename or hard link, `to=`. `OpError`
+    displays as its source, so the error text, the footer's outcome and the
+    exit code are unchanged. Why: the spec's failure line names the paths,
+    and an empty `path=""` left the reader guessing which entry failed. Cost
+    if wrong: `raw_os_error()` on the returned error is now `None` (nothing
+    reads it; `kind()` is kept).
 
 ## Process notes
 
