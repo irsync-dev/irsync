@@ -25,6 +25,7 @@ macro_rules! ctx {
 
 pub mod file;
 pub mod link;
+pub mod meta;
 pub mod tree;
 
 use std::fs::File;
@@ -92,15 +93,12 @@ pub fn dispatch(kind: OpKind) -> OpFn {
         OpKind::Symlink => link::symlink,
         OpKind::RepointSymlink => link::repoint_symlink,
         OpKind::DeleteSymlink => link::delete_symlink,
-        OpKind::Chmod | OpKind::SetMtime | OpKind::SetXattr | OpKind::Chown | OpKind::Mknod => {
-            not_yet
-        }
+        OpKind::Chmod => meta::chmod,
+        OpKind::SetMtime => meta::set_mtime,
+        OpKind::SetXattr => meta::set_xattr,
+        OpKind::Chown => meta::chown,
+        OpKind::Mknod => meta::mknod,
     }
-}
-
-/// Placeholder for kinds implemented in later tasks.
-fn not_yet(_: &mut OpCtx) -> io::Result<OpOutcome> {
-    Ok(OpOutcome::NoTarget)
 }
 
 /// Runs `f`, returning its result and how long it took. Everything inside
