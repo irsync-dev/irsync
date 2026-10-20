@@ -13,6 +13,9 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::escape::escape;
 
+/// First inode number handed out by [`Model::synthetic_ino`].
+const SYNTHETIC_INO_BASE: u64 = 1 << 63;
+
 /// Index of a node in the model's arena. The root is always 0.
 pub type NodeId = u32;
 
@@ -77,6 +80,8 @@ pub struct Model {
     free: Vec<NodeId>,
     live: usize,
     total_bytes: u64,
+    /// Next inode handed out by [`Model::synthetic_ino`].
+    next_synthetic_ino: u64,
 }
 
 impl Default for Model {
@@ -94,6 +99,7 @@ impl Model {
             free: Vec::new(),
             live: 1,
             total_bytes: 0,
+            next_synthetic_ino: SYNTHETIC_INO_BASE,
         }
     }
 
@@ -127,6 +133,16 @@ impl Model {
     /// Sum of `size` over `File` nodes (each hard link counts again).
     pub fn total_bytes(&self) -> u64 {
         self.total_bytes
+    }
+
+    /// A fresh, unique inode number for a file created in a dry run, where
+    /// no real inode exists; hard links are keyed by inode, so they must
+    /// not all share 0. Drawn from the top half of the range, away from
+    /// real inode numbers.
+    pub fn synthetic_ino(&mut self) -> u64 {
+        let ino = self.next_synthetic_ino;
+        self.next_synthetic_ino += 1;
+        ino
     }
 
     /// Case- and normalization-insensitive key: NFD of the lowercased name.
@@ -413,6 +429,15 @@ mod tests {
             .iter()
             .map(|&c| m.node(c).name.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn synthetic_inos_are_unique_and_high() {
+        let mut m = Model::new();
+        let a = m.synthetic_ino();
+        let b = m.synthetic_ino();
+        assert_eq!(a, 1 << 63);
+        assert_eq!(b, a + 1);
     }
 
     #[test]

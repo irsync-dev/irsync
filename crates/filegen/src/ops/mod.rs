@@ -84,7 +84,9 @@ fn not_yet(_: &mut OpCtx) -> io::Result<OpOutcome> {
     Ok(OpOutcome::NoTarget)
 }
 
-/// Runs `f`, returning its result and how long it took.
+/// Runs `f`, returning its result and how long it took. Everything inside
+/// `f` is timed, so for content writes this includes generating the bytes
+/// in `Content::write_to`, not only the syscalls.
 pub fn timed<T>(f: impl FnOnce() -> io::Result<T>) -> io::Result<(T, Duration)> {
     let start = Instant::now();
     let v = f()?;

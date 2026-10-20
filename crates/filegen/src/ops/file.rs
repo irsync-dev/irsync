@@ -91,6 +91,13 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         maybe_fsync(ctx, &f)?;
         Ok(f.metadata()?.ino())
     })?;
+    // A dry run has no real inode; give it a unique one, since hard links
+    // are keyed by inode.
+    let ino = if ctx.dry {
+        ctx.model.synthetic_ino()
+    } else {
+        ino
+    };
     let id = ctx
         .model
         .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
@@ -230,7 +237,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
             return Ok(applied(ctx, OpKind::PunchHole, id, 0, details, dur));
         }
     }
-    let (offset, len) = draw_range(ctx.rng, old);
+    let (offset, len) = align_range(draw_range(ctx.rng, old), old);
     let (emulated, dur) = syscalls(ctx, |ctx| {
         let mut f = OpenOptions::new().write(true).open(&path)?;
         let emulated = !punch(&f, offset, len)?;
@@ -241,11 +248,30 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         Ok(emulated)
     })?;
     let mut details = vec![("offset", offset.to_string()), ("len", len.to_string())];
+    // `emulated` (and the `bytes` it implies) is an observed outcome, like
+    // `dur`: it depends on the filesystem, a dry run cannot know it, and it
+    // is not part of the record's dry/real identity.
     if emulated {
         details.push(("emulated", "1".into()));
     }
     let bytes = if emulated { len } else { 0 };
     Ok(applied(ctx, OpKind::PunchHole, id, bytes, details, dur))
+}
+
+/// Widens a drawn hole to whole 4 KiB blocks (macOS `F_PUNCHHOLE` needs
+/// block alignment), clamped to the file size; files smaller than a block
+/// keep the drawn range.
+fn align_range((offset, len): (u64, u64), size: u64) -> (u64, u64) {
+    const BLOCK: u64 = 4096;
+    if size < BLOCK {
+        return (offset, len);
+    }
+    let start = offset / BLOCK * BLOCK;
+    let end = (offset + len)
+        .div_ceil(BLOCK)
+        .saturating_mul(BLOCK)
+        .min(size);
+    (start, end - start)
 }
 
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
@@ -595,12 +621,24 @@ mod tests {
                 let off: usize = detail(&a.rec, "offset").unwrap().parse().unwrap();
                 let len: usize = detail(&a.rec, "len").unwrap().parse().unwrap();
                 assert!(len >= 1 && off + len <= before as usize);
+                assert!(off.is_multiple_of(4096));
+                assert!((off + len).is_multiple_of(4096) || off + len == before as usize);
                 assert!(data[off..off + len].iter().all(|&b| b == 0));
             }
             assert!(after <= cfg.max_file_size.0);
             assert_consistent(&tmp, &cfg, &m);
         }
         assert!(plain > 0 && extend > 0, "plain={plain} extend={extend}");
+    }
+
+    #[test]
+    fn align_range_widens_to_blocks_within_size() {
+        assert_eq!(align_range((5000, 10), 100_000), (4096, 4096));
+        assert_eq!(align_range((4096, 4096), 100_000), (4096, 4096));
+        assert_eq!(align_range((8000, 1000), 10_000), (4096, 10_000 - 4096));
+        assert_eq!(align_range((0, 1), 4096), (0, 4096));
+        // Smaller than a block: unchanged.
+        assert_eq!(align_range((100, 50), 4000), (100, 50));
     }
 
     #[test]
@@ -652,6 +690,14 @@ mod tests {
         let id = m.resolve(&a.rec.path).unwrap();
         assert_eq!(m.node(id).kind, NodeKind::File);
         assert_eq!(m.entries(), 1);
+        let first_ino = m.node(id).ino;
+        assert_ne!(first_ino, 0, "dry-run files get a synthetic inode");
+        let mut ctx = ctx!(tmp, cfg, m, rng);
+        ctx.dry = true;
+        let b = done(create_file(&mut ctx).unwrap());
+        let second_ino = m.node(m.resolve(&b.rec.path).unwrap()).ino;
+        assert_ne!(second_ino, 0);
+        assert_ne!(second_ino, first_ino);
 
         let ops: [OpFn; 7] = [
             create_file,
@@ -673,9 +719,33 @@ mod tests {
         }
     }
 
-    /// Runs 60 operations cycling through all seven kinds, real or dry;
-    /// returns one line per step, the model and the next rng output.
-    fn run(tmp: &TempDir, cfg: &Config, seed: u64, dry: bool) -> (Vec<String>, Model, u64) {
+    /// A record without its observed outcomes: like `dur`, whether a hole
+    /// was emulated (and the `bytes` that implies) depends on the
+    /// filesystem and is not part of the dry/real record identity.
+    fn identity(rec: &OpRecord) -> String {
+        let mut details = rec.details.clone();
+        let mut bytes = rec.bytes;
+        if rec.kind == OpKind::PunchHole {
+            details.retain(|(k, _)| *k != "emulated");
+            bytes = 0;
+        }
+        format!(
+            "{:?} {:?} {:?} {} {:?}",
+            rec.kind, rec.path, rec.to, bytes, details
+        )
+    }
+
+    /// One run's step lines: full records and their [`identity`].
+    struct Run {
+        full: Vec<String>,
+        ident: Vec<String>,
+        model: Model,
+        /// The next rng output after the run.
+        tail: u64,
+    }
+
+    /// Runs 60 operations cycling through all seven kinds, real or dry.
+    fn run(tmp: &TempDir, cfg: &Config, seed: u64, dry: bool) -> Run {
         use rand::RngCore;
         let (mut m, mut rng) = ctx_in(tmp, cfg, seed);
         let kinds = [
@@ -690,7 +760,7 @@ mod tests {
             OpKind::DeleteFile,
         ];
         let mut anchor = m.root();
-        let mut lines = Vec::new();
+        let (mut full, mut ident) = (Vec::new(), Vec::new());
         for &kind in kinds.iter().cycle().take(60) {
             let mut ctx = ctx!(tmp, cfg, m, rng);
             ctx.anchor = anchor;
@@ -698,16 +768,25 @@ mod tests {
             match dispatch(kind)(&mut ctx).unwrap() {
                 OpOutcome::Done(a) => {
                     anchor = a.anchor;
-                    lines.push(format!(
+                    full.push(format!(
                         "{:?} {:?} {:?} {} {:?}",
                         a.rec.kind, a.rec.path, a.rec.to, a.rec.bytes, a.rec.details
                     ));
+                    ident.push(identity(&a.rec));
                 }
-                OpOutcome::NoTarget => lines.push("none".into()),
+                OpOutcome::NoTarget => {
+                    full.push("none".into());
+                    ident.push("none".into());
+                }
             }
         }
         let tail = rng.next_u64();
-        (lines, m, tail)
+        Run {
+            full,
+            ident,
+            model: m,
+            tail,
+        }
     }
 
     #[test]
@@ -718,22 +797,25 @@ mod tests {
             TempDir::new().unwrap(),
             TempDir::new().unwrap(),
         );
-        let (l1, m1, r1) = run(&t1, &cfg, 42, false);
-        let (l2, m2, r2) = run(&t2, &cfg, 42, false);
-        assert_eq!(l1, l2);
-        assert_eq!(r1, r2);
+        let r1 = run(&t1, &cfg, 42, false);
+        let r2 = run(&t2, &cfg, 42, false);
+        assert_eq!(r1.full, r2.full);
+        assert_eq!(r1.tail, r2.tail);
         assert_eq!(tree_sizes(t1.path()), tree_sizes(t2.path()));
-        assert_consistent(&t1, &cfg, &m1);
-        assert!(m1.entries() > 1);
+        assert_consistent(&t1, &cfg, &r1.model);
+        assert!(r1.model.entries() > 1);
+        let l1 = &r1.full;
         for kind in OpKind::ALL.iter().take(7) {
             let tag = format!("{kind:?} ");
             assert!(l1.iter().any(|l| l.starts_with(&tag)), "{kind:?} never ran");
         }
         // A dry run makes the same decisions and ends in the same model.
-        let (l3, m3, r3) = run(&t3, &cfg, 42, true);
-        assert_eq!(l1, l3);
-        assert_eq!(r1, r3);
-        assert_eq!(model_sizes(&m3), model_sizes(&m2));
+        // Records are compared by identity: observed outcomes (`emulated`
+        // and the bytes it implies, like `dur`) may differ.
+        let r3 = run(&t3, &cfg, 42, true);
+        assert_eq!(r1.ident, r3.ident);
+        assert_eq!(r1.tail, r3.tail);
+        assert_eq!(model_sizes(&r3.model), model_sizes(&r2.model));
         assert!(tree_sizes(t3.path()).is_empty());
     }
 }
