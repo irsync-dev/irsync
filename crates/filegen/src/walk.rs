@@ -22,8 +22,9 @@ pub fn is_off_limits_name(name: &[u8]) -> bool {
 /// Iterative with an explicit stack. Listings are sorted bytewise so the
 /// resulting ids are deterministic. `.fileset*` names, entries on another
 /// device, sockets and unknown types become `OffLimits` and are not
-/// descended. A directory that cannot be listed for lack of permission is
-/// kept as an empty `Dir`.
+/// descended. A subdirectory that cannot be listed (permission denied, or
+/// vanished) is kept as an empty `Dir`; an entry that is listed but cannot
+/// be stat'ed for the same reasons becomes `OffLimits`.
 pub fn from_disk(root: &Path) -> io::Result<Model> {
     let root_meta = fs::symlink_metadata(root)?;
     if !root_meta.is_dir() {
@@ -36,17 +37,12 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
     let mut model = Model::new();
     let mut stack: Vec<(PathBuf, NodeId)> = vec![(root.to_path_buf(), model.root())];
     while let Some((dir_path, dir_id)) = stack.pop() {
-        let read = match fs::read_dir(&dir_path) {
-            Ok(read) => read,
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && dir_id != model.root() => {
-                continue;
-            }
+        let names = match list_sorted(&dir_path) {
+            Ok(names) => names,
+            // An unlistable (or vanished) subdirectory stays an empty Dir.
+            Err(e) if tolerated(&e) && dir_id != model.root() => continue,
             Err(e) => return Err(e),
         };
-        let mut names: Vec<OsString> = read
-            .map(|entry| entry.map(|e| e.file_name()))
-            .collect::<io::Result<_>>()?;
-        names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         for name in names {
             let path = dir_path.join(&name);
             let name = name.into_vec();
@@ -54,7 +50,16 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
                 model.insert(dir_id, name, NodeKind::OffLimits, 0, 0);
                 continue;
             }
-            let meta = fs::symlink_metadata(&path)?;
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                // Listed but not statable (dir lacks search permission, or
+                // the entry vanished): keep the name, never touch it.
+                Err(e) if tolerated(&e) => {
+                    model.insert(dir_id, name, NodeKind::OffLimits, 0, 0);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             let ft = meta.file_type();
             let kind = if meta.dev() != root_dev {
                 NodeKind::OffLimits
@@ -83,6 +88,24 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
         }
     }
     Ok(model)
+}
+
+/// Names in `dir`, sorted bytewise. Any failure, opening the directory or
+/// mid-iteration, is reported the same way.
+fn list_sorted(dir: &Path) -> io::Result<Vec<OsString>> {
+    let mut names: Vec<OsString> = fs::read_dir(dir)?
+        .map(|entry| entry.map(|e| e.file_name()))
+        .collect::<io::Result<_>>()?;
+    names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    Ok(names)
+}
+
+/// Errors on a single entry or subdirectory that the walk absorbs.
+fn tolerated(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::NotFound
+    )
 }
 
 #[cfg(test)]
@@ -167,6 +190,30 @@ mod tests {
         let id = m.resolve(b"locked").unwrap();
         assert_eq!(m.node(id).kind, NodeKind::Dir);
         assert_eq!(m.node(id).children.is_empty(), !readable);
+    }
+
+    #[test]
+    fn walk_marks_unstatable_entry_off_limits() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            eprintln!("skipping walk_marks_unstatable_entry_off_limits: running as root");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let listable = t.path().join("listable");
+        fs::create_dir(&listable).unwrap();
+        fs::write(listable.join("f"), b"z").unwrap();
+        // Readable but not searchable: listing works, lstat of entries fails.
+        fs::set_permissions(&listable, fs::Permissions::from_mode(0o644)).unwrap();
+        let m = from_disk(t.path());
+        fs::set_permissions(&listable, fs::Permissions::from_mode(0o755)).unwrap();
+        let m = m.unwrap();
+        let dir = m.resolve(b"listable").unwrap();
+        assert_eq!(m.node(dir).kind, NodeKind::Dir);
+        let f = m.resolve(b"listable/f").unwrap();
+        assert_eq!(m.node(f).kind, NodeKind::OffLimits);
+        assert!(m.has_off_limits_below(dir));
+        assert_eq!(m.total_bytes(), 0);
     }
 
     #[cfg(target_os = "linux")]
