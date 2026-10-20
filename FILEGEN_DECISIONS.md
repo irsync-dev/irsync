@@ -286,7 +286,11 @@ code disagree, the code is what shipped and the entry says so.
     root nothing changes (root may write anything; a directory that
     vanished mid-walk still stays an empty `Dir`). Cost if wrong: an
     unprivileged run over a tree of foreign or read-only entries works on
-    fewer targets, which is the point.
+    fewer targets, which is the point. Assumption: the umask keeps the
+    owner's bits (any usual umask does). Under a umask such as `0200`,
+    files filegen creates would lack owner write, a resume's walk would put
+    them off limits, and the resumed run would diverge from the
+    uninterrupted one (and would have failed writing them anyway).
 
 41. **A failed operation's error carries its paths.** The `syscalls`
     helper (and `new_ino`) wrap the OS error as

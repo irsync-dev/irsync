@@ -207,7 +207,8 @@ filegen runs as root, they are also:
 As root these four do not apply, and a directory that cannot be listed
 (because it vanished during the walk) is kept as an empty directory.
 filegen's own `chmod` always keeps owner read and write (and search on
-directories), so nothing filegen creates ever becomes off limits. Absolute
+directories), so, with a umask that keeps the owner's bits (any usual one),
+nothing filegen creates ever becomes off limits. Absolute
 symlink targets may point outside the root, but filegen only creates the
 link.
 
