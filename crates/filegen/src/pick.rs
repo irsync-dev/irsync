@@ -56,6 +56,8 @@ pub fn descend(
 /// A node of `kind` near `anchor`: with probability `cfg.same_dir` from
 /// below `anchor`, `cfg.parent` from below its parent, else from below the
 /// root, widening when the drawn scope holds none. Never the root.
+/// `anchor` is first normalised by [`anchor_of`], so a dead or non-`Dir`
+/// anchor scopes from its live `Dir` parent, else the root.
 pub fn pick(
     rng: &mut ChaCha8Rng,
     model: &Model,
@@ -63,6 +65,7 @@ pub fn pick(
     anchor: NodeId,
     kind: NodeKind,
 ) -> Option<NodeId> {
+    let anchor = anchor_of(model, anchor);
     let first = draw_scope(rng, cfg);
     (first..SCOPES).find_map(|s| descend(rng, model, scope_root(model, anchor, s), kind))
 }
@@ -70,20 +73,21 @@ pub fn pick(
 /// A directory near `anchor` by the same scheme as [`pick`], where the
 /// `same_dir` scope may also yield `anchor` itself (with probability
 /// `1 / (1 + dirs below anchor)`), and the root is the final fallback.
+/// `anchor` is first normalised by [`anchor_of`] (a dead or non-`Dir`
+/// anchor becomes its live `Dir` parent, else the root), so only a live
+/// `Dir` is ever returned.
 pub fn pick_dir_or_root(
     rng: &mut ChaCha8Rng,
     model: &Model,
     cfg: &LocalityConfig,
     anchor: NodeId,
 ) -> NodeId {
+    let anchor = anchor_of(model, anchor);
     let first = draw_scope(rng, cfg);
     if first == 0 {
-        let node = model.node(anchor);
-        if node.kind == NodeKind::Dir {
-            let deeper = below(node, NodeKind::Dir.index());
-            if deeper == 0 || rng.gen_range(0..=deeper) == 0 {
-                return anchor;
-            }
+        let deeper = below(model.node(anchor), NodeKind::Dir.index());
+        if deeper == 0 || rng.gen_range(0..=deeper) == 0 {
+            return anchor;
         }
     }
     (first..SCOPES)
@@ -92,7 +96,8 @@ pub fn pick_dir_or_root(
 }
 
 /// Like [`pick_dir_or_root`], but never `not_inside` nor anything below
-/// it; after [`DEST_RETRIES`] rejected draws, the root.
+/// it; after [`DEST_RETRIES`] rejected draws, the root. `anchor` is
+/// normalised by [`anchor_of`] as in [`pick_dir_or_root`].
 pub fn pick_dest_dir(
     rng: &mut ChaCha8Rng,
     model: &Model,
@@ -110,14 +115,17 @@ pub fn pick_dest_dir(
     model.root()
 }
 
-/// The directory an operation on `id` touched: `id` if it is a `Dir`,
-/// else its parent (the root if it has none).
+/// The directory an operation on `id` touched, always a live `Dir`: `id`
+/// if it is a live `Dir`, else its parent if that is a live `Dir`, else
+/// the root. A stale (freed) id has no parent and so yields the root.
 pub fn anchor_of(model: &Model, id: NodeId) -> NodeId {
-    let node = model.node(id);
-    if node.kind == NodeKind::Dir {
-        id
-    } else {
-        node.parent.unwrap_or(model.root())
+    let is_live_dir = |n: NodeId| model.is_live(n) && model.node(n).kind == NodeKind::Dir;
+    if is_live_dir(id) {
+        return id;
+    }
+    match model.is_live(id).then(|| model.node(id).parent).flatten() {
+        Some(p) if is_live_dir(p) => p,
+        _ => model.root(),
     }
 }
 
@@ -384,5 +392,57 @@ mod tests {
         assert_eq!(anchor_of(&m, d), d);
         assert_eq!(anchor_of(&m, f), d);
         assert_eq!(anchor_of(&m, root), root);
+    }
+
+    #[test]
+    fn stale_anchor_degrades_to_live_dir() {
+        // root/{p/{d/{sub, f}}, other/{g}}
+        let mut m = Model::new();
+        let root = m.root();
+        let p = dir(&mut m, root, "p");
+        let d = dir(&mut m, p, "d");
+        let sub = dir(&mut m, d, "sub");
+        let f = file(&mut m, d, "f");
+        let other = dir(&mut m, root, "other");
+        file(&mut m, other, "g");
+        m.remove_subtree(d);
+        let dead = [d, sub, f];
+        assert!(dead.iter().all(|&id| !m.is_live(id)));
+        let a = anchor_of(&m, d);
+        assert!(a == p || a == root, "anchor_of dead dir gave {a}");
+
+        let live_dir = |m: &Model, id: NodeId| m.is_live(id) && m.node(id).kind == NodeKind::Dir;
+        let mut rng = ChaCha8Rng::seed_from_u64(13);
+        for cfg in [only_same_dir(), LocalityConfig::default()] {
+            for _ in 0..200 {
+                let got = pick_dir_or_root(&mut rng, &m, &cfg, d);
+                assert!(!dead.contains(&got), "returned dead id {got}");
+                assert!(live_dir(&m, got));
+                let got = pick_dest_dir(&mut rng, &m, &cfg, d, None);
+                assert!(live_dir(&m, got));
+                let got = pick(&mut rng, &m, &cfg, d, NodeKind::File).unwrap();
+                assert!(m.is_live(got) && m.node(got).kind == NodeKind::File);
+            }
+        }
+
+        // Reuse every freed slot with unrelated nodes; stale ids must still
+        // only ever lead to live directories.
+        let n1 = file(&mut m, other, "n1");
+        let n2 = dir(&mut m, root, "n2");
+        let n3 = file(&mut m, n2, "n3");
+        let mut reused = [n1, n2, n3];
+        reused.sort();
+        let mut freed = dead;
+        freed.sort();
+        assert_eq!(reused, freed, "slots reused");
+        for cfg in [only_same_dir(), LocalityConfig::default()] {
+            for &stale in &dead {
+                assert!(live_dir(&m, anchor_of(&m, stale)));
+                for _ in 0..200 {
+                    assert!(live_dir(&m, pick_dir_or_root(&mut rng, &m, &cfg, stale)));
+                    assert!(live_dir(&m, pick_dest_dir(&mut rng, &m, &cfg, stale, None)));
+                }
+            }
+        }
     }
 }

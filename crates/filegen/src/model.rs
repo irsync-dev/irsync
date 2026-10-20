@@ -105,6 +105,16 @@ impl Model {
         &self.nodes[id as usize]
     }
 
+    /// Whether `id` names a live node: in range and either the root or
+    /// attached to a parent (freed slots are parentless placeholders).
+    pub fn is_live(&self, id: NodeId) -> bool {
+        id == self.root()
+            || self
+                .nodes
+                .get(id as usize)
+                .is_some_and(|n| n.parent.is_some())
+    }
+
     fn node_mut(&mut self, id: NodeId) -> &mut Node {
         &mut self.nodes[id as usize]
     }
@@ -294,7 +304,9 @@ impl Model {
         while let Some(n) = stack.pop() {
             let node = std::mem::replace(
                 &mut self.nodes[n as usize],
-                Node::new(Box::default(), NodeKind::Dir, 0, 0),
+                // A dead slot: off-limits and parentless, so a stale id is
+                // never mistaken for a live directory.
+                Node::new(Box::default(), NodeKind::OffLimits, 0, 0),
             );
             if node.kind == NodeKind::File {
                 self.total_bytes -= node.size;
@@ -460,6 +472,28 @@ mod tests {
         assert_eq!(m.resolve(b"d2/x/a"), Some(f));
         assert!(!m.has_folded_name(d1, &Model::fold("f")));
         assert_eq!(m.total_bytes(), 3);
+    }
+
+    #[test]
+    fn freed_slots_are_not_live() {
+        let mut m = Model::new();
+        let r = m.root();
+        assert!(m.is_live(r));
+        let d = m.insert(r, b"d".to_vec(), NodeKind::Dir, 0, 0);
+        let f = m.insert(d, b"f".to_vec(), NodeKind::File, 1, 1);
+        assert!(m.is_live(d) && m.is_live(f));
+        assert!(!m.is_live(f + 100));
+        m.remove_subtree(d);
+        for id in [d, f] {
+            assert!(!m.is_live(id));
+            let n = m.node(id);
+            assert_eq!(n.kind, NodeKind::OffLimits);
+            assert_eq!(n.parent, None);
+            assert!(n.name.is_empty() && n.children.is_empty());
+            assert_eq!(n.counts, [0; NodeKind::COUNT]);
+        }
+        let g = m.insert(r, b"g".to_vec(), NodeKind::File, 1, 2);
+        assert!(m.is_live(g));
     }
 
     #[test]
