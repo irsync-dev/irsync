@@ -58,7 +58,7 @@ fn run_command(args: RunArgs) -> i32 {
         Err(e) => {
             eprintln!("filegen: {e}");
             match e {
-                RunError::Usage(_) | RunError::Config(_) | RunError::State(_) => 2,
+                RunError::Usage(_) | RunError::Config(_) | RunError::State { .. } => 2,
                 RunError::Io(_) => 1,
             }
         }

@@ -215,10 +215,10 @@ code disagree, the code is what shipped and the entry says so.
     the reliable form.
 
 28. **Validation is incomplete.** It does not check that the size bands are
-    in increasing order, that the name-class weights sum to more than 0,
-    that lists are non-empty, or that `names.extensions` hold valid name
-    characters (a `/` or NUL in one makes name drawing fail). A
+    in increasing order or that lists are non-empty. A
     `size_distribution.small.max` of 0 yields 1-byte files, not empty ones.
+    (Name-class weights summing to 0 and `/` or NUL in `names.extensions`
+    are rejected since entry 43.)
 
 29. **A size with a leading `+` (`+4K`) is accepted.**
 
@@ -314,8 +314,51 @@ code disagree, the code is what shipped and the entry says so.
     directory and resumes it there gets the history continued there, not
     in the saved `out_dir`; that is what entry 21 already promised.
 
+43. **Validation rejects `names.classes` weights that sum to 0 and any
+    `names.extensions` entry containing `/` or NUL**, naming the key (the
+    extension by its index). Either made name drawing fail at run time.
+    Cost if wrong: none.
+
+44. **Skipped steps are counted and shown.** A step where not even the
+    fallback (`create_file` in the root) found a target changes nothing,
+    logs no step line and does not advance `steps_done`, as before; it is
+    now counted, the `# end` line gains `skipped=<n>` when the count is
+    above 0 (appended last, so existing parsers of the line keep working),
+    `last_run.outcome` stays `ok`, and unless `--quiet` one warning on
+    stderr says how many of the invocation's steps were skipped. Why: a run
+    that did nothing must be visible. The count is per invocation and not
+    saved in the state. Cost if wrong: none; the draws of such a step were
+    always kept, so determinism is unchanged.
+
+45. **`--force` help reads "With --seed, truncate an existing log and state
+    file for this prefix instead of refusing"**, which is what it does; the
+    old text ("Proceed even if safety checks fail") promised more.
+
+46. **A `--resume` state file that cannot be read or parsed is reported as
+    `state file <path>: <error>`**, still exit 2 (`RunError::State` now
+    carries the path). Before, a missing file gave only the bare OS error.
+
+47. **Tests added in this wave**, each pinning a spec guarantee that had no
+    direct test: a canary directory beside the root, reachable through an
+    absolute and a relative symlink in the root, stays byte-identical
+    (names, contents, modes, nanosecond mtimes) over 3000 steps, and the
+    out dir holds exactly the log and state (`cli_never_writes_beside_the_root`);
+    a checkpoint's `rng` and `chain_state` equal those of a run that
+    stopped after exactly that many steps, and resuming from a checkpoint
+    reproduces the uninterrupted run's tree and step lines
+    (`run_checkpoints_state`); after 5000 steps exercising every default
+    kind the model equals a fresh walk of the disk
+    (`run_every_default_kind_appears`); SIGINT at binary level exits 130
+    with `outcome="interrupted: SIGINT"` and resumes like the uninterrupted
+    run (`cli_sigint_resumable`, sharing its body with the SIGTERM test).
+    The immediate exit on a second SIGINT is still not exercised: two
+    signals sent back to back can coalesce into one.
+
 ## Process notes
 
-- Every commit on the branch ends with the trailer
+- Every commit on the branch up to the final fix wave ends with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; one
-  implementer commit was amended to it after the fact.
+  implementer commit was amended to it after the fact. The final fix
+  wave's commits (entries 40 to 47) were made by Claude Opus 5.5 and carry
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`, the
+  attribution of the model that wrote them.

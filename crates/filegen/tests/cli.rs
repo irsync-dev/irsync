@@ -10,12 +10,16 @@ use common::snapshot;
 #[test]
 fn cli_help_and_seed_resume_exclusive() {
     let bin = env!("CARGO_BIN_EXE_filegen");
-    assert!(Command::new(bin)
-        .args(["run", "--help"])
-        .output()
-        .unwrap()
-        .status
-        .success());
+    let help = Command::new(bin).args(["run", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help.contains(
+            "With --seed, truncate an existing log and state file for this prefix \
+             instead of refusing"
+        ),
+        "{help}"
+    );
     // neither --seed nor --resume
     let out = Command::new(bin)
         .args(["run", "--steps", "1", "/tmp"])
@@ -292,20 +296,34 @@ fn cli_never_touches_planted_manifests() {
 
 #[test]
 fn cli_sigterm_resumable() {
-    use nix::sys::signal::{kill, Signal};
+    interrupt_then_resume(nix::sys::signal::Signal::SIGTERM, 8);
+}
+
+#[test]
+fn cli_sigint_resumable() {
+    interrupt_then_resume(nix::sys::signal::Signal::SIGINT, 21);
+}
+
+/// Sends `sig` to a long run of `seed` once it has logged 50 steps: the run
+/// exits with 128 + the signal number after writing its footer and state;
+/// resumed for 100 more steps, the tree is the uninterrupted run's.
+fn interrupt_then_resume(sig: nix::sys::signal::Signal, seed: u64) {
+    use nix::sys::signal::kill;
     use nix::unistd::Pid;
 
     let (t, root, out) = dirs();
     let sets = ["--set", "max_file_size=4K"];
+    let seed_arg = seed.to_string();
     let mut child = bin()
-        .args(["run", "-q", "--seed", "8", "--steps", "200000", "--out-dir"])
+        .args(["run", "-q", "--seed", &seed_arg, "--steps", "200000"])
+        .arg("--out-dir")
         .arg(&out)
         .args(sets)
         .arg(&root)
         .spawn()
         .unwrap();
-    let log = out.join("filegen-8.log");
-    let state = out.join("filegen-8.state.yaml");
+    let log = out.join(format!("filegen-{seed}.log"));
+    let state = out.join(format!("filegen-{seed}.state.yaml"));
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let n = fs::read_to_string(&log)
@@ -323,9 +341,9 @@ fn cli_sigterm_resumable() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(Pid::from_raw(child.id() as i32), sig).unwrap();
     let st = child.wait().unwrap();
-    assert_eq!(st.code(), Some(143));
+    assert_eq!(st.code(), Some(128 + sig as i32), "{sig:?}");
 
     let done = steps_done(&state);
     assert!((50..200000).contains(&done), "{done}");
@@ -334,7 +352,8 @@ fn cli_sigterm_resumable() {
     assert_eq!(ends.len(), 1);
     assert!(
         ends[0].starts_with(&format!(
-            "# end steps_done={done} outcome=\"interrupted: SIGTERM\" "
+            "# end steps_done={done} outcome=\"interrupted: {}\" ",
+            sig.as_str()
         )),
         "{}",
         ends[0]
@@ -356,7 +375,14 @@ fn cli_sigterm_resumable() {
     fs::rename(&root, t.path().join("resumed")).unwrap();
     fs::create_dir(&root).unwrap();
     let o = bin()
-        .args(["run", "-q", "--seed", "8", "--steps", &total.to_string()])
+        .args([
+            "run",
+            "-q",
+            "--seed",
+            &seed_arg,
+            "--steps",
+            &total.to_string(),
+        ])
         .arg("--out-dir")
         .arg(t.path().join("fresh-out"))
         .args(sets)
@@ -564,4 +590,142 @@ fn cli_config_file_out_dir_in_the_lookup_order() {
     assert!(out.join("filegen-16.log").is_file());
     assert!(!cfg_dir.join("filegen-16.log").exists());
     assert_eq!(fs::read_dir(&env_dir).unwrap().count(), 0);
+}
+
+#[test]
+fn cli_resume_names_a_missing_or_unreadable_state_file() {
+    let (t, root, _) = dirs();
+    let missing = t.path().join("gone.state.yaml");
+    // A directory: it exists but cannot be read as a file.
+    let unreadable = t.path().join("dir.state.yaml");
+    fs::create_dir(&unreadable).unwrap();
+    for state in [&missing, &unreadable] {
+        let o = bin()
+            .args(["run", "-q", "--steps", "1", "--resume"])
+            .arg(state)
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2), "{}", stderr(&o));
+        let err = stderr(&o);
+        let want = format!("state file {}: ", state.display());
+        assert!(err.contains(&want), "{err}");
+        assert!(err.contains("(os error "), "{err}");
+    }
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+}
+
+#[test]
+fn cli_warns_when_steps_found_nothing_to_do() {
+    let (_t, root, out) = dirs();
+    let run = |seed: &str, quiet: bool| {
+        let mut c = bin();
+        c.args(["run", "--seed", seed, "--steps", "4", "--out-dir"])
+            .arg(&out)
+            .args(["--set", "max_path_len=0"]);
+        if quiet {
+            c.arg("-q");
+        }
+        c.arg(&root).output().unwrap()
+    };
+    let o = run("18", false);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let err = stderr(&o);
+    assert_eq!(
+        err.lines().filter(|l| l.contains("warning")).count(),
+        1,
+        "{err}"
+    );
+    assert!(err.contains("4 of 4 steps"), "{err}");
+    let o = run("19", true);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(o.stderr.is_empty(), "{}", stderr(&o));
+    let ends = lines_starting(&out.join("filegen-19.log"), "# end ");
+    assert!(ends[0].ends_with(" skipped=4"), "{}", ends[0]);
+}
+
+/// Everything about `dir` and the entries below it, never following
+/// symlinks: relative path ("" for `dir`), mode, size, mtime to the
+/// nanosecond, and the content of files or the target of symlinks.
+type Exact = Vec<(PathBuf, u32, u64, (i64, i64), Vec<u8>)>;
+
+fn exact_snapshot(dir: &Path) -> Exact {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut out = Exact::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let md = fs::symlink_metadata(&p).unwrap();
+        let data = if md.is_dir() {
+            for e in fs::read_dir(&p).unwrap() {
+                stack.push(e.unwrap().path());
+            }
+            Vec::new()
+        } else if md.file_type().is_symlink() {
+            fs::read_link(&p).unwrap().as_os_str().as_bytes().to_vec()
+        } else {
+            fs::read(&p).unwrap()
+        };
+        let rel = p.strip_prefix(dir).unwrap().to_path_buf();
+        let mtime = (md.mtime(), md.mtime_nsec());
+        out.push((rel, md.mode(), md.size(), mtime, data));
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn cli_never_writes_beside_the_root() {
+    let t = tempfile::TempDir::new().unwrap();
+    let (root, out, canary) = (
+        t.path().join("root"),
+        t.path().join("out"),
+        t.path().join("canary"),
+    );
+    for d in [&root, &out, &canary] {
+        fs::create_dir(d).unwrap();
+    }
+    fs::create_dir(canary.join("sub")).unwrap();
+    for (rel, bytes) in [
+        ("a.txt", &b"canary a"[..]),
+        ("b.bin", &[0u8, 1, 2, 3][..]),
+        ("sub/c", &b"canary c"[..]),
+    ] {
+        fs::write(canary.join(rel), bytes).unwrap();
+    }
+    // An old mtime on every canary entry, so any change to one shows.
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    for rel in ["a.txt", "b.bin", "sub/c", "sub", ""] {
+        fs::File::open(canary.join(rel))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    // Links into the canary, one absolute and one relative, in the root.
+    std::os::unix::fs::symlink(&canary, root.join("abs")).unwrap();
+    std::os::unix::fs::symlink("../canary", root.join("rel")).unwrap();
+    let before = exact_snapshot(&canary);
+
+    let o = bin()
+        .args(["run", "-q", "--seed", "17", "--steps", "3000", "--out-dir"])
+        .arg(&out)
+        .args(["--set", "max_file_size=16K", "--set", "max_total_size=4M"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(steps_done(&out.join("filegen-17.state.yaml")), 3000);
+    assert_eq!(exact_snapshot(&canary), before);
+    assert_eq!(
+        entries_below(&out),
+        [
+            PathBuf::from("filegen-17.log"),
+            "filegen-17.state.yaml".into()
+        ]
+    );
+    assert_eq!(
+        fs::read_dir(t.path()).unwrap().count(),
+        3,
+        "only root, out and canary beside the root"
+    );
 }

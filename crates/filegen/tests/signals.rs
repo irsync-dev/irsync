@@ -30,5 +30,8 @@ fn first_signal_wins_install_clears_and_syscalls_restart() {
     assert_eq!(flag.load(Ordering::SeqCst), 0);
     raise(Signal::SIGINT).unwrap();
     assert_eq!(again.load(Ordering::SeqCst), libc::SIGINT);
-    // A second SIGINT would `_exit(130)`; that is covered at binary level.
+    // A second SIGINT would `_exit(130)`. The binary-level tests
+    // `cli_sigint_resumable` and `cli_sigterm_resumable` cover the first
+    // signal's orderly shutdown; the immediate exit on a second SIGINT is
+    // not exercised (two signals sent back to back can coalesce into one).
 }

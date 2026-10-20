@@ -598,6 +598,17 @@ impl Config {
         ] {
             check_weight(name, w)?;
         }
+        if c.plain + c.spaces + c.dotfile + c.unicode + c.long + c.awkward <= 0.0 {
+            return invalid("names.classes weights sum to 0; at least one must be > 0".into());
+        }
+        for (i, ext) in self.names.extensions.iter().enumerate() {
+            if ext.contains(['/', '\0']) {
+                return invalid(format!(
+                    "names.extensions[{i}] ({ext:?}) contains `/` or NUL, \
+                     which cannot be part of a file name"
+                ));
+            }
+        }
 
         for prev in OpKind::ALL {
             let Some(row) = self.weights.get(&prev) else {
@@ -748,6 +759,30 @@ mod tests {
         let mut c = Config::default();
         c.weights.get_mut(&OpKind::Mkdir).unwrap().clear();
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_unusable_name_settings() {
+        let mut c = Config::default();
+        c.names.classes = NameClassWeights {
+            plain: 0.0,
+            spaces: 0.0,
+            dotfile: 0.0,
+            unicode: 0.0,
+            long: 0.0,
+            awkward: 0.0,
+        };
+        let e = c.validate().unwrap_err().to_string();
+        assert!(e.contains("names.classes"), "{e}");
+        c.names.classes.long = 0.5;
+        c.validate().unwrap();
+
+        for bad in ["a/b", "x\0"] {
+            let mut c = Config::default();
+            c.names.extensions = vec!["txt".into(), bad.into()];
+            let e = c.validate().unwrap_err().to_string();
+            assert!(e.contains("names.extensions"), "{e}");
+        }
     }
 
     #[test]

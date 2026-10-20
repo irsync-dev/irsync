@@ -61,8 +61,8 @@ pub enum RunError {
     Io(io::Error),
     #[error(transparent)]
     Config(ConfigError),
-    #[error(transparent)]
-    State(StateError),
+    #[error("state file {}: {source}", path.display())]
+    State { path: PathBuf, source: StateError },
 }
 
 /// What one call to [`Runner::step`] did.
@@ -99,6 +99,8 @@ pub struct Runner {
     started: jiff::Timestamp,
     clock: Instant,
     bytes_written: u64,
+    /// Steps of this invocation that found nothing to do.
+    skipped: u64,
 }
 
 impl Runner {
@@ -110,7 +112,10 @@ impl Runner {
         let resumed = match &opts.start {
             Start::Seed(_) => None,
             Start::Resume(path) => {
-                let s = state::read(path).map_err(RunError::State)?;
+                let s = state::read(path).map_err(|source| RunError::State {
+                    path: path.clone(),
+                    source,
+                })?;
                 if s.dry_run != opts.dry_run {
                     return Err(RunError::Usage(if s.dry_run {
                         format!(
@@ -269,6 +274,7 @@ impl Runner {
             started,
             clock: Instant::now(),
             bytes_written: 0,
+            skipped: 0,
         })
     }
 
@@ -279,13 +285,18 @@ impl Runner {
     /// A failed operation is logged and returned, with the generator
     /// rewound to where it was before the step, so a state written
     /// afterwards is at the last logged step. (`last_kind`, `anchor` and
-    /// the model change only once an operation succeeds.)
+    /// the model change only once an operation succeeds.) A step where
+    /// not even the fallback found a target returns
+    /// [`StepResult::Retry`] and counts as skipped: its draws are kept, but
+    /// it logs nothing and `steps_done` does not advance.
     pub fn step(&mut self) -> Result<StepResult, io::Error> {
         let rng_before = self.rng.clone();
         match self.apply() {
-            Ok(applied) => applied.map_or(Ok(StepResult::Retry), |(pressure, kind, a)| {
-                self.commit(pressure, kind, a)
-            }),
+            Ok(None) => {
+                self.skipped += 1;
+                Ok(StepResult::Retry)
+            }
+            Ok(Some((pressure, kind, a))) => self.commit(pressure, kind, a),
             Err((kind, e)) => {
                 self.rng = rng_before;
                 let (path, to) = OpError::of(&e)
@@ -361,6 +372,11 @@ impl Runner {
         &self.model
     }
 
+    /// Steps of this invocation that found nothing to do.
+    pub fn skipped(&self) -> u64 {
+        self.skipped
+    }
+
     /// The log and state file paths.
     pub fn paths(&self) -> (&Path, &Path) {
         (&self.log_path, &self.state_path)
@@ -377,6 +393,7 @@ impl Runner {
             steps_done: self.steps_done,
             outcome: outcome.clone(),
             elapsed: self.clock.elapsed(),
+            skipped: self.skipped,
         };
         // Write the state even if the log cannot take its footer.
         let logged = self.log.footer(&footer, &self.stats.summary());
@@ -465,9 +482,11 @@ fn lenient_canonical(p: &Path) -> io::Result<PathBuf> {
 /// checking for SIGINT and SIGTERM between steps, with a progress line on
 /// stderr unless quiet (or verbose, whose echoed log lines would garble
 /// it). A failed step ends the run with [`Outcome::Failed`], a signal with
-/// [`Outcome::Interrupted`]; both still write the footer and state.
+/// [`Outcome::Interrupted`]; both still write the footer and state. If any
+/// step found nothing to do, one warning says so on stderr unless quiet.
 pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
     let steps = opts.steps;
+    let quiet = opts.quiet;
     let bar = if opts.quiet || opts.verbose {
         ProgressBar::hidden()
     } else {
@@ -501,7 +520,14 @@ pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
         }
     };
     bar.finish_and_clear();
+    let skipped = runner.skipped();
     runner.finish(outcome.clone())?;
+    if skipped > 0 && !quiet {
+        eprintln!(
+            "filegen: warning: {skipped} of {done} steps found nothing to do, not even \
+             create_file in the root, and were skipped (skipped= in the log's # end line)"
+        );
+    }
     Ok(outcome)
 }
 
@@ -703,7 +729,15 @@ mod tests {
     fn run_every_default_kind_appears() {
         let (t, root) = base();
         let out = t.path().join("out");
-        run_ok(opts(&root, &out, 5000, Start::Seed(13)));
+        let mut r = Runner::new(opts(&root, &out, 5000, Start::Seed(13))).unwrap();
+        for _ in 0..5000 {
+            r.step().unwrap();
+        }
+        // After every kind has run, the model still matches the disk.
+        let disk = from_disk(&root).unwrap();
+        assert_eq!(triples(&disk), triples(r.model()));
+        assert_eq!(disk.total_bytes(), r.model().total_bytes());
+        r.finish(Outcome::Ok).unwrap();
         let log = text(&out.join("filegen-13.log"));
         for kind in OpKind::ALL {
             let seen = log.contains(&format!(" op={} ", kind.name()));
@@ -1045,6 +1079,88 @@ mod tests {
         // Dropped without finish, as by a kill no handler catches.
         drop(r);
         assert_eq!(state::read(&state_path).unwrap().steps_done, 20);
+
+        // The checkpoint is exactly the state of a run that stopped after
+        // 2 x checkpoint_steps steps.
+        let (t2, root2) = base();
+        let o = opts_with(
+            &root2,
+            &t2.path().join("out"),
+            20,
+            Start::Seed(22),
+            &[("checkpoint_steps", "10")],
+        );
+        let mut fresh = Runner::new(o).unwrap();
+        for _ in 0..20 {
+            fresh.step().unwrap();
+        }
+        let f = fresh.state("ok");
+        assert_eq!(s.rng, f.rng);
+        assert_eq!(s.chain_state, f.chain_state);
+        drop(fresh);
+
+        // Resuming from a checkpoint (killed right after it, so the tree is
+        // as the checkpoint left it) for the remaining steps reproduces the
+        // uninterrupted run. Both at one root path: absolute symlink
+        // targets name it.
+        let cp = [("checkpoint_steps", "10")];
+        let whole = t.path().join("whole");
+        reset(&root);
+        run_ok(opts_with(&root, &whole, 100, Start::Seed(22), &cp));
+        let want = snapshot(&root);
+        reset(&root);
+        let killed = t.path().join("killed");
+        let mut r = Runner::new(opts_with(&root, &killed, 100, Start::Seed(22), &cp)).unwrap();
+        let state_path = r.paths().1.to_path_buf();
+        for _ in 0..30 {
+            r.step().unwrap();
+        }
+        drop(r);
+        assert_eq!(state::read(&state_path).unwrap().steps_done, 30);
+        run_ok(opts_with(
+            &root,
+            &killed,
+            70,
+            Start::Resume(state_path),
+            &cp,
+        ));
+        assert_eq!(snapshot(&root), want);
+        assert_eq!(
+            step_lines(&text(&whole.join("filegen-22.log"))),
+            step_lines(&text(&killed.join("filegen-22.log")))
+        );
+    }
+
+    #[test]
+    fn run_counts_skipped_steps() {
+        // No name fits a max_path_len of 0: every step, the create_file
+        // fallback included, finds nothing to do.
+        let (t, root) = base();
+        let out = t.path().join("out");
+        let o = opts_with(&root, &out, 5, Start::Seed(27), &[("max_path_len", "0")]);
+        let mut r = Runner::new(o).unwrap();
+        for _ in 0..5 {
+            assert_eq!(r.step().unwrap(), StepResult::Retry);
+        }
+        assert_eq!(r.skipped(), 5);
+        let (log_path, state_path) = (r.paths().0.to_path_buf(), r.paths().1.to_path_buf());
+        r.finish(Outcome::Ok).unwrap();
+        let end = text(&log_path)
+            .lines()
+            .find(|l| l.starts_with("# end"))
+            .unwrap()
+            .to_string();
+        assert!(end.starts_with("# end steps_done=0 outcome=ok "), "{end}");
+        assert!(end.ends_with(" skipped=5"), "{end}");
+        let s = state::read(&state_path).unwrap();
+        assert_eq!(s.last_run.outcome, "ok");
+        assert_eq!(s.steps_done, 0);
+
+        // A run that skipped nothing has no skipped= at all.
+        let out2 = t.path().join("out2");
+        run_ok(opts(&root, &out2, 5, Start::Seed(27)));
+        let log = text(&out2.join("filegen-27.log"));
+        assert!(!log.contains("skipped="), "{log}");
     }
 
     #[test]

@@ -48,7 +48,9 @@ Sizes are plain bytes or carry a `K`, `M`, `G` or `T` suffix (powers of
 1024). Precedence, lowest first: built-in defaults, the resumed state's
 `config` (without `out_dir` and `prefix`, see below), the `--config` file,
 `--set`, the dedicated flags. Unknown keys
-are an error, and `max_file_size` may not exceed `max_total_size`.
+are an error, `max_file_size` may not exceed `max_total_size`, the
+`names.classes` weights may not all be 0, and no `names.extensions` entry
+may contain `/` or NUL.
 
 Examples:
 
@@ -128,6 +130,13 @@ invocation. `outcome` is `ok`, `"failed: <message>"` or
 `"interrupted: SIGINT"` / `"interrupted: SIGTERM"`. A dry run marks each
 step line `dry=1` and logs `dur_us=0`.
 
+A step whose drawn kinds all lack a target, and where even the fallback,
+`create_file` in the root, finds no name that fits (for example with a tiny
+`max_path_len`), does nothing: it logs no step line and does not advance
+`steps_done`, but counts toward `--steps`. The `# end` line then ends in
+`skipped=<n>`, the outcome stays `ok`, and unless `-q` one warning on stderr
+says how many steps were skipped.
+
 ## State file
 
 A YAML document, written to a temporary file and renamed into place:
@@ -173,7 +182,9 @@ hold a few step numbers twice, and the tree is in the "altered" case above.
 - `0`: all steps done
 - `1`: an operation failed (the failure line, footer and state are written,
   with the generator rewound to before that step), or another I/O error
-- `2`: usage, configuration or state-file error, or a refusal above
+- `2`: usage, configuration or state-file error, or a refusal above; a
+  `--resume` state file that is missing, unreadable or invalid is reported
+  as `state file <path>: <error>`
 - `130` / `143`: interrupted by SIGINT / SIGTERM (128 + signal number)
 
 ## Safety

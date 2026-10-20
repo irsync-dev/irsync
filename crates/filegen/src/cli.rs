@@ -51,7 +51,7 @@ pub struct RunArgs {
     /// Plan operations without touching the filesystem
     #[arg(long)]
     pub dry_run: bool,
-    /// Proceed even if safety checks fail
+    /// With --seed, truncate an existing log and state file for this prefix instead of refusing
     #[arg(long)]
     pub force: bool,
     /// Suppress progress output

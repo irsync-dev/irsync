@@ -38,6 +38,8 @@ pub struct Footer {
     pub steps_done: u64,
     pub outcome: String,
     pub elapsed: Duration,
+    /// Steps of this invocation that found nothing to do; logged when > 0.
+    pub skipped: u64,
 }
 
 /// Per-kind counters and raw durations.
@@ -216,12 +218,15 @@ impl LogWriter {
     }
 
     pub fn footer(&mut self, f: &Footer, summary: &[KindSummary]) -> io::Result<()> {
-        let s = format!(
+        let mut s = format!(
             "# end steps_done={} outcome={} elapsed_ms={}",
             f.steps_done,
             detail_value(&f.outcome),
             f.elapsed.as_millis()
         );
+        if f.skipped > 0 {
+            s.push_str(&format!(" skipped={}", f.skipped));
+        }
         self.line(&s)?;
         for k in summary {
             let s = format!(
@@ -354,6 +359,7 @@ mod tests {
                 steps_done: 1,
                 outcome: "ok".into(),
                 elapsed: Duration::from_millis(5),
+                skipped: 0,
             },
             &st.summary(),
         )
