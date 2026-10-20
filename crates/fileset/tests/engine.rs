@@ -38,6 +38,7 @@ for_both_backends! {
     init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
     init_refuses_existing_manifest => init_refuses_existing_manifest_sqlite, init_refuses_existing_manifest_fjall;
     init_refuses_nested_manifest => init_refuses_nested_manifest_sqlite, init_refuses_nested_manifest_fjall;
+    init_refuses_enclosing_manifest => init_refuses_enclosing_manifest_sqlite, init_refuses_enclosing_manifest_fjall;
     update_requires_existing_manifest => update_requires_existing_manifest_sqlite, update_requires_existing_manifest_fjall;
     update_requires_existing_external_manifest => update_requires_existing_external_manifest_sqlite, update_requires_existing_external_manifest_fjall;
     update_with_external_manifest_flags_nothing => update_with_external_manifest_flags_nothing_sqlite, update_with_external_manifest_flags_nothing_fjall;
@@ -265,6 +266,32 @@ fn init_refuses_nested_manifest(b: Backend) {
         // The nested manifest itself is untouched.
         assert!(dir.path().join(nested.0).symlink_metadata().is_ok());
     }
+}
+
+fn init_refuses_enclosing_manifest(b: Backend) {
+    let dir = tree(&[("sub/deeper/f", "x")]);
+    run_update(dir.path(), b, false, false);
+    for rel in ["sub", "sub/deeper"] {
+        let child = dir.path().join(rel);
+        let e = run_update_opts(&update_opts(&child, b, false, false))
+            .expect_err("init inside an existing fileset must fail");
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains("refusing to init")
+                && msg.contains("inside the fileset")
+                && msg.contains(store_name(b))
+                && msg.contains("nested filesets are not supported"),
+            "{msg}"
+        );
+        assert!(
+            child.join(store_name(b)).symlink_metadata().is_err(),
+            "init created a manifest in {rel}"
+        );
+    }
+    // The enclosing fileset is unaffected.
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
 }
 
 fn update_requires_existing_manifest(b: Backend) {

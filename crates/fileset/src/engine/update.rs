@@ -66,6 +66,16 @@ pub fn update(
         (_, true) => OpenMode::ReadWrite,
         (_, false) => OpenMode::Create,
     };
+    if matches!(opts.mode, Mode::Init { .. }) {
+        if let Some(m) = store::enclosing_manifest(&root) {
+            anyhow::bail!(
+                "refusing to init: {} is inside the fileset with manifest {}; nested filesets \
+                 are not supported",
+                root.display(),
+                m.display()
+            );
+        }
+    }
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
     let generation = old_meta.generation + 1;

@@ -126,6 +126,27 @@ fn cli_init_nested_manifest_exits_2() {
 }
 
 #[test]
+fn cli_init_inside_fileset_exits_2() {
+    let d = tree();
+    let t = d.path().join("tree");
+    assert_eq!(code(&["init".as_ref(), t.as_os_str()]), 0);
+    let out = bin()
+        .args(["init".as_ref(), t.join("sub").as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.starts_with("error: ")
+            && e.contains("inside the fileset")
+            && e.contains(".fileset.sqlite")
+            && e.contains("not supported"),
+        "{e}"
+    );
+    assert!(!t.join("sub/.fileset.sqlite").exists());
+}
+
+#[test]
 fn cli_update_missing_manifest_exits_2() {
     let d = tree();
     let t = d.path().join("tree");

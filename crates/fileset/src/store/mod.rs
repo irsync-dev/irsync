@@ -175,6 +175,18 @@ pub fn locate(
     }
 }
 
+/// The nearest `.fileset.sqlite` or `.fileset.fjall` in a proper ancestor of `root`, if
+/// any: `root` would then be inside an existing fileset. `root` must be canonical so that
+/// every ancestor is a real directory. Existence is checked without following symlinks.
+pub fn enclosing_manifest(root: &Path) -> Option<PathBuf> {
+    root.ancestors().skip(1).find_map(|dir| {
+        [SQLITE_NAME, FJALL_NAME]
+            .into_iter()
+            .map(|name| dir.join(name))
+            .find(|p| p.symlink_metadata().is_ok())
+    })
+}
+
 /// Absolute manifest path if it lies inside `root` (so the walker can flag it), else None.
 pub fn store_path_inside(root: &Path, loc: &Location) -> Option<PathBuf> {
     let abs = match (loc.path.parent(), loc.path.file_name()) {
@@ -276,6 +288,29 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no manifest at"), "{err}");
+    }
+
+    #[test]
+    fn enclosing_manifest_finds_nearest_ancestor_only() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let deeper = root.join("sub").join("deeper");
+        std::fs::create_dir_all(&deeper).unwrap();
+        assert_eq!(enclosing_manifest(&deeper), None);
+        std::fs::create_dir(root.join(FJALL_NAME)).unwrap();
+        assert_eq!(enclosing_manifest(&deeper), Some(root.join(FJALL_NAME)));
+        assert_eq!(
+            enclosing_manifest(&root.join("sub")),
+            Some(root.join(FJALL_NAME))
+        );
+        // The directory's own manifest is not "enclosing".
+        assert_eq!(enclosing_manifest(&root), None);
+        // The nearest one wins.
+        std::fs::write(root.join("sub").join(SQLITE_NAME), b"").unwrap();
+        assert_eq!(
+            enclosing_manifest(&deeper),
+            Some(root.join("sub").join(SQLITE_NAME))
+        );
     }
 
     #[test]

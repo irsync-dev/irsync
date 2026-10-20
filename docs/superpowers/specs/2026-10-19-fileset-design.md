@@ -174,6 +174,10 @@ Names of `--relaxed`, `--paranoid`, `--ignore`, `--require`, `--manifest`,
   create is removed). `update` and `check` produce a warning instead; the
   object is then tracked like any other file or directory (a nested fjall
   directory is walked and its contents hashed).
+- `init` also refuses a root that lies inside an existing fileset: it
+  checks every proper ancestor of the canonical root for either manifest
+  name before creating anything (exit 2). `update` and `check` do not look
+  upward.
 
 ### Comparison
 
@@ -497,3 +501,8 @@ implementation branch.
   by a separate scan, and the half-built manifest at the root is deleted.
   `update` and `check` keep warning, so trees adopted before this rule
   stay usable.
+- **`init` refuses a root inside an existing fileset** (2026-10-20). The
+  proper ancestors of the canonical root are checked for `.fileset.sqlite`
+  or `.fileset.fjall` before the store is created; the nearest match is
+  named in the error. Symlinks in ancestors are not followed, and a
+  manifest kept elsewhere via `--manifest` is invisible to this check.

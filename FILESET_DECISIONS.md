@@ -154,6 +154,23 @@ deferred rather than fixed are listed in
     `check` on an archive must keep working. Cost if wrong: a nested
     fileset keeps being tracked as ordinary content, as before.
 
+## Follow-up: `init` refuses a root inside a fileset (2026-10-20)
+
+24. **Ancestors are checked by name only, on the canonical root.** The
+    user asked `init` to walk up from PATH to `/` and refuse if a parent
+    holds a manifest. Why: one `lstat` per ancestor and name is the whole
+    cost, so it runs before the store is created, and canonicalizing first
+    means a symlinked PATH is judged by where it really lives. Cost if
+    wrong: a fileset whose manifest is kept outside the tree with
+    `--manifest` is not detected from below, and a dangling symlink named
+    like a manifest counts as one. Both are consistent with how `locate`
+    treats the root's own manifest.
+
+25. **Only `init` looks upward.** `update` and `check` keep working inside
+    an enclosing fileset. Why: they operate on a manifest that already
+    exists, which this rule cannot retroactively forbid. Cost if wrong:
+    none; a stricter rule can be added to `update` later.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
