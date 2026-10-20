@@ -130,6 +130,30 @@ deferred rather than fixed are listed in
     Cost if wrong: a test could silently exercise `init` where `update` was
     meant; the dedicated precondition tests cover both directions.
 
+## Follow-up: `init` refuses nested manifests (2026-10-20)
+
+21. **The refusal fires when the walk reaches the nested manifest, not
+    after a separate pre-scan.** The user asked `init` to refuse a tree
+    with a manifest in any subdirectory. Why: a pre-scan would read every
+    directory twice on every successful `init`, which is the common case
+    on multi-million-file trees; aborting on discovery costs nothing when
+    the tree is clean. Cost if wrong: on a dirty tree, everything sorted
+    before the nested manifest gets hashed before the refusal, which can
+    be hours on terabytes. A `--check-only` pre-scan would be the remedy.
+
+22. **A failed `init` removes the manifest it created.** This covers the
+    nested-manifest refusal and every other error after the store was
+    created, SQLite sidecars included. Why: a half-built manifest has no
+    value, and leaving it would make the retry fail with "already exists".
+    A manifest that existed before the run is never touched, because it
+    is opened read-write, not created. Cost if wrong: none; the removal
+    is reported as a warning if it fails.
+
+23. **`update` and `check` still only warn about nested manifests.** Why:
+    manifests created before this rule may sit above nested ones, and
+    `check` on an archive must keep working. Cost if wrong: a nested
+    fileset keeps being tracked as ordinary content, as before.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"

@@ -170,8 +170,10 @@ Names of `--relaxed`, `--paranoid`, `--ignore`, `--require`, `--manifest`,
   checksum. `--rehash` forces hashing of every regular file. `check`
   always hashes every regular file it can read.
 - A nested `.fileset.sqlite` or `.fileset.fjall` anywhere below the root
-  produces a warning; the object is then tracked like any other file or
-  directory (a nested fjall directory is walked and its contents hashed).
+  makes `init` refuse the tree (exit 2, and the manifest it had begun to
+  create is removed). `update` and `check` produce a warning instead; the
+  object is then tracked like any other file or directory (a nested fjall
+  directory is walked and its contents hashed).
 
 ### Comparison
 
@@ -489,3 +491,9 @@ implementation branch.
   `init`; `--rehash` stays on `update`. The `check` schema message still
   says to run `update`, which is right: a manifest with an old schema
   exists.
+- **`init` refuses nested manifests** (2026-10-20). A `.fileset.sqlite`
+  or `.fileset.fjall` below the root was a warning for every verb; for
+  `init` it is now an error, raised when the walk reaches it rather than
+  by a separate scan, and the half-built manifest at the root is deleted.
+  `update` and `check` keep warning, so trees adopted before this rule
+  stay usable.

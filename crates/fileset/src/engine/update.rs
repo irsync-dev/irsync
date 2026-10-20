@@ -110,6 +110,16 @@ pub fn update(
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
         let mut obs = match ev {
             WalkEvent::Warning(text) => return Ok(warnings.emit(&text)?),
+            WalkEvent::NestedManifest(path) => {
+                let text = walk::nested_manifest_warning(&path);
+                return match opts.mode {
+                    // Nested filesets are unsupported, and a tree is only ever adopted here.
+                    Mode::Init { .. } => Err(anyhow::anyhow!(
+                        "refusing to init: {text}; nested filesets are not supported"
+                    )),
+                    Mode::Update { .. } => Ok(warnings.emit(&text)?),
+                };
+            }
             // Already warned; the sweep drops what the walk did not see, as for any absence.
             WalkEvent::NotDescended(_) => return Ok(()),
             WalkEvent::Entry(obs) => obs,
@@ -131,13 +141,24 @@ pub fn update(
         }
         Ok(())
     };
-    pipeline::run(
+    let run = pipeline::run(
         common.jobs,
         move |emit| walk::walk(&cfg, emit),
         decide,
         sink,
-    )?;
-    if let Some(e) = lookup_error {
+    );
+    if let Err(e) = run.and_then(|()| lookup_error.map_or(Ok(()), Err)) {
+        if mode == OpenMode::Create {
+            // Nothing in a half-built manifest is worth keeping, and leaving it would make
+            // the next `init` refuse with "already exists".
+            drop(store);
+            if let Err(rm) = remove_created(&loc) {
+                let _ = warnings.emit(&format!(
+                    "cannot remove the unfinished manifest at {}: {rm}",
+                    loc.path.display()
+                ));
+            }
+        }
         return Err(e);
     }
 
@@ -198,6 +219,24 @@ fn reuse_or_hash(
             Decision::Skip
         }
         _ => Decision::Hash,
+    }
+}
+
+/// Deletes the manifest this run created, with any SQLite sidecars.
+fn remove_created(loc: &store::Location) -> std::io::Result<()> {
+    match loc.backend {
+        Backend::Sqlite => {
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut sidecar = loc.path.as_os_str().to_owned();
+                sidecar.push(suffix);
+                match std::fs::remove_file(&sidecar) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                    _ => {}
+                }
+            }
+            std::fs::remove_file(&loc.path)
+        }
+        Backend::Fjall => std::fs::remove_dir_all(&loc.path),
     }
 }
 

@@ -106,6 +106,26 @@ fn cli_init_twice_exits_2() {
 }
 
 #[test]
+fn cli_init_nested_manifest_exits_2() {
+    let d = tree();
+    let t = d.path().join("tree");
+    std::fs::write(t.join("sub/.fileset.sqlite"), "not a manifest").unwrap();
+    let out = bin()
+        .args(["init".as_ref(), t.as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.starts_with("error: ")
+            && e.contains("nested manifest at sub/.fileset.sqlite")
+            && e.contains("not supported"),
+        "{e}"
+    );
+    assert!(!t.join(".fileset.sqlite").exists());
+}
+
+#[test]
 fn cli_update_missing_manifest_exits_2() {
     let d = tree();
     let t = d.path().join("tree");

@@ -76,6 +76,9 @@ pub fn check(
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
         let obs = match ev {
             WalkEvent::Warning(text) => return Ok(warnings.emit(&text)?),
+            WalkEvent::NestedManifest(path) => {
+                return Ok(warnings.emit(&walk::nested_manifest_warning(&path))?)
+            }
             WalkEvent::NotDescended(path) => {
                 not_descended.insert(unobserved_prefix(&path));
                 return Ok(());

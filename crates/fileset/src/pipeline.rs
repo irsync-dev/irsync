@@ -220,7 +220,9 @@ mod tests {
                     assert_eq!(i, 51);
                     assert_eq!(w, "after 50");
                 }
-                WalkEvent::NotDescended(p) => panic!("unexpected NotDescended {p:?}"),
+                WalkEvent::NotDescended(p) | WalkEvent::NestedManifest(p) => {
+                    panic!("unexpected event for {p:?}")
+                }
                 WalkEvent::Entry(obs) => {
                     assert_ne!(i, 51);
                     assert_eq!(obs.path, format!("f{file_idx:03}").into_bytes());

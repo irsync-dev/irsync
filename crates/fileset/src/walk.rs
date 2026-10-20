@@ -36,6 +36,10 @@ pub struct Observed {
 pub enum WalkEvent {
     Entry(Observed),
     Warning(String),
+    /// Relative path of a `.fileset.sqlite` or `.fileset.fjall` below the root. The
+    /// object itself follows as an ordinary `Entry`; the engine decides whether this is a
+    /// warning or a reason to stop.
+    NestedManifest(Vec<u8>),
     /// Relative path of a directory the walker did not descend, or of an object it could
     /// not stat; emitted right after the corresponding `Warning`. Nothing stored at or
     /// below it was observed.
@@ -43,6 +47,11 @@ pub enum WalkEvent {
 }
 
 type Sink<'a> = dyn FnMut(WalkEvent) -> anyhow::Result<()> + 'a;
+
+/// The warning text for a `WalkEvent::NestedManifest`.
+pub fn nested_manifest_warning(rel: &[u8]) -> String {
+    format!("nested manifest at {}", escape(rel))
+}
 
 pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
     let (entry, partial) = Entry::from_path(&cfg.root)?;
@@ -158,10 +167,7 @@ fn walk_dir(
         {
             // Below the root only: a root-level manifest is the tree's own, merely not the
             // one in use (--manifest points elsewhere).
-            sink(WalkEvent::Warning(format!(
-                "nested manifest at {}",
-                escape(&rel)
-            )))?;
+            sink(WalkEvent::NestedManifest(rel.clone()))?;
         }
         let is_dir = entry.kind == crate::model::Kind::Dir;
         let other_mount = is_dir && entry.dev != root_dev && !cfg.cross_mount_points;
@@ -208,6 +214,7 @@ mod tests {
             match ev {
                 WalkEvent::Entry(o) => entries.push(o),
                 WalkEvent::Warning(w) => warnings.push(w),
+                WalkEvent::NestedManifest(p) => warnings.push(nested_manifest_warning(&p)),
                 WalkEvent::NotDescended(p) => skipped.push(p),
             }
             Ok(())

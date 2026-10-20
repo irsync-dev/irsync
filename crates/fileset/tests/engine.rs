@@ -37,6 +37,7 @@ for_both_backends! {
     update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall;
     init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
     init_refuses_existing_manifest => init_refuses_existing_manifest_sqlite, init_refuses_existing_manifest_fjall;
+    init_refuses_nested_manifest => init_refuses_nested_manifest_sqlite, init_refuses_nested_manifest_fjall;
     update_requires_existing_manifest => update_requires_existing_manifest_sqlite, update_requires_existing_manifest_fjall;
     update_requires_existing_external_manifest => update_requires_existing_external_manifest_sqlite, update_requires_existing_external_manifest_fjall;
     update_with_external_manifest_flags_nothing => update_with_external_manifest_flags_nothing_sqlite, update_with_external_manifest_flags_nothing_fjall;
@@ -193,7 +194,10 @@ fn update_warns_on_unreadable(b: Backend) {
 }
 
 fn update_warns_on_nested_manifest(b: Backend) {
-    let dir = tree(&[("sub/.fileset.sqlite", "not a manifest")]);
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/.fileset.sqlite"), "not a manifest").unwrap();
     let (outcome, err) = run_update(dir.path(), b, false, false);
     assert_eq!(outcome, Outcome::Clean);
     assert!(
@@ -232,6 +236,35 @@ fn init_refuses_existing_manifest(b: Backend) {
         before,
         "init touched the manifest"
     );
+}
+
+fn init_refuses_nested_manifest(b: Backend) {
+    // One nested manifest of each backend's shape: a file and a directory.
+    for nested in [
+        ("sub/.fileset.sqlite", "not a manifest"),
+        ("sub/.fileset.fjall/version", "3"),
+    ] {
+        let dir = tree(&[("f", "x"), nested]);
+        let e = run_update_opts(&update_opts(dir.path(), b, false, false))
+            .expect_err("init over a tree with a nested manifest must fail");
+        let msg = format!("{e:#}");
+        let nested_dir = nested.0.rsplit_once('/').unwrap().0;
+        assert!(
+            msg.contains("refusing to init")
+                && msg.contains(&format!("nested manifest at {nested_dir}"))
+                && msg.contains("nested filesets are not supported"),
+            "{msg}"
+        );
+        // The refused init leaves nothing behind at the root, sidecars included.
+        let left: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".fileset"))
+            .collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
+        // The nested manifest itself is untouched.
+        assert!(dir.path().join(nested.0).symlink_metadata().is_ok());
+    }
 }
 
 fn update_requires_existing_manifest(b: Backend) {
@@ -540,10 +573,11 @@ fn update_sweeps_entries_of_interrupted_run(b: Backend) {
     // More entries than one put_batch, then a warning (nested manifest under "zz") whose
     // write fails, so the run dies after committing a batch and before finishing.
     let names: Vec<String> = (0..2000).map(|i| format!("f{i:04}")).collect();
-    let mut spec: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "x")).collect();
-    spec.push(("zz/.fileset.sqlite", "not a manifest"));
+    let spec: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "x")).collect();
     let dir = tree(&spec);
     run_update(dir.path(), b, false, false);
+    std::fs::create_dir(dir.path().join("zz")).unwrap();
+    std::fs::write(dir.path().join("zz/.fileset.sqlite"), "not a manifest").unwrap();
     let err = update(
         &update_opts(dir.path(), b, false, false),
         &mut Vec::new(),

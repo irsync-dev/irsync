@@ -18,9 +18,13 @@ fileset check  [OPTIONS] <PATH>
 ```
 
 `init` scans the tree and creates its manifest; it refuses to run if one
-already exists. `update` scans the tree and brings an existing manifest up to
-date; it refuses to run if none exists. The two share one engine and differ
-only in that precondition. `check` scans the tree and reports every
+already exists. It also refuses a tree that holds a `.fileset.sqlite` or
+`.fileset.fjall` in any subdirectory, because nested filesets are not
+supported; the refusal happens when the scan reaches that object, and the
+manifest begun at the root is removed again. `update` scans the tree and
+brings an existing manifest up to date; it refuses to run if none exists, and
+only warns about nested manifests, as `check` does. `init` and `update` share
+one engine and differ only in those preconditions. `check` scans the tree and reports every
 difference between it and the manifest; it never modifies the tree's entries
 or the manifest's contents. (Opening a fjall manifest does touch its journal
 and lock files.)
@@ -99,8 +103,8 @@ entries=43 hashed=3 reused=40 warnings=0                (init, update)
 - `1`: `check` found differences; or, with `--fail-on-warnings`, the run
   produced warnings (this is the only way `init` and `update` return 1)
 - `2`: the run itself failed (manifest unreadable, root not a directory,
-  schema too new, `init` on a tree that already has a manifest, `update` on
-  one that has none, ...)
+  schema too new, `init` on a tree that already has a manifest or a nested
+  one, `update` on a tree that has none, ...)
 
 ## Read-only media
 
