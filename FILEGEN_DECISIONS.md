@@ -299,6 +299,21 @@ code disagree, the code is what shipped and the entry says so.
     if wrong: `raw_os_error()` on the returned error is now `None` (nothing
     reads it; `kind()` is kept).
 
+42. **The state records the absolute output directory, and a resume ignores
+    the saved `out_dir` and `prefix`.** Before the state is saved,
+    `config.out_dir` is set to the canonical directory actually used. On
+    `--resume` the state's config is merged with `out_dir` and `prefix`
+    dropped, so entry 21's rule (write next to the state file, under the
+    prefix its name implies) applies unless `--out-dir`, `--prefix`, `--set`
+    or a `--config` file given on this invocation says otherwise. Before, a
+    relative `--out-dir out` was saved as given and re-resolved against the
+    resume's working directory, so a resume from elsewhere started a new
+    history under that directory and never updated the original. Neither
+    key affects a draw, so determinism and resume equivalence are
+    untouched. Cost if wrong: a user who copies a state file to another
+    directory and resumes it there gets the history continued there, not
+    in the saved `out_dir`; that is what entry 21 already promised.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer

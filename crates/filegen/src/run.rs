@@ -127,12 +127,16 @@ impl Runner {
                 Some(s)
             }
         };
-        let mut cfg = config::load(
-            opts.config_file.as_deref(),
-            resumed.as_ref().map(|s| &s.config),
-            &opts.sets,
-        )
-        .map_err(RunError::Config)?;
+        // Where a resume writes is decided below from its state file's path,
+        // so the saved out_dir and prefix do not carry over; only this
+        // invocation's config file, --set or flags can redirect it.
+        let base = resumed.as_ref().map(|s| Config {
+            out_dir: None,
+            prefix: None,
+            ..s.config.clone()
+        });
+        let mut cfg = config::load(opts.config_file.as_deref(), base.as_ref(), &opts.sets)
+            .map_err(RunError::Config)?;
         config::apply_flags(&mut cfg, &opts.flags);
         cfg.validate().map_err(RunError::Config)?;
         let chain = Chain::from_weights(&cfg.weights).map_err(RunError::Config)?;
@@ -142,9 +146,9 @@ impl Runner {
             (Start::Seed(seed), None) => *seed,
             (Start::Resume(_), None) => unreachable!("a resume reads its state"),
         };
-        // A resume without an explicit out dir or prefix keeps appending to
-        // the history its state file belongs to, whatever the environment
-        // says now.
+        // A resume without an out dir or prefix given on this invocation
+        // keeps appending to the history its state file belongs to,
+        // whatever the environment or the current directory says now.
         let resume_file = match &opts.start {
             Start::Resume(path) => Some(path.as_path()),
             Start::Seed(_) => None,
@@ -163,6 +167,9 @@ impl Runner {
             ),
         };
         let out_dir = lenient_canonical(&out_dir).map_err(RunError::Io)?;
+        // The state records the directory actually used, so its config
+        // means the same from any working directory.
+        cfg.out_dir = Some(out_dir.clone());
         if out_dir.starts_with(&root) {
             return Err(RunError::Usage(format!(
                 "output directory {} is inside the root {}; pass --out-dir elsewhere",
@@ -970,12 +977,11 @@ mod tests {
             r.step().unwrap();
         }
         r.finish(Outcome::Ok).unwrap();
-        // The saved config carries out_dir and prefix from the flags; drop
-        // them to model a first run that found both by default.
-        let mut s = state::read(&state_path).unwrap();
-        s.config.out_dir = None;
-        s.config.prefix = None;
-        state::write_atomic(&state_path, &s).unwrap();
+        // The saved config names the out dir used and the prefix; a resume
+        // ignores both and goes by the state file's path.
+        let s = state::read(&state_path).unwrap();
+        assert_eq!(s.config.out_dir, Some(fs::canonicalize(&out).unwrap()));
+        assert_eq!(s.config.prefix.as_deref(), Some("hist"));
         let mut o = opts(&root, &out, 20, Start::Resume(state_path.clone()));
         o.flags.out_dir = None;
         run_ok(o);

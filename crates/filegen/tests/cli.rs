@@ -461,3 +461,107 @@ fn cli_read_only_files_do_not_stop_the_run() {
         }
     }
 }
+
+/// Every entry below `dir`, as relative paths.
+fn entries_below(dir: &Path) -> Vec<PathBuf> {
+    snapshot(dir)
+        .into_iter()
+        .map(|e| PathBuf::from(String::from_utf8(e.0).unwrap()))
+        .collect()
+}
+
+#[test]
+fn cli_relative_out_dir_resumes_from_another_cwd() {
+    let t = tempfile::TempDir::new().unwrap();
+    let (root, a, b) = (
+        t.path().join("root"),
+        t.path().join("a"),
+        t.path().join("b"),
+    );
+    for d in [&root, &a, &b] {
+        fs::create_dir(d).unwrap();
+    }
+    let o = bin()
+        .current_dir(&a)
+        .args([
+            "run",
+            "-q",
+            "--seed",
+            "14",
+            "--steps",
+            "20",
+            "--out-dir",
+            "out",
+        ])
+        .args(["--set", "max_file_size=16K"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let (log, state) = (
+        a.join("out/filegen-14.log"),
+        a.join("out/filegen-14.state.yaml"),
+    );
+    // The state records the directory actually used, not the relative name.
+    let saved = filegen::state::read(&state).unwrap().config.out_dir;
+    assert_eq!(saved, Some(a.join("out").canonicalize().unwrap()));
+
+    let o = bin()
+        .current_dir(&b)
+        .args([
+            "run",
+            "-q",
+            "--steps",
+            "10",
+            "--resume",
+            "../a/out/filegen-14.state.yaml",
+        ])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(lines_starting(&log, "# run ").len(), 2);
+    assert_eq!(lines_starting(&log, "step=").len(), 30);
+    assert_eq!(steps_done(&state), 30);
+    assert_eq!(entries_below(&b), Vec::<PathBuf>::new());
+    assert_eq!(
+        entries_below(&a),
+        [
+            PathBuf::from("out"),
+            "out/filegen-14.log".into(),
+            "out/filegen-14.state.yaml".into()
+        ]
+    );
+}
+
+#[test]
+fn cli_config_file_out_dir_in_the_lookup_order() {
+    let (t, root, out) = dirs();
+    let (env_dir, cfg_dir) = (t.path().join("env"), t.path().join("from-config"));
+    fs::create_dir(&env_dir).unwrap();
+    let cfg = t.path().join("cfg.yaml");
+    fs::write(&cfg, format!("out_dir: {:?}\n", cfg_dir.to_str().unwrap())).unwrap();
+    let run = |seed: &str, extra: &[&std::ffi::OsStr]| {
+        let o = bin()
+            .env("FILEGENTMP", &env_dir)
+            .env("TMPDIR", &env_dir)
+            .args(["run", "-q", "--seed", seed, "--steps", "5", "--config"])
+            .arg(&cfg)
+            .args(["--set", "max_file_size=16K"])
+            .args(extra)
+            .arg(&root)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    };
+    // The config file's out_dir beats $FILEGENTMP and $TMPDIR.
+    run("15", &[]);
+    assert!(cfg_dir.join("filegen-15.log").is_file());
+    assert!(cfg_dir.join("filegen-15.state.yaml").is_file());
+    assert_eq!(fs::read_dir(&env_dir).unwrap().count(), 0);
+    // --out-dir beats the config file.
+    run("16", &["--out-dir".as_ref(), out.as_os_str()]);
+    assert!(out.join("filegen-16.log").is_file());
+    assert!(!cfg_dir.join("filegen-16.log").exists());
+    assert_eq!(fs::read_dir(&env_dir).unwrap().count(), 0);
+}

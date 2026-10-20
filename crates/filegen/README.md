@@ -46,7 +46,8 @@ filegen run [OPTIONS] --steps <N> (--seed <S> | --resume <STATEFILE>) <PATH>
 
 Sizes are plain bytes or carry a `K`, `M`, `G` or `T` suffix (powers of
 1024). Precedence, lowest first: built-in defaults, the resumed state's
-`config`, the `--config` file, `--set`, the dedicated flags. Unknown keys
+`config` (without `out_dir` and `prefix`, see below), the `--config` file,
+`--set`, the dedicated flags. Unknown keys
 are an error, and `max_file_size` may not exceed `max_total_size`.
 
 Examples:
@@ -62,10 +63,14 @@ filegen run --seed 7 --steps 1000 --max-total-size 1G --max-file-size 16M \
 ## Output files
 
 The output directory is, first that is set: `--out-dir`, the `out_dir`
-config key, `$FILEGENTMP`, `$TMPDIR`, `/tmp`. A `--resume` with neither
-`--out-dir` nor `out_dir` uses the directory of the state file instead, and
-a resume without a prefix takes it from the state file's name, so a resumed
-run keeps appending to the same history: the log is appended to across
+config key, `$FILEGENTMP`, `$TMPDIR`, `/tmp`. A relative directory is
+resolved against the current directory, and the state file records the
+absolute directory used. A `--resume` ignores the `out_dir` and `prefix`
+saved in its state file: unless `--out-dir`, `--prefix`, `--set` or a
+`--config` file given on that invocation says otherwise, it writes to the
+directory of the state file under the prefix taken from the state file's
+name, whatever the current directory or the environment. So a resumed run
+keeps appending to the same history: the log is appended to across
 resumes, each invocation adding its own `# run` header. Both paths are
 printed to stderr at the start unless `-q`. With the default prefix and
 seed 42:
@@ -134,7 +139,8 @@ A YAML document, written to a temporary file and renamed into place:
 - `chain_state`: `last_kind` (the previous operation) and `anchor` (the
   escaped relative path of the directory it touched; `''` is the root)
 - `dry_run`: whether a dry run wrote it
-- `config`: the effective configuration, fully expanded; usable as `--config`
+- `config`: the effective configuration, fully expanded, with `out_dir` the
+  absolute output directory used; usable as `--config`
 - `tree`: `entries` and `total_bytes` as filegen last knew them (advisory)
 - `last_run`: `started`, `finished`, `steps` (this invocation), `outcome`
   (as in the log, or `running` for a checkpoint), and `summary`, the
@@ -200,8 +206,9 @@ The state file always carries the effective configuration with every
 default filled in, so the way to see the schema is a one-step dry run (for
 example `filegen run --seed 1 --steps 1 --dry-run --out-dir /tmp/x <DIR>`)
 and the `config:` block of `/tmp/x/filegen-1.dry.state.yaml`. The defaults
-from such a run, with comments added and nested values in YAML flow style
-(it loads as `--config` and yields the same configuration):
+from such a run, with comments added, nested values in YAML flow style, and
+`out_dir` put back to its default `null` (a state file records the directory
+used); it loads as `--config` and yields the default configuration:
 
 ```yaml
 out_dir: null
