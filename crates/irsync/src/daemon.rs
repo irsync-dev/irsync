@@ -16,13 +16,13 @@ use irsync_proto::PROTOCOL_VERSION;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Authorizer, FileAuthorizer, Grants};
-use crate::config::daemon::{listen_sockets, DaemonConfig, Module, RelayMode};
+use crate::config::daemon::{listen_sockets, DaemonConfig, Module};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
 use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
 use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
-use crate::net::{build_endpoint, EndpointOpts, RelayChoice};
+use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::scan::WalkOpts;
 use crate::session::engine::serve_daemon;
 use crate::session::DaemonSessions;
@@ -343,32 +343,22 @@ pub async fn run_from_config(
 ) -> Result<()> {
     let secret = load_or_generate_identity(&cfg.identity, pass)?;
     let authz = Arc::new(FileAuthorizer::load(&cfg.authorized_keys)?);
-    let relay = match (&cfg.relay_mode, &cfg.relay) {
-        (RelayMode::Disabled, _) => RelayChoice::Disabled,
-        (_, Some(url)) => RelayChoice::Custom(url.clone()),
-        _ => RelayChoice::N0Default,
-    };
-    if cfg.discovery.dht && relay == RelayChoice::Disabled {
+    let bind_addrs = listen_sockets(&cfg.listen).await?;
+    let opts = daemon_endpoint_opts(&cfg, secret, bind_addrs);
+    if cfg.discovery.dht && opts.relay == RelayChoice::Disabled {
         tracing::warn!(
             "dht is enabled but relays are disabled: DHT records will carry no addresses"
         );
     }
-    let endpoint = build_endpoint(EndpointOpts {
-        secret,
-        relay,
-        dht: cfg.discovery.dht,
-        dns: cfg.discovery.dns,
-        mdns: cfg.discovery.mdns,
-        publish: true,
-        bind_addrs: listen_sockets(&cfg.listen).await?,
-        portmap: cfg.portmap,
-    })
-    .await?;
-    println!("endpoint id: {}", endpoint.id());
-    for addr in endpoint.bound_sockets() {
+    let endpoint = build_endpoint(opts).await?;
+    let daemon = Daemon::new(cfg, authz, endpoint)?;
+    // Printed only once startup can no longer fail: a parent process that
+    // reads these lines may dial at once.
+    println!("endpoint id: {}", daemon.endpoint.id());
+    for addr in daemon.endpoint.bound_sockets() {
         println!("listening on: {addr}");
     }
-    Daemon::new(cfg, authz, endpoint)?.run(shutdown).await
+    daemon.run(shutdown).await
 }
 
 /// What a [`gc`] run removed (or, on a dry run, would remove).

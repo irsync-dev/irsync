@@ -154,3 +154,96 @@ async fn isolated_opts_have_no_relay_and_no_lookup() {
     assert!(ep.address_lookup().unwrap().is_empty());
     ep.close().await;
 }
+
+#[test]
+fn client_opts_are_isolated_whenever_addresses_are_given() {
+    use irsync::config::client::HostConfig;
+    use irsync::net::{client_endpoint_opts, RelayChoice};
+    // Addresses from the config, with Relay/Dht/Mdns set beside them: isolated wins.
+    let hc = HostConfig {
+        relay: Some("https://r.example".parse().unwrap()),
+        dht: Some(true),
+        mdns: Some(true),
+        addresses: vec!["127.0.0.1:1".parse().unwrap()],
+        ..HostConfig::default()
+    };
+    let o = client_endpoint_opts(SecretKey::generate(), None, false, &hc, &hc.addresses).unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
+    // Addresses from the command line only.
+    let cli = vec!["localhost:1".parse().unwrap()];
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        None,
+        false,
+        &HostConfig::default(),
+        &cli,
+    )
+    .unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert!(!o.dns);
+    // No addresses: the pre-existing defaults.
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        None,
+        true,
+        &HostConfig::default(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(o.relay, RelayChoice::N0Default);
+    assert!(!o.dht && o.dns && o.mdns && o.portmap && !o.publish);
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        Some("https://c.example"),
+        false,
+        &HostConfig::default(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        o.relay,
+        RelayChoice::Custom("https://c.example".parse().unwrap())
+    );
+    assert!(o.dht);
+    assert!(client_endpoint_opts(
+        SecretKey::generate(),
+        Some("not a url"),
+        false,
+        &HostConfig::default(),
+        &[]
+    )
+    .is_err());
+}
+
+#[test]
+fn daemon_opts_follow_the_isolated_config() {
+    use irsync::config::daemon::DaemonConfig;
+    use irsync::net::{daemon_endpoint_opts, RelayChoice};
+    let cfg = DaemonConfig::parse(
+        "listen = [\"127.0.0.1:0\"]\nrelay_mode = \"disabled\"\nportmap = false\n\
+         [discovery]\ndht = false\ndns = false\nmdns = false\n",
+    )
+    .unwrap();
+    let bind = vec!["127.0.0.1:0".parse().unwrap()];
+    let o = daemon_endpoint_opts(&cfg, SecretKey::generate(), bind.clone());
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && o.publish);
+    assert_eq!(o.bind_addrs, bind);
+    let o = daemon_endpoint_opts(
+        &DaemonConfig::parse("").unwrap(),
+        SecretKey::generate(),
+        vec![],
+    );
+    assert_eq!(o.relay, RelayChoice::N0Default);
+    assert!(o.dht && o.dns && o.mdns && o.portmap && o.publish && o.bind_addrs.is_empty());
+    let o = daemon_endpoint_opts(
+        &DaemonConfig::parse("relay = \"https://r.example\"\n").unwrap(),
+        SecretKey::generate(),
+        vec![],
+    );
+    assert_eq!(
+        o.relay,
+        RelayChoice::Custom("https://r.example".parse().unwrap())
+    );
+}

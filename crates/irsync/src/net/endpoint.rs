@@ -4,6 +4,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
+
+use crate::config::client::HostConfig;
+use crate::config::daemon::{DaemonConfig, RelayMode as DaemonRelayMode};
+use crate::net::addr::HostPort;
+
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
     presets, BindError, IdleTimeout, InvalidSocketAddr, PortmapperConfig, QuicTransportConfig,
@@ -88,6 +94,65 @@ pub fn transport_config() -> QuicTransportConfig {
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
         .congestion_controller_factory(Arc::new(Bbr3Config::default()))
         .build()
+}
+
+/// The client's endpoint options. Any address in `addresses` (from the
+/// command line, else the host's config) means isolated mode: no relay, no
+/// lookups, no port mapper, whatever `cli_relay` is absent and the config
+/// says. Without addresses: the relay from `cli_relay`, else the config,
+/// else n0's; lookups as configured.
+pub fn client_endpoint_opts(
+    secret: SecretKey,
+    cli_relay: Option<&str>,
+    no_dht: bool,
+    hc: &HostConfig,
+    addresses: &[HostPort],
+) -> anyhow::Result<EndpointOpts> {
+    if !addresses.is_empty() {
+        if hc.relay.is_some() || hc.dht.is_some() || hc.mdns.is_some() {
+            tracing::debug!("Address given: ignoring Relay/Dht/Mdns from the client config");
+        }
+        return Ok(EndpointOpts::isolated(secret));
+    }
+    let relay = match (cli_relay, &hc.relay) {
+        (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
+        (None, Some(u)) => RelayChoice::Custom(u.clone()),
+        (None, None) => RelayChoice::N0Default,
+    };
+    Ok(EndpointOpts {
+        secret,
+        relay,
+        dht: !no_dht && hc.dht.unwrap_or(true),
+        dns: true,
+        mdns: hc.mdns.unwrap_or(true),
+        publish: false,
+        bind_addrs: Vec::new(),
+        portmap: true,
+    })
+}
+
+/// The daemon's endpoint options from its config; `bind_addrs` are the
+/// already resolved `listen` sockets.
+pub fn daemon_endpoint_opts(
+    cfg: &DaemonConfig,
+    secret: SecretKey,
+    bind_addrs: Vec<SocketAddr>,
+) -> EndpointOpts {
+    let relay = match (&cfg.relay_mode, &cfg.relay) {
+        (DaemonRelayMode::Disabled, _) => RelayChoice::Disabled,
+        (_, Some(url)) => RelayChoice::Custom(url.clone()),
+        _ => RelayChoice::N0Default,
+    };
+    EndpointOpts {
+        secret,
+        relay,
+        dht: cfg.discovery.dht,
+        dns: cfg.discovery.dns,
+        mdns: cfg.discovery.mdns,
+        publish: true,
+        bind_addrs,
+        portmap: cfg.portmap,
+    }
 }
 
 /// Builds and binds the endpoint speaking [`irsync_proto::ALPN`].

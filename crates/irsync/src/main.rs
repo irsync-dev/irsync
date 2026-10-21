@@ -13,7 +13,7 @@ use irsync::config::daemon::DaemonConfig;
 use irsync::filter::FilterSet;
 use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
-use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
+use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
 use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome};
 use irsync_proto::chunk::CHUNK_PARAMS;
@@ -296,6 +296,25 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     }
     let opts = &opts;
     let target = resolve_target(&hc, host)?;
+    // Direct addresses: the command line's, else the host's. Any address
+    // means isolated mode: dial those and nothing else. Resolved before the
+    // identity is loaded so a bad address never prompts for a passphrase.
+    let addresses = if opts.addresses.is_empty() {
+        hc.addresses.clone()
+    } else {
+        opts.addresses.clone()
+    };
+    let mut resolved = Vec::new();
+    for entry in &addresses {
+        let addrs = entry
+            .resolve()
+            .await
+            .with_context(|| format!("resolving address {entry}"))?;
+        if addrs.is_empty() {
+            bail!("address {entry} resolved to no addresses");
+        }
+        resolved.extend(addrs);
+    }
     let identity = opts
         .identity
         .clone()
@@ -305,48 +324,14 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
     let secret = load_identity_interactive(&identity, &pass)
         .with_context(|| format!("loading identity {}", identity.display()))?;
-    // Direct addresses: the command line's, else the host's. Any address
-    // means isolated mode: dial those and nothing else.
-    let addresses = if opts.addresses.is_empty() {
-        hc.addresses.clone()
-    } else {
-        opts.addresses.clone()
-    };
-    let mut resolved = Vec::new();
-    for entry in &addresses {
-        resolved.extend(
-            entry
-                .resolve()
-                .await
-                .with_context(|| format!("resolving address {entry}"))?,
-        );
-    }
-    let endpoint_opts = if resolved.is_empty() {
-        let relay = match (&opts.relay, &hc.relay) {
-            (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
-            (None, Some(u)) => RelayChoice::Custom(u.clone()),
-            (None, None) => RelayChoice::N0Default,
-        };
-        EndpointOpts {
-            secret,
-            relay,
-            dht: !opts.no_dht && hc.dht.unwrap_or(true),
-            dns: true,
-            mdns: hc.mdns.unwrap_or(true),
-            publish: false,
-            bind_addrs: Vec::new(),
-            portmap: true,
-        }
-    } else {
+    if !addresses.is_empty() {
         tracing::info!(
             addresses = ?resolved,
             "isolated mode: dialling directly, relay and lookups off"
         );
-        if hc.relay.is_some() || hc.dht.is_some() || hc.mdns.is_some() {
-            tracing::debug!("Address given: ignoring Relay/Dht/Mdns from the client config");
-        }
-        EndpointOpts::isolated(secret)
-    };
+    }
+    let endpoint_opts =
+        client_endpoint_opts(secret, opts.relay.as_deref(), opts.no_dht, &hc, &addresses)?;
     let endpoint = build_endpoint(endpoint_opts).await?;
     let target = EndpointAddr::from_parts(target, resolved.into_iter().map(TransportAddr::Ip));
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);

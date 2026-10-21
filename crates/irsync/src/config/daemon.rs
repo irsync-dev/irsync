@@ -107,6 +107,9 @@ pub async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAdd
             .resolve()
             .await
             .with_context(|| format!("resolving listen address {entry}"))?;
+        if resolved.is_empty() {
+            return Err(anyhow!("listen address {entry} resolved to no addresses"));
+        }
         let mut taken = [false, false];
         for addr in resolved {
             let fam = usize::from(addr.is_ipv6());

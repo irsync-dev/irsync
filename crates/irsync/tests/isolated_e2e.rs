@@ -156,3 +156,85 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+#[test]
+fn unresolvable_address_fails_before_the_identity_is_needed() {
+    use ssh_key::{rand_core::OsRng, Algorithm, LineEnding, PrivateKey};
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["src", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("empty_config"), b"").unwrap();
+    // An encrypted key: loading it without a passphrase would fail, so the
+    // address error can only come first if resolution runs before loading.
+    let key = tmp.join("enc_key");
+    PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        .unwrap()
+        .encrypt(&mut OsRng, "hunter2")
+        .unwrap()
+        .write_openssh_file(&key, LineEnding::LF)
+        .unwrap();
+    let id = iroh::SecretKey::generate().public().to_string();
+    let src = format!("{}/", tmp.join("src").display());
+    let dest = format!("{id}:m/");
+    let config = tmp.join("empty_config");
+    let o = run_client(
+        &[
+            "--address",
+            "no-such-host.invalid:9",
+            "--identity",
+            key.to_str().unwrap(),
+            "-F",
+            config.to_str().unwrap(),
+            &src,
+            &dest,
+        ],
+        tmp,
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("resolving address no-such-host.invalid:9"),
+        "{err}"
+    );
+    assert!(!err.contains("IRSYNC_PASSPHRASE"), "{err}");
+}
+
+#[test]
+fn no_listening_line_when_startup_fails_after_bind() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    std::fs::create_dir_all(tmp.join("dst")).unwrap();
+    // state_dir is a regular file, so opening the module index fails.
+    std::fs::write(tmp.join("state"), b"not a directory").unwrap();
+    std::fs::write(tmp.join("authorized_keys"), b"").unwrap();
+    std::fs::write(
+        tmp.join("d.toml"),
+        format!(
+            "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n\
+             relay_mode = \"disabled\"\nportmap = false\n\
+             [discovery]\ndht = false\ndns = false\nmdns = false\n\
+             [modules.m]\npath = {:?}\n",
+            tmp.join("daemon_key"),
+            tmp.join("authorized_keys"),
+            tmp.join("state"),
+            tmp.join("dst"),
+        ),
+    )
+    .unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["daemon", "--config"])
+        .arg(tmp.join("d.toml"))
+        .args(["--listen", "127.0.0.1:0"])
+        .env_remove("IRSYNC_PASSPHRASE")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "daemon should fail to start");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        !out.contains("listening on:"),
+        "ready lines printed although startup failed:\n{out}"
+    );
+}
