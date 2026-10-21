@@ -572,7 +572,7 @@ fn non_zero_exit_is_an_error_naming_the_code() {
   }
   impl Iteration {
       pub fn passed(&self) -> bool;   // sync Ok && manifest_ok && check Clean
-      /// `iter 0002/0100  sync 11.8s  exit 23   manifest ok  check FAILED (added=0 deleted=1 changed=2)`; `manifest MISMATCH` when the hashes differ; `check ok` when clean; seconds with one decimal; the exit code left-aligned in a column of width 4 (`exit 0   `, `exit 23  `, `exit sig ` for a signal).
+      /// `iter 0002/0100  sync 11.8s  exit 23   manifest ok  check FAILED (added=0 deleted=1 changed=2)`; `manifest MISMATCH` when the hashes differ; `check ok` when clean; seconds with one decimal; the exit code left-aligned in a column of width 3 (`exit 0  `, `exit 23 `, `exit sig` for a signal), then two spaces.
       pub fn line(&self) -> String;
   }
   /// 0 if every iteration passed, else 1. (Exit 2 never comes from here: it is the `Err` path of the loop.)
