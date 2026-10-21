@@ -241,3 +241,31 @@ fn daemon_listen_flag_repeats() {
     }
     assert!(Args::try_parse_from(["irsync", "daemon", "--listen", "nope"]).is_err());
 }
+
+#[test]
+fn address_flag_repeats_and_conflicts_with_relay() {
+    let o = opts(&[
+        "--address",
+        "127.0.0.1:9",
+        "--address",
+        "localhost:9",
+        "a",
+        "h:m",
+    ]);
+    assert_eq!(o.addresses.len(), 2);
+    assert!(Args::try_parse_from([
+        "irsync",
+        "--address",
+        "127.0.0.1:9",
+        "--relay",
+        "https://r",
+        "a",
+        "h:m"
+    ])
+    .is_err());
+    assert!(Args::try_parse_from(["irsync", "--address", "127.0.0.1", "a", "h:m"]).is_err());
+    assert!(
+        opts(&["--address", "127.0.0.1:9", "--no-dht", "a", "h:m"]).no_dht,
+        "redundant --no-dht is accepted"
+    );
+}

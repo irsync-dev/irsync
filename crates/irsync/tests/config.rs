@@ -244,3 +244,42 @@ async fn listen_sockets_takes_first_per_family_and_rejects_collisions() {
         .await
         .is_err());
 }
+
+#[test]
+fn client_address_lines_accumulate_and_merge_across_blocks() {
+    let text = "Host *\n    Address 10.0.0.1:1\nHost nas\n    Address 127.0.0.1:2\n    Address [::1]:2\n    Relay https://r.example\n";
+    let cfg = ClientConfig::parse(text).unwrap();
+    let nas = cfg.resolve("nas");
+    assert_eq!(
+        nas.addresses,
+        vec![
+            "10.0.0.1:1".parse::<HostPort>().unwrap(),
+            "127.0.0.1:2".parse().unwrap(),
+            "[::1]:2".parse().unwrap(),
+        ]
+    );
+    assert!(
+        nas.relay.is_some(),
+        "Address next to Relay is not a parse error"
+    );
+    assert!(cfg.resolve("other").addresses.len() == 1);
+}
+
+#[test]
+fn client_address_bad_values_report_line() {
+    for (text, line) in [
+        ("Host a\nAddress 127.0.0.1\n", 2),
+        ("Address host:99999\n", 1),
+        ("\nAddress ::1:9\n", 2),
+    ] {
+        match ClientConfig::parse(text) {
+            Err(ConfigError::BadValue {
+                line: l, keyword, ..
+            }) => {
+                assert_eq!(l, line);
+                assert_eq!(keyword, "Address");
+            }
+            other => panic!("{text:?}: {other:?}"),
+        }
+    }
+}

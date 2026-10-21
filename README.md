@@ -100,6 +100,10 @@ Host home
     IdentityFile ~/.ssh/id_ed25519
     Relay       https://relay.example.net   # optional: self-hosted relay
 
+Host lan
+    EndpointId  k51qzi5uqu5dj...
+    Address     192.168.1.10:4000   # optional, repeatable: dial directly, no relay or lookup
+
 Host nas-*
     IdentityFile ~/.ssh/id_ed25519_nas
 
@@ -168,6 +172,7 @@ irsync-specific:
 | `--reconnect DURATION` | how long to keep redialling (`0` = give up like rsync) |
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
 | `--no-dht` | do not use the mainline DHT for lookup |
+| `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
 | `-F FILE` | client config file |
 | `--identity PATH` | private key to use |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`) |

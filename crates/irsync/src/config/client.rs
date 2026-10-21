@@ -1,4 +1,5 @@
 use super::{duration, expand_tilde, ConfigError};
+use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,10 +15,14 @@ pub struct HostConfig {
     pub reconnect: Option<Duration>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
+    /// Direct addresses to dial (all `Address` lines, in file order). Any
+    /// address puts the client in isolated mode: no relay, no lookups.
+    pub addresses: Vec<HostPort>,
 }
 
 impl HostConfig {
-    /// Fill every still-unset field from `other` (first value wins).
+    /// Fill every still-unset field from `other` (first value wins);
+    /// `addresses` accumulate instead.
     fn fill_from(&mut self, other: &HostConfig) {
         macro_rules! fill {
             ($($f:ident),*) => { $( if self.$f.is_none() { self.$f = other.$f.clone(); } )* };
@@ -31,6 +36,7 @@ impl HostConfig {
             dht,
             mdns
         );
+        self.addresses.extend(other.addresses.iter().cloned());
     }
 }
 
@@ -104,6 +110,9 @@ fn set_option(opts: &mut HostConfig, keyword: &str, value: &str) -> Result<bool,
         "reconnect" => first!(reconnect, duration::parse(value).map_err(|e| e.to_string())),
         "dht" => first!(dht, parse_bool(value)),
         "mdns" => first!(mdns, parse_bool(value)),
+        "address" => opts
+            .addresses
+            .push(value.parse::<HostPort>().map_err(|e| e.to_string())?),
         _ => return Ok(false),
     }
     Ok(true)

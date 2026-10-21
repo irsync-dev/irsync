@@ -233,6 +233,11 @@ pub struct SyncArgs {
     pub relay: Option<String>,
     #[arg(long)]
     pub no_dht: bool,
+    /// Dial the daemon at this `ip:port`, `[ipv6]:port` or `host:port`
+    /// directly (repeatable). Turns relay, DNS, DHT, mDNS and the port
+    /// mapper off; the daemon's EndpointId is still required.
+    #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
+    pub address: Vec<HostPort>,
     /// Client config file.
     #[arg(short = 'F', value_name = "FILE")]
     pub config: Option<PathBuf>,
@@ -315,6 +320,7 @@ pub struct SyncOptions {
     pub reconnect: Option<Duration>,
     pub relay: Option<String>,
     pub no_dht: bool,
+    pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
@@ -371,6 +377,7 @@ impl SyncOptions {
             reconnect: a.reconnect,
             relay: a.relay.clone(),
             no_dht: a.no_dht,
+            addresses: a.address.clone(),
             config: a.config.clone(),
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
