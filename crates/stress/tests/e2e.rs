@@ -1,7 +1,9 @@
 //! End-to-end: the built harness against the real `irsync`, `filegen` and
 //! `fileset` binaries.
 
+use std::ffi::OsStr;
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
@@ -133,6 +135,7 @@ fn assert_two_passing_iterations(direction: &str) -> tempfile::TempDir {
         "run.toml",
         "logs/daemon.log",
         "logs/ping.client.log",
+        "logs/filegen.stderr.log",
         "logs/iter-0001.client.log",
         "logs/iter-0002.client.log",
         "logs/iter-0001.check.txt",
@@ -174,6 +177,138 @@ fn non_empty_root_exits_2() {
     std::fs::write(t.path().join("x"), b"").unwrap();
     let o = run_harness("push", t.path(), &[]);
     assert_eq!(o.status.code(), Some(2));
+}
+
+/// A short push run: `--iterations <iterations> --steps 5`, small sizes,
+/// `extra` flags, then `root`.
+fn run_short(iterations: &str, root: &Path, extra: &[&OsStr]) -> Output {
+    let mut cmd = Command::new(bin());
+    cmd.args([
+        "--direction",
+        "push",
+        "--iterations",
+        iterations,
+        "--steps",
+        "5",
+        "--seed",
+        "7",
+        "--max-total-size",
+        "8M",
+        "--max-file-size",
+        "1M",
+        "--filegen-set",
+        "names.max_len=200",
+    ])
+    .args(extra)
+    .arg(root)
+    .env_remove("IRSYNC_PASSPHRASE")
+    .env_remove("IRSYNC_CONFIG");
+    output_within(cmd, Duration::from_secs(300))
+}
+
+fn show(o: &Output) -> String {
+    format!(
+        "status: {}\nstdout:\n{}\nstderr:\n{}",
+        o.status,
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
+}
+
+#[test]
+fn missing_tool_leaves_the_root_untouched() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("run");
+    let o = run_short(
+        "1",
+        &root,
+        &[OsStr::new("--irsync"), OsStr::new("/nonexistent/irsync")],
+    );
+    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
+    assert!(!root.exists(), "the harness created {}", root.display());
+    // The same root is still usable.
+    let o = run_short("1", &root, &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+}
+
+/// A fake `fileset` whose `check` always reports one deleted file. `init`
+/// creates an empty manifest (the sync carries it, so both sides hash the
+/// same); `update` keeps it.
+fn failing_fileset(dir: &Path) -> PathBuf {
+    let p = dir.join("fileset");
+    std::fs::write(
+        &p,
+        "#!/bin/sh\n\
+         case \"$1\" in\n\
+         --version) echo 'fileset fake' ;;\n\
+         init) : > \"$3/.fileset.sqlite\" ;;\n\
+         update) [ -e \"$3/.fileset.sqlite\" ] || : > \"$3/.fileset.sqlite\" ;;\n\
+         check) echo 'added=0 deleted=1 changed=0 unchanged=1 warnings=0' >&2; exit 1 ;;\n\
+         *) exit 2 ;;\n\
+         esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn a_failed_check_stops_the_run_without_keep_going() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let fileset = failing_fileset(t.path());
+    let root = t.path().join("run");
+    let o = run_short("3", &root, &[OsStr::new("--fileset"), fileset.as_os_str()]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("iter 0001/0003") && out.contains("check FAILED"),
+        "{}",
+        show(&o)
+    );
+    assert!(!out.contains("iter 0002"), "{}", show(&o));
+    assert!(!root.join("logs/iter-0002.client.log").exists());
+    // The check report's path follows the iteration line.
+    let lines: Vec<&str> = out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("iter 0001/0003"))
+        .unwrap();
+    let report = root
+        .canonicalize()
+        .unwrap()
+        .join("logs/iter-0001.check.txt");
+    assert_eq!(
+        lines.get(at + 1).copied(),
+        Some(report.to_str().unwrap()),
+        "{}",
+        show(&o)
+    );
+}
+
+#[test]
+fn a_failed_check_is_recorded_and_the_run_goes_on_with_keep_going() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let fileset = failing_fileset(t.path());
+    let root = t.path().join("run");
+    let o = run_short(
+        "3",
+        &root,
+        &[
+            OsStr::new("--keep-going"),
+            OsStr::new("--fileset"),
+            fileset.as_os_str(),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("iter 0003/0003") && out.contains("passed=0 failed=3"),
+        "{}",
+        show(&o)
+    );
 }
 
 /// Polls `run.toml` every 100 ms until it names the daemon's pid.

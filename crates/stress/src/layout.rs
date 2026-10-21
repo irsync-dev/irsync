@@ -64,6 +64,16 @@ impl Layout {
         self.logs.join("daemon.log")
     }
 
+    /// filegen's stderr, appended to by every filegen run.
+    pub fn filegen_stderr_log(&self) -> PathBuf {
+        self.logs.join("filegen.stderr.log")
+    }
+
+    /// filegen's own log, which it writes under its `--out-dir`.
+    pub fn filegen_log(&self, seed: u64) -> PathBuf {
+        self.filegen_dir.join(format!("filegen-{seed}.log"))
+    }
+
     pub fn ping_client_log(&self) -> PathBuf {
         self.logs.join("ping.client.log")
     }
@@ -173,5 +183,7 @@ mod tests {
         assert!(l.ping_file().ends_with("SRC/data/.irsync-stress-ping"));
         assert!(l.daemon_log().ends_with("logs/daemon.log"));
         assert!(l.ping_client_log().ends_with("logs/ping.client.log"));
+        assert!(l.filegen_stderr_log().ends_with("logs/filegen.stderr.log"));
+        assert!(l.filegen_log(42).ends_with("filegen/filegen-42.log"));
     }
 }

@@ -79,12 +79,13 @@ impl Syncer<'_> {
 /// path (explicitly, or by its `Drop`); the root is never deleted.
 pub fn run(cli: &Cli) -> Result<i32> {
     let start = Instant::now();
-    let layout = Layout::create(&cli.root)?;
+    // Tools first: a missing tool must leave no directories behind.
     let tools = Tools::locate(
         cli.irsync.as_deref(),
         cli.filegen.as_deref(),
         cli.fileset.as_deref(),
     )?;
+    let layout = Layout::create(&cli.root)?;
     let seed = cli.seed.unwrap_or_else(rand::random);
     let started = jiff::Timestamp::now().to_string();
     let mut run_file = new_run_file(cli, &tools, seed, &started);
@@ -111,8 +112,10 @@ pub fn run(cli: &Cli) -> Result<i32> {
         max_file_size: cli.max_file_size.as_deref(),
         sets: &cli.filegen_set,
     };
-    filegen::run(
-        &tools.filegen.path,
+    run_filegen(
+        &tools,
+        &layout,
+        seed,
         &filegen::fill_args(seed, &layout.filegen_dir, &layout.src_data, &opts),
     )?;
     fileset::init(&tools.fileset.path, &layout.src_data)?;
@@ -130,8 +133,10 @@ pub fn run(cli: &Cli) -> Result<i32> {
             }
         }
         if i < cli.iterations {
-            filegen::run(
-                &tools.filegen.path,
+            run_filegen(
+                &tools,
+                &layout,
+                seed,
                 &filegen::mutate_args(&layout.filegen_state(seed), &layout.src_data, &opts),
             )?;
             fileset::update(&tools.fileset.path, &layout.src_data)?;
@@ -141,6 +146,17 @@ pub fn run(cli: &Cli) -> Result<i32> {
     drop(daemon); // stops it, then clears the signal handler's pid slot
     println!("{}", report::footer(&results, start.elapsed()));
     Ok(report::exit_code(&results))
+}
+
+/// One filegen run, its stderr appended to `logs/filegen.stderr.log`; a
+/// failure also names filegen's own log.
+fn run_filegen(tools: &Tools, layout: &Layout, seed: u64, args: &[OsString]) -> Result<()> {
+    filegen::run(&tools.filegen.path, args, &layout.filegen_stderr_log()).with_context(|| {
+        format!(
+            "filegen failed; its own log is {}",
+            layout.filegen_log(seed).display()
+        )
+    })
 }
 
 fn direction_name(d: Direction) -> &'static str {
@@ -265,9 +281,17 @@ fn iteration(daemon: &mut Daemon, sync: &Syncer, i: u64) -> Result<Iteration> {
     let log = layout.client_log(i);
     let r = sync.run(&log)?;
     if let SyncExit::Other(c) = r.exit {
+        let daemon_log = daemon.log_path().to_path_buf();
+        if let Err(e) = daemon.check_alive() {
+            return Err(e.context(format!(
+                "daemon died during iteration {i}; see {}",
+                daemon_log.display()
+            )));
+        }
         return Err(anyhow!(
-            "irsync client exited {c} in iteration {i}; see {}",
-            log.display()
+            "irsync client exited {c} in iteration {i}; see {} and {}",
+            log.display(),
+            daemon_log.display()
         ));
     }
     let hashes = verify::compare_manifests(

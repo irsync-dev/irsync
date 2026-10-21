@@ -1,4 +1,5 @@
-//! SIGINT and SIGTERM handling: pass SIGINT on to the daemon, then exit 130.
+//! SIGINT and SIGTERM handling: pass SIGINT on to the current foreground
+//! child and to the daemon, then exit 130.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -10,9 +11,23 @@ use nix::sys::signal::{
 /// The process-wide daemon pid slot: 0 while no daemon is running.
 static DAEMON_PID: OnceLock<Arc<AtomicI32>> = OnceLock::new();
 
+/// The process-wide foreground child slot: the pid of the child that
+/// `process::status` or `process::output` is waiting for, 0 while none is.
+static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+
+/// The foreground child slot the handler reads (see `process::status`).
+pub fn child_slot() -> &'static AtomicI32 {
+    &CHILD_PID
+}
+
 extern "C" fn handler(_sig: libc::c_int) {
-    // Only an atomic load (`OnceLock::get` once initialised), `kill` and
+    // Only atomic loads (`OnceLock::get` once initialised), `kill` and
     // `_exit`: all async-signal-safe.
+    let child = CHILD_PID.load(Ordering::SeqCst);
+    if child != 0 {
+        // SAFETY: `kill` is async-signal-safe.
+        unsafe { libc::kill(child, libc::SIGINT) };
+    }
     if let Some(slot) = DAEMON_PID.get() {
         let pid = slot.load(Ordering::SeqCst);
         if pid != 0 {
@@ -25,8 +40,9 @@ extern "C" fn handler(_sig: libc::c_int) {
 }
 
 /// Installs the SIGINT and SIGTERM handlers and returns the daemon pid
-/// slot they read. The handler sends SIGINT to the pid in the slot (if
-/// non-zero), then exits the process with status 130. `run` stores the
+/// slot they read. The handler sends SIGINT to the foreground child (see
+/// `child_slot`) and to the pid in the daemon slot, each if non-zero, then
+/// exits the process with status 130. `run` stores the
 /// pid once the daemon is up and clears it after stopping the daemon.
 pub fn install() -> Arc<AtomicI32> {
     let slot = DAEMON_PID.get_or_init(|| Arc::new(AtomicI32::new(0)));
@@ -37,7 +53,7 @@ pub fn install() -> Arc<AtomicI32> {
         SigSet::empty(),
     );
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
-        // SAFETY: the handler only loads an atomic, calls `kill` and `_exit`.
+        // SAFETY: the handler only loads atomics, calls `kill` and `_exit`.
         unsafe { sigaction(sig, &action) }.expect("installing a signal handler");
     }
     Arc::clone(slot)
@@ -62,7 +78,8 @@ pub struct Blocked {
 
 /// Blocks SIGINT and SIGTERM on the calling thread until the guard drops.
 /// `run` holds it from before the daemon is spawned until the daemon's pid
-/// is in the slot, so the handler never misses a daemon that exists.
+/// is in the slot, so the handler never misses a daemon that exists;
+/// `process::status` and `process::output` do the same for their child.
 pub fn block() -> Blocked {
     let mut old = SigSet::empty();
     pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&handled()), Some(&mut old))

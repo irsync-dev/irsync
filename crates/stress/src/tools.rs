@@ -87,12 +87,25 @@ fn locate_one(
             exe_dir.display()
         )
     })?;
+    let path = absolute(&path);
     let version = version_of(name, &path)?;
     Ok(Tool { path, version })
 }
 
+/// `path` canonicalised, or joined to the current directory if that fails
+/// (or left as is if even that fails), so `run.toml` and children always
+/// see an absolute path.
+fn absolute(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    })
+}
+
 impl Tools {
     /// Each override wins; else beside the current executable; else `PATH`.
+    /// Every returned path is absolute.
     pub fn locate(
         irsync: Option<&Path>,
         filegen: Option<&Path>,
@@ -164,6 +177,29 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         std::fs::write(t.path().join("filegen"), b"").unwrap();
         assert_eq!(find("filegen", None, t.path(), t.path().as_os_str()), None);
+    }
+
+    /// One `..` per component of `current_dir()`, then `abs` without its leading `/`.
+    fn relative_to_cwd(abs: &Path) -> PathBuf {
+        let depth = std::env::current_dir().unwrap().components().count() - 1;
+        let mut rel = PathBuf::new();
+        for _ in 0..depth {
+            rel.push("..");
+        }
+        rel.join(abs.strip_prefix("/").unwrap())
+    }
+
+    #[test]
+    fn a_relative_override_becomes_absolute() {
+        let t = tempfile::tempdir().unwrap();
+        let tool = t.path().join("filegen");
+        exec_script(&tool, "#!/bin/sh\necho 'filegen 9'\n");
+        let rel = relative_to_cwd(&tool);
+        assert!(rel.is_relative());
+        let found = locate_one("filegen", Some(&rel), t.path(), t.path().as_os_str()).unwrap();
+        assert!(found.path.is_absolute(), "{}", found.path.display());
+        assert_eq!(found.path, tool.canonicalize().unwrap());
+        assert_eq!(found.version, "filegen 9");
     }
 
     #[test]

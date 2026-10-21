@@ -37,21 +37,26 @@ the code disagree, the code is what shipped and the entry says so.
    anyone looking at a leftover process. Cost if wrong: none beyond an extra
    field; a stale pid is only informative.
 
-4. **Signal handling.** A SIGINT/SIGTERM handler sends SIGINT to the daemon
-   pid and calls `_exit(130)`. Both signals are blocked on the harness's
-   main thread from before the daemon is spawned until its pid is stored, so
-   a signal arriving during startup is delivered afterwards, with the pid
-   set. Because std does not reset a child's signal mask, `process::spawn`
-   unblocks both signals in every child with `pre_exec`; without it the
-   daemon would inherit the block and never see the SIGINT sent to it.
-   Limit: a client, filegen or fileset child that is running when the
-   harness is signalled is not signalled by the harness; a terminal Ctrl-C
-   still reaches it through the process group, a `kill` of the harness alone
-   does not. Why: the handler can do only async-signal-safe work, so it
-   signals one pid held in an atomic; tracking a changing set of short-lived
-   children from a handler is not worth the risk. Cost if wrong: a stray
-   client or filegen process can outlive a harness killed from outside the
-   terminal, until it finishes by itself.
+4. **Signal handling.** A SIGINT/SIGTERM handler sends SIGINT to the
+   current foreground child (the client, filegen or fileset run the harness
+   is waiting for, if any), then to the daemon, and calls `_exit(130)`. Each
+   pid sits in its own atomic slot: `process::status` and `process::output`
+   store the child's pid between spawn and wait and clear it afterwards;
+   `run` stores the daemon's pid once it is up and clears it after stopping
+   it. Both signals are blocked on the spawning thread from before each
+   spawn until the pid is stored, so a signal arriving in between is
+   delivered afterwards, with the pid set. Because std does not reset a
+   child's signal mask, `process::spawn` unblocks both signals in every
+   child with `pre_exec`; without it the daemon would inherit the block and
+   never see the SIGINT sent to it. Why: the handler can do only
+   async-signal-safe work (atomic loads, `kill`, `_exit`), and the harness
+   runs at most one foreground child at a time, so two fixed slots cover
+   every child; a `kill` of the harness from outside the terminal then
+   stops its children too, not only a terminal Ctrl-C. Cost if wrong: a
+   child that ignores SIGINT can still outlive the harness, which does not
+   wait for it; and in the instant between a child being reaped and its
+   slot being cleared, a signal could reach a process that has reused the
+   pid (vanishingly unlikely, and only SIGINT).
 
 5. **`process::spawn` retries on ETXTBSY** (10 ms apart, up to 100
    attempts), and every child goes through it. Why: parallel unit tests
@@ -96,11 +101,24 @@ the code disagree, the code is what shipped and the entry says so.
 
 10. **Log content.** The client's stdout is appended to the iteration log
     along with its stderr. filegen's stdout is discarded and its stderr is
-    inherited (progress and errors reach the terminal). The daemon and
+    appended to `logs/filegen.stderr.log` (every filegen run of the
+    harness, fill and mutations, in one file); a filegen failure names that
+    file and filegen's own log `filegen/filegen-<seed>.log`. The daemon and
     client logs contain ANSI colour codes, because irsync's tracing output
-    is coloured. Why: nothing the client prints should be lost, and filegen
-    has its own log under `filegen/`. Cost if wrong: logs need `less -R` or
-    an escape-stripping filter to grep cleanly.
+    is coloured. Why: nothing the client prints should be lost, and a
+    filegen error must survive an unattended run rather than scroll past on
+    a terminal nobody watches. Cost if wrong: filegen's progress output no
+    longer shows on the terminal; logs need `less -R` or an
+    escape-stripping filter to grep cleanly.
+
+11. **No client inactivity `--timeout`.** The harness passes no
+    `--timeout` to the irsync client. Why: the spec left it open, and a
+    hung client is itself a finding about irsync that should be visible as
+    such, with the daemon and client logs showing where it stopped, rather
+    than turned into an exit code. Cost if wrong: an overnight run can hang
+    silently until someone looks. Workaround: pass `-- --timeout N`; with
+    the harness's `--reconnect 0` the client then fails, and the harness
+    exits 2 naming the client and daemon logs.
 
 ## Known irsync bugs found by the harness
 

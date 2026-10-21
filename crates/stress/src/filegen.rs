@@ -1,6 +1,7 @@
 //! Wrappers for the `filegen` binary's `run` verb.
 
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -59,19 +60,28 @@ pub fn mutate_args(state: &Path, tree: &Path, o: &FilegenOpts) -> Vec<OsString> 
     args
 }
 
-/// Runs `<filegen> <args>` with stdin null and stderr inherited; a non-zero
-/// exit is an error naming the exit status.
-pub fn run(filegen: &Path, args: &[OsString]) -> Result<()> {
+/// Runs `<filegen> <args>` with stdin null, stdout discarded and stderr
+/// appended to `stderr_log`; a non-zero exit is an error naming the exit
+/// status and `stderr_log`.
+pub fn run(filegen: &Path, args: &[OsString], stderr_log: &Path) -> Result<()> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_log)
+        .with_context(|| format!("opening {}", stderr_log.display()))?;
     let status = process::status(
         Command::new(filegen)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit()),
+            .stderr(Stdio::from(log)),
     )
     .with_context(|| format!("running {}", filegen.display()))?;
     if !status.success() {
-        bail!("filegen run failed ({status})");
+        bail!(
+            "filegen run failed ({status}); see {}",
+            stderr_log.display()
+        );
     }
     Ok(())
 }
@@ -157,12 +167,19 @@ mod tests {
     }
 
     #[test]
-    fn non_zero_exit_is_an_error_naming_the_code() {
+    fn non_zero_exit_is_an_error_naming_the_code_and_the_stderr_log() {
         let t = tempfile::tempdir().unwrap();
-        let ok = fake(t.path(), "ok.sh", "exit 0");
-        run(&ok, &["run".into()]).unwrap();
-        let bad = fake(t.path(), "bad.sh", "exit 2");
-        let e = run(&bad, &["run".into()]).unwrap_err();
-        assert!(e.to_string().contains('2'), "{e}");
+        let log = t.path().join("filegen.stderr.log");
+        let ok = fake(t.path(), "ok.sh", "echo 'first run' >&2; exit 0");
+        run(&ok, &["run".into()], &log).unwrap();
+        let bad = fake(t.path(), "bad.sh", "echo 'no space left' >&2; exit 2");
+        let e = run(&bad, &["run".into()], &log).unwrap_err().to_string();
+        assert!(e.contains('2'), "{e}");
+        assert!(e.contains(&log.display().to_string()), "{e}");
+        // appended, not truncated
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "first run\nno space left\n"
+        );
     }
 }

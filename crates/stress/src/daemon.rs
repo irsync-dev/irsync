@@ -170,7 +170,10 @@ pub fn parse_startup(lines: &mpsc::Receiver<String>, timeout: Duration) -> Resul
 /// The daemon log file with a shared writer so markers and the copied
 /// stderr interleave in one file.
 #[derive(Debug, Clone)]
-pub struct DaemonLog(Arc<Mutex<File>>);
+pub struct DaemonLog {
+    file: Arc<Mutex<File>>,
+    path: PathBuf,
+}
 
 impl DaemonLog {
     pub fn create(path: &Path) -> Result<DaemonLog> {
@@ -181,7 +184,15 @@ impl DaemonLog {
             .truncate(true)
             .open(path)
             .with_context(|| format!("creating {}", path.display()))?;
-        Ok(DaemonLog(Arc::new(Mutex::new(f))))
+        Ok(DaemonLog {
+            file: Arc::new(Mutex::new(f)),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Where the log is, for error messages.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Writes `=== <text> ===\n` and flushes.
@@ -190,7 +201,7 @@ impl DaemonLog {
     }
 
     fn write_all(&self, bytes: &[u8]) -> Result<()> {
-        let mut f = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
         f.write_all(bytes)?;
         f.flush()?;
         Ok(())
@@ -199,7 +210,7 @@ impl DaemonLog {
     /// The last `n` lines written so far, looking only at the file's last
     /// `TAIL_BYTES`.
     fn tail(&self, n: usize) -> String {
-        let mut f = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut f = self.file.lock().unwrap_or_else(|e| e.into_inner());
         let mut buf = Vec::new();
         let mut start = 0;
         let read = f
@@ -320,7 +331,8 @@ impl Daemon {
             Err(StartFailure::Exited(status)) => {
                 join_bounded(copier, DRAIN);
                 Err(anyhow!(
-                    "daemon exited before startup ({status}); stderr:\n{}",
+                    "daemon exited before startup ({status}); see {}; stderr:\n{}",
+                    log.path().display(),
                     log.tail(TAIL_LINES)
                 ))
             }
@@ -329,7 +341,8 @@ impl Daemon {
                 let _ = child.wait();
                 join_bounded(copier, DRAIN);
                 Err(e.context(format!(
-                    "daemon failed to start; stderr:\n{}",
+                    "daemon failed to start; see {}; stderr:\n{}",
+                    log.path().display(),
                     log.tail(TAIL_LINES)
                 )))
             }
@@ -350,10 +363,16 @@ impl Daemon {
         match self.child.try_wait().context("checking on the daemon")? {
             None => Ok(()),
             Some(status) => bail!(
-                "daemon exited ({status}); stderr:\n{}",
+                "daemon exited ({status}); see {}; stderr:\n{}",
+                self.log.path().display(),
                 self.log.tail(TAIL_LINES)
             ),
         }
+    }
+
+    /// The daemon log's path, for error messages.
+    pub fn log_path(&self) -> &Path {
+        self.log.path()
     }
 
     /// SIGINT, wait up to `grace`, then SIGKILL; joins the copier (bounded). Idempotent.
@@ -560,6 +579,10 @@ mod tests {
             err.contains("exit") && err.contains("config error"),
             "{err}"
         );
+        assert!(
+            err.contains(&t.path().join("d.log").display().to_string()),
+            "{err}"
+        );
     }
 
     #[test]
@@ -620,9 +643,18 @@ mod tests {
         .unwrap();
         assert_eq!(d.startup.endpoint_id, "x");
         let deadline = Instant::now() + Duration::from_secs(5);
-        while d.check_alive().is_ok() {
+        let err = loop {
+            match d.check_alive() {
+                Ok(()) => {}
+                Err(e) => break e.to_string(),
+            }
             assert!(Instant::now() < deadline, "daemon never reported dead");
             std::thread::sleep(Duration::from_millis(20));
-        }
+        };
+        assert!(
+            err.contains(&t.path().join("d.log").display().to_string()),
+            "{err}"
+        );
+        assert_eq!(d.log_path(), t.path().join("d.log"));
     }
 }

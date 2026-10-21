@@ -39,7 +39,9 @@ deleted, on success or failure.
 - `--irsync <PATH>`, `--filegen <PATH>`, `--fileset <PATH>`: use this binary
   instead of looking one up
 - `-- <ARGS>...`: everything after `--` is appended to the irsync client
-  command line, e.g. `-- --parallel 4 --stats`
+  command line, e.g. `-- --parallel 4 --stats`. The harness sets no client
+  inactivity timeout, so a hung sync hangs the run; `-- --timeout N` makes
+  such a client fail instead, and the harness then exits 2.
 
 The tools are looked up next to the `irsync-stress` binary first, then on
 `PATH`. `run.toml` records the path and `--version` output of each.
@@ -91,6 +93,7 @@ ROOT/
   logs/
     daemon.log                daemon output for the whole run, with iteration markers
     ping.client.log           client log of the sentinel round
+    filegen.stderr.log        filegen's stderr, appended by every filegen run
     iter-0001.client.log      client log per iteration
     iter-0001.check.txt       fileset check output per iteration
     iter-0001.manifest.blake3 hashes of both manifests per iteration
@@ -123,7 +126,8 @@ output); use `less -R`.
 - `2`: the harness could not do its job: bad arguments, a root that is not
   empty, a missing tool, a daemon that did not start, a tool failing, or
   the client exiting with anything other than 0 or 23
-- `130`: interrupted by SIGINT or SIGTERM; the daemon is sent SIGINT first
+- `130`: interrupted by SIGINT or SIGTERM; the client, filegen or fileset
+  run in progress (if any) and the daemon are sent SIGINT first
 
 A client exit of 23 (partial transfer) is a failed iteration, not a harness
 error; the manifest comparison and the check still run for it.
