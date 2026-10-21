@@ -87,12 +87,26 @@ fn errno(e: nix::Error) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
 
+/// The supplementary groups of this process, empty if they can't be read.
+/// Calls libc directly because nix leaves `getgroups` out on Apple targets.
+pub fn supplementary_groups() -> Vec<u32> {
+    use nix::libc::{c_int, getgroups, gid_t};
+    // SAFETY: a zero count with a null buffer only asks for the group count.
+    let n = unsafe { getgroups(0, std::ptr::null_mut()) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    let mut buf: Vec<gid_t> = vec![0; n as usize];
+    // SAFETY: `buf` holds `n` writable gid_t slots.
+    let n = unsafe { getgroups(n as c_int, buf.as_mut_ptr()) };
+    buf.truncate(n.max(0) as usize);
+    buf.into_iter().map(|g| g as u32).collect()
+}
+
 /// Whether this process may chown to `gid`: as root, or as a member of it.
 fn may_chgrp(gid: u32) -> bool {
-    use nix::unistd::{getegid, geteuid, getgroups};
-    geteuid().is_root()
-        || getegid().as_raw() == gid
-        || getgroups().is_ok_and(|g| g.iter().any(|g| g.as_raw() == gid))
+    use nix::unistd::{getegid, geteuid};
+    geteuid().is_root() || getegid().as_raw() == gid || supplementary_groups().contains(&gid)
 }
 
 /// Apply the selected metadata of `e` to `path`, without following symlinks.

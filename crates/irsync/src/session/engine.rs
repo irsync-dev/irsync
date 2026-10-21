@@ -311,10 +311,10 @@ pub(super) struct Privs {
 
 impl Privs {
     fn current() -> Privs {
-        use nix::unistd::{getegid, geteuid, getgroups};
-        let mut groups: HashSet<u32> = getgroups()
-            .map(|g| g.into_iter().map(|g| g.as_raw()).collect())
-            .unwrap_or_default();
+        use nix::unistd::{getegid, geteuid};
+        let mut groups: HashSet<u32> = crate::fs::meta::supplementary_groups()
+            .into_iter()
+            .collect();
         groups.insert(getegid().as_raw());
         Privs {
             root: geteuid().is_root(),
