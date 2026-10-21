@@ -52,8 +52,9 @@ fn handled() -> SigSet {
 
 /// SIGINT and SIGTERM blocked on the calling thread until dropped; a signal
 /// that arrives meanwhile stays pending and is delivered on drop. Threads
-/// spawned meanwhile inherit the block; child processes do not (std resets
-/// a child's signal mask).
+/// spawned meanwhile inherit the block. Child processes would too (std
+/// passes the mask on), but `process::spawn`'s `pre_exec` unblocks both
+/// signals in every child.
 #[must_use]
 pub struct Blocked {
     old: SigSet,

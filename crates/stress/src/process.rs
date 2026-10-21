@@ -20,7 +20,9 @@ const RETRY_DELAY: Duration = Duration::from_millis(10);
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
     // SAFETY: between fork and exec the closure only calls `sigemptyset`,
     // `sigaddset` and `pthread_sigmask`, which are async-signal-safe and
-    // do not allocate.
+    // do not allocate. Registered once, outside the ETXTBSY retry loop; a
+    // caller passing the same `Command` again only stacks an identical,
+    // harmless unblock.
     unsafe {
         cmd.pre_exec(|| {
             let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
@@ -79,6 +81,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // reads /proc
     fn the_child_starts_with_sigint_and_sigterm_unblocked() {
         // `grep` itself reads its mask: a shell in between might reset it.
         let _blocked = crate::signals::block();
