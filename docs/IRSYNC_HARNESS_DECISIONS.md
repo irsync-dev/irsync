@@ -193,6 +193,42 @@ owner is fixed in place with `MetaOnly`. Tests: `tests/plan.rs`
 (`fifo_mtime_is_applied_and_updated`). Verified with the same harness runs
 as the NAME_MAX fix: 50 `mkfifo` steps per run, no `CHG` lines.
 
+### Idle watchdog versus the daemon's hashing (R35, reproduced)
+
+Found by the large-file matrix row of `docs/STRESS_BUG_HUNTING.md` on
+2026-10-21: six seeds, both directions, five iterations of ten steps, files
+up to 8 GB under a 16 GB cap, filegen's size distribution tilted to large
+files, client `--timeout 10 -c`, four runs at a time on one disk. Two of the
+six push runs ended in harness exit 2 (client exit 1); all six pull runs and
+the other four push runs passed with a clean `--paranoid` check.
+
+What the logs show (seed 2, iteration 2; seed 4, iteration 4): the client
+logs `session started`, then nothing from irsync for 47 and 59 seconds, then
+`no activity; dropping the connection secs=10` and `session failed error=no
+activity for 10 s: control stream: connection lost`. With the harness's
+`--reconnect 0` that is client exit 1. The daemon's log has the matching
+`session started` and then no irsync line at all until the harness stopped
+it; its destination tree at that point was 7.7 GB in four files over 100 MB
+(seed 2). The same seeds in the pull direction passed the same iteration in
+52 s and 45 s.
+
+Reading: with `-c` the receiver hashes every existing destination file
+before it can answer the listing. On a push the receiver is the daemon, and
+that hashing is invisible to the client's inactivity watchdog, which sees no
+data and no control message. The client's own `-c` hashing of the source
+tree keeps its watchdog alive for the first part of the silence (the drop
+comes at 47 s, not 10 s), and once the client is done and waiting, ten
+quiet seconds end the session. On a pull the hashing happens on the client,
+whose watchdog counts local work, so the identical trees pass. This is open
+point R35 in `IRSYNC_DECISIONS.md` ("one peer's long local work is invisible
+to the other peer's idle watchdog"), now reproduced on demand; the planned
+fix is a `Control.Heartbeat` frame. Not fixed here. Until it lands, a push
+with `-c` or with multi-gigabyte files needs `--timeout` comfortably above
+the daemon's hashing time, or none.
+
+Roots kept for inspection: `~/work/irsync-breadth-largefile/push-2` and
+`push-4`, with `run.toml`, both logs and both manifests.
+
 ## Acceptance run
 
 Binaries: a release build of the tree at commit 8cb3102 for all four tools.
