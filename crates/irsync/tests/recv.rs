@@ -593,3 +593,72 @@ async fn busy_part_waits_for_previous_holder() {
     assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
     drop(w2);
 }
+
+mod temp_names {
+    use irsync::recv::{is_temp_name, temp_name, NAME_MAX};
+
+    #[test]
+    fn short_names_are_wrapped_verbatim() {
+        assert_eq!(temp_name(b"f.bin", b".part"), b".irsync.f.bin.part");
+        assert_eq!(temp_name(b"f.bin", b".tmp"), b".irsync.f.bin.tmp");
+    }
+
+    #[test]
+    fn longest_plain_form_is_kept() {
+        let name = vec![b'a'; NAME_MAX - ".irsync.".len() - ".part".len()];
+        let t = temp_name(&name, b".part");
+        assert_eq!(t.len(), NAME_MAX);
+        assert_eq!(&t[8..8 + name.len()], &name[..]);
+        let name = vec![b'a'; NAME_MAX - ".irsync.".len() - ".tmp".len()];
+        let t = temp_name(&name, b".tmp");
+        assert_eq!(t.len(), NAME_MAX);
+        assert_eq!(&t[8..8 + name.len()], &name[..]);
+    }
+
+    #[test]
+    fn long_names_are_shortened_to_fit_and_stay_distinct() {
+        for suffix in [&b".part"[..], &b".tmp"[..]] {
+            for len in [NAME_MAX - 12, NAME_MAX - 1, NAME_MAX] {
+                let mut a = vec![b'x'; len];
+                let mut b = a.clone();
+                *a.last_mut().unwrap() = b'1';
+                *b.last_mut().unwrap() = b'2';
+                let (ta, tb) = (temp_name(&a, suffix), temp_name(&b, suffix));
+                assert_eq!(ta.len(), NAME_MAX, "len {len} {suffix:?}");
+                assert!(ta.starts_with(b".irsync."));
+                assert!(ta.ends_with(suffix));
+                assert!(is_temp_name(&ta));
+                assert_ne!(ta, tb, "names differing only past the cut must not collide");
+                assert!(
+                    ta.windows(NAME_MAX - 12 - 40).any(|w| w == &a[..w.len()]),
+                    "prefix kept"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shortening_is_deterministic() {
+        let name = [0xC3u8, 0xA9].repeat(127);
+        assert_eq!(temp_name(&name, b".part"), temp_name(&name, b".part"));
+    }
+
+    #[test]
+    fn utf8_names_are_cut_on_a_character_boundary() {
+        // 127 x "é" (2 bytes) + "a" = 255 bytes of valid UTF-8.
+        let mut name = "é".repeat(127).into_bytes();
+        name.push(b'a');
+        assert_eq!(name.len(), NAME_MAX);
+        let t = temp_name(&name, b".part");
+        assert!(t.len() <= NAME_MAX);
+        assert!(std::str::from_utf8(&t).is_ok(), "{t:?}");
+    }
+
+    #[test]
+    fn non_utf8_names_are_cut_bytewise() {
+        let name = vec![0xFFu8; NAME_MAX];
+        let t = temp_name(&name, b".part");
+        assert_eq!(t.len(), NAME_MAX);
+        assert!(is_temp_name(&t));
+    }
+}

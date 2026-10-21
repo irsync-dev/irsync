@@ -389,28 +389,15 @@ fn is_part_name(name: &[u8]) -> bool {
         && name.ends_with(b".part")
 }
 
-/// The `.part` file the receiver keeps for destination `rel`.
+/// The `.part` file the receiver keeps for destination `rel`. The name may
+/// be shortened (see [`crate::recv::temp_name`]), so there is no inverse:
+/// the GC maps every known destination forward and compares.
 fn part_of(rel: &RelPath) -> Option<RelPath> {
     let b = rel.as_bytes();
     let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
     let mut p = b[..i].to_vec();
-    p.extend_from_slice(b".irsync.");
-    p.extend_from_slice(&b[i..]);
-    p.extend_from_slice(b".part");
+    p.extend_from_slice(&crate::recv::temp_name(&b[i..], b".part"));
     RelPath::new(&p).ok()
-}
-
-/// The destination a `.part` path belongs to.
-fn dest_of(part: &RelPath) -> Option<RelPath> {
-    let b = part.as_bytes();
-    let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
-    let name = &b[i..];
-    if !is_part_name(name) {
-        return None;
-    }
-    let mut d = b[..i].to_vec();
-    d.extend_from_slice(&name[".irsync.".len()..name.len() - ".part".len()]);
-    RelPath::new(&d).ok()
 }
 
 /// What [`remove_part`] did.
@@ -494,11 +481,19 @@ pub async fn gc(
             let plan = SessionPlan::decode(&row.plan[..]).map_err(io_err)?;
             referenced.extend(plan.entries.into_iter().map(|e| e.path));
         }
+        // The `.part` of every referenced path, so a part on disk can be
+        // matched without inverting its (possibly shortened) name.
+        let referenced_parts: Vec<Vec<u8>> = referenced
+            .iter()
+            .filter_map(|p| RelPath::new(p).ok())
+            .filter_map(|p| part_of(&p))
+            .map(|p| p.as_bytes().to_vec())
+            .collect();
         // Plan paths are relative to the session root, which may sit below the
         // index root: match on a whole-component suffix to stay conservative.
-        let is_ref = |rel: &RelPath| {
+        let suffix_of = |rel: &RelPath, list: &[Vec<u8>]| {
             let b = rel.as_bytes();
-            referenced.iter().any(|p| {
+            list.iter().any(|p| {
                 !p.is_empty()
                     && (b == &p[..]
                         || (b.len() > p.len()
@@ -506,6 +501,7 @@ pub async fn gc(
                             && b[b.len() - p.len() - 1] == b'/'))
             })
         };
+        let is_ref = |rel: &RelPath| suffix_of(rel, &referenced);
         let mut report = GcReport::default();
         let mut handled = std::collections::HashSet::new();
 
@@ -535,16 +531,19 @@ pub async fn gc(
                 ix.remove_partial(&dest).map_err(io_err)?;
             }
         }
-        // Orphans: stale files with no record.
+        // Orphans: stale files with no record. A part with a record of any
+        // age is not an orphan (the stale ones were handled above).
+        let recorded: std::collections::HashSet<RelPath> = ix
+            .partial_paths()
+            .map_err(io_err)?
+            .iter()
+            .filter_map(part_of)
+            .collect();
         for part in on_disk {
-            if handled.contains(&part) {
+            if handled.contains(&part) || recorded.contains(&part) {
                 continue;
             }
-            let Some(dest) = dest_of(&part) else { continue };
-            if ix.partial(&dest).map_err(io_err)?.is_some() {
-                continue;
-            }
-            if is_ref(&dest) || is_ref(&part) {
+            if is_ref(&part) || suffix_of(&part, &referenced_parts) {
                 report.parts_kept += 1;
                 continue;
             }

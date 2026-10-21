@@ -132,26 +132,16 @@ output); use `less -R`.
 A client exit of 23 (partial transfer) is a failed iteration, not a harness
 error; the manifest comparison and the check still run for it.
 
-## Known irsync bug and workaround
+## Bugs the harness has found
 
-irsync stages an incoming file as `.irsync.<name>.part` in the same
-directory, so names longer than about 242 bytes fail with `File name too
-long` and the client exits 23. filegen's `long` name class draws names of
-200 to 255 bytes, so a default-size run hits this early, and once such a file
-exists in the source it never transfers: every later iteration fails too.
-The harness reports this like any failure. To get past it:
-
-```
---filegen-set names.max_len=200
-```
-
-A second bug, found by the acceptance run, needs no workaround to see:
-a FIFO that filegen gave a modification time arrives with its creation time
-instead, and the check reports `CHG <path> mtime=<source>→<destination>`
-for it in every later iteration. Such a line on a FIFO is that bug, not a
-transfer fault.
-
-See the decisions file for details.
+Two irsync bugs, both fixed on 2026-10-21: file names longer than about 242
+bytes could not be transferred, because the staging name
+`.irsync.<name>.part` exceeded `NAME_MAX`; and a FIFO whose only change was
+its modification time was never updated. Until the fix, runs needed
+`--filegen-set names.max_len=200` and had to discount `CHG ... mtime=` lines
+on FIFOs; a default run now passes with neither. The decisions file has the
+history, and [docs/STRESS_BUG_HUNTING.md](../../docs/STRESS_BUG_HUNTING.md)
+the plan for finding the next ones.
 
 ## Testing
 

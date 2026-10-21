@@ -135,11 +135,11 @@ pub(super) fn parent_of(p: &RelPath) -> RelPath {
     }
 }
 
-/// `.irsync.<name>.tmp` next to `full`, for atomic replacement of links and specials.
+/// `.irsync.<name>.tmp` next to `full` (shortened to fit `NAME_MAX` when
+/// needed), for atomic replacement of links and specials.
 fn temp_sibling(full: &Path) -> PathBuf {
-    let mut name = b".irsync.".to_vec();
-    name.extend_from_slice(full.file_name().map_or(&b""[..], |n| n.as_bytes()));
-    name.extend_from_slice(b".tmp");
+    let name = full.file_name().map_or(&b""[..], |n| n.as_bytes());
+    let name = crate::recv::temp_name(name, b".tmp");
     full.with_file_name(std::ffi::OsStr::from_bytes(&name))
 }
 
@@ -196,9 +196,7 @@ pub(super) fn place_hardlink(
     if !is_regular_mode(tm.st_mode as u32) {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    let mut tmp = b".irsync.".to_vec();
-    tmp.extend_from_slice(lname.as_bytes());
-    tmp.extend_from_slice(b".tmp");
+    let tmp = crate::recv::temp_name(lname.as_bytes(), b".tmp");
     let tmp = OsStr::from_bytes(&tmp);
     match unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir) {
         Ok(()) | Err(nix::Error::ENOENT) => {}

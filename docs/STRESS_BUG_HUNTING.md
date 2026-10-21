@@ -48,13 +48,16 @@ zero skipping (R3) and not a fault; a destination using **more** blocks with
 
 ## 2. Phase 0: clear the two known bugs
 
-Fix NAME_MAX staging and FIFO mtime before investing in campaigns. Each is
-small, each has a known reproduction, and until they are fixed every run
-needs `--filegen-set names.max_len=200` and a human to discount `CHG ...
-mtime=` lines on FIFOs. A harness whose default run fails 90% of iterations
-on known causes gives no signal on anything new.
+Done on 2026-10-21: both NAME_MAX staging and FIFO mtime are fixed (see
+`IRSYNC_HARNESS_DECISIONS.md`), and a default run passes without
+`--filegen-set names.max_len=200`. The reasoning stands for the next bug
+the harness finds: fix or neutralise anything that compounds before
+investing in campaigns, because a harness whose default run fails 90% of
+iterations on a known cause gives no signal on anything new.
 
-If they cannot be fixed yet, neutralise them per run instead:
+The per-run neutralisation, should a compounding bug reappear, looks like
+this (the `FG` array is what the commands below refer to; with the fixes
+in, it can be empty):
 
 ```
 # long names off
@@ -68,8 +71,8 @@ done
 irsync-stress --direction push "${FG[@]}" --filegen-set names.max_len=200 ROOT
 ```
 
-Keep this as a shell function; every command below assumes it is applied
-unless the run is meant to test exactly those features.
+Keep such a function around; the commands below pass `"${FG[@]}"` so a
+workaround can be slotted in without editing them.
 
 ## 3. Breadth before depth: many seeds, short runs
 

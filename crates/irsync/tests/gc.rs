@@ -369,3 +369,76 @@ async fn gc_if_due_records_and_skips() {
         .unwrap()
         .is_some());
 }
+
+/// A destination name too long for the plain `.irsync.<name>.part` form.
+fn long_name(c: u8) -> Vec<u8> {
+    vec![c; 250]
+}
+
+fn long_part(c: u8) -> RelPath {
+    RelPath::new(&irsync::recv::temp_name(&long_name(c), b".part")).unwrap()
+}
+
+#[tokio::test]
+async fn gc_handles_shortened_part_names() {
+    let f = fixture();
+    let r = f.root.path();
+    let dest = |c: u8| RelPath::new(&long_name(c)).unwrap();
+    let plant = |c: u8, days: i64| {
+        let p = r.join(long_part(c).to_os());
+        assert!(p.file_name().unwrap().len() <= 255);
+        std::fs::write(&p, b"x").unwrap();
+        touch_ago(&p, days);
+    };
+    // Orphan with a shortened name, stale: removed.
+    plant(b'o', 8);
+    // Shortened name whose destination has a fresh record: kept.
+    plant(b'r', 9);
+    // Shortened name whose destination has a stale record: removed, with the row.
+    plant(b's', 9);
+    // Shortened name whose destination a dormant session's plan references: kept.
+    plant(b'h', 8);
+    {
+        let mut ix = f.ix.lock().unwrap();
+        ix.put_partial(&dest(b'r'), &partial(now())).unwrap();
+        ix.put_partial(&dest(b's'), &partial(now() - 9 * DAY as i64))
+            .unwrap();
+        let plan = SessionPlan {
+            entries: vec![PlanEntry {
+                file_id: 1,
+                path: long_name(b'h'),
+                action: Action::Delta as i32,
+                ..PlanEntry::default()
+            }],
+            ..SessionPlan::default()
+        };
+        let t = now() - 3 * DAY as i64;
+        ix.save_session(&SessionRow {
+            id: [9; 16],
+            key: vec![9],
+            plan: plan.encode_to_vec(),
+            progress: vec![],
+            created_at: t,
+            updated_at: t,
+        })
+        .unwrap();
+    }
+    let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    assert!(!r.join(long_part(b'o').to_os()).exists(), "orphan removed");
+    assert!(
+        r.join(long_part(b'r').to_os()).exists(),
+        "fresh record kept"
+    );
+    assert!(
+        !r.join(long_part(b's').to_os()).exists(),
+        "stale record removed"
+    );
+    assert!(r.join(long_part(b'h').to_os()).exists(), "referenced kept");
+    assert!(rep.parts_removed.contains(&long_part(b'o')));
+    assert!(rep.parts_removed.contains(&long_part(b's')));
+    let ix = f.ix.lock().unwrap();
+    assert!(ix.partial(&dest(b'r')).unwrap().is_some());
+    assert!(ix.partial(&dest(b's')).unwrap().is_none());
+}

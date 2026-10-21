@@ -44,8 +44,6 @@ fn run_harness(direction: &str, root: &Path, extra: &[&str]) -> Output {
         "8M",
         "--max-file-size",
         "1M",
-        "--filegen-set",
-        "names.max_len=200", // avoids the known NAME_MAX bug (spec: "Known irsync bug")
     ])
     .args(extra)
     .arg(root)
@@ -196,8 +194,6 @@ fn run_short(iterations: &str, root: &Path, extra: &[&OsStr]) -> Output {
         "8M",
         "--max-file-size",
         "1M",
-        "--filegen-set",
-        "names.max_len=200",
     ])
     .args(extra)
     .arg(root)
@@ -359,8 +355,6 @@ fn sigint_terminates_the_daemon() {
                 "64M",
                 "--max-file-size",
                 "4M",
-                "--filegen-set",
-                "names.max_len=200",
             ])
             .arg(&root)
             .env_remove("IRSYNC_PASSPHRASE")

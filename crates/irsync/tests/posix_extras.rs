@@ -306,3 +306,131 @@ async fn hard_links_survive_a_dropped_connection() {
         }
     }
 }
+
+fn set_mtime(p: &Path, sec: i64, nsec: u32) {
+    let t = nix::sys::time::TimeSpec::new(sec, nsec as _);
+    nix::sys::stat::utimensat(
+        nix::fcntl::AT_FDCWD,
+        p,
+        &t,
+        &t,
+        nix::sys::stat::UtimensatFlags::NoFollowSymlink,
+    )
+    .unwrap();
+}
+
+fn mtime_of(p: &Path) -> (i64, i64) {
+    let m = fs::symlink_metadata(p).unwrap();
+    (m.mtime(), m.mtime_nsec())
+}
+
+/// A FIFO's modification time is applied when it is created and again when
+/// only the time changes on the source (irsync-stress found it never was).
+#[tokio::test]
+async fn fifo_mtime_is_applied_and_updated() {
+    for flow in [Flow::Push, Flow::Pull] {
+        let opts = archive_opts();
+        let (out, h) = within60(sync_trees(
+            |src| {
+                nix::unistd::mkfifo(
+                    &src.join("pipe"),
+                    nix::sys::stat::Mode::from_bits_truncate(0o640),
+                )
+                .unwrap();
+                set_mtime(&src.join("pipe"), 1_000_000_000, 123_000_000);
+            },
+            |_| {},
+            &opts,
+            flow,
+        ))
+        .await;
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        let dst = h.dst(flow).join("pipe");
+        assert!(fs::symlink_metadata(&dst).unwrap().file_type().is_fifo());
+        assert_eq!(
+            mtime_of(&dst),
+            (1_000_000_000, 123_000_000),
+            "{flow:?}: created"
+        );
+
+        set_mtime(&h.src(flow).join("pipe"), 1_100_000_000, 456_000_000);
+        let again = within60(h.run(&opts, flow)).await.expect("second run");
+        assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
+        assert_eq!(
+            mtime_of(&dst),
+            (1_100_000_000, 456_000_000),
+            "{flow:?}: updated"
+        );
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    }
+}
+
+fn long(c: char) -> String {
+    std::iter::repeat_n(c, 255).collect()
+}
+
+/// Every entry kind with a 255-byte name (NAME_MAX): irsync's temporary
+/// names must fit next to them (irsync-stress found they did not).
+#[tokio::test]
+async fn name_max_entries_transfer() {
+    for flow in [Flow::Push, Flow::Pull] {
+        let opts = opts_with(|p| p.hard_links = true);
+        let (out, h) = within60(sync_trees(
+            |src| {
+                fs::create_dir(src.join(long('d'))).unwrap();
+                fs::write(src.join(long('d')).join(long('f')), data(3 * MIB, 3)).unwrap();
+                fs::write(src.join(long('g')), data(70_000, 4)).unwrap();
+                fs::write(src.join("a"), data(50_000, 5)).unwrap();
+                fs::hard_link(src.join("a"), src.join(long('h'))).unwrap();
+                std::os::unix::fs::symlink("a", src.join(long('l'))).unwrap();
+                nix::unistd::mkfifo(
+                    &src.join(long('p')),
+                    nix::sys::stat::Mode::from_bits_truncate(0o640),
+                )
+                .unwrap();
+            },
+            |_| {},
+            &opts,
+            flow,
+        ))
+        .await;
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        let (src, dst) = (h.src(flow), h.dst(flow));
+        assert_trees_equal(src, dst, &opts.preserve);
+        assert_eq!(
+            ino(&dst.join("a")),
+            ino(&dst.join(long('h'))),
+            "{flow:?}: not linked"
+        );
+
+        // Change the long-named files so they are staged through `.part` again,
+        // and repoint the long-named symlink so it goes through `.tmp` again.
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(src.join(long('d')).join(long('f')))
+            .unwrap();
+        f.write_all(&data(100_000, 6)).unwrap();
+        fs::write(src.join(long('g')), data(80_000, 7)).unwrap();
+        fs::remove_file(src.join(long('l'))).unwrap();
+        std::os::unix::fs::symlink(long('g'), src.join(long('l'))).unwrap();
+        let again = within60(h.run(&opts, flow)).await.expect("second run");
+        assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
+        assert_trees_equal(src, dst, &opts.preserve);
+        // No temporary file of ours is left anywhere in the destination.
+        fn leftovers(d: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in fs::read_dir(d).unwrap() {
+                let e = e.unwrap();
+                let name = e.file_name();
+                if name.as_encoded_bytes().starts_with(b".irsync.") {
+                    out.push(e.path());
+                }
+                if e.file_type().unwrap().is_dir() {
+                    leftovers(&e.path(), out);
+                }
+            }
+        }
+        let mut left = Vec::new();
+        leftovers(dst, &mut left);
+        assert!(left.is_empty(), "{flow:?}: {left:?}");
+    }
+}

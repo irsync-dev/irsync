@@ -242,6 +242,7 @@ See [crates/filegen/README.md](crates/filegen/README.md).
 `irsync-stress` closes the loop: it starts an irsync daemon on loopback and
 repeatedly mutates a source tree with filegen, syncs it with irsync, and
 verifies the result with `fileset check`, keeping logs, both manifests and a
-`run.toml` for every failure. Its first runs found a real irsync bug (long
-file names fail to transfer).
+`run.toml` for every failure. Its first runs found two real irsync bugs
+(long file names failed to transfer, FIFO timestamps never updated), both
+since fixed.
 See [crates/stress/README.md](crates/stress/README.md).

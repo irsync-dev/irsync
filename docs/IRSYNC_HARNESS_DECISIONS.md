@@ -72,7 +72,9 @@ the code disagree, the code is what shipped and the entry says so.
    stops a stray harness on failure. Why: a test that fails because of a
    known, unfixed bug in the product is noise, and a hung child must not
    hang CI. Cost if wrong: the test does not exercise long names; once the
-   bug is fixed the `--filegen-set` can be dropped.
+   bug is fixed the `--filegen-set` can be dropped. **Dropped on
+   2026-10-21** with the NAME_MAX fix below; the test now runs filegen's
+   default names.
 
 7. **`--max-file-size` and `--filegen-set` exist.** The design review added
    them. Why: filegen refuses a total cap below its 256M per-file default,
@@ -138,10 +140,24 @@ passed and every iteration from 2 to 15 exited 23 with `check FAILED
 such a file exists in the source it never transfers, so the failure compounds
 across all later iterations rather than appearing sporadically.
 
-Decision: the bug is not fixed in this project. The harness reports it as a
-failed iteration like any other. A run that wants to get past it uses
-`--filegen-set names.max_len=200`. The fix (a partial-file name that fits
-whatever the entry name is) is a follow-up with its own test.
+Decision at the time: not fixed in this project; the harness reports it as a
+failed iteration like any other, and a run that wants to get past it uses
+`--filegen-set names.max_len=200`.
+
+**Fixed 2026-10-21.** Every temporary name irsync makes (`.part` for staged
+files, `.tmp` for symlinks, specials and hard links) now comes from one
+function, `recv::temp_name`. When `.irsync.<name><suffix>` would exceed 255
+bytes, the name is cut (on a character boundary when it is UTF-8) and `~`
+plus 16 hex digits of the name's BLAKE3 hash are put before the suffix, so
+the result fits and names that share a long prefix still get distinct
+temporaries. The GC can no longer invert a part name into its destination,
+so it maps every recorded and referenced destination forward instead and
+compares. Tests: `tests/recv.rs` (`temp_names`), `tests/gc.rs`
+(`gc_handles_shortened_part_names`), `tests/posix_extras.rs`
+(`name_max_entries_transfer`, every entry kind with a 255-byte name, both
+directions, synced twice). Verified with the harness: seed 11, 40 iterations,
+default names, both directions, 40 passes each and a clean `--paranoid`
+check.
 
 ### FIFO mtime: a FIFO's modification time never arrives
 
@@ -161,13 +177,21 @@ lines, both paths created by `mkfifo` and then `set_mtime` in
 `filegen/filegen-11.log`; pull-maxlen200 iteration 7 (`mkfifo` at step 99,
 `set_mtime` at steps 664, 812 and 1763).
 
-Hypothesis, not verified: the receive path creates special files without
-applying the sent mtime, and the planner treats a FIFO as unchanged when
-only its mtime differs.
+Hypothesis at the time, not verified: the receive path creates special files
+without applying the sent mtime, and the planner treats a FIFO as unchanged
+when only its mtime differs.
 
-Decision: not fixed in this project; the fix is a follow-up with its own
-test, like the NAME_MAX bug. Meaning of the line in practice: a `CHG ...
-mtime=` on a FIFO is this bug, not a transfer fault.
+**Fixed 2026-10-21.** Only the second half of the hypothesis was true: the
+regression test's first assertion (a FIFO created with a drawn mtime arrives
+with it) passed on the unfixed code, and the second (the mtime changes on
+the source, the next sync carries it) failed. The planner's branch for
+FIFOs, devices and sockets compared only `rdev` and mode and returned `Skip`
+otherwise. It now returns `Special` when `rdev` differs and otherwise the
+same `skip_or_meta` decision as directories, so a differing mode, time or
+owner is fixed in place with `MetaOnly`. Tests: `tests/plan.rs`
+(`special_metadata_only_difference_is_meta_only`), `tests/posix_extras.rs`
+(`fifo_mtime_is_applied_and_updated`). Verified with the same harness runs
+as the NAME_MAX fix: 50 `mkfifo` steps per run, no `CHG` lines.
 
 ## Acceptance run
 

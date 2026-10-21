@@ -448,6 +448,15 @@ impl Index {
         Ok(())
     }
 
+    /// Every destination with a partial record, whatever its age.
+    pub fn partial_paths(&self) -> Result<Vec<RelPath>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT path FROM partials ORDER BY path")?;
+        let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
+        rows.map(|r| relpath(&r?)).collect()
+    }
+
     pub fn partials_older_than(&self, age: Duration) -> Result<Vec<RelPath>> {
         let mut st = self
             .conn

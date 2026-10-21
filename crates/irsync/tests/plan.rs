@@ -395,3 +395,36 @@ fn merge_join_out_of_order_does_not_panic() {
     );
     assert!(!out.is_empty());
 }
+
+#[test]
+fn special_metadata_only_difference_is_meta_only() {
+    let mut s = side("p", Kind::Fifo, 0o640);
+    s.entry.mtime_sec = 100;
+    let mut d = s.clone();
+    let mut o = opts();
+    o.preserve.devices = true;
+    o.preserve.times = true;
+    o.preserve.perms = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    // Only the mtime differs: fix it in place, do not recreate.
+    d.entry.mtime_sec = 200;
+    assert_eq!(
+        decide(Some(&s), Some(&d), &o, &NoLookup),
+        Decision::MetaOnly
+    );
+    // Only the mode differs: the same.
+    d.entry.mtime_sec = 100;
+    d.entry.mode = 0o600;
+    assert_eq!(
+        decide(Some(&s), Some(&d), &o, &NoLookup),
+        Decision::MetaOnly
+    );
+    // Without -t a differing mtime is not a difference.
+    d.entry.mode = 0o640;
+    d.entry.mtime_sec = 200;
+    o.preserve.times = false;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    // A different device number needs a new node.
+    d.entry.rdev = 9;
+    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Special);
+}

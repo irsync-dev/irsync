@@ -156,10 +156,13 @@ pub fn decide(
             }
         }
         Some(Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket) => {
-            if !p.devices || (se.rdev == de.rdev && se.mode & 0o7777 == de.mode & 0o7777) {
+            if !p.devices {
                 Decision::Skip
-            } else {
+            } else if se.rdev != de.rdev {
                 Decision::Special
+            } else {
+                // Same node: mode, times and ownership are fixed in place.
+                skip_or_meta(se, de, p)
             }
         }
         Some(Kind::Regular) => {

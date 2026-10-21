@@ -119,7 +119,13 @@ cross-referenced from commit messages and review notes.
   and `FileWriter::open` restores `u+w` on irsync's own `.part` on
   `EACCES`, so a read-only temp file can never be stranded.
 - Temp files are `.irsync.<name>.part` in the destination directory (or
-  `--partial-dir`), opened `O_NOFOLLOW` with the fd held; all metadata and
+  `--partial-dir`), and `.irsync.<name>.tmp` for symlinks, specials and
+  hard links; both come from `recv::temp_name`, which cuts the name and
+  appends `~` plus 16 hex digits of its BLAKE3 hash when the plain form
+  would exceed `NAME_MAX` (255 bytes), so a 255-byte entry name still has
+  a temporary (found by irsync-stress, 2026-10-21). The GC therefore never
+  inverts a part name; it maps destinations forward. Parts are opened
+  `O_NOFOLLOW` with the fd held; all metadata and
   rename operations work on held fds / dirfds with no-follow resolution;
   chunk adoption from an existing `.part` is verified by hash before use.
 - Hard-link targets are containment-checked and resolved with no-follow
@@ -146,6 +152,12 @@ cross-referenced from commit messages and review notes.
 
 - **R5 — `--numeric-ids` is accepted and always on**; there is no name
   mapping in v1.
+- FIFOs, devices and sockets with the same `rdev` on both sides get the
+  same metadata decision as directories: `MetaOnly` when mode, time or
+  ownership differ under the preserve flags, `Skip` otherwise, and
+  `Special` (recreate) only when `rdev` differs. Before 2026-10-21 only
+  `rdev` and mode were compared, so a FIFO's mtime never updated
+  (found by irsync-stress).
 - **R23 — Hard links are applied in a final pass after all regular files are
   finalized.** The sender marks the first path (listing order) `REGULAR` and
   later paths `Kind::HARDLINK` (7) with `link_target`. Sockets are skipped
