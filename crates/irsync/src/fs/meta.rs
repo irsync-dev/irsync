@@ -90,7 +90,16 @@ fn errno(e: nix::Error) -> io::Error {
 /// The supplementary groups of this process, empty if they can't be read.
 /// Calls libc directly because nix leaves `getgroups` out on Apple targets.
 pub fn supplementary_groups() -> Vec<u32> {
-    use nix::libc::{c_int, getgroups, gid_t};
+    #[cfg(not(target_os = "macos"))]
+    use nix::libc::getgroups;
+    use nix::libc::{c_int, gid_t};
+    // The plain macOS getgroups stops at 16 groups; this variant returns
+    // all of them.
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        #[link_name = "getgroups$DARWIN_EXTSN"]
+        fn getgroups(size: c_int, list: *mut gid_t) -> c_int;
+    }
     // SAFETY: a zero count with a null buffer only asks for the group count.
     let n = unsafe { getgroups(0, std::ptr::null_mut()) };
     if n <= 0 {

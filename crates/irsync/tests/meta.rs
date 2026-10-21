@@ -202,3 +202,19 @@ fn is_contained_rejects_dotdot() {
     assert!(!is_contained(root, b"a/../../x"));
     assert!(!is_contained(root, b"/etc/passwd"));
 }
+
+#[test]
+fn supplementary_groups_lists_every_group() {
+    // `id -G` lists them all; old macOS getgroups stops at 16.
+    let out = std::process::Command::new("id").arg("-G").output().unwrap();
+    assert!(out.status.success());
+    let primary = [nix::unistd::getgid(), nix::unistd::getegid()].map(|g| g.as_raw());
+    let got = irsync::fs::meta::supplementary_groups();
+    for g in String::from_utf8(out.stdout).unwrap().split_whitespace() {
+        let g: u32 = g.parse().unwrap();
+        assert!(
+            primary.contains(&g) || got.contains(&g),
+            "missing group {g} in {got:?}"
+        );
+    }
+}
