@@ -5,6 +5,7 @@ pub mod filegen;
 pub mod fileset;
 pub mod layout;
 pub mod process;
+pub mod report;
 pub mod run_file;
 pub mod tools;
 pub mod verify;
