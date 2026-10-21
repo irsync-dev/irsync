@@ -463,3 +463,27 @@ async fn local_progress_resets_idle_watchdog() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_local_progress_resets_idle_watchdog() {
+    within60(async {
+        // A push whose daemon-side finalize takes 3 s with nothing on the
+        // wire: the daemon's heartbeats keep the client's 1 s inactivity
+        // watchdog quiet, so no reconnect (R35; irsync-stress found the
+        // same silence with `-c` and multi-gigabyte files).
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        *h.daemon.slow_finalize.lock().unwrap() = Some(Duration::from_secs(3));
+        fs::write(h.src(flow).join("f"), data(FILE_SIZE, 7)).unwrap();
+        let mut opts = archive_opts();
+        opts.timeout = Some(Duration::from_secs(1));
+        let start = std::time::Instant::now();
+        let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(start.elapsed() >= Duration::from_secs(3));
+        assert_eq!(reconnects, 0, "the client's watchdog fired");
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}

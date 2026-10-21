@@ -138,6 +138,12 @@ impl Daemon {
         self.shared.hosting.registry.hosted.clone()
     }
 
+    /// Set to make every daemon receiver's finalize take that much longer.
+    #[cfg(feature = "test-hooks")]
+    pub fn slow_finalize(&self) -> Arc<std::sync::Mutex<Option<Duration>>> {
+        self.shared.hosting.slow_finalize.clone()
+    }
+
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         for (name, module) in &self.shared.modules {
             let Some(index) = self.shared.indexes.get(name).cloned() else {

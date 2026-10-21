@@ -227,7 +227,14 @@ cross-referenced from commit messages and review notes.
    a multi-GB file on a slow disk) is invisible to the other peer's idle
    watchdog. Mitigated by the 30-min daemon default and `idle_timeout = 0`.
    Plan: a `Control.Heartbeat` frame, bundled with (1) as one protocol
-   revision.
+   revision. **Done 2026-10-21**, after irsync-stress reproduced it (a push
+   with `-c` and multi-gigabyte files, client `--timeout 10`): `Heartbeat`
+   is field 10 of `Control`, sent by either side every 500 ms in which its
+   activity marker moved and swallowed by the reader (which already counts
+   every frame as activity). It needed no protocol revision: an older peer
+   decodes an unknown oneof member as an empty `Control`, which the reader
+   has always ignored. `--timeout` values below a few seconds remain
+   unreliable by construction (`engine::HEARTBEAT_INTERVAL`).
 3. **Daemon-side filters (R10/R22).** Filters are not transmitted, so a push
    with `--delete` and filters is refused unless `--delete-excluded`. rsync
    parity needs a `Hello` extension carrying the filter rules.

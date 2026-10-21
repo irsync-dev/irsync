@@ -734,6 +734,8 @@ pub async fn serve_daemon(
         hooks: SideHooks {
             #[cfg(feature = "test-hooks")]
             events: Some(shared.events.clone()),
+            #[cfg(feature = "test-hooks")]
+            slow_finalize: *shared.slow_finalize.lock().unwrap(),
             ..SideHooks::default()
         },
     };
@@ -785,11 +787,13 @@ async fn run_role(
     let watchdog = ctx
         .idle_timeout
         .map(|t| tokio::spawn(watch_idle(ctx.clone(), t, idle.clone())));
+    let heartbeat = tokio::spawn(heartbeat(ctx.activity.clone(), out.clone()));
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {
         receiver::run(ctx.clone(), out.clone(), ev_tx, ev_rx, listing_rx).await
     };
+    heartbeat.abort();
     if let Some(w) = watchdog {
         w.abort();
     }
@@ -837,6 +841,29 @@ pub const DAEMON_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Close code for a connection dropped for inactivity.
 const CLOSE_IDLE: u32 = 4;
+
+/// How often a busy peer says so. While `activity` moves (local hashing,
+/// writing, finalizing, or traffic) a `Heartbeat` goes out on the control
+/// stream every interval, so the peer's inactivity watchdog sees progress
+/// it could not otherwise see (R35: a daemon hashing a large tree for `-c`
+/// looked dead to the client). An idle peer sends none, so a dead or stuck
+/// peer still times out. The interval bounds the usable `--timeout` from
+/// below: anything shorter than a few intervals is unreliable.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Sends a `Heartbeat` every [`HEARTBEAT_INTERVAL`] in which `activity` moved.
+async fn heartbeat(activity: Arc<AtomicU64>, out: control::Out) {
+    use irsync_proto::v1::{control::Msg, Heartbeat};
+    let mut seen = activity.load(Ordering::Relaxed);
+    loop {
+        tokio::time::sleep(HEARTBEAT_INTERVAL).await;
+        let now = activity.load(Ordering::Relaxed);
+        if now != seen {
+            seen = now;
+            out.send(Msg::Heartbeat(Heartbeat {}));
+        }
+    }
+}
 
 /// Closes the connection once `ctx.activity` has not moved for `timeout`
 /// (no control frame received, no data chunk moved, no local progress such

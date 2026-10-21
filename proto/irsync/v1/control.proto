@@ -65,6 +65,11 @@ message Itemized {
   bytes path = 1;
   string code = 2;
 } // receiver -> sender, rsync -i code (`>` = received)
+// "I am busy": sent by either side while it makes local progress (hashing,
+// writing, finalizing) that the peer cannot otherwise see, so the peer's
+// inactivity watchdog stays quiet. Carries nothing; a peer that predates it
+// decodes an empty Control and ignores it.
+message Heartbeat {}
 message Control {
   oneof msg {
     ListingEntry listing = 1;
@@ -76,5 +81,6 @@ message Control {
     SessionDone done = 7;
     Error error = 8;
     Itemized itemized = 9;
+    Heartbeat heartbeat = 10;
   }
 }

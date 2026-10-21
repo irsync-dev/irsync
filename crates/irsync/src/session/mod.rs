@@ -404,6 +404,10 @@ pub struct DaemonSessions {
     /// The event log of every daemon receiver (test hook).
     #[cfg(feature = "test-hooks")]
     pub events: EventLog,
+    /// Every daemon receiver's finalize takes this much longer (test hook,
+    /// settable after the daemon is built).
+    #[cfg(feature = "test-hooks")]
+    pub slow_finalize: Arc<std::sync::Mutex<Option<Duration>>>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and

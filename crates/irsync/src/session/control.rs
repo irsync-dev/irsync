@@ -135,6 +135,8 @@ pub(super) fn spawn_reader(
                     Msg::Listing(ListingEntry { entry: None }) => {
                         tracing::warn!("listing frame without entry; ignored");
                     }
+                    // Already counted as activity above; nothing else to do.
+                    Msg::Heartbeat(_) => {}
                     m @ Msg::ListingEnd(_) => {
                         if listing.is_some() {
                             bus.emit(crate::session::Event::Total {
@@ -532,6 +534,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Done(_) => "SessionDone",
         Msg::Error(_) => "Error",
         Msg::Itemized(_) => "Itemized",
+        Msg::Heartbeat(_) => "Heartbeat",
     }
 }
 

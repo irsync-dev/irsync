@@ -26,8 +26,14 @@ parameters.
 One QUIC connection carries:
 
 - a **control stream**: the first bidirectional stream, opened by the client.
-  It carries `Hello`, the file listing, plan, acknowledgements, completion and
-  `Error` messages, each as one framed protobuf.
+  It carries `Hello`, the file listing, plan, acknowledgements, completion,
+  `Error` and `Heartbeat` messages, each as one framed protobuf. A
+  `Heartbeat` is empty and means "I am busy": a side sends one every 500 ms
+  in which it made progress the peer cannot see (hashing, writing,
+  finalizing), so the peer's inactivity watchdog stays quiet; an idle side
+  sends none, so a stuck peer still times out. It is additive within
+  version 1: a peer that predates it decodes an empty `Control` and ignores
+  it.
 - **data streams**: unidirectional streams from sender to receiver, one per
   byte range of a file. Each starts with a `DataStreamHeader` (session id, file
   id, offset, length, first chunk index) followed by `DataChunk` frames of at

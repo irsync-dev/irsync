@@ -222,9 +222,17 @@ quiet seconds end the session. On a pull the hashing happens on the client,
 whose watchdog counts local work, so the identical trees pass. This is open
 point R35 in `IRSYNC_DECISIONS.md` ("one peer's long local work is invisible
 to the other peer's idle watchdog"), now reproduced on demand; the planned
-fix is a `Control.Heartbeat` frame. Not fixed here. Until it lands, a push
-with `-c` or with multi-gigabyte files needs `--timeout` comfortably above
-the daemon's hashing time, or none.
+fix is a `Control.Heartbeat` frame.
+
+**Fixed 2026-10-21**, the same day: each side now sends a `Heartbeat`
+control frame every 500 ms in which its activity marker moved, and the
+reader counts it as activity like any frame. Test: `tests/resume.rs`
+(`peer_local_progress_resets_idle_watchdog`): a push whose daemon-side
+finalize takes 3 s against a client `--timeout 1`; before the fix the client
+reconnected twice, after it none. Verified by re-running this row with the
+same six seeds against the fixed binaries: 12 of 12 runs passed with a clean
+`--paranoid` check, the two previously failing push runs (seeds 2 and 4)
+among them, with single syncs of up to 86 s under the 10 s client timeout.
 
 Roots kept for inspection: `~/work/irsync-breadth-largefile/push-2` and
 `push-4`, with `run.toml`, both logs and both manifests.

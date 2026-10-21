@@ -121,6 +121,8 @@ pub struct DaemonHandle {
     hosted: std::sync::Arc<std::sync::Mutex<Vec<[u8; 16]>>>,
     /// The daemon receivers' event log (`delete:<path>`, `plan:<path>`).
     pub events: irsync::session::EventLog,
+    /// Set to make every daemon receiver's finalize take that much longer.
+    pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
     pub _state: tempfile::TempDir,
 }
 
@@ -174,6 +176,7 @@ pub async fn spawn_daemon(
     let rerequests = daemon.rerequest_counter();
     let hosted = daemon.hosted_sessions();
     let events = daemon.receiver_events();
+    let slow_finalize = daemon.slow_finalize();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -188,6 +191,7 @@ pub async fn spawn_daemon(
         rerequests,
         hosted,
         events,
+        slow_finalize,
         _state: state,
     }
 }
