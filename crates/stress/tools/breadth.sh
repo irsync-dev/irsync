@@ -11,6 +11,11 @@
 #   SEEDS seeds to run, a seq(1) expression              [1 50]
 #   JOBS  runs at a time                                 [8]
 #   ITER, STEPS, TOTAL, FILE  size of each run           [20, 200, 4G, 256M]
+#   CHECK a command run as `$CHECK <root>` after each passing run; if it
+#         fails the run counts as failed (exit=3) and its root is kept.
+#         tools/paranoid-check.sh compares the final trees with every field
+#         fileset records, link counts included, which the harness's own
+#         check does not.                                   [none]
 #
 # Each run needs up to 2 x TOTAL on disk while it runs; JOBS runs at once.
 # Extra arguments go to irsync-stress before the root, e.g.
@@ -27,6 +32,7 @@ for t in irsync-stress irsync filegen fileset; do
 done
 mkdir -p "$OUT"
 export BIN OUT ITER STEPS TOTAL FILE
+export CHECK=${CHECK:-}
 export EXTRA_ARGS="${EXTRA[*]}"
 
 run() {
@@ -36,7 +42,13 @@ run() {
     --max-total-size "$TOTAL" --max-file-size "$FILE" --keep-going $EXTRA_ARGS "$root" \
     -- --timeout 300 > "$OUT/$dir-$seed.out" 2>&1
   rc=$?
-  echo "$dir $seed exit=$rc $(tail -1 "$OUT/$dir-$seed.out")" >> "$OUT/summary.txt"
+  note=
+  if [ $rc -eq 0 ] && [ -n "$CHECK" ]; then
+    if ! $CHECK "$root" > "$OUT/$dir-$seed.check.out" 2>&1; then
+      rc=3; note=" post-check FAILED: $(tail -1 "$OUT/$dir-$seed.check.out")"
+    fi
+  fi
+  echo "$dir $seed exit=$rc $(tail -1 "$OUT/$dir-$seed.out")$note" >> "$OUT/summary.txt"
   [ $rc -eq 0 ] && rm -rf "$root"
 }
 export -f run
