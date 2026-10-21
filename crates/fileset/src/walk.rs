@@ -197,7 +197,6 @@ fn walk_dir(
 mod tests {
     use super::*;
     use crate::model::{Flags, Kind};
-    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     fn run(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>) {

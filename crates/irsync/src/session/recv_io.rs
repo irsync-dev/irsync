@@ -264,7 +264,7 @@ async fn read_stream(
     // This stream's range is accounted for, delivered or not.
     let before = route
         .pending
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |p| {
             Some(p.saturating_sub(accounted))
         })
         .unwrap_or(0);
