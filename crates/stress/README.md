@@ -143,6 +143,13 @@ on FIFOs; a default run now passes with neither. The decisions file has the
 history, and [docs/STRESS_BUG_HUNTING.md](../../docs/STRESS_BUG_HUNTING.md)
 the plan for finding the next ones.
 
+## Campaign tools
+
+`tools/breadth.sh` runs the breadth sweep described in
+[docs/STRESS_BUG_HUNTING.md](../../docs/STRESS_BUG_HUNTING.md): many seeds,
+short runs, both directions, several at a time, keeping only the roots of
+failing runs. See the header of the script for its environment variables.
+
 ## Testing
 
 `cargo test -p stress` runs unit tests and an end-to-end test that starts a

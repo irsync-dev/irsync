@@ -80,16 +80,17 @@ Because failures compound, a 300-iteration run mostly re-reports its first
 bug. Distinct bugs per machine-hour is higher with many short runs:
 
 ```
-for seed in $(seq 1 50); do
-  irsync-stress --direction push --seed $seed --iterations 20 --steps 200 \
-    --max-total-size 4G --max-file-size 256M --keep-going "${FG[@]}" \
-    /scratch/breadth/push-$seed -- --timeout 300 >/scratch/breadth/push-$seed.out 2>&1 &
-  [ $((seed % 8)) -eq 0 ] && wait
-done; wait
-grep -L 'failed=0' /scratch/breadth/*.out      # runs with at least one failure
+crates/stress/tools/breadth.sh "${FG[@]}"      # 50 seeds x both directions, 8 at a time
+grep -v 'exit=0' ~/work/irsync-breadth/summary.txt   # runs with a failure or error
 ```
 
-Run the same seeds in both directions. The same seed produces the same
+The script takes `BIN`, `OUT`, `SEEDS`, `JOBS` and the run size from the
+environment, passes extra arguments to `irsync-stress`, deletes the root of
+every passing run and keeps the root of every failing one. The first sweep
+(2026-10-21, right after the two fixes) passed 100 of 100 runs; about 160 s
+per run on a 32-core box, 23 to 26 GB of disk for the eight live roots.
+
+It runs the same seeds in both directions. The same seed produces the same
 source tree in both, so a seed that fails on push and passes on pull puts
 the bug in the daemon-side receiver, and the reverse puts it in the client
 receiver. That is the cheapest localisation the harness offers.
