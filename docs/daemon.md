@@ -150,3 +150,51 @@ Set `relay = "https://..."` to use your own relay, or `relay_mode =
   self-hosted relay near the daemon (iroh ships `iroh-relay`), set as `relay`
   in the daemon config and as `Relay` in the client's `Host` block (or
   `--relay`), instead of depending on the shared public relays.
+
+### Isolated operation (localhost, LAN, no internet)
+
+For two irsync processes on one machine or one LAN, or anywhere without
+internet access, neither side needs relays or lookups. Note that `listen`
+alone only pins sockets; it does not isolate the daemon. The isolated daemon
+turns everything off explicitly:
+
+```toml
+listen = ["127.0.0.1:0"]   # at most one IPv4 and one IPv6 entry; port 0 = daemon picks
+relay_mode = "disabled"
+portmap = false            # no UPnP/PCP/NAT-PMP gateway probing
+[discovery]
+dht = false
+dns = false
+mdns = false
+```
+
+`--listen ADDR` on the command line replaces the config's `listen` list. On
+startup the daemon prints its id and, with the real ports, one line per
+bound socket, on stdout; a parent process reads these two kinds of line and
+can dial at once:
+
+```
+endpoint id: <id>
+listening on: 127.0.0.1:43210
+```
+
+The client dials directly when given at least one address, in the `Host`
+block or with `--address ADDR` (repeatable; `ip:port`, `[ipv6]:port` or
+`host:port`, hostnames resolved with the system resolver):
+
+```
+Host local
+    EndpointId  <id>
+    Address     127.0.0.1:43210
+```
+
+```sh
+irsync -a --address localhost:43210 ./src <id>:m/
+```
+
+Giving an address turns the client's relay, n0 DNS, DHT, mDNS and port
+mapper off: it talks to nothing but the addresses it was given. The daemon's
+EndpointId is still required and still verified; `--address` together with
+`--relay` is refused. iroh may still learn and probe further addresses of
+the daemon itself over the connection; against a loopback daemon those are
+loopback too.
