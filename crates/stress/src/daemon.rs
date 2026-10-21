@@ -12,6 +12,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+
+use crate::process;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 
@@ -77,13 +79,16 @@ pub fn write_config(c: &DaemonConfig) -> Result<PathBuf> {
 /// key path and the first stdout line, the public key line.
 pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String)> {
     let key = config_dir.join("id_ed25519");
-    let out = Command::new(irsync)
-        .args(["keygen", "--out"])
-        .arg(&key)
-        .env_remove("IRSYNC_PASSPHRASE")
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("cannot run {} keygen", irsync.display()))?;
+    let out = process::output(
+        Command::new(irsync)
+            .args(["keygen", "--out"])
+            .arg(&key)
+            .env_remove("IRSYNC_PASSPHRASE")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .with_context(|| format!("cannot run {} keygen", irsync.display()))?;
     if !out.status.success() {
         bail!(
             "irsync keygen failed ({}): {}",
@@ -276,18 +281,19 @@ impl Daemon {
         log_level: &str,
         timeout: Duration,
     ) -> Result<Daemon> {
-        let mut child = Command::new(irsync)
-            .arg("daemon")
-            .arg("--config")
-            .arg(toml)
-            .args(["--listen", "127.0.0.1:0"])
-            .env("RUST_LOG", log_level)
-            .env_remove("IRSYNC_PASSPHRASE")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("cannot run {} daemon", irsync.display()))?;
+        let mut child = process::spawn(
+            Command::new(irsync)
+                .arg("daemon")
+                .arg("--config")
+                .arg(toml)
+                .args(["--listen", "127.0.0.1:0"])
+                .env("RUST_LOG", log_level)
+                .env_remove("IRSYNC_PASSPHRASE")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .with_context(|| format!("cannot run {} daemon", irsync.display()))?;
 
         let stderr = child.stderr.take().expect("stderr is piped");
         let copier_log = log.clone();

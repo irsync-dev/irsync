@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::process;
+
 use crate::run_file::{ToolInfo, ToolVersions};
 
 /// A located tool and the first line of its `--version` output.
@@ -51,12 +53,14 @@ pub fn find(
 }
 
 fn version_of(name: &str, path: &Path) -> Result<String> {
-    let out = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .with_context(|| format!("{name}: cannot run {} --version", path.display()))?;
+    let out = process::output(
+        Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    )
+    .with_context(|| format!("{name}: cannot run {} --version", path.display()))?;
     if !out.status.success() {
         bail!(
             "{name}: {} --version exited with {}",

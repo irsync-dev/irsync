@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use crate::process;
+
 use crate::cli::Direction;
 use crate::layout::Layout;
 
@@ -110,18 +112,19 @@ pub fn run_sync(
         .with_context(|| format!("opening {}", log.display()))?;
     let err = out.try_clone().context("cloning log handle")?;
     let start = Instant::now();
-    let status = Command::new(irsync)
-        .args(args)
-        .env("HOME", &setup.home)
-        .env("XDG_STATE_HOME", &setup.xdg_state)
-        .env_remove("IRSYNC_CONFIG")
-        .env_remove("IRSYNC_PASSPHRASE")
-        .env("RUST_LOG", log_level)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .status()
-        .with_context(|| format!("running {}", irsync.display()))?;
+    let status = process::status(
+        Command::new(irsync)
+            .args(args)
+            .env("HOME", &setup.home)
+            .env("XDG_STATE_HOME", &setup.xdg_state)
+            .env_remove("IRSYNC_CONFIG")
+            .env_remove("IRSYNC_PASSPHRASE")
+            .env("RUST_LOG", log_level)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(out))
+            .stderr(Stdio::from(err)),
+    )
+    .with_context(|| format!("running {}", irsync.display()))?;
     let elapsed = start.elapsed();
     let exit = match status.code() {
         Some(0) => SyncExit::Ok,

@@ -5,15 +5,18 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
+use crate::process;
+
 fn run_quiet(fileset: &Path, verb: &str, tree: &Path) -> Result<()> {
-    let out = Command::new(fileset)
-        .args([verb, "-q"])
-        .arg(tree)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("running {}", fileset.display()))?;
+    let out = process::output(
+        Command::new(fileset)
+            .args([verb, "-q"])
+            .arg(tree)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+    .with_context(|| format!("running {}", fileset.display()))?;
     if !out.status.success() {
         bail!(
             "fileset {verb} {} failed ({}): {}",
@@ -75,12 +78,15 @@ pub fn parse_summary(stderr: &str) -> Option<CheckCounts> {
 /// `fileset check -q <tree>`; stdout then stderr are written to `report`.
 /// Exit 0 is `Clean`, 1 is `Differences`, anything else is an error.
 pub fn check(fileset: &Path, tree: &Path, report: &Path) -> Result<CheckOutcome> {
-    let out = Command::new(fileset)
-        .args(["check", "-q"])
-        .arg(tree)
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("running {}", fileset.display()))?;
+    let out = process::output(
+        Command::new(fileset)
+            .args(["check", "-q"])
+            .arg(tree)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .with_context(|| format!("running {}", fileset.display()))?;
     let mut all = out.stdout.clone();
     all.extend_from_slice(&out.stderr);
     std::fs::write(report, &all).with_context(|| format!("writing {}", report.display()))?;
