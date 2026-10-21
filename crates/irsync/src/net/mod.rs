@@ -1,5 +1,6 @@
 //! Networking: the iroh endpoint and length-prefixed protobuf framing.
 
+pub mod addr;
 mod endpoint;
 pub mod frame;
 
