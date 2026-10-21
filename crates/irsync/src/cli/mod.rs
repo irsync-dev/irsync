@@ -2,6 +2,7 @@ pub mod location;
 pub mod progress;
 
 use crate::config::duration;
+use crate::net::addr::HostPort;
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
 use location::Location;
 use std::ffi::OsString;
@@ -121,6 +122,11 @@ pub struct DaemonArgs {
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]
     pub passphrase_file: Option<PathBuf>,
+    /// Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 =
+    /// pick one) instead of the config's `listen` list. Repeatable, at most
+    /// one IPv4 and one IPv6.
+    #[arg(long, value_name = "ADDR")]
+    pub listen: Vec<HostPort>,
 }
 
 fn parse_bwlimit(s: &str) -> Result<u64, String> {

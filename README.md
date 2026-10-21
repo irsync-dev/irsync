@@ -47,6 +47,8 @@ identity = "~/.config/irsync/daemon_ed25519"      # OpenSSH format
 authorized_keys = "~/.config/irsync/authorized_keys"
 state_dir = "~/.local/state/irsync"
 idle_timeout = "30m"  # drop a connection idle this long (no traffic, no local work); "0" disables
+listen = ["0.0.0.0:0", "[::]:0"]  # optional: pin sockets (at most one IPv4 and one IPv6); port 0 = daemon picks
+portmap = true    # UPnP/PCP/NAT-PMP port mapping; false in isolated setups (see docs/daemon.md)
 
 [discovery]
 dht = true        # publish to mainline DHT (relay-only addresses)
@@ -172,7 +174,7 @@ irsync-specific:
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 
-Subcommands: `irsync daemon [--config PATH] [--show-id]`,
+Subcommands: `irsync daemon [--config PATH] [--show-id] [--listen ADDR]...`,
 `irsync keygen [--out PATH]`, and `irsync gc [-n]`, which removes abandoned
 partial files and dormant sessions (older than 7 days) for every local root
 irsync has synced. The client also does this for each root it syncs (at most

@@ -16,7 +16,7 @@ use irsync_proto::PROTOCOL_VERSION;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Authorizer, FileAuthorizer, Grants};
-use crate::config::daemon::{DaemonConfig, Module, RelayMode};
+use crate::config::daemon::{listen_sockets, DaemonConfig, Module, RelayMode};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
 use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
@@ -360,11 +360,14 @@ pub async fn run_from_config(
         dns: cfg.discovery.dns,
         mdns: cfg.discovery.mdns,
         publish: true,
-        bind_addrs: Vec::new(),
-        portmap: true,
+        bind_addrs: listen_sockets(&cfg.listen).await?,
+        portmap: cfg.portmap,
     })
     .await?;
     println!("endpoint id: {}", endpoint.id());
+    for addr in endpoint.bound_sockets() {
+        println!("listening on: {addr}");
+    }
     Daemon::new(cfg, authz, endpoint)?.run(shutdown).await
 }
 

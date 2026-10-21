@@ -232,3 +232,12 @@ fn multiple_sources_with_remote_source_rejected() {
     assert!(validate(&[loc("a"), loc("h:m")], &loc("h:n")).is_err());
     assert!(validate(&[loc("a"), loc("b")], &loc("c")).is_err());
 }
+
+#[test]
+fn daemon_listen_flag_repeats() {
+    match parse(&["daemon", "--listen", "127.0.0.1:0", "--listen", "[::1]:0"]).cmd {
+        Some(Command::Daemon(d)) => assert_eq!(d.listen.len(), 2),
+        c => panic!("{c:?}"),
+    }
+    assert!(Args::try_parse_from(["irsync", "daemon", "--listen", "nope"]).is_err());
+}

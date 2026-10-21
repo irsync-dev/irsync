@@ -1,6 +1,7 @@
 use irsync::config::client::ClientConfig;
 use irsync::config::daemon::{DaemonConfig, RelayMode};
 use irsync::config::ConfigError;
+use irsync::net::addr::HostPort;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -196,4 +197,50 @@ fn daemon_load_explicit_path() {
         PathBuf::from("/x")
     );
     assert!(DaemonConfig::load(Some(&dir.path().join("missing"))).is_err());
+}
+
+#[test]
+fn daemon_listen_and_portmap_parse() {
+    let cfg = DaemonConfig::parse("listen = [\"127.0.0.1:0\", \"[::1]:4000\"]\nportmap = false\n")
+        .unwrap();
+    assert_eq!(
+        cfg.listen,
+        vec![
+            "127.0.0.1:0".parse::<HostPort>().unwrap(),
+            "[::1]:4000".parse().unwrap()
+        ]
+    );
+    assert!(!cfg.portmap);
+    let d = DaemonConfig::parse("").unwrap();
+    assert!(d.listen.is_empty() && d.portmap);
+}
+
+#[test]
+fn daemon_listen_rejects_two_of_one_family_with_line() {
+    let err = DaemonConfig::parse("\nlisten = [\"0.0.0.0:0\", \"127.0.0.1:0\"]\n")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("at most one IPv4 and one IPv6"), "{err}");
+    assert!(err.contains("line 2"), "{err}");
+    assert!(DaemonConfig::parse("listen = [\"nope\"]\n").is_err());
+}
+
+#[tokio::test]
+async fn listen_sockets_takes_first_per_family_and_rejects_collisions() {
+    use irsync::config::daemon::listen_sockets;
+    let v = listen_sockets(&["localhost:5".parse().unwrap()])
+        .await
+        .unwrap();
+    assert!(v.iter().all(|a| a.ip().is_loopback() && a.port() == 5));
+    assert!(v.len() <= 2 && v.iter().filter(|a| a.is_ipv4()).count() <= 1);
+    let err = listen_sockets(&[
+        "localhost:5".parse().unwrap(),
+        "127.0.0.1:5".parse().unwrap(),
+    ])
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("127.0.0.1:5"), "{err}");
+    assert!(listen_sockets(&["no-such-host.invalid:5".parse().unwrap()])
+        .await
+        .is_err());
 }

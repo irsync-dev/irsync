@@ -1,6 +1,8 @@
 use super::{duration, expand_tilde, ConfigError};
+use crate::net::addr::HostPort;
 use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
@@ -48,6 +50,12 @@ pub struct DaemonConfig {
     pub discovery: Discovery,
     pub relay: Option<Url>,
     pub relay_mode: RelayMode,
+    /// Sockets to bind instead of iroh's defaults: at most one IPv4 and one
+    /// IPv6 entry; port 0 lets the daemon pick. Empty keeps the defaults.
+    #[serde(deserialize_with = "de_listen")]
+    pub listen: Vec<HostPort>,
+    /// iroh's UPnP/PCP/NAT-PMP port mapper.
+    pub portmap: bool,
     #[serde(deserialize_with = "de_duration")]
     pub dormant_session_timeout: Duration,
     /// Drop a session's connection after this long without activity (wire
@@ -70,6 +78,54 @@ fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
     }
 }
 
+fn de_listen<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<HostPort>, D::Error> {
+    let listen = Vec::<HostPort>::deserialize(d)?;
+    let (mut v4, mut v6) = (0, 0);
+    for entry in &listen {
+        match entry {
+            HostPort::Ip(a) if a.is_ipv4() => v4 += 1,
+            HostPort::Ip(_) => v6 += 1,
+            HostPort::Name { .. } => {}
+        }
+    }
+    if v4 > 1 || v6 > 1 {
+        return Err(serde::de::Error::custom(
+            "at most one IPv4 and one IPv6 listen address",
+        ));
+    }
+    Ok(listen)
+}
+
+/// Resolves `listen` to the sockets to bind: each entry contributes the
+/// first IPv4 and the first IPv6 address it yields; two entries landing in
+/// one family is an error naming both.
+pub async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAddr>> {
+    use anyhow::{anyhow, Context};
+    let mut out: Vec<(SocketAddr, &HostPort)> = Vec::new();
+    for entry in listen {
+        let resolved = entry
+            .resolve()
+            .await
+            .with_context(|| format!("resolving listen address {entry}"))?;
+        let mut taken = [false, false];
+        for addr in resolved {
+            let fam = usize::from(addr.is_ipv6());
+            if taken[fam] {
+                continue;
+            }
+            taken[fam] = true;
+            if let Some((_, prev)) = out.iter().find(|(a, _)| a.is_ipv6() == addr.is_ipv6()) {
+                let family = if addr.is_ipv6() { "IPv6" } else { "IPv4" };
+                return Err(anyhow!(
+                    "listen: {entry} and {prev} are both {family}; at most one per family"
+                ));
+            }
+            out.push((addr, entry));
+        }
+    }
+    Ok(out.into_iter().map(|(a, _)| a).collect())
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         DaemonConfig {
@@ -79,6 +135,8 @@ impl Default for DaemonConfig {
             discovery: Discovery::default(),
             relay: None,
             relay_mode: RelayMode::Default,
+            listen: Vec::new(),
+            portmap: true,
             dormant_session_timeout: Duration::from_secs(7 * 86400),
             idle_timeout: crate::session::engine::DAEMON_IDLE_TIMEOUT,
             modules: BTreeMap::new(),

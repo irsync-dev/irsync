@@ -479,7 +479,10 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
         .init();
 
     let result = (|| -> anyhow::Result<()> {
-        let cfg = DaemonConfig::load(d.config.as_deref())?;
+        let mut cfg = DaemonConfig::load(d.config.as_deref())?;
+        if !d.listen.is_empty() {
+            cfg.listen = d.listen.clone();
+        }
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
         if d.show_id {
             println!("{}", irsync::daemon::show_id(&cfg, &pass)?);
