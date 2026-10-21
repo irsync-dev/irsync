@@ -3,7 +3,9 @@ mod common;
 use std::io;
 
 use common::{connect_pair, loopback_pair, within};
+use iroh::SecretKey;
 use irsync::net::frame::{read_msg, write_msg, MAX_FRAME};
+use irsync::net::EndpointOpts;
 use irsync_proto::v1::{Hello, HelloAck};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
@@ -125,4 +127,30 @@ async fn eof_returns_none() {
     client.close(0u32.into(), b"done");
     a.close().await;
     b.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binds_each_requested_socket_and_reports_real_ports() {
+    let mut opts = EndpointOpts::isolated(SecretKey::generate());
+    opts.bind_addrs = vec!["127.0.0.1:0".parse().unwrap(), "[::1]:0".parse().unwrap()];
+    let ep = irsync::net::build_endpoint(opts).await.unwrap();
+    let bound = ep.bound_sockets();
+    assert_eq!(bound.len(), 2, "{bound:?}");
+    assert!(
+        bound.iter().all(|a| a.ip().is_loopback() && a.port() != 0),
+        "{bound:?}"
+    );
+    assert!(bound.iter().any(|a| a.is_ipv4()) && bound.iter().any(|a| a.is_ipv6()));
+    ep.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn isolated_opts_have_no_relay_and_no_lookup() {
+    let opts = EndpointOpts::isolated(SecretKey::generate());
+    assert!(!opts.dht && !opts.dns && !opts.mdns && !opts.publish && !opts.portmap);
+    assert_eq!(opts.relay, irsync::net::RelayChoice::Disabled);
+    let ep = irsync::net::build_endpoint(opts).await.unwrap();
+    assert_eq!(ep.addr().relay_urls().count(), 0, "{:?}", ep.addr());
+    assert!(ep.address_lookup().unwrap().is_empty());
+    ep.close().await;
 }

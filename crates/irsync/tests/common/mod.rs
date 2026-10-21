@@ -47,7 +47,8 @@ pub fn offline_opts() -> EndpointOpts {
         dns: false,
         mdns: false,
         publish: false,
-        bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+        bind_addrs: vec!["127.0.0.1:0".parse().unwrap()],
+        portmap: false,
     }
 }
 

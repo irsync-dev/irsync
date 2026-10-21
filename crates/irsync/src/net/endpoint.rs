@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
-    presets, BindError, IdleTimeout, InvalidSocketAddr, QuicTransportConfig, VarInt,
+    presets, BindError, IdleTimeout, InvalidSocketAddr, PortmapperConfig, QuicTransportConfig,
+    VarInt,
 };
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use iroh_mainline_address_lookup::DhtAddressLookup;
@@ -40,9 +41,28 @@ pub struct EndpointOpts {
     /// Publish our address (daemon) or only resolve others (client). Applies to
     /// DHT and DNS publishing and also controls whether mDNS advertises us.
     pub publish: bool,
-    /// Bind only this address instead of the unspecified IPv4/IPv6 defaults
-    /// (tests use loopback).
-    pub bind_addr: Option<SocketAddr>,
+    /// Bind exactly these instead of iroh's unspecified IPv4/IPv6 defaults
+    /// (tests use loopback). Empty keeps the defaults.
+    pub bind_addrs: Vec<SocketAddr>,
+    /// iroh's UPnP/PCP/NAT-PMP port mapper.
+    pub portmap: bool,
+}
+
+impl EndpointOpts {
+    /// No relay, no lookups, no publishing, no port mapper, default binds:
+    /// an endpoint that talks to nobody but the peers it is pointed at.
+    pub fn isolated(secret: SecretKey) -> EndpointOpts {
+        EndpointOpts {
+            secret,
+            relay: RelayChoice::Disabled,
+            dht: false,
+            dns: false,
+            mdns: false,
+            publish: false,
+            bind_addrs: Vec::new(),
+            portmap: false,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -110,8 +130,14 @@ pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
     if opts.mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder().advertise(opts.publish));
     }
-    if let Some(addr) = opts.bind_addr {
-        builder = builder.clear_ip_transports().bind_addr(addr)?;
+    if !opts.bind_addrs.is_empty() {
+        builder = builder.clear_ip_transports();
+        for addr in &opts.bind_addrs {
+            builder = builder.bind_addr(*addr)?;
+        }
+    }
+    if !opts.portmap {
+        builder = builder.portmapper_config(PortmapperConfig::Disabled);
     }
 
     Ok(builder.bind().await?)

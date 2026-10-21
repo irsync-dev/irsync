@@ -317,7 +317,8 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         dns: true,
         mdns: hc.mdns.unwrap_or(true),
         publish: false,
-        bind_addr: None,
+        bind_addrs: Vec::new(),
+        portmap: true,
     })
     .await?;
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);

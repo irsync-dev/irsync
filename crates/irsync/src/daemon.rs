@@ -360,7 +360,8 @@ pub async fn run_from_config(
         dns: cfg.discovery.dns,
         mdns: cfg.discovery.mdns,
         publish: true,
-        bind_addr: None,
+        bind_addrs: Vec::new(),
+        portmap: true,
     })
     .await?;
     println!("endpoint id: {}", endpoint.id());
