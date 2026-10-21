@@ -334,6 +334,22 @@ cross-referenced from commit messages and review notes.
   compared" list omits directory nlink; the CI-set panic path is untested.
 - chown paths are untested (need root); macOS compiled only in CI.
 
+**Isolated network mode** (design
+`docs/superpowers/specs/2026-10-21-isolated-network-design.md`, final review
+2026-10-21)
+- `Address` in the client config together with `--relay` on the command
+  line ignores `--relay` with only a debug log. The spec is silent on this
+  pair; a warning, or refusing it like `--address` with `--relay`, would be
+  friendlier.
+- The end-to-end test's daemon spawn inherits the developer's environment
+  (`IRSYNC_PASSPHRASE`, `RUST_LOG`), unlike its client run; the client run
+  has no wall-clock bound beyond `--reconnect 0` and iroh's connect timeout.
+- `HostPort` accepts a leading `+` in the port (`host:+80` parses and
+  displays as `host:80`), because `u16::from_str` does.
+- README: the `--address` row omits the `[ipv6]:port` form; the daemon
+  example's `listen = ["0.0.0.0:0", "[::]:0"]` is captioned "pin sockets"
+  but, with port 0 and the default addresses, pins nothing.
+
 ### 2.4 Out of scope for v1 (by design)
 
 - Transparent daemon spawn over SSH (mosh-style) — planned for a later
