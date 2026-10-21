@@ -75,12 +75,7 @@ fn sparse_only_for_regular_files_with_holes() {
     let p = d.path().join("holey");
     let mut f = fs::File::create(&p).unwrap();
     // APFS on a FileVault volume zero-fills holes under 16 MiB once the data is written back.
-    let len = if cfg!(target_os = "macos") {
-        17 << 20
-    } else {
-        1 << 20
-    };
-    f.set_len(len).unwrap();
+    f.set_len(17 << 20).unwrap();
     f.write_all(&[1u8; 4096]).unwrap();
     drop(f);
     assert!(lstat_entry(d.path(), &rp(b"holey")).unwrap().sparse);

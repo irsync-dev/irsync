@@ -119,9 +119,9 @@ fn write_sparse(p: &Path, size: u64) {
 #[tokio::test]
 async fn sparse_file_stays_sparse() {
     const SIZE: u64 = 64 * MIB as u64;
-    // APFS on a FileVault volume zero-fills holes under 16 MiB on writeback, so macOS
-    // needs a longer tail: at least 16 MiB of it must fall in whole zero chunks.
-    const TAIL: u64 = if cfg!(target_os = "macos") { 19 } else { 8 } * MIB as u64;
+    // APFS on a FileVault volume zero-fills holes under 16 MiB on writeback, so at least
+    // 16 MiB of the tail must fall in whole zero chunks (FastCDC max is 1 MiB).
+    const TAIL: u64 = 19 * MIB as u64;
     for flow in [Flow::Push, Flow::Pull] {
         let opts = opts_with(|p| p.sparse = true);
         let (out, h) = within60(sync_trees(

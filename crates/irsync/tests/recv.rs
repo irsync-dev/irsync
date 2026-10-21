@@ -424,13 +424,12 @@ async fn zero_size_file_finalizes_empty() {
     assert!(!part_path(&e.root).exists());
 }
 
-/// Random data with a 3 MiB zero run in the middle: at least a MiB of it
-/// falls in whole zero chunks (FastCDC max is 1 MiB). macOS gets 18 MiB, as
-/// APFS on a FileVault volume zero-fills holes under 16 MiB on writeback.
+/// Random data with an 18 MiB zero run in the middle: at least 16 MiB of it
+/// falls in whole zero chunks (FastCDC max is 1 MiB). APFS on a FileVault
+/// volume zero-fills holes under 16 MiB on writeback.
 fn with_zero_run() -> Vec<u8> {
-    let run_mib = if cfg!(target_os = "macos") { 18 } else { 3 };
     let mut data = content(5);
-    data.extend(std::iter::repeat_n(0u8, run_mib * 1024 * 1024));
+    data.extend(std::iter::repeat_n(0u8, 18 * 1024 * 1024));
     data.extend(content(6));
     data
 }
