@@ -148,12 +148,13 @@ whatever the entry name is) is a follow-up with its own test.
 Found by the acceptance run, in all four runs and both directions. A FIFO
 that filegen created (`mkfifo`) and then gave a drawn modification time
 (`set_mtime`) arrives on the destination with the time of its creation
-there, and later `set_mtime` operations on the source never reach it. The
-check reports `CHG <path> mtime=<source>→<destination>` with only `mtime`
-differing, and the line persists in every later iteration until filegen
-deletes or renames the FIFO. The number of such FIFOs grows over a run
+there. The check reports `CHG <path> mtime=<source>→<destination>` with only `mtime`
+differing, and the line persists across every later sync until filegen
+deletes or renames the FIFO, so later `set_mtime` operations on the source
+evidently do not reach it (inferred from that persistence). The number of such FIFOs grows over a run
 (push-maxlen200 ended with changed=9, pull-maxlen200 with changed=7).
-Regular files, symlinks and directories showed no metadata drift.
+Every failed iteration was attributed to one of the two bugs, so no other
+drift was observed; it was not measured separately.
 
 Evidence: push-maxlen200 iteration 8's check report has two `CHG ... mtime=`
 lines, both paths created by `mkfifo` and then `set_mtime` in
@@ -191,8 +192,9 @@ All four harness exits were 1 (failed iterations). There was no harness
 error (no exit 2), no client exit other than 0 or 23, and no manifest hash
 mismatch in any iteration of any run. Sync wall time averaged 3.2 to 3.6 s,
 maximum 13.1 s. An unattended default-size 300-iteration run takes about 30
-minutes and grows the tree to 10-20 GB per side, so the two sides need up to
-50 GB at the 25G cap.
+minutes. The measured trees were 9.5-19 GB per side after 300 iterations;
+the 25G cap bounds each side, so a run needs up to 2 x 25 GB = 50 GB on disk
+(cap arithmetic, not measured).
 
 Every one of the 1083 failed iterations is explained by exactly two irsync
 bugs, classified by a script over the check reports, client logs and filegen
@@ -209,14 +211,15 @@ logs:
 
    Second-order effect, seen twice (push iteration 264, pull iteration 94):
    a regular file that filegen had just hard-linked to a name over 242 bytes
-   was skipped with `hard link: hard link target failed`, because irsync sent
-   the long name as the link group's first name and creating it failed. The
-   short name kept its previous content for one iteration (`CHG` with blake3,
+   was skipped with `hard link: hard link target failed`. The likely
+   explanation (not observed directly) is that irsync sent the long name as
+   the link group's first name and creating it failed. The short name kept its previous content for one iteration (`CHG` with blake3,
    size and mtime differing) and was repaired by the next sync.
 
 2. **FIFO mtime** (all four runs). This caused all 234 failures of
    push-maxlen200 and all 287 of pull-maxlen200, and co-occurred with
-   NAME_MAX in 258 push and 236 pull iterations. See the entry above.
+   NAME_MAX in 258 push and 236 pull iterations of the default-size runs
+   (seeds 1 and 2). See the entry above.
 
 Definition of done, from the spec: the harness runs to the end with
 `--keep-going`, every failure it reports is explained, and the artefacts it
