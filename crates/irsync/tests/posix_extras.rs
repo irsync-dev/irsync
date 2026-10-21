@@ -119,6 +119,9 @@ fn write_sparse(p: &Path, size: u64) {
 #[tokio::test]
 async fn sparse_file_stays_sparse() {
     const SIZE: u64 = 64 * MIB as u64;
+    // APFS on a FileVault volume zero-fills holes under 16 MiB on writeback, so macOS
+    // needs a longer tail: at least 16 MiB of it must fall in whole zero chunks.
+    const TAIL: u64 = if cfg!(target_os = "macos") { 19 } else { 8 } * MIB as u64;
     for flow in [Flow::Push, Flow::Pull] {
         let opts = opts_with(|p| p.sparse = true);
         let (out, h) = within60(sync_trees(
@@ -127,7 +130,7 @@ async fn sparse_file_stays_sparse() {
                 // Ends in a zero run: the length must still come out right.
                 let mut f = fs::File::create(src.join("tail.img")).unwrap();
                 f.write_all(&data(MIB, 9)).unwrap();
-                f.set_len(8 * MIB as u64).unwrap();
+                f.set_len(TAIL).unwrap();
             },
             |_| {},
             &opts,
@@ -144,14 +147,11 @@ async fn sparse_file_stays_sparse() {
             m.blocks() * 512
         );
         let t = fs::metadata(h.dst(flow).join("tail.img")).unwrap();
-        assert_eq!(t.len(), 8 * MIB as u64);
-        // APFS allocates a zero tail made by set_len, so only check elsewhere.
-        if !cfg!(target_os = "macos") {
-            assert!(
-                t.blocks() * 512 < 4 * MIB as u64,
-                "{flow:?}: tail not sparse"
-            );
-        }
+        assert_eq!(t.len(), TAIL);
+        assert!(
+            t.blocks() * 512 < 4 * MIB as u64,
+            "{flow:?}: tail not sparse"
+        );
     }
 }
 
