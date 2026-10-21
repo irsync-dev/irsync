@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{bail, Context};
-use iroh::{EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
@@ -305,22 +305,50 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
     let secret = load_identity_interactive(&identity, &pass)
         .with_context(|| format!("loading identity {}", identity.display()))?;
-    let relay = match (&opts.relay, &hc.relay) {
-        (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
-        (None, Some(u)) => RelayChoice::Custom(u.clone()),
-        (None, None) => RelayChoice::N0Default,
+    // Direct addresses: the command line's, else the host's. Any address
+    // means isolated mode: dial those and nothing else.
+    let addresses = if opts.addresses.is_empty() {
+        hc.addresses.clone()
+    } else {
+        opts.addresses.clone()
     };
-    let endpoint = build_endpoint(EndpointOpts {
-        secret,
-        relay,
-        dht: !opts.no_dht && hc.dht.unwrap_or(true),
-        dns: true,
-        mdns: hc.mdns.unwrap_or(true),
-        publish: false,
-        bind_addrs: Vec::new(),
-        portmap: true,
-    })
-    .await?;
+    let mut resolved = Vec::new();
+    for entry in &addresses {
+        resolved.extend(
+            entry
+                .resolve()
+                .await
+                .with_context(|| format!("resolving address {entry}"))?,
+        );
+    }
+    let endpoint_opts = if resolved.is_empty() {
+        let relay = match (&opts.relay, &hc.relay) {
+            (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
+            (None, Some(u)) => RelayChoice::Custom(u.clone()),
+            (None, None) => RelayChoice::N0Default,
+        };
+        EndpointOpts {
+            secret,
+            relay,
+            dht: !opts.no_dht && hc.dht.unwrap_or(true),
+            dns: true,
+            mdns: hc.mdns.unwrap_or(true),
+            publish: false,
+            bind_addrs: Vec::new(),
+            portmap: true,
+        }
+    } else {
+        tracing::info!(
+            addresses = ?resolved,
+            "isolated mode: dialling directly, relay and lookups off"
+        );
+        if hc.relay.is_some() || hc.dht.is_some() || hc.mdns.is_some() {
+            tracing::debug!("Address given: ignoring Relay/Dht/Mdns from the client config");
+        }
+        EndpointOpts::isolated(secret)
+    };
+    let endpoint = build_endpoint(endpoint_opts).await?;
+    let target = EndpointAddr::from_parts(target, resolved.into_iter().map(TransportAddr::Ip));
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
 
     // One session per source; several sources only when pushing.
@@ -373,7 +401,16 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         };
         sessions += 1;
         let out = match session(
-            &endpoint, target, direction, root, *local_co, hello, &filters, opts, ropts, bus,
+            &endpoint,
+            target.clone(),
+            direction,
+            root,
+            *local_co,
+            hello,
+            &filters,
+            opts,
+            ropts,
+            bus,
         )
         .await
         {
@@ -400,7 +437,7 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
 #[allow(clippy::too_many_arguments)]
 async fn session(
     endpoint: &iroh::Endpoint,
-    target: EndpointId,
+    target: EndpointAddr,
     direction: Direction,
     root: PathBuf,
     local_contents_only: bool,
@@ -445,24 +482,16 @@ async fn session(
         session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
         ..hello.clone()
     };
+    let target_id = target.id;
     let on_state = |s: ConnState| match s {
-        ConnState::Connecting => tracing::info!(%target, "connecting"),
+        ConnState::Connecting => tracing::info!(target = %target_id, "connecting"),
         ConnState::Direct => tracing::info!("connected directly"),
         ConnState::Relay => tracing::info!("connected through a relay"),
         ConnState::Reconnecting { attempt } => {
             tracing::info!(attempt, "reconnecting")
         }
     };
-    run_with_reconnect(
-        endpoint,
-        EndpointAddr::new(target),
-        hello_for,
-        side,
-        opts,
-        ropts,
-        on_state,
-    )
-    .await
+    run_with_reconnect(endpoint, target, hello_for, side, opts, ropts, on_state).await
 }
 
 fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
