@@ -1,0 +1,22 @@
+[package]
+name = "stress"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "irsync-stress"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+blake3 = { workspace = true }
+nix = { workspace = true, features = ["signal", "process"] }
+libc = { workspace = true }
+rand = { workspace = true }
+jiff = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
