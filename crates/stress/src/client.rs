@@ -91,6 +91,17 @@ pub enum SyncExit {
     Other(i32),
 }
 
+impl SyncExit {
+    /// The client's exit code; -1 if it was killed by a signal.
+    pub fn code(self) -> i32 {
+        match self {
+            SyncExit::Ok => 0,
+            SyncExit::Partial => 23,
+            SyncExit::Other(c) => c,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SyncResult {
     pub exit: SyncExit,

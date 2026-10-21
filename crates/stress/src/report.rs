@@ -26,11 +26,9 @@ impl Iteration {
     }
 
     pub fn line(&self) -> String {
-        let exit = match self.sync.exit {
-            SyncExit::Ok => "0".to_string(),
-            SyncExit::Partial => "23".to_string(),
-            SyncExit::Other(-1) => "sig".to_string(),
-            SyncExit::Other(code) => code.to_string(),
+        let exit = match self.sync.exit.code() {
+            -1 => "sig".to_string(),
+            code => code.to_string(),
         };
         let manifest = if self.manifest_ok { "ok" } else { "MISMATCH" };
         let check = match &self.check {

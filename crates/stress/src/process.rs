@@ -1,6 +1,7 @@
 //! Spawning child processes, surviving the Linux ETXTBSY fork race.
 
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Output};
 use std::thread;
 use std::time::Duration;
@@ -11,7 +12,27 @@ const RETRY_DELAY: Duration = Duration::from_millis(10);
 /// Spawns `cmd`, retrying when the kernel reports ETXTBSY (a script that
 /// another thread's fork still holds open for writing) for up to about
 /// one second. Every other error is returned at once.
+///
+/// The child starts with SIGINT and SIGTERM unblocked even when the caller
+/// has them blocked (see `signals::block`): std passes the signal mask on
+/// to the child, and a daemon that inherited the block would never see the
+/// SIGINT that stops it.
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
+    // SAFETY: between fork and exec the closure only calls `sigemptyset`,
+    // `sigaddset` and `pthread_sigmask`, which are async-signal-safe and
+    // do not allocate.
+    unsafe {
+        cmd.pre_exec(|| {
+            let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigemptyset(set.as_mut_ptr());
+            libc::sigaddset(set.as_mut_ptr(), libc::SIGINT);
+            libc::sigaddset(set.as_mut_ptr(), libc::SIGTERM);
+            match libc::pthread_sigmask(libc::SIG_UNBLOCK, set.as_ptr(), std::ptr::null_mut()) {
+                0 => Ok(()),
+                e => Err(io::Error::from_raw_os_error(e)),
+            }
+        });
+    }
     let mut attempt = 1;
     loop {
         match cmd.spawn() {
@@ -55,6 +76,23 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         drop(f);
         assert!(h.join().unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn the_child_starts_with_sigint_and_sigterm_unblocked() {
+        // `grep` itself reads its mask: a shell in between might reset it.
+        let _blocked = crate::signals::block();
+        let out = output(
+            Command::new("grep")
+                .args(["SigBlk", "/proc/self/status"])
+                .stdout(std::process::Stdio::piped()),
+        )
+        .unwrap();
+        let line = String::from_utf8(out.stdout).unwrap();
+        let hex = line.trim().strip_prefix("SigBlk:").unwrap().trim();
+        let mask = u64::from_str_radix(hex, 16).unwrap();
+        let bit = |sig: i32| 1u64 << (sig - 1);
+        assert_eq!(mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)), 0, "{line}");
     }
 
     #[test]

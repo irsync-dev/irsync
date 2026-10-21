@@ -1,8 +1,9 @@
 //! End-to-end: the built harness against the real `irsync`, `filegen` and
 //! `fileset` binaries.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,30 +27,86 @@ fn require_tools() {
     }
 }
 
-fn run_harness(direction: &str, root: &Path, extra: &[&str]) -> std::process::Output {
-    Command::new(bin())
-        .args([
-            "--direction",
-            direction,
-            "--iterations",
-            "2",
-            "--steps",
-            "20",
-            "--seed",
-            "7",
-            "--max-total-size",
-            "8M",
-            "--max-file-size",
-            "1M",
-            "--filegen-set",
-            "names.max_len=200", // avoids the known NAME_MAX bug (spec: "Known irsync bug")
-        ])
-        .args(extra)
-        .arg(root)
-        .env_remove("IRSYNC_PASSPHRASE")
-        .env_remove("IRSYNC_CONFIG")
-        .output()
-        .unwrap()
+fn run_harness(direction: &str, root: &Path, extra: &[&str]) -> Output {
+    let mut cmd = Command::new(bin());
+    cmd.args([
+        "--direction",
+        direction,
+        "--iterations",
+        "2",
+        "--steps",
+        "20",
+        "--seed",
+        "7",
+        "--max-total-size",
+        "8M",
+        "--max-file-size",
+        "1M",
+        "--filegen-set",
+        "names.max_len=200", // avoids the known NAME_MAX bug (spec: "Known irsync bug")
+    ])
+    .args(extra)
+    .arg(root)
+    .env_remove("IRSYNC_PASSPHRASE")
+    .env_remove("IRSYNC_CONFIG");
+    output_within(cmd, Duration::from_secs(300))
+}
+
+/// A running harness. If a test panics before it has exited, dropping it
+/// sends SIGINT (so the harness stops its daemon), waits up to 10 s, then
+/// kills it; nothing keeps running against a deleted temp dir.
+struct Harness(Child);
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(None)) {
+            return;
+        }
+        let _ = kill(Pid::from_raw(self.0.id() as i32), Signal::SIGINT);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(self.0.try_wait(), Ok(None)) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Like `Command::output`, but panics (stopping the harness) if it has not
+/// exited within `timeout`.
+fn output_within(mut cmd: Command, timeout: Duration) -> Output {
+    let mut h = Harness(
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let read_all = |mut r: Box<dyn Read + Send>| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = r.read_to_end(&mut buf);
+            buf
+        })
+    };
+    let stdout = read_all(Box::new(h.0.stdout.take().unwrap()));
+    let stderr = read_all(Box::new(h.0.stderr.take().unwrap()));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = h.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "harness still running after {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    }
 }
 
 /// Runs two iterations in `direction`, asserts they pass and leave every
@@ -152,34 +209,36 @@ fn sigint_terminates_the_daemon() {
     require_tools();
     let t = tempfile::tempdir().unwrap();
     let root = t.path().join("run");
-    let mut child = Command::new(bin())
-        .args([
-            "--direction",
-            "push",
-            "--iterations",
-            "1000",
-            "--steps",
-            "200",
-            "--seed",
-            "7",
-            "--max-total-size",
-            "64M",
-            "--max-file-size",
-            "4M",
-            "--filegen-set",
-            "names.max_len=200",
-        ])
-        .arg(&root)
-        .env_remove("IRSYNC_PASSPHRASE")
-        .env_remove("IRSYNC_CONFIG")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = Harness(
+        Command::new(bin())
+            .args([
+                "--direction",
+                "push",
+                "--iterations",
+                "1000",
+                "--steps",
+                "200",
+                "--seed",
+                "7",
+                "--max-total-size",
+                "64M",
+                "--max-file-size",
+                "4M",
+                "--filegen-set",
+                "names.max_len=200",
+            ])
+            .arg(&root)
+            .env_remove("IRSYNC_PASSPHRASE")
+            .env_remove("IRSYNC_CONFIG")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     // wait until run.toml names the daemon pid (written once startup is parsed)
     let pid = wait_for_daemon_pid(&root.join("run.toml"), Duration::from_secs(30));
-    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).unwrap();
-    let status = child.wait().unwrap();
+    kill(Pid::from_raw(child.0.id() as i32), Signal::SIGINT).unwrap();
+    let status = child.0.wait().unwrap();
     assert_eq!(status.code(), Some(130));
     // the daemon is gone (poll up to 5 s: the handler signals it, the daemon exits on its own SIGINT path)
     assert!(wait_until_gone(pid, Duration::from_secs(5)));

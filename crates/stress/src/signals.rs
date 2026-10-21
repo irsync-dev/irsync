@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+use nix::sys::signal::{
+    pthread_sigmask, sigaction, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal,
+};
 
 /// The process-wide daemon pid slot: 0 while no daemon is running.
 static DAEMON_PID: OnceLock<Arc<AtomicI32>> = OnceLock::new();
@@ -39,4 +41,61 @@ pub fn install() -> Arc<AtomicI32> {
         unsafe { sigaction(sig, &action) }.expect("installing a signal handler");
     }
     Arc::clone(slot)
+}
+
+fn handled() -> SigSet {
+    let mut set = SigSet::empty();
+    set.add(Signal::SIGINT);
+    set.add(Signal::SIGTERM);
+    set
+}
+
+/// SIGINT and SIGTERM blocked on the calling thread until dropped; a signal
+/// that arrives meanwhile stays pending and is delivered on drop. Threads
+/// spawned meanwhile inherit the block; child processes do not (std resets
+/// a child's signal mask).
+#[must_use]
+pub struct Blocked {
+    old: SigSet,
+}
+
+/// Blocks SIGINT and SIGTERM on the calling thread until the guard drops.
+/// `run` holds it from before the daemon is spawned until the daemon's pid
+/// is in the slot, so the handler never misses a daemon that exists.
+pub fn block() -> Blocked {
+    let mut old = SigSet::empty();
+    pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&handled()), Some(&mut old))
+        .expect("blocking SIGINT and SIGTERM");
+    Blocked { old }
+}
+
+impl Drop for Blocked {
+    fn drop(&mut self) {
+        let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&self.old), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn current_mask() -> SigSet {
+        let mut cur = SigSet::empty();
+        pthread_sigmask(SigmaskHow::SIG_BLOCK, None, Some(&mut cur)).unwrap();
+        cur
+    }
+
+    #[test]
+    fn block_masks_both_signals_until_dropped() {
+        // Each test runs on its own thread, so the mask change stays local.
+        let before = current_mask();
+        assert!(!before.contains(Signal::SIGINT) && !before.contains(Signal::SIGTERM));
+        {
+            let _blocked = block();
+            let m = current_mask();
+            assert!(m.contains(Signal::SIGINT) && m.contains(Signal::SIGTERM));
+        }
+        let after = current_mask();
+        assert!(!after.contains(Signal::SIGINT) && !after.contains(Signal::SIGTERM));
+    }
 }

@@ -1,7 +1,9 @@
 //! The whole stress run: setup, daemon, sentinel round, fill, iterations.
 
 use std::ffi::OsString;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -23,8 +25,36 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the daemon may take to exit after SIGINT before SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(10);
 
+/// The running daemon and the signal handler's pid slot. Dropping it (on
+/// every path, `Err` included) stops the daemon and only then clears the
+/// slot, so a signal during the stop's grace period still reaches it.
+struct RunningDaemon {
+    daemon: Daemon,
+    pid_slot: Arc<AtomicI32>,
+}
+
+impl Deref for RunningDaemon {
+    type Target = Daemon;
+    fn deref(&self) -> &Daemon {
+        &self.daemon
+    }
+}
+
+impl DerefMut for RunningDaemon {
+    fn deref_mut(&mut self) -> &mut Daemon {
+        &mut self.daemon
+    }
+}
+
+impl Drop for RunningDaemon {
+    fn drop(&mut self) {
+        self.daemon.stop(STOP_GRACE);
+        self.pid_slot.store(0, Ordering::SeqCst);
+    }
+}
+
 /// What every sync of the run shares.
-struct Sync<'a> {
+struct Syncer<'a> {
     cli: &'a Cli,
     layout: &'a Layout,
     tools: &'a Tools,
@@ -32,7 +62,7 @@ struct Sync<'a> {
     args: Vec<OsString>,
 }
 
-impl Sync<'_> {
+impl Syncer<'_> {
     fn run(&self, log: &std::path::Path) -> Result<client::SyncResult> {
         client::run_sync(
             &self.tools.irsync.path,
@@ -61,7 +91,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
     run_file.write(&layout.run_file)?;
 
     let pid_slot = signals::install();
-    let (mut daemon, sync) = start_daemon(cli, &layout, &tools, &pid_slot, &mut run_file)?;
+    let (mut daemon, sync) = start_daemon(cli, &layout, &tools, pid_slot, &mut run_file)?;
     println!(
         "{}",
         report::header(
@@ -108,8 +138,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
         }
     }
 
-    pid_slot.store(0, Ordering::SeqCst);
-    daemon.stop(STOP_GRACE);
+    drop(daemon); // stops it, then clears the signal handler's pid slot
     println!("{}", report::footer(&results, start.elapsed()));
     Ok(report::exit_code(&results))
 }
@@ -149,9 +178,9 @@ fn start_daemon<'a>(
     cli: &'a Cli,
     layout: &'a Layout,
     tools: &'a Tools,
-    pid_slot: &AtomicI32,
+    pid_slot: Arc<AtomicI32>,
     run_file: &mut RunFile,
-) -> Result<(Daemon, Sync<'a>)> {
+) -> Result<(RunningDaemon, Syncer<'a>)> {
     let (client_config, _) = layout.client_side(cli.direction);
     let (daemon_config, daemon_data) = layout.daemon_side(cli.direction);
     let (key, pub_line) = daemon::client_keygen(&tools.irsync.path, client_config)?;
@@ -161,6 +190,10 @@ fn start_daemon<'a>(
         authorized_pub_line: &pub_line,
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;
+    // From the spawn until the pid is in the slot the handler could not
+    // reach the daemon: hold SIGINT and SIGTERM pending meanwhile. If the
+    // start fails, `Daemon::start` has already killed the child.
+    let blocked = signals::block();
     let daemon = Daemon::start(
         &tools.irsync.path,
         &toml,
@@ -170,6 +203,8 @@ fn start_daemon<'a>(
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);
+    let daemon = RunningDaemon { daemon, pid_slot };
+    drop(blocked); // a pending signal is delivered here, with the pid set
     run_file.daemon = Some(DaemonInfo {
         endpoint_id: daemon.startup.endpoint_id.clone(),
         address: daemon.startup.address.to_string(),
@@ -186,7 +221,7 @@ fn start_daemon<'a>(
         &setup,
         &cli.client_args,
     );
-    let sync = Sync {
+    let sync = Syncer {
         cli,
         layout,
         tools,
@@ -198,7 +233,7 @@ fn start_daemon<'a>(
 
 /// The sentinel round: one sync of a single small file, which must arrive
 /// byte for byte. Any failure is a setup failure.
-fn ping(daemon: &Daemon, sync: &Sync, seed: u64, started: &str) -> Result<()> {
+fn ping(daemon: &Daemon, sync: &Syncer, seed: u64, started: &str) -> Result<()> {
     let src = sync.layout.ping_file();
     let content = format!("seed={seed} started={started}\n");
     std::fs::write(&src, &content).with_context(|| format!("writing {}", src.display()))?;
@@ -206,13 +241,9 @@ fn ping(daemon: &Daemon, sync: &Sync, seed: u64, started: &str) -> Result<()> {
     let log = sync.layout.ping_client_log();
     let r = sync.run(&log)?;
     if r.exit != SyncExit::Ok {
-        let code = match r.exit {
-            SyncExit::Ok => 0,
-            SyncExit::Partial => 23,
-            SyncExit::Other(c) => c,
-        };
         bail!(
-            "sentinel sync failed: irsync client exited {code}; see {}",
+            "sentinel sync failed: irsync client exited {}; see {}",
+            r.exit.code(),
             log.display()
         );
     }
@@ -227,7 +258,7 @@ fn ping(daemon: &Daemon, sync: &Sync, seed: u64, started: &str) -> Result<()> {
 }
 
 /// One iteration: sync, manifest comparison, fileset check.
-fn iteration(daemon: &mut Daemon, sync: &Sync, i: u64) -> Result<Iteration> {
+fn iteration(daemon: &mut Daemon, sync: &Syncer, i: u64) -> Result<Iteration> {
     let layout = sync.layout;
     daemon.check_alive()?;
     daemon.marker(&format!("iteration {i}"))?;
