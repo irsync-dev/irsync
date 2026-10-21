@@ -143,8 +143,85 @@ failed iteration like any other. A run that wants to get past it uses
 `--filegen-set names.max_len=200`. The fix (a partial-file name that fits
 whatever the entry name is) is a follow-up with its own test.
 
+### FIFO mtime: a FIFO's modification time never arrives
+
+Found by the acceptance run, in all four runs and both directions. A FIFO
+that filegen created (`mkfifo`) and then gave a drawn modification time
+(`set_mtime`) arrives on the destination with the time of its creation
+there, and later `set_mtime` operations on the source never reach it. The
+check reports `CHG <path> mtime=<source>→<destination>` with only `mtime`
+differing, and the line persists in every later iteration until filegen
+deletes or renames the FIFO. The number of such FIFOs grows over a run
+(push-maxlen200 ended with changed=9, pull-maxlen200 with changed=7).
+Regular files, symlinks and directories showed no metadata drift.
+
+Evidence: push-maxlen200 iteration 8's check report has two `CHG ... mtime=`
+lines, both paths created by `mkfifo` and then `set_mtime` in
+`filegen/filegen-11.log`; pull-maxlen200 iteration 7 (`mkfifo` at step 99,
+`set_mtime` at steps 664, 812 and 1763).
+
+Hypothesis, not verified: the receive path creates special files without
+applying the sent mtime, and the planner treats a FIFO as unchanged when
+only its mtime differs.
+
+Decision: not fixed in this project; the fix is a follow-up with its own
+test, like the NAME_MAX bug. Meaning of the line in practice: a `CHG ...
+mtime=` on a FIFO is this bug, not a transfer fault.
+
 ## Acceptance run
 
-_To be filled in: the commands, the pass/fail counts for the push and pull
-runs, the explanation of each failure class, and any new irsync bug as its
-own entry above._
+Binaries: a release build of the tree at commit 8cb3102 for all four tools.
+The harness code changed afterwards only in signal handling, tool lookup
+order, absolute tool paths, filegen stderr capture and error wording
+(703c180); the loop itself is unchanged. Runs were started from
+`target/release` with `--iterations 300 --keep-going`, default size (25G
+cap, 100 steps), concurrently on one 32-core Linux box, roots on a
+disk-backed filesystem. The two `names.max_len=200` runs were added by the
+controller (the spec has none) because the NAME_MAX bug compounds from its
+first occurrence and would otherwise hide everything else.
+
+| run | extra arguments | footer | elapsed | final SRC tree |
+| --- | --- | --- | --- | --- |
+| push | `--direction push --seed 1` | passed=9 failed=291 | 1772.8 s | 14 GB, 2106 files, 48 FIFOs |
+| pull | `--direction pull --seed 2` | passed=29 failed=271 | 1575.5 s | 9.5 GB, 1546 files, 25 FIFOs |
+| push-maxlen200 | `--direction push --seed 11 --filegen-set names.max_len=200` | passed=66 failed=234 | 1719.7 s | 13 GB, 2060 files, 60 FIFOs |
+| pull-maxlen200 | `--direction pull --seed 12 --filegen-set names.max_len=200` | passed=13 failed=287 | 1766.4 s | 19 GB, 2887 files, 69 FIFOs |
+
+All four harness exits were 1 (failed iterations). There was no harness
+error (no exit 2), no client exit other than 0 or 23, and no manifest hash
+mismatch in any iteration of any run. Sync wall time averaged 3.2 to 3.6 s,
+maximum 13.1 s. An unattended default-size 300-iteration run takes about 30
+minutes and grows the tree to 10-20 GB per side, so the two sides need up to
+50 GB at the 25G cap.
+
+Every one of the 1083 failed iterations is explained by exactly two irsync
+bugs, classified by a script over the check reports, client logs and filegen
+logs:
+
+1. **NAME_MAX** (default-size runs only). Client exit 23 with `File name too
+   long (os error 36)` in the client log; the check reports `DEL` for every
+   file whose name exceeds about 242 bytes (2435 such DEL lines over the push
+   run, 1735 over the pull run). Once such a file exists it never transfers,
+   so from the first occurrence nearly every later iteration fails: 32
+   push and 34 pull iterations failed with only this bug. On a pull,
+   iterations can go clean again when filegen removes the long-named files
+   (the pull run has 29 passes scattered through it).
+
+   Second-order effect, seen twice (push iteration 264, pull iteration 94):
+   a regular file that filegen had just hard-linked to a name over 242 bytes
+   was skipped with `hard link: hard link target failed`, because irsync sent
+   the long name as the link group's first name and creating it failed. The
+   short name kept its previous content for one iteration (`CHG` with blake3,
+   size and mtime differing) and was repaired by the next sync.
+
+2. **FIFO mtime** (all four runs). This caused all 234 failures of
+   push-maxlen200 and all 287 of pull-maxlen200, and co-occurred with
+   NAME_MAX in 258 push and 236 pull iterations. See the entry above.
+
+Definition of done, from the spec: the harness runs to the end with
+`--keep-going`, every failure it reports is explained, and the artefacts it
+leaves behind are the ones the design promises. All three held. The
+artefacts checked in the run directories: `run.toml` with its `[daemon]`
+section, both manifests, `logs/iter-NNNN.check.txt`,
+`logs/iter-NNNN.client.log`, and `logs/daemon.log` with the iteration
+markers.

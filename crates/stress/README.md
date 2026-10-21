@@ -145,6 +145,12 @@ The harness reports this like any failure. To get past it:
 --filegen-set names.max_len=200
 ```
 
+A second bug, found by the acceptance run, needs no workaround to see:
+a FIFO that filegen gave a modification time arrives with its creation time
+instead, and the check reports `CHG <path> mtime=<source>→<destination>`
+for it in every later iteration. Such a line on a FIFO is that bug, not a
+transfer fault.
+
 See the decisions file for details.
 
 ## Testing
