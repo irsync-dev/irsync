@@ -96,11 +96,12 @@ pub fn supplementary_groups() -> Vec<u32> {
     if n <= 0 {
         return Vec::new();
     }
+    // gid_t is u32 on Linux and macOS alike.
     let mut buf: Vec<gid_t> = vec![0; n as usize];
     // SAFETY: `buf` holds `n` writable gid_t slots.
     let n = unsafe { getgroups(n as c_int, buf.as_mut_ptr()) };
     buf.truncate(n.max(0) as usize);
-    buf.into_iter().map(|g| g as u32).collect()
+    buf
 }
 
 /// Whether this process may chown to `gid`: as root, or as a member of it.
