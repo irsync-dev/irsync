@@ -27,6 +27,33 @@ macro_rules! for_both_backends {
     };
 }
 
+/// macOS also refuses to read the xattrs of an unreadable file or directory, which adds a
+/// warning Linux doesn't give. Drops those lines and takes them off the `warnings=` count.
+fn without_macos_xattr_warnings(err: &str) -> String {
+    if !cfg!(target_os = "macos") {
+        return err.to_string();
+    }
+    let mut dropped = 0;
+    let mut kept = String::new();
+    for line in err.split_inclusive('\n') {
+        if line.starts_with("WARN cannot read xattrs of ") {
+            dropped += 1;
+        } else {
+            kept.push_str(line);
+        }
+    }
+    match kept.rfind(" warnings=") {
+        Some(i) => {
+            let start = i + " warnings=".len();
+            let end = start + kept[start..].find('\n').unwrap_or(kept.len() - start);
+            let n: usize = kept[start..end].parse().unwrap();
+            kept.replace_range(start..end, &(n - dropped).to_string());
+            kept
+        }
+        None => kept,
+    }
+}
+
 for_both_backends! {
     update_records_every_kind => update_records_every_kind_sqlite, update_records_every_kind_fjall;
     update_reuses_hash_when_unchanged => update_reuses_hash_when_unchanged_sqlite, update_reuses_hash_when_unchanged_fjall;
@@ -180,6 +207,7 @@ fn update_warns_on_unreadable(b: Backend) {
         return;
     }
     let (outcome, err) = run_update(dir.path(), b, false, false);
+    let err = without_macos_xattr_warnings(&err);
     assert_eq!(outcome, Outcome::Clean);
     assert!(err.starts_with("WARN cannot hash f: "), "{err}");
     assert!(
@@ -517,7 +545,10 @@ fn check_unreadable_at_check_time(b: Backend) {
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[Field::Mode], &[], false);
     let hex = fmt_blake3(blake3::hash(b"secret").as_bytes());
     assert_eq!(out, format!("CHG f blake3={hex}→unreadable\n"));
-    assert_eq!(err, "added=0 deleted=0 changed=1 unchanged=2 warnings=0\n");
+    assert_eq!(
+        without_macos_xattr_warnings(&err),
+        "added=0 deleted=0 changed=1 unchanged=2 warnings=0\n"
+    );
     assert_eq!(outcome, Outcome::Differences);
 }
 
@@ -575,6 +606,7 @@ fn check_unreadable_directory_is_a_difference(b: Backend) {
     let result = run_check_opts(&check_opts(dir.path(), Tier::Relaxed, &[], &[], false));
     chmod(&d, 0o755);
     let (outcome, out, err) = result.unwrap();
+    let err = without_macos_xattr_warnings(&err);
     assert_eq!(out, "CHG d/f kind=file→unverified\n");
     assert!(err.starts_with("WARN cannot read directory d: "), "{err}");
     assert!(
@@ -680,18 +712,28 @@ fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
 }
 
 /// Recursion depth equals tree depth; the walk thread's stack must hold it. 2000 levels of
-/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096).
+/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096). macOS caps
+/// paths at 1024, so there the tree goes as deep as that allows.
 #[test]
 fn deep_tree_does_not_overflow_the_stack() {
     let dir = tempfile::tempdir().unwrap();
+    let depth = if cfg!(target_os = "macos") {
+        // Room for the base path, "/f" and the manifest name next to the deepest dir.
+        (1024 - dir.path().as_os_str().len() - 32) / 2
+    } else {
+        2000
+    };
     let mut deepest = dir.path().to_path_buf();
-    for _ in 0..2000 {
+    for _ in 0..depth {
         deepest.push("d");
     }
     std::fs::create_dir_all(&deepest).unwrap();
     std::fs::write(deepest.join("f"), "x").unwrap();
     let (outcome, err) = run_update(dir.path(), Backend::Sqlite, false, false);
-    assert_eq!(err, "entries=2003 hashed=1 reused=0 warnings=0\n");
+    assert_eq!(
+        err,
+        format!("entries={} hashed=1 reused=0 warnings=0\n", depth + 3)
+    );
     assert_eq!(outcome, Outcome::Clean);
     let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     assert_eq!(out, "");
