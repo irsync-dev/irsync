@@ -17,8 +17,13 @@ use nix::unistd::Pid;
 
 /// How many trailing lines of the daemon's stderr an error message carries.
 const TAIL_LINES: usize = 20;
+/// How much of the end of the log file `tail` reads to find them.
+const TAIL_BYTES: u64 = 64 * 1024;
 /// How often `start` and `stop` look at the child while waiting.
 const POLL: Duration = Duration::from_millis(100);
+/// How long, after the child exits, its last stdout lines and stderr may
+/// take to arrive before we stop waiting for them.
+const DRAIN: Duration = Duration::from_secs(1);
 
 pub struct DaemonConfig<'a> {
     pub config_dir: &'a Path,
@@ -186,12 +191,18 @@ impl DaemonLog {
         Ok(())
     }
 
-    /// The last `n` lines written so far.
+    /// The last `n` lines written so far, looking only at the file's last
+    /// `TAIL_BYTES`.
     fn tail(&self, n: usize) -> String {
         let mut f = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut buf = Vec::new();
+        let mut start = 0;
         let read = f
-            .seek(SeekFrom::Start(0))
+            .seek(SeekFrom::End(0))
+            .and_then(|len| {
+                start = len.saturating_sub(TAIL_BYTES);
+                f.seek(SeekFrom::Start(start))
+            })
             .and_then(|_| f.read_to_end(&mut buf));
         // A full read leaves the cursor at the end, where the next write belongs.
         if read.is_err() {
@@ -199,8 +210,23 @@ impl DaemonLog {
             return String::new();
         }
         let text = String::from_utf8_lossy(&buf);
-        let lines: Vec<&str> = text.lines().collect();
+        let mut lines: Vec<&str> = text.lines().collect();
+        if start > 0 && !lines.is_empty() {
+            lines.remove(0); // cut mid-line by the byte window
+        }
         lines[lines.len().saturating_sub(n)..].join("\n")
+    }
+}
+
+/// Joins `h` if it finishes within `bound`; otherwise leaves it detached, so
+/// a grandchild holding the daemon's stderr open cannot hang `stop`.
+fn join_bounded(h: JoinHandle<()>, bound: Duration) {
+    let deadline = Instant::now() + bound;
+    while !h.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if h.is_finished() {
+        let _ = h.join();
     }
 }
 
@@ -286,7 +312,7 @@ impl Daemon {
                 copier: Some(copier),
             }),
             Err(StartFailure::Exited(status)) => {
-                let _ = copier.join();
+                join_bounded(copier, DRAIN);
                 Err(anyhow!(
                     "daemon exited before startup ({status}); stderr:\n{}",
                     log.tail(TAIL_LINES)
@@ -295,7 +321,7 @@ impl Daemon {
             Err(StartFailure::Other(e)) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = copier.join();
+                join_bounded(copier, DRAIN);
                 Err(e.context(format!(
                     "daemon failed to start; stderr:\n{}",
                     log.tail(TAIL_LINES)
@@ -324,7 +350,7 @@ impl Daemon {
         }
     }
 
-    /// SIGINT, wait up to `grace`, then SIGKILL; joins the copier. Idempotent.
+    /// SIGINT, wait up to `grace`, then SIGKILL; joins the copier (bounded). Idempotent.
     pub fn stop(&mut self, grace: Duration) {
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = kill(Pid::from_raw(self.child.id() as i32), Signal::SIGINT);
@@ -338,7 +364,7 @@ impl Daemon {
             let _ = self.child.wait();
         }
         if let Some(copier) = self.copier.take() {
-            let _ = copier.join();
+            join_bounded(copier, DRAIN);
         }
     }
 }
@@ -360,7 +386,7 @@ fn wait_for_startup(
     let mut parser = StartupParser::default();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Err(StartFailure::Exited(status)),
+            Ok(Some(status)) => return drain_after_exit(&mut parser, lines, status),
             Ok(None) => {}
             Err(e) => return Err(StartFailure::Other(e.into())),
         }
@@ -380,6 +406,29 @@ fn wait_for_startup(
             // Stdout closed: the child is most likely exiting; let the next
             // `try_wait` see it, without spinning on the closed channel.
             Err(RecvTimeoutError::Disconnected) => thread::sleep(POLL.min(remaining)),
+        }
+    }
+}
+
+/// The child has exited, but the lines it printed first may still be in
+/// the channel. A daemon that started and then died has started: return
+/// its startup so `check_alive` reports the death. Bounded by `DRAIN` in
+/// case a grandchild holds stdout open.
+fn drain_after_exit(
+    parser: &mut StartupParser,
+    lines: &mpsc::Receiver<String>,
+    status: ExitStatus,
+) -> std::result::Result<Startup, StartFailure> {
+    let deadline = Instant::now() + DRAIN;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match lines.recv_timeout(remaining) {
+            Ok(line) => match parser.feed(&line) {
+                Ok(Some(s)) => return Ok(s),
+                Ok(None) => {}
+                Err(e) => return Err(StartFailure::Other(e)),
+            },
+            Err(_) => return Err(StartFailure::Exited(status)),
         }
     }
 }
@@ -530,5 +579,44 @@ mod tests {
         d.stop(Duration::from_millis(500));
         assert!(nix::sys::signal::kill(Pid::from_raw(pid as i32), None).is_err());
         // gone
+    }
+
+    #[test]
+    fn startup_lines_already_sent_win_over_an_exit() {
+        // The child has exited and both lines wait in the channel: the
+        // daemon did start, so this is a startup, not "exited before startup".
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        child.wait().unwrap();
+        let rx = channel_of(&["endpoint id: x", "listening on: 127.0.0.1:1"]);
+        let s = wait_for_startup(&mut child, &rx, Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("startup reported as a failure"));
+        assert_eq!(s.endpoint_id, "x");
+    }
+
+    #[test]
+    fn daemon_that_starts_then_exits_is_started_then_dead() {
+        let t = tempfile::tempdir().unwrap();
+        let fake = t.path().join("irsync");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho 'endpoint id: x'\necho 'listening on: 127.0.0.1:1'\nexit 0\n",
+        )
+        .unwrap();
+        chmod_755(&fake);
+        let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
+        let mut d = Daemon::start(
+            &fake,
+            Path::new("/dev/null"),
+            log,
+            "debug",
+            Duration::from_secs(15),
+        )
+        .unwrap();
+        assert_eq!(d.startup.endpoint_id, "x");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while d.check_alive().is_ok() {
+            assert!(Instant::now() < deadline, "daemon never reported dead");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
