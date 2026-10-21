@@ -26,14 +26,14 @@ OUT=${OUT:-$HOME/work/irsync-breadth}
 SEEDS=${SEEDS:-1 50}
 JOBS=${JOBS:-8}
 ITER=${ITER:-20}; STEPS=${STEPS:-200}; TOTAL=${TOTAL:-4G}; FILE=${FILE:-256M}
-EXTRA=("$@")
 for t in irsync-stress irsync filegen fileset; do
   [ -x "$BIN/$t" ] || { echo "missing $BIN/$t (cargo build --workspace --release)" >&2; exit 2; }
 done
 mkdir -p "$OUT"
 export BIN OUT ITER STEPS TOTAL FILE
 export CHECK=${CHECK:-}
-export EXTRA_ARGS="${EXTRA[*]}"
+# Not an array: macOS's bash 3.2 calls an empty one unbound under `set -u`.
+export EXTRA_ARGS="$*"
 
 run() {
   dir=$1; seed=$2; root=$OUT/$dir-$seed
@@ -56,7 +56,7 @@ export -f run
 : > "$OUT/summary.txt"
 # shellcheck disable=SC2086  # SEEDS is "first last" for seq
 for seed in $(seq $SEEDS); do for dir in push pull; do echo "$dir $seed"; done; done \
-  | xargs -P "$JOBS" -n 2 bash -c 'run "$0" "$1"'
+  | xargs -P "$JOBS" -n 2 "$BASH" -c 'run "$0" "$1"'
 
 total=$(grep -c . "$OUT/summary.txt")
 bad=$(grep -vc 'exit=0' "$OUT/summary.txt")
