@@ -1,0 +1,187 @@
+//! End-to-end: the built harness against the real `irsync`, `filegen` and
+//! `fileset` binaries.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
+use stress::run_file::RunFile;
+
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_irsync-stress"))
+}
+
+/// The three tools must sit next to the harness binary: `cargo test --workspace` builds them; `cargo test -p stress` does not.
+fn require_tools() {
+    let dir = bin().parent().unwrap().to_path_buf();
+    for t in ["irsync", "filegen", "fileset"] {
+        assert!(
+            dir.join(t).exists(),
+            "{} missing: run `cargo build --workspace` first",
+            dir.join(t).display()
+        );
+    }
+}
+
+fn run_harness(direction: &str, root: &Path, extra: &[&str]) -> std::process::Output {
+    Command::new(bin())
+        .args([
+            "--direction",
+            direction,
+            "--iterations",
+            "2",
+            "--steps",
+            "20",
+            "--seed",
+            "7",
+            "--max-total-size",
+            "8M",
+            "--max-file-size",
+            "1M",
+            "--filegen-set",
+            "names.max_len=200", // avoids the known NAME_MAX bug (spec: "Known irsync bug")
+        ])
+        .args(extra)
+        .arg(root)
+        .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("IRSYNC_CONFIG")
+        .output()
+        .unwrap()
+}
+
+/// Runs two iterations in `direction`, asserts they pass and leave every
+/// artefact, and returns the temp dir holding the run root `run`.
+fn assert_two_passing_iterations(direction: &str) -> tempfile::TempDir {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("run");
+    let o = run_harness(direction, &root, &[]);
+    assert!(
+        o.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("iter 0001/0002")
+            && out.contains("iter 0002/0002")
+            && out.contains("check ok"),
+        "stdout:\n{out}"
+    );
+    for f in [
+        "run.toml",
+        "logs/daemon.log",
+        "logs/ping.client.log",
+        "logs/iter-0001.client.log",
+        "logs/iter-0002.client.log",
+        "logs/iter-0001.check.txt",
+        "logs/iter-0002.manifest.blake3",
+        "DST/data/.fileset.sqlite",
+        "SRC/data/.fileset.sqlite",
+        "filegen/filegen-7.state.yaml",
+        "filegen/filegen-7.log",
+    ] {
+        assert!(root.join(f).exists(), "{f} missing");
+    }
+    let daemon_log = std::fs::read_to_string(root.join("logs/daemon.log")).unwrap();
+    assert!(daemon_log.contains("=== ping ===") && daemon_log.contains("=== iteration 2 ==="));
+    let run = std::fs::read_to_string(root.join("run.toml")).unwrap();
+    assert!(
+        run.contains("seed = 7")
+            && run.contains(&format!("direction = \"{direction}\""))
+            && run.contains("endpoint_id"),
+        "run.toml:\n{run}"
+    );
+    t
+}
+
+#[test]
+fn push_two_iterations_pass_and_leave_the_artefacts() {
+    assert_two_passing_iterations("push");
+}
+
+#[test]
+fn pull_two_iterations_pass() {
+    let t = assert_two_passing_iterations("pull");
+    assert!(t.path().join("run/DST/data/.irsync-stress-ping").exists());
+}
+
+#[test]
+fn non_empty_root_exits_2() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    std::fs::write(t.path().join("x"), b"").unwrap();
+    let o = run_harness("push", t.path(), &[]);
+    assert_eq!(o.status.code(), Some(2));
+}
+
+/// Polls `run.toml` every 100 ms until it names the daemon's pid.
+fn wait_for_daemon_pid(run_toml: &Path, timeout: Duration) -> Pid {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(Some(d)) = RunFile::read(run_toml).map(|r| r.daemon) {
+            return Pid::from_raw(d.pid as i32);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no daemon pid in {} after {timeout:?}",
+            run_toml.display()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// True once `pid` no longer exists, polling every 50 ms up to `timeout`.
+fn wait_until_gone(pid: Pid, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if kill(pid, None).is_err() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    kill(pid, None).is_err()
+}
+
+#[test]
+fn sigint_terminates_the_daemon() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("run");
+    let mut child = Command::new(bin())
+        .args([
+            "--direction",
+            "push",
+            "--iterations",
+            "1000",
+            "--steps",
+            "200",
+            "--seed",
+            "7",
+            "--max-total-size",
+            "64M",
+            "--max-file-size",
+            "4M",
+            "--filegen-set",
+            "names.max_len=200",
+        ])
+        .arg(&root)
+        .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("IRSYNC_CONFIG")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // wait until run.toml names the daemon pid (written once startup is parsed)
+    let pid = wait_for_daemon_pid(&root.join("run.toml"), Duration::from_secs(30));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(130));
+    // the daemon is gone (poll up to 5 s: the handler signals it, the daemon exits on its own SIGINT path)
+    assert!(wait_until_gone(pid, Duration::from_secs(5)));
+    assert!(root.exists()); // never deleted
+}

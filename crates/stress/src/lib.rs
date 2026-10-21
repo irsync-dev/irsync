@@ -6,6 +6,8 @@ pub mod fileset;
 pub mod layout;
 pub mod process;
 pub mod report;
+pub mod run;
 pub mod run_file;
+pub mod signals;
 pub mod tools;
 pub mod verify;
