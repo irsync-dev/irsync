@@ -317,8 +317,10 @@ mod tests {
             eprintln!("skipped xattrs_sorted_by_name: xattr set failed: {err}");
             return;
         }
-        let (got, err) = read_xattrs(&p);
+        let (mut got, err) = read_xattrs(&p);
         assert!(err.is_none(), "{err:?}");
+        // macOS adds its own attributes (com.apple.provenance) to new files.
+        got.retain(|(k, _)| k.starts_with(b"user."));
         assert_eq!(
             got,
             vec![
@@ -326,7 +328,9 @@ mod tests {
                 (b"user.b".to_vec(), b"2".to_vec())
             ]
         );
-        assert_eq!(Entry::from_path(&p).unwrap().0.xattrs, got);
+        let mut from_entry = Entry::from_path(&p).unwrap().0.xattrs;
+        from_entry.retain(|(k, _)| k.starts_with(b"user."));
+        assert_eq!(from_entry, got);
     }
 
     /// `/proc/1/cwd` is a symlink anyone can lstat but only root can readlink.

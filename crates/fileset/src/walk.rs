@@ -354,8 +354,12 @@ mod tests {
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
-        let (e, w, skipped) = run_all(&cfg(&r, None));
+        let (e, mut w, skipped) = run_all(&cfg(&r, None));
         mode(0o755).unwrap();
+        // macOS also refuses to read the xattrs of an unreadable directory.
+        if cfg!(target_os = "macos") {
+            w.retain(|m| !m.starts_with("cannot read xattrs of d: "));
+        }
         assert_eq!(paths(&e), strs(&[".", "d", "e"]));
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].starts_with("cannot read directory d: "), "{}", w[0]);
