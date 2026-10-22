@@ -70,6 +70,14 @@ impl Args {
                 "the following required arguments were not provided:\n  <SRC>... <DEST>",
             ));
         }
+        if let Some(Command::Index(ix)) = &args.cmd {
+            if !ix.daemon && ix.targets.is_empty() {
+                return Err(Args::command().error(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "the following required arguments were not provided:\n  <TARGET>... (or --daemon)",
+                ));
+            }
+        }
         args.sync.filters = ordered_filters(&m);
         Ok(args)
     }
@@ -108,6 +116,27 @@ pub enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    /// Hash the files under local roots (or daemon modules) into their
+    /// index, so a destination irsync did not create contributes chunks
+    /// and rename candidates from the first session on.
+    Index(IndexArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct IndexArgs {
+    /// Index daemon modules under the daemon's state directory: the
+    /// targets are module names, all modules when none is given.
+    #[arg(long)]
+    pub daemon: bool,
+    /// The daemon's config file (with `--daemon`).
+    #[arg(long, requires = "daemon", value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    /// Walk and count what would be hashed; read nothing.
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+    /// Local roots to index, or with `--daemon` module names.
+    #[arg(value_name = "TARGET")]
+    pub targets: Vec<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]

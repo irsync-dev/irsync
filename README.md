@@ -58,6 +58,7 @@ mdns = true       # LAN
 [modules.photos]
 path = "/srv/photos"
 read_only = false
+warm_index = true  # hash what is already there at start, so files irsync did not place are reused
 
 [modules.docs]
 path = "/srv/docs"
@@ -180,7 +181,13 @@ irsync-specific:
 | `--no-rename-detection` | do not reuse content of moved files |
 
 Subcommands: `irsync daemon [--config PATH] [--show-id] [--listen ADDR]...`,
-`irsync keygen [--out PATH]`, and `irsync gc [-n]`, which removes abandoned
+`irsync keygen [--out PATH]`, `irsync index [-n] ROOT...` (or `irsync index
+--daemon [--config PATH] [MODULE...]`), which hashes the files under a root
+into its index so that a destination irsync did not create (a prior rsync, a
+restore) is reused for renamed and copied files from the first session on
+(`-n` counts what would be read; a session also does this on its own for
+destination files of the size of a file it is about to fetch), and `irsync gc
+[-n]`, which removes abandoned
 partial files and dormant sessions (older than 7 days) for every local root
 irsync has synced. The client also does this for each root it syncs (at most
 daily, or sooner once a partial file has been left untouched for an hour), and

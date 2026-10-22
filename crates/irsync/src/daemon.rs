@@ -25,9 +25,9 @@ use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::scan::WalkOpts;
 use crate::session::engine::serve_daemon;
-use crate::session::DaemonSessions;
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
+use crate::session::{DaemonSessions, HASH_WORKERS};
 use irsync_proto::v1::SessionPlan;
 use prost::Message;
 
@@ -150,6 +150,27 @@ impl Daemon {
                 continue;
             };
             let (name, root) = (name.clone(), module.path.clone());
+            if module.warm_index {
+                let (index, name, root, stop) =
+                    (index.clone(), name.clone(), root.clone(), shutdown.clone());
+                tokio::spawn(async move {
+                    let warm = crate::warm::index_root(index, &root, HASH_WORKERS, false);
+                    tokio::select! {
+                        _ = stop.cancelled() => {}
+                        r = warm => match r {
+                            Ok(r) => tracing::info!(
+                                module = %name,
+                                examined = r.examined,
+                                hashed = r.hashed,
+                                bytes = r.bytes,
+                                errors = r.errors.len(),
+                                "index warmed"
+                            ),
+                            Err(e) => tracing::warn!(module = %name, "index warm-up failed: {e}"),
+                        },
+                    }
+                });
+            }
             let (dormant, stop) = (self.shared.dormant, shutdown.clone());
             tokio::spawn(async move {
                 let first = tokio::time::Instant::now() + GC_FIRST_RUN;

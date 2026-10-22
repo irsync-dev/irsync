@@ -117,6 +117,7 @@ mdns = true       # LAN
 [modules.photos]
 path = "/srv/photos"
 read_only = false
+warm_index = true   # hash what is there at start, so foreign files are reused
 
 [modules.docs]
 path = "/srv/docs"
@@ -134,8 +135,10 @@ read_only = true
     assert_eq!(cfg.modules.len(), 2);
     assert_eq!(cfg.modules["photos"].path, PathBuf::from("/srv/photos"));
     assert!(!cfg.modules["photos"].read_only);
+    assert!(cfg.modules["photos"].warm_index);
     assert_eq!(cfg.modules["docs"].path, PathBuf::from("/srv/docs"));
     assert!(cfg.modules["docs"].read_only);
+    assert!(!cfg.modules["docs"].warm_index, "off unless asked for");
 }
 
 #[test]

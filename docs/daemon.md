@@ -108,6 +108,14 @@ under `index/`: cached file hashes, partial-file progress and the daemon's
 session records. It is safe to delete; the next sync rebuilds it, at the cost
 of re-hashing and of losing resumable sessions.
 
+A module filled by something other than irsync (a prior rsync, a restore)
+contributes nothing to rename detection and chunk reuse until its files are
+hashed. `warm_index = true` on a module hashes them in the background when
+the daemon starts (only files whose index row is not fresh are read, so a
+restart is cheap); `irsync index --daemon [--config PATH] [MODULE...]` does
+the same on demand, and a session hashes destination files of the size of a
+file it is about to fetch on its own.
+
 Interrupted transfers leave `.irsync.<name>.part` files next to their
 destinations. The daemon checks each module once an hour (first check a minute
 after start) and walks it only when its last collection is a day old or

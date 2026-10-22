@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
-use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, SyncOptions};
+use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
 use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
 use irsync::filter::FilterSet;
@@ -15,7 +15,7 @@ use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseS
 use irsync::index::Index;
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
-use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome};
+use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome, HASH_WORKERS};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -26,6 +26,7 @@ fn main() {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d, args.sync.verbose)),
         Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, args.sync.verbose)),
+        Some(Command::Index(ix)) => std::process::exit(run_index(ix, args.sync.verbose)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -477,6 +478,73 @@ async fn session(
         }
     };
     run_with_reconnect(endpoint, target, hello_for, side, opts, ropts, on_state).await
+}
+
+/// `irsync index`: hashes every regular file under each target into its
+/// index (see `irsync::warm`). Exit code 23 when something could not be
+/// read or listed, 1 when a target could not be resolved at all.
+fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
+    init_logging(verbose, false);
+    let result = (|| -> anyhow::Result<i32> {
+        // (state directory, root) per target.
+        let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {
+            let cfg = DaemonConfig::load(a.config.as_deref())?;
+            let names: Vec<String> = if a.targets.is_empty() {
+                cfg.modules.keys().cloned().collect()
+            } else {
+                a.targets
+                    .iter()
+                    .map(|t| t.to_string_lossy().into_owned())
+                    .collect()
+            };
+            names
+                .into_iter()
+                .map(|n| {
+                    let m = cfg
+                        .modules
+                        .get(&n)
+                        .with_context(|| format!("no module {n:?} in the daemon config"))?;
+                    Ok((cfg.state_dir.clone(), m.path.clone()))
+                })
+                .collect::<anyhow::Result<_>>()?
+        } else {
+            a.targets.iter().map(|t| (state_dir(), t.clone())).collect()
+        };
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            let mut code = 0;
+            for (state, root) in targets {
+                let index = Index::open(&state, &root)
+                    .with_context(|| format!("open index for {}", root.display()))?
+                    .into_handle();
+                let r = irsync::warm::index_root(index, &root, HASH_WORKERS, a.dry_run)
+                    .await
+                    .with_context(|| format!("indexing {}", root.display()))?;
+                for (p, msg) in &r.errors {
+                    eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
+                }
+                let what = if a.dry_run { "to hash" } else { "hashed" };
+                println!(
+                    "{}: {} file(s), {} {what} ({} bytes)",
+                    root.display(),
+                    r.examined,
+                    r.hashed,
+                    r.bytes
+                );
+                if !r.errors.is_empty() || r.incomplete {
+                    code = 23;
+                }
+            }
+            Ok(code)
+        })
+    })();
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("irsync index: {e:#}");
+            1
+        }
+    }
 }
 
 fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {

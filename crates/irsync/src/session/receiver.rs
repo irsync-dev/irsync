@@ -948,6 +948,7 @@ pub(super) async fn run(
                     skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
                     hard_links: false,
                     bus: None,
+                    cold: Some(ctx.cold.clone()),
                     #[cfg(feature = "test-hooks")]
                     inject: None,
                 },

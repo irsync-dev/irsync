@@ -157,15 +157,36 @@ pub async fn spawn_daemon(
     modules: Vec<(&str, std::path::PathBuf, bool)>,
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
 ) -> DaemonHandle {
-    use irsync::config::daemon::{DaemonConfig, Module};
+    use irsync::config::daemon::Module;
+    let modules = modules
+        .into_iter()
+        .map(|(name, path, read_only)| {
+            (
+                name,
+                Module {
+                    path,
+                    read_only,
+                    warm_index: false,
+                },
+            )
+        })
+        .collect();
+    spawn_daemon_modules(modules, authz).await
+}
+
+/// Starts a daemon on a loopback endpoint serving `modules` as configured.
+pub async fn spawn_daemon_modules(
+    modules: Vec<(&str, irsync::config::daemon::Module)>,
+    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+) -> DaemonHandle {
+    use irsync::config::daemon::DaemonConfig;
     let state = tempfile::tempdir().unwrap();
     let mut cfg = DaemonConfig {
         state_dir: state.path().to_path_buf(),
         ..DaemonConfig::default()
     };
-    for (name, path, read_only) in modules {
-        cfg.modules
-            .insert(name.to_string(), Module { path, read_only });
+    for (name, module) in modules {
+        cfg.modules.insert(name.to_string(), module);
     }
     let ep = loopback_endpoint().await;
     let (addr, id) = (addr_of(&ep), ep.id());
@@ -237,15 +258,25 @@ impl Harness {
     /// A harness whose module and local dirs are created under `base`
     /// (a filesystem with properties the default temp dir may lack).
     pub async fn new_in(base: &std::path::Path) -> Harness {
-        Self::build(Some(base)).await.0
+        Self::build(Some(base), false, |_| {}).await.0
     }
 
     /// A harness plus a second client endpoint the daemon also authorises.
     pub async fn with_guest() -> (Harness, Endpoint) {
-        Self::build(None).await
+        Self::build(None, false, |_| {}).await
     }
 
-    async fn build(base: Option<&std::path::Path>) -> (Harness, Endpoint) {
+    /// A harness whose module is filled by `seed` before the daemon starts,
+    /// with `warm_index` set on it.
+    pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
+        Self::build(None, true, seed).await.0
+    }
+
+    async fn build(
+        base: Option<&std::path::Path>,
+        warm_index: bool,
+        seed: impl FnOnce(&std::path::Path),
+    ) -> (Harness, Endpoint) {
         let tmp = || match base {
             Some(b) => tempfile::tempdir_in(b).unwrap(),
             None => tempfile::tempdir().unwrap(),
@@ -254,6 +285,7 @@ impl Harness {
         let client = client_endpoint().await;
         let guest = client_endpoint().await;
         let module = tmp();
+        seed(module.path());
         let grants = Grants {
             all: Some(Access::ReadWrite),
             ..Grants::default()
@@ -261,7 +293,12 @@ impl Harness {
         let authz = std::sync::Arc::new(
             MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants),
         );
-        let daemon = spawn_daemon(vec![("m", module.path().to_path_buf(), false)], authz).await;
+        let m = irsync::config::daemon::Module {
+            path: module.path().to_path_buf(),
+            read_only: false,
+            warm_index,
+        };
+        let daemon = spawn_daemon_modules(vec![("m", m)], authz).await;
         let h = Harness {
             daemon,
             client,

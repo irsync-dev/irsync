@@ -248,7 +248,12 @@ fn basis_specs(
 /// Hashes the old destination file (from the index when its row is fresh)
 /// so its chunks can be found and its whole-file hash compared.
 pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile> {
-    let key = ctx.key(path);
+    hash_key(ctx, &ctx.key(path)).await
+}
+
+/// Hashes the regular file at index key `key` through the session's
+/// hasher (cached when its row is fresh), so its chunks are in the index.
+async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
     let (base, rel) = (ctx.base.clone(), key.clone());
     let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel))
         .await
@@ -257,7 +262,7 @@ pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile>
         return None;
     }
     let item = ScanItem {
-        path: key,
+        path: key.clone(),
         entry: entry.clone(),
         ctime,
     };
@@ -268,10 +273,28 @@ pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile>
             ctime,
         }),
         Err(e) => {
-            tracing::debug!(?path, error = %e, "hashing old file for delta failed");
+            tracing::debug!(?key, error = %e, "hashing failed");
             None
         }
     }
+}
+
+/// Before a whole file of `size` bytes is fetched: hashes the destination
+/// files of exactly that size the walk found without a fresh index row
+/// (up to [`crate::warm::CANDIDATES`]), so the chunk lookup that follows
+/// can find a renamed or copied file. Each candidate is tried once per
+/// session.
+async fn warm_candidates(ctx: &Ctx, size: u64) {
+    let keys = ctx.cold.take(size);
+    if keys.is_empty() {
+        return;
+    }
+    futures::future::join_all(keys.iter().map(|key| async move {
+        if hash_key(ctx, key).await.is_some() {
+            ctx.hooks.event("warm", key);
+        }
+    }))
+    .await;
 }
 
 /// Opens the destination if it is still the file `old` was hashed from:
@@ -430,6 +453,9 @@ pub(super) async fn open_writer(
         .map(|i| (i, digest.chunks[i as usize].hash))
         .collect();
     let (mut remote, mut local) = (Vec::new(), Vec::new());
+    if action == Action::Whole && !wanted.is_empty() {
+        warm_candidates(&ctx, digest.size).await;
+    }
     if !wanted.is_empty() {
         let index = ctx.index().clone();
         let found = blocking(move || {

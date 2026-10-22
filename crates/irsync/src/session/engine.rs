@@ -267,6 +267,9 @@ pub(super) struct Ctx {
     pub hasher: Arc<Hasher>,
     /// A second hasher that always re-reads (used after a file changed).
     pub forced: Arc<Hasher>,
+    /// Receiver: destination files its walk found without a fresh index
+    /// row, hashed when a whole file of their size is about to be fetched.
+    pub cold: Arc<crate::warm::Cold>,
     pub filters: Arc<FilterSet>,
     pub opts: RoleOpts,
     pub privs: Privs,
@@ -541,6 +544,7 @@ pub(super) async fn run_client_inner(
         scope: IndexScope::new(local.index, RelPath::root()),
         hasher: local.hasher,
         forced,
+        cold: Arc::default(),
         filters: local.filters,
         opts: RoleOpts::client(opts),
         privs: Privs::current(),
@@ -746,6 +750,7 @@ pub async fn serve_daemon(
         scope: IndexScope::new(index, rel),
         hasher,
         forced,
+        cold: Arc::default(),
         // v1: the client's filters are not transmitted; the daemon walks everything.
         filters: Arc::new(FilterSet::new(vec![])),
         opts: RoleOpts::daemon(&hello, !sends),

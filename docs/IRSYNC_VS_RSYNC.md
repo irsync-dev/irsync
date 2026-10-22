@@ -56,7 +56,7 @@ Only then does it send `FileAck DONE`.
 | Signature direction | receiver -> sender (basis blocks) | sender -> receiver (new file's chunks); receiver -> sender (block signatures, per missing chunk of a `DELTA`) |
 | Signature size, 1 GiB file | ~640 KiB (32768 blocks x 20 B) | ~200 KiB (4096 chunks x 49 B), plus ~9 KiB per missing chunk offered a basis |
 | Signature for a *new* file | none | full chunk list, ~0.02% of the data |
-| Reuse scope | the basis at the same path (`--fuzzy`, `--link-dest`, `--compare-dest` widen it) | every chunk of every file the receiver's index knows |
+| Reuse scope | the basis at the same path (`--fuzzy`, `--link-dest`, `--compare-dest` widen it) | every chunk of every file the receiver's index knows; before a whole file is fetched, destination files of its size are hashed into the index |
 | Rename detection | none (name similarity only, `--fuzzy`) | by whole-file hash, from the index |
 | Digest caching across runs | none; `-c` re-reads everything | persistent SQLite index keyed on size, mtime, ctime, inode |
 | Round trips before first data byte | ~0 (pipelined) | 1.5 (plan, chunk list, need) |
@@ -394,6 +394,37 @@ an append was already nearly free.
 
 ### 3.7 Reuse is only as good as the index
 
+*Resolved on 2026-10-22 (remedy 8): a destination irsync did not create
+is hashed into the index two ways. The text below describes the
+mechanism; the original analysis follows it.*
+
+The receiver's own walk still attaches cached hashes only, but it now
+notes every regular file of at least one minimum chunk length (64 KiB)
+whose index row is not fresh, by size (`warm::Cold`). When a `WHOLE`
+file's chunk list arrives and chunks are missing, `open_writer` first
+hashes up to four of the noted destination files of exactly that size
+(`warm_candidates`, through the session's hasher, so the rows persist),
+and only then runs the chunk lookup. A renamed or copied file is found
+whole and copied locally; unrelated same-sized files cost one read each
+and are known from then on. Each candidate is handed out once per
+session, the lookup is by exact size, and nothing is trusted: the copied
+chunks are verified like every other local source. What the walk has not
+listed yet when the chunk list arrives is not a candidate; in practice
+the local walk runs well ahead of the sender's listing and the plan
+round trip. Files below the size floor are fetched: for a file smaller
+than a chunk the bookkeeping would cost about what the fetch does.
+
+`irsync index ROOT...` (and `irsync index --daemon [--config PATH]
+[MODULE...]` for a daemon's modules, under its state directory) walks a
+tree and hashes every regular file whose row is not fresh, with the
+session's worker count; `-n` only counts. A module with `warm_index =
+true` does the same in the background when the daemon starts. After a
+warm-up a session hashes nothing on the receiving side and the planner's
+rename lookup sees the files too. Measured: a 2 MiB file present under
+another name on a cold destination crosses the wire with zero file
+bytes, after one read of the one same-sized candidate; after `irsync
+index`, with no read at all during the session.
+
 Cross-file reuse and rename detection read `chunks` and
 `entries.whole_hash` from the receiver's index. The receiver's own listing
 attaches a hash only when the index already has a fresh one
@@ -549,7 +580,10 @@ protocol change.
 8. **Index warm-up for foreign destinations** (3.7). An `irsync index
    <root>` command, or hashing destination files lazily in the background
    of a session, so a destination that irsync did not create starts
-   contributing chunks.
+   contributing chunks. *Done (2026-10-22): same-sized destination files
+   are hashed before a whole file is fetched; `irsync index` and the
+   daemon's `warm_index` module setting hash a tree ahead of time; see
+   3.7.*
 
 ## 6. Where to look
 
@@ -572,4 +606,6 @@ protocol change.
 - `crates/irsync/src/session/reconnect.rs`: `classify`.
 - `crates/irsync/src/hasher.rs`: the cache's freshness rule.
 - `crates/irsync/src/session/control.rs`: `spawn_listing` (cached hashes
-  only).
+  only; notes files without a fresh row for the receiver).
+- `crates/irsync/src/warm.rs`: `Cold` (same-size candidates), `index_root`
+  (`irsync index`, the daemon's `warm_index`).

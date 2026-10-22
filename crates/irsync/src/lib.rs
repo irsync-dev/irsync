@@ -16,3 +16,4 @@ pub mod scan;
 pub mod send;
 pub mod session;
 pub mod tree_hash;
+pub mod warm;

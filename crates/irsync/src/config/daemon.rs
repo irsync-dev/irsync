@@ -39,6 +39,11 @@ pub struct Module {
     pub path: PathBuf,
     #[serde(default)]
     pub read_only: bool,
+    /// Hash the module's files into its index when the daemon starts, so
+    /// files placed by something other than irsync are reused from the
+    /// first session on (see [`crate::warm`]).
+    #[serde(default)]
+    pub warm_index: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

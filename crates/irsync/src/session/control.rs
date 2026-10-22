@@ -191,6 +191,8 @@ pub(super) struct ListingSpec {
     pub hard_links: bool,
     /// Where to report scan progress (the sender's walk only).
     pub bus: Option<super::EventBus>,
+    /// Receiver: where to note regular files without a fresh index row.
+    pub cold: Option<Arc<crate::warm::Cold>>,
     /// Test hook: extra entries to list right after an entry.
     #[cfg(feature = "test-hooks")]
     pub inject: Option<super::ListingHook>,
@@ -248,13 +250,19 @@ pub(super) fn spawn_listing(
                     path: spec.scope.key(&item.path),
                     ..item.clone()
                 };
-                match spec.hasher.cached(&keyed) {
+                let d = match spec.hasher.cached(&keyed) {
                     Ok(d) => d,
                     Err(e) => {
                         tracing::warn!(?path, error = %e, "index lookup failed");
                         None
                     }
+                };
+                if d.is_none() {
+                    if let Some(cold) = &spec.cold {
+                        cold.record(entry.size, keyed.path);
+                    }
                 }
+                d
             } else {
                 None
             };

@@ -121,6 +121,15 @@ calls `index_old_file` itself; by then that is a cache hit.
    lookup itself fails (index error, poisoned lock), the whole missing set
    goes remote, which is always correct, and a warning is logged.
 
+   For a `WHOLE` file (no old file at the path) the partition is preceded
+   by `warm_candidates`: the receiver's walk noted every regular file of
+   at least one minimum chunk length without a fresh index row, by size
+   (`warm::Cold`), and up to four of exactly this file's size are hashed
+   now through the session's hasher, so a renamed or copied file the
+   index did not know is found by the lookup. Each candidate is tried
+   once per session; `warm.rs` has the whole story, including
+   `irsync index` for warming a tree ahead of time.
+
 6. **Pick bases** (`DELTA` with an old file, remote set non-empty).
    `basis_specs` chooses which remote chunks to offer a basis for and the
    old-file region of each: from one chunk length before the chunk's
@@ -566,6 +575,19 @@ receiver logs `identical` for it.
 - `settling_in_place_discards_a_leftover_part_file`: a stray `.part` from
   an earlier attempt is gone after the file is settled in place.
 
+`crates/irsync/tests/warm.rs` covers remedy 8: `index_root` hashes a
+tree once and only re-reads changed files (and counts without reading on
+a dry run); a file the destination holds under another name, placed by
+something other than irsync, is copied locally with zero wire bytes
+after one read of the one same-sized candidate (both directions); files
+of other sizes and files below the size floor are not candidates; the
+cap bounds the hashing and no candidate is hashed twice; after
+`index_root` or a daemon started with `warm_index` the session hashes
+nothing. `tests/delta.rs::stale_local_chunk_is_re_requested_from_the_sender`
+keeps its stale file out of the candidate set on purpose (the sizes
+differ), since a candidate is re-hashed, and so no longer stale, before
+the copy.
+
 ## 6. Code pointers
 
 | what | where |
@@ -585,6 +607,8 @@ receiver logs `identical` for it.
 | cloning the old file into the `.part` | `recv.rs::reflink`, `FileWriter::open_from`, `adopt_from` |
 | writing in place | `recv.rs::FileWriter::open_inplace`; `session/recv_io.rs::Gate`, `settle` |
 | append | `plan.rs::decide` (`Decision::Append`); `session/sender_role.rs::tail_digest`; `session/recv_io.rs::open_writer` (the `APPEND` arm, `idx_base`) |
+| same-size candidates for a whole file | `session/recv_io.rs::warm_candidates`, `hash_key`; `warm.rs::Cold`; noted in `session/control.rs::spawn_listing` |
+| warming a tree ahead of time | `warm.rs::index_root`; `main.rs::run_index`; `daemon.rs::Daemon::run` (`warm_index`) |
 | local filler | `session/recv_io.rs::copy_local_chunks`, `read_local` |
 | network filler | `session/recv_io.rs::accept_streams`, `read_stream`, `read_range` |
 | completion accounting | `session/recv_io.rs::finish_unit` |

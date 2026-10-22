@@ -117,15 +117,22 @@ async fn stale_local_chunk_is_re_requested_from_the_sender() {
         let mtime = fs::metadata(&dst_a).unwrap().modified().unwrap();
         patch(&dst_a, 2 * MIB as u64, &data(64 * KIB, 4));
         set_mtime(&dst_a, mtime);
-        // A new file with a.bin's content: every chunk is found locally,
-        // one of them no longer verifies and must come from the sender.
-        fs::write(h.src(flow).join("c.bin"), &content).unwrap();
+        // A new file with a.bin's content and a short tail: every chunk but
+        // the last is found locally, one of them no longer verifies and
+        // must come from the sender. (The tail keeps the sizes apart: a
+        // whole file of a.bin's size would have a.bin, whose ctime moved,
+        // re-hashed as a rename candidate before the copy, see
+        // `warm.rs`, and the rows would not be stale any more.)
+        let mut longer = content.clone();
+        longer.extend_from_slice(&data(KIB, 5));
+        fs::write(h.src(flow).join("c.bin"), &longer).unwrap();
         h.daemon.events.lock().unwrap().clear();
         let out = h.run(&opts, flow).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let events = h.daemon.events.lock().unwrap().clone();
         assert!(!events.contains(&"plan:a.bin".to_string()), "{events:?}");
-        assert_eq!(fs::read(h.dst(flow).join("c.bin")).unwrap(), content);
+        assert_eq!(h.daemon_files_hashed(), 0, "nothing re-hashed: {events:?}");
+        assert_eq!(fs::read(h.dst(flow).join("c.bin")).unwrap(), longer);
         assert!(
             out.bytes_transferred >= 64 * KIB as u64 && out.bytes_transferred < 2 * MIB as u64,
             "{} bytes crossed the wire",

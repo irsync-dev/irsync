@@ -269,3 +269,34 @@ fn address_flag_repeats_and_conflicts_with_relay() {
         "redundant --no-dht is accepted"
     );
 }
+
+#[test]
+fn index_subcommand_parses_roots_or_daemon_modules() {
+    let a = parse(&["index", "-n", "/srv/a", "/srv/b"]);
+    match a.cmd {
+        Some(Command::Index(ix)) => {
+            assert!(ix.dry_run && !ix.daemon && ix.config.is_none());
+            assert_eq!(
+                ix.targets,
+                [PathBuf::from("/srv/a"), PathBuf::from("/srv/b")]
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let a = parse(&["index", "--daemon", "--config", "/etc/x.toml", "photos"]);
+    match a.cmd {
+        Some(Command::Index(ix)) => {
+            assert!(!ix.dry_run && ix.daemon);
+            assert_eq!(ix.config, Some(PathBuf::from("/etc/x.toml")));
+            assert_eq!(ix.targets, [PathBuf::from("photos")]);
+        }
+        other => panic!("{other:?}"),
+    }
+    // Every module when none is named.
+    let a = parse(&["index", "--daemon"]);
+    assert!(matches!(a.cmd, Some(Command::Index(ix)) if ix.daemon && ix.targets.is_empty()));
+    // `--config` is the daemon's; a local root is required otherwise.
+    assert!(Args::try_parse_from(["irsync", "index", "--config", "/x", "photos"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "index"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "index", "-n"]).is_err());
+}
