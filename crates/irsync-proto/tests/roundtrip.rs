@@ -20,6 +20,8 @@ fn hello_roundtrips() {
         itemize: true,
         update_only: true,
         checksum: true,
+        inplace: true,
+        append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);
@@ -51,6 +53,13 @@ fn control_oneof_roundtrips() {
             file_id: 3,
             path: b"a/\xff".to_vec(),
             action: Action::Delta as i32,
+            append_from: 0,
+        }),
+        Msg::Plan(PlanItem {
+            file_id: 4,
+            path: b"log".to_vec(),
+            action: Action::Append as i32,
+            append_from: 1 << 35,
         }),
         Msg::ChunkListPart(ChunkListPart {
             file_id: 3,

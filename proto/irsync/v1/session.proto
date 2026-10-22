@@ -13,6 +13,7 @@ message PlanEntry {
   uint64 size = 4; // source size when planned (0 if unknown)
   Hash whole_hash = 5; // source whole-file hash, when known
   FileEntry entry = 6; // receiver: the sender's listing entry (applied at finalize)
+  uint64 append_from = 7; // APPEND: the trusted prefix length
 }
 message SessionPlan {
   repeated PlanEntry entries = 1;

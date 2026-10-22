@@ -10,6 +10,10 @@
 //! (`offer_bases`), so the sender can answer with operations against it
 //! (`crate::delta`). A chunk rebuilt from operations is verified like any
 //! other; one that does not verify stays missing and is re-requested raw.
+//!
+//! With `--inplace` the writer is the destination file itself, so every
+//! write goes through a [`Gate`] that admits chunks in ascending order,
+//! and the old content is only ever read above the write cursor.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,7 +29,7 @@ use irsync_proto::v1::{
     control::Msg, file_entry::Kind, plan_item::Action, DataChunk, DataStreamHeader, FileEntry,
     Hash, NeedChunks,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::control::{Ev, Out};
@@ -35,8 +39,12 @@ use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::net::frame::read_msg;
-use crate::recv::{discard_part, FileWriter, FinalizeError};
+use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
+
+fn invalid(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg.to_owned())
+}
 
 pub(super) type Slot = Arc<tokio::sync::Mutex<Option<FileWriter>>>;
 
@@ -55,6 +63,16 @@ pub(super) struct Route {
     /// The old destination file (`DELTA`), held open while bases over it
     /// are out: copies in the sender's operations read from it.
     pub old: Option<Arc<File>>,
+    /// `--inplace`: admits writes in ascending chunk order.
+    pub gate: Option<Arc<Gate>>,
+    /// `APPEND`: the sender's list is the tail only, so its chunk indices
+    /// (requests, bases, stream headers) are ours minus this.
+    pub idx_base: u32,
+}
+
+/// The sender's index of our chunk `idx` (see [`Route::idx_base`]).
+pub(super) fn sender_idx(base: u32, idx: u32) -> u32 {
+    idx - base
 }
 
 pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
@@ -66,6 +84,82 @@ pub(super) type LocalChunk = (u32, PathBuf, u64);
 /// A basis to offer for a chunk: its index, and the region of the old file
 /// (offset, length) to sign for it.
 pub(super) type BasisSpec = (u32, u64, u32);
+
+struct GateState {
+    /// The first chunk not yet settled: written, rejected or given up.
+    cursor: u32,
+    settled: Vec<bool>,
+}
+
+/// Orders the writes of an in-place file: a chunk may be written once
+/// every chunk before it is settled (so nothing above the cursor has been
+/// overwritten yet and forward reads of the old content stay valid), or
+/// at any time once it lies below the cursor (a re-sent chunk rewrites a
+/// range every forward reference has already passed).
+pub(super) struct Gate {
+    state: std::sync::Mutex<GateState>,
+    tx: watch::Sender<u32>,
+}
+
+const GATE_CLOSED: u32 = u32::MAX;
+
+impl Gate {
+    /// A gate for `total` chunks of which `missing` are still to come.
+    pub fn new(missing: &[u32], total: usize) -> Gate {
+        let mut settled = vec![true; total];
+        for &i in missing {
+            if let Some(b) = settled.get_mut(i as usize) {
+                *b = false;
+            }
+        }
+        let cursor = Self::advance(&settled, 0);
+        Gate {
+            state: std::sync::Mutex::new(GateState { cursor, settled }),
+            tx: watch::channel(cursor).0,
+        }
+    }
+
+    fn advance(settled: &[bool], mut c: u32) -> u32 {
+        while settled.get(c as usize).copied().unwrap_or(false) {
+            c += 1;
+        }
+        c
+    }
+
+    /// Waits until chunk `idx` may be written; false once the gate is
+    /// closed (the writer was retired).
+    pub async fn admit(&self, idx: u32) -> bool {
+        let mut rx = self.tx.subscribe();
+        loop {
+            let c = *rx.borrow_and_update();
+            if c == GATE_CLOSED {
+                return false;
+            }
+            if idx <= c {
+                return true;
+            }
+            if rx.changed().await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    /// Chunk `idx` is done with, delivered or not.
+    pub fn settle(&self, idx: u32) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(b) = s.settled.get_mut(idx as usize) {
+            *b = true;
+        }
+        if idx == s.cursor {
+            s.cursor = Self::advance(&s.settled, s.cursor);
+            self.tx.send_replace(s.cursor);
+        }
+    }
+
+    pub fn close(&self) {
+        self.tx.send_replace(GATE_CLOSED);
+    }
+}
 
 /// The old destination file of a `DELTA`, hashed: its digest and the stat
 /// the digest was computed under.
@@ -94,16 +188,27 @@ pub(super) struct Fill {
     pub bases: Vec<BasisSpec>,
     /// The old file the bases are over (set when `bases` is not empty).
     pub old: Option<Arc<File>>,
+    /// `--inplace`: the writer is the destination; writes are ordered.
+    pub gate: Option<Arc<Gate>>,
+    /// See [`Route::idx_base`].
+    pub idx_base: u32,
 }
 
 /// Picks the chunks of `remote` worth a basis and the old-file region for
 /// each: from one chunk length before the chunk to two after, clamped to
-/// the old file. Nothing is offered for a file that lost more than half
-/// its chunks (a rewrite: the signatures would match nothing) unless it
-/// is tiny, for a chunk starting past the old file's end (appended data),
-/// or once the regions add up to the old file's size (one cached pass at
-/// most; a few chunk lengths at least, so a small file is covered whole).
-fn basis_specs(chunks: &[ChunkRecord], remote: &[u32], old_size: u64) -> Vec<BasisSpec> {
+/// the old file (from the chunk's own offset on when `forward_only`: in
+/// place, bytes below it are already overwritten). Nothing is offered for
+/// a file that lost more than half its chunks (a rewrite: the signatures
+/// would match nothing) unless it is tiny, for a chunk starting past the
+/// old file's end (appended data), or once the regions add up to the old
+/// file's size (one cached pass at most; a few chunk lengths at least, so
+/// a small file is covered whole).
+fn basis_specs(
+    chunks: &[ChunkRecord],
+    remote: &[u32],
+    old_size: u64,
+    forward_only: bool,
+) -> Vec<BasisSpec> {
     if remote.len() * 2 > chunks.len() && chunks.len() > 2 {
         return Vec::new();
     }
@@ -118,7 +223,11 @@ fn basis_specs(chunks: &[ChunkRecord], remote: &[u32], old_size: u64) -> Vec<Bas
             continue;
         }
         let len = u64::from(c.len);
-        let start = c.offset.saturating_sub(len);
+        let start = if forward_only {
+            c.offset
+        } else {
+            c.offset.saturating_sub(len)
+        };
         let end = old_size.min(c.offset + 2 * len);
         let region = end - start;
         if region < 2 * MIN_BLOCK as u64 {
@@ -202,33 +311,78 @@ pub(super) async fn open_writer(
     path: RelPath,
     action: Action,
     prehash: Option<JoinHandle<Option<OldFile>>>,
-    digest: Arc<FileDigest>,
+    mut digest: Arc<FileDigest>,
     sparse: bool,
 ) -> io::Result<Opened> {
     // The writer works on index keys under the index root, so its partial
     // record is keyed like every other index row; the file lands at the same place.
     let key = ctx.key(&path);
-    // The old file's size, when there is one to offer bases over.
+    // The old file's size, when there is one to offer bases over; its
+    // descriptor and chunk list when it is still the file that was hashed.
     let mut old_size = None;
-    if action == Action::Delta {
-        let old = match prehash {
+    let mut old_file: Option<Arc<File>> = None;
+    let mut old_digest: Option<FileDigest> = None;
+    // The old file's hash: the planner's early start, or now.
+    let mut old = None;
+    if matches!(action, Action::Delta | Action::Append) {
+        old = match prehash {
             Some(h) => h.await.ok().flatten(),
             None => index_old_file(&ctx, &path).await,
         };
+    }
+    if action == Action::Delta {
         let same = old
             .as_ref()
             .filter(|o| o.digest.size == digest.size && o.digest.hash == digest.hash);
-        if let Some(old) = same {
-            #[cfg(feature = "test-hooks")]
+        #[cfg(feature = "test-hooks")]
+        if same.is_some() {
             if let Some(h) = &ctx.hooks.before_identical_check {
                 h(&path).await;
             }
-            if let Some(file) = unchanged_file(&ctx, &key, old).await {
-                return Ok(Opened::Identical { file, digest });
-            }
-            tracing::debug!(?path, "destination changed since it was hashed");
         }
-        old_size = old.map(|o| o.entry.size);
+        // The old file, still the one that was hashed: the source of a
+        // clone for the `.part`, of the bases, and settled in place when
+        // the content is already there.
+        if let Some(o) = &old {
+            if let Some(file) = unchanged_file(&ctx, &key, o).await {
+                if same.is_some() {
+                    return Ok(Opened::Identical { file, digest });
+                }
+                old_file = Some(Arc::new(file));
+            } else {
+                tracing::debug!(?path, "destination changed since it was hashed");
+            }
+        }
+        old_size = old.as_ref().map(|o| o.entry.size);
+        old_digest = old.take().map(|o| o.digest);
+    }
+    // An `APPEND` list covers the tail only: the old file, which must
+    // still be the planned prefix, supplies the rest of the list and its
+    // bytes; the whole-file hash is folded here, not checked.
+    let mut verify_whole = true;
+    let mut idx_base = 0u32;
+    if action == Action::Append {
+        let from = digest.chunks.first().map_or(digest.size, |c| c.offset);
+        let basis = match old.take() {
+            Some(o) if o.digest.size == from && o.entry.size == from => o,
+            _ => return Err(invalid("append: destination is not the planned prefix")),
+        };
+        let Some(file) = unchanged_file(&ctx, &key, &basis).await else {
+            return Err(invalid("append: destination changed since it was planned"));
+        };
+        let mut chunks = basis.digest.chunks.clone();
+        idx_base = chunks.len() as u32;
+        chunks.extend_from_slice(&digest.chunks);
+        digest = Arc::new(FileDigest {
+            size: digest.size,
+            hash: [0; 32],
+            chunks,
+        });
+        ctx.hooks.event("append", &path);
+        old_size = Some(from);
+        old_file = Some(Arc::new(file));
+        old_digest = Some(basis.digest);
+        verify_whole = false;
     }
     let (base, rel, index, pd, activity) = (
         ctx.base.clone(),
@@ -238,11 +392,38 @@ pub(super) async fn open_writer(
         ctx.activity.clone(),
     );
     let expected = digest.clone();
+    let (clone_file, clone_digest) = (old_file.clone(), old_digest);
+    let inplace = ctx.opts.inplace && matches!(action, Action::Delta | Action::Append);
     let mut w = blocking(move || {
-        FileWriter::open_tracked(&base, &rel, &expected, pd.as_deref(), index, activity)
+        let clone = match (&clone_file, &clone_digest) {
+            (Some(file), Some(digest)) => Some(CloneSource { file, digest }),
+            _ => None,
+        };
+        match clone {
+            // In place needs the old file as hashed; otherwise a `.part`.
+            Some(old) if inplace => {
+                FileWriter::open_inplace(&base, &rel, &expected, index, activity, old)
+            }
+            clone => FileWriter::open_from(
+                &base,
+                &rel,
+                &expected,
+                pd.as_deref(),
+                index,
+                activity,
+                clone,
+            ),
+        }
     })
     .await?;
+    if w.cloned() {
+        ctx.hooks.event("clone", &path);
+    }
+    if w.inplace() {
+        ctx.hooks.event("inplace", &path);
+    }
     w.set_sparse(sparse);
+    w.set_verify_whole(verify_whole);
     let wanted: Vec<(u32, [u8; 32])> = w
         .missing_chunks()
         .into_iter()
@@ -266,6 +447,15 @@ pub(super) async fn open_writer(
             Ok(found) => {
                 for (idx, hit) in found {
                     match hit {
+                        // In place, the file's own bytes below the chunk
+                        // are gone by the time it is written.
+                        Some((p, off))
+                            if w.inplace()
+                                && p == key
+                                && off < digest.chunks[idx as usize].offset =>
+                        {
+                            remote.push(idx)
+                        }
                         Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
                         None => remote.push(idx),
                     }
@@ -278,11 +468,14 @@ pub(super) async fn open_writer(
         }
     }
     let mut bases = match old_size {
-        Some(size) if !remote.is_empty() => basis_specs(&digest.chunks, &remote, size),
+        Some(size) if !remote.is_empty() => basis_specs(&digest.chunks, &remote, size, w.inplace()),
         _ => Vec::new(),
     };
-    let mut old = None;
-    if !bases.is_empty() {
+    let gate = w
+        .inplace()
+        .then(|| Arc::new(Gate::new(&w.missing_chunks(), digest.chunks.len())));
+    let mut old = old_file;
+    if !bases.is_empty() && old.is_none() {
         let full = ctx.full_key(&key);
         match blocking(move || crate::fs::safe::open_regular_nofollow(&full)).await {
             Ok(f) => old = Some(Arc::new(f)),
@@ -299,22 +492,26 @@ pub(super) async fn open_writer(
         digest,
         bases,
         old,
+        gate,
+        idx_base,
     })))
 }
 
 /// Signs each region in `specs` from the old file and sends it as a
-/// `ChunkBasis`, then requests those chunks. The request always goes out:
-/// a basis that could not be computed just means a raw chunk. The sender
-/// uses each basis for this one request and drops it.
+/// `ChunkBasis`, then requests the chunks `request` (those of the specs,
+/// or in place every remote chunk, so that one request is ascending). The
+/// request always goes out: a basis that could not be computed just means
+/// a raw chunk. The sender uses each basis for this one request and drops
+/// it.
 pub(super) async fn offer_bases(
     ctx: Arc<Ctx>,
     out: Out,
     route: Route,
     old: Arc<File>,
     specs: Vec<BasisSpec>,
+    request: Vec<u32>,
     file_id: u64,
 ) {
-    let idxs: Vec<u32> = specs.iter().map(|s| s.0).collect();
     for (idx, offset, len) in specs {
         let f = old.clone();
         let basis = blocking(move || {
@@ -326,7 +523,9 @@ pub(super) async fn offer_bases(
         ctx.activity.fetch_add(1, Ordering::Relaxed);
         match basis {
             Ok(b) if b.blocks() > 0 => {
-                out.send(Msg::ChunkBasis(b.to_wire(file_id, idx)));
+                out.send(Msg::ChunkBasis(
+                    b.to_wire(file_id, sender_idx(route.idx_base, idx)),
+                ));
                 ctx.hooks.event("basis", &route.path);
             }
             Ok(_) => {}
@@ -346,7 +545,10 @@ pub(super) async fn offer_bases(
     }
     out.send(Msg::Need(NeedChunks {
         file_id,
-        chunk_idx: idxs,
+        chunk_idx: request
+            .into_iter()
+            .map(|i| sender_idx(route.idx_base, i))
+            .collect(),
     }));
 }
 
@@ -389,7 +591,7 @@ pub(super) async fn settle_identical(
         apply_metadata_fd(&file, &entry, &apply)
     })
     .await?;
-    record(&ctx, &path, &digest).await;
+    record(&ctx, &path, &digest, digest.hash).await;
     Ok(())
 }
 
@@ -427,9 +629,15 @@ pub(super) async fn copy_local_chunks(
             Ok(d) => d,
             Err(e) => {
                 tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
+                settle(&route, idx);
                 continue;
             }
         };
+        if let Some(g) = &route.gate {
+            if !g.admit(idx).await {
+                break;
+            }
+        }
         let mut guard = route.slot.lock().await;
         let Some(w) = guard.as_mut() else {
             break; // The writer was retired (new chunk list, failure).
@@ -439,9 +647,17 @@ pub(super) async fn copy_local_chunks(
             // missing for the follow-up request.
             tracing::debug!(from = ?from, idx, error = %e, "local copy rejected");
         }
+        settle(&route, idx);
     }
     ctx.hooks.event("copied", &route.path);
     finish_unit(&route, &events, file_id, 1).await;
+}
+
+/// In place: chunk `idx` is done with (written, rejected or given up).
+fn settle(route: &Route, idx: u32) {
+    if let Some(g) = &route.gate {
+        g.settle(idx);
+    }
 }
 
 /// Accounts `units` of the file's request as ended, delivered or not, and
@@ -497,20 +713,22 @@ pub(super) async fn finalize(
     if let Some(d) = ctx.hooks.slow_finalize {
         w.slow_finalize(d);
     }
-    w.finalize(&entry, &apply).await?;
-    record(&ctx, &path, &digest).await;
+    let hash = w.finalize(&entry, &apply).await?;
+    record(&ctx, &path, &digest, hash).await;
     Ok(())
 }
 
-/// Records the placed file in the index with the digest the sender gave, so
-/// later sessions can quick-check and reuse it.
-async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest) {
-    let (base, key, index, digest) = (
+/// Records the placed file in the index with its chunk list and whole-file
+/// hash (the sender's, or for an `APPEND` the one folded from the bytes),
+/// so later sessions can quick-check and reuse it.
+async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest, hash: [u8; 32]) {
+    let (base, key, index, mut digest) = (
         ctx.base.clone(),
         ctx.key(path),
         ctx.index().clone(),
         digest.clone(),
     );
+    digest.hash = hash;
     let rec = blocking(move || {
         let (mut e, ctime) = lstat_entry_with_ctime(&base, &key)?;
         if e.size != digest.size {
@@ -604,7 +822,7 @@ async fn read_range(
     s: &mut RecvStream,
 ) -> usize {
     let file_id = header.file_id;
-    let first = header.first_chunk_idx as usize;
+    let first = header.first_chunk_idx as usize + route.idx_base as usize;
     let Some(n) = range_len(&route.digest.chunks, first, header.offset, header.length) else {
         tracing::warn!(file_id, "data stream range does not match the chunk list");
         stop(s, 1);
@@ -653,9 +871,18 @@ async fn read_range(
         if let Some(f) = &ctx.fault {
             f.observe(_total, &ctx.conn);
         }
+        let idx = (first + k) as u32;
         let Some(data) = data else {
+            settle(route, idx);
             continue;
         };
+        if let Some(g) = &route.gate {
+            // In place: wait for the chunks before this one.
+            if !g.admit(idx).await {
+                stop(s, 0);
+                return n;
+            }
+        }
         let mut guard = route.slot.lock().await;
         let Some(w) = guard.as_mut() else {
             // The writer was retired (new chunk list, failure): drop the rest.
@@ -663,7 +890,7 @@ async fn read_range(
             stop(s, 0);
             return n;
         };
-        match w.write_chunk((first + k) as u32, &data).await {
+        match w.write_chunk(idx, &data).await {
             Ok(()) => {
                 ctx.hooks.event("chunk", &route.path);
                 if rebuilt {
@@ -672,7 +899,7 @@ async fn read_range(
             }
             // Stale or corrupt data never verifies; the chunk stays missing.
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
+                tracing::debug!(file_id, idx, error = %e, "rejected chunk");
             }
             Err(e) => {
                 drop(guard);
@@ -685,6 +912,8 @@ async fn read_range(
                 return n;
             }
         }
+        drop(guard);
+        settle(route, idx);
     }
     if arrived < n {
         tracing::debug!(
@@ -693,6 +922,10 @@ async fn read_range(
             promised = n,
             "incomplete range; its missing chunks stay missing"
         );
+        // In place: the cursor must not wait for chunks that will not come.
+        for k in arrived..n {
+            settle(route, (first + k) as u32);
+        }
     } else {
         // Read to the end so the sender sees a clean finish rather than STOP.
         match read_msg::<DataChunk, _>(s).await {
@@ -726,6 +959,7 @@ pub(super) async fn accept_streams(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn chunks(lens: &[u32]) -> Vec<ChunkRecord> {
         let mut off = 0;
@@ -747,36 +981,71 @@ mod tests {
         let c = chunks(&[100_000; 10]);
         let old = 1_000_000;
         // Interior: one chunk before to two after.
-        assert_eq!(basis_specs(&c, &[4], old), [(4, 300_000, 300_000)]);
+        assert_eq!(basis_specs(&c, &[4], old, false), [(4, 300_000, 300_000)]);
+        // In place: only from the chunk's own offset on.
+        assert_eq!(basis_specs(&c, &[4], old, true), [(4, 400_000, 200_000)]);
         // Clamped at the start and at the old file's end.
-        assert_eq!(basis_specs(&c, &[0], old), [(0, 0, 200_000)]);
-        assert_eq!(basis_specs(&c, &[9], old), [(9, 800_000, 200_000)]);
+        assert_eq!(basis_specs(&c, &[0], old, false), [(0, 0, 200_000)]);
+        assert_eq!(basis_specs(&c, &[9], old, false), [(9, 800_000, 200_000)]);
         // A chunk starting at or past the old end (appended data) gets none.
-        assert_eq!(basis_specs(&c, &[8, 9], 850_000), [(8, 700_000, 150_000)]);
-        assert_eq!(basis_specs(&c, &[8, 9], 800_000), []);
+        assert_eq!(
+            basis_specs(&c, &[8, 9], 850_000, false),
+            [(8, 700_000, 150_000)]
+        );
+        assert_eq!(basis_specs(&c, &[8, 9], 800_000, false), []);
         // A region too small to sign is not offered.
-        assert_eq!(basis_specs(&c, &[0], 600), []);
+        assert_eq!(basis_specs(&c, &[0], 600, false), []);
     }
 
     #[test]
     fn bases_are_withheld_for_a_rewrite_and_capped_at_one_pass_over_the_old_file() {
         let c = chunks(&[100_000; 10]);
         // More than half missing: a rewrite, unless the file is tiny.
-        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4, 5], 1_000_000), []);
-        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4], 1_000_000).len(), 5);
+        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4, 5], 1_000_000, false), []);
+        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4], 1_000_000, false).len(), 5);
         // A tiny file is covered whole even where every chunk is missing.
         let two = chunks(&[100_000; 2]);
-        assert_eq!(basis_specs(&two, &[0, 1], 200_000).len(), 2);
+        assert_eq!(basis_specs(&two, &[0, 1], 200_000, false).len(), 2);
         let one = chunks(&[100_000]);
-        assert_eq!(basis_specs(&one, &[0], 100_000), [(0, 0, 100_000)]);
+        assert_eq!(basis_specs(&one, &[0], 100_000, false), [(0, 0, 100_000)]);
         // Regions add up to at most the old file's size (once it is larger
         // than a few chunks): 200,000 + 12 * 300,000 fit 4,000,000 bytes.
         let c = chunks(&[100_000; 40]);
         let remote: Vec<u32> = (0..20).collect();
-        let specs = basis_specs(&c, &remote, 4_000_000);
+        let specs = basis_specs(&c, &remote, 4_000_000, false);
         let total: u64 = specs.iter().map(|s| u64::from(s.2)).sum();
         assert!(total <= 4_000_000, "{specs:?}");
         assert_eq!(specs.len(), 13, "{specs:?}");
+    }
+
+    #[tokio::test]
+    async fn gate_admits_in_order_and_skips_settled_chunks() {
+        // Chunks 0 and 2 are already there; 1, 3, 4 are to come.
+        let g = Arc::new(Gate::new(&[1, 3, 4], 5));
+        assert!(g.admit(1).await);
+        assert!(g.admit(0).await); // below the cursor: any time
+        let g2 = g.clone();
+        let waiter = tokio::spawn(async move { g2.admit(3).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished(), "3 admitted before 1 was settled");
+        g.settle(1);
+        assert!(waiter.await.unwrap());
+        // 2 was settled from the start: the cursor is at 3, then 4.
+        g.settle(4); // out of order: noted, cursor stays
+        let g2 = g.clone();
+        let waiter = tokio::spawn(async move { g2.admit(4).await });
+        g.settle(3);
+        assert!(waiter.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_releases_its_waiters_with_false() {
+        let g = Arc::new(Gate::new(&[0, 1], 2));
+        let g2 = g.clone();
+        let waiter = tokio::spawn(async move { g2.admit(1).await });
+        g.close();
+        assert!(!waiter.await.unwrap());
+        assert!(!g.admit(0).await);
     }
 
     #[test]

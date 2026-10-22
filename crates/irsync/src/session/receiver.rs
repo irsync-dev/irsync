@@ -35,8 +35,8 @@ use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
 };
 use super::recv_io::{
-    accept_streams, copy_local_chunks, finalize, offer_bases, open_writer, settle_identical, Fill,
-    Opened, Route, Routes,
+    accept_streams, copy_local_chunks, finalize, offer_bases, open_writer, sender_idx,
+    settle_identical, Fill, Opened, Route, Routes,
 };
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -193,7 +193,7 @@ struct Receiver {
     /// Files that failed this session (never linked to).
     failed: HashSet<RelPath>,
     /// A resumed plan's files not yet requested (see `pump`).
-    queued: VecDeque<(u64, RelPath, FileEntry, Action)>,
+    queued: VecDeque<(u64, RelPath, FileEntry, Action, u64)>,
     /// At most this many files in flight.
     inflight_cap: usize,
 }
@@ -337,7 +337,10 @@ impl Receiver {
         route.pending.fetch_add(missing.len(), Ordering::SeqCst);
         self.out.send(Msg::Need(NeedChunks {
             file_id,
-            chunk_idx: missing,
+            chunk_idx: missing
+                .into_iter()
+                .map(|i| sender_idx(route.idx_base, i))
+                .collect(),
         }));
     }
 
@@ -359,6 +362,9 @@ impl Receiver {
             .remove(&file_id);
         if let Some(r) = route {
             drop(r.slot.lock().await.take());
+            if let Some(g) = &r.gate {
+                g.close();
+            }
         }
     }
 
@@ -415,6 +421,10 @@ impl Receiver {
         f.st = St::Opening;
         self.ctx.hooks.event("chunklist", &f.path);
         let (gen, path, action) = (f.gen, f.path.clone(), f.action);
+        #[cfg(feature = "test-hooks")]
+        if let Some(h) = &self.ctx.hooks.before_open {
+            h(&path).await;
+        }
         let prehash = f.deferred.prehash.take();
         let sparse = f.entry.sparse || self.ctx.opts.preserve.sparse;
         // A new chunk list replaces the previous writer; it must be gone
@@ -460,6 +470,7 @@ impl Receiver {
                     size: p.entry.size,
                     whole_hash: p.entry.whole_hash.clone(),
                     entry: Some(p.entry.clone()),
+                    append_from: p.append_from,
                 });
                 let p = *p;
                 self.register(
@@ -602,6 +613,8 @@ impl Receiver {
             digest,
             bases,
             old,
+            gate,
+            idx_base,
         } = fill;
         self.ctx.hooks.event("need", &f.path);
         if remote.is_empty() && local.is_empty() {
@@ -624,6 +637,8 @@ impl Receiver {
             )),
             path: f.path.clone(),
             old,
+            gate,
+            idx_base,
         };
         // Routed before the request goes out, so no data stream can miss it.
         self.routes
@@ -635,16 +650,39 @@ impl Receiver {
         // the basis task once their signatures are out; the local copies
         // run while the sender delivers. Every remote chunk is already
         // counted in `pending`, whichever request carries it.
-        let based: HashSet<u32> = bases.iter().map(|b| b.0).collect();
-        let raw: Vec<u32> = remote.into_iter().filter(|i| !based.contains(i)).collect();
-        self.out.send(Msg::Need(NeedChunks {
-            file_id,
-            chunk_idx: raw,
-        }));
-        if let Some(old) = route.old.clone().filter(|_| !bases.is_empty()) {
-            let (ctx, out, r) = (self.ctx.clone(), self.out.clone(), route.clone());
-            self.tasks
-                .spawn(offer_bases(ctx, out, r, old, bases, file_id));
+        // In place, writes are ordered, so the file gets one ascending
+        // request (after its bases): its streams then open in order and
+        // the one the cursor needs is never behind the others.
+        let (raw, request) = match (&route.gate, &route.old) {
+            (Some(_), Some(_)) => (None, remote),
+            _ => {
+                let based: HashSet<u32> = bases.iter().map(|b| b.0).collect();
+                let (based, raw): (Vec<u32>, Vec<u32>) =
+                    remote.into_iter().partition(|i| based.contains(i));
+                (Some(raw), based)
+            }
+        };
+        if let Some(raw) = raw {
+            self.out.send(Msg::Need(NeedChunks {
+                file_id,
+                chunk_idx: raw.into_iter().map(|i| sender_idx(idx_base, i)).collect(),
+            }));
+        }
+        if !request.is_empty() {
+            match route.old.clone() {
+                Some(old) => {
+                    let (ctx, out, r) = (self.ctx.clone(), self.out.clone(), route.clone());
+                    self.tasks
+                        .spawn(offer_bases(ctx, out, r, old, bases, request, file_id));
+                }
+                None => self.out.send(Msg::Need(NeedChunks {
+                    file_id,
+                    chunk_idx: request
+                        .into_iter()
+                        .map(|i| sender_idx(idx_base, i))
+                        .collect(),
+                })),
+            }
         }
         if !local.is_empty() {
             let (ctx, events) = (self.ctx.clone(), self.events.clone());

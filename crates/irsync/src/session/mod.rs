@@ -104,6 +104,8 @@ impl SessionKey {
         field(&mut h, b"preserve", &bits.to_le_bytes());
         field(&mut h, b"checksum", &[opts.checksum as u8]);
         field(&mut h, b"update", &[opts.update_only as u8]);
+        field(&mut h, b"inplace", &[opts.inplace as u8]);
+        field(&mut h, b"append", &[opts.append as u8]);
         let delete = match opts.delete {
             DeleteMode::Off => 0u8,
             DeleteMode::Before => 1,
@@ -150,6 +152,8 @@ impl SessionKey {
                 hello.dry_run as u8,
                 hello.update_only as u8,
                 hello.checksum as u8,
+                hello.inplace as u8,
+                hello.append as u8,
             ],
         );
         SessionKey(h.finalize().as_bytes().to_vec())
@@ -529,6 +533,10 @@ pub struct SideHooks {
     /// old file meanwhile).
     #[cfg(feature = "test-hooks")]
     pub after_bases: Option<PathHook>,
+    /// Receiver: runs when a file's chunk list is about to be opened,
+    /// before the old file is looked at (a test changes it meanwhile).
+    #[cfg(feature = "test-hooks")]
+    pub before_open: Option<PathHook>,
 }
 
 /// Test hook: a connection drop after a number of chunk-list parts.
@@ -778,6 +786,7 @@ mod tests {
                     size: 9,
                     whole_hash: None,
                     entry: None,
+                    append_from: 0,
                 }],
                 plan_complete: true,
                 remote_id: vec![4; 32],

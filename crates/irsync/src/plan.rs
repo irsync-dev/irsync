@@ -4,7 +4,7 @@ use futures::stream::{self, Stream, StreamExt};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
-use crate::cli::Preserve;
+use crate::cli::{Append, Preserve};
 use crate::fs::paths::RelPath;
 
 /// One path's view on one side: its listing entry and, when known, its digest.
@@ -24,6 +24,11 @@ pub enum Decision {
     Special,
     Whole,
     Delta,
+    /// `--append`: the destination holds the first `from` bytes, trusted;
+    /// only the tail is transferred.
+    Append {
+        from: u64,
+    },
     LocalCopy {
         from: RelPath,
     },
@@ -42,6 +47,7 @@ pub struct PlanOpts {
     pub delete: bool,
     pub rename_detection: bool,
     pub preserve: Preserve,
+    pub append: Append,
 }
 
 /// Finds a destination file already holding content with the given whole-file hash.
@@ -182,7 +188,13 @@ pub fn decide(
             } else if hashes_equal == Some(true) {
                 Decision::MetaOnly
             } else {
-                Decision::Delta
+                match opts.append {
+                    Append::Off => Decision::Delta,
+                    // rsync: a destination not shorter than the source is skipped.
+                    _ if se.size <= de.size => skip_or_meta(se, de, p),
+                    Append::Append => Decision::Append { from: de.size },
+                    Append::Verify => Decision::Delta,
+                }
             }
         }
         // Only ever in the sender's listing; whether the destination already
@@ -316,7 +328,10 @@ pub fn itemize(
         _ => 'f',
     };
     let update = match decision {
-        Decision::Whole | Decision::Delta | Decision::LocalCopy { .. } => dir,
+        Decision::Whole
+        | Decision::Delta
+        | Decision::Append { .. }
+        | Decision::LocalCopy { .. } => dir,
         Decision::Hardlink { .. } => 'h',
         Decision::Mkdir | Decision::Symlink | Decision::Special => 'c',
         Decision::MetaOnly | Decision::Skip | Decision::Delete => '.',

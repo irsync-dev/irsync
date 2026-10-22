@@ -1,5 +1,6 @@
 use futures::executor::block_on;
 use futures::stream::{self, StreamExt};
+use irsync::cli::Append;
 use irsync::cli::Preserve;
 use irsync::fs::paths::RelPath;
 use irsync::plan::{decide, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
@@ -47,7 +48,56 @@ fn opts() -> PlanOpts {
         delete: false,
         rename_detection: false,
         preserve: Preserve::default(),
+        append: Append::Off,
     }
+}
+
+fn append_opts(append: Append) -> PlanOpts {
+    PlanOpts { append, ..opts() }
+}
+
+#[test]
+fn append_transfers_only_the_tail_of_a_grown_file() {
+    let o = append_opts(Append::Append);
+    let src = reg("a", 200, 2);
+    assert_eq!(
+        decide(Some(&src), Some(&reg("a", 100, 1)), &o, &NoLookup),
+        Decision::Append { from: 100 }
+    );
+    // Not grown: skipped (attributes still applied), as rsync does.
+    assert!(matches!(
+        decide(Some(&src), Some(&reg("a", 200, 1)), &o, &NoLookup),
+        Decision::Skip | Decision::MetaOnly
+    ));
+    assert!(matches!(
+        decide(Some(&src), Some(&reg("a", 300, 1)), &o, &NoLookup),
+        Decision::Skip | Decision::MetaOnly
+    ));
+    // A missing destination, or content known equal, is unaffected.
+    assert_eq!(decide(Some(&src), None, &o, &NoLookup), Decision::Whole);
+    assert_eq!(
+        decide(
+            Some(&with_hash(reg("a", 200, 2), 1)),
+            Some(&with_hash(reg("a", 200, 1), 1)),
+            &o,
+            &NoLookup
+        ),
+        Decision::MetaOnly
+    );
+}
+
+#[test]
+fn append_verify_keeps_the_delta_for_a_grown_file() {
+    let o = append_opts(Append::Verify);
+    let src = reg("a", 200, 2);
+    assert_eq!(
+        decide(Some(&src), Some(&reg("a", 100, 1)), &o, &NoLookup),
+        Decision::Delta
+    );
+    assert!(matches!(
+        decide(Some(&src), Some(&reg("a", 200, 1)), &o, &NoLookup),
+        Decision::Skip | Decision::MetaOnly
+    ));
 }
 
 struct OneHit;

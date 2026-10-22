@@ -50,7 +50,8 @@ impl Receiver {
                 continue;
             }
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
-            self.queued.push_back((e.file_id, path, entry, action));
+            self.queued
+                .push_back((e.file_id, path, entry, action, e.append_from));
             requested += 1;
         }
         tracing::info!(requested, "resuming the stored plan");
@@ -88,7 +89,7 @@ impl Receiver {
     /// in-flight cap are in flight (the planner's bound, for this path).
     pub(super) fn pump(&mut self) {
         while self.active < self.inflight_cap {
-            let Some((file_id, path, entry, action)) = self.queued.pop_front() else {
+            let Some((file_id, path, entry, action, append_from)) = self.queued.pop_front() else {
                 return;
             };
             self.register(
@@ -104,6 +105,7 @@ impl Receiver {
                 file_id,
                 path: path.as_bytes().to_vec(),
                 action: action as i32,
+                append_from,
             }));
         }
     }

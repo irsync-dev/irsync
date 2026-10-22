@@ -48,6 +48,11 @@ One QUIC connection carries:
   records, or more than its size allows at the minimum chunk length. No
   list is too long for the control stream (an earlier draft sent each list
   as one frame, which capped a file at about 342,000 chunks).
+  A `PlanItem` of action `APPEND` names the length of the prefix the
+  receiver holds and trusts (`append_from`); the sender's chunk list for it
+  covers only the tail from there and carries no whole-file hash (every
+  other list carries one). `Hello` carries the receiver-side options the
+  daemon honours when it receives, among them `inplace` and `append`.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

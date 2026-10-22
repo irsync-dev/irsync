@@ -36,6 +36,7 @@ use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{Sender, DEFAULT_SPLIT_THRESHOLD};
+use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
 const MAX_RETRIES: u32 = 1;
@@ -62,6 +63,8 @@ struct SFile {
     /// Bumped on every re-offer; older task results are ignored.
     gen: u32,
     retries: u32,
+    /// `APPEND`: only the tail from here is digested and sent.
+    append_from: Option<u64>,
     /// The digest behind the chunk list last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
     /// Bases the receiver offered for chunks it is about to request, by
@@ -149,6 +152,7 @@ impl SenderRole {
     /// regular file (a resumed plan has no listing of this connection).
     fn spawn_digest(&self, file_id: u64, gen: u32, path: RelPath, force: bool, check: bool) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
+        let append_from = self.files.get(&file_id).and_then(|f| f.append_from);
         tokio::spawn(async move {
             let result = async {
                 if check {
@@ -170,6 +174,11 @@ impl SenderRole {
                         io::ErrorKind::InvalidInput,
                         "no longer a regular file",
                     ));
+                }
+                if let Some(from) = append_from {
+                    // Only the tail: the receiver trusts its prefix.
+                    let full = ctx.full_key(&key);
+                    return blocking(move || tail_digest(&full, from)).await;
                 }
                 let item = ScanItem {
                     path: key,
@@ -231,12 +240,14 @@ impl SenderRole {
             bail!("protocol error: duplicate file id {file_id}");
         }
         let path = RelPath::new(&p.path).unwrap_or_default();
+        let append_from = (p.action == Action::Append as i32).then_some(p.append_from);
         self.files.insert(
             file_id,
             SFile {
                 path: path.clone(),
                 gen: 0,
                 retries: 0,
+                append_from,
                 digest: None,
                 bases: HashMap::new(),
                 #[cfg(feature = "test-hooks")]
@@ -305,7 +316,8 @@ impl SenderRole {
         }
         match result {
             Ok(d) => {
-                for p in split(file_id, &d, part_records(&self.ctx)) {
+                let with_hash = f.append_from.is_none();
+                for p in split(file_id, &d, part_records(&self.ctx), with_hash) {
                     self.out.send(Msg::ChunkListPart(p));
                     #[cfg(feature = "test-hooks")]
                     if let Some(h) = &self.ctx.hooks.drop_after_parts {
@@ -542,6 +554,30 @@ impl SenderRole {
             );
         }
     }
+}
+
+/// The chunk list of `full` from `from` on (an `APPEND` tail): chunked
+/// from that offset, records at absolute offsets, no whole-file hash.
+fn tail_digest(full: &std::path::Path, from: u64) -> io::Result<FileDigest> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = crate::fs::safe::open_regular_nofollow(full)?;
+    let size = file.metadata()?.len();
+    if size < from {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "shorter than the receiver's copy; not an append",
+        ));
+    }
+    file.seek(SeekFrom::Start(from))?;
+    let mut tail = irsync_proto::chunk::digest_reader((&mut file).take(size - from))?;
+    for c in &mut tail.chunks {
+        c.offset += from;
+    }
+    Ok(FileDigest {
+        size,
+        hash: [0; 32],
+        chunks: tail.chunks,
+    })
 }
 
 /// Whether the walk (from `root`, with `filters`) would list `path` as a

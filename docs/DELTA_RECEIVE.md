@@ -147,7 +147,7 @@ generation check it looks at what `open_writer` returned.
 **Identical.** The content is already there, so the file is settled in
 place rather than placed. The receiver sends an empty `NeedChunks`, which
 tells the sender to wait for the ack, emits the held-back itemize line if
-any attribute differs (section 2.10), and spawns `settle_identical`. That
+any attribute differs (section 2.11), and spawns `settle_identical`. That
 task discards a leftover `.part` of an earlier interrupted attempt along
 with its progress record, unless another writer holds it, applies the
 sender's mode, ownership and times to the existing inode through the open
@@ -343,7 +343,52 @@ read; a sparse hole feeds its zeros. The result equals `b3sum` of the
 file. What finalize no longer catches is a byte changed on disk after the
 verified write, which rsync does not catch either.
 
-### 2.10 The itemize line of a `DELTA` file
+### 2.10 Where the bytes land: a cloned `.part`, in place, or appended
+
+By default the `.part` is a separate file renamed over the destination at
+the end. Three things changed with remedy 7 (`IRSYNC_VS_RSYNC.md` 3.6):
+
+**Clone.** `open_writer` hands `FileWriter::open_from` the old file's
+descriptor and chunk list (the `CloneSource`) whenever the old file is
+still the one that was hashed. A `.part` that is empty is first cloned
+from it with `FICLONE` (`recv::reflink`); on success every chunk the old
+list holds at an offset where the new list wants the same chunk is read,
+verified and fed to the tree (`adopt_from`), so it is neither copied nor
+written. A refused clone (tmpfs, ext4, another device) costs only the
+attempt. A `.part` that already holds bytes is adopted as before. The
+receiver logs `clone` for it.
+
+**In place** (`--inplace`, `ctx.opts.inplace`). `FileWriter::open_inplace`
+locks the destination itself, checks it is the hashed inode, adopts the
+old chunks at unchanged offsets the same way, and grows the file now but
+shrinks it only in `finalize`, which also skips the rename. Writes are
+ordered by a `Gate` on the route: `admit(idx)` waits until every chunk
+before `idx` is settled (written, rejected, or given up by a stream that
+ended early), and `settle(idx)` advances the cursor; a chunk below the
+cursor is admitted at once, which is how a re-request rewrites it. Both
+fillers go through the gate, and a retired writer closes it, releasing
+every waiter. The old content is used only above the cursor: a self-copy
+whose old offset is below the chunk's new offset becomes a remote chunk in
+the partition, and `basis_specs` starts a basis at the chunk's own offset.
+An in-place file gets one ascending `NeedChunks` after its bases, so the
+sender opens its ranges in order and the range the cursor needs is never
+behind the others. The receiver logs `inplace`.
+
+**Append** (`--append`, planner decision `Append { from }`, action
+`APPEND`). The sender's list covers the tail only. `open_writer` awaits
+the prehash of the old file, requires it to be the planned prefix (its
+length equals the tail's first offset and the inode is unchanged), and
+builds the full list from the old chunk list plus the tail, with a zero
+whole-file hash and `verify_whole` off: `finalize` then compares nothing
+and returns the hash folded from the bytes, which `record` writes to the
+index. Chunk indices on the wire are the sender's (tail-relative): the
+route's `idx_base` is subtracted from every request and basis and added to
+every stream header. A destination that is not the planned prefix fails
+the file with a message naming append. The receiver logs `append`.
+`--append-verify` is the ordinary `DELTA` path with the planner's skip
+rule.
+
+### 2.11 The itemize line of a `DELTA` file
 
 The planner decides `DELTA` before anyone knows whether the content really
 changed, so for a `DELTA` file it no longer emits the `-i` line at plan
@@ -369,6 +414,8 @@ one full pass over the file on either disk:
 | network transfer | after all of the above | starts right after the index lookups |
 | finalize re-hash | S | none (folded from the verified chunks) |
 | bytes for a small change inside a chunk | the chunk (64 KiB .. 1 MiB) | about a block (512 B .. 4 KiB) of literal, plus ~3.5% of the chunk in signatures the other way |
+| local write of unchanged chunks | S (copied into the `.part`) | none with a cloned `.part` or in place; a read of them for the tree hash |
+| free space for a changed file | its full size | the changed chunks (clone) or none (in place) |
 
 Critical path before: up to 4 S plus the transfer. After: S (the
 concurrent hashes) plus the longer of local copy and transfer. The
@@ -394,6 +441,16 @@ the new one once.
   verified by `write_chunk` like any other; the old file is only ever
   read, through a descriptor opened once; a rebuild that fails leaves the
   chunk missing, and its re-request carries no basis.
+- **A cloned chunk is verified before it counts.** The clone is a copy of
+  bytes the index described; each adopted chunk is read and hashed before
+  its bit is set, as a resumed `.part`'s chunks are.
+- **In place, nothing above the cursor is written before it is read.**
+  Writes ascend through the gate; old-content reads (self-copies, bases)
+  are only ever at or above the chunk being written; a rejected or
+  undelivered chunk settles the gate so the cursor never waits for it.
+- **An append never guesses the prefix.** The sender's tail is accepted
+  only when the destination is the exact inode and length that was
+  planned; otherwise the file fails and a run without `--append` repairs it.
 - **Reconnects and failures are safe.** A new chunk list bumps the
   generation and retires the writer. A copy task of the old generation sees
   the empty slot and exits; its late `finish_unit` finds nothing to report.
@@ -468,6 +525,28 @@ operations.
   drops the connection during the delta; the client reconnects, the
   session resumes, and the file verifies.
 
+`crates/irsync/tests/inplace.rs` covers remedy 7 end to end (the clone
+tests run only where `target/` is on a filesystem that clones, and say so
+when they skip). `a_cloned_part_writes_only_the_changed_chunk`: one
+`chunk`, no `copied`, a new inode after the rename.
+`inplace_keeps_the_inode_and_writes_only_the_changed_chunk`,
+`inplace_deletion_near_the_start_reuses_chunks_from_above` (one local copy,
+under 1 MiB on the wire), `inplace_insertion_near_the_start_takes_shifted_chunks_from_the_network`
+(byte-exact, over 2 MiB on the wire; it fails if the gate or the
+backward-reference rule is removed), `inplace_on_a_push_is_honoured_by_the_daemon`,
+`inplace_resumes_after_a_connection_loss`. `append_sends_only_the_tail_and_reads_only_the_tail`
+(the sending daemon hashes nothing; the next run finds the file up to
+date), `append_skips_a_changed_file_that_did_not_grow`,
+`append_trusts_the_prefix_and_append_verify_does_not`,
+`append_on_a_push_is_honoured_by_the_daemon`,
+`append_fails_the_file_when_the_destination_is_not_the_planned_prefix`
+(hook `SideHooks::before_open` truncates the destination between the plan
+and the chunk list). `crates/irsync/tests/recv.rs` has the writer-level
+tests: clone adoption without writes, no clone over an existing `.part`,
+the refused clone, in-place adoption and finalize without a rename, the
+shrink deferred to finalize, and the refusal of a replaced destination.
+`crates/irsync/tests/plan.rs` pins the planner's append decisions.
+
 `crates/irsync/tests/content_equal.rs` covers the settle-in-place path; the
 receiver logs `identical` for it.
 
@@ -503,10 +582,13 @@ receiver logs `identical` for it.
 | signing and offering them | `session/recv_io.rs::offer_bases`; `delta.rs::Basis::sign` |
 | holding and using a basis on the sender | `session/sender_role.rs::on_basis`, `on_need`; `send.rs::payload`; `delta.rs::encode` |
 | rebuilding a chunk from operations | `session/recv_io.rs::rebuild`; `delta.rs::decode` |
+| cloning the old file into the `.part` | `recv.rs::reflink`, `FileWriter::open_from`, `adopt_from` |
+| writing in place | `recv.rs::FileWriter::open_inplace`; `session/recv_io.rs::Gate`, `settle` |
+| append | `plan.rs::decide` (`Decision::Append`); `session/sender_role.rs::tail_digest`; `session/recv_io.rs::open_writer` (the `APPEND` arm, `idx_base`) |
 | local filler | `session/recv_io.rs::copy_local_chunks`, `read_local` |
 | network filler | `session/recv_io.rs::accept_streams`, `read_stream`, `read_range` |
 | completion accounting | `session/recv_io.rs::finish_unit` |
 | re-request | `session/receiver.rs::on_drained`, `MAX_REREQUESTS` |
 | verification on write | `recv.rs::FileWriter::write_chunk`, `missing_chunks` |
 | chunk list in parts | `session/parts.rs::split`, `assemble`; `session/receiver.rs::on_chunk_list_part` |
-| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check`, `chunk_list_part_records`, `drop_after_parts`, `after_bases`, `rerequests` |
+| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check`, `chunk_list_part_records`, `drop_after_parts`, `after_bases`, `rerequests`, `before_open` |

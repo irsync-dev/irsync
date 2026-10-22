@@ -20,6 +20,7 @@ impl Receiver {
             size: l.entry.size,
             whole_hash: None,
             entry: Some(l.entry.clone()),
+            append_from: 0,
         });
         self.links.push(l);
     }

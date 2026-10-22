@@ -234,12 +234,26 @@ impl Harness {
         Self::with_guest().await.0
     }
 
+    /// A harness whose module and local dirs are created under `base`
+    /// (a filesystem with properties the default temp dir may lack).
+    pub async fn new_in(base: &std::path::Path) -> Harness {
+        Self::build(Some(base)).await.0
+    }
+
     /// A harness plus a second client endpoint the daemon also authorises.
     pub async fn with_guest() -> (Harness, Endpoint) {
+        Self::build(None).await
+    }
+
+    async fn build(base: Option<&std::path::Path>) -> (Harness, Endpoint) {
+        let tmp = || match base {
+            Some(b) => tempfile::tempdir_in(b).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
         use irsync::authz::{Access, Grants, MemoryAuthorizer};
         let client = client_endpoint().await;
         let guest = client_endpoint().await;
-        let module = tempfile::tempdir().unwrap();
+        let module = tmp();
         let grants = Grants {
             all: Some(Access::ReadWrite),
             ..Grants::default()
@@ -252,7 +266,7 @@ impl Harness {
             daemon,
             client,
             module,
-            local: tempfile::tempdir().unwrap(),
+            local: tmp(),
             client_state: tempfile::tempdir().unwrap(),
         };
         (h, guest)

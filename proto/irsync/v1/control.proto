@@ -18,14 +18,21 @@ message PlanItem { // receiver -> sender
   enum Action {
     WHOLE = 0;
     DELTA = 1;
+    // The receiver holds the first `append_from` bytes and trusts them: the
+    // sender digests and sends only the tail from there (its chunk list
+    // covers `[append_from, size)` and carries no whole-file hash).
+    APPEND = 2;
   }
   Action action = 3;
+  uint64 append_from = 4;
 }
 // sender -> receiver: the chunk list of a file, in pieces small enough for
 // a control frame. The parts of a file arrive in order: `first` is the
 // index of `chunks[0]` in the whole list, `total` the whole list's length,
 // `last` marks the final part. `size` and `whole_hash` are repeated in
 // every part. A list of no chunks (an empty file) is one empty last part.
+// For an APPEND the list covers only the tail and `whole_hash` is absent:
+// the receiver folds the whole-file hash from the bytes it places.
 message ChunkListPart {
   uint64 file_id = 1;
   uint64 size = 2;

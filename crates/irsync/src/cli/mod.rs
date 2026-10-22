@@ -251,6 +251,20 @@ pub struct SyncArgs {
     pub no_resume: bool,
     #[arg(long)]
     pub no_rename_detection: bool,
+    /// Write a changed file into the destination itself instead of a
+    /// `.part` renamed over it: no second copy on disk, but readers see a
+    /// torn file during the transfer and a crash leaves a mixture.
+    #[arg(long)]
+    pub inplace: bool,
+    /// Extend a destination file that is shorter than the source by the
+    /// source's tail, trusting what is already there; a destination that
+    /// is not shorter is skipped (rsync's rule).
+    #[arg(long, conflicts_with = "append_verify")]
+    pub append: bool,
+    /// Like --append, but the existing prefix is verified too (a delta
+    /// transfer with --append's skip rule).
+    #[arg(long)]
+    pub append_verify: bool,
 
     /// Include/exclude rules in command-line order (filled after parsing).
     #[arg(skip)]
@@ -274,6 +288,17 @@ pub enum FilterRule {
     Exclude(String),
     IncludeFrom(PathBuf),
     ExcludeFrom(PathBuf),
+}
+
+/// `--append` / `--append-verify`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Append {
+    #[default]
+    Off,
+    /// The destination's existing prefix is trusted.
+    Append,
+    /// The prefix is verified too: a delta, with the skip rule.
+    Verify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +351,8 @@ pub struct SyncOptions {
     pub passphrase_file: Option<PathBuf>,
     pub no_resume: bool,
     pub no_rename_detection: bool,
+    pub inplace: bool,
+    pub append: Append,
     pub verbose: u8,
     pub quiet: bool,
 }
@@ -383,6 +410,14 @@ impl SyncOptions {
             passphrase_file: a.passphrase_file.clone(),
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
+            inplace: a.inplace,
+            append: if a.append {
+                Append::Append
+            } else if a.append_verify {
+                Append::Verify
+            } else {
+                Append::Off
+            },
             verbose: a.verbose,
             quiet: a.quiet,
         }

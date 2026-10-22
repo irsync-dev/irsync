@@ -671,3 +671,232 @@ async fn finalize_does_not_read_the_part_file_back() {
     assert_eq!(placed[100], data[100] ^ 0xFF);
     assert_eq!(placed.len(), data.len());
 }
+
+/// A temp root under `target/`, where the filesystem may support reflinks
+/// (`/tmp` is usually tmpfs, which does not).
+fn env_in_target() -> Env {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(base).unwrap();
+    let tmp = tempfile::tempdir_in(base).unwrap();
+    let root = tmp.path().join("root");
+    let state = tmp.path().join("state");
+    fs::create_dir_all(root.join("dir")).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    let index = Index::open(&state, &root).unwrap().into_handle();
+    Env {
+        _tmp: tmp,
+        root,
+        index,
+    }
+}
+
+/// Whether `dir`'s filesystem clones files (`FICLONE`); tests that need it
+/// skip otherwise.
+fn reflinks(dir: &Path) -> bool {
+    let a = fs::File::create(dir.join(".probe-a")).unwrap();
+    std::io::Write::write_all(&mut &a, b"probe").unwrap();
+    let b = fs::File::create(dir.join(".probe-b")).unwrap();
+    let ok = irsync::recv::reflink(&a, &b).is_ok();
+    let _ = fs::remove_file(dir.join(".probe-a"));
+    let _ = fs::remove_file(dir.join(".probe-b"));
+    if !ok {
+        eprintln!("skipping: {} does not support reflinks", dir.display());
+    }
+    ok
+}
+
+fn clone_source<'a>(file: &'a fs::File, digest: &'a FileDigest) -> irsync::recv::CloneSource<'a> {
+    irsync::recv::CloneSource { file, digest }
+}
+
+#[tokio::test]
+async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them() {
+    let e = env_in_target();
+    if !reflinks(&e.root) {
+        return;
+    }
+    let old = content(61);
+    let old_cl = chunk_list(&old);
+    let mut new = old.clone();
+    let changed = 1usize;
+    let c = &old_cl.chunks[changed];
+    new[c.offset as usize + 10] ^= 0xFF;
+    let cl = chunk_list(&new);
+    assert_eq!(cl.chunks.len(), old_cl.chunks.len());
+    fs::write(final_path(&e.root), &old).unwrap();
+    let old_file = fs::File::open(final_path(&e.root)).unwrap();
+    let mut w = FileWriter::open_from(
+        &e.root,
+        &rel(),
+        &cl,
+        None,
+        e.index.clone(),
+        Default::default(),
+        Some(clone_source(&old_file, &old_cl)),
+    )
+    .unwrap();
+    assert!(w.cloned());
+    // Every chunk the old file holds at the same offset is verified in place.
+    assert_eq!(w.missing_chunks(), vec![changed as u32]);
+    assert_eq!(w.bytes_written(), 0);
+    w.write_chunk(changed as u32, piece(&new, &cl, changed))
+        .await
+        .unwrap();
+    assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
+    let before = fs::metadata(final_path(&e.root)).unwrap().ino();
+    w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
+    assert_ne!(fs::metadata(final_path(&e.root)).unwrap().ino(), before);
+    assert!(!part_path(&e.root).exists());
+}
+
+#[tokio::test]
+async fn clone_is_skipped_when_a_part_already_holds_progress() {
+    let e = env_in_target();
+    if !reflinks(&e.root) {
+        return;
+    }
+    let data = content(62);
+    let cl = chunk_list(&data);
+    fs::write(final_path(&e.root), content(63)).unwrap();
+    let old_file = fs::File::open(final_path(&e.root)).unwrap();
+    let old_cl = chunk_list(&content(63));
+    {
+        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        write_all(&mut w, &data, &cl, &[0]).await;
+    }
+    let w = FileWriter::open_from(
+        &e.root,
+        &rel(),
+        &cl,
+        None,
+        e.index.clone(),
+        Default::default(),
+        Some(clone_source(&old_file, &old_cl)),
+    )
+    .unwrap();
+    assert!(!w.cloned());
+    assert_eq!(
+        w.missing_chunks(),
+        (1..cl.chunks.len() as u32).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
+    // The default temp dir is usually tmpfs, which cannot clone: nothing
+    // may depend on the clone, and a refused one costs only the attempt.
+    let e = env();
+    let supported = reflinks(&e.root);
+    let old = content(64);
+    let old_cl = chunk_list(&old);
+    let mut new = old.clone();
+    new[5] ^= 1;
+    let cl = chunk_list(&new);
+    fs::write(final_path(&e.root), &old).unwrap();
+    let old_file = fs::File::open(final_path(&e.root)).unwrap();
+    let mut w = FileWriter::open_from(
+        &e.root,
+        &rel(),
+        &cl,
+        None,
+        e.index.clone(),
+        Default::default(),
+        Some(clone_source(&old_file, &old_cl)),
+    )
+    .unwrap();
+    assert_eq!(w.cloned(), supported);
+    if !supported {
+        assert_eq!(w.missing_chunks(), all(&cl));
+    }
+    let missing = w.missing_chunks();
+    write_all(&mut w, &new, &cl, &missing).await;
+    w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
+}
+
+#[tokio::test]
+async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
+    let e = env();
+    let old = content(71);
+    let old_cl = chunk_list(&old);
+    let mut new = old.clone();
+    let changed = 2usize;
+    new[old_cl.chunks[changed].offset as usize + 3] ^= 0xFF;
+    let cl = chunk_list(&new);
+    assert_eq!(cl.chunks.len(), old_cl.chunks.len());
+    fs::write(final_path(&e.root), &old).unwrap();
+    let old_file = fs::File::open(final_path(&e.root)).unwrap();
+    let ino = fs::metadata(final_path(&e.root)).unwrap().ino();
+    let mut w = FileWriter::open_inplace(
+        &e.root,
+        &rel(),
+        &cl,
+        e.index.clone(),
+        Default::default(),
+        clone_source(&old_file, &old_cl),
+    )
+    .unwrap();
+    assert_eq!(w.missing_chunks(), vec![changed as u32]);
+    assert!(!part_path(&e.root).exists());
+    w.write_chunk(changed as u32, piece(&new, &cl, changed))
+        .await
+        .unwrap();
+    assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
+    w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
+    assert_eq!(fs::metadata(final_path(&e.root)).unwrap().ino(), ino);
+    assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn open_inplace_shrinks_the_file_only_at_finalize() {
+    // Bytes above the new size may still be the source of forward copies:
+    // the file keeps its old length until every chunk is in.
+    let e = env();
+    let old = content(72);
+    let old_cl = chunk_list(&old);
+    let new = old[..1024 * 1024].to_vec();
+    let cl = chunk_list(&new);
+    fs::write(final_path(&e.root), &old).unwrap();
+    let old_file = fs::File::open(final_path(&e.root)).unwrap();
+    let mut w = FileWriter::open_inplace(
+        &e.root,
+        &rel(),
+        &cl,
+        e.index.clone(),
+        Default::default(),
+        clone_source(&old_file, &old_cl),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::metadata(final_path(&e.root)).unwrap().len(),
+        old.len() as u64
+    );
+    let missing = w.missing_chunks();
+    write_all(&mut w, &new, &cl, &missing).await;
+    w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
+}
+
+#[tokio::test]
+async fn open_inplace_refuses_a_destination_that_is_not_the_hashed_file() {
+    let e = env();
+    let old = content(73);
+    let old_cl = chunk_list(&old);
+    fs::write(final_path(&e.root), &old).unwrap();
+    let other = e.root.join("other.bin");
+    fs::write(&other, &old).unwrap();
+    let other_file = fs::File::open(&other).unwrap();
+    let err = FileWriter::open_inplace(
+        &e.root,
+        &rel(),
+        &old_cl,
+        e.index.clone(),
+        Default::default(),
+        clone_source(&other_file, &old_cl),
+    )
+    .err()
+    .expect("another inode at the destination must be refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}

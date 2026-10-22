@@ -49,6 +49,8 @@ pub(super) struct Planned {
     /// The sender's listing entry (metadata applied at finalize).
     pub entry: FileEntry,
     pub action: Action,
+    /// `APPEND`: the trusted prefix length.
+    pub append_from: u64,
     pub deferred: Deferred,
     /// One of the session's in-flight slots, released when the file leaves
     /// the receiver (placed or failed).
@@ -472,7 +474,10 @@ impl Planner {
                 if self.ctx.opts.dry_run
                     && matches!(
                         decision,
-                        Decision::Whole | Decision::Delta | Decision::LocalCopy { .. }
+                        Decision::Whole
+                            | Decision::Delta
+                            | Decision::Append { .. }
+                            | Decision::LocalCopy { .. }
                     )
                 {
                     bus.emit(crate::session::Event::FileDone(path.clone(), 0));
@@ -569,7 +574,10 @@ impl Planner {
                 })
                 .await
             }
-            Decision::Whole | Decision::Delta | Decision::LocalCopy { .. } => {
+            Decision::Whole
+            | Decision::Delta
+            | Decision::Append { .. }
+            | Decision::LocalCopy { .. } => {
                 // Placing it (now or on an earlier connection) moved the parent's mtime.
                 self.touch_parent(&path);
                 let Some(file_id) = self.file_id(&path) else {
@@ -577,11 +585,12 @@ impl Planner {
                 };
                 // A rename-detection source needs no special handling: its
                 // chunks are indexed, so the writer finds them like any other.
-                let action = match decision {
-                    Decision::Delta => Action::Delta,
-                    _ => Action::Whole,
+                let (action, append_from) = match decision {
+                    Decision::Delta => (Action::Delta, 0),
+                    Decision::Append { from } => (Action::Append, from),
+                    _ => (Action::Whole, 0),
                 };
-                let prehash = (action == Action::Delta).then(|| {
+                let prehash = matches!(action, Action::Delta | Action::Append).then(|| {
                     self.ctx.hooks.event("prehash", &path);
                     let (ctx, p) = (self.ctx.clone(), path.clone());
                     tokio::spawn(async move { index_old_file(&ctx, &p).await })
@@ -596,6 +605,7 @@ impl Planner {
                     path: path.clone(),
                     entry,
                     action,
+                    append_from,
                     deferred: Deferred {
                         prehash,
                         itemize: deferred,
@@ -607,6 +617,7 @@ impl Planner {
                     file_id,
                     path: path.as_bytes().to_vec(),
                     action: action as i32,
+                    append_from,
                 }));
                 return;
             }
@@ -759,6 +770,7 @@ pub(super) async fn plan(
         delete: deletes.is_some(),
         rename_detection: ctx.opts.rename_detection,
         preserve: ctx.opts.preserve,
+        append: ctx.opts.append,
     };
     let mut p = Planner {
         ctx,

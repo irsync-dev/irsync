@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
-use irsync_proto::v1::hello::{DeleteMode as WireDeleteMode, Direction};
+use irsync_proto::v1::hello::{AppendMode as WireAppend, DeleteMode as WireDeleteMode, Direction};
 use irsync_proto::v1::{error::Code, Error, FileEntry, Hello, HelloAck};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
@@ -32,7 +32,7 @@ use super::{
     SessionRecord, SideHooks, HASH_WORKERS,
 };
 use crate::cli::location::Location;
-use crate::cli::{DeleteMode, Preserve, SyncOptions};
+use crate::cli::{Append, DeleteMode, Preserve, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
@@ -105,6 +105,10 @@ pub(super) struct RoleOpts {
     pub ignore_errors: bool,
     /// `-i`: a receiving daemon sends `Itemized` frames.
     pub itemize: bool,
+    /// Receiver only: `--inplace`, write changed files into the destination.
+    pub inplace: bool,
+    /// Receiver only: `--append` / `--append-verify`.
+    pub append: Append,
 }
 
 impl RoleOpts {
@@ -123,6 +127,8 @@ impl RoleOpts {
             dry_run: o.dry_run,
             ignore_errors: o.ignore_errors,
             itemize: o.itemize,
+            inplace: o.inplace,
+            append: o.append,
         }
     }
 
@@ -163,6 +169,13 @@ impl RoleOpts {
             dry_run: receives && hello.dry_run,
             ignore_errors: hello.ignore_errors,
             itemize: hello.itemize,
+            inplace: receives && hello.inplace,
+            append: match hello.append() {
+                _ if !receives => Append::Off,
+                WireAppend::AppendOff => Append::Off,
+                WireAppend::Append => Append::Append,
+                WireAppend::AppendVerify => Append::Verify,
+            },
         }
     }
 }
@@ -184,6 +197,12 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
     hello.itemize = o.itemize || (o.dry_run && o.verbose > 0);
     hello.update_only = o.update_only;
     hello.checksum = o.checksum;
+    hello.inplace = o.inplace;
+    hello.append = match o.append {
+        Append::Off => WireAppend::AppendOff,
+        Append::Append => WireAppend::Append,
+        Append::Verify => WireAppend::AppendVerify,
+    } as i32;
 }
 
 /// Option combinations this protocol version cannot honour safely.

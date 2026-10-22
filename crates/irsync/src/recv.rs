@@ -1,6 +1,10 @@
 //! Receiver write path: verified chunks go into `.irsync.<name>.part`, the whole
-//! file is re-hashed, and only then is it renamed over its final name. Progress
-//! is recorded in the index so a later session can adopt a half-written file.
+//! file's hash is folded from them, and only then is it renamed over its final
+//! name. Progress is recorded in the index so a later session can adopt a
+//! half-written file. Where the filesystem clones files (`FICLONE`), a fresh
+//! `.part` for a changed file starts as a clone of the old file, so the
+//! chunks the old file already holds at the same offset are verified in
+//! place and never copied.
 
 use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
@@ -44,6 +48,34 @@ pub enum FinalizeError {
     Io(#[from] io::Error),
 }
 
+/// The old destination file a fresh `.part` may be cloned from, with the
+/// chunk list it was hashed to (its chunks at unchanged offsets are then
+/// verified in place).
+pub struct CloneSource<'a> {
+    pub file: &'a File,
+    pub digest: &'a FileDigest,
+}
+
+/// Makes `dst` share `src`'s extents (`FICLONE`): constant time, no new
+/// space. Fails where the filesystem, or a cross-device pair, cannot.
+#[cfg(target_os = "linux")]
+pub fn reflink(src: &File, dst: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: FICLONE takes the source descriptor as its integer argument
+    // and touches no memory of ours.
+    let r = unsafe { nix::libc::ioctl(dst.as_raw_fd(), nix::libc::FICLONE, src.as_raw_fd()) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn reflink(_src: &File, _dst: &File) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {
     rel: RelPath,
@@ -70,6 +102,15 @@ pub struct FileWriter {
     /// The session's activity marker: bumped by local progress (chunks
     /// written, finalize, re-hashing) so the inactivity watchdogs see it.
     activity: Arc<AtomicU64>,
+    /// The `.part` started as a clone of the old file.
+    cloned: bool,
+    /// `--inplace`: `part` is the destination itself; no rename at the end.
+    inplace: bool,
+    /// Compare the folded whole-file hash with the expected one at
+    /// finalize (false for an `APPEND`, whose expected hash is unknown).
+    verify_whole: bool,
+    #[cfg(feature = "test-hooks")]
+    written: u64,
     #[cfg(feature = "test-hooks")]
     fail_at: Option<u32>,
     #[cfg(feature = "test-hooks")]
@@ -383,6 +424,22 @@ impl FileWriter {
         index: IndexHandle,
         activity: Arc<AtomicU64>,
     ) -> io::Result<FileWriter> {
+        Self::open_from(root, rel, expected, partial_dir, index, activity, None)
+    }
+
+    /// [`FileWriter::open_tracked`] with the old destination file to clone
+    /// a fresh `.part` from (see [`reflink`]). A `.part` that already holds
+    /// bytes is adopted as it is; a clone the filesystem refuses costs
+    /// nothing but the attempt.
+    pub fn open_from(
+        root: &Path,
+        rel: &RelPath,
+        expected: &FileDigest,
+        partial_dir: Option<&Path>,
+        index: IndexHandle,
+        activity: Arc<AtomicU64>,
+        clone: Option<CloneSource<'_>>,
+    ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
         let (dest, part) = paths(root, rel, partial_dir)?;
         if let Some(dir) = part.parent() {
@@ -392,7 +449,14 @@ impl FileWriter {
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
         let file = open_locked_part(&part, &activity)?;
-        let hole_from = file.metadata()?.len();
+        let mut hole_from = file.metadata()?.len();
+        let mut cloned = false;
+        if let Some(c) = &clone {
+            if hole_from == 0 && reflink(c.file, &file).is_ok() {
+                cloned = true;
+                hole_from = file.metadata()?.len();
+            }
+        }
         let mut w = FileWriter {
             rel: rel.clone(),
             dest,
@@ -410,13 +474,20 @@ impl FileWriter {
             sparse: false,
             hole_from,
             activity,
+            cloned,
+            inplace: false,
+            verify_whole: true,
+            #[cfg(feature = "test-hooks")]
+            written: 0,
             #[cfg(feature = "test-hooks")]
             fail_at: None,
             #[cfg(feature = "test-hooks")]
             finalize_delay: Duration::ZERO,
         };
         let adopted_from_record = w.adopt_recorded()?;
-        if !adopted_from_record {
+        if cloned {
+            w.adopt_from(clone.as_ref().expect("cloned from a source").digest)?;
+        } else if !adopted_from_record {
             w.adopt_unrecorded()?;
         }
         w.file.set_len(w.size)?;
@@ -424,6 +495,115 @@ impl FileWriter {
             w.persist_sync()?;
         }
         Ok(w)
+    }
+
+    /// Opens the destination itself as the file to write (`--inplace`):
+    /// `old` is that file, as hashed to `old.digest`, and must still be the
+    /// inode at the destination. Its chunks at unchanged offsets are
+    /// verified in place; the rest are written over it. Writes must come
+    /// in ascending order with only forward reads of the old content (the
+    /// caller's gate enforces that); the file is never shrunk before
+    /// `finalize`, which also applies metadata without a rename.
+    pub fn open_inplace(
+        root: &Path,
+        rel: &RelPath,
+        expected: &FileDigest,
+        index: IndexHandle,
+        activity: Arc<AtomicU64>,
+        old: CloneSource<'_>,
+    ) -> io::Result<FileWriter> {
+        let chunks = native_chunks(expected)?;
+        let (dest, _) = paths(root, rel, None)?;
+        let file = open_locked_part(&dest, &activity)?;
+        let (now, hashed) = (file.metadata()?, old.file.metadata()?);
+        if now.ino() != hashed.ino() || now.dev() != hashed.dev() {
+            return Err(invalid("destination is no longer the file that was hashed"));
+        }
+        let hole_from = now.len();
+        let mut w = FileWriter {
+            rel: rel.clone(),
+            dest: dest.clone(),
+            part: dest,
+            file: Arc::new(file),
+            size: expected.size,
+            whole_hash: expected.hash,
+            tree: Box::new(TreeHash::new(expected.size)),
+            verified: vec![false; chunks.len()],
+            chunks,
+            index,
+            chunks_since_persist: 0,
+            last_persist: Instant::now(),
+            done: false,
+            sparse: false,
+            hole_from,
+            activity,
+            cloned: false,
+            inplace: true,
+            verify_whole: true,
+            #[cfg(feature = "test-hooks")]
+            written: 0,
+            #[cfg(feature = "test-hooks")]
+            fail_at: None,
+            #[cfg(feature = "test-hooks")]
+            finalize_delay: Duration::ZERO,
+        };
+        let adopted_from_record = w.adopt_recorded()?;
+        w.adopt_from(old.digest)?;
+        // Grown now; shrunk only at finalize (forward copies may still
+        // read above the new size).
+        if w.size > hole_from {
+            w.file.set_len(w.size)?;
+        }
+        if !adopted_from_record && w.verified.iter().any(|&v| v) {
+            w.persist_sync()?;
+        }
+        Ok(w)
+    }
+
+    /// The `.part` started as a clone of the old file.
+    pub fn cloned(&self) -> bool {
+        self.cloned
+    }
+
+    /// The writer writes into the destination itself (`--inplace`).
+    pub fn inplace(&self) -> bool {
+        self.inplace
+    }
+
+    /// Whether `finalize` compares the whole-file hash with the expected
+    /// one. Off for an `APPEND`: the sender never read the prefix, so the
+    /// receiver's folded hash is the only one there is.
+    pub fn set_verify_whole(&mut self, verify: bool) {
+        self.verify_whole = verify;
+    }
+
+    /// Bytes written into the `.part` so far (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub fn bytes_written(&self) -> u64 {
+        self.written
+    }
+
+    /// Adopt the chunks a clone of the old file (chunk list `old`) holds at
+    /// an offset where the new list wants the same chunk: verified by
+    /// reading, never copied.
+    fn adopt_from(&mut self, old: &FileDigest) -> io::Result<()> {
+        let file_len = self.file.metadata()?.len();
+        for o in &old.chunks {
+            let Ok(i) = self.chunks.binary_search_by_key(&o.offset, |c| c.offset) else {
+                continue;
+            };
+            let c = self.chunks[i];
+            if self.verified[i] || c != *o || c.offset + u64::from(c.len) > file_len {
+                continue;
+            }
+            let bytes = read_chunk(&self.file, &c)?;
+            if *blake3::hash(&bytes).as_bytes() == c.hash {
+                self.verified[i] = true;
+                self.tree.add(c.offset, &bytes);
+                self.activity.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
 
     /// Adopt chunks covered by the index record. Returns whether a usable record existed.
@@ -546,6 +726,10 @@ impl FileWriter {
         } else {
             let file = self.file.clone();
             let buf = data.to_vec();
+            #[cfg(feature = "test-hooks")]
+            {
+                self.written += data.len() as u64;
+            }
             tokio::task::spawn_blocking(move || {
                 if inject {
                     return Err(io::Error::from_raw_os_error(nix::libc::ENOSPC));
@@ -633,11 +817,12 @@ impl FileWriter {
 
     /// Verify the whole `.part`, apply metadata and rename it over the destination.
     /// On any error the `.part` and its record stay; nothing appears at the final name.
+    /// Returns the file's whole-file hash (folded from its chunks).
     pub async fn finalize(
         mut self,
         entry: &FileEntry,
         opts: &ApplyOpts,
-    ) -> Result<(), FinalizeError> {
+    ) -> Result<[u8; 32], FinalizeError> {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
@@ -648,12 +833,13 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (file, part, dest, size, expected) = (
+        let (file, part, dest, size, expected, inplace) = (
             self.file.clone(),
             self.part.clone(),
             self.dest.clone(),
             self.size,
-            self.whole_hash,
+            self.verify_whole.then_some(self.whole_hash),
+            self.inplace,
         );
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
@@ -674,7 +860,7 @@ impl FileWriter {
             file.set_len(size)?;
             file.sync_all()?;
             activity.fetch_add(1, Ordering::Relaxed);
-            if actual != expected {
+            if let Some(expected) = expected.filter(|e| *e != actual) {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
             match std::fs::symlink_metadata(&dest) {
@@ -689,10 +875,14 @@ impl FileWriter {
                 Err(e) => return Err(e.into()),
             }
             // Metadata goes through the held descriptor; the rename (by
-            // path) only once the path still names that very file.
+            // path) only once the path still names that very file. In
+            // place, the file is already at its name.
             let placed = apply_metadata_fd(&*file, &entry, &opts)
                 .and_then(|()| still_same_file(&file, &part))
                 .and_then(|()| {
+                    if inplace {
+                        return Ok(());
+                    }
                     std::fs::rename(&part, &dest).map_err(|e| {
                         io::Error::new(
                             e.kind(),
@@ -728,7 +918,7 @@ impl FileWriter {
             // The verified file is already in place; a stale record is harmless.
             tracing::warn!(path = ?self.dest, error = %e, "removing partial record failed");
         }
-        Ok(())
+        Ok(actual)
     }
 }
 

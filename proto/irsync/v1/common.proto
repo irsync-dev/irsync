@@ -35,6 +35,17 @@ message Hello {
   bool itemize = 15; // the receiver sends Itemized codes (-i)
   bool update_only = 16; // -u: keep destination files newer than the source
   bool checksum = 17; // -c: equal size+mtime is not enough, compare content
+  // --inplace: a changed file is written into the destination file itself
+  // (ascending, forward-only reuse) instead of a `.part` renamed over it.
+  bool inplace = 18;
+  // --append / --append-verify: a destination file shorter than the
+  // source is extended by its tail; one that is not shorter is skipped.
+  enum AppendMode {
+    APPEND_OFF = 0;
+    APPEND = 1; // the existing prefix is trusted (rsync --append)
+    APPEND_VERIFY = 2; // the prefix is verified too: a plain DELTA, with the skip rule
+  }
+  AppendMode append = 19;
 }
 message HelloAck {
   bytes session_id = 1;

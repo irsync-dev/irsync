@@ -330,15 +330,67 @@ which bounds what a hostile sender can make a receiver hold.
 
 ### 3.6 No in-place or append mode
 
-Every file is built in `.irsync.<name>.part` and renamed. This gives the
-atomicity the design's anti-goals demand, but it means a changed file needs
-free space equal to its full size, and (per 3.3) a full local rewrite even
-when one chunk changed. rsync's `--inplace` writes only the changed blocks
-into the existing file, and `--append` / `--append-verify` turn a
-grow-only log into a tail transfer with no basis pass at all. irsync has
-nothing to offer for the "the disk is 90% full and the 200 GiB image
-changed" case, and nothing cheaper than a full chunk-list exchange for a
-log that only grows.
+*Resolved on 2026-10-22 (remedy 7), in three parts described below the
+original text.*
+
+Every file used to be built in `.irsync.<name>.part` and renamed. This
+gives the atomicity the design's anti-goals demand, but it meant a changed
+file needed free space equal to its full size, and (per 3.3) a full local
+rewrite even when one chunk changed. rsync's `--inplace` writes only the
+changed blocks into the existing file, and `--append` / `--append-verify`
+turn a grow-only log into a tail transfer with no basis pass at all.
+irsync had nothing to offer for the "the disk is 90% full and the 200 GiB
+image changed" case, and nothing cheaper than a full chunk-list exchange
+for a log that only grows.
+
+**A cloned `.part` (no flag).** Where the filesystem clones files
+(`FICLONE`: btrfs, XFS, bcachefs, ZFS with block cloning), a fresh `.part`
+for a `DELTA` file starts as a clone of the old file. Every chunk the old
+file holds at the same offset is verified by one read (the tree hash of
+3.4 needs the bytes anyway; the old-file hash just put them in the page
+cache) and never copied; only changed and moved chunks are written, and
+only those allocate space. The rename, the resume and the verification
+are exactly as before. On a filesystem that cannot clone (`/tmp`'s tmpfs,
+ext4), or across devices with `--partial-dir`, the attempt fails and the
+`.part` starts empty as it always did. The integration test writes one
+chunk of a 4 MiB file into the `.part` and copies nothing.
+
+**`--inplace`.** The writer is the destination file itself, locked like a
+`.part`, and the old file must still be the inode that was hashed. Reads
+of the old content and writes of the new one share a file, so every write
+goes through a gate that admits chunks in ascending order (a chunk below
+the write cursor may be rewritten at any time, which is what a re-sent
+chunk does), and the old content is only ever used *above* the cursor:
+a chunk whose old copy sits at a lower offset than its new one comes from
+the sender instead of the file, and the basis a chunk is offered (3.1)
+starts at the chunk's own offset. That is rsync's rule, with rsync's
+consequence: a deletion near the start keeps its reuse, an insertion loses
+it. Data streams for an in-place file are requested in one ascending list
+after its bases and consumed in cursor order, with QUIC flow control
+holding the rest; the file grows at open and shrinks only at finalize, so
+forward copies above the new size stay readable. What the flag costs, as
+in rsync: readers see a torn file during the transfer, a crash leaves a
+mixture of old and new, a whole-file hash mismatch leaves the destination
+inconsistent until the retry, hard links to the destination see the new
+content, and one write front per file. The option travels in `Hello` for a
+push and is part of the session key.
+
+**`--append` and `--append-verify`.** With `--append`, a regular file that
+exists on both sides, is longer on the sender and is not up to date is
+planned as `APPEND` with the destination's length: the sender digests and
+sends only the tail from there (chunked from that offset; no whole-file
+hash), the receiver prepends its own chunk list of the old file, which
+must still be the planned prefix (same length, same inode, unchanged), and
+fills the file as any other delta: the prefix is adopted from a clone or
+copied locally, the tail arrives. The whole-file hash is folded from the
+bytes placed and recorded in the index, so the next run quick-checks the
+file. As in rsync, the prefix is trusted (the test shows a changed head
+surviving an append) and a destination that is not shorter than the
+source is skipped, attributes aside. `--append-verify` keeps the skip rule
+and transfers a grown file as a plain `DELTA`, so a changed head is
+repaired. Either mode saves the sender's read of the prefix and the
+prefix's share of the chunk list; with a warm index the receiver's side of
+an append was already nearly free.
 
 ### 3.7 Reuse is only as good as the index
 
@@ -489,7 +541,11 @@ protocol change.
 7. **`--inplace` and `--append`** (3.6). `--append` is cheap once 6 exists
    or even without it (compare the old file's chunk list as a prefix).
    `--inplace` conflicts with the atomic-rename anti-goal and should stay
-   an explicit opt-in as it is in rsync.
+   an explicit opt-in as it is in rsync. *Done (2026-10-22): a reflink
+   clone of the old file as the `.part` wherever the filesystem allows,
+   with no flag; `--inplace` with ascending, forward-only reuse;
+   `--append` / `--append-verify` with rsync's semantics; see 3.6 and
+   `DELTA_RECEIVE.md`.*
 8. **Index warm-up for foreign destinations** (3.7). An `irsync index
    <root>` command, or hashing destination files lazily in the background
    of a session, so a destination that irsync did not create starts
@@ -509,7 +565,7 @@ protocol change.
 - `crates/irsync/src/delta.rs`: the rolling sum, block signatures
   (`Basis`), the matcher (`encode`) and the rebuild (`decode`).
 - `crates/irsync/src/recv.rs`: `FileWriter` (`write_chunk`, adoption,
-  `finalize` re-hash).
+  `open_from` with a clone source, `open_inplace`, `finalize`), `reflink`.
 - `crates/irsync/src/send.rs`: `send_chunks_against`, `split_ranges`,
   `read_chunk`, `payload` (operations or bytes per chunk).
 - `crates/irsync/src/net/frame.rs`: `MAX_FRAME`.
