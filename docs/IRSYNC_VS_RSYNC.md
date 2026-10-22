@@ -1,15 +1,19 @@
 # irsync versus rsync: the transfer algorithm, critically
 
-A comparison of how irsync and rsync move a changed file, with the
-shortcomings on the irsync side worked out in detail. Everything said about
-irsync was checked against the code as of commit `d08b4de` (2026-10-22);
-function names below point at where each behaviour lives. rsync facts refer
-to protocol 30 and later (rsync 3.x).
+A comparison of how irsync and rsync move a changed file. It was written
+on 2026-10-22 against commit `d08b4de` as a critical review: eight
+shortcomings on the irsync side worked out in detail and ranked as
+remedies. All eight landed the same day, the last as commit `c0f6291`,
+and the text was brought up to date with each. The document now describes
+the algorithm as it is; every finding is kept under its "Resolved" note as
+the record of why a mechanism exists and what it was measured against.
+Function names point at where each behaviour lives. rsync facts refer to
+protocol 30 and later (rsync 3.x).
 
-Written 2026-10-22. The design document
-(`superpowers/specs/2026-10-17-irsync-design.md`) is the binding authority
-for what irsync *intends*; this file records where the implementation falls
-short of that intent or of rsync, and what it would take to close each gap.
+The design document (`superpowers/specs/2026-10-17-irsync-design.md`) is
+the binding authority for what irsync *intends*. Section 6 lists what is
+still open. `DELTA_RECEIVE.md` walks through the receiver's side of one
+file step by step.
 
 ## 1. The two algorithms in brief
 
@@ -32,19 +36,32 @@ pipelined processes (generator, sender, receiver).
 No basis is part of the protocol. The sender cuts the new file into
 content-defined chunks (FastCDC 2020, 64 KiB min, 256 KiB average, 1 MiB max)
 and BLAKE3-hashes each chunk and the whole file (`irsync_proto::chunk`).
-After the receiver's planner requests the file (`PlanItem`), the sender
-digests it (from its index when size, mtime, ctime and inode match, else by
-reading it) and sends the `ChunkList`. The receiver opens
-`.irsync.<name>.part`, adopts any verified progress, for a `DELTA` action
-hashes the old destination file into its index, fills what it can from the
-rename-detection source and from any indexed file holding a chunk with the
-same hash (`recv_io::open_writer`), and asks for the rest (`NeedChunks`).
-The sender streams those chunks over up to 32 parallel QUIC streams, one per
-contiguous run (`send::Sender::send_chunks`), re-hashing each chunk as it
-reads it. The receiver verifies each chunk before writing it, persists
-verified ranges in its index, re-hashes the whole `.part` at finalize,
-applies metadata through the open descriptor and renames (`recv::FileWriter::finalize`).
-Only then does it send `FileAck DONE`.
+The receiver's planner requests the file (`PlanItem`) and, for a `DELTA`
+(a file it holds an old version of), starts hashing its old copy at that
+moment. The sender digests the new file (from its index when size, mtime,
+ctime and inode match, else by reading it) and sends the chunk list in
+`ChunkListPart` pieces. The receiver reassembles it and opens the file
+(`recv_io::open_writer`). If the old file's hash equals the list's, the
+destination is settled in place with the sender's metadata and nothing is
+written. Otherwise it opens `.irsync.<name>.part`, as a reflink clone of
+the old file where the filesystem allows (the destination itself with
+`--inplace`; the old file's chunk list as a trusted prefix with
+`--append`), adopts whatever the clone or earlier progress already holds,
+and partitions the missing chunks into those an indexed file holds (any
+file the index knows; before a whole file is fetched, destination files of
+its size that the index did not know are hashed first) and those the
+sender must deliver. `NeedChunks` goes out at once and the local chunks are
+copied while the sender delivers. For a `DELTA`, each requested chunk is
+first offered a *basis*, block signatures over the old file around the
+chunk's place (`ChunkBasis`), which the sender answers with copies and
+literals instead of the chunk when that is smaller. The sender streams
+over up to 32 parallel QUIC streams, one per contiguous run
+(`send::Sender::send_chunks`), re-hashing each chunk as it reads it. The
+receiver verifies every chunk against its hash before writing it, rebuilt
+or raw, persists verified ranges in its index, folds the whole-file BLAKE3
+from the verified chunks with no read-back, applies metadata through the
+open descriptor and renames (`recv::FileWriter::finalize`). Only then does
+it send `FileAck DONE`.
 
 ## 2. Side by side
 
@@ -60,20 +77,24 @@ Only then does it send `FileAck DONE`.
 | Rename detection | none (name similarity only, `--fuzzy`) | by whole-file hash, from the index |
 | Digest caching across runs | none; `-c` re-reads everything | persistent SQLite index keyed on size, mtime, ctime, inode |
 | Round trips before first data byte | ~0 (pipelined) | 1.5 (plan, chunk list, need) |
-| Serial disk passes before first data byte, one big changed file | 1 (basis checksums) | 2 or 3 (sender hash, receiver old-file hash, receiver local copy) |
-| Extra receiver pass after last byte | none (MD5 computed while writing) | whole-file re-hash |
+| Serial disk passes before first data byte, one big changed file | 1 (basis checksums) | 1 (the sender's hash and the receiver's old-file hash run concurrently; local copies overlap the transfer) |
+| Extra receiver pass after last byte | none (MD5 computed while writing) | none (BLAKE3 folded from the verified chunks) |
 | Streams | one, in order | many QUIC streams, 32 at a time, files split at 64 MiB |
 | Files in flight | pipelined, bounded by the window | up to 4096 |
 | Resume | `--partial` keeps bytes; next run re-checksums them | chunk-granular, verified ranges persisted; plan persisted |
-| In-place / append | `--inplace`, `--append`, `--append-verify` | none; always `.part` + rename |
+| In-place / append | `--inplace`, `--append`, `--append-verify` | the same three; by default a `.part` that is a reflink clone of the old file where the filesystem allows, so only changed chunks are written and still renamed into place |
 | Per-block integrity | 4-byte rolling + 2..16-byte MD5 | 32-byte BLAKE3, checked at send and at write |
-| Whole-file integrity | MD5 (xxh3 negotiable in 3.2+), one redo | BLAKE3, retried once per side |
+| Whole-file integrity | MD5 (xxh3 negotiable in 3.2+), one redo | BLAKE3, folded from the verified chunks, retried once per side |
 | Change during transfer | noticed at the final whole-file check; whole file redone | noticed at the sender per chunk, before the bytes leave; re-offered once |
 | Compression | `-z` | none (deferred in the design) |
-| Largest file | no protocol limit | ~80 GiB of typical data (see 3.5) |
+| Largest file | no protocol limit | no frame limit; 2^24 chunks per list, about 4 TiB of typical data (see 3.5) |
 | Transport | TCP or SSH | iroh QUIC, NAT traversal, pinned Ed25519 identities |
 
-## 3. irsync's shortcomings in detail
+## 3. The shortcomings found, and how each was closed
+
+Each of 3.1 to 3.8 opens with what landed and keeps the original finding
+below it, in the past tense where the behaviour is gone. 3.9 and 3.10 are
+the points that remain open.
 
 ### 3.1 Delta granularity: whole chunks instead of bytes
 
@@ -186,7 +207,15 @@ irsync's is now 512.
 
 ### 3.3 Disk passes are serialised, and there are more of them
 
-For one changed file the implementation does, in this order, with nothing
+*Resolved on 2026-10-22 (remedy 2; remedies 5 and 7 then removed two more
+passes): the sender's hash and the receiver's old-file hash run
+concurrently from plan time, `NeedChunks` goes out as soon as the missing
+chunks are partitioned, local copies run under the transfer, the `.part`
+is a clone of the old file where the filesystem allows, and finalize reads
+nothing. The original finding follows; the chain and the I/O volume as
+they are now close the section.*
+
+For one changed file the implementation did, in this order, with nothing
 overlapping within the file:
 
 1. Sender: `SenderRole::spawn_digest` reads and hashes the new file in full
@@ -204,55 +233,64 @@ overlapping within the file:
    `.part` again to check the whole-file hash.
 
 So a 100 GiB image with one changed block, warm index, at 1 GiB/s of disk,
-spends about 100 s hashing on the sender, then 100 s + 100 s copying on the
-receiver, then sends a chunk, then 100 s re-hashing: roughly 400 s of
-wall-clock in which the network is idle for all but a millisecond. rsync
+spent about 100 s hashing on the sender, then 100 s + 100 s copying on the
+receiver, then sent a chunk, then 100 s re-hashing: roughly 400 s of
+wall-clock in which the network was idle for all but a millisecond. rsync
 does the generator pass (100 s), then the sender's rolling pass and the
 receiver's reconstruction run *concurrently* with each other and with the
 transfer (100 s), and the MD5 is computed during the write. About 200 s.
 
-Receiver I/O volume for the same case:
+The chain is now: the sender's hash in parallel with the receiver's
+old-file hash (the planner starts it when it sends the `PlanItem`), then
+the index lookups that split the missing chunks into a remote and a local
+set, then `NeedChunks` at once, the transfer with the local copies (or the
+clone's adoption) running under it, then a finalize that is `fsync`, fold,
+metadata, rename. The local-copy task counts as one unit of the request,
+so the drained-and-re-request path covers a local source whose bytes no
+longer match the index. For the 100 GiB image: 100 s of hashing on both
+sides at once, then about 100 s verifying the adopted chunks of the cloned
+`.part` (one read, which the old-file hash may have left in the page
+cache), then the one chunk. About 200 s, rsync's figure, with the
+difference that the sender's pass is a hash rather than a rolling match.
+The flow is documented step by step in `DELTA_RECEIVE.md`.
+
+Receiver I/O volume for the same case, as it is now:
 
 | | reads of S | writes of S |
 | --- | --- | --- |
 | rsync, default | 2 | 1 |
 | rsync `--inplace` | 1 | changed blocks only |
-| irsync, old file's digest cached | 1 | 1 |
-| irsync, old file's digest not cached | 2 | 1 |
-
-Two of these costs were avoidable without a protocol change, and were
-removed on 2026-10-22: `open_writer` now only partitions the missing chunks
-into a remote and a local set, `NeedChunks` goes out at once, and a
-local-copy task fills the local set while the sender delivers, counting as
-one unit of the request so the existing drained-and-re-request path covers
-a local source whose bytes no longer match the index. The planner also
-starts hashing the old file when it sends the `PlanItem`, so steps 1 and 2
-above run concurrently. The chain is now: sender hash in parallel with the
-receiver's old-file hash, then index lookups, then the transfer with the
-local copy running under it, then finalize, which since remedy 5 (3.4)
-reads nothing. The table above reflects that. The flow is documented step
-by step in `DELTA_RECEIVE.md`.
+| irsync, cloned `.part`, old digest cached | 1 (adoption verifies the clone's chunks) | changed chunks only |
+| irsync, cloned `.part`, old digest not cached | 2 | changed chunks only |
+| irsync `--inplace` | 1 or 2, as above | changed chunks only |
+| irsync, plain `.part` (no clone support) | 1 or 2, as above | 1 |
 
 The first-time sync of a tree pays a related price. Every new file is read
 twice on the sender (once to digest, once to send, with each chunk
-re-hashed as it is read in `send::read_chunk`) and once more on the
-receiver (finalize). rsync reads a new file once on the sender and writes it
-once on the receiver. The page cache hides this for files that fit in RAM,
-the 4-worker hasher overlaps it across files, and it is what makes every
-later run cheap; but for the primary use case in the design document, the
-first push of a photo library, irsync does about twice the disk I/O.
+re-hashed as it is read in `send::read_chunk`); the receiver writes it once
+and, since remedy 5, reads nothing. rsync reads a new file once on the
+sender and writes it once on the receiver. The page cache hides the extra
+read for files that fit in RAM, the 4-worker hasher overlaps it across
+files, and it is what makes every later run cheap; but for the primary use
+case in the design document, the first push of a photo library, irsync
+reads the source about twice.
 
 ### 3.4 The finalize re-hash is a full extra pass by construction
 
+*Resolved on 2026-10-22 (remedy 5): the whole-file BLAKE3 is folded from
+the verified chunks through the hash's own tree, so finalize reads
+nothing and nothing on the wire or in the index changed. The finding, the
+alternatives weighed and the mechanism follow.*
+
 Every chunk is verified against its 32-byte hash before it is written
-(`FileWriter::write_chunk`). The whole-file hash is nevertheless a plain
+(`FileWriter::write_chunk`). The whole-file hash was nevertheless a plain
 BLAKE3 over the bytes, which cannot be derived from the chunk hashes, so
-`finalize` must read the whole `.part` back. This defends against bits
+`finalize` had to read the whole `.part` back. This defended against bits
 flipped on disk between write and rename, against a second writer (already
-excluded by the `.part` lock), and against bugs in the chunk path. It costs
+excluded by the `.part` lock), and against bugs in the chunk path. It cost
 one full read per file received, on the critical path, after the last byte
-has arrived, and it is what the R35 heartbeat exists to hide from the idle
-watchdog.
+had arrived, and it was what the R35 heartbeat existed to hide from the
+idle watchdog.
 
 The alternative considered first was to define the whole-file hash as a
 BLAKE3 over the concatenated chunk hashes (a two-level Merkle root), at the
@@ -277,11 +315,15 @@ exactly once, on adoption or local copy, and writes it once.
 
 ### 3.5 A chunk list is one control frame, capped at 16 MiB
 
-`ChunkList` is sent as a single framed protobuf on the control stream, and
+*Resolved on 2026-10-22 (remedies 1 and 4): every chunk list travels in
+`ChunkListPart` pieces of 32,768 records; the one-frame message and the
+day-long retry loop are gone. The finding follows, then what landed.*
+
+`ChunkList` was sent as a single framed protobuf on the control stream, and
 `net::frame::MAX_FRAME` is 16 MiB on both the writing and the reading side.
 A `ChunkRecord` encodes to about 49 bytes at large offsets (tag and length,
 offset varint, length varint, and a nested 32-byte `Hash` message), so a
-chunk list holds at most ~342,000 chunks:
+chunk list held at most ~342,000 chunks:
 
 | Data | Chunk size | Largest describable file |
 | --- | --- | --- |
@@ -289,22 +331,22 @@ chunk list holds at most ~342,000 chunks:
 | all chunks at the minimum | 64 KiB | ~21 GiB |
 | low-entropy data, forced max cuts | 1 MiB | ~334 GiB |
 
-What happens above the ceiling is the worse part. `write_msg` refuses the
-frame, the writer task reports `Ev::WriterFailed`, the sender role turns
-that into a `TransportError`, and `reconnect::classify` treats a
-`TransportError` as "dial again". The resumed session re-plans the same
-file (or resumes a stored plan that contains it), the sender digests it
-again from cache, and the same frame is refused again. The loop ends only
-when the reconnect window (24 h by default, measured from the last
-progress) runs out. Every other file in the session has been placed by
-then, so the user sees a sync that spends a day retrying and then fails,
+What happened above the ceiling was the worse part. `write_msg` refused
+the frame, the writer task reported `Ev::WriterFailed`, the sender role
+turned that into a `TransportError`, and `reconnect::classify` treats a
+`TransportError` as "dial again". The resumed session re-planned the same
+file (or resumed a stored plan that contained it), the sender digested it
+again from cache, and the same frame was refused again. The loop ended
+only when the reconnect window (24 h by default, measured from the last
+progress) ran out. Every other file in the session had been placed by
+then, so the user saw a sync that spent a day retrying and then failed,
 with the real cause one log line among many. The file-level `SOURCE_ERROR`
-path exists but is not used for this.
+path existed but was not used for this.
 
 rsync has no equivalent limit: block signatures are streamed, and even the
 whole-file approach caps nothing.
 
-The fix is either to stream the chunk list in bounded pieces (a protocol
+The fix was either to stream the chunk list in bounded pieces (a protocol
 change, backwards-compatible as a new message) or, much cheaper, to check
 the encoded size before sending and fail the *file* with `SOURCE_ERROR`
 instead of the session. The second landed on 2026-10-22: `on_digested`
@@ -425,41 +467,46 @@ another name on a cold destination crosses the wire with zero file
 bytes, after one read of the one same-sized candidate; after `irsync
 index`, with no read at all during the session.
 
-Cross-file reuse and rename detection read `chunks` and
-`entries.whole_hash` from the receiver's index. The receiver's own listing
-attaches a hash only when the index already has a fresh one
-(`control::spawn_listing` calls `Hasher::cached`, which never reads a file).
-So:
+The original analysis, for the record. Cross-file reuse and rename
+detection read `chunks` and `entries.whole_hash` from the receiver's
+index. The receiver's own listing attaches a hash only when the index
+already has a fresh one (`control::spawn_listing` calls `Hasher::cached`,
+which never reads a file). So:
 
 - A destination populated by anything other than irsync (a prior rsync, a
-  restore from backup, a manual copy) contributes no chunks and no rename
-  candidates until each file is hashed, and only a `DELTA` target or a
-  `-c` run ever hashes a destination file on demand.
+  restore from backup, a manual copy) contributed no chunks and no rename
+  candidates until each file was hashed, and only a `DELTA` target or a
+  `-c` run ever hashed a destination file on demand.
 - Files irsync has placed are indexed with the digest the sender gave them
   (`recv_io::finalize`), so the index grows with use. A fresh destination
-  after a fresh install is blind.
+  after a fresh install was blind.
 - `find_chunk` returns the first path holding a hash and the copy is
   re-verified, so staleness is safe, only wasteful.
 
 rsync's basis is always the real file at the destination path, with no
-warm-up. For a one-off transfer to a cold machine irsync behaves like
+warm-up. For a one-off transfer to a cold machine irsync behaved like
 rsync `--whole-file`, plus the chunk list and the two extra passes.
 
 ### 3.8 The planner diverges from the specification on content-equal files
 
+*Resolved on 2026-10-22 (remedy 3), at chunk-list time rather than plan
+time: a destination whose content equals the sender's is settled in place
+with no write. The `-c` divergence noted at the end is still open
+(section 6).*
+
 The design says that when the quick check fails the receiver "computes on
 demand" the whole-file hash of its copy, and a match becomes a metadata-only
-update. The implementation does not: `plan::decide` compares only the hashes
+update. The implementation did not: `plan::decide` compares only the hashes
 that came with the two listings, and the receiver's listing carries cached
 hashes only. A file whose mtime moved but whose content did not (a `touch`,
-an editor that rewrote the same bytes, a restored backup) is planned as
-`DELTA` whenever the receiver's index lacks a fresh digest, and `DELTA` with
-every chunk found locally still runs the full `open_writer` copy and
+an editor that rewrote the same bytes, a restored backup) was planned as
+`DELTA` whenever the receiver's index lacked a fresh digest, and `DELTA`
+with every chunk found locally still ran the full `open_writer` copy and
 `finalize` re-hash: a complete local rewrite of the file to apply an mtime.
 
-With `-c` the same gap appears: `quick_equal` requires `hashes_equal ==
+With `-c` the same gap appeared: `quick_equal` requires `hashes_equal ==
 Some(true)`, which a cold receiver index cannot supply, so `-c` against a
-cold destination falls into `DELTA` instead of the metadata-only path the
+cold destination fell into `DELTA` instead of the metadata-only path the
 specification describes. rsync `-c` computes both checksums, finds them
 equal, and applies attributes only.
 
@@ -480,6 +527,11 @@ and still stands.
 
 ### 3.9 Per-file protocol chatter
 
+*Open.* None of the remedies changed the message count per file; the
+overlapped passes of 3.3 shorten how long a `DELTA` file holds its slot,
+and the parts of 3.5 and the bases of 3.1 add messages for large or
+changed files rather than removing any.
+
 Each file costs four control messages in strict alternation (`PlanItem`,
 `ChunkList`, `NeedChunks`, `FileAck`) and 1.5 round trips before the first
 data byte. rsync's generator runs ahead and the sender's token stream
@@ -496,15 +548,18 @@ new file, serialised with every other index user.
 
 ### 3.10 Smaller points
 
+*Open.*
+
 - **No compression.** The design defers `-z` to later. For text-heavy
   trees rsync's `-z` can halve the bytes on the wire.
-- **Chunk parameters are a protocol constant.** The tuning that would help
-  3.1 and 3.2 (smaller chunks for small files, a smaller minimum) cannot be
-  done without a version bump, and every index on every peer would be
-  invalidated (`IndexError::ChunkParamsChanged`).
+- **Chunk parameters are a protocol constant.** Delta quality no longer
+  depends on them (3.1 and 3.2 are closed by the sub-chunk delta, whose
+  block is chosen per chunk), but a change still needs a version bump and
+  invalidates every index on every peer (`IndexError::ChunkParamsChanged`).
 - **Two chunk lists in memory per in-flight file** (the writer's and the
   route's), about 48 bytes per chunk each. Harmless until many large files
-  are in flight at once; 4096 slots make that possible.
+  are in flight at once; 4096 slots make that possible, and 3.5 sets the
+  per-list cap.
 - **Sparse handling is chunk-granular**: a zero run shorter than a chunk is
   written. rsync `-S` detects zero runs at write granularity.
 
@@ -516,7 +571,19 @@ For balance, the cases where the comparison runs the other way:
   both sides, `-c` included. rsync `-c` re-reads everything every time.
 - **Moved, renamed and duplicated data.** Any chunk anywhere in the indexed
   destination is reused; a renamed 10 GiB file transfers nothing. rsync
-  sends it again.
+  sends it again. A destination that rsync or a restore filled is hashed
+  into the index on demand or by `irsync index` (3.7).
+- **Small edits in large files.** The delta block is chosen per chunk,
+  not per file, so a one-byte edit in a 1 GiB file costs about 1 KiB of
+  literal against rsync's 32 KiB, and a hundred scattered page writes
+  about 1.5 MiB with signatures against rsync's 3.2 MiB (3.1).
+- **Atomic and cheap updates at once.** Where the filesystem clones files,
+  a changed file costs only its changed chunks in space and writes and
+  still lands by rename (3.6); rsync gets the first only with `--inplace`,
+  which gives up the second.
+- **No read-back.** The receiver reads a received file at most once (to
+  verify adopted or locally copied chunks) and writes it once; the
+  whole-file hash is folded from what it verified (3.4).
 - **Bad and fat links.** 32 parallel streams, files split at 64 MiB, a
   scan that runs alongside the transfer, and chunk-granular resume across
   disconnects, process deaths and reboots. rsync's single in-order stream is
@@ -531,10 +598,12 @@ For balance, the cases where the comparison runs the other way:
   SSH or port forwarding, which is irsync's reason to exist and not an
   algorithmic property.
 
-## 5. Remedies, ranked
+## 5. Remedies, ranked (all done)
 
-Ordered by what they buy against what they cost. Items 1 and 2 need no
-protocol change.
+Ordered by what they bought against what they cost, as ranked on
+2026-10-22. Every item landed that day; each ends with what shipped.
+Items 1, 2, 3, 5 and 8 needed no protocol change; 4, 6 and 7 changed the
+wire, with the version left at 1 because no peer had been deployed.
 
 1. **Fail the file, not the session, when a chunk list will not fit**
    (3.5). Check the encoded size in `on_digested` and send `SOURCE_ERROR`.
@@ -585,7 +654,30 @@ protocol change.
    daemon's `warm_index` module setting hash a tree ahead of time; see
    3.7.*
 
-## 6. Where to look
+## 6. What is still open
+
+- **Per-file chatter** (3.9): four control messages and 1.5 round trips
+  per file, hidden by files in flight rather than removed; one SQLite
+  lookup per missing chunk under the index mutex before `NeedChunks`.
+- **Compression, fixed chunk parameters, two chunk lists per in-flight
+  file, chunk-granular sparse detection** (3.10).
+- **`-c` does not force re-hashing** (3.8): the design says it does; the
+  hasher is never put into forced mode for it.
+- **Delta reach** (3.1): a missing chunk is matched against the old file's
+  neighbourhood of its own offset, so content that moved by more than a
+  chunk and is not a whole chunk is sent as literal. Whole chunks are
+  found anywhere through the index.
+- **In-place insertions** (3.6): with `--inplace`, reuse is forward-only,
+  so an insertion near the start loses the reuse below it. rsync's rule
+  and rsync's cost.
+- **Candidates are opportunistic** (3.7): a destination file the walk has
+  not listed when a whole file's chunk list arrives is not hashed for it,
+  and only exact-size matches are tried, at most four per file. `irsync
+  index` or `warm_index` covers the rest.
+- **The first push reads the source twice** (3.3): once to digest, once to
+  send.
+
+## 7. Where to look
 
 - `crates/irsync-proto/src/chunk.rs`: chunking and hashing constants.
 - `crates/irsync/src/plan.rs`: `decide`, the per-path decision.
@@ -604,6 +696,10 @@ protocol change.
   `read_chunk`, `payload` (operations or bytes per chunk).
 - `crates/irsync/src/net/frame.rs`: `MAX_FRAME`.
 - `crates/irsync/src/session/reconnect.rs`: `classify`.
+- `crates/irsync/src/session/parts.rs`: `split`, `assemble` (chunk lists in
+  pieces).
+- `crates/irsync/src/tree_hash.rs`: `TreeHash`, the whole-file BLAKE3 folded
+  from verified chunks.
 - `crates/irsync/src/hasher.rs`: the cache's freshness rule.
 - `crates/irsync/src/session/control.rs`: `spawn_listing` (cached hashes
   only; notes files without a fresh row for the receiver).
