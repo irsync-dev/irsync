@@ -649,3 +649,25 @@ mod temp_names {
         assert!(is_temp_name(&t));
     }
 }
+
+#[tokio::test]
+async fn finalize_does_not_read_the_part_file_back() {
+    let e = env();
+    let data = content(13);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    // Every byte was verified in memory and the whole-file hash is folded
+    // from those bytes: a byte changed on disk behind the writer's back is
+    // not noticed (rsync's guarantee too), and there is no second full pass.
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(part_path(&e.root))
+        .unwrap();
+    std::os::unix::fs::FileExt::write_all_at(&f, &[data[100] ^ 0xFF], 100).unwrap();
+    drop(f);
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    let placed = fs::read(final_path(&e.root)).unwrap();
+    assert_eq!(placed[100], data[100] ^ 0xFF);
+    assert_eq!(placed.len(), data.len());
+}

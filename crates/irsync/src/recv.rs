@@ -6,6 +6,7 @@ use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
+use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
 use std::ffi::OsStr;
@@ -51,6 +52,9 @@ pub struct FileWriter {
     file: Arc<File>,
     size: u64,
     whole_hash: [u8; 32],
+    /// The whole-file hash, folded from the verified chunks as they come
+    /// (boxed: the writer travels by value through the receiver's events).
+    tree: Box<TreeHash>,
     chunks: Vec<ChunkRecord>,
     verified: Vec<bool>,
     index: IndexHandle,
@@ -335,10 +339,10 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
     }
 }
 
-fn hash_at(file: &File, c: &ChunkRecord) -> io::Result<[u8; 32]> {
+fn read_chunk(file: &File, c: &ChunkRecord) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; c.len as usize];
     file.read_exact_at(&mut buf, c.offset)?;
-    Ok(*blake3::hash(&buf).as_bytes())
+    Ok(buf)
 }
 
 /// Normalise ranges: sort by offset and merge overlapping or adjacent ones.
@@ -396,6 +400,7 @@ impl FileWriter {
             file: Arc::new(file),
             size: expected.size,
             whole_hash: expected.hash,
+            tree: Box::new(TreeHash::new(expected.size)),
             verified: vec![false; chunks.len()],
             chunks,
             index,
@@ -447,8 +452,12 @@ impl FileWriter {
         for (i, c) in self.chunks.iter().enumerate() {
             let end = c.offset + u64::from(c.len);
             let covered = ranges.iter().any(|&(s, e)| s <= c.offset && end <= e);
-            if covered && end <= file_len && hash_at(&self.file, c)? == c.hash {
-                self.verified[i] = true;
+            if covered && end <= file_len {
+                let bytes = read_chunk(&self.file, c)?;
+                if *blake3::hash(&bytes).as_bytes() == c.hash {
+                    self.verified[i] = true;
+                    self.tree.add(c.offset, &bytes);
+                }
             }
         }
         Ok(true)
@@ -464,6 +473,7 @@ impl FileWriter {
             if let Ok(i) = self.chunks.binary_search_by_key(&f.offset, |c| c.offset) {
                 if self.chunks[i] == f {
                     self.verified[i] = true;
+                    self.tree.add(f.offset, &read_chunk(&self.file, &f)?);
                 }
             }
         }
@@ -555,6 +565,7 @@ impl FileWriter {
         self.activity.fetch_add(1, Ordering::Relaxed);
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
+            self.tree.add(c.offset, data);
             self.chunks_since_persist += 1;
         }
         if self.chunks_since_persist >= PERSIST_EVERY_CHUNKS
@@ -632,6 +643,11 @@ impl FileWriter {
         }
         self.activity.fetch_add(1, Ordering::Relaxed);
         self.persist().await?;
+        // Folded from the bytes verified in memory: no read of the `.part`.
+        let actual = self
+            .tree
+            .root()
+            .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
         let (file, part, dest, size, expected) = (
             self.file.clone(),
             self.part.clone(),
@@ -658,7 +674,6 @@ impl FileWriter {
             file.set_len(size)?;
             file.sync_all()?;
             activity.fetch_add(1, Ordering::Relaxed);
-            let actual = digest_held(&file, &activity)?.hash;
             if actual != expected {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }

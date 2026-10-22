@@ -157,8 +157,8 @@ Receiver I/O volume for the same case:
 | --- | --- | --- |
 | rsync, default | 2 | 1 |
 | rsync `--inplace` | 1 | changed blocks only |
-| irsync, old file's digest cached | 2 | 1 |
-| irsync, old file's digest not cached | 3 | 1 |
+| irsync, old file's digest cached | 1 | 1 |
+| irsync, old file's digest not cached | 2 | 1 |
 
 Two of these costs were avoidable without a protocol change, and were
 removed on 2026-10-22: `open_writer` now only partitions the missing chunks
@@ -169,9 +169,9 @@ a local source whose bytes no longer match the index. The planner also
 starts hashing the old file when it sends the `PlanItem`, so steps 1 and 2
 above run concurrently. The chain is now: sender hash in parallel with the
 receiver's old-file hash, then index lookups, then the transfer with the
-local copy running under it, then finalize. The finalize re-hash is
-discussed in 3.4. The new flow is documented step by step in
-`DELTA_RECEIVE.md`.
+local copy running under it, then finalize, which since remedy 5 (3.4)
+reads nothing. The table above reflects that. The flow is documented step
+by step in `DELTA_RECEIVE.md`.
 
 The first-time sync of a tree pays a related price. Every new file is read
 twice on the sender (once to digest, once to send, with each chunk
@@ -194,14 +194,26 @@ one full read per file received, on the critical path, after the last byte
 has arrived, and it is what the R35 heartbeat exists to hide from the idle
 watchdog.
 
-The alternative is to define the whole-file hash as a BLAKE3 over the
-concatenated chunk hashes (a two-level Merkle root). Finalize would then be
-O(chunks) instead of O(bytes), and the data path would be exactly as
-verified as it is now. The losses: the whole-file hash would no longer
-equal `b3sum` of the file, which is convenient for debugging and for
-interoperating with other tools; the index's `whole_hash` column and rename
-detection would change meaning; and silent post-write disk corruption would
-go unnoticed until the next run's quick check. It is a protocol change.
+The alternative considered first was to define the whole-file hash as a
+BLAKE3 over the concatenated chunk hashes (a two-level Merkle root), at the
+cost of `b3sum` equivalence, of the meaning of the index's `whole_hash`
+column, and of a protocol change. A second idea, aligning chunk cuts to
+1 KiB so that chunks map onto BLAKE3's own tree, would have broken
+content-defined chunking's resynchronisation after unaligned insertions.
+
+What landed on 2026-10-22 needs neither. BLAKE3 is itself a Merkle tree
+over 1 KiB leaves at absolute offsets, and the `blake3` crate's `hazmat`
+module exposes its nodes. The writer (`tree_hash::TreeHash`) hashes the
+leaf-aligned interior of every verified chunk as aligned power-of-two
+subtrees, keeps the few bytes at each chunk end until the neighbouring
+chunk completes their leaf, merges sibling nodes eagerly so only a small
+frontier is held, and folds the root at finalize along the tree's own
+split points. The result equals `blake3::hash` of the bytes, so nothing
+on the wire or in the index changed; finalize is now `fsync`, fold,
+metadata, rename. What is no longer checked is the disk after the write:
+a byte flipped on the platter between write and rename goes unnoticed,
+which is rsync's guarantee as well. The receiver reads a file it receives
+exactly once, on adoption or local copy, and writes it once.
 
 ### 3.5 A chunk list is one control frame, capped at 16 MiB
 
@@ -401,9 +413,9 @@ protocol change.
    with a `last` flag, the only form a chunk list takes; protocol version
    2. Removes the frame ceiling; memory and a 2^24-record cap remain.
    *Done (2026-10-22); see 3.5.*
-5. **A Merkle whole-file hash** (3.4). Removes the finalize pass. Protocol
-   and index change, and it gives up `b3sum` equivalence; worth it only if
-   receiver throughput on large files becomes the bottleneck.
+5. **A Merkle whole-file hash** (3.4). Removes the finalize pass. *Done
+   (2026-10-22) without a protocol or index change: the true BLAKE3 is
+   folded from the verified chunks through the crate's tree API; see 3.4.*
 6. **Sub-chunk delta for the `DELTA` action** (3.1, 3.2). The honest fix
    for in-place workloads: when a chunk is missing and the old file has a
    chunk at roughly the same offset, run an rsync-style rolling match

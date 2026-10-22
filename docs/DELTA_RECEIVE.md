@@ -254,10 +254,24 @@ A file still incomplete after three re-requests fails with
 
 ### 2.8 Finalize
 
-Unchanged (`recv_io::finalize`): `fsync`, re-hash of the whole `.part`
-against the sender's whole-file hash, metadata applied through the
-descriptor, rename over the destination, `FileAck DONE`. The index record
-at the end is shared with the settle-in-place path (`record`).
+`recv_io::finalize`: `fsync`, then the whole-file hash is compared with the
+sender's, metadata is applied through the descriptor, the `.part` is
+renamed over the destination, and `FileAck DONE` goes out. The index
+record at the end is shared with the settle-in-place path (`record`).
+
+The hash is not computed by reading the `.part` back. BLAKE3 is a Merkle
+tree over 1 KiB leaves at absolute offsets, and the writer folds the
+file's real hash from the chunks it verified in memory
+(`tree_hash::TreeHash`): the leaf-aligned interior of each chunk is hashed
+as aligned power-of-two subtrees through the `blake3` crate's `hazmat`
+API, the up-to-1023 bytes at either end of a chunk wait until the
+neighbouring chunk completes their leaf, sibling nodes merge eagerly so a
+few dozen chaining values are held at most, and the root is folded at
+finalize along the tree's own split points. A chunk adopted from an
+earlier `.part` is read once to verify it and feeds the tree from that
+read; a sparse hole feeds its zeros. The result equals `b3sum` of the
+file. What finalize no longer catches is a byte changed on disk after the
+verified write, which rsync does not catch either.
 
 ### 2.9 The itemize line of a `DELTA` file
 
@@ -283,15 +297,11 @@ one full pass over the file on either disk:
 | receiver old-file hash | S (0 if cached) | overlapped with the sender's digest |
 | local copy into `.part` | S, before the request | S, concurrent with the transfer |
 | network transfer | after all of the above | starts right after the index lookups |
-| finalize re-hash | S | S |
+| finalize re-hash | S | none (folded from the verified chunks) |
 
 Critical path before: up to 4 S plus the transfer. After: S (the
-concurrent hashes) plus the longer of local copy and transfer, plus S for
-finalize. The finalize pass is the subject of remedy 5 in
-`IRSYNC_VS_RSYNC.md` and is outside this change.
-
-The receiver's I/O volume is the same as before; only its placement on the
-timeline changed.
+concurrent hashes) plus the longer of local copy and transfer. The
+receiver reads the old file once at most and writes the new one once.
 
 ## 4. Invariants
 
@@ -371,6 +381,7 @@ receiver logs `identical` for it.
 | open, compare, adopt, partition | `session/recv_io.rs::open_writer`, result `Opened` |
 | is it still the hashed file | `session/recv_io.rs::unchanged_file` |
 | settle in place | `session/recv_io.rs::settle_identical`, `recv.rs::discard_part` |
+| whole-file hash without a read-back | `tree_hash.rs::TreeHash`; fed from `recv.rs::FileWriter::write_chunk` and the adoption paths, folded in `finalize` |
 | route and dispatch | `session/receiver.rs::on_opened`, `recv_io::Route` |
 | local filler | `session/recv_io.rs::copy_local_chunks`, `read_local` |
 | network filler | `session/recv_io.rs::accept_streams`, `read_stream`, `read_range` |
