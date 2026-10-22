@@ -521,6 +521,14 @@ pub struct SideHooks {
     /// (once per hook instance, across reconnects).
     #[cfg(feature = "test-hooks")]
     pub drop_after_parts: Option<Arc<PartsFault>>,
+    /// Receiver: counts the `NeedChunks` re-requests it sends.
+    #[cfg(feature = "test-hooks")]
+    pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Receiver: runs once a `DELTA` file's chunk bases have been sent,
+    /// before the request for those chunks goes out (a test changes the
+    /// old file meanwhile).
+    #[cfg(feature = "test-hooks")]
+    pub after_bases: Option<PathHook>,
 }
 
 /// Test hook: a connection drop after a number of chunk-list parts.

@@ -35,8 +35,8 @@ use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
 };
 use super::recv_io::{
-    accept_streams, copy_local_chunks, finalize, open_writer, settle_identical, Fill, Opened,
-    Route, Routes,
+    accept_streams, copy_local_chunks, finalize, offer_bases, open_writer, settle_identical, Fill,
+    Opened, Route, Routes,
 };
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -600,6 +600,8 @@ impl Receiver {
             remote,
             local,
             digest,
+            bases,
+            old,
         } = fill;
         self.ctx.hooks.event("need", &f.path);
         if remote.is_empty() && local.is_empty() {
@@ -621,18 +623,29 @@ impl Receiver {
                 remote.len() + usize::from(!local.is_empty()),
             )),
             path: f.path.clone(),
+            old,
         };
         // Routed before the request goes out, so no data stream can miss it.
         self.routes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(file_id, route.clone());
-        // The request first (empty means "nothing needed for now"), then the
-        // local copies run while the sender delivers.
+        // The request for the chunks without a basis first (empty means
+        // "nothing needed for now"); the chunks with one are requested by
+        // the basis task once their signatures are out; the local copies
+        // run while the sender delivers. Every remote chunk is already
+        // counted in `pending`, whichever request carries it.
+        let based: HashSet<u32> = bases.iter().map(|b| b.0).collect();
+        let raw: Vec<u32> = remote.into_iter().filter(|i| !based.contains(i)).collect();
         self.out.send(Msg::Need(NeedChunks {
             file_id,
-            chunk_idx: remote,
+            chunk_idx: raw,
         }));
+        if let Some(old) = route.old.clone().filter(|_| !bases.is_empty()) {
+            let (ctx, out, r) = (self.ctx.clone(), self.out.clone(), route.clone());
+            self.tasks
+                .spawn(offer_bases(ctx, out, r, old, bases, file_id));
+        }
         if !local.is_empty() {
             let (ctx, events) = (self.ctx.clone(), self.events.clone());
             self.tasks

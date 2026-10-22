@@ -4,6 +4,12 @@
 //! data stream into the current writer of its file. A request whose streams
 //! and local copies have all ended with chunks still missing is reported
 //! back as `Drained`.
+//!
+//! For a `DELTA`, chunks the sender has to deliver are first offered a
+//! basis: block signatures over the old file around the chunk's place
+//! (`offer_bases`), so the sender can answer with operations against it
+//! (`crate::delta`). A chunk rebuilt from operations is verified like any
+//! other; one that does not verify stays missing and is re-requested raw.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,16 +20,18 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use iroh::endpoint::{RecvStream, VarInt};
-use irsync_proto::chunk::{ChunkRecord, FileDigest};
+use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{
-    file_entry::Kind, plan_item::Action, DataChunk, DataStreamHeader, FileEntry, Hash,
+    control::Msg, file_entry::Kind, plan_item::Action, DataChunk, DataStreamHeader, FileEntry,
+    Hash, NeedChunks,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::control::Ev;
+use super::control::{Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
+use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::net::frame::read_msg;
@@ -44,6 +52,9 @@ pub(super) struct Route {
     pub pending: Arc<AtomicUsize>,
     /// The file's session path (events and logs).
     pub path: RelPath,
+    /// The old destination file (`DELTA`), held open while bases over it
+    /// are out: copies in the sender's operations read from it.
+    pub old: Option<Arc<File>>,
 }
 
 pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
@@ -51,6 +62,10 @@ pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
 /// A chunk one of the receiver's own files holds: its index in the chunk
 /// list, the file (absolute) and the chunk's offset in that file.
 pub(super) type LocalChunk = (u32, PathBuf, u64);
+
+/// A basis to offer for a chunk: its index, and the region of the old file
+/// (offset, length) to sign for it.
+pub(super) type BasisSpec = (u32, u64, u32);
 
 /// The old destination file of a `DELTA`, hashed: its digest and the stat
 /// the digest was computed under.
@@ -75,6 +90,47 @@ pub(super) struct Fill {
     /// Chunks an indexed file holds: copied while the sender delivers the rest.
     pub local: Vec<LocalChunk>,
     pub digest: Arc<FileDigest>,
+    /// Chunks of `remote` to offer a basis for (see [`offer_bases`]).
+    pub bases: Vec<BasisSpec>,
+    /// The old file the bases are over (set when `bases` is not empty).
+    pub old: Option<Arc<File>>,
+}
+
+/// Picks the chunks of `remote` worth a basis and the old-file region for
+/// each: from one chunk length before the chunk to two after, clamped to
+/// the old file. Nothing is offered for a file that lost more than half
+/// its chunks (a rewrite: the signatures would match nothing) unless it
+/// is tiny, for a chunk starting past the old file's end (appended data),
+/// or once the regions add up to the old file's size (one cached pass at
+/// most; a few chunk lengths at least, so a small file is covered whole).
+fn basis_specs(chunks: &[ChunkRecord], remote: &[u32], old_size: u64) -> Vec<BasisSpec> {
+    if remote.len() * 2 > chunks.len() && chunks.len() > 2 {
+        return Vec::new();
+    }
+    let budget = old_size.max(3 * u64::from(CHUNK_PARAMS.max));
+    let mut specs = Vec::new();
+    let mut used = 0u64;
+    for &idx in remote {
+        let Some(c) = chunks.get(idx as usize) else {
+            continue;
+        };
+        if c.offset >= old_size {
+            continue;
+        }
+        let len = u64::from(c.len);
+        let start = c.offset.saturating_sub(len);
+        let end = old_size.min(c.offset + 2 * len);
+        let region = end - start;
+        if region < 2 * MIN_BLOCK as u64 {
+            continue;
+        }
+        if used + region > budget {
+            break;
+        }
+        used += region;
+        specs.push((idx, start, region as u32));
+    }
+    specs
 }
 
 /// Makes sure the destination's current file at `path` has its chunks in
@@ -152,22 +208,27 @@ pub(super) async fn open_writer(
     // The writer works on index keys under the index root, so its partial
     // record is keyed like every other index row; the file lands at the same place.
     let key = ctx.key(&path);
+    // The old file's size, when there is one to offer bases over.
+    let mut old_size = None;
     if action == Action::Delta {
         let old = match prehash {
             Some(h) => h.await.ok().flatten(),
             None => index_old_file(&ctx, &path).await,
         };
-        let same = old.filter(|o| o.digest.size == digest.size && o.digest.hash == digest.hash);
+        let same = old
+            .as_ref()
+            .filter(|o| o.digest.size == digest.size && o.digest.hash == digest.hash);
         if let Some(old) = same {
             #[cfg(feature = "test-hooks")]
             if let Some(h) = &ctx.hooks.before_identical_check {
                 h(&path).await;
             }
-            if let Some(file) = unchanged_file(&ctx, &key, &old).await {
+            if let Some(file) = unchanged_file(&ctx, &key, old).await {
                 return Ok(Opened::Identical { file, digest });
             }
             tracing::debug!(?path, "destination changed since it was hashed");
         }
+        old_size = old.map(|o| o.entry.size);
     }
     let (base, rel, index, pd, activity) = (
         ctx.base.clone(),
@@ -216,12 +277,92 @@ pub(super) async fn open_writer(
             }
         }
     }
+    let mut bases = match old_size {
+        Some(size) if !remote.is_empty() => basis_specs(&digest.chunks, &remote, size),
+        _ => Vec::new(),
+    };
+    let mut old = None;
+    if !bases.is_empty() {
+        let full = ctx.full_key(&key);
+        match blocking(move || crate::fs::safe::open_regular_nofollow(&full)).await {
+            Ok(f) => old = Some(Arc::new(f)),
+            Err(e) => {
+                tracing::debug!(?path, error = %e, "old file not opened; no bases");
+                bases.clear();
+            }
+        }
+    }
     Ok(Opened::Writer(Box::new(Fill {
         writer: w,
         remote,
         local,
         digest,
+        bases,
+        old,
     })))
+}
+
+/// Signs each region in `specs` from the old file and sends it as a
+/// `ChunkBasis`, then requests those chunks. The request always goes out:
+/// a basis that could not be computed just means a raw chunk. The sender
+/// uses each basis for this one request and drops it.
+pub(super) async fn offer_bases(
+    ctx: Arc<Ctx>,
+    out: Out,
+    route: Route,
+    old: Arc<File>,
+    specs: Vec<BasisSpec>,
+    file_id: u64,
+) {
+    let idxs: Vec<u32> = specs.iter().map(|s| s.0).collect();
+    for (idx, offset, len) in specs {
+        let f = old.clone();
+        let basis = blocking(move || {
+            let mut buf = vec![0u8; len as usize];
+            f.read_exact_at(&mut buf, offset)?;
+            Ok(Basis::sign(offset, &buf))
+        })
+        .await;
+        ctx.activity.fetch_add(1, Ordering::Relaxed);
+        match basis {
+            Ok(b) if b.blocks() > 0 => {
+                out.send(Msg::ChunkBasis(b.to_wire(file_id, idx)));
+                ctx.hooks.event("basis", &route.path);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(path = ?route.path, idx, error = %e, "reading the old file for a basis failed");
+                break;
+            }
+        }
+    }
+    #[cfg(feature = "test-hooks")]
+    if let Some(h) = &ctx.hooks.after_bases {
+        h(&route.path).await;
+    }
+    // A retired writer (new chunk list, failure) has nothing to request.
+    if route.slot.lock().await.is_none() {
+        return;
+    }
+    out.send(Msg::Need(NeedChunks {
+        file_id,
+        chunk_idx: idxs,
+    }));
+}
+
+/// Rebuilds chunk `idx` from the sender's operations against the old file.
+async fn rebuild(route: &Route, idx: usize, ops: Vec<Op>) -> io::Result<Vec<u8>> {
+    let old = route
+        .old
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "operations without a basis"))?;
+    let len = route
+        .digest
+        .chunks
+        .get(idx)
+        .map(|c| c.len as usize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk index out of range"))?;
+    blocking(move || decode(&ops, len, &mut |off, buf| old.read_exact_at(buf, off))).await
 }
 
 /// Settles a `DELTA` file whose destination already holds the content:
@@ -471,8 +612,8 @@ async fn read_range(
     };
     let mut arrived = 0;
     for k in 0..n {
-        let data = match read_msg::<DataChunk, _>(s).await {
-            Ok(Some(c)) => c.data,
+        let frame = match read_msg::<DataChunk, _>(s).await {
+            Ok(Some(c)) => c,
             Ok(None) => break,
             Err(e) => {
                 tracing::debug!(file_id, error = %e, "data stream failed");
@@ -480,14 +621,41 @@ async fn read_range(
             }
         };
         arrived += 1;
+        // The chunk's bytes, raw or rebuilt from operations against the
+        // old file (outside the writer lock), with what they cost on the
+        // wire. A rebuild that fails leaves the chunk missing.
+        let rebuilt = !frame.ops.is_empty();
+        let (data, wire) = if rebuilt {
+            let ops: io::Result<Vec<Op>> = frame.ops.into_iter().map(Op::from_wire).collect();
+            let (ops, wire) = match ops {
+                Ok(ops) => {
+                    let wire = encoded_len(&ops) as u64;
+                    (rebuild(route, first + k, ops).await, wire)
+                }
+                Err(e) => (Err(e), 0),
+            };
+            match ops {
+                Ok(d) => (Some(d), wire),
+                Err(e) => {
+                    tracing::debug!(file_id, idx = first + k, error = %e, "rebuilding a chunk failed");
+                    (None, wire)
+                }
+            }
+        } else {
+            let wire = frame.data.len() as u64;
+            (Some(frame.data), wire)
+        };
         ctx.progress.store(true, Ordering::Relaxed);
         ctx.activity.fetch_add(1, Ordering::Relaxed);
-        ctx.hooks.bus.emit(super::Event::Bytes(data.len() as u64));
-        let _total = bytes.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
+        ctx.hooks.bus.emit(super::Event::Bytes(wire));
+        let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
         #[cfg(feature = "test-hooks")]
         if let Some(f) = &ctx.fault {
             f.observe(_total, &ctx.conn);
         }
+        let Some(data) = data else {
+            continue;
+        };
         let mut guard = route.slot.lock().await;
         let Some(w) = guard.as_mut() else {
             // The writer was retired (new chunk list, failure): drop the rest.
@@ -496,7 +664,12 @@ async fn read_range(
             return n;
         };
         match w.write_chunk((first + k) as u32, &data).await {
-            Ok(()) => ctx.hooks.event("chunk", &route.path),
+            Ok(()) => {
+                ctx.hooks.event("chunk", &route.path);
+                if rebuilt {
+                    ctx.hooks.event("ops", &route.path);
+                }
+            }
             // Stale or corrupt data never verifies; the chunk stays missing.
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                 tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
@@ -567,6 +740,43 @@ mod tests {
                 c
             })
             .collect()
+    }
+
+    #[test]
+    fn bases_cover_the_neighbourhood_of_a_missing_chunk_inside_the_old_file() {
+        let c = chunks(&[100_000; 10]);
+        let old = 1_000_000;
+        // Interior: one chunk before to two after.
+        assert_eq!(basis_specs(&c, &[4], old), [(4, 300_000, 300_000)]);
+        // Clamped at the start and at the old file's end.
+        assert_eq!(basis_specs(&c, &[0], old), [(0, 0, 200_000)]);
+        assert_eq!(basis_specs(&c, &[9], old), [(9, 800_000, 200_000)]);
+        // A chunk starting at or past the old end (appended data) gets none.
+        assert_eq!(basis_specs(&c, &[8, 9], 850_000), [(8, 700_000, 150_000)]);
+        assert_eq!(basis_specs(&c, &[8, 9], 800_000), []);
+        // A region too small to sign is not offered.
+        assert_eq!(basis_specs(&c, &[0], 600), []);
+    }
+
+    #[test]
+    fn bases_are_withheld_for_a_rewrite_and_capped_at_one_pass_over_the_old_file() {
+        let c = chunks(&[100_000; 10]);
+        // More than half missing: a rewrite, unless the file is tiny.
+        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4, 5], 1_000_000), []);
+        assert_eq!(basis_specs(&c, &[0, 1, 2, 3, 4], 1_000_000).len(), 5);
+        // A tiny file is covered whole even where every chunk is missing.
+        let two = chunks(&[100_000; 2]);
+        assert_eq!(basis_specs(&two, &[0, 1], 200_000).len(), 2);
+        let one = chunks(&[100_000]);
+        assert_eq!(basis_specs(&one, &[0], 100_000), [(0, 0, 100_000)]);
+        // Regions add up to at most the old file's size (once it is larger
+        // than a few chunks): 200,000 + 12 * 300,000 fit 4,000,000 bytes.
+        let c = chunks(&[100_000; 40]);
+        let remote: Vec<u32> = (0..20).collect();
+        let specs = basis_specs(&c, &remote, 4_000_000);
+        let total: u64 = specs.iter().map(|s| u64::from(s.2)).sum();
+        assert!(total <= 4_000_000, "{specs:?}");
+        assert_eq!(specs.len(), 13, "{specs:?}");
     }
 
     #[test]

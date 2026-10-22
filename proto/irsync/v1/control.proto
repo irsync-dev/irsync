@@ -39,6 +39,21 @@ message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
 } // receiver -> sender; empty = nothing needed (local copy / already have)
+// receiver -> sender, before the NeedChunks that asks for `chunk_idx`: block
+// signatures over a region of the receiver's old file (`offset` is where it
+// starts in that file; the region is `block` * blocks long, a shorter tail
+// is unsigned). Per block one rsync-style rolling sum (`weak`) and the
+// first 8 bytes of its BLAKE3 hash (`strong`, concatenated). The sender may
+// answer the chunk with `DataChunk.ops` against this region; it must still
+// hash to the chunk's record. Dropped by the sender after that one chunk.
+message ChunkBasis {
+  uint64 file_id = 1;
+  uint32 chunk_idx = 2;
+  uint64 offset = 3;
+  uint32 block = 4; // 512 ..= 4096
+  repeated fixed32 weak = 5;
+  bytes strong = 6; // 8 * weak.len() bytes
+}
 // receiver -> sender: DONE, HASH_MISMATCH, WRITE_ERROR. sender -> receiver: SOURCE_ERROR
 // (the sender cannot read the file; the receiver drops it without a reply).
 message FileAck {
@@ -91,5 +106,6 @@ message Control {
     Itemized itemized = 9;
     Heartbeat heartbeat = 10;
     ChunkListPart chunk_list_part = 11;
+    ChunkBasis chunk_basis = 12;
   }
 }

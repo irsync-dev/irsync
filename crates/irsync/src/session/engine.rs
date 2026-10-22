@@ -516,7 +516,7 @@ pub(super) async fn run_client_inner(
         #[cfg(feature = "test-hooks")]
         fault: None,
         #[cfg(feature = "test-hooks")]
-        rerequests: None,
+        rerequests: local.hooks.rerequests.clone(),
         base: local.root.clone(),
         root: local.root,
         scope: IndexScope::new(local.index, RelPath::root()),

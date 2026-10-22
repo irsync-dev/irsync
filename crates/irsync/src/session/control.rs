@@ -530,6 +530,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Plan(_) => "PlanItem",
         Msg::ChunkListPart(_) => "ChunkListPart",
         Msg::Need(_) => "NeedChunks",
+        Msg::ChunkBasis(_) => "ChunkBasis",
         Msg::Ack(_) => "FileAck",
         Msg::Done(_) => "SessionDone",
         Msg::Error(_) => "Error",

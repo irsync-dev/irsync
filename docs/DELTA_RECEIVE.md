@@ -1,12 +1,15 @@
 # Receiving a changed file: the overlapped delta algorithm
 
 How the receiver fills one file once the sender's chunk list is in hand,
-after the restructuring of 2026-10-22, and how it settles a file whose
-content turns out not to have changed at all. Everything here was checked against
-the code in the working tree of that date; function names point at where
-each step lives. The wire protocol (`protocol.md`) is unchanged by this
-work: the receiver only reorders what it does between two messages it was
-already sending.
+after the restructuring of 2026-10-22, how it settles a file whose
+content turns out not to have changed at all, and how a chunk it lacks is
+rebuilt from block matches against the old file instead of being sent
+whole. Everything here was checked against the code in the working tree
+of that date; function names point at where each step lives. The wire
+protocol (`protocol.md`) gained two things for the last part: a
+`ChunkBasis` control message from the receiver and an operation form of
+the `DataChunk` frame; everything else only reorders what the receiver
+does between messages it was already sending.
 
 Companion documents: `IRSYNC_VS_RSYNC.md` (section 3.3 describes the
 serialised flow this replaces, and why it mattered), `protocol.md` (the
@@ -118,9 +121,23 @@ calls `index_old_file` itself; by then that is a cache hit.
    lookup itself fails (index error, poisoned lock), the whole missing set
    goes remote, which is always correct, and a warning is logged.
 
-The result is `Opened::Writer` carrying the writer, the two sets and the
-digest. The sets are disjoint and together cover exactly the missing
-chunks.
+6. **Pick bases** (`DELTA` with an old file, remote set non-empty).
+   `basis_specs` chooses which remote chunks to offer a basis for and the
+   old-file region of each: from one chunk length before the chunk's
+   offset to two after, clamped to the old file. No basis for a chunk
+   starting at or past the old file's end (appended data), none at all
+   when more than half the chunks are missing (a rewrite; a file of one
+   or two chunks is exempt, see 3.2 of the comparison), and the regions
+   stop once they add up to the old file's size or three maximum chunk
+   lengths, whichever is more. If any basis is chosen, the old file is
+   opened without following symlinks and the descriptor travels with the
+   result: the signatures are computed from it and the copies later read
+   from it, so a rename of the destination meanwhile changes nothing.
+
+The result is `Opened::Writer` carrying the writer, the two sets, the
+digest, the basis specs and the old-file descriptor. The sets are disjoint
+and together cover exactly the missing chunks; the basis specs name a
+subset of the remote set.
 
 ### 2.4 Dispatch: settle in place, or request first and then copy
 
@@ -130,7 +147,7 @@ generation check it looks at what `open_writer` returned.
 **Identical.** The content is already there, so the file is settled in
 place rather than placed. The receiver sends an empty `NeedChunks`, which
 tells the sender to wait for the ack, emits the held-back itemize line if
-any attribute differs (section 2.9), and spawns `settle_identical`. That
+any attribute differs (section 2.10), and spawns `settle_identical`. That
 task discards a leftover `.part` of an earlier interrupted attempt along
 with its progress record, unless another writer holds it, applies the
 sender's mode, ownership and times to the existing inode through the open
@@ -157,8 +174,9 @@ straight to finalize.
 | `gen` | the file's generation; stale streams and task results carry an older value and are ignored |
 | `slot` | `Arc<Mutex<Option<FileWriter>>>`, the one writer both fillers share |
 | `chunks` | the chunk table (offset, length, hash per chunk) |
-| `pending` | units of delivery still running, see 2.6 |
+| `pending` | units of delivery still running, see 2.7 |
 | `path` | the file's session path, for events and logs |
+| `old` | the old file's descriptor while bases over it are out (`DELTA`), read by the rebuild of an operation frame |
 
 `pending` starts at `remote.len() + 1` if the local set is non-empty, or
 `remote.len()` if it is empty: one unit per remote chunk, plus one for the
@@ -168,24 +186,74 @@ Then, in this order:
 
 1. the route is inserted into the routing table, so the earliest possible
    data stream finds it;
-2. `NeedChunks` with the remote set goes out on the control stream;
-3. if the local set is non-empty, `copy_local_chunks` is spawned.
+2. `NeedChunks` with the remote chunks that have no basis goes out on the
+   control stream;
+3. if any basis was chosen, `offer_bases` is spawned (section 2.5); it
+   ends with the `NeedChunks` for the chunks it signed;
+4. if the local set is non-empty, `copy_local_chunks` is spawned.
 
-Step 2 before step 3 is the point of the change. The sender starts reading
+Step 2 before step 4 is the point of the change. The sender starts reading
 and streaming the moment the request lands, while the receiver's disk fills
-in the rest. If the remote set is empty but the local set is not, the
-receiver still sends an empty `NeedChunks`: the sender must know it may
-move on to the next file, and the receiver's local work is not the sender's
-concern.
+in the rest and the signatures are computed. If the remote set is empty but
+the local set is not, the receiver still sends an empty `NeedChunks`: the
+sender must know it may move on to the next file, and the receiver's local
+work is not the sender's concern. `pending` counts every remote chunk from
+the start, whichever of the two requests carries it, so the request cannot
+drain before the second half of it has even been sent.
 
-### 2.5 Two fillers, one writer
+### 2.5 Bases and operations: rsync inside a chunk
+
+`recv_io::offer_bases` runs as one task per file. For each basis spec it
+reads the region from the old file's descriptor (blocking, outside every
+lock), signs it (`delta::Basis::sign`: blocks of `sqrt(region)` bytes
+clamped to 512 B .. 4 KiB, per block a 32-bit rolling sum and the first
+8 bytes of the block's BLAKE3), and sends it as a `ChunkBasis` on the
+control stream. A region that cannot be read ends the signing; the rest
+of the chunks come raw. Then, unless the writer has been retired
+meanwhile, one `NeedChunks` naming every chunk of the specs goes out. The
+control stream is ordered, so the sender holds every basis before it sees
+the request.
+
+On the sender (`sender_role::on_basis`, `send::payload`) a basis is kept
+per file and chunk index until the request for that chunk arrives, then
+taken out of the map and given to the data-stream task. For such a chunk
+the task runs `delta::encode` on the chunk's bytes: a window of one block
+slides over them one byte at a time, the rolling sum is updated in place,
+each position is checked against a 64 Ki-bit filter, then the signature
+map, then the strong hash; a hit emits a copy of that block's range in the
+old file and jumps a block ahead, a miss extends the pending literal. Runs
+of adjacent copies and of literals are coalesced. If the operations are
+not at least a quarter smaller than the chunk, the chunk's bytes go out as
+before; otherwise the `DataChunk` carries `ops` and no `data`. A chunk
+asked for a second time (section 2.8) has no basis any more and goes raw.
+
+Back on the receiver, `read_range` sees a frame with operations, converts
+them, charges their wire size to the byte counters, and calls `rebuild`:
+the operations must add up to exactly the chunk's length (checked before
+anything is read), literals are copied in, copies are read from the old
+file's descriptor with positioned reads, all outside the writer lock. The
+result goes through the same `write_chunk` as every other chunk. A rebuild
+that fails for any reason (no old file, an operation list that does not
+add up, a copy past the old file's end, a read error) or a rebuilt chunk
+that does not hash to its record is logged at debug level and the chunk
+stays missing. Section 2.8 then has it re-sent raw. Nothing in this path
+is trusted: the old file may have changed in place since it was signed,
+the strong hash is 8 bytes, the sender may be hostile, and every one of
+those ends in the same place, a chunk that is not verified and is asked
+for again.
+
+The receiver logs `basis` per basis sent and `ops` per chunk verified from
+operations (test hooks).
+
+### 2.6 Two fillers, one writer
 
 **The network side** is unchanged in shape (`accept_streams`,
 `read_stream`, `read_range`). Each unidirectional stream carries a
 `DataStreamHeader` naming the session, the file and a contiguous chunk
-range. The reader looks up the route, reads chunk by chunk, hashes each one,
-takes the writer lock, and calls `FileWriter::write_chunk`, which checks
-length and hash again and does a positioned write at the chunk's offset.
+range. The reader looks up the route, reads chunk by chunk (rebuilding
+one that arrived as operations, section 2.5), hashes each one, takes the
+writer lock, and calls `FileWriter::write_chunk`, which checks length and
+hash again and does a positioned write at the chunk's offset.
 
 **The local side** (`copy_local_chunks`) walks the local set in order. For
 each triple it:
@@ -206,10 +274,10 @@ the write calls, never the reads or the network receive.
 Any failure of a local chunk (source vanished or shrank, read error, hash
 mismatch because the source was modified in place without changing its
 mtime so the index row is stale) is logged at debug level and the task
-moves on. The chunk's bit stays clear. Nothing else happens yet; 2.7
+moves on. The chunk's bit stays clear. Nothing else happens yet; 2.8
 describes how it is recovered.
 
-### 2.6 Completion accounting
+### 2.7 Completion accounting
 
 Both fillers end through `finish_unit(route, events, file_id, units)`:
 
@@ -233,26 +301,28 @@ Taking the writer out of the slot on `Ready` is what makes a late unit
 harmless: a stream that straggles in after the file is complete finds an
 empty slot and does nothing.
 
-### 2.7 Recovering a failed local copy
+### 2.8 Recovering a failed local copy or a failed rebuild
 
 When the last unit ends with chunks still missing, `Done::Drained` reaches
 `Receiver::on_drained`. It re-reads the missing set from the writer, checks
 that `pending` really is zero, counts a re-request against
 `MAX_REREQUESTS` (3), adds the missing count back onto `pending`, and
 sends another `NeedChunks` naming those chunks. The sender delivers them
-over the network and the normal path verifies them.
+over the network and the normal path verifies them. No basis accompanies
+a re-request, so these chunks come raw.
 
 This is the pre-existing path for a data stream that ended short; the local
-copy task reuses it by being one unit of the same request. A stale local
-source therefore costs exactly one round trip and the bytes of the chunks
-that did not verify, and the file still finalizes with a verified whole-file
-hash. The stale index row is not corrected here; the next scan of that
-source file replaces it.
+copy task reuses it by being one unit of the same request, and so does a
+chunk whose rebuild from operations did not verify. A stale local source
+or a stale basis therefore costs exactly one round trip and the bytes of
+the chunks that did not verify, and the file still finalizes with a
+verified whole-file hash. The stale index row is not corrected here; the
+next scan of that source file replaces it.
 
 A file still incomplete after three re-requests fails with
 `Status::WriteError`, as before.
 
-### 2.8 Finalize
+### 2.9 Finalize
 
 `recv_io::finalize`: `fsync`, then the whole-file hash is compared with the
 sender's, metadata is applied through the descriptor, the `.part` is
@@ -273,7 +343,7 @@ read; a sparse hole feeds its zeros. The result equals `b3sum` of the
 file. What finalize no longer catches is a byte changed on disk after the
 verified write, which rsync does not catch either.
 
-### 2.9 The itemize line of a `DELTA` file
+### 2.10 The itemize line of a `DELTA` file
 
 The planner decides `DELTA` before anyone knows whether the content really
 changed, so for a `DELTA` file it no longer emits the `-i` line at plan
@@ -298,10 +368,13 @@ one full pass over the file on either disk:
 | local copy into `.part` | S, before the request | S, concurrent with the transfer |
 | network transfer | after all of the above | starts right after the index lookups |
 | finalize re-hash | S | none (folded from the verified chunks) |
+| bytes for a small change inside a chunk | the chunk (64 KiB .. 1 MiB) | about a block (512 B .. 4 KiB) of literal, plus ~3.5% of the chunk in signatures the other way |
 
 Critical path before: up to 4 S plus the transfer. After: S (the
 concurrent hashes) plus the longer of local copy and transfer. The
-receiver reads the old file once at most and writes the new one once.
+receiver reads the old file once for its hash and once more, only around
+the missing chunks and capped at its size, for the signatures; it writes
+the new one once.
 
 ## 4. Invariants
 
@@ -317,11 +390,16 @@ receiver reads the old file once at most and writes the new one once.
   construction.
 - **Local data is never trusted.** A mismatch degrades to a network fetch,
   not an error, and never reaches the `.part`.
+- **Operations are never trusted either.** A chunk rebuilt from them is
+  verified by `write_chunk` like any other; the old file is only ever
+  read, through a descriptor opened once; a rebuild that fails leaves the
+  chunk missing, and its re-request carries no basis.
 - **Reconnects and failures are safe.** A new chunk list bumps the
   generation and retires the writer. A copy task of the old generation sees
   the empty slot and exits; its late `finish_unit` finds nothing to report.
-- **The protocol sees nothing new.** The sender observes the same message
-  sequence as before, only earlier. A file settled in place looks to the
+- **The sender's view stays simple.** It answers every `NeedChunks` with
+  data streams as before; the bases are optional extras it may use for
+  the one request that follows them. A file settled in place looks to the
   sender like one whose every chunk was adopted: an empty request, then
   `DONE`.
 - **Settling in place trusts the quick check, not the clock.** The
@@ -351,6 +429,44 @@ each tagged with the path.
 - `delta_hashes_the_old_file_once_starting_at_plan_time`: a pull with a
   fresh state directory reports exactly one file hashed on the receiver,
   with `prehash` logged before `chunklist`.
+
+`crates/irsync/tests/sub_chunk.rs` pins the codec on its own
+(`irsync::delta`): the rolling sum equals a fresh computation at every
+position and block length; an unchanged chunk is one copy; one changed
+byte, an insertion and a deletion cost at most two blocks of literal and
+rebuild exactly; copies carry the basis offset in the old file; an
+unrelated basis yields one literal as large as the chunk; a chunk shorter
+than a block is all literal; adjacent operations coalesce; `decode`
+refuses operations that do not add up to the chunk or overflow, and
+reports a copy the old file cannot supply; a basis and the operations
+round-trip through their wire forms, with malformed ones refused.
+
+`crates/irsync/tests/sub_chunk_delta.rs` runs the path end to end; the
+receiver logs `basis` per basis sent and `ops` per chunk verified from
+operations.
+
+- `one_changed_byte_in_a_large_file_costs_a_block_not_a_chunk`: 4 MiB,
+  one byte changed, pulled: one basis, one chunk from operations, fewer
+  than 16 KiB on the data path (measured 2,100 bytes).
+- `scattered_page_writes_cost_blocks_not_chunks`: 16 MiB, eight 4 KiB
+  writes, pushed (the sender's count is what it put on the wire): at
+  least eight chunks from operations, fewer than 128 KiB (measured
+  51,475 bytes).
+- `a_single_chunk_file_with_one_edit_is_not_resent_whole`: 100 KiB, six
+  bytes changed: fewer than 4 KiB (measured 550 bytes).
+- `a_rewritten_file_offers_no_bases`: 4 MiB replaced: no `basis`, no
+  `ops`, the whole file crosses.
+- `chunks_past_the_end_of_the_old_file_get_no_basis`: 2 MiB appended to
+  4 MiB: at most one basis (the old last chunk, whose end moved), about
+  2 MiB on the wire.
+- `old_file_modified_in_place_after_the_bases_falls_back_to_raw`: a test
+  hook (`SideHooks::after_bases`) overwrites the destination in place
+  once the bases are out; the rebuilt chunk is rejected (no `ops`), the
+  re-request counter (`SideHooks::rerequests`) reads 1, and the file ends
+  up equal to the source with no `.part` left.
+- `a_connection_lost_mid_delta_resumes_and_completes`: the sending daemon
+  drops the connection during the delta; the client reconnects, the
+  session resumes, and the file verifies.
 
 `crates/irsync/tests/content_equal.rs` covers the settle-in-place path; the
 receiver logs `identical` for it.
@@ -383,10 +499,14 @@ receiver logs `identical` for it.
 | settle in place | `session/recv_io.rs::settle_identical`, `recv.rs::discard_part` |
 | whole-file hash without a read-back | `tree_hash.rs::TreeHash`; fed from `recv.rs::FileWriter::write_chunk` and the adoption paths, folded in `finalize` |
 | route and dispatch | `session/receiver.rs::on_opened`, `recv_io::Route` |
+| choosing bases | `session/recv_io.rs::basis_specs` |
+| signing and offering them | `session/recv_io.rs::offer_bases`; `delta.rs::Basis::sign` |
+| holding and using a basis on the sender | `session/sender_role.rs::on_basis`, `on_need`; `send.rs::payload`; `delta.rs::encode` |
+| rebuilding a chunk from operations | `session/recv_io.rs::rebuild`; `delta.rs::decode` |
 | local filler | `session/recv_io.rs::copy_local_chunks`, `read_local` |
 | network filler | `session/recv_io.rs::accept_streams`, `read_stream`, `read_range` |
 | completion accounting | `session/recv_io.rs::finish_unit` |
 | re-request | `session/receiver.rs::on_drained`, `MAX_REREQUESTS` |
 | verification on write | `recv.rs::FileWriter::write_chunk`, `missing_chunks` |
 | chunk list in parts | `session/parts.rs::split`, `assemble`; `session/receiver.rs::on_chunk_list_part` |
-| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check`, `chunk_list_part_records`, `drop_after_parts` |
+| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check`, `chunk_list_part_records`, `drop_after_parts`, `after_bases`, `rerequests` |

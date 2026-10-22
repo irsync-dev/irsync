@@ -10,7 +10,24 @@ message DataStreamHeader {
   uint64 length = 4;
   uint32 first_chunk_idx = 5;
 }
+// One chunk per frame: its bytes in `data` (<= 1 MiB), or, for a chunk the
+// receiver offered a `ChunkBasis` for, the operations that rebuild it in
+// `ops` (then `data` is empty). The rebuilt bytes must hash to the chunk's
+// record like any other; the receiver verifies them before writing.
 message DataChunk {
   bytes data = 1;
-} // <= 1 MiB, exactly one chunk per frame
+  repeated DeltaOp ops = 2;
+}
+// `len` bytes at `offset` of the receiver's old file (inside the region the
+// receiver signed), or literal bytes.
+message CopyOld {
+  uint64 offset = 1;
+  uint32 len = 2;
+}
+message DeltaOp {
+  oneof op {
+    bytes literal = 1;
+    CopyOld copy = 2;
+  }
+}
 // RangeSet/Range (persisted partial progress) live in common.proto.

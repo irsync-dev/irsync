@@ -5,12 +5,17 @@
 //! `DataChunk` frame per chunk. Chunks are re-hashed as they are read; a
 //! mismatch with the digest means the file changed under us and is reported
 //! as `InvalidData` instead of sending stale bytes.
+//!
+//! A chunk the receiver offered a basis for (block signatures over its old
+//! file, see [`crate::delta`]) goes out as copy/literal operations when
+//! those are clearly smaller than the chunk, as its bytes otherwise.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,6 +25,7 @@ use irsync_proto::v1::{DataChunk, DataStreamHeader};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::delta::{encode, encoded_len, Basis, Op};
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::net::frame::write_msg;
@@ -199,14 +205,30 @@ impl Sender {
     }
 
     /// Sends the chunks `idxs` of `digest` as one stream per contiguous range,
-    /// at most `parallel` streams at a time. Returns the first error.
+    /// at most `parallel` streams at a time. Returns the bytes put on the
+    /// wire, or the first error.
     pub async fn send_chunks(
         &self,
         file_id: u64,
         path: &RelPath,
         digest: &FileDigest,
         idxs: &[u32],
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
+        self.send_chunks_against(file_id, path, digest, idxs, HashMap::new())
+            .await
+    }
+
+    /// [`Sender::send_chunks`], with the receiver's bases for some of the
+    /// chunks (by index): those go as operations against its old file when
+    /// that is clearly smaller.
+    pub async fn send_chunks_against(
+        &self,
+        file_id: u64,
+        path: &RelPath,
+        digest: &FileDigest,
+        idxs: &[u32],
+        bases: HashMap<u32, Basis>,
+    ) -> io::Result<u64> {
         let mut sorted: Vec<usize> = idxs.iter().map(|&i| i as usize).collect();
         sorted.sort_unstable();
         sorted.dedup();
@@ -221,6 +243,8 @@ impl Sender {
         let digest = Arc::new(digest.clone());
         let full = self.inner.root.join(path.to_os());
         let name = Arc::new(name);
+        let bases = Arc::new(bases);
+        let sent = Arc::new(AtomicU64::new(0));
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut tasks = JoinSet::new();
@@ -244,11 +268,13 @@ impl Sender {
                 break;
             }
             let inner = self.inner.clone();
-            let (digest, full, name, cancelled) = (
+            let (digest, full, name, cancelled, bases, sent) = (
                 digest.clone(),
                 full.clone(),
                 name.clone(),
                 cancelled.clone(),
+                bases.clone(),
+                sent.clone(),
             );
             tasks.spawn(async move {
                 let _permit = permit;
@@ -257,7 +283,9 @@ impl Sender {
                 }
                 let now = inner.active.fetch_add(1, Ordering::SeqCst) + 1;
                 inner.max_active.fetch_max(now, Ordering::SeqCst);
-                let res = inner.send_range(file_id, &full, &name, &digest, r).await;
+                let res = inner
+                    .send_range(file_id, &full, &name, &digest, r, &bases, &sent)
+                    .await;
                 inner.active.fetch_sub(1, Ordering::SeqCst);
                 if res.is_err() {
                     cancelled.store(true, Ordering::SeqCst);
@@ -271,7 +299,10 @@ impl Sender {
                 cancelled.store(true, Ordering::SeqCst);
             }
         }
-        first_err.map_or(Ok(()), Err)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(sent.load(Ordering::SeqCst)),
+        }
     }
 }
 
@@ -306,6 +337,7 @@ impl Inner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_range(
         &self,
         file_id: u64,
@@ -313,6 +345,8 @@ impl Inner {
         name: &str,
         digest: &FileDigest,
         r: Range,
+        bases: &Arc<HashMap<u32, Basis>>,
+        sent: &AtomicU64,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
         // Never follow a symlink swapped in since the file was listed.
@@ -325,7 +359,9 @@ impl Inner {
         let first = read_chunk(&file, &chunks[0], name, r.first).await?;
         let mut send = self.conn.open_uni().await.map_err(io::Error::other)?;
         let res = self
-            .write_range(&mut send, file_id, &file, name, digest, &r, first)
+            .write_range(
+                &mut send, file_id, &file, name, digest, &r, first, bases, sent,
+            )
             .await;
         if res.is_err() {
             let _ = send.reset(VarInt::from_u32(1));
@@ -343,6 +379,8 @@ impl Inner {
         digest: &FileDigest,
         r: &Range,
         first: Vec<u8>,
+        bases: &Arc<HashMap<u32, Basis>>,
+        sent: &AtomicU64,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
         let header = DataStreamHeader {
@@ -366,9 +404,22 @@ impl Inner {
                 Some(d) => d,
                 None => read_chunk(file, c, name, r.first + k).await?,
             };
-            self.throttle(c.len as u64).await;
-            let n = data.len() as u64;
-            write_msg(send, &DataChunk { data }).await?;
+            let idx = (r.first + k) as u32;
+            let (frame, n) = if bases.contains_key(&idx) {
+                payload(data, idx, bases.clone()).await?
+            } else {
+                let n = data.len() as u64;
+                (
+                    DataChunk {
+                        data,
+                        ops: Vec::new(),
+                    },
+                    n,
+                )
+            };
+            self.throttle(n).await;
+            write_msg(send, &frame).await?;
+            sent.fetch_add(n, Ordering::Relaxed);
             if let Some(p) = self.progress.get() {
                 p(n);
             }
@@ -386,6 +437,39 @@ impl Inner {
             )),
         }
     }
+}
+
+/// The frame for chunk `idx` given the receiver's basis for it: the
+/// operations when they are clearly smaller than the bytes, the bytes
+/// otherwise. With how many bytes it puts on the wire.
+async fn payload(
+    data: Vec<u8>,
+    idx: u32,
+    bases: Arc<HashMap<u32, Basis>>,
+) -> io::Result<(DataChunk, u64)> {
+    tokio::task::spawn_blocking(move || {
+        let basis = &bases[&idx];
+        let ops = encode(&data, basis);
+        let n = encoded_len(&ops);
+        if n * 4 < data.len() * 3 {
+            let frame = DataChunk {
+                data: Vec::new(),
+                ops: ops.iter().map(Op::to_wire).collect(),
+            };
+            (frame, n as u64)
+        } else {
+            let n = data.len() as u64;
+            (
+                DataChunk {
+                    data,
+                    ops: Vec::new(),
+                },
+                n,
+            )
+        }
+    })
+    .await
+    .map_err(io::Error::other)
 }
 
 /// Reads chunk `idx` with `pread` and checks it still hashes to the digest.

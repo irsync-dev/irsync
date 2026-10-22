@@ -17,8 +17,8 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, FileAck, NeedChunks, PlanEntry, PlanItem,
-    SessionDone,
+    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, FileAck, NeedChunks, PlanEntry,
+    PlanItem, SessionDone,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -30,6 +30,7 @@ use super::control::{
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
 use super::parts::{split, PART_RECORDS};
 use super::Outcome;
+use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
@@ -63,6 +64,9 @@ struct SFile {
     retries: u32,
     /// The digest behind the chunk list last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
+    /// Bases the receiver offered for chunks it is about to request, by
+    /// chunk index; each is used for one request and dropped.
+    bases: HashMap<u32, Basis>,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
 }
@@ -216,6 +220,7 @@ impl SenderRole {
         f.retries += 1;
         f.gen += 1;
         f.digest = None;
+        f.bases.clear();
         let (gen, path) = (f.gen, f.path.clone());
         self.spawn_digest(file_id, gen, path, true, false);
     }
@@ -233,6 +238,7 @@ impl SenderRole {
                 gen: 0,
                 retries: 0,
                 digest: None,
+                bases: HashMap::new(),
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
@@ -317,6 +323,30 @@ impl SenderRole {
         }
     }
 
+    /// A basis for one chunk of a file in flight: kept for the request
+    /// that follows. A malformed or misplaced basis is dropped (the chunk
+    /// then goes raw); it is never a protocol error.
+    fn on_basis(&mut self, b: ChunkBasis) {
+        let Some(f) = self.files.get_mut(&b.file_id) else {
+            return;
+        };
+        let Some(d) = &f.digest else {
+            return;
+        };
+        let idx = b.chunk_idx;
+        if (idx as usize) >= d.chunks.len()
+            || (f.bases.len() >= d.chunks.len() && !f.bases.contains_key(&idx))
+        {
+            return;
+        }
+        match Basis::from_wire(b) {
+            Ok(basis) => {
+                f.bases.insert(idx, basis);
+            }
+            Err(e) => tracing::debug!(path = ?f.path, idx, error = %e, "ignoring a chunk basis"),
+        }
+    }
+
     fn on_need(&mut self, n: NeedChunks) {
         let file_id = n.file_id;
         let Some(f) = self.files.get_mut(&file_id) else {
@@ -337,6 +367,11 @@ impl SenderRole {
         if idxs.is_empty() {
             return; // The receiver has everything; wait for its ack.
         }
+        #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
+        let mut bases: HashMap<u32, Basis> = idxs
+            .iter()
+            .filter_map(|i| f.bases.remove_entry(i))
+            .collect();
         #[cfg(feature = "test-hooks")]
         let hook = if f.hooked {
             None
@@ -354,30 +389,39 @@ impl SenderRole {
         let path = f.path.clone();
         self.sending += 1;
         tokio::spawn(async move {
-            let bytes: u64 = idxs
-                .iter()
-                .filter_map(|&i| digest.chunks.get(i as usize))
-                .map(|c| u64::from(c.len))
-                .sum();
             #[cfg(feature = "test-hooks")]
             let result = match hook {
                 Some(h) if idxs.len() > 1 => {
-                    match sender.send_chunks(file_id, &key, &digest, &idxs[..1]).await {
-                        Ok(()) => {
+                    let first: HashMap<u32, Basis> =
+                        bases.remove_entry(&idxs[0]).into_iter().collect();
+                    match sender
+                        .send_chunks_against(file_id, &key, &digest, &idxs[..1], first)
+                        .await
+                    {
+                        Ok(n) => {
                             h(&path).await;
-                            sender.send_chunks(file_id, &key, &digest, &idxs[1..]).await
+                            sender
+                                .send_chunks_against(file_id, &key, &digest, &idxs[1..], bases)
+                                .await
+                                .map(|m| n + m)
                         }
                         Err(e) => Err(e),
                     }
                 }
-                _ => sender.send_chunks(file_id, &key, &digest, &idxs).await,
+                _ => {
+                    sender
+                        .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                        .await
+                }
             };
             #[cfg(not(feature = "test-hooks"))]
-            let result = sender.send_chunks(file_id, &key, &digest, &idxs).await;
+            let result = sender
+                .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                .await;
             let _ = events.send(Ev::Send(Done::Sent {
                 file_id,
                 gen,
-                result: result.map(|()| bytes),
+                result,
             }));
         });
     }
@@ -633,6 +677,10 @@ pub(super) async fn run(
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
             Ev::Ctrl(Msg::Itemized(i)) => {
                 s.on_itemized(i);
+                Ok(())
+            }
+            Ev::Ctrl(Msg::ChunkBasis(b)) => {
+                s.on_basis(b);
                 Ok(())
             }
             Ev::Ctrl(Msg::Need(n)) => {

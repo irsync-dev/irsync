@@ -29,8 +29,8 @@ fn hello_roundtrips() {
 #[test]
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
-        control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, ChunkRecord, Control,
-        Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, NeedChunks, PlanItem,
+        control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListPart, ChunkRecord,
+        Control, Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, NeedChunks, PlanItem,
         SessionDone,
     };
     use prost::Message;
@@ -75,6 +75,14 @@ fn control_oneof_roundtrips() {
         Msg::Need(NeedChunks {
             file_id: 3,
             chunk_idx: vec![0, 5, 7],
+        }),
+        Msg::ChunkBasis(ChunkBasis {
+            file_id: 3,
+            chunk_idx: 5,
+            offset: 1 << 33,
+            block: 1024,
+            weak: vec![1, 2, 0xffff_ffff],
+            strong: vec![9; 24],
         }),
         Msg::Ack(FileAck {
             file_id: 3,
@@ -125,6 +133,23 @@ fn data_header_roundtrips() {
     );
     let c = DataChunk {
         data: vec![0xab; 1 << 20],
+        ops: vec![],
     };
     assert_eq!(DataChunk::decode(c.encode_to_vec().as_slice()).unwrap(), c);
+    use irsync_proto::v1::{delta_op::Op, CopyOld, DeltaOp};
+    let d = DataChunk {
+        data: vec![],
+        ops: vec![
+            DeltaOp {
+                op: Some(Op::Literal(vec![1, 2, 3])),
+            },
+            DeltaOp {
+                op: Some(Op::Copy(CopyOld {
+                    offset: 1 << 40,
+                    len: 4096,
+                })),
+            },
+        ],
+    };
+    assert_eq!(DataChunk::decode(d.encode_to_vec().as_slice()).unwrap(), d);
 }

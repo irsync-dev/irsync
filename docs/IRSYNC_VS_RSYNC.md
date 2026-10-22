@@ -50,11 +50,11 @@ Only then does it send `FileAck DONE`.
 
 | Dimension | rsync | irsync |
 | --- | --- | --- |
-| Delta unit | basis block (700 B .. 128 KiB, ~sqrt(size)), matched at any byte offset | content-defined chunk (64 KiB .. 1 MiB, 256 KiB avg), matched whole |
-| Smallest file that gets a delta | any (blocks go down to 700 B) | effectively ~1 MiB (below that a file is 1 to 3 chunks) |
-| What a 1-byte edit in a 1 GiB file sends | ~32 KiB literal + tokens | ~256 KiB (one chunk, sometimes two) |
-| Signature direction | receiver -> sender (basis blocks) | sender -> receiver (new file's chunks) |
-| Signature size, 1 GiB file | ~640 KiB (32768 blocks x 20 B) | ~200 KiB (4096 chunks x 49 B) |
+| Delta unit | basis block (700 B .. 128 KiB, ~sqrt(size)), matched at any byte offset | content-defined chunk (64 KiB .. 1 MiB, 256 KiB avg), matched whole anywhere the index knows; inside a missing chunk of a `DELTA` file, blocks (512 B .. 4 KiB) matched at any byte offset of the old file's neighbourhood |
+| Smallest file that gets a delta | any (blocks go down to 700 B) | any that exists on both sides (blocks go down to 512 B) |
+| What a 1-byte edit in a 1 GiB file sends | ~32 KiB literal + tokens | ~1 KiB literal + a few operations, with ~9 KiB of block signatures the other way |
+| Signature direction | receiver -> sender (basis blocks) | sender -> receiver (new file's chunks); receiver -> sender (block signatures, per missing chunk of a `DELTA`) |
+| Signature size, 1 GiB file | ~640 KiB (32768 blocks x 20 B) | ~200 KiB (4096 chunks x 49 B), plus ~9 KiB per missing chunk offered a basis |
 | Signature for a *new* file | none | full chunk list, ~0.02% of the data |
 | Reuse scope | the basis at the same path (`--fuzzy`, `--link-dest`, `--compare-dest` widen it) | every chunk of every file the receiver's index knows |
 | Rename detection | none (name similarity only, `--fuzzy`) | by whole-file hash, from the index |
@@ -77,18 +77,83 @@ Only then does it send `FileAck DONE`.
 
 ### 3.1 Delta granularity: whole chunks instead of bytes
 
+*Resolved on 2026-10-22 (remedy 6): a missing chunk of a `DELTA` file is
+rebuilt from rsync-style block matches against the old file. The text
+below describes the mechanism; the original analysis follows it.*
+
 rsync's rolling checksum lets the sender find a basis block at *any* byte
-offset of the new file. A one-byte change therefore costs the literal bytes
-between the two surrounding block matches: at most one block plus a few
-bytes of tokens, and the block is ~sqrt(size).
+offset of the new file, so a one-byte change costs the literal bytes
+between two block matches. irsync reuses a chunk only when its bytes are
+identical, and a chunk is 64 KiB to 1 MiB. The two are now combined: the
+chunk list still decides *which* chunks are missing, and for a `DELTA`
+file (one the receiver holds an old version of) each missing chunk is
+then transferred rsync's way, against the old file's bytes around the
+chunk's place.
 
-irsync can only reuse a chunk whose bytes are identical. A change inside a
-chunk invalidates that chunk; FastCDC resynchronises its boundaries within
-about one chunk after the edit, so the cost is one chunk, sometimes two, each
-64 KiB to 1 MiB. The gap is a constant factor that grows with the number of
-edits and shrinks with their size:
+How it works (`crates/irsync/src/delta.rs`, `recv_io.rs`, `send.rs`):
 
-| Scenario, 1 GiB file | rsync sends (approx) | irsync sends (approx) | ratio |
+1. After the partition of a `DELTA` file's missing chunks (3.3), the
+   receiver picks the chunks worth a *basis*: for a missing chunk at
+   offset `o` of length `n`, the old file's bytes from `o - n` to
+   `o + 2n`, clamped to the old file. A chunk starting past the old
+   file's end (appended data) gets none; a file missing more than half
+   its chunks (a rewrite, unless it has at most two chunks) gets none;
+   and the regions are capped at the old file's size, or three maximum
+   chunk lengths, whichever is more.
+2. Those chunks are requested separately, after the ones without a basis
+   (which go out raw at once, exactly as before). A background task reads
+   each region from the old file, held open as a descriptor, and signs it
+   in blocks of `sqrt(region)` bytes clamped to 512 B .. 4 KiB: per block
+   a 32-bit rolling sum and the first 8 bytes of its BLAKE3 hash, 12 bytes
+   per block. Each basis goes out as a `ChunkBasis` control message, then
+   one `NeedChunks` names those chunks. The control stream is ordered, so
+   every basis precedes the request that uses it.
+3. The sender, reading a requested chunk it holds a basis for, slides a
+   window over the chunk's bytes, probes the signatures at every
+   position (a 64 Ki-bit filter first, then the map, then the strong
+   hash), and emits copies of old-file ranges and literals in between,
+   coalescing neighbours. If the operations are not at least a quarter
+   smaller than the chunk, the chunk goes raw. Either way the basis is
+   dropped after that one request.
+4. The receiver rebuilds the chunk in memory (literals copied in,
+   old-file ranges read by positioned reads, outside the writer lock) and
+   hands it to the very same `write_chunk` as every other chunk, which
+   verifies the chunk's BLAKE3 hash before anything reaches the `.part`.
+   A rebuilt chunk that does not verify (the old file changed in place,
+   a hostile operation list, a short-hash collision) simply stays missing;
+   the existing drained-request path asks for it again, and that second
+   request carries no basis, so it comes raw. Nothing in the delta path
+   is trusted and nothing new can corrupt a file.
+
+Measured with the integration tests (bytes on the data path, which
+exclude the chunk list and the signatures):
+
+| Scenario | before | after |
+| --- | --- | --- |
+| 4 MiB file, one byte changed | one chunk, ~256 KiB | 2,100 bytes |
+| 16 MiB file, eight scattered 4 KiB writes | eight chunks, ~2 MiB | 51,475 bytes |
+| 100 KiB file, six bytes changed | the whole file | 550 bytes |
+| 4 MiB file rewritten | 4 MiB | 4 MiB, no bases offered |
+| 2 MiB appended to 4 MiB | ~2 MiB | ~2 MiB, at most one basis |
+
+The signatures cost the other way: about 12 bytes per block, so about
+9 KiB for a 256 KiB chunk with a 768 KiB region at 886-byte blocks, or
+3.5% of the chunk. Against rsync's numbers from the original table: a
+one-byte edit in a 1 GiB file is now about 1 KiB of literal instead of
+rsync's 32 KiB, because the block is chosen per chunk, not per file; a
+hundred scattered page writes are about 0.6 MiB of literals plus 0.9 MiB
+of signatures against rsync's 3.2 MiB. What rsync still does and irsync
+does not: match content that moved by more than a chunk from its old
+offset and is not a whole chunk (whole chunks are found anywhere through
+the index). That case is rare in practice.
+
+The original analysis, for the record. A change inside a chunk
+invalidated that chunk; FastCDC resynchronises its boundaries within about
+one chunk after the edit, so the cost was one chunk, sometimes two, each
+64 KiB to 1 MiB. The gap was a constant factor that grew with the number
+of edits and shrank with their size:
+
+| Scenario, 1 GiB file | rsync sends (approx) | irsync sent (approx) | ratio |
 | --- | --- | --- | --- |
 | one byte changed | 32 KiB | 256 KiB | 8x |
 | 100 scattered page writes (4 KiB each) | 3.2 MiB | 25 MiB | 8x |
@@ -96,33 +161,28 @@ edits and shrinks with their size:
 | 1 byte inserted near the start | 32 KiB | 256 KiB | 8x |
 | 10% rewritten in one run | ~100 MiB | ~100 MiB | 1x |
 
-The 8x figure is for 1 GiB; rsync's block shrinks with the file, so for a
-100 MiB file it is 10 KiB against irsync's unchanged 256 KiB, a 25x gap. On
-files that are updated in place with many small writes (databases, VM
-images, mbox files, sqlite, append-plus-header-rewrite formats) rsync's
-delta is categorically tighter. irsync is competitive only when edits are
-large relative to a chunk, or when whole regions are moved or duplicated.
-
-The design document promises "rsync-style in-file delta transfer". What is
-implemented is chunk-level deduplication, which is a weaker thing. The code
-does nothing below chunk granularity anywhere: `plan::decide` only chooses
-`WHOLE` or `DELTA`, and `DELTA` differs from `WHOLE` solely in that
-`open_writer` hashes the old destination file first so its chunks are in the
-index.
+The 8x figure was for 1 GiB; for a 100 MiB file it was 25x. On files
+updated in place with many small writes (databases, VM images, mbox
+files, sqlite, append-plus-header-rewrite formats) rsync's delta was
+categorically tighter, and the design document's promise of "rsync-style
+in-file delta transfer" was not met: what was implemented was chunk-level
+deduplication. It is met now, for the files that have an old version on
+the receiver, which is the only place a delta can exist.
 
 ### 3.2 No delta at all below about 1 MiB
 
-FastCDC emits a single chunk for anything shorter than the 64 KiB minimum,
-and a file under the 256 KiB average is usually one or two chunks. For the
-bulk of a typical tree (source code, documents, configuration, thumbnails,
-most photos' sidecar files) any change is a whole-file transfer. rsync's
-block size floor is 700 bytes, so it still produces a useful delta for a
-100 KiB file.
-
-This is a direct consequence of the fixed protocol constants (`Hello`
-carries them, `CHUNK_PARAMS` pins them, the index refuses to open with
-others). rsync adapts block size per file; irsync cannot adapt anything per
-file without a protocol revision.
+*Resolved on 2026-10-22 together with 3.1.* FastCDC emits a single chunk
+for anything shorter than the 64 KiB minimum, and a file under the
+256 KiB average is usually one or two chunks, so any change used to be a
+whole-file transfer for the bulk of a typical tree (source code,
+documents, configuration, sidecar files). The chunk parameters are still
+protocol constants and still cannot adapt per file, but they no longer
+set the floor: a one-chunk file is a `DELTA` file with one missing chunk,
+its basis is the whole old file, and the block length is chosen from that
+(512 bytes for anything up to 256 KiB). The integration test puts six
+changed bytes in a 100 KiB file and measures 550 bytes on the data path
+where the whole file crossed before. rsync's floor is 700-byte blocks;
+irsync's is now 512.
 
 ### 3.3 Disk passes are serialised, and there are more of them
 
@@ -422,7 +482,10 @@ protocol change.
    within that chunk pair and send literals. It would be a per-chunk
    negotiation on top of the existing one, confined to files the receiver
    already holds, so it composes with everything else here. Substantial
-   work, and the reason the comparison in section 3.1 exists.
+   work, and the reason the comparison in section 3.1 exists. *Done
+   (2026-10-22): `ChunkBasis` messages from the receiver, operation
+   frames from the sender, chunk-level verification unchanged; see 3.1
+   and `DELTA_RECEIVE.md`.*
 7. **`--inplace` and `--append`** (3.6). `--append` is cheap once 6 exists
    or even without it (compare the old file's chunk list as a prefix).
    `--inplace` conflicts with the atomic-rename anti-goal and should stay
@@ -441,11 +504,14 @@ protocol change.
 - `crates/irsync/src/session/sender_role.rs`: `spawn_digest`,
   `on_digested`, `on_need`, retries.
 - `crates/irsync/src/session/recv_io.rs`: `open_writer` (local reuse,
-  index lookups), `finalize`, data-stream routing.
+  index lookups, `basis_specs`), `offer_bases`, `rebuild`, `finalize`,
+  data-stream routing.
+- `crates/irsync/src/delta.rs`: the rolling sum, block signatures
+  (`Basis`), the matcher (`encode`) and the rebuild (`decode`).
 - `crates/irsync/src/recv.rs`: `FileWriter` (`write_chunk`, adoption,
   `finalize` re-hash).
-- `crates/irsync/src/send.rs`: `send_chunks`, `split_ranges`,
-  `read_chunk`.
+- `crates/irsync/src/send.rs`: `send_chunks_against`, `split_ranges`,
+  `read_chunk`, `payload` (operations or bytes per chunk).
 - `crates/irsync/src/net/frame.rs`: `MAX_FRAME`.
 - `crates/irsync/src/session/reconnect.rs`: `classify`.
 - `crates/irsync/src/hasher.rs`: the cache's freshness rule.

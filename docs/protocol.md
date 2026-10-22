@@ -48,11 +48,24 @@ One QUIC connection carries:
   records, or more than its size allows at the minimum chunk length. No
   list is too long for the control stream (an earlier draft sent each list
   as one frame, which capped a file at about 342,000 chunks).
+  Before it asks for a chunk of a `DELTA` file, the receiver may send a
+  `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
+  of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)
+  over a region of its old file, named by its offset in that file. The
+  `NeedChunks` naming the chunk follows the basis on the same ordered
+  stream. A basis is good for that one request; a chunk asked for again
+  is sent raw. A malformed basis is dropped by the sender, not a protocol
+  error.
 - **data streams**: unidirectional streams from sender to receiver, one per
   byte range of a file. Each starts with a `DataStreamHeader` (session id, file
   id, offset, length, first chunk index) followed by `DataChunk` frames of at
   most 1 MiB, one chunk per frame. Many are open at once; this is what lets a
-  transfer fill the link.
+  transfer fill the link. A chunk the receiver offered a basis for may
+  arrive as `DataChunk.ops` instead of `data`: a list of literals and
+  copies (`offset`, `len` in the receiver's old file) that add up to the
+  chunk, which the receiver rebuilds and verifies against the chunk's hash
+  like any other chunk. The sender uses operations only when they are
+  clearly smaller than the bytes.
 
 Authorization happens on the verified peer key before any stream is read.
 
