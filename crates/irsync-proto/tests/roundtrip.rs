@@ -20,6 +20,7 @@ fn hello_roundtrips() {
         itemize: true,
         update_only: true,
         checksum: true,
+        chunk_list_parts: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

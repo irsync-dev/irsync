@@ -71,6 +71,13 @@ that used to carry its path is gone.
 
 ### 2.2 Chunk list arrival
 
+A chunk list arrives as one frame or, when both sides announced it in the
+handshake, as a sequence of `ChunkListPart` frames that
+`Receiver::on_chunk_list_part` reassembles (`session/parts.rs`) before
+handing the complete list on. A connection loss mid-sequence drops the
+half-built list with the connection; the resumed session gets a fresh
+sequence from the sender. A malformed sequence fails the file.
+
 `Receiver::on_chunk_list` (`session/receiver.rs`) bumps the file's
 generation, retires any earlier writer for that file (`retire_writer`
 removes the route and drops the writer out of its slot, so no stale task
@@ -369,4 +376,5 @@ receiver logs `identical` for it.
 | completion accounting | `session/recv_io.rs::finish_unit` |
 | re-request | `session/receiver.rs::on_drained`, `MAX_REREQUESTS` |
 | verification on write | `recv.rs::FileWriter::write_chunk`, `missing_chunks` |
-| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check` |
+| chunk list in parts | `session/parts.rs::split`, `assemble`; `session/receiver.rs::on_chunk_list_part` |
+| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check`, `chunk_list_part_records`, `drop_after_parts` |

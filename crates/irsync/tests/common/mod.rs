@@ -123,6 +123,8 @@ pub struct DaemonHandle {
     pub events: irsync::session::EventLog,
     /// Set to make every daemon receiver's finalize take that much longer.
     pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
+    /// Set to make the daemon act as one predating chunk lists in parts.
+    pub legacy_chunk_lists: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub _state: tempfile::TempDir,
 }
 
@@ -177,6 +179,7 @@ pub async fn spawn_daemon(
     let hosted = daemon.hosted_sessions();
     let events = daemon.receiver_events();
     let slow_finalize = daemon.slow_finalize();
+    let legacy_chunk_lists = daemon.legacy_chunk_lists();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -192,6 +195,7 @@ pub async fn spawn_daemon(
         hosted,
         events,
         slow_finalize,
+        legacy_chunk_lists,
         _state: state,
     }
 }

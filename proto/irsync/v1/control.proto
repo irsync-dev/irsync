@@ -27,6 +27,21 @@ message ChunkList {
   Hash whole_hash = 3;
   repeated ChunkRecord chunks = 4;
 } // sender -> receiver
+// sender -> receiver: one piece of a chunk list, for lists too long for one
+// frame. Used instead of ChunkList once both sides announced
+// `chunk_list_parts` in Hello / HelloAck (additive within version 1). The
+// parts of a file arrive in order: `first` is the index of `chunks[0]` in
+// the whole list, `total` the whole list's length, `last` marks the final
+// part. `size` and `whole_hash` are repeated in every part.
+message ChunkListPart {
+  uint64 file_id = 1;
+  uint64 size = 2;
+  Hash whole_hash = 3;
+  uint32 total = 4;
+  uint32 first = 5;
+  repeated ChunkRecord chunks = 6;
+  bool last = 7;
+}
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -82,5 +97,6 @@ message Control {
     Error error = 8;
     Itemized itemized = 9;
     Heartbeat heartbeat = 10;
+    ChunkListPart chunk_list_part = 11;
   }
 }

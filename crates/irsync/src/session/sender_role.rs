@@ -28,6 +28,7 @@ use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
+use super::parts::{split, PART_RECORDS};
 use super::Outcome;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
@@ -120,6 +121,16 @@ fn chunk_list_frame_len(cl: &ChunkList) -> usize {
 }
 
 /// [`MAX_FRAME`], or a test's smaller cap on the chunk-list frame.
+/// Records per `ChunkListPart` (a test hook may shrink it).
+fn part_records(ctx: &Ctx) -> usize {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = ctx.hooks.chunk_list_part_records {
+        return n;
+    }
+    let _ = ctx;
+    PART_RECORDS
+}
+
 fn chunk_list_limit(ctx: &Ctx) -> usize {
     #[cfg(feature = "test-hooks")]
     let cap = ctx.hooks.max_chunk_list_frame.unwrap_or(MAX_FRAME);
@@ -309,6 +320,22 @@ impl SenderRole {
             return;
         }
         match result {
+            Ok(d) if self.ctx.peer_parts => {
+                // In parts, each far below the frame limit: no list is too long.
+                for p in split(file_id, &d, part_records(&self.ctx)) {
+                    self.out.send(Msg::ChunkListPart(p));
+                    #[cfg(feature = "test-hooks")]
+                    if let Some(h) = &self.ctx.hooks.drop_after_parts {
+                        if h.queued() {
+                            tracing::warn!(
+                                "fault injection: dropping the connection between parts"
+                            );
+                            self.ctx.conn.close(99u32.into(), b"fault");
+                        }
+                    }
+                }
+                f.digest = Some(Arc::new(d));
+            }
             Ok(d) => {
                 let cl = ChunkList {
                     file_id,

@@ -594,6 +594,10 @@ async fn oversize_chunk_list_fails_the_file_not_the_session() {
         let h = Harness::new().await;
         fs::write(h.src(flow).join("big.bin"), data(4 * MIB, 21)).unwrap();
         fs::write(h.src(flow).join("small.txt"), b"fits").unwrap();
+        // A daemon predating chunk lists in parts: the list must be one frame.
+        h.daemon
+            .legacy_chunk_lists
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut local = h.local_side();
         // A one-chunk list is ~90 bytes framed; a 4 MiB file's is far more.
         local.hooks.max_chunk_list_frame = Some(256);

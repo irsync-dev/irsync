@@ -3,6 +3,7 @@
 
 mod control;
 pub mod engine;
+mod parts;
 mod planner;
 mod receiver;
 pub mod reconnect;
@@ -408,6 +409,10 @@ pub struct DaemonSessions {
     /// settable after the daemon is built).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Arc<std::sync::Mutex<Option<Duration>>>,
+    /// The daemon does not announce chunk lists in parts, as a daemon
+    /// predating them (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub legacy_chunk_lists: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -517,6 +522,45 @@ pub struct SideHooks {
     /// hashed (a test replaces it meanwhile).
     #[cfg(feature = "test-hooks")]
     pub before_identical_check: Option<PathHook>,
+    /// Client: do not announce chunk lists in parts (a client predating them).
+    #[cfg(feature = "test-hooks")]
+    pub legacy_chunk_lists: bool,
+    /// Sender: records per `ChunkListPart` instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub chunk_list_part_records: Option<usize>,
+    /// Sender: close the connection once this many parts have been queued
+    /// (once per hook instance, across reconnects).
+    #[cfg(feature = "test-hooks")]
+    pub drop_after_parts: Option<Arc<PartsFault>>,
+}
+
+/// Test hook: a connection drop after a number of chunk-list parts.
+#[cfg(feature = "test-hooks")]
+#[derive(Debug, Default)]
+pub struct PartsFault {
+    after: usize,
+    sent: std::sync::atomic::AtomicUsize,
+    fired: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(feature = "test-hooks")]
+impl PartsFault {
+    pub fn after(n: usize) -> Arc<PartsFault> {
+        Arc::new(PartsFault {
+            after: n,
+            ..PartsFault::default()
+        })
+    }
+
+    pub fn fired(&self) -> bool {
+        self.fired.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Counts one queued part; true when the connection is to be dropped now.
+    pub(crate) fn queued(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.sent.fetch_add(1, SeqCst) + 1 >= self.after && !self.fired.swap(true, SeqCst)
+    }
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

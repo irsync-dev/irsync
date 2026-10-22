@@ -144,6 +144,12 @@ impl Daemon {
         self.shared.hosting.slow_finalize.clone()
     }
 
+    /// Set to make the daemon behave as one predating chunk lists in parts.
+    #[cfg(feature = "test-hooks")]
+    pub fn legacy_chunk_lists(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.shared.hosting.legacy_chunk_lists.clone()
+    }
+
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         for (name, module) in &self.shared.modules {
             let Some(index) = self.shared.indexes.get(name).cloned() else {

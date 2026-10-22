@@ -34,6 +34,18 @@ One QUIC connection carries:
   sends none, so a stuck peer still times out. It is additive within
   version 1: a peer that predates it decodes an empty `Control` and ignores
   it.
+  A chunk list travels as one `ChunkList` frame, or, when both sides set
+  `chunk_list_parts` in `Hello` and `HelloAck`, as a sequence of
+  `ChunkListPart` frames of at most 32,768 records each, in order, the last
+  one flagged. Every part repeats the file id, size, whole-file hash and
+  total record count; the receiver reassembles them and treats a sequence
+  that skips, repeats a different file or stops short as that file's
+  error. A sender never uses parts towards a peer that did not announce
+  them, because such a peer would ignore the frames rather than refuse
+  them. Without parts, a list that does not fit one frame makes the sender
+  give the file up with `SOURCE_ERROR`. A receiver refuses a list that
+  announces more than 2^24 records, or more than its size allows at the
+  minimum chunk length.
 - **data streams**: unidirectional streams from sender to receiver, one per
   byte range of a file. Each starts with a `DataStreamHeader` (session id, file
   id, offset, length, first chunk index) followed by `DataChunk` frames of at

@@ -239,9 +239,23 @@ instead of the session. The second landed on 2026-10-22: `on_digested`
 measures the frame with `chunk_list_frame_len` before queueing it and gives
 the file up with a message naming the chunk count, the frame size and the
 limit. The session completes, the error is reported like any unreadable
-source file, and no redial happens. The ceiling itself remains until the
-list is streamed; the design document lists 100 GiB VM images among the
-things irsync should carry.
+source file, and no redial happens.
+
+The first landed the same day. `ChunkListPart` carries the list in pieces
+of 32,768 records (about 1.6 MiB each) on the control stream; the receiver
+reassembles them (`session/parts.rs`) and feeds the result to the unchanged
+chunk-list path. Two points of the protocol shaped it. The daemon refuses
+any protocol version but 1, so the message is additive within version 1.
+And a peer that predates a message does not refuse it, it decodes an empty
+`Control` and ignores it, so parts are negotiated: `Hello` and `HelloAck`
+each carry a `chunk_list_parts` flag, and a sender uses parts only towards
+a peer that announced them, keeping the one-frame path and its
+`SOURCE_ERROR` for the others. The ceiling is now the receiver's memory
+for the list (a 1 TiB file at the typical chunk size is about 200 MB of
+records, held three times: per-file state, route and writer) and a hard
+cap of 2^24 records per list, about 4 TiB of typical data, which bounds
+what a hostile sender can make a receiver hold. Sharing one copy of the
+list between the three holders is the natural next step.
 
 ### 3.6 No in-place or append mode
 
@@ -384,8 +398,10 @@ protocol change.
    (2026-10-22), at chunk-list time rather than plan time; see 3.8 and
    `DELTA_RECEIVE.md`.*
 4. **Stream the chunk list in pieces** (3.5). A `ChunkListPart` message
-   with `more` flag; additive, old peers refuse it with a protocol error.
-   Removes the ceiling for good.
+   with a `last` flag; additive within version 1 and negotiated in the
+   handshake, since old peers ignore unknown messages rather than refuse
+   them. Removes the frame ceiling; memory and a 2^24-record cap remain.
+   *Done (2026-10-22); see 3.5.*
 5. **A Merkle whole-file hash** (3.4). Removes the finalize pass. Protocol
    and index change, and it gives up `b3sum` equivalence; worth it only if
    receiver throughput on large files becomes the bottleneck.

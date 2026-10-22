@@ -35,11 +35,15 @@ message Hello {
   bool itemize = 15; // the receiver sends Itemized codes (-i)
   bool update_only = 16; // -u: keep destination files newer than the source
   bool checksum = 17; // -c: equal size+mtime is not enough, compare content
+  // The client can send and receive chunk lists in parts (ChunkListPart);
+  // a sender uses them only when its peer announced this too.
+  bool chunk_list_parts = 18;
 }
 message HelloAck {
   bytes session_id = 1;
   bool resumed = 2;
   uint32 protocol_version = 3;
+  bool chunk_list_parts = 4; // see Hello.chunk_list_parts
 }
 message Error {
   enum Code {

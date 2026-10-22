@@ -234,6 +234,9 @@ pub(super) struct Ctx {
     pub activity: Arc<AtomicU64>,
     /// Drop the connection after this long without activity.
     pub idle_timeout: Option<Duration>,
+    /// The peer announced chunk lists in parts (`ChunkListPart`); a sender
+    /// uses them instead of one `ChunkList` frame.
+    pub peer_parts: bool,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<super::FaultInjector>>,
     /// Counts `NeedChunks` re-requests (test hook).
@@ -458,6 +461,11 @@ pub(super) async fn run_client_inner(
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     check_options(direction, opts)?;
     set_hello_options(&mut hello, opts);
+    hello.chunk_list_parts = true;
+    #[cfg(feature = "test-hooks")]
+    if local.hooks.legacy_chunk_lists {
+        hello.chunk_list_parts = false;
+    }
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
     warn_ignored_options(direction, opts);
 
@@ -513,6 +521,7 @@ pub(super) async fn run_client_inner(
         progress: attempt.progress.clone(),
         activity,
         idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
+        peer_parts: ack.chunk_list_parts,
         #[cfg(feature = "test-hooks")]
         fault: None,
         #[cfg(feature = "test-hooks")]
@@ -657,12 +666,22 @@ pub async fn serve_daemon(
         (id, Some(rec), claim)
     };
     let resumed = record.is_some();
+    #[allow(unused_mut)]
+    let mut announce_parts = true;
+    #[cfg(feature = "test-hooks")]
+    if shared
+        .legacy_chunk_lists
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        announce_parts = false;
+    }
     write_msg(
         &mut send,
         &HelloAck {
             session_id: session_id.to_vec(),
             resumed,
             protocol_version: PROTOCOL_VERSION,
+            chunk_list_parts: announce_parts,
         },
     )
     .await?;
@@ -718,6 +737,7 @@ pub async fn serve_daemon(
         activity,
         idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT))
             .filter(|t| !t.is_zero()),
+        peer_parts: announce_parts && hello.chunk_list_parts,
         #[cfg(feature = "test-hooks")]
         fault: shared.fault.clone(),
         #[cfg(feature = "test-hooks")]

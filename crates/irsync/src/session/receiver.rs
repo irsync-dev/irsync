@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, Itemized,
-    ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
+    control::Msg, file_ack::Status, plan_item::Action, ChunkList, ChunkListPart, FileAck,
+    FileEntry, Itemized, ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -30,6 +30,7 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
+use super::parts::{assemble, Assembly};
 use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
 };
@@ -130,6 +131,8 @@ struct RFile {
     st: St,
     /// A `ChunkList` that arrived while the `.part` was busy (opening or finalizing).
     pending: Option<ChunkList>,
+    /// A chunk list arriving in parts, until its last part.
+    assembly: Option<Assembly>,
     /// The sender gave up on this file while we were finalizing it.
     abandoned: Option<String>,
     /// The current chunk list as native records (set once opened).
@@ -287,6 +290,7 @@ impl Receiver {
                 rerequests: 0,
                 st: St::Requested,
                 pending: None,
+                assembly: None,
                 abandoned: None,
                 digest: None,
                 _slot: slot,
@@ -375,12 +379,32 @@ impl Receiver {
         }
     }
 
+    /// One part of a chunk list; the complete list goes to `on_chunk_list`.
+    /// A malformed sequence fails the file, like a list that does not tile it.
+    async fn on_chunk_list_part(&mut self, p: ChunkListPart) {
+        let file_id = p.file_id;
+        let Some(f) = self.files.get_mut(&file_id) else {
+            tracing::debug!(file_id, "chunk list part for a file not in flight");
+            return;
+        };
+        self.ctx.hooks.event("part", &f.path);
+        match assemble(&mut f.assembly, p) {
+            Ok(Some(cl)) => self.on_chunk_list(cl).await,
+            Ok(None) => {}
+            Err(e) => {
+                let msg = format!("chunk list in parts: {e}");
+                self.fail(file_id, Some(Status::WriteError), msg).await;
+            }
+        }
+    }
+
     async fn on_chunk_list(&mut self, cl: ChunkList) {
         let file_id = cl.file_id;
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "chunk list for a file not in flight");
             return;
         };
+        f.assembly = None;
         match f.st {
             St::Opening | St::Finalizing => {
                 f.pending = Some(cl);
@@ -689,6 +713,7 @@ impl Receiver {
         match ev {
             Ev::Recv(d) => self.on_done(d).await,
             Ev::Ctrl(Msg::ChunkList(cl)) => self.on_chunk_list(cl).await,
+            Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
