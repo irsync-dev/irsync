@@ -1,5 +1,10 @@
 # irsync wire protocol (version 1)
 
+The protocol and the on-disk state (index, session records) change without
+compatibility paths until the first release: there are no deployed peers to
+keep talking to, so the version number stays 1 through those changes. A
+peer with another version is refused with `VERSION_MISMATCH`.
+
 The protobuf definitions in [`proto/irsync/v1/`](../proto/irsync/v1/)
 (`common.proto`, `control.proto`, `data.proto`, `session.proto`) are
 **normative**. This page only summarises the constants and the model; where it
@@ -34,18 +39,15 @@ One QUIC connection carries:
   sends none, so a stuck peer still times out. It is additive within
   version 1: a peer that predates it decodes an empty `Control` and ignores
   it.
-  A chunk list travels as one `ChunkList` frame, or, when both sides set
-  `chunk_list_parts` in `Hello` and `HelloAck`, as a sequence of
-  `ChunkListPart` frames of at most 32,768 records each, in order, the last
-  one flagged. Every part repeats the file id, size, whole-file hash and
-  total record count; the receiver reassembles them and treats a sequence
-  that skips, repeats a different file or stops short as that file's
-  error. A sender never uses parts towards a peer that did not announce
-  them, because such a peer would ignore the frames rather than refuse
-  them. Without parts, a list that does not fit one frame makes the sender
-  give the file up with `SOURCE_ERROR`. A receiver refuses a list that
-  announces more than 2^24 records, or more than its size allows at the
-  minimum chunk length.
+  A chunk list travels as a sequence of `ChunkListPart` frames of at most
+  32,768 records each, in order, the last one flagged; an empty file's list
+  is one empty last part. Every part repeats the file id, size, whole-file
+  hash and total record count; the receiver reassembles them and treats a
+  sequence that skips, repeats a different file or stops short as that
+  file's error. A receiver refuses a list that announces more than 2^24
+  records, or more than its size allows at the minimum chunk length. No
+  list is too long for the control stream (an earlier draft sent each list
+  as one frame, which capped a file at about 342,000 chunks).
 - **data streams**: unidirectional streams from sender to receiver, one per
   byte range of a file. Each starts with a `DataStreamHeader` (session id, file
   id, offset, length, first chunk index) followed by `DataChunk` frames of at

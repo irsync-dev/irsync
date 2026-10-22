@@ -20,7 +20,6 @@ fn hello_roundtrips() {
         itemize: true,
         update_only: true,
         checksum: true,
-        chunk_list_parts: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);
@@ -30,8 +29,9 @@ fn hello_roundtrips() {
 #[test]
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
-        control::Msg, file_ack::Status, plan_item::Action, ChunkList, ChunkRecord, Control, Error,
-        FileAck, FileEntry, Hash, ListingEnd, ListingEntry, NeedChunks, PlanItem, SessionDone,
+        control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, ChunkRecord, Control,
+        Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, NeedChunks, PlanItem,
+        SessionDone,
     };
     use prost::Message;
     let h = |b: u8| Hash { bytes: vec![b; 32] };
@@ -52,10 +52,13 @@ fn control_oneof_roundtrips() {
             path: b"a/\xff".to_vec(),
             action: Action::Delta as i32,
         }),
-        Msg::ChunkList(ChunkList {
+        Msg::ChunkListPart(ChunkListPart {
             file_id: 3,
             size: 2048,
             whole_hash: Some(h(9)),
+            total: 2,
+            first: 0,
+            last: true,
             chunks: vec![
                 ChunkRecord {
                     offset: 0,

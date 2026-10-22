@@ -2,7 +2,7 @@
 //! listing and decides per path (rsync-generator style). Directories,
 //! symlinks, specials and metadata are applied locally; regular files are
 //! requested with `PlanItem`, opened as verified `.part` writers when their
-//! `ChunkList` arrives, filled from local copies and data streams, and
+//! chunk list arrives, filled from local copies and data streams, and
 //! acknowledged only after `finalize` has verified and renamed them.
 //!
 //! Deletions (`--delete*`) run here too: before the transfers (asked for by
@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, plan_item::Action, ChunkList, ChunkListPart, FileAck,
-    FileEntry, Itemized, ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
+    control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, FileAck, FileEntry, Itemized,
+    ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -105,7 +105,7 @@ pub(super) enum Done {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum St {
-    /// `PlanItem` sent (or a retry requested); waiting for a `ChunkList`.
+    /// `PlanItem` sent (or a retry requested); waiting for a chunk list.
     Requested,
     Opening,
     Receiving,
@@ -122,21 +122,21 @@ struct RFile {
     deferred: Deferred,
     /// The destination already held the content: settled in place, not placed.
     identical: bool,
-    /// Bumped for every new `ChunkList` and on failure; stale task results
+    /// Bumped for every new chunk list and on failure; stale task results
     /// and data streams carry an older value and are ignored.
     gen: u32,
     mismatches: u32,
     /// `NeedChunks` re-sent for chunks the data streams did not deliver.
     rerequests: u32,
     st: St,
-    /// A `ChunkList` that arrived while the `.part` was busy (opening or finalizing).
-    pending: Option<ChunkList>,
+    /// A chunk list that arrived while the `.part` was busy (opening or finalizing).
+    pending: Option<Arc<FileDigest>>,
     /// A chunk list arriving in parts, until its last part.
     assembly: Option<Assembly>,
     /// The sender gave up on this file while we were finalizing it.
     abandoned: Option<String>,
     /// The current chunk list as native records (set once opened).
-    digest: Option<FileDigest>,
+    digest: Option<Arc<FileDigest>>,
     /// The planner's in-flight slot (none for a resumed plan), released
     /// when the file leaves `files`.
     _slot: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -389,7 +389,7 @@ impl Receiver {
         };
         self.ctx.hooks.event("part", &f.path);
         match assemble(&mut f.assembly, p) {
-            Ok(Some(cl)) => self.on_chunk_list(cl).await,
+            Ok(Some(d)) => self.on_chunk_list(file_id, Arc::new(d)).await,
             Ok(None) => {}
             Err(e) => {
                 let msg = format!("chunk list in parts: {e}");
@@ -398,8 +398,7 @@ impl Receiver {
         }
     }
 
-    async fn on_chunk_list(&mut self, cl: ChunkList) {
-        let file_id = cl.file_id;
+    async fn on_chunk_list(&mut self, file_id: u64, digest: Arc<FileDigest>) {
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "chunk list for a file not in flight");
             return;
@@ -407,7 +406,7 @@ impl Receiver {
         f.assembly = None;
         match f.st {
             St::Opening | St::Finalizing => {
-                f.pending = Some(cl);
+                f.pending = Some(digest);
                 return;
             }
             St::Requested | St::Receiving => {}
@@ -423,7 +422,7 @@ impl Receiver {
         self.retire_writer(file_id).await;
         let (ctx, events) = (self.ctx.clone(), self.events.clone());
         self.tasks.spawn(async move {
-            let result = open_writer(ctx, path, action, prehash, cl, sparse).await;
+            let result = open_writer(ctx, path, action, prehash, digest, sparse).await;
             let _ = events.send(Ev::Recv(Done::Opened {
                 file_id,
                 gen,
@@ -432,7 +431,7 @@ impl Receiver {
         });
     }
 
-    fn spawn_finalize(&self, file_id: u64, gen: u32, w: FileWriter, digest: FileDigest) {
+    fn spawn_finalize(&self, file_id: u64, gen: u32, w: FileWriter, digest: Arc<FileDigest>) {
         let f = &self.files[&file_id];
         let (ctx, events, path, entry) = (
             self.ctx.clone(),
@@ -539,7 +538,7 @@ impl Receiver {
             // Superseded while opening: drop this writer, open the newer list.
             drop(result);
             f.st = St::Requested;
-            self.on_chunk_list(cl).await;
+            self.on_chunk_list(file_id, cl).await;
             return;
         }
         let o = match result {
@@ -617,7 +616,7 @@ impl Receiver {
         let route = Route {
             gen,
             slot: Arc::new(tokio::sync::Mutex::new(Some(writer))),
-            chunks: Arc::new(digest.chunks),
+            digest: digest.clone(),
             pending: Arc::new(AtomicUsize::new(
                 remote.len() + usize::from(!local.is_empty()),
             )),
@@ -687,7 +686,7 @@ impl Receiver {
                     self.fail(file_id, None, msg).await;
                 } else if let Some(cl) = pending {
                     // The partial stays; the fresh chunk list adopts it.
-                    self.on_chunk_list(cl).await;
+                    self.on_chunk_list(file_id, cl).await;
                 }
             }
             Err(e) => {
@@ -712,7 +711,6 @@ impl Receiver {
     async fn handle(&mut self, ev: Ev) -> anyhow::Result<()> {
         match ev {
             Ev::Recv(d) => self.on_done(d).await,
-            Ev::Ctrl(Msg::ChunkList(cl)) => self.on_chunk_list(cl).await,
             Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await

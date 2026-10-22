@@ -7,7 +7,7 @@ use crate::fs::paths::RelPath;
 use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
-use irsync_proto::v1::{ChunkList, FileEntry, Range, RangeSet};
+use irsync_proto::v1::{FileEntry, Range, RangeSet};
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
@@ -87,20 +87,12 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// Validate `expected` into native chunk records that tile `[0, size)` exactly.
-fn native_chunks(expected: &ChunkList) -> io::Result<([u8; 32], Vec<ChunkRecord>)> {
-    let whole_hash: [u8; 32] = expected
-        .whole_hash
-        .as_ref()
-        .ok_or_else(|| invalid("chunk list missing whole_hash"))?
-        .bytes
-        .clone()
-        .try_into()
-        .map_err(|_| invalid("whole_hash is not 32 bytes"))?;
+/// Validates `expected`'s records as tiling `[0, size)` exactly (they came
+/// off the wire) and copies them for the writer.
+fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
     let mut chunks = Vec::with_capacity(expected.chunks.len());
     let mut next = 0u64;
-    for c in &expected.chunks {
-        let c = ChunkRecord::try_from(c.clone())?;
+    for &c in &expected.chunks {
         if c.offset != next || c.len == 0 {
             return Err(invalid("chunk list does not tile the file"));
         }
@@ -114,7 +106,7 @@ fn native_chunks(expected: &ChunkList) -> io::Result<([u8; 32], Vec<ChunkRecord>
     if next != expected.size {
         return Err(invalid("chunk list does not cover the file size"));
     }
-    Ok((whole_hash, chunks))
+    Ok(chunks)
 }
 
 /// Paths of the destination and of its `.part` file.
@@ -370,7 +362,7 @@ impl FileWriter {
     pub fn open(
         root: &Path,
         rel: &RelPath,
-        expected: &ChunkList,
+        expected: &FileDigest,
         partial_dir: Option<&Path>,
         index: IndexHandle,
     ) -> io::Result<FileWriter> {
@@ -382,12 +374,12 @@ impl FileWriter {
     pub fn open_tracked(
         root: &Path,
         rel: &RelPath,
-        expected: &ChunkList,
+        expected: &FileDigest,
         partial_dir: Option<&Path>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
     ) -> io::Result<FileWriter> {
-        let (whole_hash, chunks) = native_chunks(expected)?;
+        let chunks = native_chunks(expected)?;
         let (dest, part) = paths(root, rel, partial_dir)?;
         if let Some(dir) = part.parent() {
             std::fs::create_dir_all(dir)?;
@@ -403,7 +395,7 @@ impl FileWriter {
             part,
             file: Arc::new(file),
             size: expected.size,
-            whole_hash,
+            whole_hash: expected.hash,
             verified: vec![false; chunks.len()],
             chunks,
             index,

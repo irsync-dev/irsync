@@ -528,7 +528,6 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Listing(_) => "ListingEntry",
         Msg::ListingEnd(_) => "ListingEnd",
         Msg::Plan(_) => "PlanItem",
-        Msg::ChunkList(_) => "ChunkList",
         Msg::ChunkListPart(_) => "ChunkListPart",
         Msg::Need(_) => "NeedChunks",
         Msg::Ack(_) => "FileAck",

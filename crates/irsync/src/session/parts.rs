@@ -1,9 +1,9 @@
-//! Chunk lists in parts: a list too long for one control frame travels as
-//! a sequence of `ChunkListPart` messages (sender), reassembled into one
-//! `ChunkList` on the receiver. Pure functions; the roles drive them.
+//! Chunk lists in parts: a list travels as a sequence of `ChunkListPart`
+//! messages (sender), reassembled into one `FileDigest` on the receiver.
+//! Pure functions; the roles drive them.
 
-use irsync_proto::chunk::{FileDigest, CHUNK_PARAMS};
-use irsync_proto::v1::{ChunkList, ChunkListPart, Hash};
+use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
+use irsync_proto::v1::{ChunkListPart, Hash};
 
 /// Records per part: about 1.6 MiB on the wire, a tenth of a control frame.
 pub(super) const PART_RECORDS: usize = 32 * 1024;
@@ -39,7 +39,7 @@ pub(super) fn split(file_id: u64, d: &FileDigest, per_part: usize) -> Vec<ChunkL
 
 /// A chunk list under assembly from its parts.
 pub(super) struct Assembly {
-    cl: ChunkList,
+    digest: FileDigest,
     total: usize,
 }
 
@@ -49,7 +49,7 @@ pub(super) struct Assembly {
 pub(super) fn assemble(
     slot: &mut Option<Assembly>,
     part: ChunkListPart,
-) -> Result<Option<ChunkList>, String> {
+) -> Result<Option<FileDigest>, String> {
     match feed(slot, part) {
         Ok(done) => Ok(done),
         Err(e) => {
@@ -59,8 +59,13 @@ pub(super) fn assemble(
     }
 }
 
-fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<ChunkList>, String> {
+fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<FileDigest>, String> {
     let total = part.total as usize;
+    let hash: [u8; 32] = part
+        .whole_hash
+        .as_ref()
+        .and_then(|h| h.bytes.as_slice().try_into().ok())
+        .ok_or_else(|| "no 32-byte whole-file hash".to_string())?;
     if part.first == 0 {
         // A first part starts over (a re-digested file comes as a new sequence).
         if total > MAX_LIST_CHUNKS {
@@ -76,15 +81,10 @@ fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<Chunk
                 part.size
             ));
         }
-        let whole_hash = part.whole_hash.clone();
-        if whole_hash.is_none() {
-            return Err("no whole-file hash".into());
-        }
         *slot = Some(Assembly {
-            cl: ChunkList {
-                file_id: part.file_id,
+            digest: FileDigest {
                 size: part.size,
-                whole_hash,
+                hash,
                 chunks: Vec::with_capacity(total.min(PART_RECORDS * 4)),
             },
             total,
@@ -93,41 +93,43 @@ fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<Chunk
     let Some(a) = slot.as_mut() else {
         return Err(format!("part continues at {} without a start", part.first));
     };
-    if part.first as usize != a.cl.chunks.len() {
+    if part.first as usize != a.digest.chunks.len() {
         return Err(format!(
             "part continues at {} but {} records are assembled",
             part.first,
-            a.cl.chunks.len()
+            a.digest.chunks.len()
         ));
     }
-    if part.size != a.cl.size || part.whole_hash != a.cl.whole_hash || total != a.total {
+    if part.size != a.digest.size || hash != a.digest.hash || total != a.total {
         return Err("part describes another file (size, hash or total differ)".into());
     }
-    if a.cl.chunks.len() + part.chunks.len() > a.total {
+    if a.digest.chunks.len() + part.chunks.len() > a.total {
         return Err(format!(
             "{} records exceeds the {} announced",
-            a.cl.chunks.len() + part.chunks.len(),
+            a.digest.chunks.len() + part.chunks.len(),
             a.total
         ));
     }
-    a.cl.chunks.extend(part.chunks);
+    for c in part.chunks {
+        let c = ChunkRecord::try_from(c).map_err(|e| format!("bad record: {e}"))?;
+        a.digest.chunks.push(c);
+    }
     if !part.last {
         return Ok(None);
     }
-    if a.cl.chunks.len() != a.total {
+    if a.digest.chunks.len() != a.total {
         return Err(format!(
             "last part leaves the list short: {} of {} records",
-            a.cl.chunks.len(),
+            a.digest.chunks.len(),
             a.total
         ));
     }
-    Ok(slot.take().map(|a| a.cl))
+    Ok(slot.take().map(|a| a.digest))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use irsync_proto::chunk::ChunkRecord;
 
     fn digest(n: usize) -> FileDigest {
         let mut chunks = Vec::with_capacity(n);
@@ -146,7 +148,7 @@ mod tests {
         }
     }
 
-    fn run(parts: Vec<ChunkListPart>) -> Result<Option<ChunkList>, String> {
+    fn run(parts: Vec<ChunkListPart>) -> Result<Option<FileDigest>, String> {
         let mut slot = None;
         let mut out = None;
         for p in parts {
@@ -196,15 +198,9 @@ mod tests {
     fn assemble_rebuilds_the_list_from_its_parts() {
         let d = digest(10);
         let cl = run(split(42, &d, 4)).unwrap().expect("complete");
-        assert_eq!(cl.file_id, 42);
         assert_eq!(cl.size, d.size);
-        assert_eq!(cl.whole_hash.unwrap().bytes, d.hash.to_vec());
-        let records: Vec<ChunkRecord> = cl
-            .chunks
-            .into_iter()
-            .map(|c| ChunkRecord::try_from(c).unwrap())
-            .collect();
-        assert_eq!(records, d.chunks);
+        assert_eq!(cl.hash, d.hash);
+        assert_eq!(cl.chunks, d.chunks);
     }
 
     #[test]

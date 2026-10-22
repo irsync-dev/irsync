@@ -409,10 +409,6 @@ pub struct DaemonSessions {
     /// settable after the daemon is built).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Arc<std::sync::Mutex<Option<Duration>>>,
-    /// The daemon does not announce chunk lists in parts, as a daemon
-    /// predating them (test hook).
-    #[cfg(feature = "test-hooks")]
-    pub legacy_chunk_lists: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -510,10 +506,6 @@ pub struct SideHooks {
     /// Receiver: every finalize takes this much longer (slow storage).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Option<std::time::Duration>,
-    /// Sender: the chunk-list frame limit instead of `MAX_FRAME` (a small
-    /// file then stands in for one too large for protocol version 1).
-    #[cfg(feature = "test-hooks")]
-    pub max_chunk_list_frame: Option<usize>,
     /// Receiver: every local chunk copy takes this much longer (slow disk).
     #[cfg(feature = "test-hooks")]
     pub slow_local_copy: Option<std::time::Duration>,
@@ -522,9 +514,6 @@ pub struct SideHooks {
     /// hashed (a test replaces it meanwhile).
     #[cfg(feature = "test-hooks")]
     pub before_identical_check: Option<PathHook>,
-    /// Client: do not announce chunk lists in parts (a client predating them).
-    #[cfg(feature = "test-hooks")]
-    pub legacy_chunk_lists: bool,
     /// Sender: records per `ChunkListPart` instead of the default.
     #[cfg(feature = "test-hooks")]
     pub chunk_list_part_records: Option<usize>,

@@ -236,26 +236,25 @@ The fix is either to stream the chunk list in bounded pieces (a protocol
 change, backwards-compatible as a new message) or, much cheaper, to check
 the encoded size before sending and fail the *file* with `SOURCE_ERROR`
 instead of the session. The second landed on 2026-10-22: `on_digested`
-measures the frame with `chunk_list_frame_len` before queueing it and gives
-the file up with a message naming the chunk count, the frame size and the
-limit. The session completes, the error is reported like any unreadable
-source file, and no redial happens.
+measured the frame before queueing it and gave the file up with a message
+naming the chunk count, the frame size and the limit, so the session
+completed and no redial happened.
 
-The first landed the same day. `ChunkListPart` carries the list in pieces
-of 32,768 records (about 1.6 MiB each) on the control stream; the receiver
-reassembles them (`session/parts.rs`) and feeds the result to the unchanged
-chunk-list path. Two points of the protocol shaped it. The daemon refuses
-any protocol version but 1, so the message is additive within version 1.
-And a peer that predates a message does not refuse it, it decodes an empty
-`Control` and ignores it, so parts are negotiated: `Hello` and `HelloAck`
-each carry a `chunk_list_parts` flag, and a sender uses parts only towards
-a peer that announced them, keeping the one-frame path and its
-`SOURCE_ERROR` for the others. The ceiling is now the receiver's memory
-for the list (a 1 TiB file at the typical chunk size is about 200 MB of
-records, held three times: per-file state, route and writer) and a hard
-cap of 2^24 records per list, about 4 TiB of typical data, which bounds
-what a hostile sender can make a receiver hold. Sharing one copy of the
-list between the three holders is the natural next step.
+The first landed the same day and made the second moot. `ChunkListPart`
+carries every chunk list in pieces of 32,768 records (about 1.6 MiB each)
+on the control stream; the receiver reassembles them (`session/parts.rs`)
+into the native digest and feeds it to the unchanged chunk-list path. The
+one-frame `ChunkList` message, the sender's frame-size check and its
+`SOURCE_ERROR` are gone; the version number stays 1, there being no
+deployed peers. (A first cut
+negotiated parts in the handshake, because a peer that predates a message
+ignores it rather than refusing it; with no deployed peers to keep talking
+to, the negotiation was dropped the same day.) The ceiling is now the
+receiver's memory for the list, a 1 TiB file at the typical chunk size
+being about 200 MB of records held twice (one copy shared by the file's
+state, its route and its open result, one validated copy in the writer),
+and a hard cap of 2^24 records per list, about 4 TiB of typical data,
+which bounds what a hostile sender can make a receiver hold.
 
 ### 3.6 No in-place or append mode
 
@@ -384,7 +383,8 @@ protocol change.
 
 1. **Fail the file, not the session, when a chunk list will not fit**
    (3.5). Check the encoded size in `on_digested` and send `SOURCE_ERROR`.
-   Small change, removes a day-long retry loop. *Done (2026-10-22).*
+   Small change, removes a day-long retry loop. *Done (2026-10-22), then
+   removed again the same day once remedy 4 made every list fit.*
 2. **Send `NeedChunks` before the local copies, and copy concurrently with
    the network** (3.3). Restructure `open_writer` so index lookups decide the
    two sets first; the sets are disjoint, so the writer can take both. Cuts
@@ -398,9 +398,8 @@ protocol change.
    (2026-10-22), at chunk-list time rather than plan time; see 3.8 and
    `DELTA_RECEIVE.md`.*
 4. **Stream the chunk list in pieces** (3.5). A `ChunkListPart` message
-   with a `last` flag; additive within version 1 and negotiated in the
-   handshake, since old peers ignore unknown messages rather than refuse
-   them. Removes the frame ceiling; memory and a 2^24-record cap remain.
+   with a `last` flag, the only form a chunk list takes; protocol version
+   2. Removes the frame ceiling; memory and a 2^24-record cap remain.
    *Done (2026-10-22); see 3.5.*
 5. **A Merkle whole-file hash** (3.4). Removes the finalize pass. Protocol
    and index change, and it gives up `b3sum` equivalence; worth it only if

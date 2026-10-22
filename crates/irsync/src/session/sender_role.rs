@@ -1,5 +1,5 @@
 //! The sender role: walks and streams its listing, then answers the
-//! receiver: `PlanItem` → digest (lookahead) → `ChunkList`; `NeedChunks` →
+//! receiver: `PlanItem` → digest (lookahead) → chunk list in parts; `NeedChunks` →
 //! data streams. A file counts as done only at `FileAck DONE`. A file that
 //! changed while being sent, or whose whole-file hash did not match at the
 //! receiver, is re-stat'ed, re-digested and offered once more.
@@ -17,8 +17,8 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, ChunkList, FileAck, Hash, NeedChunks,
-    PlanEntry, PlanItem, SessionDone,
+    control::Msg, file_ack::Status, file_entry::Kind, FileAck, NeedChunks, PlanEntry, PlanItem,
+    SessionDone,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -33,7 +33,6 @@ use super::Outcome;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
-use crate::net::frame::MAX_FRAME;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{Sender, DEFAULT_SPLIT_THRESHOLD};
 
@@ -62,7 +61,7 @@ struct SFile {
     /// Bumped on every re-offer; older task results are ignored.
     gen: u32,
     retries: u32,
-    /// The digest behind the `ChunkList` last sent (none while re-digesting).
+    /// The digest behind the chunk list last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
@@ -111,16 +110,6 @@ struct SenderRole {
     max_delete_reached: bool,
 }
 
-/// Bytes of the control frame carrying `cl`: the `Control` wrapper's tag
-/// and length prefix around the encoded list. Linear in the chunk count and
-/// allocates nothing (the list is not encoded).
-fn chunk_list_frame_len(cl: &ChunkList) -> usize {
-    use prost::Message;
-    let body = cl.encoded_len();
-    1 + prost::encoding::encoded_len_varint(body as u64) + body
-}
-
-/// [`MAX_FRAME`], or a test's smaller cap on the chunk-list frame.
 /// Records per `ChunkListPart` (a test hook may shrink it).
 fn part_records(ctx: &Ctx) -> usize {
     #[cfg(feature = "test-hooks")]
@@ -129,17 +118,6 @@ fn part_records(ctx: &Ctx) -> usize {
     }
     let _ = ctx;
     PART_RECORDS
-}
-
-fn chunk_list_limit(ctx: &Ctx) -> usize {
-    #[cfg(feature = "test-hooks")]
-    let cap = ctx.hooks.max_chunk_list_frame.unwrap_or(MAX_FRAME);
-    #[cfg(not(feature = "test-hooks"))]
-    let cap = {
-        let _ = ctx;
-        MAX_FRAME
-    };
-    cap
 }
 
 impl SenderRole {
@@ -320,8 +298,7 @@ impl SenderRole {
             return;
         }
         match result {
-            Ok(d) if self.ctx.peer_parts => {
-                // In parts, each far below the frame limit: no list is too long.
+            Ok(d) => {
                 for p in split(file_id, &d, part_records(&self.ctx)) {
                     self.out.send(Msg::ChunkListPart(p));
                     #[cfg(feature = "test-hooks")]
@@ -336,34 +313,6 @@ impl SenderRole {
                 }
                 f.digest = Some(Arc::new(d));
             }
-            Ok(d) => {
-                let cl = ChunkList {
-                    file_id,
-                    size: d.size,
-                    whole_hash: Some(Hash {
-                        bytes: d.hash.to_vec(),
-                    }),
-                    chunks: d.chunks.iter().map(|&c| c.into()).collect(),
-                };
-                // A list the control stream cannot frame is this file's
-                // problem, not the session's: the writer would refuse the
-                // frame and take the connection down, and every redial would
-                // plan the same file again.
-                let (len, limit) = (chunk_list_frame_len(&cl), chunk_list_limit(&self.ctx));
-                if len > limit {
-                    self.source_error(
-                        file_id,
-                        format!(
-                            "chunk list of {} chunks ({len} bytes) exceeds the {limit}-byte \
-                             control frame; a file this large cannot be sent by protocol version 1",
-                            d.chunks.len()
-                        ),
-                    );
-                    return;
-                }
-                self.out.send(Msg::ChunkList(cl));
-                f.digest = Some(Arc::new(d));
-            }
             Err(e) => self.source_error(file_id, e.to_string()),
         }
     }
@@ -375,7 +324,7 @@ impl SenderRole {
             return;
         };
         // The receiver may ask again for chunks its streams did not deliver.
-        // Without a digest a fresh `ChunkList` is on its way and will be
+        // Without a digest a fresh chunk list is on its way and will be
         // answered with a new request.
         let Some(digest) = f.digest.clone() else {
             return;
@@ -787,51 +736,4 @@ pub(super) async fn run(
         #[cfg(feature = "test-hooks")]
         retained_files: s.files.len(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use irsync_proto::v1::{ChunkRecord, Control};
-    use prost::Message;
-
-    fn list(n: usize, first_offset: u64) -> ChunkList {
-        let chunks = (0..n)
-            .map(|i| ChunkRecord {
-                offset: first_offset + i as u64 * 262_144,
-                len: 262_144,
-                hash: Some(Hash {
-                    bytes: vec![0xab; 32],
-                }),
-            })
-            .collect();
-        ChunkList {
-            file_id: 7,
-            size: n as u64 * 262_144,
-            whole_hash: Some(Hash {
-                bytes: vec![0xcd; 32],
-            }),
-            chunks,
-        }
-    }
-
-    #[test]
-    fn chunk_list_frame_len_matches_the_real_encoding() {
-        for (n, off) in [(0, 0), (1, 0), (1000, 1 << 40), (3, u64::MAX - (1 << 40))] {
-            let cl = list(n, off);
-            let real = Control {
-                msg: Some(Msg::ChunkList(cl.clone())),
-            }
-            .encode_to_vec()
-            .len();
-            assert_eq!(chunk_list_frame_len(&cl), real, "{n} chunks at {off}");
-        }
-    }
-
-    #[test]
-    fn oversize_chunk_list_is_detected_without_encoding() {
-        // ~49 bytes per record at large offsets: 400k exceed 16 MiB, 300k fit.
-        assert!(chunk_list_frame_len(&list(400_000, 1 << 40)) > MAX_FRAME);
-        assert!(chunk_list_frame_len(&list(300_000, 1 << 40)) <= MAX_FRAME);
-    }
 }

@@ -29,7 +29,6 @@ async fn two_local_endpoints_exchange_hello() {
             session_id: hello.session_id.clone(),
             resumed: false,
             protocol_version: hello.protocol_version,
-            chunk_list_parts: false,
         };
         write_msg(&mut send, &ack).await.unwrap();
         send.finish().unwrap();

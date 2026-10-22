@@ -1,7 +1,6 @@
-//! Chunk lists in parts: a list too long for one control frame is sent as
-//! `ChunkListPart` messages when both sides announced them, reassembled on
-//! the receiver, and the rest of the transfer is unchanged. A peer that did
-//! not announce them gets one frame and the old limit.
+//! Chunk lists in parts: every chunk list travels as `ChunkListPart`
+//! messages, reassembled on the receiver; the rest of the transfer is
+//! unchanged, and a connection lost between parts resumes cleanly.
 
 mod common;
 
@@ -58,7 +57,7 @@ fn patch(p: &Path, offset: u64, bytes: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_list_too_long_for_one_frame_is_sent_in_parts() {
+async fn a_chunk_list_is_sent_in_parts_and_reassembled() {
     within60(async {
         let opts = archive_opts();
         let flow = Flow::Push;
@@ -66,9 +65,7 @@ async fn a_list_too_long_for_one_frame_is_sent_in_parts() {
         let content = data(4 * MIB, 31);
         fs::write(h.src(flow).join("big.bin"), &content).unwrap();
         let mut local = h.local_side();
-        // One frame could not hold this list (see the remedy-1 test), but
-        // parts of three records are far below the limit.
-        local.hooks.max_chunk_list_frame = Some(256);
+        // Three records per part: a 4 MiB file takes several.
         local.hooks.chunk_list_part_records = Some(3);
         let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), local).await;
         let out = out.unwrap();
@@ -80,34 +77,6 @@ async fn a_list_too_long_for_one_frame_is_sent_in_parts() {
         // 4 MiB is at least 4 chunks: several parts, one assembled list.
         assert!(count(&events, "part:big.bin") >= 2, "{events:?}");
         assert_eq!(count(&events, "chunklist:big.bin"), 1, "{events:?}");
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_without_parts_gets_one_frame_and_the_old_limit() {
-    within60(async {
-        let opts = archive_opts();
-        let flow = Flow::Push;
-        let h = Harness::new().await;
-        h.daemon.legacy_chunk_lists.store(true, SeqCst);
-        fs::write(h.src(flow).join("big.bin"), data(4 * MIB, 32)).unwrap();
-        fs::write(h.src(flow).join("small.txt"), b"fits").unwrap();
-        let mut local = h.local_side();
-        local.hooks.max_chunk_list_frame = Some(256);
-        local.hooks.chunk_list_part_records = Some(3);
-        let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), local).await;
-        let out = out.unwrap();
-        assert_eq!(reconnects, 0);
-        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
-        let (path, msg) = &out.errors[0];
-        assert_eq!(path.as_bytes(), b"big.bin");
-        assert!(msg.contains("control frame"), "{msg}");
-        assert_eq!(fs::read(h.dst(flow).join("small.txt")).unwrap(), b"fits");
-        assert!(!h.dst(flow).join("big.bin").exists());
-        let events = h.daemon.events.lock().unwrap().clone();
-        assert_eq!(count(&events, "part:small.txt"), 0, "{events:?}");
-        assert_eq!(count(&events, "chunklist:small.txt"), 1, "{events:?}");
     })
     .await;
 }

@@ -2,8 +2,8 @@ use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::recv::{FileWriter, FinalizeError};
-use irsync_proto::chunk::digest_bytes;
-use irsync_proto::v1::{self, file_entry::Kind, ChunkList, FileEntry};
+use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
+use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -22,19 +22,11 @@ fn content(seed: u64) -> Vec<u8> {
     out
 }
 
-fn chunk_list(data: &[u8]) -> ChunkList {
-    let d = digest_bytes(data);
-    ChunkList {
-        file_id: 1,
-        size: d.size,
-        whole_hash: Some(v1::Hash {
-            bytes: d.hash.to_vec(),
-        }),
-        chunks: d.chunks.into_iter().map(Into::into).collect(),
-    }
+fn chunk_list(data: &[u8]) -> FileDigest {
+    digest_bytes(data)
 }
 
-fn piece<'a>(data: &'a [u8], cl: &ChunkList, idx: usize) -> &'a [u8] {
+fn piece<'a>(data: &'a [u8], cl: &FileDigest, idx: usize) -> &'a [u8] {
     let c = &cl.chunks[idx];
     &data[c.offset as usize..c.offset as usize + c.len as usize]
 }
@@ -90,7 +82,7 @@ const OPTS: ApplyOpts = ApplyOpts {
     group: false,
 };
 
-async fn write_all(w: &mut FileWriter, data: &[u8], cl: &ChunkList, idxs: &[u32]) {
+async fn write_all(w: &mut FileWriter, data: &[u8], cl: &FileDigest, idxs: &[u32]) {
     for &idx in idxs {
         w.write_chunk(idx, piece(data, cl, idx as usize))
             .await
@@ -98,7 +90,7 @@ async fn write_all(w: &mut FileWriter, data: &[u8], cl: &ChunkList, idxs: &[u32]
     }
 }
 
-fn all(cl: &ChunkList) -> Vec<u32> {
+fn all(cl: &FileDigest) -> Vec<u32> {
     (0..cl.chunks.len() as u32).collect()
 }
 
@@ -131,9 +123,7 @@ async fn finalize_rejects_hash_mismatch_and_leaves_no_final_file() {
     let e = env();
     let data = content(11);
     let mut cl = chunk_list(&data);
-    cl.whole_hash = Some(v1::Hash {
-        bytes: vec![0xAB; 32],
-    });
+    cl.hash = [0xAB; 32];
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     let err = w
@@ -374,18 +364,14 @@ async fn oversized_chunk_in_list_is_rejected() {
     let e = env();
     let data = vec![7u8; 2 * 1024 * 1024];
     // One 2 MiB "chunk": tiles the file, but exceeds the 1 MiB maximum.
-    let cl = ChunkList {
-        file_id: 1,
+    let hash = *blake3::hash(&data).as_bytes();
+    let cl = FileDigest {
         size: data.len() as u64,
-        whole_hash: Some(v1::Hash {
-            bytes: blake3::hash(&data).as_bytes().to_vec(),
-        }),
-        chunks: vec![v1::ChunkRecord {
+        hash,
+        chunks: vec![ChunkRecord {
             offset: 0,
             len: data.len() as u32,
-            hash: Some(v1::Hash {
-                bytes: blake3::hash(&data).as_bytes().to_vec(),
-            }),
+            hash,
         }],
     };
     let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())

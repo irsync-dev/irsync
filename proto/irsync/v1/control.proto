@@ -21,18 +21,11 @@ message PlanItem { // receiver -> sender
   }
   Action action = 3;
 }
-message ChunkList {
-  uint64 file_id = 1;
-  uint64 size = 2;
-  Hash whole_hash = 3;
-  repeated ChunkRecord chunks = 4;
-} // sender -> receiver
-// sender -> receiver: one piece of a chunk list, for lists too long for one
-// frame. Used instead of ChunkList once both sides announced
-// `chunk_list_parts` in Hello / HelloAck (additive within version 1). The
-// parts of a file arrive in order: `first` is the index of `chunks[0]` in
-// the whole list, `total` the whole list's length, `last` marks the final
-// part. `size` and `whole_hash` are repeated in every part.
+// sender -> receiver: the chunk list of a file, in pieces small enough for
+// a control frame. The parts of a file arrive in order: `first` is the
+// index of `chunks[0]` in the whole list, `total` the whole list's length,
+// `last` marks the final part. `size` and `whole_hash` are repeated in
+// every part. A list of no chunks (an empty file) is one empty last part.
 message ChunkListPart {
   uint64 file_id = 1;
   uint64 size = 2;
@@ -86,11 +79,11 @@ message Itemized {
 // decodes an empty Control and ignores it.
 message Heartbeat {}
 message Control {
+  reserved 4; // ChunkList, one frame per list (never shipped)
   oneof msg {
     ListingEntry listing = 1;
     ListingEnd listing_end = 2;
     PlanItem plan = 3;
-    ChunkList chunk_list = 4;
     NeedChunks need = 5;
     FileAck ack = 6;
     SessionDone done = 7;

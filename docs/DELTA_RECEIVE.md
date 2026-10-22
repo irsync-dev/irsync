@@ -71,10 +71,11 @@ that used to carry its path is gone.
 
 ### 2.2 Chunk list arrival
 
-A chunk list arrives as one frame or, when both sides announced it in the
-handshake, as a sequence of `ChunkListPart` frames that
-`Receiver::on_chunk_list_part` reassembles (`session/parts.rs`) before
-handing the complete list on. A connection loss mid-sequence drops the
+A chunk list arrives as a sequence of `ChunkListPart` frames that
+`Receiver::on_chunk_list_part` reassembles (`session/parts.rs`) into one
+native digest before handing it on. That digest is shared by reference
+between the file's state, its route and the open result; the writer keeps
+its own validated copy. A connection loss mid-sequence drops the
 half-built list with the connection; the resumed session gets a fresh
 sequence from the sender. A malformed sequence fails the file.
 
@@ -92,7 +93,7 @@ calls `index_old_file` itself; by then that is a cache hit.
 
 `recv_io::open_writer` does five things and copies nothing:
 
-1. **Decode** the chunk list into a native `FileDigest` (`native_digest`).
+1. **Take the assembled list**, already a native `FileDigest` (section 2.2).
 2. **Take the old file's hash** (`DELTA` only): await the prehash handle,
    which yields the old file's digest together with the stat it was
    computed under (`OldFile`). If the planner never started a task

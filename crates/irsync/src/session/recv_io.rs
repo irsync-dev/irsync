@@ -16,7 +16,7 @@ use std::sync::Arc;
 use iroh::endpoint::{RecvStream, VarInt};
 use irsync_proto::chunk::{ChunkRecord, FileDigest};
 use irsync_proto::v1::{
-    file_entry::Kind, plan_item::Action, ChunkList, DataChunk, DataStreamHeader, FileEntry, Hash,
+    file_entry::Kind, plan_item::Action, DataChunk, DataStreamHeader, FileEntry, Hash,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -37,7 +37,8 @@ pub(super) type Slot = Arc<tokio::sync::Mutex<Option<FileWriter>>>;
 pub(super) struct Route {
     pub gen: u32,
     pub slot: Slot,
-    pub chunks: Arc<Vec<ChunkRecord>>,
+    /// The chunk list, shared with the file's state and its `Fill`.
+    pub digest: Arc<FileDigest>,
     /// Units of delivery still running: one per requested chunk whose data
     /// stream has not ended, plus one for the local-copy task while it runs.
     pub pending: Arc<AtomicUsize>,
@@ -64,7 +65,7 @@ pub(super) enum Opened {
     Writer(Box<Fill>),
     /// The destination already holds the content (a `DELTA` whose
     /// whole-file hash matches): settled in place by [`settle_identical`].
-    Identical { file: File, digest: FileDigest },
+    Identical { file: File, digest: Arc<FileDigest> },
 }
 
 pub(super) struct Fill {
@@ -73,25 +74,7 @@ pub(super) struct Fill {
     pub remote: Vec<u32>,
     /// Chunks an indexed file holds: copied while the sender delivers the rest.
     pub local: Vec<LocalChunk>,
-    pub digest: FileDigest,
-}
-
-fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
-    let hash: [u8; 32] = cl
-        .whole_hash
-        .as_ref()
-        .and_then(|h| h.bytes.clone().try_into().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk list without hash"))?;
-    let chunks = cl
-        .chunks
-        .iter()
-        .map(|c| ChunkRecord::try_from(c.clone()))
-        .collect::<io::Result<Vec<_>>>()?;
-    Ok(FileDigest {
-        size: cl.size,
-        hash,
-        chunks,
-    })
+    pub digest: Arc<FileDigest>,
 }
 
 /// Makes sure the destination's current file at `path` has its chunks in
@@ -163,10 +146,9 @@ pub(super) async fn open_writer(
     path: RelPath,
     action: Action,
     prehash: Option<JoinHandle<Option<OldFile>>>,
-    cl: ChunkList,
+    digest: Arc<FileDigest>,
     sparse: bool,
 ) -> io::Result<Opened> {
-    let digest = native_digest(&cl)?;
     // The writer works on index keys under the index root, so its partial
     // record is keyed like every other index row; the file lands at the same place.
     let key = ctx.key(&path);
@@ -194,8 +176,9 @@ pub(super) async fn open_writer(
         ctx.opts.partial_dir.clone(),
         ctx.activity.clone(),
     );
+    let expected = digest.clone();
     let mut w = blocking(move || {
-        FileWriter::open_tracked(&base, &rel, &cl, pd.as_deref(), index, activity)
+        FileWriter::open_tracked(&base, &rel, &expected, pd.as_deref(), index, activity)
     })
     .await?;
     w.set_sparse(sparse);
@@ -249,7 +232,7 @@ pub(super) async fn settle_identical(
     file: File,
     path: RelPath,
     entry: FileEntry,
-    digest: FileDigest,
+    digest: Arc<FileDigest>,
 ) -> Result<(), FinalizeError> {
     let apply = ctx.apply_opts(&entry);
     let (base, key, index, pd) = (
@@ -295,7 +278,7 @@ pub(super) async fn copy_local_chunks(
         if let Some(d) = ctx.hooks.slow_local_copy {
             tokio::time::sleep(d).await;
         }
-        let Some(len) = route.chunks.get(idx as usize).map(|c| c.len) else {
+        let Some(len) = route.digest.chunks.get(idx as usize).map(|c| c.len) else {
             continue;
         };
         // Read outside the writer lock: network streams keep writing meanwhile.
@@ -364,7 +347,7 @@ pub(super) async fn finalize(
     w: FileWriter,
     path: RelPath,
     entry: FileEntry,
-    digest: FileDigest,
+    digest: Arc<FileDigest>,
 ) -> Result<(), FinalizeError> {
     let apply = ctx.apply_opts(&entry);
     #[cfg(feature = "test-hooks")]
@@ -481,7 +464,7 @@ async fn read_range(
 ) -> usize {
     let file_id = header.file_id;
     let first = header.first_chunk_idx as usize;
-    let Some(n) = range_len(&route.chunks, first, header.offset, header.length) else {
+    let Some(n) = range_len(&route.digest.chunks, first, header.offset, header.length) else {
         tracing::warn!(file_id, "data stream range does not match the chunk list");
         stop(s, 1);
         return usize::MAX;
