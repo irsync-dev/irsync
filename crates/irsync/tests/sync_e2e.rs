@@ -585,3 +585,35 @@ async fn inflight_plan_items_are_capped() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversize_chunk_list_fails_the_file_not_the_session() {
+    within30(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("big.bin"), data(4 * MIB, 21)).unwrap();
+        fs::write(h.src(flow).join("small.txt"), b"fits").unwrap();
+        let mut local = h.local_side();
+        // A one-chunk list is ~90 bytes framed; a 4 MiB file's is far more.
+        local.hooks.max_chunk_list_frame = Some(256);
+        let ropts = irsync::session::reconnect::ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let (out, reconnects) = h.run_reconnect(&opts, flow, ropts, local).await;
+        let out = out.unwrap();
+        assert_eq!(reconnects, 0, "the client redialled");
+        assert_eq!(h.daemon.hellos.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(out.exit_code(), 23);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"big.bin");
+        assert!(msg.contains("control frame"), "{msg}");
+        assert_eq!(out.files_transferred, 1);
+        assert_eq!(fs::read(h.dst(flow).join("small.txt")).unwrap(), b"fits");
+        assert!(!h.dst(flow).join("big.bin").exists());
+        assert!(!h.dst(flow).join(".irsync.big.bin.part").exists());
+    })
+    .await;
+}

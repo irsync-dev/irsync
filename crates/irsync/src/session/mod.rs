@@ -501,6 +501,10 @@ pub struct SideHooks {
     /// Receiver: every finalize takes this much longer (slow storage).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Option<std::time::Duration>,
+    /// Sender: the chunk-list frame limit instead of `MAX_FRAME` (a small
+    /// file then stands in for one too large for protocol version 1).
+    #[cfg(feature = "test-hooks")]
+    pub max_chunk_list_frame: Option<usize>,
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

@@ -228,8 +228,13 @@ whole-file approach caps nothing.
 The fix is either to stream the chunk list in bounded pieces (a protocol
 change, backwards-compatible as a new message) or, much cheaper, to check
 the encoded size before sending and fail the *file* with `SOURCE_ERROR`
-instead of the session. The second should land regardless; the design
-document lists 100 GiB VM images among the things irsync should carry.
+instead of the session. The second landed on 2026-10-22: `on_digested`
+measures the frame with `chunk_list_frame_len` before queueing it and gives
+the file up with a message naming the chunk count, the frame size and the
+limit. The session completes, the error is reported like any unreadable
+source file, and no redial happens. The ceiling itself remains until the
+list is streamed; the design document lists 100 GiB VM images among the
+things irsync should carry.
 
 ### 3.6 No in-place or append mode
 
@@ -343,7 +348,7 @@ protocol change.
 
 1. **Fail the file, not the session, when a chunk list will not fit**
    (3.5). Check the encoded size in `on_digested` and send `SOURCE_ERROR`.
-   Small change, removes a day-long retry loop.
+   Small change, removes a day-long retry loop. *Done (2026-10-22).*
 2. **Send `NeedChunks` before the local copies, and copy concurrently with
    the network** (3.3). Restructure `open_writer` so index lookups decide the
    two sets first; the sets are disjoint, so the writer can take both. Cuts
