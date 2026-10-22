@@ -160,11 +160,18 @@ Receiver I/O volume for the same case:
 | irsync, old file's digest cached | 2 | 1 |
 | irsync, old file's digest not cached | 3 | 1 |
 
-Two of these costs are avoidable without a protocol change: `NeedChunks`
-could be sent as soon as the index lookups are done and before the local
-copies run (the network set and the local set are disjoint by then), and
-local copies could run while the network delivers. The finalize re-hash is
-discussed in 3.4.
+Two of these costs were avoidable without a protocol change, and were
+removed on 2026-10-22: `open_writer` now only partitions the missing chunks
+into a remote and a local set, `NeedChunks` goes out at once, and a
+local-copy task fills the local set while the sender delivers, counting as
+one unit of the request so the existing drained-and-re-request path covers
+a local source whose bytes no longer match the index. The planner also
+starts hashing the old file when it sends the `PlanItem`, so steps 1 and 2
+above run concurrently. The chain is now: sender hash in parallel with the
+receiver's old-file hash, then index lookups, then the transfer with the
+local copy running under it, then finalize. The finalize re-hash is
+discussed in 3.4. The new flow is documented step by step in
+`DELTA_RECEIVE.md`.
 
 The first-time sync of a tree pays a related price. Every new file is read
 twice on the sender (once to digest, once to send, with each chunk
@@ -352,7 +359,9 @@ protocol change.
 2. **Send `NeedChunks` before the local copies, and copy concurrently with
    the network** (3.3). Restructure `open_writer` so index lookups decide the
    two sets first; the sets are disjoint, so the writer can take both. Cuts
-   one full pass off the critical path of every `DELTA`.
+   one full pass off the critical path of every `DELTA`. *Done
+   (2026-10-22), including the early old-file hash; see
+   `DELTA_RECEIVE.md`.*
 3. **Compute the receiver's whole-file hash on demand before deciding**
    (3.8). One read of the old file turns a `touch` into a metadata-only
    update instead of a rewrite, and makes `-c` match its documentation.

@@ -217,7 +217,9 @@ partial files are waiting.
 - Linux and macOS only.
 
 More: [docs/daemon.md](docs/daemon.md) for running the daemon,
-[docs/protocol.md](docs/protocol.md) for the wire protocol.
+[docs/protocol.md](docs/protocol.md) for the wire protocol,
+[docs/DELTA_RECEIVE.md](docs/DELTA_RECEIVE.md) for how a changed file is
+received.
 
 ## fileset
 
