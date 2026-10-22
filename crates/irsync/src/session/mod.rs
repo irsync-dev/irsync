@@ -505,6 +505,9 @@ pub struct SideHooks {
     /// file then stands in for one too large for protocol version 1).
     #[cfg(feature = "test-hooks")]
     pub max_chunk_list_frame: Option<usize>,
+    /// Receiver: every local chunk copy takes this much longer (slow disk).
+    #[cfg(feature = "test-hooks")]
+    pub slow_local_copy: Option<std::time::Duration>,
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

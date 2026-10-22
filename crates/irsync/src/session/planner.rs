@@ -27,10 +27,12 @@ use irsync_proto::v1::{
     control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, PlanItem, SessionPlan,
 };
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 
 use super::control::{is_own_temp, Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
+use super::recv_io::index_old_file;
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::Verdict;
@@ -45,9 +47,9 @@ pub(super) struct Planned {
     /// The sender's listing entry (metadata applied at finalize).
     pub entry: FileEntry,
     pub action: Action,
-    /// Rename detection found this local file with the same content (an
-    /// index key, i.e. relative to the index root, not the session root).
-    pub local_copy: Option<RelPath>,
+    /// `DELTA`: hashing of the old destination file, started here so it
+    /// runs alongside the sender's digest of the new one.
+    pub prehash: Option<JoinHandle<()>>,
     /// One of the session's in-flight slots, released when the file leaves
     /// the receiver (placed or failed).
     pub slot: OwnedSemaphorePermit,
@@ -545,11 +547,17 @@ impl Planner {
                 let Some(file_id) = self.file_id(&path) else {
                     return;
                 };
-                let (action, local_copy) = match decision {
-                    Decision::Delta => (Action::Delta, None),
-                    Decision::LocalCopy { from } => (Action::Whole, Some(from)),
-                    _ => (Action::Whole, None),
+                // A rename-detection source needs no special handling: its
+                // chunks are indexed, so the writer finds them like any other.
+                let action = match decision {
+                    Decision::Delta => Action::Delta,
+                    _ => Action::Whole,
                 };
+                let prehash = (action == Action::Delta).then(|| {
+                    self.ctx.hooks.event("prehash", &path);
+                    let (ctx, p) = (self.ctx.clone(), path.clone());
+                    tokio::spawn(async move { index_old_file(&ctx, &p).await })
+                });
                 // Bounded in flight: wait until an earlier file is acknowledged.
                 let Ok(slot) = self.inflight.clone().acquire_owned().await else {
                     return;
@@ -560,7 +568,7 @@ impl Planner {
                     path: path.clone(),
                     entry,
                     action,
-                    local_copy,
+                    prehash,
                     slot,
                 }))));
                 self.ctx.hooks.event("plan", &path);

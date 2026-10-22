@@ -31,7 +31,9 @@ use super::control::{
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
 use super::planner::{inflight_cap, parent_of, plan, Linked, Planned, PlannerReport, Prior};
-use super::recv_io::{accept_streams, finalize, open_writer, Opened, Route, Routes};
+use super::recv_io::{
+    accept_streams, copy_local_chunks, finalize, open_writer, Opened, Route, Routes,
+};
 use super::Outcome;
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
@@ -70,7 +72,7 @@ pub(super) enum Done {
     Opened {
         file_id: u64,
         gen: u32,
-        result: io::Result<Opened>,
+        result: io::Result<Box<Opened>>,
     },
     /// Every chunk of the file is verified on disk.
     Ready {
@@ -110,7 +112,9 @@ struct RFile {
     path: RelPath,
     entry: FileEntry,
     action: Action,
-    local_copy: Option<RelPath>,
+    /// `DELTA`: the planner's early hashing of the old file, handed to the
+    /// first `open_writer` so it waits instead of reading the file again.
+    prehash: Option<JoinHandle<()>>,
     /// Bumped for every new `ChunkList` and on failure; stale task results
     /// and data streams carry an older value and are ignored.
     gen: u32,
@@ -242,7 +246,7 @@ impl Receiver {
         path: RelPath,
         entry: FileEntry,
         action: Action,
-        local_copy: Option<RelPath>,
+        prehash: Option<JoinHandle<()>>,
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
         self.active += 1;
@@ -256,7 +260,7 @@ impl Receiver {
                 path,
                 entry,
                 action,
-                local_copy,
+                prehash,
                 gen: 0,
                 mismatches: 0,
                 rerequests: 0,
@@ -365,15 +369,17 @@ impl Receiver {
         }
         f.gen += 1;
         f.st = St::Opening;
-        let (gen, path, action, local_copy) =
-            (f.gen, f.path.clone(), f.action, f.local_copy.clone());
+        self.ctx.hooks.event("chunklist", &f.path);
+        let (gen, path, action, prehash) = (f.gen, f.path.clone(), f.action, f.prehash.take());
         let sparse = f.entry.sparse || self.ctx.opts.preserve.sparse;
         // A new chunk list replaces the previous writer; it must be gone
         // before the next one opens the same `.part`.
         self.retire_writer(file_id).await;
         let (ctx, events) = (self.ctx.clone(), self.events.clone());
         self.tasks.spawn(async move {
-            let result = open_writer(ctx, path, action, local_copy, cl, sparse).await;
+            let result = open_writer(ctx, path, action, prehash, cl, sparse)
+                .await
+                .map(Box::new);
             let _ = events.send(Ev::Recv(Done::Opened {
                 file_id,
                 gen,
@@ -418,7 +424,7 @@ impl Receiver {
                     p.path,
                     p.entry,
                     p.action,
-                    p.local_copy,
+                    p.prehash,
                     Some(p.slot),
                 );
             }
@@ -478,7 +484,7 @@ impl Receiver {
         }
     }
 
-    async fn on_opened(&mut self, file_id: u64, gen: u32, result: io::Result<Opened>) {
+    async fn on_opened(&mut self, file_id: u64, gen: u32, result: io::Result<Box<Opened>>) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -493,7 +499,7 @@ impl Receiver {
             return;
         }
         let o = match result {
-            Ok(o) => o,
+            Ok(o) => *o,
             Err(e) => {
                 let msg = if e.kind() == io::ErrorKind::WouldBlock {
                     // Another session writes the same destination; a later
@@ -511,31 +517,49 @@ impl Receiver {
             .hooks
             .bus
             .emit(super::Event::FileStart(f.path.clone()));
-        let missing = o.missing.clone();
-        if missing.is_empty() {
+        let Opened {
+            writer,
+            remote,
+            local,
+            digest,
+        } = o;
+        self.ctx.hooks.event("need", &f.path);
+        if remote.is_empty() && local.is_empty() {
             f.st = St::Finalizing;
-            self.spawn_finalize(file_id, gen, o.writer, o.digest);
-        } else {
-            f.st = St::Receiving;
-            // Routed before the request goes out, so no data stream can miss it.
-            self.routes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(
-                    file_id,
-                    Route {
-                        gen,
-                        slot: Arc::new(tokio::sync::Mutex::new(Some(o.writer))),
-                        chunks: Arc::new(o.digest.chunks),
-                        pending: Arc::new(AtomicUsize::new(missing.len())),
-                    },
-                );
+            // Nothing needed: every chunk was adopted from earlier progress.
+            self.out.send(Msg::Need(NeedChunks {
+                file_id,
+                chunk_idx: Vec::new(),
+            }));
+            self.spawn_finalize(file_id, gen, writer, digest);
+            return;
         }
-        // Empty means "nothing needed": everything was local.
+        f.st = St::Receiving;
+        let route = Route {
+            gen,
+            slot: Arc::new(tokio::sync::Mutex::new(Some(writer))),
+            chunks: Arc::new(digest.chunks),
+            pending: Arc::new(AtomicUsize::new(
+                remote.len() + usize::from(!local.is_empty()),
+            )),
+            path: f.path.clone(),
+        };
+        // Routed before the request goes out, so no data stream can miss it.
+        self.routes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(file_id, route.clone());
+        // The request first (empty means "nothing needed for now"), then the
+        // local copies run while the sender delivers.
         self.out.send(Msg::Need(NeedChunks {
             file_id,
-            chunk_idx: missing,
+            chunk_idx: remote,
         }));
+        if !local.is_empty() {
+            let (ctx, events) = (self.ctx.clone(), self.events.clone());
+            self.tasks
+                .spawn(copy_local_chunks(ctx, route, local, events, file_id));
+        }
     }
 
     async fn on_finalized(&mut self, file_id: u64, gen: u32, result: Result<(), FinalizeError>) {

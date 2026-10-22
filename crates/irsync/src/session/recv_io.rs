@@ -1,11 +1,14 @@
-//! The receiver role's file and data-stream I/O: opening `.part` writers
-//! (with local chunk reuse), finalizing them, and routing each incoming data
-//! stream into the current writer of its file. A request whose streams have
-//! all ended with chunks still missing is reported back as `Drained`.
+//! The receiver role's file and data-stream I/O: opening `.part` writers,
+//! deciding which chunks the receiver's own files can supply, copying those
+//! while the sender delivers the rest, finalizing, and routing each incoming
+//! data stream into the current writer of its file. A request whose streams
+//! and local copies have all ended with chunks still missing is reported
+//! back as `Drained`.
 
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::FileExt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -15,6 +18,7 @@ use irsync_proto::v1::{
     file_entry::Kind, plan_item::Action, ChunkList, DataChunk, DataStreamHeader, FileEntry, Hash,
 };
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::control::Ev;
 use super::engine::{blocking, Ctx};
@@ -33,19 +37,26 @@ pub(super) struct Route {
     pub gen: u32,
     pub slot: Slot,
     pub chunks: Arc<Vec<ChunkRecord>>,
-    /// Requested chunks whose data streams have not ended yet.
+    /// Units of delivery still running: one per requested chunk whose data
+    /// stream has not ended, plus one for the local-copy task while it runs.
     pub pending: Arc<AtomicUsize>,
+    /// The file's session path (events and logs).
+    pub path: RelPath,
 }
 
 pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
+
+/// A chunk one of the receiver's own files holds: its index in the chunk
+/// list, the file (absolute) and the chunk's offset in that file.
+pub(super) type LocalChunk = (u32, PathBuf, u64);
+
 pub(super) struct Opened {
     pub writer: FileWriter,
-    pub missing: Vec<u32>,
+    /// Chunks with no local source: to be requested from the sender.
+    pub remote: Vec<u32>,
+    /// Chunks an indexed file holds: copied while the sender delivers the rest.
+    pub local: Vec<LocalChunk>,
     pub digest: FileDigest,
-}
-
-fn is_regular(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file())
 }
 
 fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
@@ -66,29 +77,40 @@ fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
     })
 }
 
-/// Copies chunk `idx` from a local file if it is still a regular file there.
-/// Failures only mean the chunk has to come over the network.
-async fn try_copy(w: &mut FileWriter, idx: u32, from: PathBuf, offset: u64) {
-    let probe = from.clone();
-    if !blocking(move || Ok(is_regular(&probe)))
-        .await
-        .unwrap_or(false)
-    {
+/// Makes sure the destination's current file at `path` has its chunks in
+/// the index (a cache hit if it is fresh there, a read otherwise), so a
+/// `DELTA` can take them from it. Failures only mean nothing local.
+pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) {
+    let key = ctx.key(path);
+    let (base, rel) = (ctx.base.clone(), key.clone());
+    let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await else {
+        return;
+    };
+    if entry.kind() != Kind::Regular {
         return;
     }
-    if let Err(e) = w.copy_local(idx, &from, offset).await {
-        tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
+    let item = ScanItem {
+        path: key,
+        entry,
+        ctime,
+    };
+    if let Err(e) = ctx.hasher.digest(&item).await {
+        tracing::debug!(?path, error = %e, "hashing old file for delta failed");
     }
 }
 
-/// Opens the `.part` writer (adopting earlier progress), then fills what it
-/// can locally: from the rename-detection source, then any indexed file that
-/// holds a chunk with the same hash. Returns the chunks still missing.
+/// Opens the `.part` writer (adopting earlier progress) and sorts the
+/// chunks still missing into those an indexed local file holds and those
+/// the sender has to deliver. Nothing is copied here: the request for the
+/// remote set should go out before the local copies start.
+///
+/// `prehash`: the planner's early hashing of the old file (`DELTA`), awaited
+/// rather than repeated.
 pub(super) async fn open_writer(
     ctx: Arc<Ctx>,
     path: RelPath,
     action: Action,
-    local_copy: Option<RelPath>,
+    prehash: Option<JoinHandle<()>>,
     cl: ChunkList,
     sparse: bool,
 ) -> io::Result<Opened> {
@@ -110,62 +132,139 @@ pub(super) async fn open_writer(
     w.set_sparse(sparse);
 
     if action == Action::Delta {
-        // Make sure the old file's chunks are indexed (cached if fresh).
-        let (base, rel) = (ctx.base.clone(), key.clone());
-        if let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
-            if entry.kind() == Kind::Regular {
-                let item = ScanItem {
-                    path: key.clone(),
-                    entry,
-                    ctime,
-                };
-                if let Err(e) = ctx.hasher.digest(&item).await {
-                    tracing::debug!(?path, error = %e, "hashing old file for delta failed");
-                }
-            }
+        if let Some(h) = prehash {
+            let _ = h.await;
         }
-    }
-    if let Some(from) = &local_copy {
-        let from = ctx.full_key(from);
-        for idx in w.missing_chunks() {
-            let offset = digest.chunks[idx as usize].offset;
-            try_copy(&mut w, idx, from.clone(), offset).await;
-        }
+        index_old_file(&ctx, &path).await;
     }
     let wanted: Vec<(u32, [u8; 32])> = w
         .missing_chunks()
         .into_iter()
         .map(|i| (i, digest.chunks[i as usize].hash))
         .collect();
+    let (mut remote, mut local) = (Vec::new(), Vec::new());
     if !wanted.is_empty() {
         let index = ctx.index().clone();
         let found = blocking(move || {
             let ix = index
                 .lock()
                 .map_err(|_| io::Error::other("index poisoned"))?;
-            let mut v = Vec::new();
+            let mut v = Vec::with_capacity(wanted.len());
             for (i, h) in wanted {
-                if let Some((p, off)) = ix.find_chunk(&h).map_err(io::Error::other)? {
-                    v.push((i, p, off));
-                }
+                v.push((i, ix.find_chunk(&h).map_err(io::Error::other)?));
             }
             Ok(v)
         })
         .await;
         match found {
             Ok(found) => {
-                for (idx, p, off) in found {
-                    try_copy(&mut w, idx, ctx.full_key(&p), off).await;
+                for (idx, hit) in found {
+                    match hit {
+                        Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
+                        None => remote.push(idx),
+                    }
                 }
             }
-            Err(e) => tracing::warn!(?path, error = %e, "chunk lookup failed"),
+            Err(e) => {
+                tracing::warn!(?path, error = %e, "chunk lookup failed");
+                remote = w.missing_chunks();
+            }
         }
     }
     Ok(Opened {
-        missing: w.missing_chunks(),
         writer: w,
+        remote,
+        local,
         digest,
     })
+}
+
+/// Reads `len` bytes at `offset` of `from` (a regular file, never a symlink).
+async fn read_local(from: PathBuf, offset: u64, len: u32) -> io::Result<Vec<u8>> {
+    blocking(move || {
+        let mut buf = vec![0u8; len as usize];
+        crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
+        Ok(buf)
+    })
+    .await
+}
+
+/// Fills `local` chunks from the receiver's own files while the sender
+/// delivers the rest. Each copy is verified like a network chunk; one that
+/// no longer matches stays missing and is re-requested once every unit of
+/// the request has ended. Counts as one unit of the file's request.
+pub(super) async fn copy_local_chunks(
+    ctx: Arc<Ctx>,
+    route: Route,
+    local: Vec<LocalChunk>,
+    events: mpsc::UnboundedSender<Ev>,
+    file_id: u64,
+) {
+    for (idx, from, offset) in local {
+        #[cfg(feature = "test-hooks")]
+        if let Some(d) = ctx.hooks.slow_local_copy {
+            tokio::time::sleep(d).await;
+        }
+        let Some(len) = route.chunks.get(idx as usize).map(|c| c.len) else {
+            continue;
+        };
+        // Read outside the writer lock: network streams keep writing meanwhile.
+        let data = match read_local(from.clone(), offset, len).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
+                continue;
+            }
+        };
+        let mut guard = route.slot.lock().await;
+        let Some(w) = guard.as_mut() else {
+            break; // The writer was retired (new chunk list, failure).
+        };
+        if let Err(e) = w.write_chunk(idx, &data).await {
+            // Stale bytes never verify; any failure leaves the chunk
+            // missing for the follow-up request.
+            tracing::debug!(from = ?from, idx, error = %e, "local copy rejected");
+        }
+    }
+    ctx.hooks.event("copied", &route.path);
+    finish_unit(&route, &events, file_id, 1).await;
+}
+
+/// Accounts `units` of the file's request as ended, delivered or not, and
+/// reports the file ready (every chunk verified on disk) or drained (every
+/// unit ended with chunks still missing). Whichever unit ends last makes
+/// the report; a retired writer means the file is no longer ours to report.
+async fn finish_unit(
+    route: &Route,
+    events: &mpsc::UnboundedSender<Ev>,
+    file_id: u64,
+    units: usize,
+) {
+    let before = route
+        .pending
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |p| {
+            Some(p.saturating_sub(units))
+        })
+        .unwrap_or(0);
+    let drained = before <= units;
+    let mut guard = route.slot.lock().await;
+    let Some(complete) = guard.as_ref().map(|w| w.missing_chunks().is_empty()) else {
+        return;
+    };
+    if complete {
+        if let Some(writer) = guard.take() {
+            let _ = events.send(Ev::Recv(Done::Ready {
+                file_id,
+                gen: route.gen,
+                writer,
+            }));
+        }
+    } else if drained {
+        let _ = events.send(Ev::Recv(Done::Drained {
+            file_id,
+            gen: route.gen,
+        }));
+    }
 }
 
 /// Verifies and places the file, then records it (with the digest the sender
@@ -262,31 +361,7 @@ async fn read_stream(
     };
     let accounted = read_range(&ctx, &route, &events, &bytes, &header, &mut s).await;
     // This stream's range is accounted for, delivered or not.
-    let before = route
-        .pending
-        .try_update(Ordering::SeqCst, Ordering::SeqCst, |p| {
-            Some(p.saturating_sub(accounted))
-        })
-        .unwrap_or(0);
-    let drained = before <= accounted;
-    let mut guard = route.slot.lock().await;
-    let Some(complete) = guard.as_ref().map(|w| w.missing_chunks().is_empty()) else {
-        return;
-    };
-    if complete {
-        if let Some(writer) = guard.take() {
-            let _ = events.send(Ev::Recv(Done::Ready {
-                file_id,
-                gen: route.gen,
-                writer,
-            }));
-        }
-    } else if drained {
-        let _ = events.send(Ev::Recv(Done::Drained {
-            file_id,
-            gen: route.gen,
-        }));
-    }
+    finish_unit(&route, &events, file_id, accounted).await;
 }
 
 fn stop(s: &mut RecvStream, code: u32) {
@@ -337,7 +412,7 @@ async fn read_range(
             return n;
         };
         match w.write_chunk((first + k) as u32, &data).await {
-            Ok(()) => {}
+            Ok(()) => ctx.hooks.event("chunk", &route.path),
             // Stale or corrupt data never verifies; the chunk stays missing.
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                 tracing::debug!(file_id, idx = first + k, error = %e, "rejected chunk");
