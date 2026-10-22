@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, ListingEnd,
-    NeedChunks, PathError, PlanEntry, SessionDone,
+    control::Msg, file_ack::Status, plan_item::Action, ChunkList, FileAck, FileEntry, Itemized,
+    ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -30,9 +30,12 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
-use super::planner::{inflight_cap, parent_of, plan, Linked, Planned, PlannerReport, Prior};
+use super::planner::{
+    inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
+};
 use super::recv_io::{
-    accept_streams, copy_local_chunks, finalize, open_writer, Opened, Route, Routes,
+    accept_streams, copy_local_chunks, finalize, open_writer, settle_identical, Fill, Opened,
+    Route, Routes,
 };
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -72,7 +75,7 @@ pub(super) enum Done {
     Opened {
         file_id: u64,
         gen: u32,
-        result: io::Result<Box<Opened>>,
+        result: io::Result<Opened>,
     },
     /// Every chunk of the file is verified on disk.
     Ready {
@@ -112,9 +115,12 @@ struct RFile {
     path: RelPath,
     entry: FileEntry,
     action: Action,
-    /// `DELTA`: the planner's early hashing of the old file, handed to the
-    /// first `open_writer` so it waits instead of reading the file again.
-    prehash: Option<JoinHandle<()>>,
+    /// `DELTA`: the planner's early hash of the old file, handed to the
+    /// first `open_writer` so it waits instead of reading the file again,
+    /// and the itemize line, emitted once the chunk list is resolved.
+    deferred: Deferred,
+    /// The destination already held the content: settled in place, not placed.
+    identical: bool,
     /// Bumped for every new `ChunkList` and on failure; stale task results
     /// and data streams carry an older value and are ignored.
     gen: u32,
@@ -131,6 +137,20 @@ struct RFile {
     /// The planner's in-flight slot (none for a resumed plan), released
     /// when the file leaves `files`.
     _slot: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+/// Itemizes a file from the receiver: to the sending client when this is
+/// a daemon asked for `-i`, and on the local bus.
+fn emit_itemized(ctx: &Ctx, out: &Out, path: &RelPath, code: String) {
+    if ctx.opts.itemize && ctx.remote_id.is_some() {
+        out.send(Msg::Itemized(Itemized {
+            path: path.as_bytes().to_vec(),
+            code: code.clone(),
+        }));
+    }
+    ctx.hooks
+        .bus
+        .emit(super::Event::Itemized(path.clone(), code));
 }
 
 struct Receiver {
@@ -246,7 +266,7 @@ impl Receiver {
         path: RelPath,
         entry: FileEntry,
         action: Action,
-        prehash: Option<JoinHandle<()>>,
+        deferred: Deferred,
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
         self.active += 1;
@@ -260,7 +280,8 @@ impl Receiver {
                 path,
                 entry,
                 action,
-                prehash,
+                deferred,
+                identical: false,
                 gen: 0,
                 mismatches: 0,
                 rerequests: 0,
@@ -370,16 +391,15 @@ impl Receiver {
         f.gen += 1;
         f.st = St::Opening;
         self.ctx.hooks.event("chunklist", &f.path);
-        let (gen, path, action, prehash) = (f.gen, f.path.clone(), f.action, f.prehash.take());
+        let (gen, path, action) = (f.gen, f.path.clone(), f.action);
+        let prehash = f.deferred.prehash.take();
         let sparse = f.entry.sparse || self.ctx.opts.preserve.sparse;
         // A new chunk list replaces the previous writer; it must be gone
         // before the next one opens the same `.part`.
         self.retire_writer(file_id).await;
         let (ctx, events) = (self.ctx.clone(), self.events.clone());
         self.tasks.spawn(async move {
-            let result = open_writer(ctx, path, action, prehash, cl, sparse)
-                .await
-                .map(Box::new);
+            let result = open_writer(ctx, path, action, prehash, cl, sparse).await;
             let _ = events.send(Ev::Recv(Done::Opened {
                 file_id,
                 gen,
@@ -424,7 +444,7 @@ impl Receiver {
                     p.path,
                     p.entry,
                     p.action,
-                    p.prehash,
+                    p.deferred,
                     Some(p.slot),
                 );
             }
@@ -484,7 +504,7 @@ impl Receiver {
         }
     }
 
-    async fn on_opened(&mut self, file_id: u64, gen: u32, result: io::Result<Box<Opened>>) {
+    async fn on_opened(&mut self, file_id: u64, gen: u32, result: io::Result<Opened>) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -499,7 +519,7 @@ impl Receiver {
             return;
         }
         let o = match result {
-            Ok(o) => *o,
+            Ok(o) => o,
             Err(e) => {
                 let msg = if e.kind() == io::ErrorKind::WouldBlock {
                     // Another session writes the same destination; a later
@@ -512,17 +532,52 @@ impl Receiver {
                 return;
             }
         };
-        f.digest = Some(o.digest.clone());
+        let fill = match o {
+            Opened::Identical { file, digest } => {
+                f.digest = Some(digest.clone());
+                f.identical = true;
+                f.st = St::Finalizing;
+                self.ctx.hooks.event("identical", &f.path);
+                if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
+                    emit_itemized(&self.ctx, &self.out, &f.path, code);
+                }
+                // The sender has nothing to deliver; it waits for the ack.
+                self.out.send(Msg::Need(NeedChunks {
+                    file_id,
+                    chunk_idx: Vec::new(),
+                }));
+                let (ctx, events, path, entry) = (
+                    self.ctx.clone(),
+                    self.events.clone(),
+                    f.path.clone(),
+                    f.entry.clone(),
+                );
+                self.tasks.spawn(async move {
+                    let result = settle_identical(ctx, file, path, entry, digest).await;
+                    let _ = events.send(Ev::Recv(Done::Finalized {
+                        file_id,
+                        gen,
+                        result,
+                    }));
+                });
+                return;
+            }
+            Opened::Writer(fill) => *fill,
+        };
+        f.digest = Some(fill.digest.clone());
+        if let Some(i) = f.deferred.itemize.take() {
+            emit_itemized(&self.ctx, &self.out, &f.path, i.planned);
+        }
         self.ctx
             .hooks
             .bus
             .emit(super::Event::FileStart(f.path.clone()));
-        let Opened {
+        let Fill {
             writer,
             remote,
             local,
             digest,
-        } = o;
+        } = fill;
         self.ctx.hooks.event("need", &f.path);
         if remote.is_empty() && local.is_empty() {
             f.st = St::Finalizing;
@@ -563,6 +618,7 @@ impl Receiver {
     }
 
     async fn on_finalized(&mut self, file_id: u64, gen: u32, result: Result<(), FinalizeError>) {
+        // (`identical` files arrive here from `settle_identical`.)
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -573,13 +629,16 @@ impl Receiver {
         match result {
             Ok(()) => {
                 let (path, size) = (f.path.clone(), f.entry.size);
-                self.transferred_size += size;
-                self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
+                // Settled in place is a metadata-only update, not a transfer.
+                if !f.identical {
+                    self.transferred_size += size;
+                    self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
+                    self.files_done += 1;
+                }
                 // Placed: acknowledged DONE even if the sender gave up meanwhile
                 // (it withdraws its error on this ack).
                 self.files.remove(&file_id);
                 self.active -= 1;
-                self.files_done += 1;
                 self.persist.done(file_id);
                 self.ctx.progress.store(true, Ordering::Relaxed);
                 self.ack(file_id, Status::Done, String::new());

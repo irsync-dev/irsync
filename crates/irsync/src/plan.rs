@@ -71,7 +71,8 @@ fn mtime(e: &FileEntry) -> (i64, u32) {
 }
 
 /// Whether the metadata selected by `p` differs between the two entries.
-fn meta_differs(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
+/// Whether the attributes `p` preserves differ between `src` and `dst`.
+pub fn meta_differs(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
     (p.perms && src.mode & 0o7777 != dst.mode & 0o7777)
         || (p.times && mtime(src) != mtime(dst))
         || (p.owner && src.uid != dst.uid)

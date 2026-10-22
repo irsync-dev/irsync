@@ -1,7 +1,8 @@
 # Receiving a changed file: the overlapped delta algorithm
 
 How the receiver fills one file once the sender's chunk list is in hand,
-after the restructuring of 2026-10-22. Everything here was checked against
+after the restructuring of 2026-10-22, and how it settles a file whose
+content turns out not to have changed at all. Everything here was checked against
 the code in the working tree of that date; function names point at where
 each step lives. The wire protocol (`protocol.md`) is unchanged by this
 work: the receiver only reorders what it does between two messages it was
@@ -82,19 +83,26 @@ calls `index_old_file` itself; by then that is a cache hit.
 
 ### 2.3 Open and partition
 
-`recv_io::open_writer` does four things and copies nothing:
+`recv_io::open_writer` does five things and copies nothing:
 
 1. **Decode** the chunk list into a native `FileDigest` (`native_digest`).
-2. **Open** the locked `.part` (`FileWriter::open_tracked`). The writer
+2. **Take the old file's hash** (`DELTA` only): await the prehash handle,
+   which yields the old file's digest together with the stat it was
+   computed under (`OldFile`). If the planner never started a task
+   (reconnect), call `index_old_file` here; that is a cache hit when the
+   earlier connection already hashed the file.
+3. **Compare whole-file hashes.** If the old file's size and BLAKE3 hash
+   equal the chunk list's, the destination already holds the new content.
+   The receiver then opens the destination without following symlinks and
+   checks by `fstat` that size, mtime, ctime, device and inode are the ones
+   the digest was computed under (`unchanged_file`). If they are, the
+   function returns `Opened::Identical` with that open descriptor and no
+   `.part` is created; section 2.4 settles it. If the file changed
+   meanwhile, or the hashes differ, the normal path continues.
+4. **Open** the locked `.part` (`FileWriter::open_tracked`). The writer
    adopts earlier progress recorded for that `.part` and keeps a `verified`
    bit per chunk; `missing_chunks()` lists the indices whose bit is clear.
-3. **Ensure the old file is indexed** (`DELTA` only): await the prehash
-   handle, then call `index_old_file` once more. The second call is the
-   deduplication point. The task has finished, so the index row is fresh
-   and the hasher returns from cache without reading the file. If the
-   planner never started a task (reconnect, or a `WHOLE` file promoted to
-   this path), this call does the work.
-4. **Partition** the missing chunks. One blocking pass holds the index lock
+5. **Partition** the missing chunks. One blocking pass holds the index lock
    and asks `find_chunk` for each missing chunk's hash. A hit yields a path
    (an index key, turned absolute with `ctx.full_key`) and an offset inside
    that file; the chunk goes into the `local` set as a
@@ -102,13 +110,32 @@ calls `index_old_file` itself; by then that is a cache hit.
    lookup itself fails (index error, poisoned lock), the whole missing set
    goes remote, which is always correct, and a warning is logged.
 
-The result is `Opened { writer, remote, local, digest }`. The two sets are
-disjoint and together cover exactly the missing chunks.
+The result is `Opened::Writer` carrying the writer, the two sets and the
+digest. The sets are disjoint and together cover exactly the missing
+chunks.
 
-### 2.4 Dispatch: request first, then copy
+### 2.4 Dispatch: settle in place, or request first and then copy
 
 `Receiver::on_opened` runs on the receiver's event loop. After the usual
-generation check it looks at the two sets.
+generation check it looks at what `open_writer` returned.
+
+**Identical.** The content is already there, so the file is settled in
+place rather than placed. The receiver sends an empty `NeedChunks`, which
+tells the sender to wait for the ack, emits the held-back itemize line if
+any attribute differs (section 2.9), and spawns `settle_identical`. That
+task discards a leftover `.part` of an earlier interrupted attempt along
+with its progress record, unless another writer holds it, applies the
+sender's mode, ownership and times to the existing inode through the open
+descriptor, and records the file in the index with the sender's digest so
+the next run's quick check passes. The receiver then acks `DONE`. The file
+counts as a metadata-only update, not a transfer: no bytes, no placed
+file, no file-done event. A metadata failure fails the file like a write
+error, and the next run tries again. This is what a `touch` on either
+side, a restore from backup, or `-c` against a cold index comes to: one
+read of the old file on the side whose index was stale, four small
+control messages, no write.
+
+**Otherwise** it looks at the two sets.
 
 **Both empty.** Every chunk was adopted from an earlier `.part`. The
 receiver sends an empty `NeedChunks` (the protocol requires an answer to
@@ -221,7 +248,21 @@ A file still incomplete after three re-requests fails with
 
 Unchanged (`recv_io::finalize`): `fsync`, re-hash of the whole `.part`
 against the sender's whole-file hash, metadata applied through the
-descriptor, rename over the destination, `FileAck DONE`.
+descriptor, rename over the destination, `FileAck DONE`. The index record
+at the end is shared with the settle-in-place path (`record`).
+
+### 2.9 The itemize line of a `DELTA` file
+
+The planner decides `DELTA` before anyone knows whether the content really
+changed, so for a `DELTA` file it no longer emits the `-i` line at plan
+time. It computes two lines, the transfer line as planned and the
+attributes-only line that applies if the content proves unchanged (none
+if no preserved attribute differs), and hands both to the receiver in
+`Deferred.itemize`. The receiver emits the transfer line when it opens the
+`.part`, and the attributes-only line when it settles the file in place.
+A touched file therefore itemizes as `.f..t......`, as rsync prints it.
+Dry runs are not affected: nothing is requested, so the planner itemizes
+at once as before. A file of a resumed plan carries no held-back line.
 
 ## 3. The chain, before and after
 
@@ -262,7 +303,13 @@ timeline changed.
   generation and retires the writer. A copy task of the old generation sees
   the empty slot and exits; its late `finish_unit` finds nothing to report.
 - **The protocol sees nothing new.** The sender observes the same message
-  sequence as before, only earlier.
+  sequence as before, only earlier. A file settled in place looks to the
+  sender like one whose every chunk was adopted: an empty request, then
+  `DONE`.
+- **Settling in place trusts the quick check, not the clock.** The
+  destination is settled only if `fstat` on the open descriptor matches
+  the stat under which it was hashed, in size, mtime, ctime, device and
+  inode; otherwise it is received as a delta.
 
 ## 5. Tests
 
@@ -287,17 +334,39 @@ each tagged with the path.
   fresh state directory reports exactly one file hashed on the receiver,
   with `prehash` logged before `chunklist`.
 
+`crates/irsync/tests/content_equal.rs` covers the settle-in-place path; the
+receiver logs `identical` for it.
+
+- `touched_source_is_a_metadata_only_update`: the source's mtime moves. No
+  bytes cross, no `need` or `chunk` or `copied` event, the receiver hashes
+  nothing (warm index), the sender hashes once, the destination keeps its
+  inode and takes the new mtime, and the itemize line is `.f..t......`.
+- `touched_destination_is_a_metadata_only_update`: the mirror image on a
+  push; the receiver hashes once and restores the mtime.
+- `checksum_against_a_cold_index_reads_once_and_changes_nothing`: `-c`
+  with a fresh receiver state directory hashes once per side, rewrites
+  nothing, and itemizes nothing because no attribute differs.
+- `destination_replaced_after_hashing_falls_through_to_delta`: a test hook
+  (`SideHooks::before_identical_check`) replaces the destination between
+  the hash and the check; the file is received as a delta and ends up
+  equal to the source.
+- `settling_in_place_discards_a_leftover_part_file`: a stray `.part` from
+  an earlier attempt is gone after the file is settled in place.
+
 ## 6. Code pointers
 
 | what | where |
 | --- | --- |
-| early hash at plan time | `session/planner.rs`, the `Delta` arm building `Planned.prehash` |
-| hashing the old file | `session/recv_io.rs::index_old_file` |
-| open, adopt, partition | `session/recv_io.rs::open_writer`, result `Opened` |
+| early hash at plan time | `session/planner.rs`, the `Delta` arm building `Deferred.prehash` |
+| held-back itemize line | `session/planner.rs`, `Deferred.itemize`; `session/receiver.rs::emit_itemized` |
+| hashing the old file | `session/recv_io.rs::index_old_file`, result `OldFile` |
+| open, compare, adopt, partition | `session/recv_io.rs::open_writer`, result `Opened` |
+| is it still the hashed file | `session/recv_io.rs::unchanged_file` |
+| settle in place | `session/recv_io.rs::settle_identical`, `recv.rs::discard_part` |
 | route and dispatch | `session/receiver.rs::on_opened`, `recv_io::Route` |
 | local filler | `session/recv_io.rs::copy_local_chunks`, `read_local` |
 | network filler | `session/recv_io.rs::accept_streams`, `read_stream`, `read_range` |
 | completion accounting | `session/recv_io.rs::finish_unit` |
 | re-request | `session/receiver.rs::on_drained`, `MAX_REREQUESTS` |
 | verification on write | `recv.rs::FileWriter::write_chunk`, `missing_chunks` |
-| test hook | `session/mod.rs::SideHooks::slow_local_copy` |
+| test hooks | `session/mod.rs::SideHooks::slow_local_copy`, `before_identical_check` |

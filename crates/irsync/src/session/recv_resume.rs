@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use irsync_proto::v1::{control::Msg, plan_item::Action, PlanItem, SessionPlan};
 
 use super::super::engine::blocking;
-use super::super::planner::{mkdir_replacing, DirEntry, PlannerReport};
+use super::super::planner::{mkdir_replacing, Deferred, DirEntry, PlannerReport};
 use super::Receiver;
 use crate::fs::paths::RelPath;
 
@@ -91,7 +91,14 @@ impl Receiver {
             let Some((file_id, path, entry, action)) = self.queued.pop_front() else {
                 return;
             };
-            self.register(file_id, path.clone(), entry, action, None, None);
+            self.register(
+                file_id,
+                path.clone(),
+                entry,
+                action,
+                Deferred::default(),
+                None,
+            );
             self.ctx.hooks.event("plan", &path);
             self.out.send(Msg::Plan(PlanItem {
                 file_id,

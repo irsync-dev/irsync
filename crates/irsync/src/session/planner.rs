@@ -32,13 +32,15 @@ use tokio::task::JoinHandle;
 use super::control::{is_own_temp, Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
-use super::recv_io::index_old_file;
+use super::recv_io::{index_old_file, OldFile};
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::Verdict;
 use crate::fs::meta::{apply_metadata, create_special};
 use crate::fs::paths::RelPath;
-use crate::plan::{decide, itemize, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
+use crate::plan::{
+    decide, itemize, merge_join, meta_differs, Decision, HashLookup, NoLookup, PlanOpts, Side,
+};
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -47,12 +49,29 @@ pub(super) struct Planned {
     /// The sender's listing entry (metadata applied at finalize).
     pub entry: FileEntry,
     pub action: Action,
-    /// `DELTA`: hashing of the old destination file, started here so it
-    /// runs alongside the sender's digest of the new one.
-    pub prehash: Option<JoinHandle<()>>,
+    pub deferred: Deferred,
     /// One of the session's in-flight slots, released when the file leaves
     /// the receiver (placed or failed).
     pub slot: OwnedSemaphorePermit,
+}
+
+/// What the planner started early or held back for a `DELTA` file; empty
+/// for other actions and for files of a resumed plan.
+#[derive(Default)]
+pub(super) struct Deferred {
+    /// Hashing of the old destination file, started at plan time so it
+    /// runs alongside the sender's digest of the new one.
+    pub prehash: Option<JoinHandle<Option<OldFile>>>,
+    /// The itemize line, emitted by the receiver once the chunk list shows
+    /// whether the content changed.
+    pub itemize: Option<Itemize>,
+}
+
+/// A `DELTA` file's itemize line as planned (a transfer) and as it reads if
+/// the content proves unchanged (attributes only; none if nothing differs).
+pub(super) struct Itemize {
+    pub planned: String,
+    pub meta: Option<String>,
 }
 
 /// At most this many requested files are in flight (planned, not yet
@@ -421,34 +440,43 @@ impl Planner {
                 }
             }
         }
+        let mut deferred = None;
         if decision != Decision::Skip {
             if dst.is_none() {
                 self.report.created += 1;
             }
-            let code = itemize(
-                &decision,
-                Some(&src),
-                dst.as_ref(),
-                '>',
-                &self.popts.preserve,
-            );
-            // A receiving daemon tells the (sending) client what it plans.
-            if self.ctx.opts.itemize && self.ctx.remote_id.is_some() {
-                self.out.send(Msg::Itemized(Itemized {
-                    path: path.as_bytes().to_vec(),
-                    code: code.clone(),
-                }));
-            }
-            let bus = &self.ctx.hooks.bus;
-            bus.emit(crate::session::Event::Itemized(path.clone(), code));
-            // rsync -n -v lists what would be transferred.
-            if self.ctx.opts.dry_run
-                && matches!(
-                    decision,
-                    Decision::Whole | Decision::Delta | Decision::LocalCopy { .. }
-                )
-            {
-                bus.emit(crate::session::Event::FileDone(path.clone(), 0));
+            let p = &self.popts.preserve;
+            let code = itemize(&decision, Some(&src), dst.as_ref(), '>', p);
+            if decision == Decision::Delta && !self.ctx.opts.dry_run {
+                // Itemized by the receiver once the chunk list shows whether
+                // the content changed (a `touch` is an attribute update).
+                let meta = dst
+                    .as_ref()
+                    .filter(|d| meta_differs(&src.entry, &d.entry, p))
+                    .map(|_| itemize(&Decision::MetaOnly, Some(&src), dst.as_ref(), '>', p));
+                deferred = Some(Itemize {
+                    planned: code,
+                    meta,
+                });
+            } else {
+                // A receiving daemon tells the (sending) client what it plans.
+                if self.ctx.opts.itemize && self.ctx.remote_id.is_some() {
+                    self.out.send(Msg::Itemized(Itemized {
+                        path: path.as_bytes().to_vec(),
+                        code: code.clone(),
+                    }));
+                }
+                let bus = &self.ctx.hooks.bus;
+                bus.emit(crate::session::Event::Itemized(path.clone(), code));
+                // rsync -n -v lists what would be transferred.
+                if self.ctx.opts.dry_run
+                    && matches!(
+                        decision,
+                        Decision::Whole | Decision::Delta | Decision::LocalCopy { .. }
+                    )
+                {
+                    bus.emit(crate::session::Event::FileDone(path.clone(), 0));
+                }
             }
         }
         if self.ctx.opts.dry_run {
@@ -568,7 +596,10 @@ impl Planner {
                     path: path.clone(),
                     entry,
                     action,
-                    prehash,
+                    deferred: Deferred {
+                        prehash,
+                        itemize: deferred,
+                    },
                     slot,
                 }))));
                 self.ctx.hooks.event("plan", &path);

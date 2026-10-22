@@ -420,6 +420,10 @@ pub type EventLog = Arc<std::sync::Mutex<Vec<String>>>;
 pub type FirstChunkHook =
     Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
+/// Test hook: runs at a point in a file's handling (see [`SideHooks`]).
+#[cfg(feature = "test-hooks")]
+pub type PathHook = Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 /// Something worth telling the user about, emitted as a session runs.
 /// Events are best-effort: a slow reporter loses some (`Lagged`), and the
 /// final [`Outcome`] is authoritative for totals.
@@ -508,6 +512,11 @@ pub struct SideHooks {
     /// Receiver: every local chunk copy takes this much longer (slow disk).
     #[cfg(feature = "test-hooks")]
     pub slow_local_copy: Option<std::time::Duration>,
+    /// Receiver: runs once a `DELTA` file's content has proved unchanged,
+    /// before the destination is checked to still be the file that was
+    /// hashed (a test replaces it meanwhile).
+    #[cfg(feature = "test-hooks")]
+    pub before_identical_check: Option<PathHook>,
 }
 
 /// Test hook: entries to list right after `entry` (see [`SideHooks`]).

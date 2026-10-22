@@ -6,8 +6,9 @@
 //! back as `Drained`.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -23,10 +24,10 @@ use tokio::task::JoinHandle;
 use super::control::Ev;
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
-use crate::fs::meta::lstat_entry_with_ctime;
+use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::net::frame::read_msg;
-use crate::recv::{FileWriter, FinalizeError};
+use crate::recv::{discard_part, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
 
 pub(super) type Slot = Arc<tokio::sync::Mutex<Option<FileWriter>>>;
@@ -50,7 +51,23 @@ pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
 /// list, the file (absolute) and the chunk's offset in that file.
 pub(super) type LocalChunk = (u32, PathBuf, u64);
 
-pub(super) struct Opened {
+/// The old destination file of a `DELTA`, hashed: its digest and the stat
+/// the digest was computed under.
+pub(super) struct OldFile {
+    pub digest: FileDigest,
+    pub entry: FileEntry,
+    pub ctime: (i64, u32),
+}
+
+pub(super) enum Opened {
+    /// The `.part` writer and the chunks it still needs.
+    Writer(Box<Fill>),
+    /// The destination already holds the content (a `DELTA` whose
+    /// whole-file hash matches): settled in place by [`settle_identical`].
+    Identical { file: File, digest: FileDigest },
+}
+
+pub(super) struct Fill {
     pub writer: FileWriter,
     /// Chunks with no local source: to be requested from the sender.
     pub remote: Vec<u32>,
@@ -80,23 +97,55 @@ fn native_digest(cl: &ChunkList) -> io::Result<FileDigest> {
 /// Makes sure the destination's current file at `path` has its chunks in
 /// the index (a cache hit if it is fresh there, a read otherwise), so a
 /// `DELTA` can take them from it. Failures only mean nothing local.
-pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) {
+/// Hashes the old destination file (from the index when its row is fresh)
+/// so its chunks can be found and its whole-file hash compared.
+pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile> {
     let key = ctx.key(path);
     let (base, rel) = (ctx.base.clone(), key.clone());
-    let Ok((entry, ctime)) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await else {
-        return;
-    };
+    let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel))
+        .await
+        .ok()?;
     if entry.kind() != Kind::Regular {
-        return;
+        return None;
     }
     let item = ScanItem {
         path: key,
-        entry,
+        entry: entry.clone(),
         ctime,
     };
-    if let Err(e) = ctx.hasher.digest(&item).await {
-        tracing::debug!(?path, error = %e, "hashing old file for delta failed");
+    match ctx.hasher.digest(&item).await {
+        Ok(digest) => Some(OldFile {
+            digest,
+            entry,
+            ctime,
+        }),
+        Err(e) => {
+            tracing::debug!(?path, error = %e, "hashing old file for delta failed");
+            None
+        }
     }
+}
+
+/// Opens the destination if it is still the file `old` was hashed from:
+/// same size, mtime, ctime, device and inode.
+async fn unchanged_file(ctx: &Ctx, key: &RelPath, old: &OldFile) -> Option<File> {
+    let full = ctx.full_key(key);
+    let (entry, ctime) = (old.entry.clone(), old.ctime);
+    blocking(move || {
+        let file = crate::fs::safe::open_regular_nofollow(&full)?;
+        let m = file.metadata()?;
+        let same = m.len() == entry.size
+            && m.mtime() == entry.mtime_sec
+            && m.mtime_nsec() == i64::from(entry.mtime_nsec)
+            && m.ctime() == ctime.0
+            && m.ctime_nsec() == i64::from(ctime.1)
+            && m.dev() == entry.dev
+            && m.ino() == entry.inode;
+        Ok(same.then_some(file))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Opens the `.part` writer (adopting earlier progress) and sorts the
@@ -104,13 +153,16 @@ pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) {
 /// the sender has to deliver. Nothing is copied here: the request for the
 /// remote set should go out before the local copies start.
 ///
+/// A `DELTA` whose old file hashes to the chunk list's whole-file hash
+/// needs no `.part` at all: it is returned as [`Opened::Identical`].
+///
 /// `prehash`: the planner's early hashing of the old file (`DELTA`), awaited
 /// rather than repeated.
 pub(super) async fn open_writer(
     ctx: Arc<Ctx>,
     path: RelPath,
     action: Action,
-    prehash: Option<JoinHandle<()>>,
+    prehash: Option<JoinHandle<Option<OldFile>>>,
     cl: ChunkList,
     sparse: bool,
 ) -> io::Result<Opened> {
@@ -118,6 +170,23 @@ pub(super) async fn open_writer(
     // The writer works on index keys under the index root, so its partial
     // record is keyed like every other index row; the file lands at the same place.
     let key = ctx.key(&path);
+    if action == Action::Delta {
+        let old = match prehash {
+            Some(h) => h.await.ok().flatten(),
+            None => index_old_file(&ctx, &path).await,
+        };
+        let same = old.filter(|o| o.digest.size == digest.size && o.digest.hash == digest.hash);
+        if let Some(old) = same {
+            #[cfg(feature = "test-hooks")]
+            if let Some(h) = &ctx.hooks.before_identical_check {
+                h(&path).await;
+            }
+            if let Some(file) = unchanged_file(&ctx, &key, &old).await {
+                return Ok(Opened::Identical { file, digest });
+            }
+            tracing::debug!(?path, "destination changed since it was hashed");
+        }
+    }
     let (base, rel, index, pd, activity) = (
         ctx.base.clone(),
         key.clone(),
@@ -130,13 +199,6 @@ pub(super) async fn open_writer(
     })
     .await?;
     w.set_sparse(sparse);
-
-    if action == Action::Delta {
-        if let Some(h) = prehash {
-            let _ = h.await;
-        }
-        index_old_file(&ctx, &path).await;
-    }
     let wanted: Vec<(u32, [u8; 32])> = w
         .missing_chunks()
         .into_iter()
@@ -171,12 +233,40 @@ pub(super) async fn open_writer(
             }
         }
     }
-    Ok(Opened {
+    Ok(Opened::Writer(Box::new(Fill {
         writer: w,
         remote,
         local,
         digest,
+    })))
+}
+
+/// Settles a `DELTA` file whose destination already holds the content:
+/// applies the sender's metadata to it in place, discards a leftover
+/// `.part`, and records it in the index with the digest the sender gave.
+pub(super) async fn settle_identical(
+    ctx: Arc<Ctx>,
+    file: File,
+    path: RelPath,
+    entry: FileEntry,
+    digest: FileDigest,
+) -> Result<(), FinalizeError> {
+    let apply = ctx.apply_opts(&entry);
+    let (base, key, index, pd) = (
+        ctx.base.clone(),
+        ctx.key(&path),
+        ctx.index().clone(),
+        ctx.opts.partial_dir.clone(),
+    );
+    blocking(move || {
+        if let Err(e) = discard_part(&base, &key, pd.as_deref(), &index) {
+            tracing::warn!(?key, error = %e, "discarding a stale partial file failed");
+        }
+        apply_metadata_fd(&file, &entry, &apply)
     })
+    .await?;
+    record(&ctx, &path, &digest).await;
+    Ok(())
 }
 
 /// Reads `len` bytes at `offset` of `from` (a regular file, never a symlink).
@@ -284,7 +374,19 @@ pub(super) async fn finalize(
         w.slow_finalize(d);
     }
     w.finalize(&entry, &apply).await?;
-    let (base, key, index) = (ctx.base.clone(), ctx.key(&path), ctx.index().clone());
+    record(&ctx, &path, &digest).await;
+    Ok(())
+}
+
+/// Records the placed file in the index with the digest the sender gave, so
+/// later sessions can quick-check and reuse it.
+async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest) {
+    let (base, key, index, digest) = (
+        ctx.base.clone(),
+        ctx.key(path),
+        ctx.index().clone(),
+        digest.clone(),
+    );
     let rec = blocking(move || {
         let (mut e, ctime) = lstat_entry_with_ctime(&base, &key)?;
         if e.size != digest.size {
@@ -303,7 +405,6 @@ pub(super) async fn finalize(
     if let Err(e) = rec {
         tracing::warn!(error = %e, "recording received file in the index failed");
     }
-    Ok(())
 }
 
 /// Chunk count of a data stream's range, if it lines up with the chunk list.

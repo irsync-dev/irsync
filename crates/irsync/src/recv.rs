@@ -4,7 +4,7 @@
 
 use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{nofollow_error, require_regular};
+use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{ChunkList, FileEntry, Range, RangeSet};
@@ -141,6 +141,31 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
         root.join(rel.to_os()),
         part_dir.join(OsStr::from_bytes(&part_name)),
     ))
+}
+
+/// Removes a leftover `.part` of `rel` and its progress record, unless
+/// another writer holds the `.part` (then both stay for that writer).
+pub fn discard_part(
+    root: &Path,
+    rel: &RelPath,
+    partial_dir: Option<&Path>,
+    index: &IndexHandle,
+) -> io::Result<()> {
+    let (_, part) = paths(root, rel, partial_dir)?;
+    match open_regular_nofollow(&part) {
+        Ok(file) => match file.try_lock() {
+            Ok(()) => std::fs::remove_file(&part)?,
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    index
+        .lock()
+        .map_err(|_| io::Error::other("index poisoned"))?
+        .remove_partial(rel)
+        .map_err(io::Error::other)
 }
 
 /// The longest file name irsync creates, in bytes: `NAME_MAX` on Linux and macOS.

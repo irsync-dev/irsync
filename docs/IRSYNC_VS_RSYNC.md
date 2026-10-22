@@ -295,6 +295,21 @@ cold destination falls into `DELTA` instead of the metadata-only path the
 specification describes. rsync `-c` computes both checksums, finds them
 equal, and applies attributes only.
 
+Closed on 2026-10-22 at the point where both hashes first meet, which is
+the chunk list, not the plan: the sender's hash is absent from its listing
+exactly when its file was touched, and hashing the destination inline in
+the planner would stall the merge-join. `open_writer` now compares the old
+file's whole-file hash (the planner's early hash, see 3.3) with the chunk
+list's; on a match, and after a check that the destination is still the
+file that was hashed, the receiver sends an empty `NeedChunks`, applies
+the sender's metadata to the existing inode, records it in the index and
+acks `DONE`. No `.part`, no write, no finalize re-hash. The planner's `-i`
+line for a `DELTA` file is held back until then, so a `touch` itemizes as
+`.f..t......`. See `DELTA_RECEIVE.md`, section 2.4. The other half of the
+`-c` story, that the design says it "forces rehashing everything" while
+the hasher is never put into forced mode for it, is a separate divergence
+and still stands.
+
 ### 3.9 Per-file protocol chatter
 
 Each file costs four control messages in strict alternation (`PlanItem`,
@@ -365,7 +380,9 @@ protocol change.
 3. **Compute the receiver's whole-file hash on demand before deciding**
    (3.8). One read of the old file turns a `touch` into a metadata-only
    update instead of a rewrite, and makes `-c` match its documentation.
-   The read is the same one `open_writer` does today for `DELTA`.
+   The read is the same one `open_writer` does today for `DELTA`. *Done
+   (2026-10-22), at chunk-list time rather than plan time; see 3.8 and
+   `DELTA_RECEIVE.md`.*
 4. **Stream the chunk list in pieces** (3.5). A `ChunkListPart` message
    with `more` flag; additive, old peers refuse it with a protocol error.
    Removes the ceiling for good.
