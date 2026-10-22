@@ -101,3 +101,15 @@ async fn hasher_refuses_symlink() {
     assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
     assert_eq!(h.stats().files_hashed.load(Relaxed), 0);
 }
+
+#[tokio::test]
+async fn a_forced_hasher_reports_no_cached_digest() {
+    let (root, _s, h) = setup();
+    fs::write(root.path().join("f"), b"data").unwrap();
+    let it = item(root.path(), b"f");
+    let d = h.digest(&it).await.unwrap();
+    assert_eq!(h.cached(&it).unwrap(), Some(d));
+    // `-c`: a fresh row is not evidence; the file has to be read.
+    let forced = h.with_force(true);
+    assert!(forced.cached(&it).unwrap().is_none());
+}

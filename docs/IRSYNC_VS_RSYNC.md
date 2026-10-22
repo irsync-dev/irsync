@@ -75,7 +75,7 @@ it send `FileAck DONE`.
 | Signature for a *new* file | none | full chunk list, ~0.02% of the data |
 | Reuse scope | the basis at the same path (`--fuzzy`, `--link-dest`, `--compare-dest` widen it) | every chunk of every file the receiver's index knows; before a whole file is fetched, destination files of its size are hashed into the index |
 | Rename detection | none (name similarity only, `--fuzzy`) | by whole-file hash, from the index |
-| Digest caching across runs | none; `-c` re-reads everything | persistent SQLite index keyed on size, mtime, ctime, inode |
+| Digest caching across runs | none; `-c` re-reads everything | persistent SQLite index keyed on size, mtime, ctime, inode; `-c` trusts none of it and re-reads both sides |
 | Round trips before first data byte | ~0 (pipelined) | 1.5 (plan, chunk list, need) |
 | Serial disk passes before first data byte, one big changed file | 1 (basis checksums) | 1 (the sender's hash and the receiver's old-file hash run concurrently; local copies overlap the transfer) |
 | Extra receiver pass after last byte | none (MD5 computed while writing) | none (BLAKE3 folded from the verified chunks) |
@@ -491,8 +491,9 @@ rsync `--whole-file`, plus the chunk list and the two extra passes.
 
 *Resolved on 2026-10-22 (remedy 3), at chunk-list time rather than plan
 time: a destination whose content equals the sender's is settled in place
-with no write. The `-c` divergence noted at the end is still open
-(section 6).*
+with no write. The `-c` divergence noted at the end was closed the same
+day: under `-c` both sides' hashers are forced, so no index row is
+trusted and every file is read.*
 
 The design says that when the quick check fails the receiver "computes on
 demand" the whole-file hash of its copy, and a match becomes a metadata-only
@@ -521,9 +522,18 @@ the sender's metadata to the existing inode, records it in the index and
 acks `DONE`. No `.part`, no write, no finalize re-hash. The planner's `-i`
 line for a `DELTA` file is held back until then, so a `touch` itemizes as
 `.f..t......`. See `DELTA_RECEIVE.md`, section 2.4. The other half of the
-`-c` story, that the design says it "forces rehashing everything" while
-the hasher is never put into forced mode for it, is a separate divergence
-and still stands.
+`-c` story was that the design says it "forces rehashing everything"
+while the hasher was never put into forced mode for it: with a warm index
+`-c` trusted the cached digests, so content that changed under an
+unchanged stat (bit rot, a block-level restore) went unnoticed, which is
+the one case `-c` exists for. Now a session started with `-c` builds its
+hasher forced on both sides: the listings carry no hashes, every file
+present on both sides is planned as `DELTA`, the sender reads it for the
+chunk list and the receiver reads its copy, the two hashes meet at
+chunk-list time as above, and what was read is stored so the next plain
+run is quick again. A push that settles every file in place also reports
+zero files transferred, because the sender now takes the placed count
+from the receiver's summary rather than counting acks.
 
 ### 3.9 Per-file protocol chatter
 
@@ -661,8 +671,6 @@ wire, with the version left at 1 because no peer had been deployed.
   lookup per missing chunk under the index mutex before `NeedChunks`.
 - **Compression, fixed chunk parameters, two chunk lists per in-flight
   file, chunk-granular sparse detection** (3.10).
-- **`-c` does not force re-hashing** (3.8): the design says it does; the
-  hasher is never put into forced mode for it.
 - **Delta reach** (3.1): a missing chunk is matched against the old file's
   neighbourhood of its own offset, so content that moved by more than a
   chunk and is not a whole chunk is sent as literal. Whole chunks are

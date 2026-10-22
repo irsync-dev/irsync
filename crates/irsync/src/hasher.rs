@@ -2,7 +2,9 @@
 //!
 //! A cached digest is reused only if the index has a digest for the path and
 //! size, mtime (sec+nsec), ctime and inode all match the scanned item.
-//! `force` (`--checksum`) bypasses the cache and re-reads every file.
+//! `force` (`--checksum`) trusts no row: `cached` reports nothing and
+//! `digest` re-reads every file, storing what it read so the next plain
+//! run is quick again.
 
 use crate::index::IndexHandle;
 use crate::scan::ScanItem;
@@ -122,9 +124,13 @@ impl Hasher {
         &self.stats
     }
 
-    /// Cached digest if the quick check passes; never reads the file. Ignores
-    /// `force` (it only describes what the index holds).
+    /// Cached digest if the quick check passes; never reads the file. A
+    /// forced hasher (`--checksum`) reports none: a fresh row is not
+    /// evidence about the content.
     pub fn cached(&self, item: &ScanItem) -> io::Result<Option<FileDigest>> {
+        if self.force {
+            return Ok(None);
+        }
         lookup(&self.index, item)
     }
 

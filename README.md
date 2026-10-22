@@ -154,7 +154,7 @@ rsync-compatible, same spelling and semantics:
 | `-a`, `-r`, `-l`, `-p`, `-t`, `-g`, `-o`, `-D`, `-H`, `-S` | archive, recursion, links, permissions, times, group, owner, devices/specials, hard links, sparse files |
 | `-v`, `-q` | more / less output |
 | `-n`, `--dry-run` | change nothing |
-| `-c`, `--checksum` | compare by content, not size and time |
+| `-c`, `--checksum` | compare by content, not size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read |
 | `-u`, `--update` | skip files newer on the destination |
 | `--delete`, `--delete-before`, `--delete-during`, `--delete-after`, `--delete-excluded`, `--max-delete` | deletion modes and guards |
 | `--exclude`, `--include`, `--exclude-from`, `--include-from` | filter rules, in command-line order |

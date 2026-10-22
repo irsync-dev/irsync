@@ -520,6 +520,17 @@ pub(super) async fn run_client_inner(
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = local.hasher.activity().clone();
+    // `-c`: no index row is trusted; every file this side lists or
+    // compares is read.
+    let hasher = if opts.checksum {
+        Arc::new(
+            Hasher::new(local.index.clone(), local.root.clone(), HASH_WORKERS)
+                .with_force(true)
+                .with_activity(activity.clone()),
+        )
+    } else {
+        local.hasher.clone()
+    };
     let forced = Arc::new(
         Hasher::new(local.index.clone(), local.root.clone(), 1)
             .with_force(true)
@@ -542,7 +553,7 @@ pub(super) async fn run_client_inner(
         base: local.root.clone(),
         root: local.root,
         scope: IndexScope::new(local.index, RelPath::root()),
-        hasher: local.hasher,
+        hasher,
         forced,
         cold: Arc::default(),
         filters: local.filters,
@@ -721,8 +732,11 @@ pub async fn serve_daemon(
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = Arc::new(AtomicU64::new(0));
+    // `-c` applies to both sides: the daemon reads every file it lists
+    // or compares, whichever way the data flows.
     let hasher = Arc::new(
         Hasher::new(index.clone(), module_root.clone(), HASH_WORKERS)
+            .with_force(hello.checksum)
             .with_activity(activity.clone()),
     );
     let forced = Arc::new(

@@ -546,6 +546,11 @@ impl SenderRole {
                 .emit(super::Event::WouldDelete(p.clone()));
         }
         self.created = d.created;
+        // The receiver knows what it placed: a file whose content was
+        // already there is acknowledged DONE but settled in place, a
+        // metadata-only update rather than a transfer.
+        self.files_done = d.files;
+        self.transferred_size = d.transferred_size;
         self.max_delete_reached = d.max_delete_reached;
         if d.deleted_omitted + d.would_delete_omitted > 0 {
             tracing::info!(

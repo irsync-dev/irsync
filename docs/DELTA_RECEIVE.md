@@ -165,9 +165,10 @@ the next run's quick check passes. The receiver then acks `DONE`. The file
 counts as a metadata-only update, not a transfer: no bytes, no placed
 file, no file-done event. A metadata failure fails the file like a write
 error, and the next run tries again. This is what a `touch` on either
-side, a restore from backup, or `-c` against a cold index comes to: one
-read of the old file on the side whose index was stale, four small
-control messages, no write.
+side or a restore from backup comes to: one read of the old file on the
+side whose index was stale, four small control messages, no write. Under
+`-c` no index row is trusted on either side, so every file present on
+both sides takes this path, read once per side.
 
 **Otherwise** it looks at the two sets.
 
@@ -568,6 +569,16 @@ receiver logs `identical` for it.
 - `checksum_against_a_cold_index_reads_once_and_changes_nothing`: `-c`
   with a fresh receiver state directory hashes once per side, rewrites
   nothing, and itemizes nothing because no attribute differs.
+- `checksum_reads_every_file_on_both_sides_and_rewrites_nothing`: with
+  warm indexes, `-c` still reads every file on both sides, settles each in
+  place, reports no transfer, and leaves the rows fresh so the next plain
+  run reads nothing.
+- `checksum_catches_a_destination_whose_row_is_fresh_but_wrong`,
+  `checksum_catches_a_source_whose_row_is_fresh_but_wrong`,
+  `checksum_forces_the_daemon_sender_to_read`: an index row planted with
+  the file's current stat but the wrong content (what bit rot looks like
+  to the quick check) is skipped by a plain run and repaired by `-c`, on
+  either side and in either direction.
 - `destination_replaced_after_hashing_falls_through_to_delta`: a test hook
   (`SideHooks::before_identical_check`) replaces the destination between
   the hash and the check; the file is received as a delta and ends up
