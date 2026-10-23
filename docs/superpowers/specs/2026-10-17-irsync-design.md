@@ -151,6 +151,8 @@ for daemon-to-daemon later.
 
 ### Identity and authentication
 
+> The [2026-10-23 zero-config design](2026-10-23-zero-config-cli-design.md) supersedes this section: keys are generated on demand, client and daemon use separate identities, and grants live in `exports.toml` instead of an `authorized_keys` file.
+
 **iroh authenticates both ends by node key.** Every iroh connection is
 mutually authenticated: after the handshake each side knows the other's
 `EndpointId` (an Ed25519 public key), cryptographically. irsync needs no
@@ -198,6 +200,8 @@ hard error. There is no "trust on first use" prompt in version one; the
 user copies the id once, as they do with an SSH host key fingerprint.
 
 ### Addressing and configuration
+
+> The [2026-10-23 zero-config design](2026-10-23-zero-config-cli-design.md) supersedes this section: modules are now exports, and configuration is `irsync.toml`, `hosts.toml` and `exports.toml` instead of the ssh_config-style client file and `irsyncd.toml`.
 
 **Daemon modules.** As in rsyncd, the daemon exports named *modules*, each
 rooted at a filesystem path, with optional per-module settings (read-only,

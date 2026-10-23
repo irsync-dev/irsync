@@ -24,114 +24,150 @@ Linux and macOS (x86_64 and aarch64) are supported, as client and as daemon.
 
 ## Quick start
 
-The examples push a photo library from a laptop to a home server, then pull it
-back.
-
-### 1. Generate a key on both machines
-
-```sh
-irsync keygen
-```
-
-This writes `~/.config/irsync/id_ed25519` (and `.pub`), refuses to overwrite an
-existing key, and prints two lines: the OpenSSH public key line, to paste into a
-daemon's `authorized_keys`, and the `EndpointId`, to pin in a client config.
-Only file-based Ed25519 keys work; an existing `~/.ssh/id_ed25519` is fine too.
-
-### 2. Configure the daemon (home server)
-
-`~/.config/irsync/irsyncd.toml` (or `/etc/irsync/irsyncd.toml`, which wins if both exist, or `--config`):
-
-```toml
-identity = "~/.config/irsync/daemon_ed25519"      # OpenSSH format
-authorized_keys = "~/.config/irsync/authorized_keys"
-state_dir = "~/.local/state/irsync"
-idle_timeout = "30m"  # drop a connection idle this long (no traffic, no local work); "0" disables
-listen = ["0.0.0.0:0", "[::]:0"]  # optional: pin sockets (at most one IPv4 and one IPv6); port 0 = daemon picks
-portmap = true    # UPnP/PCP/NAT-PMP port mapping; false in isolated setups (see docs/daemon.md)
-
-[discovery]
-dht = true        # publish to mainline DHT (relay-only addresses)
-dns = true        # n0 pkarr/DNS
-mdns = true       # LAN
-
-[exports.photos]
-path = "/srv/photos"
-read_only = false
-warm_index = true  # hash what is already there at start, so files irsync did not place are reused
-
-[exports.docs]
-path = "/srv/docs"
-read_only = true
-```
-
-If the identity file does not exist the daemon generates it on first start.
-
-### 3. Authorise the laptop
-
-Append the laptop's public key line (printed by `irsync keygen`) to the daemon's
-`authorized_keys`, with the exports it may use:
-
-```
-exports="photos:rw,docs:ro" ssh-ed25519 AAAAC3... mike@laptop
-```
-
-`photos:rw` allows both directions, `docs:ro` only pulling from the daemon, and
-`*` matches every export (`exports="*:ro"`). Keys not in the file are rejected
-before any protocol message is read.
-
-### 4. Start the daemon and read its id
+The example pushes a photo library from a laptop to a home server, then pulls
+it back. No file is written by hand. Each side generates its key the first
+time a command needs it and says so on stderr (`generated identity <path>`).
 
 ```sh
+# laptop
+irsync id                              # public key line, then the client EndpointId
+
+# home server
+irsync add photos:/srv/photos          # prints the daemon's EndpointId
+irsync host add laptop <laptop-id>     # a readable name for the client
+irsync allow photos laptop
 irsync daemon
-irsync daemon --show-id        # prints only the EndpointId
-```
 
-The daemon runs in the foreground and logs to stderr (see
-[docs/daemon.md](docs/daemon.md) for systemd and launchd).
-
-### 5. Configure the client (laptop)
-
-`~/.config/irsync/config`, in ssh_config syntax (`-F` or `$IRSYNC_CONFIG`
-override the path):
-
-```
-Host home
-    EndpointId  k51qzi5uqu5dj...        # z-base-32 or hex, as iroh prints it
-    IdentityFile ~/.ssh/id_ed25519
-    Relay       https://relay.example.net   # optional: self-hosted relay
-
-Host lan
-    EndpointId  k51qzi5uqu5dj...
-    Address     192.168.1.10:4000   # optional, repeatable: dial directly, no relay or lookup
-
-Host nas-*
-    IdentityFile ~/.ssh/id_ed25519_nas
-
-Host *
-    Parallel    32
-    Reconnect   24h
-```
-
-The client pins the daemon's `EndpointId`; a mismatch is a hard error. There is
-no trust-on-first-use prompt. For a one-off transfer the raw id can stand in for
-the name: `irsync -av ~/Photos k51qzi5...:photos/`.
-
-### 6. First sync, and the other direction
-
-```sh
+# laptop
+irsync host add home <server-id>       # a readable name for the server
 irsync -av ~/Photos home:photos/       # push: laptop to daemon
 irsync -av home:photos/ ~/Photos       # pull: daemon to laptop
 ```
+
+Two strings are copied by hand, one in each direction: the laptop's
+`EndpointId` (the second line of `irsync id`) to the server, and the server's
+(printed by `irsync add`, `irsync daemon` and `irsync id --daemon`) to the
+laptop. The client pins the daemon's `EndpointId`; a mismatch is a hard error.
+There is no trust-on-first-use prompt. The alias is optional: the raw id can
+stand in for it, as in `irsync -av ~/Photos k51qzi5...:photos/`, and `irsync
+allow photos <laptop-id>` works without `host add`. `allow` also takes a
+pasted `ssh-ed25519 AAAA...` line or the path of a `.pub` file in place of the
+id; `--ro` grants pulling only.
 
 Addresses are `<name>:<export>/<path>`, and rsync's trailing-slash rule holds:
 `Photos/` copies the contents, `Photos` copies the directory itself. Exactly one
 of source and destination is remote.
 
+The client and the daemon use different keys (`id_ed25519` and
+`daemon_ed25519`), so both can run in one account on one machine and talk to
+each other: add `--address 127.0.0.1:PORT` (or `irsync host add home ID
+--address 127.0.0.1:PORT`), with the port the daemon prints, to dial it
+directly.
+
+Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
+`irsync keygen [--out PATH]` makes one explicitly and refuses to overwrite.
+
+## Files
+
+Everything lives in `~/.config/irsync/` and every file is optional: a missing
+file is the same as an empty one. The commands below edit `hosts.toml` and
+`exports.toml` for you, preserving comments; you can also edit them by hand.
+Every command accepts `--config`, `--hosts` and `--exports` to use other
+paths (a sync takes the first two). Unknown keys are errors that name the
+file, table and key.
+
+`irsync.toml`: settings for the client and the daemon. These are the defaults
+except where marked.
+
+```toml
+identity = "~/.config/irsync/id_ed25519"
+state_dir = "~/.local/state/irsync"
+
+[client]                     # defaults for every host
+parallel = 32
+reconnect = "24h"
+dht = true
+mdns = true
+relay = "https://relay.example.net"   # no default: n0's relays
+
+[daemon]
+identity = "~/.config/irsync/daemon_ed25519"
+idle_timeout = "30m"         # "0" disables
+dormant_session_timeout = "7d"
+listen = ["0.0.0.0:0", "[::]:0"]      # at most one IPv4 and one IPv6; port 0 = daemon picks
+portmap = true               # UPnP/PCP/NAT-PMP; false in isolated setups
+relay = "https://relay.example.net"
+relay_mode = "default"       # or "disabled"
+
+[daemon.discovery]
+dht = true
+dns = true
+mdns = true
+```
+
+`hosts.toml`: one table per remote, named by its alias. On a daemon's machine
+the same file names the clients that exports can be granted to.
+
+```toml
+[home]
+endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32, as iroh prints it
+relay = "https://relay.example.net"   # the rest is optional
+address = ["192.168.1.10:4000"]       # dial directly: no relay or lookup
+parallel = 64
+reconnect = "1h"
+dht = false
+mdns = false
+
+[laptop]
+endpoint_id = "7f3a0c..."
+```
+
+A sync resolves each setting from the command-line flag, then the alias's
+table, then `[client]`, then the built-in default. Aliases match exactly; there
+are no patterns.
+
+`exports.toml`: what the daemon shares and with whom. Entries in `rw` and `ro`
+are aliases from `hosts.toml` or EndpointIds.
+
+```toml
+rw = ["9c4d..."]             # optional: grants for every export
+ro = []
+
+[photos]
+path = "/srv/photos"
+rw = ["laptop", "k51qzi5..."]
+ro = ["b2e1..."]
+warm_index = false           # hash what is already there at start, so files irsync did not place are reused
+
+[docs]
+path = "/srv/docs"
+read_only = true             # caps everyone, even ids under rw
+ro = ["7f3a0c..."]
+```
+
+A key that no entry names is rejected before any protocol message is read;
+there is no open access. `read_only` refuses pushes from everyone.
+
+## Managing exports and hosts
+
+| Command | Effect |
+| --- | --- |
+| `irsync add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
+| `irsync remove NAME` | stop exporting; its grants go with it |
+| `irsync allow EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
+| `irsync revoke EXPORT\|all WHO\|all` | remove grants; `irsync revoke WHO` removes `WHO` everywhere |
+| `irsync host add ALIAS ID [--relay URL] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dht yes\|no] [--mdns yes\|no]` | add an alias, or change the id and the keys given for an existing one |
+| `irsync host remove ALIAS`, `irsync host list` | remove or list aliases |
+| `irsync id [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
+| `irsync show` | print the file paths, identities, aliases, exports and grants |
+
+A running daemon picks up `add`, `remove`, `allow`, `revoke` and `host`
+changes on the next connection; see [docs/daemon.md](docs/daemon.md).
+
 ### Resuming
 
 Just run the same command again. A dropped connection is redialled
-automatically for up to `Reconnect` (default 24h); if the process itself dies,
+automatically for up to the reconnect window (default 24h); if the process itself dies,
 or the reconnect window runs out, the next identical invocation finds the
 dormant session and prints `resuming session <id> from <time>`. Partly
 transferred files continue from the last verified chunk. `--no-resume` forces a
@@ -169,20 +205,20 @@ irsync-specific:
 
 | Flag | Meaning |
 | --- | --- |
-| `--parallel N` | files in flight at once (default: the host's `Parallel`, else 32) |
+| `--parallel N` | files in flight at once (default: the host's `parallel`, else `[client]`'s, else 32) |
 | `--reconnect DURATION` | how long to keep redialling (`0` = give up like rsync) |
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
 | `--no-dht` | do not use the mainline DHT for lookup |
 | `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
-| `-F FILE` | client config file |
-| `--identity PATH` | private key to use |
+| `--config PATH`, `--hosts PATH` | settings file and host aliases file (default: `irsync.toml` and `hosts.toml` in `~/.config/irsync/`) |
+| `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, generated if missing) |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`) |
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 
-Subcommands: `irsync daemon [--config PATH] [--show-id] [--listen ADDR]...`,
-`irsync keygen [--out PATH]`, `irsync index [-n] ROOT...` (or `irsync index
---daemon [--config PATH] [EXPORT...]`), which hashes the files under a root
+Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--show-id] [--listen ADDR]...`,
+the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] ROOT...` (or `irsync index
+--daemon [--exports PATH] [NAME...]`), which hashes the files under a root
 into its index so that a destination irsync did not create (a prior rsync, a
 restore) is reused for renamed and copied files from the first session on
 (`-n` counts what would be read; a session also does this on its own for
@@ -211,11 +247,10 @@ partial files are waiting.
 - `--partial-dir` is not supported on a push (it would name a directory on the
   daemon); a push with it is refused.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
-  cannot be used; generate an irsync-specific key with `irsync keygen` or
-  `ssh-keygen -t ed25519`.
-- In `authorized_keys`, only the `exports=` option is understood; other options
-  are ignored with a warning, and escaped quotes inside option values are not
-  supported.
+  cannot be used, and keys under `~/.ssh` are not read unless `identity` or
+  `--identity` names it.
+- Daemon settings in `irsync.toml` need a restart; exports, grants and host
+  aliases do not.
 - `--numeric-ids` is always on: owners and groups are transferred as numbers,
   never mapped by name.
 - The throughput target (filling a 1 Gbit/s link) applies to direct

@@ -456,8 +456,8 @@ the local walk runs well ahead of the sender's listing and the plan
 round trip. Files below the size floor are fetched: for a file smaller
 than a chunk the bookkeeping would cost about what the fetch does.
 
-`irsync index ROOT...` (and `irsync index --daemon [--config PATH]
-[EXPORT...]` for a daemon's exports, under its state directory) walks a
+`irsync index ROOT...` (and `irsync index --daemon [--exports PATH]
+[NAME...]` for a daemon's exports, under its state directory) walks a
 tree and hashes every regular file whose row is not fresh, with the
 session's worker count; `-n` only counts. An export with `warm_index =
 true` does the same in the background when the daemon starts. After a

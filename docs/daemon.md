@@ -1,12 +1,58 @@
 # Running the irsync daemon
 
 `irsync daemon` runs in the foreground and never daemonises itself; let
-systemd or launchd supervise it. It reads `--config PATH`, else
-`/etc/irsync/irsyncd.toml` if present, else `~/.config/irsync/irsyncd.toml`. See the
-[README](../README.md) for the config file and `authorized_keys` format.
+systemd or launchd supervise it. It needs no setup beyond `irsync add` (see the
+[README](../README.md)).
 
-`irsync daemon --show-id` prints only the daemon's `EndpointId` on stdout and
-exits; it generates the identity first if it does not exist yet.
+## Files
+
+All under `~/.config/irsync/`, all optional, each overridable on the command
+line:
+
+| File | Flag | Holds |
+| --- | --- | --- |
+| `irsync.toml` | `--config` | settings; the daemon reads the `[daemon]` tables and the top-level `state_dir` |
+| `hosts.toml` | `--hosts` | aliases for clients (and for servers, when this machine is also a client) |
+| `exports.toml` | `--exports` | the exports and who may use them |
+| `daemon_ed25519` (+ `.pub`) | `[daemon] identity` | the daemon's identity, generated if missing |
+
+There is no `/etc` lookup: a system-wide daemon passes the three paths
+explicitly (see the unit files below). `irsync id --daemon` prints the
+daemon's public key line and `EndpointId`; `irsync daemon --show-id` prints
+only the id, and generates the identity first if it does not exist yet.
+`irsync add` and `irsync show` print the id too.
+
+## Changing exports while it runs
+
+The daemon reads `hosts.toml` and `exports.toml` afresh on every accepted
+connection, after the handshake has proved the peer's `EndpointId`. `irsync
+add`, `remove`, `allow`, `revoke` and `host add`/`remove` therefore take effect
+on the next connection, with no restart. The commands write the files
+atomically. If either file cannot be read or parsed, the daemon logs the error
+at `warn`, rejects that connection and keeps running: it fails closed and does
+not fall back to an earlier copy. A missing file counts as empty. At startup an
+`exports.toml` that does not parse is fatal. A grant entry that is neither a
+known alias nor an `EndpointId` matches nobody and is logged.
+
+A daemon with no exports starts, logs a warning naming the exports file, and
+serves nothing until `irsync add` creates one.
+
+A client whose key is not granted anything is closed on before any protocol
+message is read. It sees `reading HelloAck: connection lost`; the reason is in
+the daemon's log as `rejecting unauthorized key`, with the first ten hex digits of the
+peer's id (`irsync id` on the client prints the whole id for `irsync allow`).
+
+Settings in `irsync.toml` (`listen`, relays, discovery, `idle_timeout`, ...)
+are read once and need a restart.
+
+### Indexes
+
+An export's index is opened, and its hourly collection and `warm_index`
+warm-up started, when the export is first used: at startup for exports already
+in the file, on the first connection naming it for one added later. Exports
+with the same path share an index. A removed export cannot be connected to,
+but keeps its index and collection task until the daemon restarts. Changing
+`warm_index` on a running export takes effect at restart.
 
 ## systemd (Linux)
 
@@ -20,7 +66,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsyncd.toml
+ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml --hosts /etc/irsync/hosts.toml --exports /etc/irsync/exports.toml
 Restart=on-failure
 RestartSec=5
 User=irsync
@@ -31,7 +77,7 @@ WantedBy=multi-user.target
 ```
 
 The `User=` account needs read access to the export paths (write access for
-read-write exports), to the identity and `authorized_keys` files, and write
+read-write exports), to the identity key and the three config files, and write
 access to `state_dir`. Then `systemctl enable --now irsync` and
 `journalctl -u irsync -f`.
 
@@ -60,7 +106,11 @@ for a system-wide daemon):
     <string>/usr/local/bin/irsync</string>
     <string>daemon</string>
     <string>--config</string>
-    <string>/usr/local/etc/irsync/irsyncd.toml</string>
+    <string>/usr/local/etc/irsync/irsync.toml</string>
+    <string>--hosts</string>
+    <string>/usr/local/etc/irsync/hosts.toml</string>
+    <string>--exports</string>
+    <string>/usr/local/etc/irsync/exports.toml</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -112,7 +162,7 @@ An export filled by something other than irsync (a prior rsync, a restore)
 contributes nothing to rename detection and chunk reuse until its files are
 hashed. `warm_index = true` on an export hashes them in the background when
 the daemon starts (only files whose index row is not fresh are read, so a
-restart is cheap); `irsync index --daemon [--config PATH] [EXPORT...]` does
+restart is cheap); `irsync index --daemon [--exports PATH] [NAME...]` does
 the same on demand, and a session hashes destination files of the size of a
 file it is about to fetch on its own.
 
@@ -141,14 +191,14 @@ symlinks are never followed. Each run logs a summary at `info`. On a client,
 ## Relays, DHT and discovery
 
 The daemon publishes its address so clients can find it by `EndpointId`:
-`dns` uses n0's pkarr/DNS service, `dht` the mainline DHT, and `mdns` the local
-network. Clients resolve with the same mechanisms (`--no-dht` or `Host` options
+`[daemon.discovery] dns` uses n0's pkarr/DNS service, `dht` the mainline DHT, and `mdns` the local
+network. Clients resolve with the same mechanisms (`--no-dht` or a host's `dht` and `mdns` keys
 turn lookups off on their side).
 
 Connections start through a relay and upgrade to a direct path when hole
 punching succeeds. Relays are a fallback and much slower than a direct path.
-Set `relay = "https://..."` to use your own relay, or `relay_mode =
-"disabled"` for direct-only operation.
+Set `[daemon] relay = "https://..."` to use your own relay, or
+`relay_mode = "disabled"` for direct-only operation.
 
 - Published DHT records carry relay-only addresses. With relays disabled they
   would carry none, so the daemon logs a warning if `dht` is on while
@@ -156,7 +206,7 @@ Set `relay = "https://..."` to use your own relay, or `relay_mode =
 - Users behind a symmetric NAT (many mobile and carrier-grade NATs) on both
   ends cannot hole-punch and stay on the relay. For them we recommend a
   self-hosted relay near the daemon (iroh ships `iroh-relay`), set as `relay`
-  in the daemon config and as `Relay` in the client's `Host` block (or
+  in the daemon config and as `relay` in the client's `hosts.toml` table (or
   `--relay`), instead of depending on the shared public relays.
 
 ### Isolated operation (localhost, LAN, no internet)
@@ -167,10 +217,12 @@ alone only pins sockets; it does not isolate the daemon. The isolated daemon
 turns everything off explicitly:
 
 ```toml
+[daemon]
 listen = ["127.0.0.1:0"]   # at most one IPv4 and one IPv6 entry; port 0 = daemon picks
 relay_mode = "disabled"
 portmap = false            # no UPnP/PCP/NAT-PMP gateway probing
-[discovery]
+
+[daemon.discovery]
 dht = false
 dns = false
 mdns = false
@@ -186,21 +238,21 @@ endpoint id: <id>
 listening on: 127.0.0.1:43210
 ```
 
-The client dials directly when given at least one address, in the `Host`
-block or with `--address ADDR` (repeatable; `ip:port`, `[ipv6]:port` or
+The client dials directly when given at least one address, in the host's
+`address` key or with `--address ADDR` (repeatable; `ip:port`, `[ipv6]:port` or
 `host:port`, hostnames resolved with the system resolver):
 
-```
-Host local
-    EndpointId  <id>
-    Address     127.0.0.1:43210
+```toml
+[local]
+endpoint_id = "<id>"
+address = ["127.0.0.1:43210"]
 ```
 
 ```sh
-irsync -a --address localhost:43210 ./src <id>:m/
+irsync -a --address localhost:43210 ./src <id>:data/
 ```
 
-Giving an address turns the client's relay, n0 DNS, DHT, mDNS and port
+Giving an address (`irsync host add local <id> --address 127.0.0.1:43210` writes the table above) turns the client's relay, n0 DNS, DHT, mDNS and port
 mapper off: it talks to nothing but the addresses it was given. The daemon's
 EndpointId is still required and still verified; `--address` together with
 `--relay` is refused. iroh may still learn and probe further addresses of

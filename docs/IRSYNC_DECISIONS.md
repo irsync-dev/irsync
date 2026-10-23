@@ -48,12 +48,14 @@ cross-referenced from commit messages and review notes.
 ### 1.2 Identity and authorization
 
 - SSH Ed25519 keys are iroh identities (32-byte seed → `SecretKey`);
-  `authorized_keys`-style grants `exports="photos:rw,docs:ro"`.
+  grants as `exports="photos:rw,docs:ro"` lines in a key list file.
+  (Superseded: grants now live in `exports.toml`; see
+  `docs/superpowers/specs/2026-10-23-zero-config-cli-design.md`.)
 - The daemon rejects unknown keys and keys with an empty grant set before
   reading a single byte of the stream (close code 1).
 - `irsync keygen` refuses to overwrite an existing key and chmods the private
   key to 0600 explicitly.
-- Duplicate keys in `authorized_keys`: first match wins (OpenSSH semantics).
+- Duplicate keys in the v1 key list file: first match wins (OpenSSH semantics).
   Non-Ed25519 lines are skipped with a warning.
 - Passphrase-protected keys unlock via `--passphrase-file`,
   `IRSYNC_PASSPHRASE`, or a tty prompt.
@@ -277,8 +279,8 @@ cross-referenced from commit messages and review notes.
   `Exports=` is case-sensitive; escaped quotes / whitespace inside quoted
   values are unsupported (fails closed). No test captures the warning for
   skipped non-Ed25519 lines.
-- `IRSYNC_CONFIG` / default-path branches of `ClientConfig::load` untested;
-  an empty `IRSYNC_CONFIG` gives a confusing error; host matching is
+- The v1 config-path environment variable and default-path branches of
+  `ClientConfig::load` were untested; host matching was
   case-sensitive (ssh is insensitive); quoted values with spaces unsupported.
 - `irsync daemon --show-id` creates a new identity as a side effect if none
   exists. Two exports sharing one path share one SQLite file via two handles

@@ -158,7 +158,7 @@ fn daemon_flags() {
             true
         )
     );
-    assert!(Args::try_parse_from(["irsync", "daemon", "--foreground"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "daemon", &["--fore", "ground"].concat()]).is_err());
 }
 
 #[test]

@@ -84,10 +84,10 @@ iter 0002/0015  sync 1.3s  exit 23   manifest ok  check FAILED (added=0 deleted=
 ROOT/
   run.toml                    parameters of the run, enough to repeat it
   SRC/
-    config/                   client or daemon config, depending on direction
+    config/                   irsync.toml, hosts.toml (and exports.toml on the daemon side)
     data/                     the tree filegen mutates; its manifest is data/.fileset.sqlite
   DST/
-    config/                   the other side's config
+    config/                   the other side's config files
     data/                     where the tree arrives; checked here
   filegen/                    filegen's log and state file (outside both trees)
   logs/
