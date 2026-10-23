@@ -364,6 +364,18 @@ fn validate<'a>(
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
     }
+    // The grant is checked before anything about the export itself, and
+    // the reply for a name this key may not use is the same whether or
+    // not such an export exists: a key must not be able to probe for the
+    // names of exports it was not given. Only a key that may use the name
+    // learns that it is missing, that a path escapes it, or that it is
+    // read-only.
+    let Some(access) = grants.access(&hello.export) else {
+        return Err((
+            Code::Unauthorized,
+            format!("no access to export {:?}", hello.export),
+        ));
+    };
     let Some(export) = snap.exports.get(&hello.export) else {
         return Err((
             Code::NoSuchExport,
@@ -375,15 +387,11 @@ fn validate<'a>(
     }
     match Direction::try_from(hello.direction) {
         Ok(Direction::ClientSends) => {
-            if export.read_only || !grants.allows(&hello.export, true) {
+            if export.read_only || !access.permits(true) {
                 return Err((Code::ReadOnly, "export is read-only for this key".into()));
             }
         }
-        Ok(Direction::DaemonSends) => {
-            if !grants.allows(&hello.export, false) {
-                return Err((Code::Unauthorized, "no access to export".into()));
-            }
-        }
+        Ok(Direction::DaemonSends) => {}
         // No dedicated code for a malformed direction; UNKNOWN is the honest answer.
         Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }

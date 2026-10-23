@@ -14,7 +14,7 @@ pub enum Access {
 }
 
 impl Access {
-    fn permits(self, write: bool) -> bool {
+    pub fn permits(self, write: bool) -> bool {
         !write || self == Access::ReadWrite
     }
 }
@@ -32,12 +32,14 @@ impl Grants {
         self.exports.is_empty() && self.all.is_none()
     }
 
+    /// The access this key has to `export`: its own entry, else the `*`
+    /// wildcard, else none.
+    pub fn access(&self, export: &str) -> Option<Access> {
+        self.exports.get(export).copied().or(self.all)
+    }
+
     pub fn allows(&self, export: &str, write: bool) -> bool {
-        self.exports
-            .get(export)
-            .copied()
-            .or(self.all)
-            .is_some_and(|a| a.permits(write))
+        self.access(export).is_some_and(|a| a.permits(write))
     }
 }
 

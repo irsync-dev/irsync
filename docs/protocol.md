@@ -92,6 +92,14 @@ progress, both persisted on each side.
 Error codes: `UNKNOWN`, `UNAUTHORIZED`, `NO_SUCH_EXPORT`, `READ_ONLY`,
 `BAD_PATH`, `VERSION_MISMATCH`, `BAD_SESSION`, `INTERNAL`.
 
+The daemon checks the key's grant on the named export before it looks at
+the export itself. A name the key may not use always gets
+`UNAUTHORIZED`, whether or not such an export exists and whatever the
+direction or path, so a key granted one export cannot probe for the
+names of others. `NO_SUCH_EXPORT`, `BAD_PATH` and `READ_ONLY` are only
+ever sent to a key whose grant covers the name (in practice a `*`
+grant, for `NO_SUCH_EXPORT`).
+
 ## Cross-implementation check
 
 `crates/irsync-proto/tests/golden/chunk_1mib.json` is a golden vector: the

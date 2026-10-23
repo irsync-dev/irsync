@@ -188,6 +188,39 @@ async fn rw_grant_cannot_send_to_read_only_export() {
     );
 }
 
+/// The reply for an export the key may not use is byte-for-byte the same
+/// whether the export exists or not, for every direction and for a path
+/// escape, so a key granted one export cannot probe for the names of others.
+#[tokio::test]
+async fn ungranted_export_reply_does_not_reveal_whether_it_exists() {
+    let only_rw = || Grants {
+        exports: [("rw".to_string(), Access::ReadWrite)].into(),
+        all: None,
+    };
+    let reply = |r: Result<HelloAckOrError, String>| match r.unwrap() {
+        HelloAckOrError::Err(e) => (e.code, e.message),
+        HelloAckOrError::Ack(_) => panic!("expected an error, got ack"),
+    };
+    for (dir, path) in [
+        (Direction::DaemonSends, &b""[..]),
+        (Direction::ClientSends, &b""[..]),
+        (Direction::DaemonSends, &b"../escape"[..]),
+    ] {
+        // "ro" exists (the key has no grant on it); "nope" does not exist.
+        let existing = reply(exchange_with(only_rw(), hello("ro", path, dir)).await);
+        let missing = reply(exchange_with(only_rw(), hello("nope", path, dir)).await);
+        assert_eq!(existing.0, Code::Unauthorized as i32, "{dir:?} {path:?}: {}", existing.1);
+        // Any difference in the message would be a leak; the export name is
+        // the client's own input, so echoing it back is fine.
+        let strip = |m: &str| m.replace("\"ro\"", "<name>").replace("\"nope\"", "<name>");
+        assert_eq!(
+            (existing.0, strip(&existing.1)),
+            (missing.0, strip(&missing.1)),
+            "{dir:?} {path:?}: existing export reply differs from a missing one"
+        );
+    }
+}
+
 #[tokio::test]
 async fn grant_lacking_export_cannot_pull() {
     let g = Grants {
