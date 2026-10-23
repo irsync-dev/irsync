@@ -110,24 +110,42 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
 }
 
 #[test]
+fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    assert!(irsync(&home, &["id"]).status.success());
+    std::fs::remove_file(home.join(".config/irsync/id_ed25519.pub")).unwrap();
+    let o = irsync(&home, &["id"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    let pk = ssh_key::PublicKey::from_openssh(lines[0]).unwrap();
+    let from_line = irsync::identity::endpoint_id_of_public_key(&pk).unwrap();
+    assert_eq!(from_line, irsync::identity::parse_endpoint_id(lines[1]).unwrap());
+    assert!(irsync(&home, &["show"]).status.success());
+}
+
+#[test]
 fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    irsync(&home, &["host", "add", "laptop", &id]);
-    irsync(&home, &["add", &format!("p:{}", home.join("p").display())]);
-    irsync(&home, &["allow", "p", "laptop"]);
+    assert!(irsync(&home, &["host", "add", "laptop", &id]).status.success());
+    assert!(irsync(&home, &["add", &format!("p:{}", home.join("p").display())]).status.success());
+    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
     std::fs::write(
         home.join(".config/irsync/exports.toml"),
         format!("[p]\npath = {:?}\nrw = [\"laptop\", \"ghost\"]\n", home.join("p")),
     )
     .unwrap();
     let o = irsync(&home, &["show"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("irsync.toml") && out.contains("hosts.toml") && out.contains("exports.toml"), "{out}");
     assert!(out.contains(&format!("laptop ({id})")) && out.contains("ghost (unknown alias)"), "{out}");
-    assert!(out.contains("p: ") && out.contains(home.join("p").to_str().unwrap()));
+    let line = format!("p: {}", home.join("p").display());
+    assert!(out.lines().any(|l| l == line), "{out}");
     assert!(out.contains("client identity: ") && out.contains("daemon identity: "), "{out}");
     assert!(out.contains("irsync.toml (missing)"), "{out}");
 }

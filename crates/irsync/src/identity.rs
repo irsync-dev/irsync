@@ -148,6 +148,17 @@ pub fn endpoint_id_of_public_key(pk: &ssh_key::PublicKey) -> Option<EndpointId> 
     EndpointId::from_bytes(&ed.0).ok()
 }
 
+/// The OpenSSH public key line (`ssh-ed25519 AAAA... comment`) for `secret`,
+/// derived from the key itself rather than any `.pub` file.
+pub fn public_key_line(secret: &SecretKey, comment: &str) -> String {
+    let data = ssh_key::public::KeyData::Ed25519(ssh_key::public::Ed25519PublicKey(
+        *secret.public().as_bytes(),
+    ));
+    ssh_key::PublicKey::new(data, comment)
+        .to_openssh()
+        .expect("an Ed25519 public key encodes")
+}
+
 /// Parse an endpoint id in any format iroh prints (hex) or z-base-32.
 pub fn parse_endpoint_id(s: &str) -> Result<EndpointId, IdentityError> {
     let s = s.trim();

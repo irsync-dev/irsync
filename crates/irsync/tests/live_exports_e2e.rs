@@ -19,14 +19,27 @@ impl Drop for DaemonGuard {
 }
 
 fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(args)
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Bounded: a protocol hang fails the test instead of blocking it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("irsync {args:?} did not finish within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
 }
 
 fn stderr(o: &std::process::Output) -> String {
@@ -112,6 +125,9 @@ fn add_and_allow_take_effect_without_restart() {
     let sync_args = ["-a", "--reconnect", "0", "--address", &address, &from, &to];
     let o = irsync(&client, &sync_args);
     assert!(!o.status.success(), "sync before add should fail");
+    assert!(stderr(&o).contains("connection lost"), "{}", stderr(&o));
+    let log_now = std::fs::read_to_string(&log).unwrap();
+    assert!(log_now.contains("unauthorized"), "{log_now}");
 
     // 5. Export and authorize while the daemon runs.
     let o = irsync(&server, &["add", &format!("data:{}", data.display())]);
@@ -129,6 +145,10 @@ fn add_and_allow_take_effect_without_restart() {
     assert!(o.status.success(), "{}", stderr(&o));
     let o = irsync(&client, &sync_args);
     assert!(!o.status.success(), "sync after revoke should fail");
+    assert!(stderr(&o).contains("connection lost"), "{}", stderr(&o));
+    let log_now = std::fs::read_to_string(&log).unwrap();
+    assert!(log_now.matches("unauthorized").count() >= 2, "{log_now}");
+    assert!(daemon.0.try_wait().unwrap().is_none(), "daemon exited");
 
     // 8. The guard stops the daemon.
 }

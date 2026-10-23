@@ -351,11 +351,8 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     let (secret, generated) = load_or_generate(&identity, &pass, "irsync")
         .with_context(|| format!("loading identity {}", identity.display()))?;
     if generated {
-        let mut pub_path = identity.as_os_str().to_owned();
-        pub_path.push(".pub");
-        let line = std::fs::read_to_string(&pub_path).unwrap_or_default();
         eprintln!("generated identity {}", identity.display());
-        eprintln!("{}", line.trim());
+        eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
         eprintln!("{}", secret.public());
     }
     if !addresses.is_empty() {
@@ -792,16 +789,6 @@ fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::Se
     Ok(secret)
 }
 
-/// The OpenSSH public key line, from the identity's `.pub` file.
-fn public_line(path: &std::path::Path) -> anyhow::Result<String> {
-    let mut pub_path = path.as_os_str().to_owned();
-    pub_path.push(".pub");
-    let pub_path = PathBuf::from(pub_path);
-    let line = std::fs::read_to_string(&pub_path)
-        .with_context(|| format!("reading {}", pub_path.display()))?;
-    Ok(line.trim().to_string())
-}
-
 fn run_id(daemon: bool, all: bool, f: &FilesArgs) -> i32 {
     finish(
         "id",
@@ -809,7 +796,7 @@ fn run_id(daemon: bool, all: bool, f: &FilesArgs) -> i32 {
             let settings = Settings::load(&file_paths(f).config)?;
             let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
                 let secret = identity_of(path, comment)?;
-                println!("{}", public_line(path)?);
+                println!("{}", irsync::identity::public_key_line(&secret, comment));
                 println!("{}", secret.public());
                 Ok(())
             };
@@ -837,7 +824,7 @@ fn run_show(f: &FilesArgs) -> i32 {
             let hosts = Hosts::load(&paths.hosts)?;
             let exports = Exports::load(&paths.exports)?;
             let client = identity_of(&settings.identity, "irsync")?;
-            let client_line = public_line(&settings.identity)?;
+            let client_line = irsync::identity::public_key_line(&client, "irsync");
             let daemon = identity_of(&settings.daemon.identity, "irsync-daemon")?;
             print!(
                 "{}",
