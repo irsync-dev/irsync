@@ -81,7 +81,10 @@ fn hosts_entry_without_endpoint_id_is_error_with_line() {
     let e = Hosts::parse("[home]\nparallel = 4\n", p())
         .unwrap_err()
         .to_string();
-    assert!(e.contains("/x/f.toml") && e.contains("endpoint_id"), "{e}");
+    assert!(
+        e.contains("/x/f.toml:1:") && e.contains("endpoint_id"),
+        "{e}"
+    );
 }
 
 #[test]
@@ -128,4 +131,62 @@ fn exports_missing_file_is_empty() {
     let d = tempfile::tempdir().unwrap();
     let x = Exports::load(&d.path().join("none.toml")).unwrap();
     assert!(x.exports.is_empty() && x.rw.is_empty());
+}
+
+#[test]
+fn syntax_error_carries_its_line() {
+    let e = Hosts::parse("[a]\nendpoint_id = \n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.starts_with("/x/f.toml:2:"), "{e}");
+}
+
+#[test]
+fn hosts_invalid_alias_in_file_is_error_with_line() {
+    let t = format!(
+        "[ok]\nendpoint_id = \"{}\"\n[\"a:b\"]\nendpoint_id = \"{}\"\n",
+        id(1),
+        id(2)
+    );
+    let e = Hosts::parse(&t, p()).unwrap_err().to_string();
+    assert!(e.contains("/x/f.toml:3:") && e.contains("a:b"), "{e}");
+    let t = format!("[{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
+    assert!(Hosts::parse(&t, p())
+        .unwrap_err()
+        .to_string()
+        .contains("invalid host alias"));
+}
+
+#[test]
+fn hosts_bad_endpoint_id_has_line() {
+    let e = Hosts::parse("[a]\nendpoint_id = \"zzz\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("/x/f.toml:2:"), "{e}");
+}
+
+#[test]
+fn exports_schema_errors_have_lines() {
+    let e = Exports::parse("[a]\npath = \"/x\"\n[b]\npath = \"/y\"\nbogus = 1\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("/x/f.toml:") && e.contains("bogus"), "{e}");
+    let e = Exports::parse("\n\nrw = 5\n", p()).unwrap_err().to_string();
+    assert!(e.contains("/x/f.toml:3:"), "{e}");
+    let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
+    assert!(e.contains("/x/f.toml:1:") && e.contains("table"), "{e}");
+}
+
+#[test]
+fn exports_rw_ro_tables_are_reserved() {
+    let e = Exports::parse("[rw]\npath = \"/x\"\n", p()).unwrap_err();
+    assert!(
+        matches!(e, ConfigError::ReservedName(ref n) if n == "rw"),
+        "{e:?}"
+    );
+    let e = Exports::parse("[ro]\npath = \"/x\"\n", p()).unwrap_err();
+    assert!(
+        matches!(e, ConfigError::ReservedName(ref n) if n == "ro"),
+        "{e:?}"
+    );
 }

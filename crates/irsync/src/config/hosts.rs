@@ -1,7 +1,7 @@
 //! `hosts.toml`: aliases for daemons.
 
 use super::settings::de_opt_duration;
-use super::{read_optional, toml_err, ConfigError};
+use super::{line_of, read_optional, toml_err, ConfigError};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use toml::Spanned;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub struct HostEntry {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawHost {
-    endpoint_id: String,
+    endpoint_id: Spanned<String>,
     #[serde(default)]
     relay: Option<Url>,
     #[serde(default)]
@@ -53,15 +54,26 @@ pub fn valid_alias(s: &str) -> bool {
 
 impl Hosts {
     pub fn parse(text: &str, path: &Path) -> Result<Hosts, ConfigError> {
-        let raw: BTreeMap<String, RawHost> =
+        let raw: BTreeMap<String, Spanned<RawHost>> =
             toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
         let mut entries = BTreeMap::new();
         for (alias, r) in raw {
-            let endpoint_id = parse_endpoint_id(&r.endpoint_id).map_err(|e| ConfigError::File {
+            let at = |offset: usize, message: String| ConfigError::File {
                 path: path.to_path_buf(),
-                line: None,
-                message: format!("host {alias:?}: {e}"),
-            })?;
+                line: Some(line_of(text, offset)),
+                message,
+            };
+            if !valid_alias(&alias) {
+                return Err(at(
+                    r.span().start,
+                    format!(
+                        "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and not be an EndpointId"
+                    ),
+                ));
+            }
+            let r = r.into_inner();
+            let endpoint_id = parse_endpoint_id(r.endpoint_id.get_ref())
+                .map_err(|e| at(r.endpoint_id.span().start, format!("host {alias:?}: {e}")))?;
             entries.insert(
                 alias,
                 HostEntry {
