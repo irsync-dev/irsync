@@ -296,3 +296,46 @@ artefacts checked in the run directories: `run.toml` with its `[daemon]`
 section, both manifests, `logs/iter-NNNN.check.txt`,
 `logs/iter-NNNN.client.log`, and `logs/daemon.log` with the iteration
 markers.
+
+## Breadth sweeps
+
+The campaign of `STRESS_BUG_HUNTING.md` section 3, run with
+`crates/stress/tools/breadth.sh`: 20 iterations of 200 steps per run under
+a 4G cap (256M per file), client `--timeout 300`, both directions for every
+seed, eight runs at a time, the root of every passing run deleted.
+
+### 2026-10-22: default and paranoid tiers, 100 runs, all clean
+
+Binaries: a release build of d6092e9, which includes everything since the
+acceptance run: the overlapped delta receive, sub-chunk deltas, cloning the
+old file into the `.part`, index warm-up, `-c` re-reading every file, and
+the heartbeat fix for R35. Two sweeps ran concurrently on the 32-core box
+with roots on the disk-backed home filesystem, 16 runs live at once.
+
+| sweep | seeds | runs | iterations | failed | harness errors | post-check |
+| --- | --- | --- | --- | --- | --- | --- |
+| normal | 1 to 25 | 50 | 1000 | 0 | 0 | none |
+| paranoid | 26 to 50 | 50 | 1000 | 0 | 0 | `tools/paranoid-check.sh`, 50 of 50 clean |
+
+Every iteration of both sweeps logged client exit 0, equal manifest hashes
+and a clean default-tier check. In the paranoid sweep the final destination
+of every run was compared with the source manifest on every field fileset
+records (`--paranoid`: uid, gid, nlink and xattr on top of the default
+tier) and reported no added, deleted or changed entry and no warning; push
+and pull of the same seed ended with identical trees of 121 to 510
+entries. Run wall time was 112 to 402 s (median about 300 s), the longest
+single sync 45 s, both under the load of 16 concurrent runs.
+
+Disjoint seeds were chosen on purpose: the same seed yields the same tree
+in both tiers, so re-running seeds 1 to 25 under `--paranoid` would only
+have added the four extra fields over trees already covered, while seeds
+26 to 50 double the trees seen. A seed that fails in one tier can still be
+re-run in the other, since runs are deterministic.
+
+What the sweep did not exercise, and so says nothing about: non-default
+filegen weights (hard links stay at about 1 percent, `set_xattr`, `chown`
+and `mknod` off), interrupted syncs, destination drift, and the `-c`
+flag, which the newest commit changed. These are the matrix rows and
+harness extensions of `STRESS_BUG_HUNTING.md` sections 4 and 6. The only
+artefacts kept are the two `summary.txt` files under
+`~/work/irsync-breadth-normal` and `~/work/irsync-breadth-paranoid`.
