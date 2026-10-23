@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use iroh::endpoint::{Connection, ConnectionError};
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 use irsync_proto::v1::{error::Code, Hello};
 use rand_core::{OsRng, RngCore};
 
@@ -110,6 +110,9 @@ enum Next {
     Retry,
     /// The daemon does not know the session: start a fresh one.
     Fresh,
+    /// The daemon closed the connection with a final answer (see
+    /// [`FINAL_CLOSE_CODES`]); `reason` is its close reason, as text.
+    ClosedByDaemon { code: u32, reason: String },
     Fatal,
 }
 
@@ -130,17 +133,35 @@ fn classify(err: &anyhow::Error, conn: Option<&Connection>) -> Next {
         return Next::Fatal;
     }
     if let Some(ConnectionError::ApplicationClosed(c)) = conn.and_then(|c| c.close_reason()) {
-        if FINAL_CLOSE_CODES
+        if let Some(&code) = FINAL_CLOSE_CODES
             .iter()
-            .any(|&code| c.error_code == code.into())
+            .find(|&&code| c.error_code == code.into())
         {
-            return Next::Fatal;
+            return Next::ClosedByDaemon {
+                code,
+                reason: String::from_utf8_lossy(&c.reason).into_owned(),
+            };
         }
     }
     if err.chain().any(|e| e.is::<TransportError>()) {
         Next::Retry
     } else {
         Next::Fatal
+    }
+}
+
+/// The message for a connection the daemon closed with a final code. An
+/// unauthorized key (code 1) is the likeliest first-run mistake, so that
+/// one names the export and this client's id and spells out the `irsync
+/// allow` line to run on the daemon's machine.
+fn describe_close(code: u32, reason: &str, export: &str, client: &EndpointId) -> String {
+    match code {
+        1 => format!(
+            "the daemon rejected this client's key ({reason}): it is not allowed to use \
+             export {export:?}. On the daemon's machine run: irsync allow {export} {client} \
+             (irsync id prints this id)"
+        ),
+        _ => format!("the daemon closed the connection: {reason}"),
     }
 }
 
@@ -309,6 +330,15 @@ pub async fn run_with_reconnect(
                 continue;
             }
             Some(Next::Retry) => {}
+            Some(Next::ClosedByDaemon { code, reason }) => {
+                let export = hello_for(None).export;
+                return Err(anyhow::anyhow!(describe_close(
+                    code,
+                    &reason,
+                    &export,
+                    &endpoint.id()
+                )));
+            }
             _ => return Err(err),
         }
         let now = Instant::now();
@@ -334,6 +364,17 @@ pub async fn run_with_reconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unauthorized_close_tells_the_user_what_to_run() {
+        let id = iroh::SecretKey::from_bytes(&[3u8; 32]).public();
+        let msg = describe_close(1, "unauthorized", "photos", &id);
+        assert!(msg.contains("rejected this client's key"), "{msg}");
+        assert!(msg.contains(&format!("irsync allow photos {id}")), "{msg}");
+        assert!(msg.contains("irsync id"), "{msg}");
+        let other = describe_close(2, "hello timeout", "photos", &id);
+        assert!(other.contains("hello timeout") && !other.contains("allow"), "{other}");
+    }
 
     #[test]
     fn backoff_grows_to_the_cap_and_never_drops_below_the_floor() {

@@ -40,9 +40,10 @@ A daemon with no exports starts, logs a warning naming the exports file, and
 serves nothing until `irsync add` creates one.
 
 A client whose key is not granted anything is closed on before any protocol
-message is read. It sees `reading HelloAck: connection lost`; the reason is in
-the daemon's log as `rejecting unauthorized key`, with the first ten hex digits of the
-peer's id (`irsync id` on the client prints the whole id for `irsync allow`).
+message is read. The client reports that the daemon rejected its key and
+prints the exact `irsync allow <export> <id>` line to run on the daemon's
+machine; the daemon's log shows `rejecting unauthorized key` with the first
+ten hex digits of the peer's id.
 
 Settings in `irsync.toml` (`listen`, relays, discovery, `idle_timeout`, ...)
 are read once and need a restart.
