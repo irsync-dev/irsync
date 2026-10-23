@@ -105,3 +105,48 @@ fn add_target_edge_cases() {
     assert_eq!(parse_add_target("./x", &sub).unwrap(), ("x".into(), sub.join("x")));
     assert_eq!(parse_add_target("../sub/x", &sub).unwrap(), ("x".into(), sub.join("x")));
 }
+
+const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
+
+#[test]
+fn allow_refuses_a_comment_with_control_characters_and_leaves_the_doc() {
+    let mut doc: DocumentMut = "[p]\npath = \"/p\"\n".parse().unwrap();
+    let before = doc.to_string();
+    let none = |_: &str| None;
+    for c in [INJECTED, "a\rb", "tab\there"] {
+        let evil = PeerSpec::Id { id: id(1), comment: Some(c.into()) };
+        let r = allow(&mut doc, Some("p"), &evil, false, &none);
+        assert!(matches!(r, Err(ManageError::BadComment(_))), "{c:?}: {r:?}");
+        assert_eq!(doc.to_string(), before);
+    }
+}
+
+#[test]
+fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
+    let hosts = irsync::config::hosts::Hosts::parse("", Path::new("h")).unwrap();
+    let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
+    let key = line.rsplit_once(' ').unwrap().0;
+    let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &hosts);
+    assert!(matches!(r, Err(ManageError::BadComment(_))), "{r:?}");
+    let msg = r.unwrap_err().to_string();
+    assert!(msg.contains("control characters"), "{msg}");
+    // A file holding such a line is refused the same way.
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("k.pub");
+    std::fs::write(&f, format!("{key} a\x07b\n")).unwrap();
+    assert!(matches!(PeerSpec::parse(f.to_str().unwrap(), &hosts), Err(ManageError::BadComment(_))));
+}
+
+#[test]
+fn save_exports_refuses_a_document_that_does_not_parse() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("exports.toml");
+    std::fs::write(&path, "[p]\npath = \"/p\"\n").unwrap();
+    let doc: DocumentMut = "[p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
+    let e = irsync::manage::save_exports(&path, &doc).unwrap_err();
+    assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "[p]\npath = \"/p\"\n");
+    let ok: DocumentMut = "[q]\npath = \"/q\"\n".parse().unwrap();
+    irsync::manage::save_exports(&path, &ok).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "[q]\npath = \"/q\"\n");
+}

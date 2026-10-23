@@ -185,3 +185,45 @@ fn sync_generates_the_client_identity_on_first_run() {
     assert!(err.contains("generated identity") && err.contains(key.to_str().unwrap()), "{err}");
     assert!(key.exists() && home.join(".config/irsync/id_ed25519.pub").exists());
 }
+
+#[test]
+fn an_unreadable_daemon_key_is_named_in_the_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    assert!(irsync(&home, &["id", "--daemon"]).status.success());
+    let key = home.join(".config/irsync/daemon_ed25519");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&key).is_ok() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    for args in [&["id", "--daemon"][..], &["daemon", "--show-id"][..]] {
+        let o = irsync(&home, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && err.contains(key.to_str().unwrap()), "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let exports = home.join(".config/irsync/exports.toml");
+    let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
+    let key = line.rsplit_once(' ').unwrap().0;
+    let other = iroh::SecretKey::from_bytes(&[8; 32]).public();
+    let evil = format!("{key} laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"{other}\"");
+    // No exports.toml yet: nothing is created.
+    let o = irsync(&home, &["allow", "all", &evil]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("control characters"), "{err}");
+    assert!(!exports.exists());
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    assert!(irsync(&home, &["add", &format!("p:{}", home.join("p").display())]).status.success());
+    let before = std::fs::read_to_string(&exports).unwrap();
+    let o = irsync(&home, &["allow", "p", &evil]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("control characters"), "{err}");
+    assert_eq!(std::fs::read_to_string(&exports).unwrap(), before);
+}

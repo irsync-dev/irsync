@@ -3,7 +3,10 @@ mod common;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use common::{client_endpoint, spawn_daemon, spawn_daemon_with, within, DaemonHandle};
+use common::{
+    client_endpoint, spawn_daemon, spawn_daemon_with, spawn_daemon_with_state, within,
+    DaemonHandle,
+};
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
 use irsync::net::frame::{read_msg, write_msg};
@@ -260,6 +263,37 @@ async fn exports_file_is_read_on_every_connection() {
         exchange_against(&daemon, &client, h).await.is_err(),
         "revoked"
     );
+    daemon.shutdown.cancel();
+    let _ = within(daemon.task).await;
+}
+
+/// An export whose index cannot be opened gets an INTERNAL error reply, not
+/// a dropped connection the client would retry.
+#[tokio::test]
+async fn index_open_failure_is_an_internal_error_reply() {
+    let d = tempfile::tempdir().unwrap();
+    let (hosts, exports) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
+    std::fs::create_dir_all(d.path().join("data")).unwrap();
+    let client = client_endpoint().await;
+    let state = tempfile::tempdir().unwrap();
+    // The index directory cannot be created: a file is in its place.
+    std::fs::write(state.path().join("index"), b"").unwrap();
+    let authz = Arc::new(FileAuthorizer::new(hosts, exports.clone()));
+    let daemon = spawn_daemon_with_state(authz, state).await;
+    std::fs::write(
+        &exports,
+        format!("[data]\npath = {:?}\nro = [\"{}\"]\n", d.path().join("data"), client.id()),
+    )
+    .unwrap();
+    let h = hello("data", b"", Direction::DaemonSends);
+    match exchange_against(&daemon, &client, h).await {
+        Ok(HelloAckOrError::Err(e)) => {
+            assert_eq!(e.code, Code::Internal as i32, "{}", e.message);
+            assert!(e.message.contains("cannot open index for export \"data\""), "{}", e.message);
+        }
+        Ok(HelloAckOrError::Ack(_)) => panic!("expected INTERNAL, got ack"),
+        Err(e) => panic!("expected an INTERNAL error reply, got a dropped connection: {e}"),
+    }
     daemon.shutdown.cancel();
     let _ = within(daemon.task).await;
 }

@@ -192,8 +192,15 @@ pub async fn spawn_daemon_exports(
 pub async fn spawn_daemon_with(
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
 ) -> DaemonHandle {
+    spawn_daemon_with_state(authz, tempfile::tempdir().unwrap()).await
+}
+
+/// As [`spawn_daemon_with`], keeping its state (indexes) in `state`.
+pub async fn spawn_daemon_with_state(
+    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+    state: tempfile::TempDir,
+) -> DaemonHandle {
     use irsync::config::settings::Settings;
-    let state = tempfile::tempdir().unwrap();
     let settings = Settings {
         state_dir: state.path().to_path_buf(),
         ..Settings::default()

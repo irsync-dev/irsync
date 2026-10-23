@@ -5,6 +5,7 @@ pub mod exports;
 pub mod hosts;
 pub mod show;
 
+use crate::config::exports::Exports;
 use crate::config::hosts::Hosts;
 use crate::config::ConfigError;
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
@@ -36,6 +37,18 @@ pub enum ManageError {
     NotADirectory(PathBuf),
     #[error("nothing to remove for {0:?}")]
     NothingToRemove(String),
+    #[error("comment {0:?} contains control characters (such as a line break); retype the key line on one line")]
+    BadComment(String),
+    #[error("{}: refusing to save, the edited file would not load: {source}", path.display())]
+    Invalid { path: PathBuf, source: ConfigError },
+}
+
+/// A comment kept in a config file must be one line of printable text.
+pub fn check_comment(c: &str) -> Result<(), ManageError> {
+    if c.chars().any(char::is_control) {
+        return Err(ManageError::BadComment(c.to_string()));
+    }
+    Ok(())
 }
 
 /// Load a TOML file for editing; a missing file yields an empty document.
@@ -69,6 +82,20 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
     Ok(())
 }
 
+/// Save `exports.toml`, refusing a document that would not load.
+pub fn save_exports(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
+    Exports::parse(&doc.to_string(), path)
+        .map_err(|source| ManageError::Invalid { path: path.to_path_buf(), source })?;
+    save_doc(path, doc)
+}
+
+/// Save `hosts.toml`, refusing a document that would not load.
+pub fn save_hosts(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
+    Hosts::parse(&doc.to_string(), path)
+        .map_err(|source| ManageError::Invalid { path: path.to_path_buf(), source })?;
+    save_doc(path, doc)
+}
+
 /// How a command-line "who" argument is understood.
 #[derive(Debug, Clone)]
 pub enum PeerSpec {
@@ -88,13 +115,13 @@ impl PeerSpec {
         if let Ok(text) = std::fs::read_to_string(who) {
             if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
                 if let Ok(pk) = ssh_key::PublicKey::from_openssh(line) {
-                    return Self::from_key(&pk).ok_or_else(bad);
+                    return Self::from_key(&pk)?.ok_or_else(bad);
                 }
             }
         }
         if who.starts_with("ssh-") {
             let pk = ssh_key::PublicKey::from_openssh(who).map_err(|_| bad())?;
-            return Self::from_key(&pk).ok_or_else(bad);
+            return Self::from_key(&pk)?.ok_or_else(bad);
         }
         if let Ok(id) = parse_endpoint_id(who) {
             return Ok(PeerSpec::Id { id, comment: None });
@@ -102,11 +129,16 @@ impl PeerSpec {
         Err(bad())
     }
 
-    fn from_key(pk: &ssh_key::PublicKey) -> Option<PeerSpec> {
-        let id = endpoint_id_of_public_key(pk)?;
+    /// `None` when the key is not Ed25519; an error when its comment is
+    /// not one line of printable text.
+    fn from_key(pk: &ssh_key::PublicKey) -> Result<Option<PeerSpec>, ManageError> {
         let comment = pk.comment();
+        check_comment(comment)?;
+        let Some(id) = endpoint_id_of_public_key(pk) else {
+            return Ok(None);
+        };
         let comment = if comment.is_empty() { None } else { Some(comment.to_string()) };
-        Some(PeerSpec::Id { id, comment })
+        Ok(Some(PeerSpec::Id { id, comment }))
     }
 
     /// The text stored in a config entry: the alias, or the id in hex.

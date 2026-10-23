@@ -657,7 +657,7 @@ fn run_add(a: &AddArgs) -> i32 {
             let paths = file_paths(&a.files);
             let mut doc = manage::load_doc(&paths.exports)?;
             manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
-            manage::save_doc(&paths.exports, &doc)?;
+            manage::save_exports(&paths.exports, &doc)?;
             eprintln!(
                 "added export {name} ({}) to {}",
                 path.display(),
@@ -685,7 +685,7 @@ fn run_remove(name: &str, f: &FilesArgs) -> i32 {
             let mut doc = manage::load_doc(&paths.exports)?;
             manage::exports::remove_export(&mut doc, name)
                 .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_doc(&paths.exports, &doc)?;
+            manage::save_exports(&paths.exports, &doc)?;
             eprintln!("removed export {name} from {}", paths.exports.display());
             Ok(())
         })(),
@@ -704,7 +704,7 @@ fn run_allow(export: &str, who: &str, ro: bool, f: &FilesArgs) -> i32 {
             let target = (export != "all").then_some(export);
             manage::exports::allow(&mut doc, target, &spec, ro, &resolve)
                 .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_doc(&paths.exports, &doc)?;
+            manage::save_exports(&paths.exports, &doc)?;
             let mode = if ro { "ro" } else { "rw" };
             match target {
                 Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
@@ -743,7 +743,7 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
             let mut doc = manage::load_doc(&paths.exports)?;
             let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)
                 .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_doc(&paths.exports, &doc)?;
+            manage::save_exports(&paths.exports, &doc)?;
             eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
             Ok(())
         })(),
@@ -760,7 +760,7 @@ fn run_host(h: &HostCmd) -> i32 {
                 let mut doc = manage::load_doc(&paths.hosts)?;
                 manage::hosts::host_remove(&mut doc, alias)
                     .with_context(|| format!("in {}", paths.hosts.display()))?;
-                manage::save_doc(&paths.hosts, &doc)?;
+                manage::save_hosts(&paths.hosts, &doc)?;
                 eprintln!("removed host {alias} from {}", paths.hosts.display());
                 Ok(())
             })(),
@@ -858,7 +858,7 @@ fn host_add(a: &HostAddArgs) -> anyhow::Result<()> {
     let paths = file_paths(&a.files);
     let mut doc = manage::load_doc(&paths.hosts)?;
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
-    manage::save_doc(&paths.hosts, &doc)?;
+    manage::save_hosts(&paths.hosts, &doc)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),

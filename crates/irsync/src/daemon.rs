@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -201,7 +201,7 @@ fn open_index(shared: &Shared, name: &str, export: &Export) -> Result<(IndexHand
     let mut indexes = shared
         .indexes
         .lock()
-        .map_err(|_| anyhow::anyhow!("index cache lock poisoned"))?;
+        .unwrap_or_else(PoisonError::into_inner);
     if let Some(ix) = indexes.get(&export.path) {
         return Ok((ix.clone(), false));
     }
@@ -308,7 +308,19 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     match validate(&snap, &grants, &hello) {
         Ok(export) => {
             let root = export.path.clone();
-            let index = index_for(&shared, &hello.export, export)?;
+            let index = match index_for(&shared, &hello.export, export) {
+                Ok(ix) => ix,
+                Err(e) => {
+                    tracing::warn!(export = %hello.export, "cannot open index: {e:#}");
+                    let message = format!("cannot open index for export {:?}: {e:#}", hello.export);
+                    let res = reject(&conn, &mut send, Code::Internal, message).await;
+                    #[cfg(feature = "test-hooks")]
+                    shared
+                        .sessions
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return res;
+                }
+            };
             let hosting = shared.hosting.clone();
             let res = serve_daemon(conn, send, recv, root, hello, index, hosting).await;
             #[cfg(feature = "test-hooks")]
@@ -400,7 +412,8 @@ async fn reject(
 }
 
 fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<SecretKey> {
-    let (secret, generated) = crate::identity::load_or_generate(path, pass, "irsync-daemon")?;
+    let (secret, generated) = crate::identity::load_or_generate(path, pass, "irsync-daemon")
+        .with_context(|| format!("identity {}", path.display()))?;
     if generated {
         tracing::info!(path = %path.display(), "generated daemon identity");
     }

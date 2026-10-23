@@ -2,7 +2,7 @@
 //! functions are pure on a parsed document; loading and saving belong to
 //! the caller.
 
-use super::{ManageError, PeerSpec};
+use super::{check_comment, ManageError, PeerSpec};
 use crate::config::exports::RESERVED;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
@@ -139,6 +139,9 @@ pub fn allow(
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<(), ManageError> {
+    if let PeerSpec::Id { comment: Some(c), .. } = who {
+        check_comment(c)?;
+    }
     let table = target(doc, export)?;
     let id = who_id(who, resolve);
     let pred = |t: &str| entry_matches(t, who, id, resolve);

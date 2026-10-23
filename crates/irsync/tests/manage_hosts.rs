@@ -28,3 +28,13 @@ fn host_add_rejects_bad_alias_and_remove_needs_existing() {
     host_remove(&mut doc, "x").unwrap();
     assert!(doc.as_table().is_empty());
 }
+
+#[test]
+fn save_hosts_refuses_a_document_that_does_not_parse() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("hosts.toml");
+    let doc: DocumentMut = "[x]\nendpoint_id = \"nope\"\n".parse().unwrap();
+    let e = irsync::manage::save_hosts(&path, &doc).unwrap_err();
+    assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
+    assert!(!path.exists());
+}
