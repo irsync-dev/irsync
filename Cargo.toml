@@ -23,6 +23,7 @@ jwalk = "0.9"
 nix = "0.31"
 clap = { version = "4", features = ["derive"] }
 toml = "1"
+toml_edit = "0.25"
 url = { version = "2", features = ["serde"] }
 dirs = "6"
 tracing = "0.1"

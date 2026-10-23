@@ -9,6 +9,7 @@ pub mod fs;
 pub mod hasher;
 pub mod identity;
 pub mod index;
+pub mod manage;
 pub mod net;
 pub mod plan;
 pub mod recv;
