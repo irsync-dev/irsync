@@ -65,37 +65,52 @@ struct Shared {
 pub struct Daemon {
     endpoint: Endpoint,
     shared: Arc<Shared>,
+    /// Indexes opened by `new` whose background tasks `run` starts.
+    startup: Vec<(String, Export, IndexHandle)>,
 }
 
 impl Daemon {
-    /// Wraps `endpoint`; indexes live under `settings.state_dir` and are
-    /// opened as exports are first served.
+    /// Wraps `endpoint` and opens the index (under `settings.state_dir`) of
+    /// every export `authz` lists now; exports added later are opened by
+    /// their first connection.
     pub fn new(
         settings: &Settings,
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
+        let snap = authz.snapshot()?;
+        let shared = Arc::new(Shared {
+            authz,
+            state_dir: settings.state_dir.clone(),
+            indexes: Mutex::new(HashMap::new()),
+            tasks: CancellationToken::new(),
+            dormant: settings.daemon.dormant_session_timeout,
+            hosting: DaemonSessions {
+                idle_timeout: Some(settings.daemon.idle_timeout),
+                #[cfg(feature = "test-hooks")]
+                fault: Some(Arc::default()),
+                ..DaemonSessions::default()
+            },
+            #[cfg(feature = "test-hooks")]
+            hellos: Default::default(),
+            #[cfg(feature = "test-hooks")]
+            sessions: Default::default(),
+            #[cfg(feature = "test-hooks")]
+            hashed: Default::default(),
+        });
+        // Opened here, before anyone else can open the same files, and
+        // fatally: a daemon that cannot index its exports does not start.
+        let mut startup = Vec::new();
+        for (name, export) in snap.exports {
+            let (index, fresh) = open_index(&shared, &name, &export)?;
+            if fresh {
+                startup.push((name, export, index));
+            }
+        }
         Ok(Daemon {
             endpoint,
-            shared: Arc::new(Shared {
-                authz,
-                state_dir: settings.state_dir.clone(),
-                indexes: Mutex::new(HashMap::new()),
-                tasks: CancellationToken::new(),
-                dormant: settings.daemon.dormant_session_timeout,
-                hosting: DaemonSessions {
-                    idle_timeout: Some(settings.daemon.idle_timeout),
-                    #[cfg(feature = "test-hooks")]
-                    fault: Some(Arc::default()),
-                    ..DaemonSessions::default()
-                },
-                #[cfg(feature = "test-hooks")]
-                hellos: Default::default(),
-                #[cfg(feature = "test-hooks")]
-                sessions: Default::default(),
-                #[cfg(feature = "test-hooks")]
-                hashed: Default::default(),
-            }),
+            shared,
+            startup,
         })
     }
 
@@ -149,17 +164,8 @@ impl Daemon {
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let _tasks = self.shared.tasks.clone().drop_guard();
-        // Open (and start the background tasks of) every export known now;
-        // exports added later are opened by their first connection.
-        match self.shared.authz.snapshot() {
-            Ok(snap) => {
-                for (name, export) in &snap.exports {
-                    if let Err(e) = index_for(&self.shared, name, export) {
-                        tracing::warn!(export = %name, "{e:#}");
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("{e:#}"),
+        for (name, export, index) in &self.startup {
+            start_tasks(&self.shared, name, export, index.clone());
         }
         loop {
             tokio::select! {
@@ -180,22 +186,35 @@ impl Daemon {
     }
 }
 
-/// The index for `export`, opened on first use. Opening it also starts its
-/// GC loop and, with `warm_index`, its warm-up, both stopped by `shared.tasks`.
-fn index_for(shared: &Arc<Shared>, name: &str, export: &Export) -> Result<IndexHandle> {
+/// The index for `export`, opened on first use, which also starts its
+/// background tasks.
+fn index_for(shared: &Shared, name: &str, export: &Export) -> Result<IndexHandle> {
+    let (index, fresh) = open_index(shared, name, export)?;
+    if fresh {
+        start_tasks(shared, name, export, index.clone());
+    }
+    Ok(index)
+}
+
+/// The cached index for `export.path`, or a newly opened one (`true`).
+fn open_index(shared: &Shared, name: &str, export: &Export) -> Result<(IndexHandle, bool)> {
     let mut indexes = shared
         .indexes
         .lock()
         .map_err(|_| anyhow::anyhow!("index cache lock poisoned"))?;
     if let Some(ix) = indexes.get(&export.path) {
-        return Ok(ix.clone());
+        return Ok((ix.clone(), false));
     }
     let index = Index::open(&shared.state_dir, &export.path)
         .with_context(|| format!("open index for export {name}"))?
         .into_handle();
     indexes.insert(export.path.clone(), index.clone());
-    drop(indexes);
+    Ok((index, true))
+}
 
+/// Starts the GC loop of `index` and, with `warm_index`, its warm-up, both
+/// stopped by `shared.tasks`.
+fn start_tasks(shared: &Shared, name: &str, export: &Export, index: IndexHandle) {
     let (name, root) = (name.to_string(), export.path.clone());
     if export.warm_index {
         let (index, name, root, stop) = (
@@ -222,7 +241,7 @@ fn index_for(shared: &Arc<Shared>, name: &str, export: &Export) -> Result<IndexH
             }
         });
     }
-    let (dormant, stop, gc_index) = (shared.dormant, shared.tasks.clone(), index.clone());
+    let (dormant, stop, gc_index) = (shared.dormant, shared.tasks.clone(), index);
     tokio::spawn(async move {
         let first = tokio::time::Instant::now() + GC_FIRST_RUN;
         let mut tick = tokio::time::interval_at(first, GC_INTERVAL);
@@ -246,7 +265,6 @@ fn index_for(shared: &Arc<Shared>, name: &str, export: &Export) -> Result<IndexH
             }
         }
     });
-    Ok(index)
 }
 
 async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
@@ -426,11 +444,6 @@ pub async fn run_from_settings(
     }
     let endpoint = build_endpoint(opts).await?;
     let daemon = Daemon::new(&settings, authz, endpoint)?;
-    // Open the indexes of the startup exports now, so a broken state dir
-    // fails startup instead of every later connection.
-    for (name, export) in &snap.exports {
-        index_for(&daemon.shared, name, export)?;
-    }
     // Printed only once startup can no longer fail: a parent process that
     // reads these lines may dial at once.
     println!("endpoint id: {}", daemon.endpoint.id());
