@@ -72,8 +72,10 @@ Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
 Everything lives in `~/.config/irsync/` and every file is optional: a missing
 file is the same as an empty one. The commands below edit `hosts.toml` and
 `exports.toml` for you, preserving comments; you can also edit them by hand.
-Every command accepts `--config`, `--hosts` and `--exports` to use other
-paths (a sync takes the first two). Unknown keys are errors that name the
+The management commands (`add`, `remove`, `allow`, `revoke`, `host`, `id`,
+`show`) and `daemon` accept `--config`, `--hosts` and `--exports` to use
+other paths; a sync takes `--config` and `--hosts`, `index` takes `--config`
+and `--exports`, and `keygen` and `gc` take none. Unknown keys are errors that name the
 file, table and key.
 
 `irsync.toml`: settings for the client and the daemon. These are the defaults
