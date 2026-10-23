@@ -39,6 +39,9 @@ pub struct DaemonConfig<'a> {
 pub struct DaemonFiles {
     pub config: PathBuf,
     pub exports: PathBuf,
+    /// Never written: an absent hosts file is empty, and naming it keeps the
+    /// daemon off the user's own `hosts.toml`.
+    pub hosts: PathBuf,
 }
 
 /// A path as a quoted TOML string.
@@ -81,7 +84,11 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
         ),
     )
     .with_context(|| format!("writing {}", exports.display()))?;
-    Ok(DaemonFiles { config, exports })
+    Ok(DaemonFiles {
+        config,
+        exports,
+        hosts: dir.join("hosts.toml"),
+    })
 }
 
 /// Runs `irsync keygen --out <config_dir>/id_ed25519`; returns the private
@@ -297,7 +304,7 @@ enum StartFailure {
 
 impl Daemon {
     /// Spawns `<irsync> daemon --config <config> --exports <exports>
-    /// --listen 127.0.0.1:0` and
+    /// --hosts <hosts> --listen 127.0.0.1:0` and
     /// waits up to `timeout` for its startup lines. A child that exits first
     /// is reported at once with its status and the tail of its stderr.
     pub fn start(
@@ -314,6 +321,8 @@ impl Daemon {
                 .arg(&files.config)
                 .arg("--exports")
                 .arg(&files.exports)
+                .arg("--hosts")
+                .arg(&files.hosts)
                 .args(["--listen", "127.0.0.1:0"])
                 .env("RUST_LOG", log_level)
                 .env_remove("IRSYNC_PASSPHRASE")
@@ -493,6 +502,7 @@ mod tests {
         DaemonFiles {
             config: PathBuf::from("/dev/null"),
             exports: PathBuf::from("/dev/null"),
+            hosts: PathBuf::from("/dev/null"),
         }
     }
 
@@ -517,6 +527,7 @@ mod tests {
             DaemonFiles {
                 config: cfg.join("irsync.toml"),
                 exports: cfg.join("exports.toml"),
+                hosts: cfg.join("hosts.toml"),
             }
         );
         let read =

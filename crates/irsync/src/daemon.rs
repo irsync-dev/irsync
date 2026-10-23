@@ -257,7 +257,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     let snap = match shared.authz.snapshot() {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("{e:#}");
+            tracing::warn!(peer = %id.fmt_short(), "{e:#}");
             conn.close(1u32.into(), b"unauthorized");
             return Ok(());
         }

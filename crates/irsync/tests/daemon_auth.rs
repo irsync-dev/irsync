@@ -233,15 +233,12 @@ async fn exports_file_is_read_on_every_connection() {
         exchange_against(&daemon, &client, h.clone()).await.is_err(),
         "rejected before Hello: no grant"
     );
-    std::fs::write(
-        &exports,
-        format!(
-            "[data]\npath = {:?}\nro = [\"{}\"]\n",
-            d.path().join("data"),
-            client.id()
-        ),
-    )
-    .unwrap();
+    let grant = format!(
+        "[data]\npath = {:?}\nro = [\"{}\"]\n",
+        d.path().join("data"),
+        client.id()
+    );
+    std::fs::write(&exports, &grant).unwrap();
     std::fs::create_dir_all(d.path().join("data")).unwrap();
     assert!(matches!(
         exchange_against(&daemon, &client, h.clone()).await,
@@ -249,6 +246,11 @@ async fn exports_file_is_read_on_every_connection() {
     ));
     std::fs::write(&exports, "[x\n").unwrap(); // broken: fail closed, daemon alive
     assert!(exchange_against(&daemon, &client, h.clone()).await.is_err());
+    std::fs::write(&exports, &grant).unwrap(); // fixed again: still serving
+    assert!(matches!(
+        exchange_against(&daemon, &client, h.clone()).await,
+        Ok(HelloAckOrError::Ack(_))
+    ));
     std::fs::write(
         &exports,
         format!("[data]\npath = {:?}\n", d.path().join("data")),
