@@ -199,11 +199,11 @@ fn start_daemon<'a>(
 ) -> Result<(RunningDaemon, Syncer<'a>)> {
     let (client_config, _) = layout.client_side(cli.direction);
     let (daemon_config, daemon_data) = layout.daemon_side(cli.direction);
-    let (key, pub_line) = daemon::client_keygen(&tools.irsync.path, client_config)?;
-    let toml = daemon::write_config(&DaemonConfig {
+    let (key, _pub_line, client_id) = daemon::client_keygen(&tools.irsync.path, client_config)?;
+    let files = daemon::write_config(&DaemonConfig {
         config_dir: daemon_config,
         export_path: daemon_data,
-        authorized_pub_line: &pub_line,
+        client_id: &client_id,
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;
     // From the spawn until the pid is in the slot the handler could not
@@ -212,7 +212,7 @@ fn start_daemon<'a>(
     let blocked = signals::block();
     let daemon = Daemon::start(
         &tools.irsync.path,
-        &toml,
+        &files,
         log,
         &cli.log_level,
         STARTUP_TIMEOUT,

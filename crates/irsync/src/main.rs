@@ -10,7 +10,8 @@ use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
 use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
-use irsync::config::paths::state_dir;
+use irsync::config::paths::{state_dir, Paths};
+use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
 use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
@@ -555,13 +556,18 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
         .init();
 
     let result = (|| -> anyhow::Result<()> {
-        let mut cfg = DaemonConfig::load(d.config.as_deref())?;
+        let paths = Paths::resolve(
+            d.config.as_deref(),
+            d.hosts.as_deref(),
+            d.exports.as_deref(),
+        );
+        let mut settings = Settings::load(&paths.config)?;
         if !d.listen.is_empty() {
-            cfg.listen = d.listen.clone();
+            settings.daemon.listen = d.listen.clone();
         }
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
         if d.show_id {
-            println!("{}", irsync::daemon::show_id(&cfg, &pass)?);
+            println!("{}", irsync::daemon::show_id(&settings, &pass)?);
             return Ok(());
         }
         let rt = tokio::runtime::Runtime::new()?;
@@ -572,7 +578,7 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
                 let _ = tokio::signal::ctrl_c().await;
                 token.cancel();
             });
-            irsync::daemon::run_from_config(cfg, &pass, shutdown).await
+            irsync::daemon::run_from_settings(settings, &paths, &pass, shutdown).await
         })
     })();
     match result {

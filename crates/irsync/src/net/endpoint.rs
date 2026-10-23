@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Context;
 
 use crate::config::client::HostConfig;
-use crate::config::daemon::{DaemonConfig, RelayMode as DaemonRelayMode};
+use crate::config::settings::{DaemonSettings, RelayMode as DaemonRelayMode};
 use crate::net::addr::HostPort;
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
@@ -131,10 +131,10 @@ pub fn client_endpoint_opts(
     })
 }
 
-/// The daemon's endpoint options from its config; `bind_addrs` are the
+/// The daemon's endpoint options from its settings; `bind_addrs` are the
 /// already resolved `listen` sockets.
 pub fn daemon_endpoint_opts(
-    cfg: &DaemonConfig,
+    cfg: &DaemonSettings,
     secret: SecretKey,
     bind_addrs: Vec<SocketAddr>,
 ) -> EndpointOpts {

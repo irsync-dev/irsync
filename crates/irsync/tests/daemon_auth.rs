@@ -3,8 +3,9 @@ mod common;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use common::{client_endpoint, spawn_daemon, within};
-use irsync::authz::{Access, Grants, MemoryAuthorizer};
+use common::{client_endpoint, spawn_daemon, spawn_daemon_with, within, DaemonHandle};
+use iroh::Endpoint;
+use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
 use irsync::net::frame::{read_msg, write_msg};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello, HelloAck};
@@ -40,30 +41,43 @@ async fn exchange(access: Access, h: Hello) -> Result<HelloAckOrError, String> {
 async fn exchange_with(g: Grants, h: Hello) -> Result<HelloAckOrError, String> {
     let client = client_endpoint().await;
     let dir = tempfile::tempdir().unwrap();
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), g));
     let d = spawn_daemon(
         vec![
             ("rw", dir.path().to_path_buf(), false),
             ("ro", dir.path().to_path_buf(), true),
         ],
-        authz,
+        MemoryAuthorizer::single(client.id(), g),
     )
     .await;
-    let conn = within(client.connect(d.addr.clone(), ALPN)).await.unwrap();
-    let (mut send, mut recv) = within(conn.open_bi()).await.unwrap();
-    within(write_msg(&mut send, &h)).await.unwrap();
-    send.finish().unwrap();
+    let out = exchange_against(&d, &client, h).await;
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+    out
+}
+
+/// Sends `h` over a fresh connection to `d`; any failure (including the
+/// daemon closing the connection before the Hello) is an `Err`.
+async fn exchange_against(
+    d: &DaemonHandle,
+    client: &Endpoint,
+    h: Hello,
+) -> Result<HelloAckOrError, String> {
+    let conn = within(client.connect(d.addr.clone(), ALPN))
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut send, mut recv) = within(conn.open_bi()).await.map_err(|e| e.to_string())?;
+    within(write_msg(&mut send, &h))
+        .await
+        .map_err(|e| e.to_string())?;
+    send.finish().map_err(|e| e.to_string())?;
     let raw = within(recv.read_to_end(1 << 20))
         .await
         .map_err(|e| e.to_string())?;
     // HelloAck and Error differ in the wire type of field 1, so at most one decodes.
-    let out = match read_msg::<HelloAck, _>(&mut &raw[..]).await {
+    Ok(match read_msg::<HelloAck, _>(&mut &raw[..]).await {
         Ok(Some(ack)) => HelloAckOrError::Ack(ack),
         _ => HelloAckOrError::Err(read_msg::<Error, _>(&mut &raw[..]).await.unwrap().unwrap()),
-    };
-    d.shutdown.cancel();
-    let _ = within(d.task).await;
-    Ok(out)
+    })
 }
 
 enum HelloAckOrError {
@@ -81,23 +95,16 @@ fn expect_err(r: Result<HelloAckOrError, String>, code: Code) {
 #[tokio::test]
 async fn unauthorized_key_connection_closed_before_hello() {
     let stranger = client_endpoint().await;
-    closed_before_hello(|_| {
-        Arc::new(MemoryAuthorizer::single(
-            stranger.id(),
-            grants(Access::ReadWrite),
-        ))
-    })
-    .await;
+    closed_before_hello(|_| MemoryAuthorizer::single(stranger.id(), grants(Access::ReadWrite)))
+        .await;
 }
 
 #[tokio::test]
 async fn empty_grants_closed_before_hello() {
-    closed_before_hello(|id| Arc::new(MemoryAuthorizer::single(id, Grants::default()))).await;
+    closed_before_hello(|id| MemoryAuthorizer::single(id, Grants::default())).await;
 }
 
-async fn closed_before_hello(
-    mk: impl FnOnce(iroh::EndpointId) -> Arc<dyn irsync::authz::Authorizer>,
-) {
+async fn closed_before_hello(mk: impl FnOnce(iroh::EndpointId) -> MemoryAuthorizer) {
     let client = client_endpoint().await;
     let dir = tempfile::tempdir().unwrap();
     let authz = mk(client.id());
@@ -210,4 +217,47 @@ async fn wrong_chunk_params_rejected() {
     let mut h = hello("rw", b"", Direction::ClientSends);
     h.chunk_avg += 1;
     expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+}
+
+/// A daemon started with an empty exports file serves an export added
+/// afterwards, and stops serving a key revoked afterwards, with no restart.
+#[tokio::test]
+async fn exports_file_is_read_on_every_connection() {
+    let d = tempfile::tempdir().unwrap();
+    let (hosts, exports) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
+    let client = client_endpoint().await;
+    let authz = Arc::new(FileAuthorizer::new(hosts, exports.clone()));
+    let daemon = spawn_daemon_with(authz).await;
+    let h = hello("data", b"", Direction::DaemonSends);
+    assert!(
+        exchange_against(&daemon, &client, h.clone()).await.is_err(),
+        "rejected before Hello: no grant"
+    );
+    std::fs::write(
+        &exports,
+        format!(
+            "[data]\npath = {:?}\nro = [\"{}\"]\n",
+            d.path().join("data"),
+            client.id()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.path().join("data")).unwrap();
+    assert!(matches!(
+        exchange_against(&daemon, &client, h.clone()).await,
+        Ok(HelloAckOrError::Ack(_))
+    ));
+    std::fs::write(&exports, "[x\n").unwrap(); // broken: fail closed, daemon alive
+    assert!(exchange_against(&daemon, &client, h.clone()).await.is_err());
+    std::fs::write(
+        &exports,
+        format!("[data]\npath = {:?}\n", d.path().join("data")),
+    )
+    .unwrap();
+    assert!(
+        exchange_against(&daemon, &client, h).await.is_err(),
+        "revoked"
+    );
+    daemon.shutdown.cancel();
+    let _ = within(daemon.task).await;
 }

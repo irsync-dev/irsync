@@ -1,10 +1,10 @@
 //! The long-running side: accepts connections, checks the peer's key before reading
 //! anything, resolves and validates the requested export, then hands off to a session.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,8 +15,10 @@ use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello};
 use irsync_proto::PROTOCOL_VERSION;
 use tokio_util::sync::CancellationToken;
 
-use crate::authz::{Authorizer, FileAuthorizer, Grants};
-use crate::config::daemon::{listen_sockets, DaemonConfig, Export};
+use crate::authz::{Authorizer, FileAuthorizer, Grants, Snapshot};
+use crate::config::exports::Export;
+use crate::config::paths::Paths;
+use crate::config::settings::{listen_sockets, Settings};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
 use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
@@ -39,9 +41,14 @@ const GC_FIRST_RUN: Duration = Duration::from_secs(60);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Shared {
+    /// Consulted afresh on every connection.
     authz: Arc<dyn Authorizer>,
-    exports: BTreeMap<String, Export>,
-    indexes: HashMap<String, IndexHandle>,
+    state_dir: PathBuf,
+    /// One open index per export path, opened on first use and kept (with
+    /// its GC and warm-up tasks) even if the export is later removed.
+    indexes: Mutex<HashMap<PathBuf, IndexHandle>>,
+    /// Cancels the per-index background tasks; cancelled when `run` ends.
+    tasks: CancellationToken,
     /// Age after which dormant sessions and abandoned partial files are collected.
     dormant: Duration,
     /// Hosted sessions (one connection per session id) and test hooks.
@@ -61,27 +68,23 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Opens one index per export (under `cfg.state_dir`) and wraps `endpoint`.
+    /// Wraps `endpoint`; indexes live under `settings.state_dir` and are
+    /// opened as exports are first served.
     pub fn new(
-        cfg: DaemonConfig,
+        settings: &Settings,
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
-        let mut indexes = HashMap::new();
-        for (name, m) in &cfg.exports {
-            let ix = Index::open(&cfg.state_dir, &m.path)
-                .with_context(|| format!("open index for export {name}"))?;
-            indexes.insert(name.clone(), ix.into_handle());
-        }
         Ok(Daemon {
             endpoint,
             shared: Arc::new(Shared {
                 authz,
-                exports: cfg.exports,
-                indexes,
-                dormant: cfg.dormant_session_timeout,
+                state_dir: settings.state_dir.clone(),
+                indexes: Mutex::new(HashMap::new()),
+                tasks: CancellationToken::new(),
+                dormant: settings.daemon.dormant_session_timeout,
                 hosting: DaemonSessions {
-                    idle_timeout: Some(cfg.idle_timeout),
+                    idle_timeout: Some(settings.daemon.idle_timeout),
                     #[cfg(feature = "test-hooks")]
                     fault: Some(Arc::default()),
                     ..DaemonSessions::default()
@@ -145,56 +148,18 @@ impl Daemon {
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
-        for (name, export) in &self.shared.exports {
-            let Some(index) = self.shared.indexes.get(name).cloned() else {
-                continue;
-            };
-            let (name, root) = (name.clone(), export.path.clone());
-            if export.warm_index {
-                let (index, name, root, stop) =
-                    (index.clone(), name.clone(), root.clone(), shutdown.clone());
-                tokio::spawn(async move {
-                    let warm = crate::warm::index_root(index, &root, HASH_WORKERS, false);
-                    tokio::select! {
-                        _ = stop.cancelled() => {}
-                        r = warm => match r {
-                            Ok(r) => tracing::info!(
-                                export = %name,
-                                examined = r.examined,
-                                hashed = r.hashed,
-                                bytes = r.bytes,
-                                errors = r.errors.len(),
-                                "index warmed"
-                            ),
-                            Err(e) => tracing::warn!(export = %name, "index warm-up failed: {e}"),
-                        },
-                    }
-                });
-            }
-            let (dormant, stop) = (self.shared.dormant, shutdown.clone());
-            tokio::spawn(async move {
-                let first = tokio::time::Instant::now() + GC_FIRST_RUN;
-                let mut tick = tokio::time::interval_at(first, GC_INTERVAL);
-                loop {
-                    tokio::select! {
-                        _ = stop.cancelled() => break,
-                        _ = tick.tick() => {}
-                    }
-                    // Walks the export only when a day has passed or
-                    // collectable (dormant) partial records exist.
-                    match gc_if_due(index.clone(), &root, dormant, dormant).await {
-                        Ok(Some(r)) => tracing::info!(
-                            export = %name,
-                            parts_removed = r.parts_removed.len(),
-                            parts_kept = r.parts_kept,
-                            sessions_removed = r.sessions_removed,
-                            "gc finished"
-                        ),
-                        Ok(None) => tracing::debug!(export = %name, "gc not due"),
-                        Err(e) => tracing::warn!(export = %name, "gc failed: {e}"),
+        let _tasks = self.shared.tasks.clone().drop_guard();
+        // Open (and start the background tasks of) every export known now;
+        // exports added later are opened by their first connection.
+        match self.shared.authz.snapshot() {
+            Ok(snap) => {
+                for (name, export) in &snap.exports {
+                    if let Err(e) = index_for(&self.shared, name, export) {
+                        tracing::warn!(export = %name, "{e:#}");
                     }
                 }
-            });
+            }
+            Err(e) => tracing::warn!("{e:#}"),
         }
         loop {
             tokio::select! {
@@ -215,18 +180,94 @@ impl Daemon {
     }
 }
 
+/// The index for `export`, opened on first use. Opening it also starts its
+/// GC loop and, with `warm_index`, its warm-up, both stopped by `shared.tasks`.
+fn index_for(shared: &Arc<Shared>, name: &str, export: &Export) -> Result<IndexHandle> {
+    let mut indexes = shared
+        .indexes
+        .lock()
+        .map_err(|_| anyhow::anyhow!("index cache lock poisoned"))?;
+    if let Some(ix) = indexes.get(&export.path) {
+        return Ok(ix.clone());
+    }
+    let index = Index::open(&shared.state_dir, &export.path)
+        .with_context(|| format!("open index for export {name}"))?
+        .into_handle();
+    indexes.insert(export.path.clone(), index.clone());
+    drop(indexes);
+
+    let (name, root) = (name.to_string(), export.path.clone());
+    if export.warm_index {
+        let (index, name, root, stop) = (
+            index.clone(),
+            name.clone(),
+            root.clone(),
+            shared.tasks.clone(),
+        );
+        tokio::spawn(async move {
+            let warm = crate::warm::index_root(index, &root, HASH_WORKERS, false);
+            tokio::select! {
+                _ = stop.cancelled() => {}
+                r = warm => match r {
+                    Ok(r) => tracing::info!(
+                        export = %name,
+                        examined = r.examined,
+                        hashed = r.hashed,
+                        bytes = r.bytes,
+                        errors = r.errors.len(),
+                        "index warmed"
+                    ),
+                    Err(e) => tracing::warn!(export = %name, "index warm-up failed: {e}"),
+                },
+            }
+        });
+    }
+    let (dormant, stop, gc_index) = (shared.dormant, shared.tasks.clone(), index.clone());
+    tokio::spawn(async move {
+        let first = tokio::time::Instant::now() + GC_FIRST_RUN;
+        let mut tick = tokio::time::interval_at(first, GC_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = stop.cancelled() => break,
+                _ = tick.tick() => {}
+            }
+            // Walks the export only when a day has passed or
+            // collectable (dormant) partial records exist.
+            match gc_if_due(gc_index.clone(), &root, dormant, dormant).await {
+                Ok(Some(r)) => tracing::info!(
+                    export = %name,
+                    parts_removed = r.parts_removed.len(),
+                    parts_kept = r.parts_kept,
+                    sessions_removed = r.sessions_removed,
+                    "gc finished"
+                ),
+                Ok(None) => tracing::debug!(export = %name, "gc not due"),
+                Err(e) => tracing::warn!(export = %name, "gc failed: {e}"),
+            }
+        }
+    });
+    Ok(index)
+}
+
 async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
-    // Authorise on the verified key before touching any stream.
+    // Authorise on the verified key, against a fresh read of the grants,
+    // before touching any stream. An unreadable config fails closed.
     let id = conn.remote_id();
-    let grants = match shared.authz.grants(&id) {
-        Some(g) if !g.is_empty() => g,
-        _ => {
-            tracing::info!(peer = %id.fmt_short(), "rejecting unauthorized key");
+    let snap = match shared.authz.snapshot() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("{e:#}");
             conn.close(1u32.into(), b"unauthorized");
             return Ok(());
         }
     };
+    let grants = snap.grants(&id);
+    if grants.is_empty() {
+        tracing::info!(peer = %id.fmt_short(), "rejecting unauthorized key");
+        conn.close(1u32.into(), b"unauthorized");
+        return Ok(());
+    }
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
         let hello: Hello = read_msg(&mut recv)
@@ -246,14 +287,10 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
         .hellos
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    match validate(&shared, &grants, &hello) {
+    match validate(&snap, &grants, &hello) {
         Ok(export) => {
             let root = export.path.clone();
-            let index = shared
-                .indexes
-                .get(&hello.export)
-                .context("export has no index")?
-                .clone();
+            let index = index_for(&shared, &hello.export, export)?;
             let hosting = shared.hosting.clone();
             let res = serve_daemon(conn, send, recv, root, hello, index, hosting).await;
             #[cfg(feature = "test-hooks")]
@@ -279,7 +316,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
 }
 
 fn validate<'a>(
-    shared: &'a Shared,
+    snap: &'a Snapshot,
     grants: &Grants,
     hello: &Hello,
 ) -> Result<&'a Export, (Code, String)> {
@@ -297,7 +334,7 @@ fn validate<'a>(
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
     }
-    let Some(export) = shared.exports.get(&hello.export) else {
+    let Some(export) = snap.exports.get(&hello.export) else {
         return Err((
             Code::NoSuchExport,
             format!("no such export {:?}", hello.export),
@@ -357,28 +394,46 @@ fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<Sec
 
 /// The daemon's EndpointId as a string, generating the identity if missing.
 /// `pass` unlocks an encrypted identity.
-pub fn show_id(cfg: &DaemonConfig, pass: &PassphraseSource) -> Result<String> {
-    Ok(load_or_generate_identity(&cfg.identity, pass)?
+pub fn show_id(settings: &Settings, pass: &PassphraseSource) -> Result<String> {
+    Ok(load_or_generate_identity(&settings.daemon.identity, pass)?
         .public()
         .to_string())
 }
 
-pub async fn run_from_config(
-    cfg: DaemonConfig,
+/// Runs the daemon: grants and exports are read from `paths.hosts` and
+/// `paths.exports` on every connection.
+pub async fn run_from_settings(
+    settings: Settings,
+    paths: &Paths,
     pass: &PassphraseSource,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    let secret = load_or_generate_identity(&cfg.identity, pass)?;
-    let authz = Arc::new(FileAuthorizer::load(&cfg.authorized_keys)?);
-    let bind_addrs = listen_sockets(&cfg.listen).await?;
-    let opts = daemon_endpoint_opts(&cfg, secret, bind_addrs);
-    if cfg.discovery.dht && opts.relay == RelayChoice::Disabled {
+    let secret = load_or_generate_identity(&settings.daemon.identity, pass)?;
+    let authz = Arc::new(FileAuthorizer::new(
+        paths.hosts.clone(),
+        paths.exports.clone(),
+    ));
+    let snap = authz.snapshot()?;
+    if snap.exports.is_empty() {
+        tracing::warn!(
+            "no exports defined in {}; run irsync add",
+            paths.exports.display()
+        );
+    }
+    let bind_addrs = listen_sockets(&settings.daemon.listen).await?;
+    let opts = daemon_endpoint_opts(&settings.daemon, secret, bind_addrs);
+    if settings.daemon.discovery.dht && opts.relay == RelayChoice::Disabled {
         tracing::warn!(
             "dht is enabled but relays are disabled: DHT records will carry no addresses"
         );
     }
     let endpoint = build_endpoint(opts).await?;
-    let daemon = Daemon::new(cfg, authz, endpoint)?;
+    let daemon = Daemon::new(&settings, authz, endpoint)?;
+    // Open the indexes of the startup exports now, so a broken state dir
+    // fails startup instead of every later connection.
+    for (name, export) in &snap.exports {
+        index_for(&daemon.shared, name, export)?;
+    }
     // Printed only once startup can no longer fail: a parent process that
     // reads these lines may dial at once.
     println!("endpoint id: {}", daemon.endpoint.id());

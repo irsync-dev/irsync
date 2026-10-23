@@ -46,7 +46,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     std::fs::write(tmp.join("src/sub/b.bin"), bytes(64 * 1024)).unwrap();
     std::fs::write(tmp.join("empty_config"), b"").unwrap();
 
-    // Client identity; line 1 of keygen's output is the public key line.
+    // Client identity; line 2 of keygen's output is its EndpointId.
     let key = tmp.join("client_key");
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["keygen", "--out"])
@@ -54,29 +54,30 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let pub_line = String::from_utf8(o.stdout)
+    let client_id = String::from_utf8(o.stdout)
         .unwrap()
         .lines()
-        .next()
+        .nth(1)
         .unwrap()
         .to_string();
-    std::fs::write(
-        tmp.join("authorized_keys"),
-        format!("exports=\"m:rw\" {pub_line}\n"),
-    )
-    .unwrap();
 
     std::fs::write(
         tmp.join("d.toml"),
         format!(
-            "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n\
+            "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
-             [discovery]\ndht = false\ndns = false\nmdns = false\n\
-             [exports.m]\npath = {:?}\n",
-            tmp.join("daemon_key"),
-            tmp.join("authorized_keys"),
+             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
+            tmp.join("daemon_key"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("exports.toml"),
+        format!(
+            "[m]\npath = {:?}\nrw = [\"{}\"]\n",
             tmp.join("dst"),
+            client_id
         ),
     )
     .unwrap();
@@ -84,6 +85,10 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
         .arg(tmp.join("d.toml"))
+        .arg("--hosts")
+        .arg(tmp.join("hosts.toml"))
+        .arg("--exports")
+        .arg(tmp.join("exports.toml"))
         .args(["--listen", "127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -208,24 +213,29 @@ fn no_listening_line_when_startup_fails_after_bind() {
     std::fs::create_dir_all(tmp.join("dst")).unwrap();
     // state_dir is a regular file, so opening the export index fails.
     std::fs::write(tmp.join("state"), b"not a directory").unwrap();
-    std::fs::write(tmp.join("authorized_keys"), b"").unwrap();
     std::fs::write(
         tmp.join("d.toml"),
         format!(
-            "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n\
+            "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
-             [discovery]\ndht = false\ndns = false\nmdns = false\n\
-             [exports.m]\npath = {:?}\n",
-            tmp.join("daemon_key"),
-            tmp.join("authorized_keys"),
+             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
-            tmp.join("dst"),
+            tmp.join("daemon_key"),
         ),
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("exports.toml"),
+        format!("[m]\npath = {:?}\n", tmp.join("dst")),
     )
     .unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
         .arg(tmp.join("d.toml"))
+        .arg("--hosts")
+        .arg(tmp.join("hosts.toml"))
+        .arg("--exports")
+        .arg(tmp.join("exports.toml"))
         .args(["--listen", "127.0.0.1:0"])
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null())

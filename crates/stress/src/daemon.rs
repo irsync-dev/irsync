@@ -30,7 +30,15 @@ const DRAIN: Duration = Duration::from_secs(1);
 pub struct DaemonConfig<'a> {
     pub config_dir: &'a Path,
     pub export_path: &'a Path,
-    pub authorized_pub_line: &'a str,
+    /// The client's EndpointId, granted read-write on the export.
+    pub client_id: &'a str,
+}
+
+/// The files [`write_config`] wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DaemonFiles {
+    pub config: PathBuf,
+    pub exports: PathBuf,
 }
 
 /// A path as a quoted TOML string.
@@ -41,43 +49,44 @@ fn toml_path(p: &Path) -> Result<String> {
     Ok(toml::Value::String(s.to_string()).to_string())
 }
 
-/// Writes `<config_dir>/irsyncd.toml` and `<config_dir>/authorized_keys`,
-/// creates `<config_dir>/state`, and returns the toml path.
-pub fn write_config(c: &DaemonConfig) -> Result<PathBuf> {
+/// Writes `<config_dir>/irsync.toml` and `<config_dir>/exports.toml`
+/// (export `data`, read-write for the client), creates `<config_dir>/state`,
+/// and returns both paths.
+pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
     let dir = c.config_dir;
     let state = dir.join("state");
     std::fs::create_dir_all(&state).with_context(|| format!("creating {}", state.display()))?;
-    let toml = format!(
-        "identity = {}\n\
-         authorized_keys = {}\n\
-         state_dir = {}\n\
+    let settings = format!(
+        "state_dir = {}\n\
+         [daemon]\n\
+         identity = {}\n\
          relay_mode = \"disabled\"\n\
          portmap = false\n\
-         [discovery]\n\
+         [daemon.discovery]\n\
          dht = false\n\
          dns = false\n\
-         mdns = false\n\
-         [exports.data]\n\
-         path = {}\n",
-        toml_path(&dir.join("daemon_ed25519"))?,
-        toml_path(&dir.join("authorized_keys"))?,
+         mdns = false\n",
         toml_path(&state)?,
-        toml_path(c.export_path)?,
+        toml_path(&dir.join("daemon_ed25519"))?,
     );
-    let toml_file = dir.join("irsyncd.toml");
-    std::fs::write(&toml_file, toml).with_context(|| format!("writing {}", toml_file.display()))?;
-    let keys = dir.join("authorized_keys");
+    let config = dir.join("irsync.toml");
+    std::fs::write(&config, settings).with_context(|| format!("writing {}", config.display()))?;
+    let exports = dir.join("exports.toml");
     std::fs::write(
-        &keys,
-        format!("exports=\"data:rw\" {}\n", c.authorized_pub_line),
+        &exports,
+        format!(
+            "[data]\npath = {}\nrw = [{}]\n",
+            toml_path(c.export_path)?,
+            toml::Value::String(c.client_id.to_string())
+        ),
     )
-    .with_context(|| format!("writing {}", keys.display()))?;
-    Ok(toml_file)
+    .with_context(|| format!("writing {}", exports.display()))?;
+    Ok(DaemonFiles { config, exports })
 }
 
 /// Runs `irsync keygen --out <config_dir>/id_ed25519`; returns the private
-/// key path and the first stdout line, the public key line.
-pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String)> {
+/// key path, the public key line (stdout line 1) and the EndpointId (line 2).
+pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String, String)> {
     let key = config_dir.join("id_ed25519");
     let out = process::output(
         Command::new(irsync)
@@ -97,13 +106,18 @@ pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, Strin
         );
     }
     let stdout = String::from_utf8(out.stdout).context("irsync keygen: stdout is not UTF-8")?;
-    let pub_line = stdout
-        .lines()
+    let mut lines = stdout.lines().map(str::trim);
+    let pub_line = lines
         .next()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.is_empty())
         .ok_or_else(|| anyhow!("irsync keygen printed no public key line"))?
         .to_string();
-    Ok((key, pub_line))
+    let id = lines
+        .next()
+        .filter(|l| !l.is_empty())
+        .ok_or_else(|| anyhow!("irsync keygen printed no endpoint id line"))?
+        .to_string();
+    Ok((key, pub_line, id))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -282,12 +296,13 @@ enum StartFailure {
 }
 
 impl Daemon {
-    /// Spawns `<irsync> daemon --config <toml> --listen 127.0.0.1:0` and
+    /// Spawns `<irsync> daemon --config <config> --exports <exports>
+    /// --listen 127.0.0.1:0` and
     /// waits up to `timeout` for its startup lines. A child that exits first
     /// is reported at once with its status and the tail of its stderr.
     pub fn start(
         irsync: &Path,
-        toml: &Path,
+        files: &DaemonFiles,
         log: DaemonLog,
         log_level: &str,
         timeout: Duration,
@@ -296,7 +311,9 @@ impl Daemon {
             Command::new(irsync)
                 .arg("daemon")
                 .arg("--config")
-                .arg(toml)
+                .arg(&files.config)
+                .arg("--exports")
+                .arg(&files.exports)
                 .args(["--listen", "127.0.0.1:0"])
                 .env("RUST_LOG", log_level)
                 .env_remove("IRSYNC_PASSPHRASE")
@@ -472,42 +489,55 @@ mod tests {
         rx
     }
 
+    fn dev_null() -> DaemonFiles {
+        DaemonFiles {
+            config: PathBuf::from("/dev/null"),
+            exports: PathBuf::from("/dev/null"),
+        }
+    }
+
     fn chmod_755(p: &Path) {
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
-    fn write_config_writes_toml_and_authorized_keys() {
+    fn write_config_writes_settings_and_exports() {
         let t = tempfile::tempdir().unwrap();
         let cfg = t.path().join("cfg");
         std::fs::create_dir(&cfg).unwrap();
         let export = t.path().join("mod \"q\"");
-        let toml_path = write_config(&DaemonConfig {
+        let files = write_config(&DaemonConfig {
             config_dir: &cfg,
             export_path: &export,
-            authorized_pub_line: "ssh-ed25519 AAAA test",
+            client_id: "abc",
         })
         .unwrap();
-        assert_eq!(toml_path, cfg.join("irsyncd.toml"));
-        let parsed: toml::Table = std::fs::read_to_string(&toml_path)
-            .unwrap()
-            .parse()
-            .unwrap();
-        let s = |p: PathBuf| toml::Value::String(p.to_str().unwrap().to_string());
-        assert_eq!(parsed["identity"], s(cfg.join("daemon_ed25519")));
-        assert_eq!(parsed["authorized_keys"], s(cfg.join("authorized_keys")));
-        assert_eq!(parsed["state_dir"], s(cfg.join("state")));
-        assert_eq!(parsed["relay_mode"].as_str(), Some("disabled"));
-        assert_eq!(parsed["portmap"].as_bool(), Some(false));
-        for k in ["dht", "dns", "mdns"] {
-            assert_eq!(parsed["discovery"][k].as_bool(), Some(false));
-        }
-        assert_eq!(parsed["exports"]["data"]["path"], s(export));
-        assert!(cfg.join("state").is_dir());
         assert_eq!(
-            std::fs::read_to_string(cfg.join("authorized_keys")).unwrap(),
-            "exports=\"data:rw\" ssh-ed25519 AAAA test\n"
+            files,
+            DaemonFiles {
+                config: cfg.join("irsync.toml"),
+                exports: cfg.join("exports.toml"),
+            }
         );
+        let read =
+            |p: &Path| -> toml::Table { std::fs::read_to_string(p).unwrap().parse().unwrap() };
+        let s = |p: PathBuf| toml::Value::String(p.to_str().unwrap().to_string());
+        let parsed = read(&files.config);
+        assert_eq!(parsed["state_dir"], s(cfg.join("state")));
+        let d = &parsed["daemon"];
+        assert_eq!(d["identity"], s(cfg.join("daemon_ed25519")));
+        assert_eq!(d["relay_mode"].as_str(), Some("disabled"));
+        assert_eq!(d["portmap"].as_bool(), Some(false));
+        for k in ["dht", "dns", "mdns"] {
+            assert_eq!(d["discovery"][k].as_bool(), Some(false));
+        }
+        let exports = read(&files.exports);
+        assert_eq!(exports["data"]["path"], s(export));
+        assert_eq!(
+            exports["data"]["rw"],
+            toml::Value::Array(vec![toml::Value::String("abc".into())])
+        );
+        assert!(cfg.join("state").is_dir());
     }
 
     #[test]
@@ -565,15 +595,9 @@ mod tests {
         chmod_755(&fake);
         let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
         let started = Instant::now();
-        let err = Daemon::start(
-            &fake,
-            Path::new("/dev/null"),
-            log,
-            "debug",
-            Duration::from_secs(15),
-        )
-        .unwrap_err()
-        .to_string();
+        let err = Daemon::start(&fake, &dev_null(), log, "debug", Duration::from_secs(15))
+            .unwrap_err()
+            .to_string();
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(
             err.contains("exit") && err.contains("config error"),
@@ -596,14 +620,8 @@ mod tests {
         .unwrap();
         chmod_755(&fake);
         let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
-        let mut d = Daemon::start(
-            &fake,
-            Path::new("/dev/null"),
-            log,
-            "debug",
-            Duration::from_secs(15),
-        )
-        .unwrap();
+        let mut d =
+            Daemon::start(&fake, &dev_null(), log, "debug", Duration::from_secs(15)).unwrap();
         let pid = d.pid();
         d.stop(Duration::from_millis(500));
         assert!(nix::sys::signal::kill(Pid::from_raw(pid as i32), None).is_err());
@@ -633,14 +651,8 @@ mod tests {
         .unwrap();
         chmod_755(&fake);
         let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
-        let mut d = Daemon::start(
-            &fake,
-            Path::new("/dev/null"),
-            log,
-            "debug",
-            Duration::from_secs(15),
-        )
-        .unwrap();
+        let mut d =
+            Daemon::start(&fake, &dev_null(), log, "debug", Duration::from_secs(15)).unwrap();
         assert_eq!(d.startup.endpoint_id, "x");
         let deadline = Instant::now() + Duration::from_secs(5);
         let err = loop {

@@ -218,10 +218,9 @@ fn daemon_show_id_prints_only_the_id() {
     std::fs::write(
         &cfg,
         format!(
-            "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n",
-            dir.path().join("id"),
-            dir.path().join("ak"),
-            dir.path().join("state")
+            "state_dir = {:?}\n[daemon]\nidentity = {:?}\n",
+            dir.path().join("state"),
+            dir.path().join("id")
         ),
     )
     .unwrap();

@@ -218,27 +218,23 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
 
 #[test]
 fn daemon_opts_follow_the_isolated_config() {
-    use irsync::config::daemon::DaemonConfig;
+    use irsync::config::settings::Settings;
     use irsync::net::{daemon_endpoint_opts, RelayChoice};
-    let cfg = DaemonConfig::parse(
-        "listen = [\"127.0.0.1:0\"]\nrelay_mode = \"disabled\"\nportmap = false\n\
-         [discovery]\ndht = false\ndns = false\nmdns = false\n",
-    )
-    .unwrap();
+    let parse = |t: &str| Settings::parse(t, std::path::Path::new("irsync.toml")).unwrap();
+    let cfg = parse(
+        "[daemon]\nlisten = [\"127.0.0.1:0\"]\nrelay_mode = \"disabled\"\nportmap = false\n\
+         [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+    );
     let bind = vec!["127.0.0.1:0".parse().unwrap()];
-    let o = daemon_endpoint_opts(&cfg, SecretKey::generate(), bind.clone());
+    let o = daemon_endpoint_opts(&cfg.daemon, SecretKey::generate(), bind.clone());
     assert_eq!(o.relay, RelayChoice::Disabled);
     assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && o.publish);
     assert_eq!(o.bind_addrs, bind);
-    let o = daemon_endpoint_opts(
-        &DaemonConfig::parse("").unwrap(),
-        SecretKey::generate(),
-        vec![],
-    );
+    let o = daemon_endpoint_opts(&parse("").daemon, SecretKey::generate(), vec![]);
     assert_eq!(o.relay, RelayChoice::N0Default);
     assert!(o.dht && o.dns && o.mdns && o.portmap && o.publish && o.bind_addrs.is_empty());
     let o = daemon_endpoint_opts(
-        &DaemonConfig::parse("relay = \"https://r.example\"\n").unwrap(),
+        &parse("[daemon]\nrelay = \"https://r.example\"\n").daemon,
         SecretKey::generate(),
         vec![],
     );

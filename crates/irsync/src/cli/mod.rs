@@ -143,6 +143,12 @@ pub struct IndexArgs {
 pub struct DaemonArgs {
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// The host aliases file (default: hosts.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub hosts: Option<PathBuf>,
+    /// The exports file (default: exports.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub exports: Option<PathBuf>,
     #[arg(long)]
     pub show_id: bool,
     #[arg(long)]

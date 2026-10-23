@@ -234,6 +234,21 @@ fn multiple_sources_with_remote_source_rejected() {
 }
 
 #[test]
+fn daemon_hosts_and_exports_flags_parse() {
+    match parse(&["daemon", "--hosts", "h.toml", "--exports", "e.toml"]).cmd {
+        Some(Command::Daemon(d)) => {
+            assert_eq!(d.hosts, Some(PathBuf::from("h.toml")));
+            assert_eq!(d.exports, Some(PathBuf::from("e.toml")));
+        }
+        c => panic!("{c:?}"),
+    }
+    match parse(&["daemon"]).cmd {
+        Some(Command::Daemon(d)) => assert!(d.hosts.is_none() && d.exports.is_none()),
+        c => panic!("{c:?}"),
+    }
+}
+
+#[test]
 fn daemon_listen_flag_repeats() {
     match parse(&["daemon", "--listen", "127.0.0.1:0", "--listen", "[::1]:0"]).cmd {
         Some(Command::Daemon(d)) => assert_eq!(d.listen.len(), 2),

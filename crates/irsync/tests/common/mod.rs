@@ -155,9 +155,9 @@ impl DaemonHandle {
 /// Starts a daemon on a loopback endpoint serving `exports` (name -> (path, read_only)).
 pub async fn spawn_daemon(
     exports: Vec<(&str, std::path::PathBuf, bool)>,
-    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+    authz: irsync::authz::MemoryAuthorizer,
 ) -> DaemonHandle {
-    use irsync::config::daemon::Export;
+    use irsync::config::exports::Export;
     let exports = exports
         .into_iter()
         .map(|(name, path, read_only)| {
@@ -167,6 +167,8 @@ pub async fn spawn_daemon(
                     path,
                     read_only,
                     warm_index: false,
+                    rw: Vec::new(),
+                    ro: Vec::new(),
                 },
             )
         })
@@ -176,21 +178,29 @@ pub async fn spawn_daemon(
 
 /// Starts a daemon on a loopback endpoint serving `exports` as configured.
 pub async fn spawn_daemon_exports(
-    exports: Vec<(&str, irsync::config::daemon::Export)>,
+    exports: Vec<(&str, irsync::config::exports::Export)>,
+    authz: irsync::authz::MemoryAuthorizer,
+) -> DaemonHandle {
+    let map = exports
+        .into_iter()
+        .map(|(name, export)| (name.to_string(), export))
+        .collect();
+    spawn_daemon_with(std::sync::Arc::new(authz.with_exports(map))).await
+}
+
+/// Starts a daemon on a loopback endpoint whose exports and grants come from `authz`.
+pub async fn spawn_daemon_with(
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
 ) -> DaemonHandle {
-    use irsync::config::daemon::DaemonConfig;
+    use irsync::config::settings::Settings;
     let state = tempfile::tempdir().unwrap();
-    let mut cfg = DaemonConfig {
+    let settings = Settings {
         state_dir: state.path().to_path_buf(),
-        ..DaemonConfig::default()
+        ..Settings::default()
     };
-    for (name, export) in exports {
-        cfg.exports.insert(name.to_string(), export);
-    }
     let ep = loopback_endpoint().await;
     let (addr, id) = (addr_of(&ep), ep.id());
-    let daemon = irsync::daemon::Daemon::new(cfg, authz, ep).expect("daemon");
+    let daemon = irsync::daemon::Daemon::new(&settings, authz, ep).expect("daemon");
     let hellos = daemon.hello_counter();
     let (sessions, hashed) = daemon.session_counters();
     let fault = daemon.fault_injector();
@@ -290,13 +300,13 @@ impl Harness {
             all: Some(Access::ReadWrite),
             ..Grants::default()
         };
-        let authz = std::sync::Arc::new(
-            MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants),
-        );
-        let m = irsync::config::daemon::Export {
+        let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);
+        let m = irsync::config::exports::Export {
             path: export.path().to_path_buf(),
             read_only: false,
             warm_index,
+            rw: Vec::new(),
+            ro: Vec::new(),
         };
         let daemon = spawn_daemon_exports(vec![("m", m)], authz).await;
         let h = Harness {
