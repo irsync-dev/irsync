@@ -10,6 +10,7 @@ use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
 use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
+use irsync::config::paths::state_dir;
 use irsync::filter::FilterSet;
 use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
@@ -244,13 +245,6 @@ fn verb(dry_run: bool) -> &'static str {
     } else {
         "removed"
     }
-}
-
-fn state_dir() -> PathBuf {
-    dirs::state_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("irsync")
 }
 
 /// The daemon's EndpointId: from the client config's `Host` block, else the
