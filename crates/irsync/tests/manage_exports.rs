@@ -40,7 +40,7 @@ fn allow_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
     assert!(doc["p"]["rw"].as_array().unwrap().is_empty());
     assert_eq!(doc["p"]["ro"].as_array().unwrap().len(), 1);
     allow(&mut doc, Some("p"), &PeerSpec::Id { id: id(2), comment: Some("mike@laptop".into()) }, false, &resolve).unwrap();
-    assert!(doc.to_string().contains(&format!("\"{}\", # mike@laptop", id(2))) || doc.to_string().contains(&format!("\"{}\" # mike@laptop", id(2))), "{doc}");
+    assert!(doc.to_string().contains(&format!("rw = [\"{}\", # mike@laptop\n]", id(2))), "{doc}");
     allow(&mut doc, None, &peer(3), true, &resolve).unwrap();                                   // top level
     assert_eq!(doc["ro"].as_array().unwrap().get(0).unwrap().as_str(), Some(id(3).to_string().as_str()));
     assert!(matches!(allow(&mut doc, Some("zz"), &peer(3), false, &resolve), Err(ManageError::NotFound(_))));
@@ -71,4 +71,37 @@ fn add_target_forms() {
     assert_eq!(parse_add_target(d.path().join("docs").to_str().unwrap(), Path::new("/elsewhere")).unwrap().0, "docs");
     assert!(matches!(parse_add_target("x:f", d.path()), Err(ManageError::NotADirectory(_))));
     assert!(matches!(parse_add_target("x:missing", d.path()), Err(ManageError::NotADirectory(_))));
+}
+
+#[test]
+fn a_second_allow_after_a_comment_keeps_the_comment_and_valid_toml() {
+    let mut doc: DocumentMut = "[p]\npath = \"/p\"\n".parse().unwrap();
+    let none = |_: &str| None;
+    allow(&mut doc, Some("p"), &PeerSpec::Id { id: id(1), comment: Some("c1".into()) }, false, &none).unwrap();
+    allow(&mut doc, Some("p"), &peer(2), false, &none).unwrap();
+    let text = doc.to_string();
+    let x = irsync::config::exports::Exports::parse(&text, Path::new("e")).unwrap();
+    assert_eq!(x.exports["p"].rw.len(), 2, "{text}");
+    assert!(text.contains(&format!("\"{}\", # c1\n", id(1))), "{text}");
+}
+
+#[test]
+fn revoke_matches_a_dangling_alias_by_literal_text() {
+    let mut doc: DocumentMut = "[p]\npath = \"/p\"\nrw = [\"gone\"]\n".parse().unwrap();
+    let none = |_: &str| None;
+    assert_eq!(revoke(&mut doc, None, Some(&PeerSpec::Alias("gone".into())), &none).unwrap(), 1);
+}
+
+#[test]
+fn add_target_edge_cases() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("a:b")).unwrap();
+    std::fs::create_dir_all(d.path().join("sub/x")).unwrap();
+    assert!(matches!(parse_add_target(":docs", d.path()), Err(ManageError::BadName(_))));
+    let abs = d.path().join("a:b");
+    assert_eq!(parse_add_target(abs.to_str().unwrap(), Path::new("/elsewhere")).unwrap(), ("a:b".into(), abs));
+    let sub = d.path().join("sub");
+    assert_eq!(parse_add_target("..", &sub.join("x")).unwrap(), ("sub".into(), sub.clone()));
+    assert_eq!(parse_add_target("./x", &sub).unwrap(), ("x".into(), sub.join("x")));
+    assert_eq!(parse_add_target("../sub/x", &sub).unwrap(), ("x".into(), sub.join("x")));
 }

@@ -6,7 +6,7 @@ use super::{ManageError, PeerSpec};
 use crate::config::exports::RESERVED;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
@@ -195,14 +195,32 @@ pub fn revoke(
     Ok(n)
 }
 
-/// `NAME:PATH` or a bare `PATH` (named by its final component); the path
-/// is made absolute against `cwd` and must be an existing directory.
+/// `NAME:PATH` or a bare `PATH` (named by its final component). The text
+/// before the first `:` is a name only when it contains no `/`. The path is
+/// joined onto `cwd`, `.` and `..` are resolved lexically (symlinks are
+/// left alone), and it must be an existing directory.
 pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), ManageError> {
     let (name, raw) = match arg.split_once(':') {
-        Some((n, p)) => (Some(n.to_string()), p),
-        None => (None, arg),
+        Some((n, p)) if !n.contains('/') => {
+            if n.is_empty() {
+                return Err(ManageError::BadName(n.to_string()));
+            }
+            (Some(n.to_string()), p)
+        }
+        _ => (None, arg),
     };
-    let path = cwd.join(raw);
+    let mut path = PathBuf::new();
+    for c in cwd.join(raw).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !path.pop() {
+                    path.push(c);
+                }
+            }
+            c => path.push(c),
+        }
+    }
     if !path.is_dir() {
         return Err(ManageError::NotADirectory(path));
     }

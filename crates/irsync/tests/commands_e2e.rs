@@ -13,6 +13,24 @@ fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn revoke_removes_an_alias_that_left_hosts_toml() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("srv/p")).unwrap();
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+    std::fs::write(cfg.join("hosts.toml"), format!("[laptop]\nendpoint_id = \"{id}\"\n")).unwrap();
+    let target = format!("p:{}", home.join("srv/p").display());
+    assert!(irsync(&home, &["add", &target]).status.success());
+    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
+    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    let o = irsync(&home, &["revoke", "laptop"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!std::fs::read_to_string(cfg.join("exports.toml")).unwrap().contains("laptop"));
+}
+
+#[test]
 fn add_allow_revoke_remove_round_trip_with_default_paths() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");

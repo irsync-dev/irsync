@@ -22,6 +22,8 @@ pub enum ManageError {
     Exists(String),
     #[error("no such entry {0:?}")]
     NotFound(String),
+    #[error("{0:?} is not a valid export name")]
+    BadName(String),
     #[error("{0:?} is a reserved name (rw, ro, all)")]
     Reserved(String),
     #[error("{0:?} is not a valid alias: must not contain ':' or '/' and must not be an EndpointId")]

@@ -725,7 +725,16 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
                 ),
                 _ => bail!("expected WHO or EXPORT WHO"),
             };
-            let spec = who.map(|w| PeerSpec::parse(w, &hosts)).transpose()?;
+            // Text that names no known peer still matches entries literally
+            // (an alias no longer in hosts.toml).
+            let spec = match who.map(|w| (w, PeerSpec::parse(w, &hosts))) {
+                None => None,
+                Some((_, Ok(s))) => Some(s),
+                Some((w, Err(manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))))) => {
+                    Some(PeerSpec::Alias(w.to_string()))
+                }
+                Some((_, Err(e))) => return Err(e.into()),
+            };
             let mut doc = manage::load_doc(&paths.exports)?;
             let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)?;
             manage::save_doc(&paths.exports, &doc)?;
