@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 
-use crate::config::client::HostConfig;
-use crate::config::settings::{DaemonSettings, RelayMode as DaemonRelayMode};
+use crate::config::hosts::HostEntry;
+use crate::config::settings::{ClientSettings, DaemonSettings, RelayMode as DaemonRelayMode};
 use crate::net::addr::HostPort;
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
@@ -97,24 +97,35 @@ pub fn transport_config() -> QuicTransportConfig {
 }
 
 /// The client's endpoint options. Any address in `addresses` (from the
-/// command line, else the host's config) means isolated mode: no relay, no
+/// command line, else the host entry) means isolated mode: no relay, no
 /// lookups, no port mapper, whatever `cli_relay` is absent and the config
-/// says. Without addresses: the relay from `cli_relay`, else the config,
-/// else n0's; lookups as configured.
+/// says. Without addresses: the relay from `cli_relay`, else the host entry,
+/// else the client settings, else n0's; lookups likewise (host entry, then
+/// client settings, then on).
 pub fn client_endpoint_opts(
     secret: SecretKey,
     cli_relay: Option<&str>,
     no_dht: bool,
-    hc: &HostConfig,
+    client: &ClientSettings,
+    host: Option<&HostEntry>,
     addresses: &[HostPort],
 ) -> anyhow::Result<EndpointOpts> {
+    let host_relay = host.and_then(|h| h.relay.as_ref());
+    let host_dht = host.and_then(|h| h.dht);
+    let host_mdns = host.and_then(|h| h.mdns);
     if !addresses.is_empty() {
-        if hc.relay.is_some() || hc.dht.is_some() || hc.mdns.is_some() {
-            tracing::debug!("Address given: ignoring Relay/Dht/Mdns from the client config");
+        if host_relay.is_some()
+            || host_dht.is_some()
+            || host_mdns.is_some()
+            || client.relay.is_some()
+            || client.dht.is_some()
+            || client.mdns.is_some()
+        {
+            tracing::debug!("address given: ignoring relay/dht/mdns from the config");
         }
         return Ok(EndpointOpts::isolated(secret));
     }
-    let relay = match (cli_relay, &hc.relay) {
+    let relay = match (cli_relay, host_relay.or(client.relay.as_ref())) {
         (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
         (None, Some(u)) => RelayChoice::Custom(u.clone()),
         (None, None) => RelayChoice::N0Default,
@@ -122,9 +133,9 @@ pub fn client_endpoint_opts(
     Ok(EndpointOpts {
         secret,
         relay,
-        dht: !no_dht && hc.dht.unwrap_or(true),
+        dht: !no_dht && host_dht.or(client.dht).unwrap_or(true),
         dns: true,
-        mdns: hc.mdns.unwrap_or(true),
+        mdns: host_mdns.or(client.mdns).unwrap_or(true),
         publish: false,
         bind_addrs: Vec::new(),
         portmap: true,

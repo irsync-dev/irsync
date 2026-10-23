@@ -21,7 +21,7 @@ use crate::config::paths::Paths;
 use crate::config::settings::{listen_sockets, Settings};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
-use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
+use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
@@ -382,14 +382,11 @@ async fn reject(
 }
 
 fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<SecretKey> {
-    if !path.exists() {
-        tracing::info!(path = %path.display(), "generating daemon identity");
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        return Ok(generate_openssh(path, "irsync-daemon")?);
+    let (secret, generated) = crate::identity::load_or_generate(path, pass, "irsync-daemon")?;
+    if generated {
+        tracing::info!(path = %path.display(), "generated daemon identity");
     }
-    Ok(load_identity_interactive(path, pass)?)
+    Ok(secret)
 }
 
 /// The daemon's EndpointId as a string, generating the identity if missing.

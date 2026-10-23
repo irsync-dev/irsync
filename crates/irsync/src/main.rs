@@ -8,12 +8,12 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
-use irsync::config::client::{ClientConfig, HostConfig};
 use irsync::config::daemon::DaemonConfig;
+use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
-use irsync::identity::{load_identity_interactive, parse_endpoint_id, PassphraseSource};
+use irsync::identity::{load_or_generate, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
@@ -248,14 +248,23 @@ fn verb(dry_run: bool) -> &'static str {
     }
 }
 
-/// The daemon's EndpointId: from the client config's `Host` block, else the
-/// host string itself must be an EndpointId.
-fn resolve_target(hc: &HostConfig, host: &str) -> anyhow::Result<EndpointId> {
-    match hc.endpoint_id {
-        Some(id) => Ok(id),
-        None => parse_endpoint_id(host)
-            .with_context(|| format!("{host:?} is neither a configured host nor an EndpointId")),
+/// The daemon's EndpointId: an alias from `hosts.toml`, else the host
+/// string itself must be an EndpointId.
+fn resolve_target(hosts: &Hosts, host: &str) -> anyhow::Result<EndpointId> {
+    if let Some(entry) = hosts.get(host) {
+        return Ok(entry.endpoint_id);
     }
+    parse_endpoint_id(host).map_err(|_| {
+        let missing = if hosts.path.exists() {
+            ""
+        } else {
+            "; no such file"
+        };
+        anyhow::anyhow!(
+            "{host:?} is not an alias in {} and not an EndpointId{missing}",
+            hosts.path.display()
+        )
+    })
 }
 
 /// What all sessions of one invocation did together.
@@ -283,20 +292,25 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         bail!("internal: no remote location");
     };
 
-    let cfg = ClientConfig::load(opts.config.as_deref())?;
-    let hc = cfg.resolve(host);
-    // The host's config fills in what the command line left out.
+    let paths = Paths::resolve(opts.config.as_deref(), opts.hosts.as_deref(), None);
+    let settings = Settings::load(&paths.config)?;
+    let hosts = Hosts::load(&paths.hosts)?;
+    let host_entry = hosts.get(host);
+    let target = resolve_target(&hosts, host)?;
+    // Precedence: command line, then the host entry, then the client
+    // settings, then the built-in default.
     let mut opts = opts.clone();
     if opts.parallel.is_none() {
-        opts.parallel = hc.parallel;
+        opts.parallel = host_entry
+            .and_then(|h| h.parallel)
+            .or(settings.client.parallel);
     }
     let opts = &opts;
-    let target = resolve_target(&hc, host)?;
     // Direct addresses: the command line's, else the host's. Any address
     // means isolated mode: dial those and nothing else. Resolved before the
     // identity is loaded so a bad address never prompts for a passphrase.
     let addresses = if opts.addresses.is_empty() {
-        hc.addresses.clone()
+        host_entry.map(|h| h.address.clone()).unwrap_or_default()
     } else {
         opts.addresses.clone()
     };
@@ -314,20 +328,32 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     let identity = opts
         .identity
         .clone()
-        .or_else(|| hc.identity_file.clone())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".ssh/id_ed25519")))
-        .context("no identity file")?;
+        .unwrap_or_else(|| settings.identity.clone());
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
-    let secret = load_identity_interactive(&identity, &pass)
+    let (secret, generated) = load_or_generate(&identity, &pass, "irsync")
         .with_context(|| format!("loading identity {}", identity.display()))?;
+    if generated {
+        let mut pub_path = identity.as_os_str().to_owned();
+        pub_path.push(".pub");
+        let line = std::fs::read_to_string(&pub_path).unwrap_or_default();
+        eprintln!("generated identity {}", identity.display());
+        eprintln!("{}", line.trim());
+        eprintln!("{}", secret.public());
+    }
     if !addresses.is_empty() {
         tracing::info!(
             addresses = ?resolved,
             "isolated mode: dialling directly, relay and lookups off"
         );
     }
-    let endpoint_opts =
-        client_endpoint_opts(secret, opts.relay.as_deref(), opts.no_dht, &hc, &addresses)?;
+    let endpoint_opts = client_endpoint_opts(
+        secret,
+        opts.relay.as_deref(),
+        opts.no_dht,
+        &settings.client,
+        host_entry,
+        &addresses,
+    )?;
     let endpoint = build_endpoint(endpoint_opts).await?;
     let target = EndpointAddr::from_parts(target, resolved.into_iter().map(TransportAddr::Ip));
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
@@ -376,7 +402,8 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         let ropts = ReconnectOpts {
             max: opts
                 .reconnect
-                .or(hc.reconnect)
+                .or(host_entry.and_then(|h| h.reconnect))
+                .or(settings.client.reconnect)
                 .unwrap_or(ReconnectOpts::default().max),
             ..ReconnectOpts::default()
         };

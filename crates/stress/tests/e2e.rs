@@ -47,8 +47,7 @@ fn run_harness(direction: &str, root: &Path, extra: &[&str]) -> Output {
     ])
     .args(extra)
     .arg(root)
-    .env_remove("IRSYNC_PASSPHRASE")
-    .env_remove("IRSYNC_CONFIG");
+    .env_remove("IRSYNC_PASSPHRASE");
     output_within(cmd, Duration::from_secs(300))
 }
 
@@ -197,8 +196,7 @@ fn run_short(iterations: &str, root: &Path, extra: &[&OsStr]) -> Output {
     ])
     .args(extra)
     .arg(root)
-    .env_remove("IRSYNC_PASSPHRASE")
-    .env_remove("IRSYNC_CONFIG");
+    .env_remove("IRSYNC_PASSPHRASE");
     output_within(cmd, Duration::from_secs(300))
 }
 
@@ -358,7 +356,6 @@ fn sigint_terminates_the_daemon() {
             ])
             .arg(&root)
             .env_remove("IRSYNC_PASSPHRASE")
-            .env_remove("IRSYNC_CONFIG")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

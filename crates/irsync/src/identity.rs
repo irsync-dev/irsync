@@ -124,6 +124,24 @@ pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, Identit
     secret_of(&key)
 }
 
+/// Loads the identity at `path`, generating it (with its parent directories)
+/// when the file does not exist. The flag is `true` when it was generated
+/// now. An existing key that cannot be read or unlocked is an error and is
+/// never replaced.
+pub fn load_or_generate(
+    path: &Path,
+    src: &PassphraseSource,
+    comment: &str,
+) -> Result<(SecretKey, bool), IdentityError> {
+    if path.symlink_metadata().is_ok() {
+        return Ok((load_identity_interactive(path, src)?, false));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok((generate_openssh(path, comment)?, true))
+}
+
 /// The iroh endpoint id for an SSH public key, if it is Ed25519.
 pub fn endpoint_id_of_public_key(pk: &ssh_key::PublicKey) -> Option<EndpointId> {
     let ed = pk.key_data().ed25519()?;

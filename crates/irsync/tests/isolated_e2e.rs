@@ -29,7 +29,6 @@ fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
         .env("HOME", tmp.join("home"))
         .env("XDG_STATE_HOME", tmp.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
-        .env_remove("IRSYNC_CONFIG")
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -44,10 +43,12 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     }
     std::fs::write(tmp.join("src/a.txt"), b"hello").unwrap();
     std::fs::write(tmp.join("src/sub/b.bin"), bytes(64 * 1024)).unwrap();
-    std::fs::write(tmp.join("empty_config"), b"").unwrap();
 
-    // Client identity; line 2 of keygen's output is its EndpointId.
-    let key = tmp.join("client_key");
+    // The client generates its own identity under HOME on first use. Until
+    // `irsync id` exists, create that key with keygen to learn its
+    // EndpointId (line 2 of the output).
+    // TODO(task 9): use irsync id
+    let key = tmp.join("home/.config/irsync/id_ed25519");
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["keygen", "--out"])
         .arg(&key)
@@ -62,7 +63,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         .to_string();
 
     std::fs::write(
-        tmp.join("d.toml"),
+        tmp.join("irsync.toml"),
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
@@ -84,7 +85,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
 
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
-        .arg(tmp.join("d.toml"))
+        .arg(tmp.join("irsync.toml"))
         .arg("--hosts")
         .arg(tmp.join("hosts.toml"))
         .arg("--exports")
@@ -127,16 +128,14 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let address = format!("localhost:{}", listen.port());
     let src = format!("{}/", tmp.join("src").display());
     let dest = format!("{id}:m/");
-    let config = tmp.join("empty_config");
+    let config = tmp.join("irsync.toml");
     let args = [
         "-a",
         "--reconnect",
         "0",
         "--address",
         &address,
-        "--identity",
-        key.to_str().unwrap(),
-        "-F",
+        "--config",
         config.to_str().unwrap(),
         &src,
         &dest,
@@ -147,6 +146,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         "client failed: {}",
         String::from_utf8_lossy(&o.stderr)
     );
+    assert!(key.exists(), "client identity under HOME");
     assert_eq!(std::fs::read(tmp.join("dst/a.txt")).unwrap(), b"hello");
     assert_eq!(
         std::fs::read(tmp.join("dst/sub/b.bin")).unwrap(),
@@ -190,7 +190,7 @@ fn unresolvable_address_fails_before_the_identity_is_needed() {
             "no-such-host.invalid:9",
             "--identity",
             key.to_str().unwrap(),
-            "-F",
+            "--config",
             config.to_str().unwrap(),
             &src,
             &dest,
@@ -207,6 +207,32 @@ fn unresolvable_address_fails_before_the_identity_is_needed() {
 }
 
 #[test]
+fn unknown_alias_error_names_hosts_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    std::fs::create_dir_all(tmp.join("home")).unwrap();
+    std::fs::create_dir_all(tmp.join("src")).unwrap();
+    let o = run_client(
+        &[
+            "-a",
+            "--hosts",
+            tmp.join("hosts.toml").to_str().unwrap(),
+            tmp.join("src/").to_str().unwrap(),
+            "home:photos/",
+        ],
+        tmp,
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("\"home\" is not an alias in")
+            && err.contains("hosts.toml")
+            && err.contains("no such file"),
+        "{err}"
+    );
+}
+
+#[test]
 fn no_listening_line_when_startup_fails_after_bind() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
@@ -214,7 +240,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
     // state_dir is a regular file, so opening the export index fails.
     std::fs::write(tmp.join("state"), b"not a directory").unwrap();
     std::fs::write(
-        tmp.join("d.toml"),
+        tmp.join("irsync.toml"),
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
@@ -231,7 +257,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
     .unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
-        .arg(tmp.join("d.toml"))
+        .arg(tmp.join("irsync.toml"))
         .arg("--hosts")
         .arg(tmp.join("hosts.toml"))
         .arg("--exports")

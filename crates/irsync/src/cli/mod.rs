@@ -258,8 +258,8 @@ pub struct SyncArgs {
     /// message for this long is dropped and the session reconnects.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
-    /// Files in flight at once (default: `Parallel` from the client
-    /// config, else 32).
+    /// Files in flight at once (default: `parallel` from the host entry or
+    /// the client settings, else 32).
     #[arg(long, value_name = "N")]
     pub parallel: Option<u32>,
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
@@ -273,9 +273,12 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// Client config file.
-    #[arg(short = 'F', value_name = "FILE")]
+    /// The settings file (default: irsync.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
+    /// The host aliases file (default: hosts.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub hosts: Option<PathBuf>,
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
     /// Read the identity's passphrase from the first line of this file
@@ -382,6 +385,7 @@ pub struct SyncOptions {
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
+    pub hosts: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
     pub no_resume: bool,
@@ -441,6 +445,7 @@ impl SyncOptions {
             no_dht: a.no_dht,
             addresses: a.address.clone(),
             config: a.config.clone(),
+            hosts: a.hosts.clone(),
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
             no_resume: a.no_resume,

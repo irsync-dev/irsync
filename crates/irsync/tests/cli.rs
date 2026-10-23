@@ -97,8 +97,10 @@ fn irsync_flags_and_misc() {
         "--parallel",
         "4",
         "--timeout=9",
-        "-F",
+        "--config",
         "cfg",
+        "--hosts",
+        "hosts",
         "--no-dht",
         "--max-delete=5",
         "--partial-dir=.p",
@@ -110,6 +112,7 @@ fn irsync_flags_and_misc() {
     assert_eq!(o.parallel, Some(4));
     assert_eq!(o.timeout, Some(Duration::from_secs(9)));
     assert_eq!(o.config, Some(PathBuf::from("cfg")));
+    assert_eq!(o.hosts, Some(PathBuf::from("hosts")));
     assert!(o.no_dht && o.numeric_ids);
     assert_eq!(o.max_delete, Some(5));
     assert_eq!(o.partial_dir, Some(PathBuf::from(".p")));

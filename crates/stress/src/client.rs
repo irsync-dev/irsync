@@ -64,7 +64,7 @@ pub fn sync_args(
     a.push(format!("127.0.0.1:{port}").into());
     a.push("--identity".into());
     a.push(setup.identity.clone().into());
-    a.push("-F".into());
+    a.push("--config".into());
     a.push(setup.config.clone().into());
     a.extend(extra.iter().cloned());
     let remote = OsString::from(format!("{endpoint_id}:data/"));
@@ -128,7 +128,6 @@ pub fn run_sync(
             .args(args)
             .env("HOME", &setup.home)
             .env("XDG_STATE_HOME", &setup.xdg_state)
-            .env_remove("IRSYNC_CONFIG")
             .env_remove("IRSYNC_PASSPHRASE")
             .env("RUST_LOG", log_level)
             .stdin(Stdio::null())
@@ -180,7 +179,7 @@ mod tests {
             "127.0.0.1:4321",
             "--identity",
             s.identity.to_str().unwrap(),
-            "-F",
+            "--config",
             s.config.to_str().unwrap(),
             "--parallel",
             "4",

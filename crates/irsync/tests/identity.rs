@@ -1,6 +1,6 @@
 use irsync::identity::{
-    endpoint_id_of_public_key, generate_openssh, load_identity_interactive, load_secret_key,
-    parse_endpoint_id, IdentityError, PassphraseSource,
+    endpoint_id_of_public_key, generate_openssh, load_identity_interactive, load_or_generate,
+    load_secret_key, parse_endpoint_id, IdentityError, PassphraseSource,
 };
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -182,4 +182,36 @@ fn daemon_show_id_unlocks_encrypted_identity_from_env_without_tty() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
+}
+
+#[test]
+fn load_or_generate_creates_once_then_loads_same_key() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("deep/dir/id_ed25519");
+    let src = PassphraseSource::default();
+    let (k1, gen1) = load_or_generate(&p, &src, "irsync").unwrap();
+    let (k2, gen2) = load_or_generate(&p, &src, "irsync").unwrap();
+    assert!(gen1 && !gen2);
+    assert_eq!(k1.public(), k2.public());
+    assert!(d.path().join("deep/dir/id_ed25519.pub").exists());
+    assert_eq!(
+        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn encrypted_existing_key_without_passphrase_is_error_not_regenerated() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("k");
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    let enc = key.encrypt(&mut OsRng, "pw").unwrap();
+    enc.write_openssh_file(&p, LineEnding::LF).unwrap();
+    let before = std::fs::read(&p).unwrap();
+    let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
+    assert!(
+        matches!(e, IdentityError::NoPassphraseSource(ref q) if q == &p),
+        "{e}"
+    );
+    assert_eq!(std::fs::read(&p).unwrap(), before);
 }

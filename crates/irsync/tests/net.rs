@@ -157,47 +157,46 @@ async fn isolated_opts_have_no_relay_and_no_lookup() {
 
 #[test]
 fn client_opts_are_isolated_whenever_addresses_are_given() {
-    use irsync::config::client::HostConfig;
+    use irsync::config::hosts::HostEntry;
+    use irsync::config::settings::ClientSettings;
     use irsync::net::{client_endpoint_opts, RelayChoice};
-    // Addresses from the config, with Relay/Dht/Mdns set beside them: isolated wins.
-    let hc = HostConfig {
+    let cs = ClientSettings::default();
+    // Addresses from the host entry, with relay/dht/mdns set beside them: isolated wins.
+    let he = HostEntry {
+        endpoint_id: SecretKey::generate().public(),
         relay: Some("https://r.example".parse().unwrap()),
+        address: vec!["127.0.0.1:1".parse().unwrap()],
+        parallel: None,
+        reconnect: None,
         dht: Some(true),
         mdns: Some(true),
-        addresses: vec!["127.0.0.1:1".parse().unwrap()],
-        ..HostConfig::default()
     };
-    let o = client_endpoint_opts(SecretKey::generate(), None, false, &hc, &hc.addresses).unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
-    // Addresses from the command line only.
-    let cli = vec!["localhost:1".parse().unwrap()];
     let o = client_endpoint_opts(
         SecretKey::generate(),
         None,
         false,
-        &HostConfig::default(),
-        &cli,
+        &cs,
+        Some(&he),
+        &he.address,
     )
     .unwrap();
     assert_eq!(o.relay, RelayChoice::Disabled);
+    assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
+    // Addresses from the command line only.
+    let cli = vec!["localhost:1".parse().unwrap()];
+    let o = client_endpoint_opts(SecretKey::generate(), None, false, &cs, None, &cli).unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
     assert!(!o.dns);
     // No addresses: the pre-existing defaults.
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        None,
-        true,
-        &HostConfig::default(),
-        &[],
-    )
-    .unwrap();
+    let o = client_endpoint_opts(SecretKey::generate(), None, true, &cs, None, &[]).unwrap();
     assert_eq!(o.relay, RelayChoice::N0Default);
     assert!(!o.dht && o.dns && o.mdns && o.portmap && !o.publish);
     let o = client_endpoint_opts(
         SecretKey::generate(),
         Some("https://c.example"),
         false,
-        &HostConfig::default(),
+        &cs,
+        None,
         &[],
     )
     .unwrap();
@@ -210,7 +209,8 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         SecretKey::generate(),
         Some("not a url"),
         false,
-        &HostConfig::default(),
+        &cs,
+        None,
         &[]
     )
     .is_err());

@@ -1,6 +1,5 @@
-//! Client (ssh_config-style) and daemon (TOML) configuration.
+//! Settings, host aliases and exports (TOML) configuration.
 
-pub mod client;
 pub mod daemon;
 pub mod duration;
 pub mod exports;
