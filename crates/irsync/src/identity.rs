@@ -11,6 +11,8 @@ use std::str::FromStr;
 pub enum IdentityError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("{}: {source}", path.display())]
+    File { path: PathBuf, source: std::io::Error },
     #[error("SSH key error: {0}")]
     Ssh(#[from] ssh_key::Error),
     #[error("private key is encrypted; a passphrase is required")]
@@ -106,7 +108,29 @@ pub fn load_identity_interactive(
     }
 }
 
+/// Create `path` holding `contents` with `mode`, only if nothing is there:
+/// an existing file is never replaced (`AlreadyExists`). The content is
+/// written to a temporary file in the same directory first, so `path`
+/// never appears half-written.
+pub fn write_new(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".irsync-new")
+        .permissions(std::fs::Permissions::from_mode(mode))
+        .tempfile_in(dir)?;
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 /// Generate a new Ed25519 key, writing `path` (mode 0600) and `path.pub`.
+/// Refuses (`AlreadyExists`) when either file exists; the private key is
+/// created atomically and never written over a key that appeared meanwhile.
 pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, IdentityError> {
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
@@ -118,16 +142,28 @@ pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, Identit
     }
     let mut key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)?;
     key.set_comment(comment);
-    key.write_openssh_file(path, LineEnding::LF)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    key.public_key().write_openssh_file(&pub_path)?;
+    let text = key.to_openssh(LineEnding::LF)?;
+    match write_new(path, text.as_bytes(), 0o600) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(IdentityError::AlreadyExists(path.to_path_buf()))
+        }
+        Err(source) => return Err(IdentityError::File { path: path.to_path_buf(), source }),
+    }
+    let line = format!("{}\n", key.public_key().to_openssh()?);
+    match write_new(&pub_path, line.as_bytes(), 0o644) {
+        // Another process wrote it first: the private key is what counts.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(source) => return Err(IdentityError::File { path: pub_path, source }),
+        Ok(()) => {}
+    }
     secret_of(&key)
 }
 
 /// Loads the identity at `path`, generating it (with its parent directories)
 /// when the file does not exist. The flag is `true` when it was generated
 /// now. An existing key that cannot be read or unlocked is an error and is
-/// never replaced.
+/// never replaced; a key another process creates first is loaded.
 pub fn load_or_generate(
     path: &Path,
     src: &PassphraseSource,
@@ -137,9 +173,17 @@ pub fn load_or_generate(
         return Ok((load_identity_interactive(path, src)?, false));
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|source| IdentityError::File {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
-    Ok((generate_openssh(path, comment)?, true))
+    match generate_openssh(path, comment) {
+        Err(IdentityError::AlreadyExists(p)) if p == path => {
+            Ok((load_identity_interactive(path, src)?, false))
+        }
+        r => Ok((r?, true)),
+    }
 }
 
 /// The iroh endpoint id for an SSH public key, if it is Ed25519.

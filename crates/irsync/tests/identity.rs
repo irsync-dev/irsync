@@ -1,6 +1,6 @@
 use irsync::identity::{
     endpoint_id_of_public_key, generate_openssh, load_identity_interactive, load_or_generate,
-    load_secret_key, parse_endpoint_id, IdentityError, PassphraseSource,
+    load_secret_key, parse_endpoint_id, write_new, IdentityError, PassphraseSource,
 };
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -214,4 +214,33 @@ fn encrypted_existing_key_without_passphrase_is_error_not_regenerated() {
         "{e}"
     );
     assert_eq!(std::fs::read(&p).unwrap(), before);
+}
+
+#[test]
+fn write_new_never_replaces_an_existing_file() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("k");
+    write_new(&p, b"first", 0o600).unwrap();
+    let e = write_new(&p, b"second", 0o600).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+    assert_eq!(std::fs::read(&p).unwrap(), b"first");
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    // No temporary file is left behind.
+    assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn load_or_generate_in_a_read_only_directory_names_the_path() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("ro");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(dir.join("probe"), b"").is_ok() {
+        eprintln!("skipping: running as root, mode 0o555 does not stop writes");
+        return;
+    }
+    let p = dir.join("id_ed25519");
+    let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
+    assert!(e.to_string().contains(p.to_str().unwrap()), "{e}");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
