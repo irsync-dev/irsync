@@ -136,7 +136,7 @@ impl RoleOpts {
     /// everything it can. Only the receiver-side options carried in `Hello`
     /// (deletion, dry run, `-u`, `-c`, itemize) are honoured, and only when
     /// the daemon `receives` (the client pushes, which already requires
-    /// write access to a writable module).
+    /// write access to a writable export).
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
             _ if !receives => DeleteMode::Off,
@@ -387,7 +387,7 @@ async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
 fn remote_location(daemon: EndpointId, hello: &Hello) -> anyhow::Result<Location> {
     Ok(Location::Remote {
         host: daemon.to_string(),
-        module: hello.module.clone(),
+        export: hello.export.clone(),
         path: RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid remote path"))?,
         contents_only: hello.contents_only,
     })
@@ -586,11 +586,11 @@ enum Missing {
     Allow,
 }
 
-/// Checks the session root below the module root: every existing component
+/// Checks the session root below the export root: every existing component
 /// must be a real directory (never a symlink, which could lead outside the
-/// module); missing ones are handled as `missing` says.
-fn prepare_root(module_root: &Path, rel: &RelPath, missing: Missing) -> io::Result<PathBuf> {
-    let mut p = module_root.to_path_buf();
+/// export); missing ones are handled as `missing` says.
+fn prepare_root(export_root: &Path, rel: &RelPath, missing: Missing) -> io::Result<PathBuf> {
+    let mut p = export_root.to_path_buf();
     let check = |p: &Path| -> io::Result<bool> {
         match std::fs::symlink_metadata(p) {
             Ok(m) if m.is_dir() => Ok(true),
@@ -605,7 +605,7 @@ fn prepare_root(module_root: &Path, rel: &RelPath, missing: Missing) -> io::Resu
     if !check(&p)? {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "module root is missing",
+            "export root is missing",
         ));
     }
     for c in rel.components() {
@@ -621,7 +621,7 @@ fn prepare_root(module_root: &Path, rel: &RelPath, missing: Missing) -> io::Resu
                 Missing::Create => std::fs::create_dir(&p)?,
                 Missing::Allow => {
                     // Nothing below a missing component can exist.
-                    p = module_root.to_path_buf();
+                    p = export_root.to_path_buf();
                     p.push(rel.to_os());
                     return Ok(p);
                 }
@@ -637,7 +637,7 @@ pub async fn serve_daemon(
     conn: Connection,
     mut send: SendStream,
     recv: RecvStream,
-    module_root: PathBuf,
+    export_root: PathBuf,
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
@@ -652,7 +652,7 @@ pub async fn serve_daemon(
         (false, true) => Missing::Allow,
     };
     let prepared = {
-        let (m, r) = (module_root.clone(), rel.clone());
+        let (m, r) = (export_root.clone(), rel.clone());
         blocking(move || prepare_root(&m, &r, missing)).await
     };
     let root = match prepared {
@@ -671,7 +671,7 @@ pub async fn serve_daemon(
         (id, None, claim)
     } else {
         // Only the key that created a session may resume it, and only for
-        // the same module, path and direction.
+        // the same export, path and direction.
         let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
         let id = <[u8; 16]>::try_from(hello.session_id.as_slice()).ok();
         let found = match id {
@@ -722,25 +722,25 @@ pub async fn serve_daemon(
     tracing::info!(
         session = %control::hex(&session_id),
         peer = %remote.fmt_short(),
-        module = %hello.module,
+        export = %hello.export,
         ?direction,
         resumed,
         "session started"
     );
-    // The module's index is opened for the module root: hash and key paths
-    // from there, so rows stay module-relative whatever the session path.
+    // The export's index is opened for the export root: hash and key paths
+    // from there, so rows stay export-relative whatever the session path.
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = Arc::new(AtomicU64::new(0));
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
     let hasher = Arc::new(
-        Hasher::new(index.clone(), module_root.clone(), HASH_WORKERS)
+        Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
             .with_force(hello.checksum)
             .with_activity(activity.clone()),
     );
     let forced = Arc::new(
-        Hasher::new(index.clone(), module_root.clone(), 1)
+        Hasher::new(index.clone(), export_root.clone(), 1)
             .with_force(true)
             .with_activity(activity.clone()),
     );
@@ -760,7 +760,7 @@ pub async fn serve_daemon(
         #[cfg(feature = "test-hooks")]
         rerequests: Some(shared.rerequests.clone()),
         root,
-        base: module_root,
+        base: export_root,
         scope: IndexScope::new(index, rel),
         hasher,
         forced,

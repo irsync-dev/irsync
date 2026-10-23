@@ -332,7 +332,7 @@ async fn dry_run_push_into_missing_path_creates_nothing() {
         let (local, _) = side(&h, &o);
         let out = h.run_hello(&o, hello, local).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        assert!(!h.module.path().join("not").exists());
+        assert!(!h.export.path().join("not").exists());
     })
     .await;
 }
@@ -389,7 +389,7 @@ async fn excluded_dst_files_are_protected_without_delete_excluded() {
         // Push: the daemon cannot see the client's filters, so it would treat
         // excluded files as extraneous; the client refuses.
         let h = Harness::new().await;
-        fs::write(h.module.path().join("junk.o"), b"j").unwrap();
+        fs::write(h.export.path().join("junk.o"), b"j").unwrap();
         let (local, _) = side(&h, &o);
         let conn = h
             .client
@@ -406,7 +406,7 @@ async fn excluded_dst_files_are_protected_without_delete_excluded() {
         conn.close(0u32.into(), b"done");
         let err = res.unwrap_err();
         assert!(format!("{err:#}").contains("--delete-excluded"), "{err:#}");
-        assert!(h.module.path().join("junk.o").exists());
+        assert!(h.export.path().join("junk.o").exists());
     })
     .await;
 }

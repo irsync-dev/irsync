@@ -1,4 +1,4 @@
-//! Authorisation: which endpoint may access which modules.
+//! Authorisation: which endpoint may access which exports.
 
 use crate::identity::endpoint_id_of_public_key;
 use iroh::EndpointId;
@@ -21,27 +21,27 @@ impl Access {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
-    pub modules: BTreeMap<String, Access>,
+    pub exports: BTreeMap<String, Access>,
     /// Access granted by the `*` wildcard.
     pub all: Option<Access>,
 }
 
 impl Grants {
-    /// True when the grants cover no module at all (no entries and no `*`).
+    /// True when the grants cover no export at all (no entries and no `*`).
     pub fn is_empty(&self) -> bool {
-        self.modules.is_empty() && self.all.is_none()
+        self.exports.is_empty() && self.all.is_none()
     }
 
-    pub fn allows(&self, module: &str, write: bool) -> bool {
-        self.modules
-            .get(module)
+    pub fn allows(&self, export: &str, write: bool) -> bool {
+        self.exports
+            .get(export)
             .copied()
             .or(self.all)
             .is_some_and(|a| a.permits(write))
     }
 
     fn parse(spec: &str) -> Result<Self, AuthzError> {
-        let bad = || AuthzError::BadModules(spec.to_string());
+        let bad = || AuthzError::BadExports(spec.to_string());
         let mut grants = Grants::default();
         for item in spec.split(',') {
             let (name, mode) = item.rsplit_once(':').ok_or_else(bad)?;
@@ -57,7 +57,7 @@ impl Grants {
             if name == "*" {
                 grants.all = Some(access);
             } else {
-                grants.modules.insert(name.to_string(), access);
+                grants.exports.insert(name.to_string(), access);
             }
         }
         Ok(grants)
@@ -70,8 +70,8 @@ pub enum AuthzError {
     Ssh(#[from] ssh_key::Error),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("invalid modules entry: {0:?}")]
-    BadModules(String),
+    #[error("invalid exports entry: {0:?}")]
+    BadExports(String),
 }
 
 pub trait Authorizer: Send + Sync {
@@ -98,7 +98,7 @@ impl FileAuthorizer {
                 );
                 continue;
             };
-            let grants = match modules_option(&opts) {
+            let grants = match exports_option(&opts) {
                 Some(spec) => Grants::parse(&spec)?,
                 None => Grants::default(),
             };
@@ -125,24 +125,24 @@ fn parse_line(line: &str) -> Result<(ConfigOpts, PublicKey), AuthzError> {
     Ok((opts, PublicKey::from_openssh(key)?))
 }
 
-/// Extract the `modules="..."` value from an OpenSSH option string, warning
+/// Extract the `exports="..."` value from an OpenSSH option string, warning
 /// about every other option because irsync does not enforce them.
-fn modules_option(opts: &ConfigOpts) -> Option<String> {
-    let mut modules = None;
+fn exports_option(opts: &ConfigOpts) -> Option<String> {
+    let mut exports = None;
     let mut ignored = Vec::new();
     for opt in opts.iter() {
-        match opt.strip_prefix("modules=") {
-            Some(v) => modules = Some(v.trim_matches('"').to_string()),
+        match opt.strip_prefix("exports=") {
+            Some(v) => exports = Some(v.trim_matches('"').to_string()),
             None => ignored.push(opt),
         }
     }
     if !ignored.is_empty() {
         tracing::warn!(
             options = %ignored.join(","),
-            "authorized_keys options other than `modules` are not enforced"
+            "authorized_keys options other than `exports` are not enforced"
         );
     }
-    modules
+    exports
 }
 
 impl Authorizer for FileAuthorizer {

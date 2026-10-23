@@ -263,7 +263,7 @@ async fn gc_continues_after_one_removal_failure() {
 }
 
 #[tokio::test]
-async fn gc_keeps_part_referenced_by_module_relative_plan() {
+async fn gc_keeps_part_referenced_by_export_relative_plan() {
     for (plan_path, kept) in [("b/x", true), ("c/x", false)] {
         let state = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();

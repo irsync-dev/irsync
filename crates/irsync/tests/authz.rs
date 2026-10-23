@@ -25,11 +25,11 @@ fn write_keys(contents: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
-fn file_authorizer_parses_modules_option() {
+fn file_authorizer_parses_exports_option() {
     let k1 = new_key();
     let k2 = new_key();
     let (_d, path) = write_keys(&format!(
-        "# comment\nmodules=\"photos:rw,docs:ro\" {}\nmodules=\"*:ro\" {}\n{}\n",
+        "# comment\nexports=\"photos:rw,docs:ro\" {}\nexports=\"*:ro\" {}\n{}\n",
         pub_line(&k1),
         pub_line(&k2),
         RSA_PUB.trim()
@@ -46,11 +46,11 @@ fn file_authorizer_parses_modules_option() {
 }
 
 #[test]
-fn flag_and_from_options_before_modules() {
+fn flag_and_from_options_before_exports() {
     let k1 = new_key();
     let k2 = new_key();
     let (_d, path) = write_keys(&format!(
-        "restrict,modules=\"a:rw\" {}\nfrom=\"10.0.0.0/8\",no-pty,modules=\"b:ro,c:rw\" {}\n",
+        "restrict,exports=\"a:rw\" {}\nfrom=\"10.0.0.0/8\",no-pty,exports=\"b:ro,c:rw\" {}\n",
         pub_line(&k1),
         pub_line(&k2),
     ));
@@ -65,16 +65,16 @@ fn flag_and_from_options_before_modules() {
 #[test]
 fn trailing_comment_after_key_is_accepted() {
     let k = new_key();
-    let (_d, path) = write_keys(&format!("modules=\"a:rw\" {} alice laptop\n", pub_line(&k)));
+    let (_d, path) = write_keys(&format!("exports=\"a:rw\" {} alice laptop\n", pub_line(&k)));
     let a = FileAuthorizer::load(&path).unwrap();
     assert!(a.grants(&id_of(&k)).unwrap().allows("a", true));
 }
 
 #[test]
-fn malformed_modules_value_is_an_error() {
+fn malformed_exports_value_is_an_error() {
     let k = new_key();
     for bad in ["a", "a:xx", ":rw", "a:rw,,b:ro", ""] {
-        let (_d, path) = write_keys(&format!("modules=\"{bad}\" {}\n", pub_line(&k)));
+        let (_d, path) = write_keys(&format!("exports=\"{bad}\" {}\n", pub_line(&k)));
         assert!(FileAuthorizer::load(&path).is_err(), "accepted {bad:?}");
     }
 }
@@ -83,7 +83,7 @@ fn malformed_modules_value_is_an_error() {
 fn duplicate_key_first_entry_wins() {
     let k = new_key();
     let (_d, path) = write_keys(&format!(
-        "modules=\"a:ro\" {}\nmodules=\"a:rw\" {}\n",
+        "exports=\"a:ro\" {}\nexports=\"a:rw\" {}\n",
         pub_line(&k),
         pub_line(&k)
     ));

@@ -2,7 +2,7 @@ use super::UsageError;
 use crate::fs::paths::RelPath;
 use std::path::PathBuf;
 
-/// One side of a transfer, parsed with rsync's `host:module/path` rule.
+/// One side of a transfer, parsed with rsync's `host:export/path` rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
     Local {
@@ -12,7 +12,7 @@ pub enum Location {
     Remote {
         /// A client-config host name or a literal EndpointId; resolved later.
         host: String,
-        module: String,
+        export: String,
         path: RelPath,
         contents_only: bool,
     },
@@ -32,12 +32,12 @@ impl Location {
             Some(c) if slash.is_none_or(|sl| c < sl) => {
                 let host = &s[..c];
                 let rest = s[c + 1..].trim_end_matches('/');
-                let (module, path) = rest.split_once('/').unwrap_or((rest, ""));
+                let (export, path) = rest.split_once('/').unwrap_or((rest, ""));
                 if host.is_empty() {
                     return Err(UsageError(format!("empty host in {s:?}")));
                 }
-                if module.is_empty() {
-                    return Err(UsageError(format!("missing module in {s:?}")));
+                if export.is_empty() {
+                    return Err(UsageError(format!("missing export in {s:?}")));
                 }
                 let path = if path.is_empty() {
                     RelPath::root()
@@ -47,7 +47,7 @@ impl Location {
                 };
                 Ok(Location::Remote {
                     host: host.to_string(),
-                    module: module.to_string(),
+                    export: export.to_string(),
                     path,
                     contents_only,
                 })

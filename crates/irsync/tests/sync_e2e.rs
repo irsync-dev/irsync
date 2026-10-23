@@ -442,7 +442,7 @@ async fn unreadable_source_subdir_exits_23() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn daemon_index_rows_are_module_relative() {
+async fn daemon_index_rows_are_export_relative() {
     within30(async {
         let opts = archive_opts();
         let h = Harness::new().await;
@@ -452,7 +452,7 @@ async fn daemon_index_rows_are_module_relative() {
         let out = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_eq!(
-            fs::read(h.module.path().join("sub/f.bin")).unwrap(),
+            fs::read(h.export.path().join("sub/f.bin")).unwrap(),
             data(300 * KIB, 5)
         );
 
@@ -461,7 +461,7 @@ async fn daemon_index_rows_are_module_relative() {
         let row = ix.get_entry(&r(b"sub/f.bin")).unwrap();
         assert!(
             row.is_some_and(|e| e.digest.is_some()),
-            "no module-relative row"
+            "no export-relative row"
         );
         assert!(ix.get_entry(&r(b"f.bin")).unwrap().is_none());
 
@@ -566,7 +566,7 @@ async fn inflight_plan_items_are_capped() {
         let h = Harness::new().await;
         for i in 0..10u32 {
             fs::write(
-                h.module.path().join(format!("f{i}")),
+                h.export.path().join(format!("f{i}")),
                 data(64 * KIB + i as usize, i),
             )
             .unwrap();
@@ -581,7 +581,7 @@ async fn inflight_plan_items_are_capped() {
         assert_eq!(out.files_transferred, 10);
         let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
         assert!((1..=2).contains(&peak), "peak in flight {peak}");
-        assert_trees_equal(h.module.path(), h.local.path(), &opts.preserve);
+        assert_trees_equal(h.export.path(), h.local.path(), &opts.preserve);
     })
     .await;
 }

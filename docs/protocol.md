@@ -89,7 +89,7 @@ progress, both persisted on each side.
    knows the id (for example after dormant-session garbage collection). The
    client then starts a fresh session.
 
-Error codes: `UNKNOWN`, `UNAUTHORIZED`, `NO_SUCH_MODULE`, `READ_ONLY`,
+Error codes: `UNKNOWN`, `UNAUTHORIZED`, `NO_SUCH_EXPORT`, `READ_ONLY`,
 `BAD_PATH`, `VERSION_MISMATCH`, `BAD_SESSION`, `INTERNAL`.
 
 ## Cross-implementation check

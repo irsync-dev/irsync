@@ -86,10 +86,10 @@ async fn peer_listing_temp_name_is_rejected() {
         out.errors
     );
     assert!(has_error(&out, b".irsync.y.tmp", "reserved"));
-    assert!(fs::symlink_metadata(h.module.path().join(".irsync.x.part")).is_err());
-    assert!(fs::symlink_metadata(h.module.path().join(".irsync.y.tmp")).is_err());
+    assert!(fs::symlink_metadata(h.export.path().join(".irsync.x.part")).is_err());
+    assert!(fs::symlink_metadata(h.export.path().join(".irsync.y.tmp")).is_err());
     assert_eq!(
-        fs::read(h.module.path().join("x")).unwrap(),
+        fs::read(h.export.path().join("x")).unwrap(),
         b"real content"
     );
     assert_eq!(fs::read(&victim).unwrap(), b"keep me");
@@ -101,8 +101,8 @@ async fn hardlink_target_outside_root_rejected() {
     let h = Harness::new().await;
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("secret"), b"private key").unwrap();
-    // A symlink inside the module leading out of it.
-    symlink(outside.path(), h.module.path().join("esc")).unwrap();
+    // A symlink inside the export leading out of it.
+    symlink(outside.path(), h.export.path().join("esc")).unwrap();
     fs::write(h.local.path().join("a"), b"a").unwrap();
     let out = push_with(
         &h,
@@ -111,7 +111,7 @@ async fn hardlink_target_outside_root_rejected() {
     )
     .await;
     assert!(has_error(&out, b"b", "hard link"), "{:?}", out.errors);
-    assert!(fs::symlink_metadata(h.module.path().join("b")).is_err());
+    assert!(fs::symlink_metadata(h.export.path().join("b")).is_err());
     assert_eq!(
         fs::metadata(outside.path().join("secret")).unwrap().nlink(),
         1
@@ -122,8 +122,8 @@ async fn hardlink_target_outside_root_rejected() {
 async fn hardlink_to_failed_target_rejected() {
     let h = Harness::new().await;
     // Stale content at the target path on the receiver.
-    fs::create_dir(h.module.path().join("zz")).unwrap();
-    fs::write(h.module.path().join("zz/t"), b"stale").unwrap();
+    fs::create_dir(h.export.path().join("zz")).unwrap();
+    fs::write(h.export.path().join("zz/t"), b"stale").unwrap();
     fs::write(h.local.path().join("a"), b"a").unwrap();
     // `zz/t` is listed without its parent directory (a planner error), then
     // a link to it.
@@ -138,6 +138,6 @@ async fn hardlink_to_failed_target_rejected() {
     .await;
     assert!(has_error(&out, b"zz/t", "parent"), "{:?}", out.errors);
     assert!(has_error(&out, b"zzz", "hard link"), "{:?}", out.errors);
-    assert!(fs::symlink_metadata(h.module.path().join("zzz")).is_err());
-    assert_eq!(fs::read(h.module.path().join("zz/t")).unwrap(), b"stale");
+    assert!(fs::symlink_metadata(h.export.path().join("zzz")).is_err());
+    assert_eq!(fs::read(h.export.path().join("zz/t")).unwrap(), b"stale");
 }

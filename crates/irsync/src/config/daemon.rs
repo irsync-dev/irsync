@@ -35,11 +35,11 @@ impl Default for Discovery {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Module {
+pub struct Export {
     pub path: PathBuf,
     #[serde(default)]
     pub read_only: bool,
-    /// Hash the module's files into its index when the daemon starts, so
+    /// Hash the export's files into its index when the daemon starts, so
     /// files placed by something other than irsync are reused from the
     /// first session on (see [`crate::warm`]).
     #[serde(default)]
@@ -67,7 +67,7 @@ pub struct DaemonConfig {
     /// traffic or local progress); the client resumes. Zero disables.
     #[serde(deserialize_with = "de_duration")]
     pub idle_timeout: Duration,
-    pub modules: BTreeMap<String, Module>,
+    pub exports: BTreeMap<String, Export>,
 }
 
 fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
@@ -147,7 +147,7 @@ impl Default for DaemonConfig {
             portmap: true,
             dormant_session_timeout: Duration::from_secs(7 * 86400),
             idle_timeout: crate::session::engine::DAEMON_IDLE_TIMEOUT,
-            modules: BTreeMap::new(),
+            exports: BTreeMap::new(),
         }
     }
 }
@@ -162,7 +162,7 @@ impl DaemonConfig {
         ] {
             *p = expand_tilde(&p.to_string_lossy());
         }
-        for m in cfg.modules.values_mut() {
+        for m in cfg.exports.values_mut() {
             m.path = expand_tilde(&m.path.to_string_lossy());
         }
         Ok(cfg)

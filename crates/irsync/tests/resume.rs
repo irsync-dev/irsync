@@ -259,7 +259,7 @@ async fn foreign_client_cannot_resume_session() {
             .find_map(|e| e.downcast_ref::<SessionRefused>())
             .unwrap_or_else(|| panic!("not a refusal: {err:#}"));
         assert_eq!(refused.code, Code::BadSession);
-        assert!(!h.module.path().join("evil.txt").exists());
+        assert!(!h.export.path().join("evil.txt").exists());
 
         // The owner can still resume it.
         let (again, _) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;

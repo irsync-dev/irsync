@@ -29,7 +29,7 @@ cross-referenced from commit messages and review notes.
 - **R19 — `Hello` fields 10–14: `delete_mode`, `delete_excluded`,
   `max_delete`, `dry_run`, `ignore_errors`.** Deletion and dry-run are
   receiver actions; a push needs the daemon to know. Honoured only with a
-  write grant on a writable module. Dry-run gates *every* receiver-side
+  write grant on a writable export. Dry-run gates *every* receiver-side
   mutation. Wire-compatible addition.
 - **R25 — `Hello.itemize` (15) and `Control.Itemized` (9).** The daemon's
   planner is the only place that knows the attribute diff on a push, so it
@@ -48,7 +48,7 @@ cross-referenced from commit messages and review notes.
 ### 1.2 Identity and authorization
 
 - SSH Ed25519 keys are iroh identities (32-byte seed → `SecretKey`);
-  `authorized_keys`-style grants `modules="photos:rw,docs:ro"`.
+  `authorized_keys`-style grants `exports="photos:rw,docs:ro"`.
 - The daemon rejects unknown keys and keys with an empty grant set before
   reading a single byte of the stream (close code 1).
 - `irsync keygen` refuses to overwrite an existing key and chmods the private
@@ -65,9 +65,9 @@ cross-referenced from commit messages and review notes.
 - **R6 — A new session with the same key evicts the dormant one** (newest
   wins, needed by `--no-resume`); the evicted id is returned for logging so
   eviction is never silent.
-- **R13 — One index per daemon module root; per-session paths are prefixed
+- **R13 — One index per daemon export root; per-session paths are prefixed
   via `IndexScope`** rather than opening one index per session root, so GC,
-  partials and resume all resolve against the module root and cache reuse
+  partials and resume all resolve against the export root and cache reuse
   works across sessions.
 - **R28 — `meta.root_path` is stored** so `irsync gc` can locate each index's
   root without being told.
@@ -273,15 +273,15 @@ cross-referenced from commit messages and review notes.
   sub-minimum tail case; no tests for `ChunkRecord` conversion error paths.
 
 **Identity / authz / config**
-- Several `modules=` options on one line: last wins (OpenSSH: first);
-  `Modules=` is case-sensitive; escaped quotes / whitespace inside quoted
+- Several `exports=` options on one line: last wins (OpenSSH: first);
+  `Exports=` is case-sensitive; escaped quotes / whitespace inside quoted
   values are unsupported (fails closed). No test captures the warning for
   skipped non-Ed25519 lines.
 - `IRSYNC_CONFIG` / default-path branches of `ClientConfig::load` untested;
   an empty `IRSYNC_CONFIG` gives a confusing error; host matching is
   case-sensitive (ssh is insensitive); quoted values with spaces unsupported.
 - `irsync daemon --show-id` creates a new identity as a side effect if none
-  exists. Two modules sharing one path share one SQLite file via two handles
+  exists. Two exports sharing one path share one SQLite file via two handles
   (works under WAL; intent undecided).
 
 **CLI**
@@ -321,7 +321,7 @@ cross-referenced from commit messages and review notes.
 - Stale `FileEntry` (mtime/mode) is applied after a changed-source resume
   (repaired on the next run); a retried file gets the original listing's
   mtime/mode. Rename detection and `find_chunk` reuse under a non-empty
-  module prefix lack an end-to-end test. `Decision::LocalCopy` and the
+  export prefix lack an end-to-end test. `Decision::LocalCopy` and the
   `HASH_MISMATCH` retry path are only lightly exercised.
 - A hard link can point at stale target content when the target failed only
   at planning time (only the receiver's `failed` set is consulted). Hard

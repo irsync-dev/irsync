@@ -62,7 +62,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         .to_string();
     std::fs::write(
         tmp.join("authorized_keys"),
-        format!("modules=\"m:rw\" {pub_line}\n"),
+        format!("exports=\"m:rw\" {pub_line}\n"),
     )
     .unwrap();
 
@@ -72,7 +72,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
             "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
              [discovery]\ndht = false\ndns = false\nmdns = false\n\
-             [modules.m]\npath = {:?}\n",
+             [exports.m]\npath = {:?}\n",
             tmp.join("daemon_key"),
             tmp.join("authorized_keys"),
             tmp.join("state"),
@@ -206,7 +206,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     std::fs::create_dir_all(tmp.join("dst")).unwrap();
-    // state_dir is a regular file, so opening the module index fails.
+    // state_dir is a regular file, so opening the export index fails.
     std::fs::write(tmp.join("state"), b"not a directory").unwrap();
     std::fs::write(tmp.join("authorized_keys"), b"").unwrap();
     std::fs::write(
@@ -215,7 +215,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
             "identity = {:?}\nauthorized_keys = {:?}\nstate_dir = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
              [discovery]\ndht = false\ndns = false\nmdns = false\n\
-             [modules.m]\npath = {:?}\n",
+             [exports.m]\npath = {:?}\n",
             tmp.join("daemon_key"),
             tmp.join("authorized_keys"),
             tmp.join("state"),

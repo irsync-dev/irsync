@@ -36,7 +36,7 @@ fn set_mtime(p: &std::path::Path, secs: u64) {
 async fn push_update_keeps_newer_dest() {
     within30(async {
         let h = Harness::new().await;
-        let (src, dst) = (h.local.path().join("f"), h.module.path().join("f"));
+        let (src, dst) = (h.local.path().join("f"), h.export.path().join("f"));
         fs::write(&src, b"older source").unwrap();
         set_mtime(&src, 1_600_000_000);
         fs::write(&dst, b"newer destination").unwrap();
@@ -58,7 +58,7 @@ async fn push_update_keeps_newer_dest() {
 async fn push_checksum_detects_same_mtime_change() {
     within30(async {
         let h = Harness::new().await;
-        let (src, dst) = (h.local.path().join("f"), h.module.path().join("f"));
+        let (src, dst) = (h.local.path().join("f"), h.export.path().join("f"));
         fs::write(&src, b"aaaa").unwrap();
         set_mtime(&src, 1_600_000_000);
         h.run(&opts(&[]), Flow::Push).await.unwrap();
@@ -97,7 +97,7 @@ async fn dry_run_verbose_push_lists_files() {
         }
         // What the reporter prints under `-n -v` (FileDone lines).
         assert_eq!(listed, vec!["new.txt".to_string()]);
-        assert!(!h.module.path().join("new.txt").exists());
+        assert!(!h.export.path().join("new.txt").exists());
     })
     .await;
 }
@@ -122,7 +122,7 @@ async fn push_with_partial_dir_is_refused() {
         .unwrap_err();
         conn.close(0u32.into(), b"done");
         assert!(format!("{err:#}").contains("--partial-dir"), "{err:#}");
-        assert!(!h.module.path().join("f").exists());
+        assert!(!h.export.path().join("f").exists());
     })
     .await;
 }

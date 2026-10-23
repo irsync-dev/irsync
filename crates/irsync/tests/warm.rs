@@ -266,7 +266,7 @@ async fn after_index_root_a_rename_costs_no_hashing_in_the_session() {
         let flow = Flow::Push;
         let content = data(MIB + 11, 14);
         write(h.dst(flow), "attic/a.bin", &content);
-        let r = index_root(h.daemon_index().into_handle(), h.module.path(), 4, false)
+        let r = index_root(h.daemon_index().into_handle(), h.export.path(), 4, false)
             .await
             .unwrap();
         assert_eq!((r.examined, r.hashed), (1, 1), "{r:?}");
@@ -282,10 +282,10 @@ async fn after_index_root_a_rename_costs_no_hashing_in_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_daemon_with_warm_index_hashes_its_module_at_start() {
+async fn a_daemon_with_warm_index_hashes_its_export_at_start() {
     within30(async {
         let content = data(MIB + 17, 15);
-        let h = Harness::warm(|module| write(module, "attic/a.bin", &content)).await;
+        let h = Harness::warm(|export| write(export, "attic/a.bin", &content)).await;
         // The warm-up runs in the background; it has read the file once
         // the index holds its digest.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -294,7 +294,7 @@ async fn a_daemon_with_warm_index_hashes_its_module_at_start() {
             if e.is_some_and(|e| e.digest.is_some()) {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "module never warmed");
+            assert!(std::time::Instant::now() < deadline, "export never warmed");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 

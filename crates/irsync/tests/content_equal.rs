@@ -294,7 +294,7 @@ async fn checksum_catches_a_destination_whose_row_is_fresh_but_wrong() {
         let keep = mtime(&dst);
         fs::write(&dst, &rot).unwrap();
         set_mtime(&dst, keep);
-        plant_row(h.daemon._state.path(), h.module.path(), "x.bin", &good);
+        plant_row(h.daemon._state.path(), h.export.path(), "x.bin", &good);
 
         // Without `-c` size and mtime decide: the file is skipped.
         let out = h.run(&archive_opts(), flow).await.unwrap();
@@ -365,7 +365,7 @@ async fn checksum_forces_the_daemon_sender_to_read() {
         let keep = mtime(&src);
         fs::write(&src, &new).unwrap();
         set_mtime(&src, keep);
-        plant_row(h.daemon._state.path(), h.module.path(), "x.bin", &old);
+        plant_row(h.daemon._state.path(), h.export.path(), "x.bin", &old);
 
         let hashed_before = h.daemon_files_hashed();
         let out = h.run(&checksum_opts(), flow).await.unwrap();

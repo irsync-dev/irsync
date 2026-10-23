@@ -43,7 +43,7 @@ async fn two_local_endpoints_exchange_hello() {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         session_id: vec![7; 16],
-        module: "photos".into(),
+        export: "photos".into(),
         path: b"2026/oct".to_vec(),
         ..Default::default()
     };

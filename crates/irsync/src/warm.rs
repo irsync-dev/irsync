@@ -13,7 +13,7 @@
 //!   lookup that follows finds a renamed or copied file. Sizes below
 //!   [`MIN_SIZE`] are left out: for a file smaller than a chunk the
 //!   bookkeeping costs about what the fetch does.
-//! - [`index_root`]: `irsync index`, or a module's `warm_index` setting:
+//! - [`index_root`]: `irsync index`, or an export's `warm_index` setting:
 //!   walk a root and hash every regular file whose row is not fresh.
 //!
 //! Nothing here can make a wrong decision: a candidate's chunks are

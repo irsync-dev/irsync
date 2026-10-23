@@ -116,7 +116,7 @@ pub enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Hash the files under local roots (or daemon modules) into their
+    /// Hash the files under local roots (or daemon exports) into their
     /// index, so a destination irsync did not create contributes chunks
     /// and rename candidates from the first session on.
     Index(IndexArgs),
@@ -124,8 +124,8 @@ pub enum Command {
 
 #[derive(Debug, clap::Args)]
 pub struct IndexArgs {
-    /// Index daemon modules under the daemon's state directory: the
-    /// targets are module names, all modules when none is given.
+    /// Index daemon exports under the daemon's state directory: the
+    /// targets are export names, all exports when none is given.
     #[arg(long)]
     pub daemon: bool,
     /// The daemon's config file (with `--daemon`).
@@ -134,7 +134,7 @@ pub struct IndexArgs {
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
-    /// Local roots to index, or with `--daemon` module names.
+    /// Local roots to index, or with `--daemon` export names.
     #[arg(value_name = "TARGET")]
     pub targets: Vec<PathBuf>,
 }

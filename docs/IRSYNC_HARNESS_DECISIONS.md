@@ -24,7 +24,7 @@ the code disagree, the code is what shipped and the entry says so.
 
 2. **Sentinel file.** The first sync carries `.irsync-stress-ping` in the
    source tree, with content `seed=<seed> started=<timestamp>\n`. Why: the
-   sentinel round proves the daemon, keys and module work before any filegen
+   sentinel round proves the daemon, keys and export work before any filegen
    output is involved, so a setup fault is not confused with a transfer
    fault; the content makes the file unique per run. The file stays in the
    tree and filegen may change or delete it. Cost if wrong: a name clash

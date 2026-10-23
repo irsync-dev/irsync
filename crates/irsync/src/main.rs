@@ -352,7 +352,7 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
                 contents_only: local_co,
             },
             Location::Remote {
-                module,
+                export,
                 path: rpath,
                 contents_only: remote_co,
                 ..
@@ -365,7 +365,7 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             session_id: vec![],
-            module: module.clone(),
+            export: export.clone(),
             path: rpath.as_bytes().to_vec(),
             direction: match direction {
                 Direction::ClientSends => hello::Direction::ClientSends,
@@ -490,7 +490,7 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
         let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {
             let cfg = DaemonConfig::load(a.config.as_deref())?;
             let names: Vec<String> = if a.targets.is_empty() {
-                cfg.modules.keys().cloned().collect()
+                cfg.exports.keys().cloned().collect()
             } else {
                 a.targets
                     .iter()
@@ -501,9 +501,9 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
                 .into_iter()
                 .map(|n| {
                     let m = cfg
-                        .modules
+                        .exports
                         .get(&n)
-                        .with_context(|| format!("no module {n:?} in the daemon config"))?;
+                        .with_context(|| format!("no export {n:?} in the daemon config"))?;
                     Ok((cfg.state_dir.clone(), m.path.clone()))
                 })
                 .collect::<anyhow::Result<_>>()?

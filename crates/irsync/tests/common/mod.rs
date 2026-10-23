@@ -152,18 +152,18 @@ impl DaemonHandle {
     }
 }
 
-/// Starts a daemon on a loopback endpoint serving `modules` (name -> (path, read_only)).
+/// Starts a daemon on a loopback endpoint serving `exports` (name -> (path, read_only)).
 pub async fn spawn_daemon(
-    modules: Vec<(&str, std::path::PathBuf, bool)>,
+    exports: Vec<(&str, std::path::PathBuf, bool)>,
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
 ) -> DaemonHandle {
-    use irsync::config::daemon::Module;
-    let modules = modules
+    use irsync::config::daemon::Export;
+    let exports = exports
         .into_iter()
         .map(|(name, path, read_only)| {
             (
                 name,
-                Module {
+                Export {
                     path,
                     read_only,
                     warm_index: false,
@@ -171,12 +171,12 @@ pub async fn spawn_daemon(
             )
         })
         .collect();
-    spawn_daemon_modules(modules, authz).await
+    spawn_daemon_exports(exports, authz).await
 }
 
-/// Starts a daemon on a loopback endpoint serving `modules` as configured.
-pub async fn spawn_daemon_modules(
-    modules: Vec<(&str, irsync::config::daemon::Module)>,
+/// Starts a daemon on a loopback endpoint serving `exports` as configured.
+pub async fn spawn_daemon_exports(
+    exports: Vec<(&str, irsync::config::daemon::Export)>,
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
 ) -> DaemonHandle {
     use irsync::config::daemon::DaemonConfig;
@@ -185,8 +185,8 @@ pub async fn spawn_daemon_modules(
         state_dir: state.path().to_path_buf(),
         ..DaemonConfig::default()
     };
-    for (name, module) in modules {
-        cfg.modules.insert(name.to_string(), module);
+    for (name, export) in exports {
+        cfg.exports.insert(name.to_string(), export);
     }
     let ep = loopback_endpoint().await;
     let (addr, id) = (addr_of(&ep), ep.id());
@@ -228,9 +228,9 @@ pub async fn client_endpoint() -> Endpoint {
 /// Which way the data flows in a [`Harness`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
-    /// Client sends: local dir -> daemon module.
+    /// Client sends: local dir -> daemon export.
     Push,
-    /// Daemon sends: daemon module -> local dir.
+    /// Daemon sends: daemon export -> local dir.
     Pull,
 }
 
@@ -240,12 +240,12 @@ pub fn archive_opts() -> irsync::cli::SyncOptions {
     irsync::cli::SyncOptions::from_args(&args)
 }
 
-/// A daemon serving module `m` (a temp dir) to one authorised client, plus the
+/// A daemon serving export `m` (a temp dir) to one authorised client, plus the
 /// client's own local dir and state dir. Runs can be repeated.
 pub struct Harness {
     pub daemon: DaemonHandle,
     pub client: Endpoint,
-    pub module: tempfile::TempDir,
+    pub export: tempfile::TempDir,
     pub local: tempfile::TempDir,
     pub client_state: tempfile::TempDir,
 }
@@ -255,7 +255,7 @@ impl Harness {
         Self::with_guest().await.0
     }
 
-    /// A harness whose module and local dirs are created under `base`
+    /// A harness whose export and local dirs are created under `base`
     /// (a filesystem with properties the default temp dir may lack).
     pub async fn new_in(base: &std::path::Path) -> Harness {
         Self::build(Some(base), false, |_| {}).await.0
@@ -266,7 +266,7 @@ impl Harness {
         Self::build(None, false, |_| {}).await
     }
 
-    /// A harness whose module is filled by `seed` before the daemon starts,
+    /// A harness whose export is filled by `seed` before the daemon starts,
     /// with `warm_index` set on it.
     pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
         Self::build(None, true, seed).await.0
@@ -284,8 +284,8 @@ impl Harness {
         use irsync::authz::{Access, Grants, MemoryAuthorizer};
         let client = client_endpoint().await;
         let guest = client_endpoint().await;
-        let module = tmp();
-        seed(module.path());
+        let export = tmp();
+        seed(export.path());
         let grants = Grants {
             all: Some(Access::ReadWrite),
             ..Grants::default()
@@ -293,16 +293,16 @@ impl Harness {
         let authz = std::sync::Arc::new(
             MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants),
         );
-        let m = irsync::config::daemon::Module {
-            path: module.path().to_path_buf(),
+        let m = irsync::config::daemon::Export {
+            path: export.path().to_path_buf(),
             read_only: false,
             warm_index,
         };
-        let daemon = spawn_daemon_modules(vec![("m", m)], authz).await;
+        let daemon = spawn_daemon_exports(vec![("m", m)], authz).await;
         let h = Harness {
             daemon,
             client,
-            module,
+            export,
             local: tmp(),
             client_state: tempfile::tempdir().unwrap(),
         };
@@ -312,25 +312,25 @@ impl Harness {
     pub fn src(&self, flow: Flow) -> &std::path::Path {
         match flow {
             Flow::Push => self.local.path(),
-            Flow::Pull => self.module.path(),
+            Flow::Pull => self.export.path(),
         }
     }
 
     pub fn dst(&self, flow: Flow) -> &std::path::Path {
         match flow {
-            Flow::Push => self.module.path(),
+            Flow::Push => self.export.path(),
             Flow::Pull => self.local.path(),
         }
     }
 
-    /// Hello for the whole module, contents only (`host:m/`).
+    /// Hello for the whole export, contents only (`host:m/`).
     pub fn hello(flow: Flow) -> irsync_proto::v1::Hello {
         use irsync_proto::chunk::CHUNK_PARAMS;
         use irsync_proto::v1::hello::Direction;
         irsync_proto::v1::Hello {
             protocol_version: irsync_proto::PROTOCOL_VERSION,
             session_id: vec![],
-            module: "m".into(),
+            export: "m".into(),
             path: vec![],
             direction: match flow {
                 Flow::Push => Direction::ClientSends,
@@ -441,9 +441,9 @@ impl Harness {
         out
     }
 
-    /// The daemon's index for module `m` (a second connection to its database).
+    /// The daemon's index for export `m` (a second connection to its database).
     pub fn daemon_index(&self) -> irsync::index::Index {
-        irsync::index::Index::open(self.daemon._state.path(), self.module.path())
+        irsync::index::Index::open(self.daemon._state.path(), self.export.path())
             .expect("open daemon index")
     }
 

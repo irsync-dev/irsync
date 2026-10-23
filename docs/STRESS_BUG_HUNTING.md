@@ -173,7 +173,7 @@ and should land with its own end-to-end test like the existing ones.
    exercises the planner's changed/equal decisions on files irsync did not
    write, including same-size-different-content and the mtime shortcut
    (compare with and without `-c`).
-5. **Two clients, one module.** Run the same push from two client setups at
+5. **Two clients, one export.** Run the same push from two client setups at
    once. Known cost is 60 s per overlapping file before `PART_BUSY`; unknown
    is whether the result is ever wrong.
 6. **Split roots** (`--dst-root`) so source and destination can be on

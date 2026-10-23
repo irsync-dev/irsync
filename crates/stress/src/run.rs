@@ -202,7 +202,7 @@ fn start_daemon<'a>(
     let (key, pub_line) = daemon::client_keygen(&tools.irsync.path, client_config)?;
     let toml = daemon::write_config(&DaemonConfig {
         config_dir: daemon_config,
-        module_path: daemon_data,
+        export_path: daemon_data,
         authorized_pub_line: &pub_line,
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;

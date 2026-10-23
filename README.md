@@ -55,12 +55,12 @@ dht = true        # publish to mainline DHT (relay-only addresses)
 dns = true        # n0 pkarr/DNS
 mdns = true       # LAN
 
-[modules.photos]
+[exports.photos]
 path = "/srv/photos"
 read_only = false
 warm_index = true  # hash what is already there at start, so files irsync did not place are reused
 
-[modules.docs]
+[exports.docs]
 path = "/srv/docs"
 read_only = true
 ```
@@ -70,14 +70,14 @@ If the identity file does not exist the daemon generates it on first start.
 ### 3. Authorise the laptop
 
 Append the laptop's public key line (printed by `irsync keygen`) to the daemon's
-`authorized_keys`, with the modules it may use:
+`authorized_keys`, with the exports it may use:
 
 ```
-modules="photos:rw,docs:ro" ssh-ed25519 AAAAC3... mike@laptop
+exports="photos:rw,docs:ro" ssh-ed25519 AAAAC3... mike@laptop
 ```
 
 `photos:rw` allows both directions, `docs:ro` only pulling from the daemon, and
-`*` matches every module (`modules="*:ro"`). Keys not in the file are rejected
+`*` matches every export (`exports="*:ro"`). Keys not in the file are rejected
 before any protocol message is read.
 
 ### 4. Start the daemon and read its id
@@ -124,7 +124,7 @@ irsync -av ~/Photos home:photos/       # push: laptop to daemon
 irsync -av home:photos/ ~/Photos       # pull: daemon to laptop
 ```
 
-Addresses are `<name>:<module>/<path>`, and rsync's trailing-slash rule holds:
+Addresses are `<name>:<export>/<path>`, and rsync's trailing-slash rule holds:
 `Photos/` copies the contents, `Photos` copies the directory itself. Exactly one
 of source and destination is remote.
 
@@ -182,7 +182,7 @@ irsync-specific:
 
 Subcommands: `irsync daemon [--config PATH] [--show-id] [--listen ADDR]...`,
 `irsync keygen [--out PATH]`, `irsync index [-n] ROOT...` (or `irsync index
---daemon [--config PATH] [MODULE...]`), which hashes the files under a root
+--daemon [--config PATH] [EXPORT...]`), which hashes the files under a root
 into its index so that a destination irsync did not create (a prior rsync, a
 restore) is reused for renamed and copied files from the first session on
 (`-n` counts what would be read; a session also does this on its own for
@@ -191,7 +191,7 @@ destination files of the size of a file it is about to fetch), and `irsync gc
 partial files and dormant sessions (older than 7 days) for every local root
 irsync has synced. The client also does this for each root it syncs (at most
 daily, or sooner once a partial file has been left untouched for an hour), and
-the daemon checks hourly but walks a module at most daily unless collectable
+the daemon checks hourly but walks an export at most daily unless collectable
 partial files are waiting.
 
 ## Known limitations in version one
@@ -213,7 +213,7 @@ partial files are waiting.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used; generate an irsync-specific key with `irsync keygen` or
   `ssh-keygen -t ed25519`.
-- In `authorized_keys`, only the `modules=` option is understood; other options
+- In `authorized_keys`, only the `exports=` option is understood; other options
   are ignored with a warning, and escaped quotes inside option values are not
   supported.
 - `--numeric-ids` is always on: owners and groups are transferred as numbers,

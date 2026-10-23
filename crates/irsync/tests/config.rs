@@ -114,12 +114,12 @@ dht = true        # publish to mainline DHT (relay-only addresses)
 dns = true        # n0 pkarr/DNS
 mdns = true       # LAN
 
-[modules.photos]
+[exports.photos]
 path = "/srv/photos"
 read_only = false
 warm_index = true   # hash what is there at start, so foreign files are reused
 
-[modules.docs]
+[exports.docs]
 path = "/srv/docs"
 read_only = true
 "#;
@@ -132,30 +132,30 @@ read_only = true
     );
     assert_eq!(cfg.state_dir, home.join(".local/state/irsync"));
     assert!(cfg.discovery.dht && cfg.discovery.dns && cfg.discovery.mdns);
-    assert_eq!(cfg.modules.len(), 2);
-    assert_eq!(cfg.modules["photos"].path, PathBuf::from("/srv/photos"));
-    assert!(!cfg.modules["photos"].read_only);
-    assert!(cfg.modules["photos"].warm_index);
-    assert_eq!(cfg.modules["docs"].path, PathBuf::from("/srv/docs"));
-    assert!(cfg.modules["docs"].read_only);
-    assert!(!cfg.modules["docs"].warm_index, "off unless asked for");
+    assert_eq!(cfg.exports.len(), 2);
+    assert_eq!(cfg.exports["photos"].path, PathBuf::from("/srv/photos"));
+    assert!(!cfg.exports["photos"].read_only);
+    assert!(cfg.exports["photos"].warm_index);
+    assert_eq!(cfg.exports["docs"].path, PathBuf::from("/srv/docs"));
+    assert!(cfg.exports["docs"].read_only);
+    assert!(!cfg.exports["docs"].warm_index, "off unless asked for");
 }
 
 #[test]
 fn daemon_unknown_key_is_error() {
-    let text = "[modules.photos]\npath = \"/srv/photos\"\nreadonly = true\n";
+    let text = "[exports.photos]\npath = \"/srv/photos\"\nreadonly = true\n";
     assert!(DaemonConfig::parse(text).is_err());
     assert!(DaemonConfig::parse("bogus = 1\n").is_err());
     assert!(DaemonConfig::parse("[discovery]\nmdnss = true\n").is_err());
 }
 
 #[test]
-fn daemon_timeout_accepts_integer_and_tilde_module_path() {
-    let cfg = DaemonConfig::parse("dormant_session_timeout = 90\n[modules.m]\npath = \"~/data\"\n")
+fn daemon_timeout_accepts_integer_and_tilde_export_path() {
+    let cfg = DaemonConfig::parse("dormant_session_timeout = 90\n[exports.m]\npath = \"~/data\"\n")
         .unwrap();
     assert_eq!(cfg.dormant_session_timeout, Duration::from_secs(90));
     assert_eq!(
-        cfg.modules["m"].path,
+        cfg.exports["m"].path,
         dirs::home_dir().unwrap().join("data")
     );
 }
@@ -187,7 +187,7 @@ fn daemon_defaults_when_sections_missing() {
     assert_eq!(cfg.relay, None);
     assert_eq!(cfg.relay_mode, RelayMode::Default);
     assert_eq!(cfg.dormant_session_timeout, Duration::from_secs(7 * 86400));
-    assert!(cfg.modules.is_empty());
+    assert!(cfg.exports.is_empty());
 }
 
 #[test]

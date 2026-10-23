@@ -146,12 +146,12 @@ fn location_remote_with_trailing_slash() {
     match loc("home:data/photos/") {
         Location::Remote {
             host,
-            module,
+            export,
             path,
             contents_only,
         } => {
             assert_eq!(host, "home");
-            assert_eq!(module, "data");
+            assert_eq!(export, "data");
             assert_eq!(path.as_bytes(), b"photos");
             assert!(contents_only);
         }
@@ -188,9 +188,9 @@ fn location_local_with_colon_after_slash_is_local() {
 fn endpoint_id_literal_is_remote_host() {
     let id = iroh::SecretKey::from_bytes(&[7u8; 32]).public().to_string();
     match loc(&format!("{id}:mod/x")) {
-        Location::Remote { host, module, .. } => {
+        Location::Remote { host, export, .. } => {
             assert_eq!(host, id);
-            assert_eq!(module, "mod");
+            assert_eq!(export, "mod");
         }
         l => panic!("{l:?}"),
     }
@@ -271,7 +271,7 @@ fn address_flag_repeats_and_conflicts_with_relay() {
 }
 
 #[test]
-fn index_subcommand_parses_roots_or_daemon_modules() {
+fn index_subcommand_parses_roots_or_daemon_exports() {
     let a = parse(&["index", "-n", "/srv/a", "/srv/b"]);
     match a.cmd {
         Some(Command::Index(ix)) => {
@@ -292,7 +292,7 @@ fn index_subcommand_parses_roots_or_daemon_modules() {
         }
         other => panic!("{other:?}"),
     }
-    // Every module when none is named.
+    // Every export when none is named.
     let a = parse(&["index", "--daemon"]);
     assert!(matches!(a.cmd, Some(Command::Index(ix)) if ix.daemon && ix.targets.is_empty()));
     // `--config` is the daemon's; a local root is required otherwise.

@@ -29,7 +29,7 @@ const DRAIN: Duration = Duration::from_secs(1);
 
 pub struct DaemonConfig<'a> {
     pub config_dir: &'a Path,
-    pub module_path: &'a Path,
+    pub export_path: &'a Path,
     pub authorized_pub_line: &'a str,
 }
 
@@ -57,19 +57,19 @@ pub fn write_config(c: &DaemonConfig) -> Result<PathBuf> {
          dht = false\n\
          dns = false\n\
          mdns = false\n\
-         [modules.data]\n\
+         [exports.data]\n\
          path = {}\n",
         toml_path(&dir.join("daemon_ed25519"))?,
         toml_path(&dir.join("authorized_keys"))?,
         toml_path(&state)?,
-        toml_path(c.module_path)?,
+        toml_path(c.export_path)?,
     );
     let toml_file = dir.join("irsyncd.toml");
     std::fs::write(&toml_file, toml).with_context(|| format!("writing {}", toml_file.display()))?;
     let keys = dir.join("authorized_keys");
     std::fs::write(
         &keys,
-        format!("modules=\"data:rw\" {}\n", c.authorized_pub_line),
+        format!("exports=\"data:rw\" {}\n", c.authorized_pub_line),
     )
     .with_context(|| format!("writing {}", keys.display()))?;
     Ok(toml_file)
@@ -481,10 +481,10 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let cfg = t.path().join("cfg");
         std::fs::create_dir(&cfg).unwrap();
-        let module = t.path().join("mod \"q\"");
+        let export = t.path().join("mod \"q\"");
         let toml_path = write_config(&DaemonConfig {
             config_dir: &cfg,
-            module_path: &module,
+            export_path: &export,
             authorized_pub_line: "ssh-ed25519 AAAA test",
         })
         .unwrap();
@@ -502,11 +502,11 @@ mod tests {
         for k in ["dht", "dns", "mdns"] {
             assert_eq!(parsed["discovery"][k].as_bool(), Some(false));
         }
-        assert_eq!(parsed["modules"]["data"]["path"], s(module));
+        assert_eq!(parsed["exports"]["data"]["path"], s(export));
         assert!(cfg.join("state").is_dir());
         assert_eq!(
             std::fs::read_to_string(cfg.join("authorized_keys")).unwrap(),
-            "modules=\"data:rw\" ssh-ed25519 AAAA test\n"
+            "exports=\"data:rw\" ssh-ed25519 AAAA test\n"
         );
     }
 

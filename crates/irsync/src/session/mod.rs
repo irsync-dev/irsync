@@ -59,15 +59,15 @@ fn location_bytes(l: &Location) -> Vec<u8> {
         }
         // The host string is an alias; the daemon id passed alongside identifies it.
         Location::Remote {
-            module,
+            export,
             path,
             contents_only,
             ..
         } => {
             v.extend_from_slice(b"remote\0");
             v.push(*contents_only as u8);
-            v.extend_from_slice(&(module.len() as u64).to_le_bytes());
-            v.extend_from_slice(module.as_bytes());
+            v.extend_from_slice(&(export.len() as u64).to_le_bytes());
+            v.extend_from_slice(export.as_bytes());
             v.extend_from_slice(path.as_bytes());
         }
     }
@@ -136,7 +136,7 @@ impl SessionKey {
         let mut h = blake3::Hasher::new();
         field(&mut h, b"irsync-daemon-session-key", b"v1");
         field(&mut h, b"client", client.as_bytes());
-        field(&mut h, b"module", hello.module.as_bytes());
+        field(&mut h, b"export", hello.export.as_bytes());
         field(&mut h, b"path", &hello.path);
         field(
             &mut h,
@@ -206,7 +206,7 @@ impl SessionRecord {
 
 /// The index a session uses, and where the session root sits below the root
 /// the index was opened for. Index rows are always relative to that index
-/// root (the module root on the daemon), so `key` maps session-relative paths
+/// root (the export root on the daemon), so `key` maps session-relative paths
 /// to index keys and `strip` maps index keys back.
 #[derive(Clone)]
 pub struct IndexScope {

@@ -10,11 +10,11 @@ use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello, HelloAck};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
-fn hello(module: &str, path: &[u8], dir: Direction) -> Hello {
+fn hello(export: &str, path: &[u8], dir: Direction) -> Hello {
     Hello {
         protocol_version: PROTOCOL_VERSION,
         session_id: vec![],
-        module: module.into(),
+        export: export.into(),
         path: path.to_vec(),
         direction: dir as i32,
         chunk_min: CHUNK_PARAMS.min,
@@ -139,7 +139,7 @@ async fn authorized_key_gets_hello_ack() {
 }
 
 #[tokio::test]
-async fn module_path_escape_rejected() {
+async fn export_path_escape_rejected() {
     expect_err(
         exchange(
             Access::ReadWrite,
@@ -159,19 +159,19 @@ async fn read_only_grant_cannot_send() {
 }
 
 #[tokio::test]
-async fn unknown_module_rejected() {
+async fn unknown_export_rejected() {
     expect_err(
         exchange(
             Access::ReadWrite,
             hello("nope", b"", Direction::DaemonSends),
         )
         .await,
-        Code::NoSuchModule,
+        Code::NoSuchExport,
     );
 }
 
 #[tokio::test]
-async fn rw_grant_cannot_send_to_read_only_module() {
+async fn rw_grant_cannot_send_to_read_only_export() {
     expect_err(
         exchange(Access::ReadWrite, hello("ro", b"", Direction::ClientSends)).await,
         Code::ReadOnly,
@@ -179,9 +179,9 @@ async fn rw_grant_cannot_send_to_read_only_module() {
 }
 
 #[tokio::test]
-async fn grant_lacking_module_cannot_pull() {
+async fn grant_lacking_export_cannot_pull() {
     let g = Grants {
-        modules: [("ro".to_string(), Access::ReadWrite)].into(),
+        exports: [("ro".to_string(), Access::ReadWrite)].into(),
         all: None,
     };
     expect_err(

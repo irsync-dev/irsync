@@ -30,16 +30,16 @@ Environment=RUST_LOG=info
 WantedBy=multi-user.target
 ```
 
-The `User=` account needs read access to the module paths (write access for
-read-write modules), to the identity and `authorized_keys` files, and write
+The `User=` account needs read access to the export paths (write access for
+read-write exports), to the identity and `authorized_keys` files, and write
 access to `state_dir`. Then `systemctl enable --now irsync` and
 `journalctl -u irsync -f`.
 
 **Do not run the daemon as root.** A receiving daemon applies the archive
 metadata the client sends (permissions, owner, group, device nodes): as root
-that means any client with write access to a module can create setuid files
+that means any client with write access to an export can create setuid files
 owned by root, files owned by other users, and device nodes in it. Run it as a
-dedicated unprivileged account (`irsync` above) that owns the module trees;
+dedicated unprivileged account (`irsync` above) that owns the export trees;
 ownership is then applied only where that account may (its own groups), as
 rsync does without privilege.
 
@@ -103,21 +103,21 @@ finalize to release the `.part` file before reporting it busy.
 
 ## State directory and garbage collection
 
-`state_dir` (default `~/.local/state/irsync`) holds one SQLite index per module
+`state_dir` (default `~/.local/state/irsync`) holds one SQLite index per export
 under `index/`: cached file hashes, partial-file progress and the daemon's
 session records. It is safe to delete; the next sync rebuilds it, at the cost
 of re-hashing and of losing resumable sessions.
 
-A module filled by something other than irsync (a prior rsync, a restore)
+An export filled by something other than irsync (a prior rsync, a restore)
 contributes nothing to rename detection and chunk reuse until its files are
-hashed. `warm_index = true` on a module hashes them in the background when
+hashed. `warm_index = true` on an export hashes them in the background when
 the daemon starts (only files whose index row is not fresh are read, so a
-restart is cheap); `irsync index --daemon [--config PATH] [MODULE...]` does
+restart is cheap); `irsync index --daemon [--config PATH] [EXPORT...]` does
 the same on demand, and a session hashes destination files of the size of a
 file it is about to fetch on its own.
 
 Interrupted transfers leave `.irsync.<name>.part` files next to their
-destinations. The daemon checks each module once an hour (first check a minute
+destinations. The daemon checks each export once an hour (first check a minute
 after start) and walks it only when its last collection is a day old or
 partial-file records older than `dormant_session_timeout` exist; it collects:
 

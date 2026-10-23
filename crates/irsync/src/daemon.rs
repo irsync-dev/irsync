@@ -1,5 +1,5 @@
 //! The long-running side: accepts connections, checks the peer's key before reading
-//! anything, resolves and validates the requested module, then hands off to a session.
+//! anything, resolves and validates the requested export, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -16,7 +16,7 @@ use irsync_proto::PROTOCOL_VERSION;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Authorizer, FileAuthorizer, Grants};
-use crate::config::daemon::{listen_sockets, DaemonConfig, Module};
+use crate::config::daemon::{listen_sockets, DaemonConfig, Export};
 use crate::filter::FilterSet;
 use crate::fs::paths::{is_contained, RelPath};
 use crate::identity::{generate_openssh, load_identity_interactive, PassphraseSource};
@@ -31,7 +31,7 @@ use crate::session::{DaemonSessions, HASH_WORKERS};
 use irsync_proto::v1::SessionPlan;
 use prost::Message;
 
-/// How often each module is garbage-collected, and the delay before the first
+/// How often each export is garbage-collected, and the delay before the first
 /// run (so startup stays quick).
 const GC_INTERVAL: Duration = Duration::from_secs(3600);
 const GC_FIRST_RUN: Duration = Duration::from_secs(60);
@@ -40,7 +40,7 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Shared {
     authz: Arc<dyn Authorizer>,
-    modules: BTreeMap<String, Module>,
+    exports: BTreeMap<String, Export>,
     indexes: HashMap<String, IndexHandle>,
     /// Age after which dormant sessions and abandoned partial files are collected.
     dormant: Duration,
@@ -61,23 +61,23 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Opens one index per module (under `cfg.state_dir`) and wraps `endpoint`.
+    /// Opens one index per export (under `cfg.state_dir`) and wraps `endpoint`.
     pub fn new(
         cfg: DaemonConfig,
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
         let mut indexes = HashMap::new();
-        for (name, m) in &cfg.modules {
+        for (name, m) in &cfg.exports {
             let ix = Index::open(&cfg.state_dir, &m.path)
-                .with_context(|| format!("open index for module {name}"))?;
+                .with_context(|| format!("open index for export {name}"))?;
             indexes.insert(name.clone(), ix.into_handle());
         }
         Ok(Daemon {
             endpoint,
             shared: Arc::new(Shared {
                 authz,
-                modules: cfg.modules,
+                exports: cfg.exports,
                 indexes,
                 dormant: cfg.dormant_session_timeout,
                 hosting: DaemonSessions {
@@ -145,12 +145,12 @@ impl Daemon {
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
-        for (name, module) in &self.shared.modules {
+        for (name, export) in &self.shared.exports {
             let Some(index) = self.shared.indexes.get(name).cloned() else {
                 continue;
             };
-            let (name, root) = (name.clone(), module.path.clone());
-            if module.warm_index {
+            let (name, root) = (name.clone(), export.path.clone());
+            if export.warm_index {
                 let (index, name, root, stop) =
                     (index.clone(), name.clone(), root.clone(), shutdown.clone());
                 tokio::spawn(async move {
@@ -159,14 +159,14 @@ impl Daemon {
                         _ = stop.cancelled() => {}
                         r = warm => match r {
                             Ok(r) => tracing::info!(
-                                module = %name,
+                                export = %name,
                                 examined = r.examined,
                                 hashed = r.hashed,
                                 bytes = r.bytes,
                                 errors = r.errors.len(),
                                 "index warmed"
                             ),
-                            Err(e) => tracing::warn!(module = %name, "index warm-up failed: {e}"),
+                            Err(e) => tracing::warn!(export = %name, "index warm-up failed: {e}"),
                         },
                     }
                 });
@@ -180,18 +180,18 @@ impl Daemon {
                         _ = stop.cancelled() => break,
                         _ = tick.tick() => {}
                     }
-                    // Walks the module only when a day has passed or
+                    // Walks the export only when a day has passed or
                     // collectable (dormant) partial records exist.
                     match gc_if_due(index.clone(), &root, dormant, dormant).await {
                         Ok(Some(r)) => tracing::info!(
-                            module = %name,
+                            export = %name,
                             parts_removed = r.parts_removed.len(),
                             parts_kept = r.parts_kept,
                             sessions_removed = r.sessions_removed,
                             "gc finished"
                         ),
-                        Ok(None) => tracing::debug!(module = %name, "gc not due"),
-                        Err(e) => tracing::warn!(module = %name, "gc failed: {e}"),
+                        Ok(None) => tracing::debug!(export = %name, "gc not due"),
+                        Err(e) => tracing::warn!(export = %name, "gc failed: {e}"),
                     }
                 }
             });
@@ -247,12 +247,12 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     match validate(&shared, &grants, &hello) {
-        Ok(module) => {
-            let root = module.path.clone();
+        Ok(export) => {
+            let root = export.path.clone();
             let index = shared
                 .indexes
-                .get(&hello.module)
-                .context("module has no index")?
+                .get(&hello.export)
+                .context("export has no index")?
                 .clone();
             let hosting = shared.hosting.clone();
             let res = serve_daemon(conn, send, recv, root, hello, index, hosting).await;
@@ -282,7 +282,7 @@ fn validate<'a>(
     shared: &'a Shared,
     grants: &Grants,
     hello: &Hello,
-) -> Result<&'a Module, (Code, String)> {
+) -> Result<&'a Export, (Code, String)> {
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err((
             Code::VersionMismatch,
@@ -297,30 +297,30 @@ fn validate<'a>(
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
     }
-    let Some(module) = shared.modules.get(&hello.module) else {
+    let Some(export) = shared.exports.get(&hello.export) else {
         return Err((
-            Code::NoSuchModule,
-            format!("no such module {:?}", hello.module),
+            Code::NoSuchExport,
+            format!("no such export {:?}", hello.export),
         ));
     };
-    if !is_contained(&module.path, &hello.path) {
-        return Err((Code::BadPath, "path escapes module".into()));
+    if !is_contained(&export.path, &hello.path) {
+        return Err((Code::BadPath, "path escapes export".into()));
     }
     match Direction::try_from(hello.direction) {
         Ok(Direction::ClientSends) => {
-            if module.read_only || !grants.allows(&hello.module, true) {
-                return Err((Code::ReadOnly, "module is read-only for this key".into()));
+            if export.read_only || !grants.allows(&hello.export, true) {
+                return Err((Code::ReadOnly, "export is read-only for this key".into()));
             }
         }
         Ok(Direction::DaemonSends) => {
-            if !grants.allows(&hello.module, false) {
-                return Err((Code::Unauthorized, "no access to module".into()));
+            if !grants.allows(&hello.export, false) {
+                return Err((Code::Unauthorized, "no access to export".into()));
             }
         }
         // No dedicated code for a malformed direction; UNKNOWN is the honest answer.
         Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }
-    Ok(module)
+    Ok(export)
 }
 
 async fn reject(

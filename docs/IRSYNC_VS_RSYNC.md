@@ -301,7 +301,7 @@ content-defined chunking's resynchronisation after unaligned insertions.
 
 What landed on 2026-10-22 needs neither. BLAKE3 is itself a Merkle tree
 over 1 KiB leaves at absolute offsets, and the `blake3` crate's `hazmat`
-module exposes its nodes. The writer (`tree_hash::TreeHash`) hashes the
+export exposes its nodes. The writer (`tree_hash::TreeHash`) hashes the
 leaf-aligned interior of every verified chunk as aligned power-of-two
 subtrees, keeps the few bytes at each chunk end until the neighbouring
 chunk completes their leaf, merges sibling nodes eagerly so only a small
@@ -457,9 +457,9 @@ round trip. Files below the size floor are fetched: for a file smaller
 than a chunk the bookkeeping would cost about what the fetch does.
 
 `irsync index ROOT...` (and `irsync index --daemon [--config PATH]
-[MODULE...]` for a daemon's modules, under its state directory) walks a
+[EXPORT...]` for a daemon's exports, under its state directory) walks a
 tree and hashes every regular file whose row is not fresh, with the
-session's worker count; `-n` only counts. A module with `warm_index =
+session's worker count; `-n` only counts. An export with `warm_index =
 true` does the same in the background when the daemon starts. After a
 warm-up a session hashes nothing on the receiving side and the planner's
 rename lookup sees the files too. Measured: a 2 MiB file present under
@@ -661,7 +661,7 @@ wire, with the version left at 1 because no peer had been deployed.
    of a session, so a destination that irsync did not create starts
    contributing chunks. *Done (2026-10-22): same-sized destination files
    are hashed before a whole file is fetched; `irsync index` and the
-   daemon's `warm_index` module setting hash a tree ahead of time; see
+   daemon's `warm_index` export setting hash a tree ahead of time; see
    3.7.*
 
 ## 6. What is still open
