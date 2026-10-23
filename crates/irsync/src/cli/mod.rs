@@ -120,6 +120,65 @@ pub enum Command {
     /// index, so a destination irsync did not create contributes chunks
     /// and rename candidates from the first session on.
     Index(IndexArgs),
+    /// Export a directory from this machine's daemon (edits exports.toml)
+    /// and print the daemon's id.
+    Add(AddArgs),
+    /// Stop exporting a directory (edits exports.toml).
+    Remove {
+        /// The export's name.
+        name: String,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+    /// Grant a peer access to an export (edits exports.toml).
+    Allow {
+        /// The export's name (`all`: the top level, every export).
+        export: String,
+        /// An alias from hosts.toml, an EndpointId, a public key line or a
+        /// .pub file.
+        who: String,
+        /// Read-only access (default: read-write).
+        #[arg(long)]
+        ro: bool,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+    /// Remove grants: `revoke WHO`, `revoke EXPORT WHO` or `revoke EXPORT all`
+    /// (`all` in place of EXPORT means everywhere, of WHO every peer).
+    Revoke {
+        #[arg(required = true, num_args = 1..=2, value_name = "ARG")]
+        args: Vec<String>,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+}
+
+/// The config files the management commands read and edit.
+#[derive(Debug, clap::Args)]
+pub struct FilesArgs {
+    /// The settings file (default: irsync.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    /// The host aliases file (default: hosts.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub hosts: Option<PathBuf>,
+    /// The exports file (default: exports.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
+    pub exports: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AddArgs {
+    /// `NAME:PATH`, or a directory named by its final component.
+    pub target: String,
+    /// Export read-only.
+    #[arg(long)]
+    pub ro: bool,
+    /// Keep the export's index warm in the background.
+    #[arg(long)]
+    pub warm_index: bool,
+    #[command(flatten)]
+    pub files: FilesArgs,
 }
 
 #[derive(Debug, clap::Args)]

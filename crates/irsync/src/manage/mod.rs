@@ -1,6 +1,8 @@
 //! Shared editing layer for the config-managing commands: format-preserving
 //! TOML load/save and the interpretation of a command-line "who" argument.
 
+pub mod exports;
+
 use crate::config::hosts::Hosts;
 use crate::config::ConfigError;
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};

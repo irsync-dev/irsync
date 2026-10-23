@@ -353,3 +353,16 @@ fn index_subcommand_parses_roots_or_daemon_exports() {
     assert!(Args::try_parse_from(["irsync", "index"]).is_err());
     assert!(Args::try_parse_from(["irsync", "index", "-n"]).is_err());
 }
+
+#[test]
+fn management_commands_parse() {
+    let a = parse(&["add", "photos:/srv/photos", "--ro", "--warm-index", "--exports", "/e"]);
+    let Some(Command::Add(x)) = a.cmd else { panic!() };
+    assert!(x.target == "photos:/srv/photos" && x.ro && x.warm_index && x.files.exports == Some("/e".into()));
+    assert!(matches!(parse(&["remove", "photos"]).cmd, Some(Command::Remove { ref name, .. }) if name == "photos"));
+    assert!(matches!(parse(&["allow", "photos", "laptop", "--ro"]).cmd, Some(Command::Allow { ref export, ref who, ro: true, .. }) if export == "photos" && who == "laptop"));
+    assert!(matches!(parse(&["revoke", "laptop"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 1));
+    assert!(matches!(parse(&["revoke", "photos", "all"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 2));
+    assert!(Args::try_parse_from(["irsync", "revoke"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "revoke", "a", "b", "c"]).is_err());
+}

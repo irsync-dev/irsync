@@ -7,7 +7,9 @@ use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
-use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
+use irsync::cli::{
+    validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, IndexArgs, SyncOptions,
+};
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
@@ -15,6 +17,7 @@ use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
 use irsync::identity::{load_or_generate, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
+use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
 use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome, HASH_WORKERS};
@@ -29,6 +32,15 @@ fn main() {
         Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, args.sync.verbose)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, args.sync.verbose)),
+        Some(Command::Add(a)) => std::process::exit(run_add(a)),
+        Some(Command::Remove { name, files }) => std::process::exit(run_remove(name, files)),
+        Some(Command::Allow {
+            export,
+            who,
+            ro,
+            files,
+        }) => std::process::exit(run_allow(export, who, *ro, files)),
+        Some(Command::Revoke { args, files }) => std::process::exit(run_revoke(args, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -616,6 +628,111 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
             1
         }
     }
+}
+
+/// Report a management command's result: `irsync <cmd>: error` and exit 1.
+fn finish(cmd: &str, r: anyhow::Result<()>) -> i32 {
+    match r {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("irsync {cmd}: {e:#}");
+            1
+        }
+    }
+}
+
+fn file_paths(f: &FilesArgs) -> Paths {
+    Paths::resolve(f.config.as_deref(), f.hosts.as_deref(), f.exports.as_deref())
+}
+
+fn run_add(a: &AddArgs) -> i32 {
+    finish(
+        "add",
+        (|| {
+            let (name, path) =
+                manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
+            let paths = file_paths(&a.files);
+            let mut doc = manage::load_doc(&paths.exports)?;
+            manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
+            manage::save_doc(&paths.exports, &doc)?;
+            eprintln!(
+                "added export {name} ({}) to {}",
+                path.display(),
+                paths.exports.display()
+            );
+            let settings = Settings::load(&paths.config)?;
+            let pass = PassphraseSource::from_env(None);
+            let (secret, generated) =
+                load_or_generate(&settings.daemon.identity, &pass, "irsync-daemon")
+                    .with_context(|| format!("identity {}", settings.daemon.identity.display()))?;
+            if generated {
+                eprintln!("generated identity {}", settings.daemon.identity.display());
+            }
+            println!("{}", secret.public());
+            Ok(())
+        })(),
+    )
+}
+
+fn run_remove(name: &str, f: &FilesArgs) -> i32 {
+    finish(
+        "remove",
+        (|| {
+            let paths = file_paths(f);
+            let mut doc = manage::load_doc(&paths.exports)?;
+            manage::exports::remove_export(&mut doc, name)?;
+            manage::save_doc(&paths.exports, &doc)?;
+            eprintln!("removed export {name} from {}", paths.exports.display());
+            Ok(())
+        })(),
+    )
+}
+
+fn run_allow(export: &str, who: &str, ro: bool, f: &FilesArgs) -> i32 {
+    finish(
+        "allow",
+        (|| {
+            let paths = file_paths(f);
+            let hosts = Hosts::load(&paths.hosts)?;
+            let spec = PeerSpec::parse(who, &hosts)?;
+            let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+            let mut doc = manage::load_doc(&paths.exports)?;
+            let target = (export != "all").then_some(export);
+            manage::exports::allow(&mut doc, target, &spec, ro, &resolve)?;
+            manage::save_doc(&paths.exports, &doc)?;
+            let mode = if ro { "ro" } else { "rw" };
+            match target {
+                Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
+                None => eprintln!("{}: {mode} on all exports", spec.entry()),
+            }
+            Ok(())
+        })(),
+    )
+}
+
+fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
+    finish(
+        "revoke",
+        (|| {
+            let paths = file_paths(f);
+            let hosts = Hosts::load(&paths.hosts)?;
+            let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+            let (export, who) = match args {
+                [w] => (None, Some(w.as_str())),
+                [e, w] => (
+                    (e != "all").then_some(e.as_str()),
+                    (w != "all").then_some(w.as_str()),
+                ),
+                _ => bail!("expected WHO or EXPORT WHO"),
+            };
+            let spec = who.map(|w| PeerSpec::parse(w, &hosts)).transpose()?;
+            let mut doc = manage::load_doc(&paths.exports)?;
+            let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)?;
+            manage::save_doc(&paths.exports, &doc)?;
+            eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
+            Ok(())
+        })(),
+    )
 }
 
 #[cfg(test)]
