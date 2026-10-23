@@ -107,11 +107,20 @@ fn exports_parse_top_level_arrays_and_tables() {
 
 #[test]
 fn exports_reserved_table_name_is_error() {
-    let e = Exports::parse("[all]\npath = \"/x\"\n", p()).unwrap_err();
-    assert!(
-        matches!(e, ConfigError::ReservedName(ref n) if n == "all"),
-        "{e:?}"
-    );
+    let e = Exports::parse("\n[all]\npath = \"/x\"\n", p()).unwrap_err();
+    assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
+    let e = e.to_string();
+    assert!(e.starts_with("/x/f.toml:2:") && e.contains("\"all\" is a reserved name"), "{e}");
+}
+
+#[test]
+fn exports_relative_path_is_error_with_file_and_line() {
+    let e = Exports::parse("[a]\npath = \"/a\"\n[b]\npath = \"srv/b\"\n", p()).unwrap_err();
+    assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
+    let e = e.to_string();
+    assert!(e.starts_with("/x/f.toml:3:") && e.contains("srv/b") && e.contains("absolute"), "{e}");
+    // `~` expands to an absolute path and is accepted.
+    assert!(Exports::parse("[c]\npath = \"~/c\"\n", p()).unwrap().exports["c"].path.is_absolute());
 }
 
 #[test]
@@ -179,14 +188,10 @@ fn exports_schema_errors_have_lines() {
 
 #[test]
 fn exports_rw_ro_tables_are_reserved() {
-    let e = Exports::parse("[rw]\npath = \"/x\"\n", p()).unwrap_err();
-    assert!(
-        matches!(e, ConfigError::ReservedName(ref n) if n == "rw"),
-        "{e:?}"
-    );
-    let e = Exports::parse("[ro]\npath = \"/x\"\n", p()).unwrap_err();
-    assert!(
-        matches!(e, ConfigError::ReservedName(ref n) if n == "ro"),
-        "{e:?}"
-    );
+    for name in ["rw", "ro"] {
+        let e = Exports::parse(&format!("[{name}]\npath = \"/x\"\n"), p()).unwrap_err();
+        assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
+        let e = e.to_string();
+        assert!(e.starts_with("/x/f.toml:1:") && e.contains(&format!("{name:?} is a reserved name")), "{e}");
+    }
 }

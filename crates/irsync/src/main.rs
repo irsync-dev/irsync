@@ -657,20 +657,16 @@ fn run_add(a: &AddArgs) -> i32 {
             let paths = file_paths(&a.files);
             let mut doc = manage::load_doc(&paths.exports)?;
             manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
+            // The daemon identity comes first: when it cannot be had, the
+            // export is not added either.
+            let settings = Settings::load(&paths.config)?;
+            let secret = identity_of(&settings.daemon.identity, "irsync-daemon")?;
             manage::save_exports(&paths.exports, &doc)?;
             eprintln!(
                 "added export {name} ({}) to {}",
                 path.display(),
                 paths.exports.display()
             );
-            let settings = Settings::load(&paths.config)?;
-            let pass = PassphraseSource::from_env(None);
-            let (secret, generated) =
-                load_or_generate(&settings.daemon.identity, &pass, "irsync-daemon")
-                    .with_context(|| format!("identity {}", settings.daemon.identity.display()))?;
-            if generated {
-                eprintln!("generated identity {}", settings.daemon.identity.display());
-            }
             println!("{}", secret.public());
             Ok(())
         })(),

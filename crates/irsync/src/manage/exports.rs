@@ -37,11 +37,17 @@ pub fn add_export(
     Ok(())
 }
 
-/// Remove `[name]` together with its grants.
+/// Remove `[name]` together with its grants. Only an export (a table) is
+/// removed, never the top-level `rw`/`ro` arrays.
 pub fn remove_export(doc: &mut DocumentMut, name: &str) -> Result<(), ManageError> {
-    doc.remove(name)
-        .map(|_| ())
-        .ok_or_else(|| ManageError::NotFound(name.to_string()))
+    if RESERVED.contains(&name) {
+        return Err(ManageError::Reserved(name.to_string()));
+    }
+    if !doc.get(name).is_some_and(Item::is_table_like) {
+        return Err(ManageError::NotFound(name.to_string()));
+    }
+    doc.remove(name);
+    Ok(())
 }
 
 /// The table `export` names, or the top level for `None`.

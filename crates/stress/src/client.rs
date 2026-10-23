@@ -17,7 +17,7 @@ use crate::layout::Layout;
 #[derive(Debug, Clone)]
 pub struct ClientSetup {
     pub identity: PathBuf,
-    /// An empty file, passed as `-F`.
+    /// An empty `irsync.toml`, passed as `--config`.
     pub config: PathBuf,
     pub home: PathBuf,
     pub xdg_state: PathBuf,
@@ -26,7 +26,7 @@ pub struct ClientSetup {
 /// Creates the empty config file and the `home/` and `xdg/` directories under
 /// `config_dir`. `identity` comes from `client_keygen`.
 pub fn setup(config_dir: &Path, identity: PathBuf) -> Result<ClientSetup> {
-    let config = config_dir.join("client.conf");
+    let config = config_dir.join("irsync.toml");
     File::create(&config).with_context(|| format!("creating {}", config.display()))?;
     let home = config_dir.join("home");
     let xdg_state = config_dir.join("xdg");

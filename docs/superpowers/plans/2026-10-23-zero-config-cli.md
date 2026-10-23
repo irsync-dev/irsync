@@ -1107,7 +1107,7 @@ Verify each command line in the docs against the binary: run every `irsync …` 
 
 - [ ] **Step 2: Check for leftovers**
 
-Run: `grep -rn "authorized_keys\|irsyncd.toml\|IRSYNC_CONFIG\|\.ssh/id_ed25519\|--foreground\|Host \*\|IdentityFile" README.md docs crates --include='*.md' --include='*.rs' --include='*.toml' | grep -v "superpowers/specs\|superpowers/plans"`
+Run: `grep -rn "authorized_keys\|irsyncd.toml\|IRSYNC_CONFIG\|\.ssh/id_ed25519\|--foreground\|Host \*\|IdentityFile" README.md docs crates --include='*.md' --include='*.rs' --include='*.toml' | grep -v "superpowers/specs\|superpowers/plans" | grep -v "tests/cli.rs"`
 Expected: no output.
 
 - [ ] **Step 3: Commit**

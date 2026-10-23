@@ -32,6 +32,10 @@ pub struct Exports {
     pub exports: BTreeMap<String, Export>,
 }
 
+fn reserved(name: &str) -> String {
+    format!("{name:?} is a reserved name and cannot be used as an export name")
+}
+
 impl Exports {
     pub fn parse(text: &str, path: &Path) -> Result<Exports, ConfigError> {
         let at = |offset: usize, message: String| ConfigError::File {
@@ -44,9 +48,7 @@ impl Exports {
         let mut list = |key: &str| -> Result<Vec<String>, ConfigError> {
             match table.remove(key) {
                 None => Ok(Vec::new()),
-                Some(v) if v.get_ref().is_table() => {
-                    Err(ConfigError::ReservedName(key.to_string()))
-                }
+                Some(v) if v.get_ref().is_table() => Err(at(v.span().start, reserved(key))),
                 Some(v) => {
                     let start = v.span().start;
                     v.into_inner()
@@ -61,7 +63,7 @@ impl Exports {
         for (name, value) in table {
             let start = value.span().start;
             if RESERVED.contains(&name.as_str()) {
-                return Err(ConfigError::ReservedName(name));
+                return Err(at(start, reserved(&name)));
             }
             let value = value.into_inner();
             if !value.is_table() {
@@ -77,6 +79,15 @@ impl Exports {
                 .try_into()
                 .map_err(|e: toml::de::Error| at(start, format!("[{name}]: {}", e.message())))?;
             e.path = expand_tilde(&e.path.to_string_lossy());
+            if !e.path.is_absolute() {
+                return Err(at(
+                    start,
+                    format!(
+                        "[{name}]: path {:?} must be absolute",
+                        e.path.to_string_lossy()
+                    ),
+                ));
+            }
             exports.insert(name, e);
         }
         Ok(Exports {

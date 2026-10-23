@@ -203,6 +203,12 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && err.contains(key.to_str().unwrap()), "{args:?}: {err}");
     }
+    // `add` needs the daemon identity, and adds nothing without it.
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let o = irsync(&home, &["add", &format!("p:{}", home.join("p").display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains(key.to_str().unwrap()), "{err}");
+    assert!(!home.join(".config/irsync/exports.toml").exists());
 }
 
 #[test]

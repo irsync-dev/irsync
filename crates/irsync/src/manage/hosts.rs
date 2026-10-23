@@ -40,7 +40,7 @@ pub fn host_add(
         .and_then(Item::as_str)
         .and_then(|s| parse_endpoint_id(s).ok())
         .filter(|old| *old != id);
-    if !doc.get(alias).is_some_and(Item::is_table) {
+    if !doc.get(alias).is_some_and(Item::is_table_like) {
         doc[alias] = toml_edit::table();
     }
     let t = &mut doc[alias];
@@ -67,11 +67,13 @@ pub fn host_add(
     Ok(old)
 }
 
-/// Remove `[alias]`.
+/// Remove `[alias]`; only a host entry (a table) is removed.
 pub fn host_remove(doc: &mut DocumentMut, alias: &str) -> Result<(), ManageError> {
-    doc.remove(alias)
-        .map(|_| ())
-        .ok_or_else(|| ManageError::NotFound(alias.to_string()))
+    if !doc.get(alias).is_some_and(Item::is_table_like) {
+        return Err(ManageError::NotFound(alias.to_string()));
+    }
+    doc.remove(alias);
+    Ok(())
 }
 
 /// The lines `host list` prints: `alias: id`, then one indented

@@ -38,3 +38,23 @@ fn save_hosts_refuses_a_document_that_does_not_parse() {
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
     assert!(!path.exists());
 }
+
+#[test]
+fn host_remove_needs_a_table() {
+    let mut doc: DocumentMut = "x = 1\n".parse().unwrap();
+    assert!(matches!(host_remove(&mut doc, "x"), Err(ManageError::NotFound(_))));
+    assert_eq!(doc.to_string(), "x = 1\n");
+    let mut doc: DocumentMut = format!("y = {{ endpoint_id = \"{}\" }}\n", id(1)).parse().unwrap();
+    host_remove(&mut doc, "y").unwrap();
+    assert!(doc.as_table().is_empty());
+}
+
+#[test]
+fn host_add_keeps_the_other_keys_of_an_inline_table() {
+    let mut doc: DocumentMut = format!("home = {{ endpoint_id = \"{}\", parallel = 4 }}\n", id(1)).parse().unwrap();
+    let f = HostFlags { mdns: Some(true), ..Default::default() };
+    assert_eq!(host_add(&mut doc, "home", id(2), &f).unwrap(), Some(id(1)));
+    let h = irsync::config::hosts::Hosts::parse(&doc.to_string(), std::path::Path::new("h")).unwrap();
+    let e = h.get("home").unwrap();
+    assert_eq!((e.endpoint_id, e.parallel, e.mdns), (id(2), Some(4), Some(true)), "{doc}");
+}

@@ -150,3 +150,16 @@ fn save_exports_refuses_a_document_that_does_not_parse() {
     irsync::manage::save_exports(&path, &ok).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "[q]\npath = \"/q\"\n");
 }
+
+#[test]
+fn remove_refuses_reserved_names_and_non_tables() {
+    let text = format!("rw = [\"{}\"]\nro = []\n[p]\npath = \"/p\"\n", id(1));
+    let mut doc: DocumentMut = text.parse().unwrap();
+    for r in ["rw", "ro", "all"] {
+        assert!(matches!(remove_export(&mut doc, r), Err(ManageError::Reserved(_))), "{r}");
+    }
+    let mut odd: DocumentMut = "x = 1\n[p]\npath = \"/p\"\n".parse().unwrap();
+    assert!(matches!(remove_export(&mut odd, "x"), Err(ManageError::NotFound(_))));
+    assert_eq!(doc.to_string(), text);
+    assert_eq!(odd.to_string(), "x = 1\n[p]\npath = \"/p\"\n");
+}

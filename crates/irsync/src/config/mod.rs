@@ -36,8 +36,6 @@ pub enum ConfigError {
     },
     #[error("unknown host alias {alias:?} (and not an EndpointId); aliases are defined in {}", hosts.display())]
     UnknownAlias { alias: String, hosts: PathBuf },
-    #[error("{0:?} is a reserved name and cannot be used as an export name")]
-    ReservedName(String),
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
     BadPeer(String),
     #[error("daemon config: {0}")]
