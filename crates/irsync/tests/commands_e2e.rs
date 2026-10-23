@@ -55,3 +55,23 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
     assert!(irsync(&home, &["remove", "photos"]).status.success());
     assert_eq!(std::fs::read_to_string(&exports).unwrap().trim(), "");
 }
+
+#[test]
+fn host_add_then_allow_by_alias_then_list() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    assert!(irsync(&home, &["host", "add", "laptop", &id, "--parallel", "4"]).status.success());
+    assert_eq!(std::fs::read_to_string(home.join(".config/irsync/hosts.toml")).unwrap(), format!("[laptop]\nendpoint_id = \"{id}\"\nparallel = 4\n"));
+    assert!(irsync(&home, &["add", &format!("p:{}", home.join("p").display())]).status.success());
+    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
+    assert!(std::fs::read_to_string(home.join(".config/irsync/exports.toml")).unwrap().contains("rw = [\"laptop\"]"));
+    let o = irsync(&home, &["host", "list"]);
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(out.starts_with(&format!("laptop: {id}\n")) && out.contains("parallel = 4"), "{out}");
+    let o = irsync(&home, &["host", "add", &id, &id]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("alias"));
+    assert!(irsync(&home, &["host", "remove", "laptop"]).status.success());
+    assert_eq!(std::fs::read_to_string(home.join(".config/irsync/hosts.toml")).unwrap().trim(), "");
+}

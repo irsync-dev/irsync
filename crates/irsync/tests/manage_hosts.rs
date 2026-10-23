@@ -1,0 +1,30 @@
+use irsync::manage::hosts::{host_add, host_remove, HostFlags};
+use irsync::manage::ManageError;
+use toml_edit::DocumentMut;
+
+fn id(n: u8) -> iroh::EndpointId { iroh::SecretKey::from_bytes(&[n; 32]).public() }
+
+#[test]
+fn host_add_writes_given_keys_updates_id_and_keeps_others() {
+    let mut doc = DocumentMut::new();
+    let f = HostFlags { parallel: Some(4), reconnect: Some("1h".into()), ..Default::default() };
+    assert_eq!(host_add(&mut doc, "home", id(1), &f).unwrap(), None);
+    assert_eq!(doc.to_string(), format!("[home]\nendpoint_id = \"{}\"\nparallel = 4\nreconnect = \"1h\"\n", id(1)));
+    let f = HostFlags { address: Some(vec!["10.0.0.1:4000".parse().unwrap()]), ..Default::default() };
+    assert_eq!(host_add(&mut doc, "home", id(2), &f).unwrap(), Some(id(1)));
+    let s = doc.to_string();
+    assert!(s.contains(&id(2).to_string()) && s.contains("parallel = 4") && s.contains("address = [\"10.0.0.1:4000\"]"), "{s}");
+    assert_eq!(host_add(&mut doc, "home", id(2), &HostFlags::default()).unwrap(), None);
+}
+
+#[test]
+fn host_add_rejects_bad_alias_and_remove_needs_existing() {
+    let mut doc = DocumentMut::new();
+    for bad in ["a:b", "a/b", "", &id(1).to_string()] {
+        assert!(matches!(host_add(&mut doc, bad, id(1), &HostFlags::default()), Err(ManageError::BadAlias(_))), "{bad:?}");
+    }
+    assert!(matches!(host_remove(&mut doc, "x"), Err(ManageError::NotFound(_))));
+    host_add(&mut doc, "x", id(1), &HostFlags::default()).unwrap();
+    host_remove(&mut doc, "x").unwrap();
+    assert!(doc.as_table().is_empty());
+}

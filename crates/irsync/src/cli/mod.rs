@@ -151,6 +151,68 @@ pub enum Command {
         #[command(flatten)]
         files: FilesArgs,
     },
+    /// Manage host aliases (edits hosts.toml).
+    #[command(subcommand)]
+    Host(HostCmd),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HostCmd {
+    /// Add a host alias, or update the keys given for an existing one.
+    Add(HostAddArgs),
+    /// Remove a host alias.
+    Remove {
+        /// The alias.
+        alias: String,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+    /// List host aliases.
+    List {
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HostAddArgs {
+    /// The alias (no ':' or '/', not an EndpointId).
+    pub alias: String,
+    /// The host's EndpointId.
+    pub id: String,
+    /// Home relay URL.
+    #[arg(long)]
+    pub relay: Option<String>,
+    /// Direct address `HOST:PORT` (repeatable; replaces the stored list).
+    #[arg(long)]
+    pub address: Vec<HostPort>,
+    /// Files in flight at once.
+    #[arg(long)]
+    pub parallel: Option<u32>,
+    /// Reconnect window, e.g. `1h`.
+    #[arg(long, value_parser = validate_duration)]
+    pub reconnect: Option<String>,
+    /// Use DHT discovery for this host (yes|no).
+    #[arg(long, value_parser = parse_yes_no)]
+    pub dht: Option<bool>,
+    /// Use mDNS discovery for this host (yes|no).
+    #[arg(long, value_parser = parse_yes_no)]
+    pub mdns: Option<bool>,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
+/// Accepts a duration the config files accept; keeps the user's text.
+fn validate_duration(s: &str) -> Result<String, String> {
+    duration::parse(s).map(|_| s.to_string()).map_err(|e| e.to_string())
+}
+
+fn parse_yes_no(s: &str) -> Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "yes" | "true" => Ok(true),
+        "no" | "false" => Ok(false),
+        _ => Err(format!("expected yes or no, got {s:?}")),
+    }
 }
 
 /// The config files the management commands read and edit.

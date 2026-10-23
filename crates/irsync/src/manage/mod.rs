@@ -2,6 +2,7 @@
 //! TOML load/save and the interpretation of a command-line "who" argument.
 
 pub mod exports;
+pub mod hosts;
 
 use crate::config::hosts::Hosts;
 use crate::config::ConfigError;

@@ -366,3 +366,14 @@ fn management_commands_parse() {
     assert!(Args::try_parse_from(["irsync", "revoke"]).is_err());
     assert!(Args::try_parse_from(["irsync", "revoke", "a", "b", "c"]).is_err());
 }
+
+#[test]
+fn host_subcommands_parse() {
+    use irsync::cli::HostCmd;
+    let a = parse(&["host", "add", "home", "abc", "--relay", "https://r", "--address", "1.2.3.4:1", "--address", "h:2", "--parallel", "8", "--reconnect", "2h", "--dht", "no", "--mdns", "yes", "--hosts", "/h"]);
+    let Some(Command::Host(HostCmd::Add(h))) = a.cmd else { panic!() };
+    assert!(h.alias == "home" && h.id == "abc" && h.address.len() == 2 && h.dht == Some(false) && h.mdns == Some(true) && h.files.hosts == Some("/h".into()));
+    assert!(Args::try_parse_from(["irsync", "host", "add", "home", "abc", "--dht", "maybe"]).is_err());
+    assert!(matches!(parse(&["host", "remove", "home"]).cmd, Some(Command::Host(HostCmd::Remove { ref alias, .. })) if alias == "home"));
+    assert!(matches!(parse(&["host", "list"]).cmd, Some(Command::Host(HostCmd::List { .. }))));
+}

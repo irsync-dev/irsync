@@ -8,7 +8,8 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, IndexArgs, SyncOptions,
+    validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, HostAddArgs, HostCmd,
+    IndexArgs, SyncOptions,
 };
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
@@ -41,6 +42,7 @@ fn main() {
             files,
         }) => std::process::exit(run_allow(export, who, *ro, files)),
         Some(Command::Revoke { args, files }) => std::process::exit(run_revoke(args, files)),
+        Some(Command::Host(h)) => std::process::exit(run_host(h)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -742,6 +744,58 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
             Ok(())
         })(),
     )
+}
+
+fn run_host(h: &HostCmd) -> i32 {
+    match h {
+        HostCmd::Add(a) => finish("host add", host_add(a)),
+        HostCmd::Remove { alias, files } => finish(
+            "host remove",
+            (|| {
+                let paths = file_paths(files);
+                let mut doc = manage::load_doc(&paths.hosts)?;
+                manage::hosts::host_remove(&mut doc, alias)?;
+                manage::save_doc(&paths.hosts, &doc)?;
+                eprintln!("removed host {alias} from {}", paths.hosts.display());
+                Ok(())
+            })(),
+        ),
+        HostCmd::List { files } => finish(
+            "host list",
+            (|| {
+                let doc = manage::load_doc(&file_paths(files).hosts)?;
+                for line in manage::hosts::host_list(&doc) {
+                    println!("{line}");
+                }
+                Ok(())
+            })(),
+        ),
+    }
+}
+
+fn host_add(a: &HostAddArgs) -> anyhow::Result<()> {
+    let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
+    let flags = manage::hosts::HostFlags {
+        relay: a
+            .relay
+            .as_deref()
+            .map(|r| r.parse().with_context(|| format!("--relay {r:?}")))
+            .transpose()?,
+        address: (!a.address.is_empty()).then(|| a.address.clone()),
+        parallel: a.parallel,
+        reconnect: a.reconnect.clone(),
+        dht: a.dht,
+        mdns: a.mdns,
+    };
+    let paths = file_paths(&a.files);
+    let mut doc = manage::load_doc(&paths.hosts)?;
+    let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
+    manage::save_doc(&paths.hosts, &doc)?;
+    match old {
+        Some(old) => println!("{}: {old} -> {id}", a.alias),
+        None => println!("{}: {id}", a.alias),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
