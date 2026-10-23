@@ -154,6 +154,23 @@ pub enum Command {
     /// Manage host aliases (edits hosts.toml).
     #[command(subcommand)]
     Host(HostCmd),
+    /// Print this machine's public key line and EndpointId, generating the
+    /// identity if it does not exist.
+    Id {
+        /// The daemon's identity instead of the client's.
+        #[arg(long, conflicts_with = "all")]
+        daemon: bool,
+        /// Both identities, labelled.
+        #[arg(short = 'a', long)]
+        all: bool,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
+    /// Show the config files, identities, host aliases and exports.
+    Show {
+        #[command(flatten)]
+        files: FilesArgs,
+    },
 }
 
 #[derive(Debug, Subcommand)]

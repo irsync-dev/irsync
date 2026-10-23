@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -54,6 +56,9 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
     assert!(!std::fs::read_to_string(&exports).unwrap().contains(&id));
     assert!(irsync(&home, &["remove", "photos"]).status.success());
     assert_eq!(std::fs::read_to_string(&exports).unwrap().trim(), "");
+    let o = irsync(&home, &["remove", "photos"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("no such entry") && err.contains(exports.to_str().unwrap()), "{err}");
 }
 
 #[test]
@@ -74,4 +79,91 @@ fn host_add_then_allow_by_alias_then_list() {
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("alias"));
     assert!(irsync(&home, &["host", "remove", "laptop"]).status.success());
     assert_eq!(std::fs::read_to_string(home.join(".config/irsync/hosts.toml")).unwrap().trim(), "");
+}
+
+#[test]
+fn id_generates_and_prints_client_then_daemon_then_both() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let o = irsync(&home, &["id"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].starts_with("ssh-ed25519 "));
+    let client = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+    assert!(home.join(".config/irsync/id_ed25519").exists());
+    let o = irsync(&home, &["id", "--daemon"]);
+    let daemon = irsync::identity::parse_endpoint_id(
+        String::from_utf8(o.stdout).unwrap().lines().nth(1).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(client, daemon);
+    let o = irsync(&home, &["id", "--all"]);
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!((lines[0], lines[3]), ("client:", "daemon:"));
+    assert_eq!(irsync::identity::parse_endpoint_id(lines[2]).unwrap(), client);
+    assert_eq!(irsync::identity::parse_endpoint_id(lines[5]).unwrap(), daemon);
+    assert!(!String::from_utf8_lossy(&irsync(&home, &["id"]).stderr).contains("generated"));
+}
+
+#[test]
+fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    irsync(&home, &["host", "add", "laptop", &id]);
+    irsync(&home, &["add", &format!("p:{}", home.join("p").display())]);
+    irsync(&home, &["allow", "p", "laptop"]);
+    std::fs::write(
+        home.join(".config/irsync/exports.toml"),
+        format!("[p]\npath = {:?}\nrw = [\"laptop\", \"ghost\"]\n", home.join("p")),
+    )
+    .unwrap();
+    let o = irsync(&home, &["show"]);
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(out.contains("irsync.toml") && out.contains("hosts.toml") && out.contains("exports.toml"), "{out}");
+    assert!(out.contains(&format!("laptop ({id})")) && out.contains("ghost (unknown alias)"), "{out}");
+    assert!(out.contains("p: ") && out.contains(home.join("p").to_str().unwrap()));
+    assert!(out.contains("client identity: ") && out.contains("daemon identity: "), "{out}");
+    assert!(out.contains("irsync.toml (missing)"), "{out}");
+}
+
+#[test]
+fn sync_generates_the_client_identity_on_first_run() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let src = d.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    // A loopback endpoint that refuses every connection: the client fails
+    // at once instead of waiting out the QUIC idle timeout.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let ep = rt.block_on(common::loopback_endpoint());
+    let id = ep.id().to_string();
+    let port = ep.addr().ip_addrs().next().unwrap().port();
+    rt.spawn(async move {
+        while let Some(incoming) = ep.accept().await {
+            incoming.refuse();
+        }
+    });
+    let o = irsync(
+        &home,
+        &[
+            "-a",
+            "--address",
+            &format!("127.0.0.1:{port}"),
+            "--reconnect",
+            "0",
+            &format!("{}/", src.display()),
+            &format!("{id}:x/"),
+        ],
+    );
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    let key = home.join(".config/irsync/id_ed25519");
+    assert!(err.contains("generated identity") && err.contains(key.to_str().unwrap()), "{err}");
+    assert!(key.exists() && home.join(".config/irsync/id_ed25519.pub").exists());
 }

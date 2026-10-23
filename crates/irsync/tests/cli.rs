@@ -377,3 +377,12 @@ fn host_subcommands_parse() {
     assert!(matches!(parse(&["host", "remove", "home"]).cmd, Some(Command::Host(HostCmd::Remove { ref alias, .. })) if alias == "home"));
     assert!(matches!(parse(&["host", "list"]).cmd, Some(Command::Host(HostCmd::List { .. }))));
 }
+
+#[test]
+fn id_and_show_parse() {
+    assert!(matches!(parse(&["id"]).cmd, Some(Command::Id { daemon: false, all: false, .. })));
+    assert!(matches!(parse(&["id", "--daemon"]).cmd, Some(Command::Id { daemon: true, .. })));
+    assert!(matches!(parse(&["id", "-a"]).cmd, Some(Command::Id { all: true, .. })));
+    assert!(Args::try_parse_from(["irsync", "id", "--daemon", "--all"]).is_err());
+    assert!(matches!(parse(&["show", "--config", "/c"]).cmd, Some(Command::Show { .. })));
+}

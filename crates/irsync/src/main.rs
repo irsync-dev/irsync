@@ -43,6 +43,10 @@ fn main() {
         }) => std::process::exit(run_allow(export, who, *ro, files)),
         Some(Command::Revoke { args, files }) => std::process::exit(run_revoke(args, files)),
         Some(Command::Host(h)) => std::process::exit(run_host(h)),
+        Some(Command::Id { daemon, all, files }) => {
+            std::process::exit(run_id(*daemon, *all, files))
+        }
+        Some(Command::Show { files }) => std::process::exit(run_show(files)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -682,7 +686,8 @@ fn run_remove(name: &str, f: &FilesArgs) -> i32 {
         (|| {
             let paths = file_paths(f);
             let mut doc = manage::load_doc(&paths.exports)?;
-            manage::exports::remove_export(&mut doc, name)?;
+            manage::exports::remove_export(&mut doc, name)
+                .with_context(|| format!("in {}", paths.exports.display()))?;
             manage::save_doc(&paths.exports, &doc)?;
             eprintln!("removed export {name} from {}", paths.exports.display());
             Ok(())
@@ -700,7 +705,8 @@ fn run_allow(export: &str, who: &str, ro: bool, f: &FilesArgs) -> i32 {
             let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
             let mut doc = manage::load_doc(&paths.exports)?;
             let target = (export != "all").then_some(export);
-            manage::exports::allow(&mut doc, target, &spec, ro, &resolve)?;
+            manage::exports::allow(&mut doc, target, &spec, ro, &resolve)
+                .with_context(|| format!("in {}", paths.exports.display()))?;
             manage::save_doc(&paths.exports, &doc)?;
             let mode = if ro { "ro" } else { "rw" };
             match target {
@@ -738,7 +744,8 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
                 Some((_, Err(e))) => return Err(e.into()),
             };
             let mut doc = manage::load_doc(&paths.exports)?;
-            let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)?;
+            let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)
+                .with_context(|| format!("in {}", paths.exports.display()))?;
             manage::save_doc(&paths.exports, &doc)?;
             eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
             Ok(())
@@ -754,7 +761,8 @@ fn run_host(h: &HostCmd) -> i32 {
             (|| {
                 let paths = file_paths(files);
                 let mut doc = manage::load_doc(&paths.hosts)?;
-                manage::hosts::host_remove(&mut doc, alias)?;
+                manage::hosts::host_remove(&mut doc, alias)
+                    .with_context(|| format!("in {}", paths.hosts.display()))?;
                 manage::save_doc(&paths.hosts, &doc)?;
                 eprintln!("removed host {alias} from {}", paths.hosts.display());
                 Ok(())
@@ -771,6 +779,79 @@ fn run_host(h: &HostCmd) -> i32 {
             })(),
         ),
     }
+}
+
+/// Loads (generating if missing, with a stderr notice) the identity at `path`.
+fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::SecretKey> {
+    let pass = PassphraseSource::from_env(None);
+    let (secret, generated) = load_or_generate(path, &pass, comment)
+        .with_context(|| format!("identity {}", path.display()))?;
+    if generated {
+        eprintln!("generated identity {}", path.display());
+    }
+    Ok(secret)
+}
+
+/// The OpenSSH public key line, from the identity's `.pub` file.
+fn public_line(path: &std::path::Path) -> anyhow::Result<String> {
+    let mut pub_path = path.as_os_str().to_owned();
+    pub_path.push(".pub");
+    let pub_path = PathBuf::from(pub_path);
+    let line = std::fs::read_to_string(&pub_path)
+        .with_context(|| format!("reading {}", pub_path.display()))?;
+    Ok(line.trim().to_string())
+}
+
+fn run_id(daemon: bool, all: bool, f: &FilesArgs) -> i32 {
+    finish(
+        "id",
+        (|| {
+            let settings = Settings::load(&file_paths(f).config)?;
+            let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
+                let secret = identity_of(path, comment)?;
+                println!("{}", public_line(path)?);
+                println!("{}", secret.public());
+                Ok(())
+            };
+            if all {
+                println!("client:");
+                show(&settings.identity, "irsync")?;
+                println!("daemon:");
+                show(&settings.daemon.identity, "irsync-daemon")?;
+            } else if daemon {
+                show(&settings.daemon.identity, "irsync-daemon")?;
+            } else {
+                show(&settings.identity, "irsync")?;
+            }
+            Ok(())
+        })(),
+    )
+}
+
+fn run_show(f: &FilesArgs) -> i32 {
+    finish(
+        "show",
+        (|| {
+            let paths = file_paths(f);
+            let settings = Settings::load(&paths.config)?;
+            let hosts = Hosts::load(&paths.hosts)?;
+            let exports = Exports::load(&paths.exports)?;
+            let client = identity_of(&settings.identity, "irsync")?;
+            let client_line = public_line(&settings.identity)?;
+            let daemon = identity_of(&settings.daemon.identity, "irsync-daemon")?;
+            print!(
+                "{}",
+                manage::show::report(
+                    &paths,
+                    &hosts,
+                    &exports,
+                    (&client.public(), &client_line),
+                    &daemon.public(),
+                )
+            );
+            Ok(())
+        })(),
+    )
 }
 
 fn host_add(a: &HostAddArgs) -> anyhow::Result<()> {

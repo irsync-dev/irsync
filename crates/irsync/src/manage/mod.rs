@@ -3,6 +3,7 @@
 
 pub mod exports;
 pub mod hosts;
+pub mod show;
 
 use crate::config::hosts::Hosts;
 use crate::config::ConfigError;

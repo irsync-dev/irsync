@@ -44,16 +44,11 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     std::fs::write(tmp.join("src/a.txt"), b"hello").unwrap();
     std::fs::write(tmp.join("src/sub/b.bin"), bytes(64 * 1024)).unwrap();
 
-    // The client generates its own identity under HOME on first use. Until
-    // `irsync id` exists, create that key with keygen to learn its
-    // EndpointId (line 2 of the output).
-    // TODO(task 9): use irsync id
+    // The client generates its own identity under HOME on first use;
+    // `irsync id` creates it early and prints its EndpointId (line 2).
     let key = tmp.join("home/.config/irsync/id_ed25519");
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
-        .args(["keygen", "--out"])
-        .arg(&key)
-        .output()
-        .unwrap();
+    let config_path = tmp.join("irsync.toml");
+    let o = run_client(&["id", "--config", config_path.to_str().unwrap()], tmp);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let client_id = String::from_utf8(o.stdout)
         .unwrap()
