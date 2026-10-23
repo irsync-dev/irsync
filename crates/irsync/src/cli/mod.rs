@@ -128,9 +128,13 @@ pub struct IndexArgs {
     /// targets are export names, all exports when none is given.
     #[arg(long)]
     pub daemon: bool,
-    /// The daemon's config file (with `--daemon`).
+    /// The settings file (with `--daemon`).
     #[arg(long, requires = "daemon", value_name = "PATH")]
     pub config: Option<PathBuf>,
+    /// The exports file (with `--daemon`; default: exports.toml in the
+    /// config directory).
+    #[arg(long, requires = "daemon", value_name = "PATH")]
+    pub exports: Option<PathBuf>,
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
@@ -151,8 +155,6 @@ pub struct DaemonArgs {
     pub exports: Option<PathBuf>,
     #[arg(long)]
     pub show_id: bool,
-    #[arg(long)]
-    pub foreground: bool,
     /// Read the identity's passphrase from the first line of this file
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]

@@ -8,7 +8,7 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{validate, Args, Command, DaemonArgs, Direction, IndexArgs, SyncOptions};
-use irsync::config::daemon::DaemonConfig;
+use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
@@ -510,9 +510,11 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
     let result = (|| -> anyhow::Result<i32> {
         // (state directory, root) per target.
         let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {
-            let cfg = DaemonConfig::load(a.config.as_deref())?;
+            let paths = Paths::resolve(a.config.as_deref(), None, a.exports.as_deref());
+            let settings = Settings::load(&paths.config)?;
+            let exports = Exports::load(&paths.exports)?;
             let names: Vec<String> = if a.targets.is_empty() {
-                cfg.exports.keys().cloned().collect()
+                exports.exports.keys().cloned().collect()
             } else {
                 a.targets
                     .iter()
@@ -522,11 +524,10 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
             names
                 .into_iter()
                 .map(|n| {
-                    let m = cfg
-                        .exports
-                        .get(&n)
-                        .with_context(|| format!("no export {n:?} in the daemon config"))?;
-                    Ok((cfg.state_dir.clone(), m.path.clone()))
+                    let m = exports.exports.get(&n).with_context(|| {
+                        format!("no export {n:?} in {}", exports.path.display())
+                    })?;
+                    Ok((settings.state_dir.clone(), m.path.clone()))
                 })
                 .collect::<anyhow::Result<_>>()?
         } else {

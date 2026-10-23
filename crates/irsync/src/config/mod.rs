@@ -1,6 +1,5 @@
 //! Settings, host aliases and exports (TOML) configuration.
 
-pub mod daemon;
 pub mod duration;
 pub mod exports;
 pub mod hosts;

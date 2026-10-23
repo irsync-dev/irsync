@@ -120,10 +120,6 @@ fn irsync_flags_and_misc() {
 
 #[test]
 fn subcommands_parse() {
-    match parse(&["daemon", "--show-id"]).cmd {
-        Some(Command::Daemon(d)) => assert!(d.show_id && !d.foreground),
-        c => panic!("{c:?}"),
-    }
     assert!(matches!(
         parse(&["gc", "--dry-run"]).cmd,
         Some(Command::Gc { dry_run: true })
@@ -136,6 +132,45 @@ fn subcommands_parse() {
     assert!(a.cmd.is_none());
     assert_eq!(a.sync.src(), vec!["a", "b"]);
     assert_eq!(a.sync.dest(), Some("h:m/"));
+}
+
+#[test]
+fn daemon_flags() {
+    let a = parse(&[
+        "daemon",
+        "--config",
+        "/c",
+        "--hosts",
+        "/h",
+        "--exports",
+        "/e",
+        "--show-id",
+    ]);
+    let Some(Command::Daemon(d)) = a.cmd else {
+        panic!()
+    };
+    assert_eq!(
+        (d.config, d.hosts, d.exports, d.show_id),
+        (
+            Some("/c".into()),
+            Some("/h".into()),
+            Some("/e".into()),
+            true
+        )
+    );
+    assert!(Args::try_parse_from(["irsync", "daemon", "--foreground"]).is_err());
+}
+
+#[test]
+fn index_daemon_takes_exports_file() {
+    let a = parse(&["index", "--daemon", "--exports", "/e", "photos"]);
+    let Some(Command::Index(ix)) = a.cmd else {
+        panic!()
+    };
+    assert!(
+        ix.daemon && ix.exports == Some("/e".into()) && ix.targets == vec![PathBuf::from("photos")]
+    );
+    assert!(Args::try_parse_from(["irsync", "index", "--exports", "/e", "photos"]).is_err());
 }
 
 #[test]
