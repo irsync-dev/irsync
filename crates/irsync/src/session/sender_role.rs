@@ -35,7 +35,7 @@ use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::scan::{ScanItem, ScanSummary};
-use crate::send::{Sender, DEFAULT_SPLIT_THRESHOLD};
+use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
@@ -70,6 +70,8 @@ struct SFile {
     /// Bases the receiver offered for chunks it is about to request, by
     /// chunk index; each is used for one request and dropped.
     bases: HashMap<u32, Basis>,
+    /// `FileMatched` was emitted (once per file, on its first request).
+    matched_reported: bool,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
 }
@@ -251,14 +253,11 @@ impl SenderRole {
                 append_from,
                 digest: None,
                 bases: HashMap::new(),
+                matched_reported: false,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
         );
-        self.ctx
-            .hooks
-            .bus
-            .emit(super::Event::FileStart(path.clone(), 0));
         self.persist.plan(PlanEntry {
             file_id,
             path: p.path,
@@ -377,6 +376,17 @@ impl SenderRole {
             .into_iter()
             .filter(|&i| (i as usize) < digest.chunks.len())
             .collect();
+        if !f.matched_reported {
+            f.matched_reported = true;
+            let needed: u64 = idxs
+                .iter()
+                .map(|&i| digest.chunks[i as usize].len as u64)
+                .sum();
+            self.ctx.hooks.bus.emit(super::Event::FileMatched(
+                f.path.clone(),
+                digest.size.saturating_sub(needed),
+            ));
+        }
         if idxs.is_empty() {
             return; // The receiver has everything; wait for its ack.
         }
@@ -643,9 +653,17 @@ pub(super) async fn run(
     ));
     {
         let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
-        sender.set_progress(Arc::new(move |n| {
+        sender.set_progress(Arc::new(move |path, p| {
             activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            bus.emit(super::Event::Bytes(n))
+            match p {
+                SendProgress::Opened { size } => {
+                    bus.emit(super::Event::FileStart(path.clone(), size))
+                }
+                SendProgress::Sent(n) => {
+                    bus.emit(super::Event::FileBytes(path.clone(), n));
+                    bus.emit(super::Event::Bytes(n))
+                }
+            }
         }));
     }
     #[cfg(feature = "test-hooks")]

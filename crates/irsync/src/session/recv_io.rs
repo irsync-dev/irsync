@@ -891,6 +891,9 @@ async fn read_range(
         };
         ctx.progress.store(true, Ordering::Relaxed);
         ctx.activity.fetch_add(1, Ordering::Relaxed);
+        ctx.hooks
+            .bus
+            .emit(super::Event::FileBytes(route.path.clone(), wire));
         ctx.hooks.bus.emit(super::Event::Bytes(wire));
         let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
         #[cfg(feature = "test-hooks")]

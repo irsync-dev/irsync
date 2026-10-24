@@ -73,8 +73,16 @@ impl Bucket {
     }
 }
 
-/// A callback for bytes sent.
-pub type ProgressFn = Arc<dyn Fn(u64) + Send + Sync>;
+/// What the sender reports about a file as it goes.
+pub enum SendProgress {
+    /// The first data stream for this call opened; the file's size.
+    Opened { size: u64 },
+    /// Bytes put on the wire.
+    Sent(u64),
+}
+
+/// A callback told when a file's first stream opens and of bytes sent.
+pub type ProgressFn = Arc<dyn Fn(&RelPath, SendProgress) + Send + Sync>;
 
 struct Inner {
     conn: Connection,
@@ -86,7 +94,7 @@ struct Inner {
     bucket: Option<Mutex<Bucket>>,
     active: AtomicU32,
     max_active: AtomicU32,
-    /// Told of every chunk put on the wire (its length).
+    /// Told of every file's first stream and every chunk put on the wire.
     progress: std::sync::OnceLock<ProgressFn>,
     #[cfg(feature = "test-hooks")]
     truncate: std::sync::OnceLock<Arc<TruncateHook>>,
@@ -187,7 +195,8 @@ impl Sender {
         self.inner.hasher.digest(item).await
     }
 
-    /// Installs (once) a callback told the length of every chunk sent.
+    /// Installs (once) a callback told when a file's first stream opens and
+    /// the length of every chunk sent.
     pub fn set_progress(&self, f: ProgressFn) {
         let _ = self.inner.progress.set(f);
     }
@@ -243,12 +252,14 @@ impl Sender {
         let digest = Arc::new(digest.clone());
         let full = self.inner.root.join(path.to_os());
         let name = Arc::new(name);
+        let rel = Arc::new(path.clone());
         let bases = Arc::new(bases);
         let sent = Arc::new(AtomicU64::new(0));
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut tasks = JoinSet::new();
         let mut first_err = None;
+        let mut opened = false;
         'sched: for r in ranges {
             let permit = loop {
                 tokio::select! {
@@ -267,11 +278,18 @@ impl Sender {
             if cancelled.load(Ordering::SeqCst) {
                 break;
             }
+            if !opened {
+                opened = true;
+                if let Some(p) = self.inner.progress.get() {
+                    p(path, SendProgress::Opened { size: digest.size });
+                }
+            }
             let inner = self.inner.clone();
-            let (digest, full, name, cancelled, bases, sent) = (
+            let (digest, full, name, rel, cancelled, bases, sent) = (
                 digest.clone(),
                 full.clone(),
                 name.clone(),
+                rel.clone(),
                 cancelled.clone(),
                 bases.clone(),
                 sent.clone(),
@@ -284,7 +302,7 @@ impl Sender {
                 let now = inner.active.fetch_add(1, Ordering::SeqCst) + 1;
                 inner.max_active.fetch_max(now, Ordering::SeqCst);
                 let res = inner
-                    .send_range(file_id, &full, &name, &digest, r, &bases, &sent)
+                    .send_range(file_id, &full, &name, &rel, &digest, r, &bases, &sent)
                     .await;
                 inner.active.fetch_sub(1, Ordering::SeqCst);
                 if res.is_err() {
@@ -343,6 +361,7 @@ impl Inner {
         file_id: u64,
         full: &Path,
         name: &str,
+        rel: &RelPath,
         digest: &FileDigest,
         r: Range,
         bases: &Arc<HashMap<u32, Basis>>,
@@ -360,7 +379,7 @@ impl Inner {
         let mut send = self.conn.open_uni().await.map_err(io::Error::other)?;
         let res = self
             .write_range(
-                &mut send, file_id, &file, name, digest, &r, first, bases, sent,
+                &mut send, file_id, &file, name, rel, digest, &r, first, bases, sent,
             )
             .await;
         if res.is_err() {
@@ -376,6 +395,7 @@ impl Inner {
         file_id: u64,
         file: &Arc<File>,
         name: &str,
+        rel: &RelPath,
         digest: &FileDigest,
         r: &Range,
         first: Vec<u8>,
@@ -421,7 +441,7 @@ impl Inner {
             write_msg(send, &frame).await?;
             sent.fetch_add(n, Ordering::Relaxed);
             if let Some(p) = self.progress.get() {
-                p(n);
+                p(rel, SendProgress::Sent(n));
             }
         }
         send.finish().map_err(io::Error::other)?;

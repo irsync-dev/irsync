@@ -616,6 +616,17 @@ impl Receiver {
             gate,
             idx_base,
         } = fill;
+        // Everything not requested from the sender (local copies, adopted
+        // chunks) needs no transfer.
+        let needed: u64 = remote
+            .iter()
+            .filter_map(|&i| digest.chunks.get(i as usize))
+            .map(|c| c.len as u64)
+            .sum();
+        self.ctx.hooks.bus.emit(super::Event::FileMatched(
+            f.path.clone(),
+            digest.size.saturating_sub(needed),
+        ));
         self.ctx.hooks.event("need", &f.path);
         if remote.is_empty() && local.is_empty() {
             f.st = St::Finalizing;

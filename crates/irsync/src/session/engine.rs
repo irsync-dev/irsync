@@ -36,7 +36,7 @@ use crate::cli::{Append, DeleteMode, Preserve, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
-use crate::hasher::Hasher;
+use crate::hasher::{HashEvent, HashProgress, Hasher};
 use crate::index::IndexHandle;
 use crate::net::frame::{write_msg, MAX_FRAME};
 use crate::send::DEFAULT_PARALLEL;
@@ -520,21 +520,32 @@ pub(super) async fn run_client_inner(
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = local.hasher.activity().clone();
+    // Every file this side actually reads is reported on the bus.
+    let on_hash: HashProgress = {
+        let bus = local.hooks.bus.clone();
+        Arc::new(move |p, e| match e {
+            HashEvent::Start { size } => bus.emit(super::Event::FileHashing(p.clone(), size)),
+            HashEvent::Done => bus.emit(super::Event::FileHashed(p.clone())),
+        })
+    };
     // `-c`: no index row is trusted; every file this side lists or
     // compares is read.
     let hasher = if opts.checksum {
         Arc::new(
             Hasher::new(local.index.clone(), local.root.clone(), HASH_WORKERS)
                 .with_force(true)
-                .with_activity(activity.clone()),
+                .with_activity(activity.clone())
+                .with_progress(on_hash.clone()),
         )
     } else {
-        local.hasher.clone()
+        // Shares the side's worker limit and counters across attempts.
+        Arc::new(Hasher::clone(&local.hasher).with_progress(on_hash.clone()))
     };
     let forced = Arc::new(
         Hasher::new(local.index.clone(), local.root.clone(), 1)
             .with_force(true)
-            .with_activity(activity.clone()),
+            .with_activity(activity.clone())
+            .with_progress(on_hash),
     );
     let ctx = Ctx {
         conn,

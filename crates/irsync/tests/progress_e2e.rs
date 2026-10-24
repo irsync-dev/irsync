@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use common::{Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
+use irsync::fs::paths::RelPath;
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{Event, Outcome, Party};
 
@@ -25,17 +26,40 @@ fn opts(extra: &[&str]) -> SyncOptions {
     SyncOptions::from_args(&Args::try_parse_from(v).unwrap())
 }
 
-/// Runs one session and returns what the client's bus carried.
+/// Runs one session and returns what the client's bus carried. The bus is
+/// drained while the session runs, as the reporter does: per-file events
+/// for many files outgrow its capacity.
 async fn run(h: &Harness, o: &SyncOptions, flow: Flow) -> (Outcome, Vec<Event>) {
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let local = h.local_side();
     let mut rx = local.hooks.bus.subscribe();
+    let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+    let collector = tokio::spawn(async move {
+        let mut events = Vec::new();
+        'collect: loop {
+            tokio::select! {
+                biased;
+                r = rx.recv() => match r {
+                    Ok(e) => events.push(e),
+                    Err(RecvError::Lagged(n)) => panic!("the test lost {n} events"),
+                    Err(RecvError::Closed) => break 'collect,
+                },
+                _ = &mut stopped => loop {
+                    match rx.try_recv() {
+                        Ok(e) => events.push(e),
+                        Err(TryRecvError::Lagged(n)) => panic!("the test lost {n} events"),
+                        Err(_) => break 'collect,
+                    }
+                },
+            }
+        }
+        events
+    });
     let (out, _) = h
         .run_reconnect(o, flow, ReconnectOpts::default(), local)
         .await;
-    let mut events = Vec::new();
-    while let Ok(e) = rx.try_recv() {
-        events.push(e);
-    }
+    let _ = stop.send(());
+    let events = collector.await.expect("event collector");
     (out.expect("sync session"), events)
 }
 
@@ -213,6 +237,115 @@ async fn pull_reports_total_from_peer_listing() {
             _ => None,
         });
         assert_eq!(total, Some((2, 3 + 5000)));
+    })
+    .await;
+}
+
+fn big(p: &RelPath) -> bool {
+    p.as_bytes() == b"big.bin"
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_file_events_in_both_directions() {
+    for flow in [Flow::Push, Flow::Pull] {
+        within30(async {
+            let h = Harness::new().await;
+            fs::write(h.src(flow).join("big.bin"), vec![3u8; 3_000_000]).unwrap();
+            let (out, events) = run(&h, &opts(&[]), flow).await;
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::FileStart(p, 3_000_000) if big(p))),
+                "{flow:?}: no FileStart with size: {events:?}"
+            );
+            let bytes: u64 = events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::FileBytes(p, n) if big(p) => Some(*n),
+                    _ => None,
+                })
+                .sum();
+            assert_eq!(bytes, out.bytes_transferred, "{flow:?}");
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::FileMatched(p, 0) if big(p))),
+                "{flow:?}: a new file matches nothing: {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, Event::FileDone(p, 3_000_000) if big(p))),
+                "{flow:?}"
+            );
+        })
+        .await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hashing_events_when_a_file_is_read() {
+    within30(async {
+        // Push with -c: the sender reads the source file for its digest.
+        let h = Harness::new().await;
+        fs::write(h.src(Flow::Push).join("big.bin"), vec![3u8; 3_000_000]).unwrap();
+        let (_, events) = run(&h, &opts(&["-c"]), Flow::Push).await;
+        let start = events
+            .iter()
+            .position(|e| matches!(e, Event::FileHashing(p, 3_000_000) if big(p)));
+        let end = events
+            .iter()
+            .position(|e| matches!(e, Event::FileHashed(p) if big(p)));
+        let open = events
+            .iter()
+            .position(|e| matches!(e, Event::FileStart(p, _) if big(p)));
+        assert!(
+            start < end && end <= open,
+            "hashing, then hashed, then the stream: {events:?}"
+        );
+        // Pull over a differing old file: the receiver reads it for the delta basis.
+        let h = Harness::new().await;
+        fs::write(h.src(Flow::Pull).join("big.bin"), vec![3u8; 3_000_000]).unwrap();
+        fs::write(h.dst(Flow::Pull).join("big.bin"), vec![4u8; 2_000_000]).unwrap();
+        let (_, events) = run(&h, &opts(&[]), Flow::Pull).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::FileHashing(p, 2_000_000) if big(p))),
+            "{events:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sender_file_start_means_a_stream_opened_not_a_plan() {
+    within30(async {
+        let h = Harness::new().await;
+        for i in 0..50 {
+            fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
+        }
+        let (_, events) = run(&h, &opts(&["--parallel", "2"]), Flow::Push).await;
+        // Every FileStart is followed by FileBytes for the same path before
+        // more than `parallel` other files start: in-flight is bounded.
+        let mut open = std::collections::BTreeSet::new();
+        let mut max_open = 0;
+        for e in &events {
+            match e {
+                Event::FileStart(p, _) => {
+                    open.insert(p.clone());
+                    max_open = max_open.max(open.len());
+                }
+                Event::FileDone(p, _) => {
+                    open.remove(p);
+                }
+                _ => {}
+            }
+        }
+        // `--parallel 2` streams; acknowledgements lag a little behind the
+        // streams closing, so allow some slack. Before this change every
+        // planned file started at once and this peaked at 50.
+        assert!(max_open <= 10, "in flight peaked at {max_open}: {events:?}");
     })
     .await;
 }

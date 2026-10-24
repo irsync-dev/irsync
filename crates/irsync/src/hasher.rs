@@ -6,6 +6,7 @@
 //! `digest` re-reads every file, storing what it read so the next plain
 //! run is quick again.
 
+use crate::fs::paths::RelPath;
 use crate::index::IndexHandle;
 use crate::scan::ScanItem;
 use irsync_proto::chunk::{digest_reader, FileDigest};
@@ -25,6 +26,8 @@ pub struct HashStats {
     pub bytes_hashed: AtomicU64,
 }
 
+/// Clones share the worker limit, the counters and the activity marker.
+#[derive(Clone)]
 pub struct Hasher {
     index: IndexHandle,
     root: PathBuf,
@@ -35,7 +38,20 @@ pub struct Hasher {
     /// every [`TICK_BYTES`] read, so long local hashing keeps the inactivity
     /// watchdogs quiet.
     activity: Arc<AtomicU64>,
+    /// Told when a file is actually read for its digest, and when that ends.
+    progress: Option<HashProgress>,
 }
+
+/// What a hasher reports about a file it reads.
+pub enum HashEvent {
+    /// Reading starts (the cache had nothing fresh); the file's size.
+    Start { size: u64 },
+    /// Reading ended, successfully or not.
+    Done,
+}
+
+/// A callback told when a file is read for its digest.
+pub type HashProgress = Arc<dyn Fn(&RelPath, HashEvent) + Send + Sync>;
 
 /// While hashing, bump the activity marker after this many bytes read.
 pub const TICK_BYTES: u64 = 64 << 20;
@@ -100,7 +116,14 @@ impl Hasher {
             force: false,
             stats: Arc::new(HashStats::default()),
             activity: Arc::default(),
+            progress: None,
         }
+    }
+
+    /// Report every file actually read (not a cache hit) to `p`.
+    pub fn with_progress(mut self, p: HashProgress) -> Self {
+        self.progress = Some(p);
+        self
     }
 
     /// Share `activity` as this hasher's activity marker.
@@ -154,6 +177,7 @@ impl Hasher {
         let item = item.clone();
         let force = self.force;
         let activity = self.activity.clone();
+        let progress = self.progress.clone();
         let res = tokio::task::spawn_blocking(move || {
             if !force {
                 if let Some(d) = lookup(&index, &item)? {
@@ -161,8 +185,20 @@ impl Hasher {
                 }
             }
             // Never follow a symlink swapped in since the walk lstat'ed it.
-            let file = crate::fs::safe::open_regular_nofollow(&full)?;
-            let d = digest_reader(Ticking::new(file, &activity))?;
+            if let Some(p) = &progress {
+                p(
+                    &item.path,
+                    HashEvent::Start {
+                        size: item.entry.size,
+                    },
+                );
+            }
+            let d = crate::fs::safe::open_regular_nofollow(&full)
+                .and_then(|file| digest_reader(Ticking::new(file, &activity)));
+            if let Some(p) = &progress {
+                p(&item.path, HashEvent::Done);
+            }
+            let d = d?;
             stats.files_hashed.fetch_add(1, Ordering::Relaxed);
             stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
             let mut entry = item.entry;
