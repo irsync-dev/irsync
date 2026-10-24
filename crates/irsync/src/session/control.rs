@@ -121,30 +121,38 @@ pub(super) fn spawn_reader(
             activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match frame {
                 Ok(Some(Control { msg: Some(msg) })) => match msg {
-                    Msg::Listing(ListingEntry { entry: Some(e) }) => match &listing {
-                        Some(tx) => {
-                            seen.count(&e);
-                            let _ = tx.send(side_of(e));
+                    Msg::Listing(ListingEntry { entry: Some(e) }) => {
+                        seen.count(&e);
+                        if seen.files().is_multiple_of(1000) {
+                            bus.emit(crate::session::Event::Scanned {
+                                party: crate::session::Party::Peer,
+                                entries: seen.files(),
+                                bytes: seen.total_size,
+                                at: None,
+                            });
                         }
-                        None if !announced => {
-                            announced = true;
-                            let _ = events.send(Ev::PeerListing);
+                        match &listing {
+                            Some(tx) => {
+                                let _ = tx.send(side_of(e));
+                            }
+                            None if !announced => {
+                                announced = true;
+                                let _ = events.send(Ev::PeerListing);
+                            }
+                            None => {}
                         }
-                        None => {}
-                    },
+                    }
                     Msg::Listing(ListingEntry { entry: None }) => {
                         tracing::warn!("listing frame without entry; ignored");
                     }
                     // Already counted as activity above; nothing else to do.
                     Msg::Heartbeat(_) => {}
                     m @ Msg::ListingEnd(_) => {
-                        if listing.is_some() {
-                            bus.emit(crate::session::Event::Total {
-                                party: crate::session::Party::Peer,
-                                files: seen.reg,
-                                bytes: seen.total_size,
-                            });
-                        }
+                        bus.emit(crate::session::Event::Total {
+                            party: crate::session::Party::Peer,
+                            files: seen.reg,
+                            bytes: seen.total_size,
+                        });
                         listing = None;
                         let _ = events.send(Ev::Ctrl(m));
                     }
@@ -227,6 +235,7 @@ pub(super) fn spawn_listing(
         let mut stats = crate::scan::ListStats::default();
         // `-H`: the first listed name of each (dev, inode) with nlink > 1.
         let mut first_names: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
+        let mut last_emit = std::time::Instant::now();
         while let Some(item) = rx.blocking_recv() {
             if is_own_temp(&item.path) || under_skip(&item.path) {
                 continue;
@@ -272,6 +281,10 @@ pub(super) fn spawn_listing(
                     bytes: d.hash.to_vec(),
                 });
             }
+            let due = spec.bus.is_some()
+                && ((count + 1).is_multiple_of(1000)
+                    || last_emit.elapsed() >= std::time::Duration::from_millis(250));
+            let at = due.then(|| path.parent());
             if entry.kind() == Kind::Regular {
                 if let Some(l) = &listed {
                     l.lock().unwrap_or_else(|e| e.into_inner()).insert(path);
@@ -291,15 +304,14 @@ pub(super) fn spawn_listing(
                 let _ = tx.send(Side { entry, digest });
             }
             count += 1;
-            if count.is_multiple_of(1000) {
-                if let Some(b) = &spec.bus {
-                    b.emit(super::Event::Scanned {
-                        party: super::Party::Local,
-                        entries: count,
-                        bytes: stats.total_size,
-                        at: None,
-                    });
-                }
+            if let (Some(b), Some(at)) = (&spec.bus, at) {
+                last_emit = std::time::Instant::now();
+                b.emit(super::Event::Scanned {
+                    party: super::Party::Local,
+                    entries: count,
+                    bytes: stats.total_size,
+                    at: Some(at),
+                });
             }
         }
         let mut summary = summary.blocking_recv().unwrap_or_else(|_| ScanSummary {

@@ -490,6 +490,10 @@ impl Planner {
                 self.ok_dirs.insert(path);
             } else if src.entry.kind() == Kind::Regular && decision == Decision::Skip {
                 self.report.skipped += 1;
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(crate::session::Event::Skipped(path.clone(), src.entry.size));
             }
             return;
         }
@@ -507,12 +511,16 @@ impl Planner {
                     });
                 } else if matches!(entry.kind(), Kind::Regular | Kind::Hardlink) {
                     self.report.skipped += 1;
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(crate::session::Event::Skipped(path.clone(), entry.size));
                 }
                 return;
             }
             Decision::Hardlink { target } => {
                 self.touch_parent(&path);
-                let Some(file_id) = self.file_id(&path) else {
+                let Some(file_id) = self.file_id(&path, entry.size) else {
                     return;
                 };
                 // Placed after every regular file (the target may be in flight).
@@ -580,7 +588,7 @@ impl Planner {
             | Decision::LocalCopy { .. } => {
                 // Placing it (now or on an earlier connection) moved the parent's mtime.
                 self.touch_parent(&path);
-                let Some(file_id) = self.file_id(&path) else {
+                let Some(file_id) = self.file_id(&path, entry.size) else {
                     return;
                 };
                 // A rename-detection source needs no special handling: its
@@ -631,10 +639,14 @@ impl Planner {
     /// The id for a planned path: kept from an earlier connection of this
     /// session, or new. `None` (counted as skipped) if that connection
     /// already placed it.
-    fn file_id(&mut self, path: &RelPath) -> Option<u64> {
+    fn file_id(&mut self, path: &RelPath, size: u64) -> Option<u64> {
         match self.prior.by_path.get(path) {
             Some(&(_, true)) => {
                 self.report.skipped += 1;
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(crate::session::Event::Skipped(path.clone(), size));
                 None
             }
             Some(&(id, false)) => Some(id),

@@ -350,3 +350,56 @@ async fn sender_file_start_means_a_stream_opened_not_a_plan() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_run_reports_skipped_bytes_locally_on_pull() {
+    within30(async {
+        let h = Harness::new().await;
+        tree(h.src(Flow::Pull));
+        run(&h, &opts(&[]), Flow::Pull).await;
+        let (_, events) = run(&h, &opts(&[]), Flow::Pull).await;
+        let skipped: u64 = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Skipped(_, n) => Some(*n),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(skipped, 3 + 5000, "{events:?}");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Total {
+                    party: Party::Local,
+                    ..
+                }
+            )),
+            "local listing now reports: {events:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_listing_is_counted_on_push_and_local_walk_says_where_it_is() {
+    within30(async {
+        let h = Harness::new().await;
+        fs::create_dir_all(h.src(Flow::Push).join("deep/dir")).unwrap();
+        for i in 0..1100 {
+            fs::write(h.src(Flow::Push).join(format!("deep/dir/f{i}")), b"x").unwrap();
+        }
+        fs::write(h.dst(Flow::Push).join("extra"), b"x").unwrap();
+        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Total { party: Party::Peer, files: 1, .. })),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Scanned { party: Party::Local, at: Some(p), .. } if p.as_bytes() == b"deep/dir")),
+            "{events:?}"
+        );
+    })
+    .await;
+}

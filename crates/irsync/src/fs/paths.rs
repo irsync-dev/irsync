@@ -47,6 +47,14 @@ impl RelPath {
         self.0.split(|&b| b == b'/').filter(|c| !c.is_empty())
     }
 
+    /// The path without its last component; the root for a top-level entry.
+    pub fn parent(&self) -> RelPath {
+        match self.0.iter().rposition(|&b| b == b'/') {
+            Some(i) => RelPath(self.0[..i].to_vec()),
+            None => RelPath::root(),
+        }
+    }
+
     pub fn join(&self, name: &[u8]) -> Result<RelPath, InvalidPath> {
         if !valid_name(name) {
             return Err(InvalidPath);
@@ -83,4 +91,16 @@ impl PartialOrd for RelPath {
 /// reserved; symlink escapes are not checked here.
 pub fn is_contained(_root: &Path, rel: &[u8]) -> bool {
     RelPath::new(rel).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_drops_the_last_component() {
+        assert_eq!(RelPath::new(b"a/b/c").unwrap().parent().as_bytes(), b"a/b");
+        assert_eq!(RelPath::new(b"a").unwrap().parent(), RelPath::root());
+        assert_eq!(RelPath::root().parent(), RelPath::root());
+    }
 }

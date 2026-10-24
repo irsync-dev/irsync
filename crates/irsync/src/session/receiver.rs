@@ -571,6 +571,10 @@ impl Receiver {
                 f.digest = Some(digest.clone());
                 f.identical = true;
                 f.st = St::Finalizing;
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(super::Event::Skipped(f.path.clone(), f.entry.size));
                 self.ctx.hooks.event("identical", &f.path);
                 if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
                     emit_itemized(&self.ctx, &self.out, &f.path, code);
@@ -958,7 +962,7 @@ pub(super) async fn run(
                     scope: ctx.scope.clone(),
                     skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
                     hard_links: false,
-                    bus: None,
+                    bus: Some(ctx.hooks.bus.clone()),
                     cold: Some(ctx.cold.clone()),
                     #[cfg(feature = "test-hooks")]
                     inject: None,
