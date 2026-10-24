@@ -34,6 +34,8 @@ rpassword = { workspace = true }
 noq-proto = { workspace = true }
 iroh-mainline-address-lookup = { workspace = true }
 iroh-mdns-address-lookup = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

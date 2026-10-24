@@ -6,6 +6,7 @@
 //! the engine down; if it lags it loses events (never the final totals,
 //! which come from the [`Outcome`]).
 
+pub mod render;
 pub mod state;
 
 use std::io::Write;
@@ -67,7 +68,7 @@ pub fn clock(d: Duration) -> String {
 }
 
 /// `1,234,567`, as rsync prints numbers in `--stats`.
-fn commas(n: u64) -> String {
+pub fn commas(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
@@ -119,7 +120,7 @@ pub fn escape_path(p: &[u8]) -> String {
 }
 
 /// A path as shown in a line: `./` for the session root.
-fn shown(p: &RelPath) -> String {
+pub fn shown(p: &RelPath) -> String {
     if p.as_bytes().is_empty() {
         "./".to_string()
     } else {
@@ -127,7 +128,7 @@ fn shown(p: &RelPath) -> String {
     }
 }
 
-fn conn_label(c: ConnState) -> String {
+pub fn conn_label(c: ConnState) -> String {
     match c {
         ConnState::Connecting => "connecting".into(),
         ConnState::Direct => "direct".into(),

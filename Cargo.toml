@@ -40,6 +40,7 @@ fjall = "3.1"
 xattr = "1.6"
 crossbeam-channel = "0.5"
 indicatif = "0.18"
+console = "0.16"
 jiff = "0.2"
 rand = "0.8"
 rand_chacha = { version = "0.3", features = ["serde1"] }

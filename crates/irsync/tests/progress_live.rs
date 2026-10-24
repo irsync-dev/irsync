@@ -174,3 +174,209 @@ fn second_session_resets_counters_but_keeps_connection() {
     assert_eq!((l.xfr, l.done_bytes, l.session), (0, 0, (1, 2)));
     assert_eq!(l.conn, ConnState::Relay);
 }
+
+use irsync::cli::progress::render::{bar, render, truncate_middle, Geometry};
+
+fn mid_sync() -> (Live, Instant) {
+    let t = Instant::now();
+    let mut l = Live::new(Party::Local, DeleteMode::After, t);
+    l.apply(
+        &Event::Scanned {
+            party: Party::Local,
+            entries: 18204,
+            bytes: 7_000_000_000,
+            at: Some(rp("2023")),
+        },
+        t,
+    );
+    l.apply(
+        &Event::Scanned {
+            party: Party::Peer,
+            entries: 9120,
+            bytes: 0,
+            at: Some(rp("2022")),
+        },
+        t,
+    );
+    l.apply(
+        &Event::FileStart(rp("2024/trip/clip_0007.mov"), 1_900_000_000),
+        t,
+    );
+    l.apply(
+        &Event::FileBytes(rp("2024/trip/clip_0007.mov"), 684_000_000),
+        t,
+    );
+    l.apply(
+        &Event::FileStart(rp("2024/trip/IMG_0419.heic"), 4_200_000),
+        t,
+    );
+    l.apply(
+        &Event::FileHashing(rp("2024/trip/clip_0009.mov"), 2_400_000_000),
+        t,
+    );
+    (l, t)
+}
+
+#[test]
+fn block_has_rule_phases_and_rows_largest_first() {
+    let (l, t) = mid_sync();
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert!(lines[0].chars().all(|c| c == '─'), "{lines:?}");
+    assert!(
+        lines[1].starts_with("list      18,204 entries  walking 2023/"),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[1].contains("peer 9,120 entries  walking 2022/"),
+        "{}",
+        lines[1]
+    );
+    assert!(lines[2].starts_with("transfer  ["), "{}", lines[2]);
+    assert!(
+        lines[2].contains("3 in flight") && lines[2].contains("[connecting]"),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[3].contains("clip_0009.mov") && lines[3].contains("hashing"),
+        "{}",
+        lines[3]
+    );
+    assert!(
+        lines[4].contains("clip_0007.mov") && lines[4].contains(" 36%"),
+        "{}",
+        lines[4]
+    );
+    assert!(lines[5].contains("IMG_0419.heic"), "{}", lines[5]);
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("delete    waiting (--delete-after)"),
+        "{lines:?}"
+    );
+    for l in &lines {
+        assert!(l.chars().count() <= 120, "{l:?}");
+    }
+}
+
+#[test]
+fn done_phases_collapse() {
+    let t = Instant::now();
+    let mut l = Live::new(Party::Local, DeleteMode::Off, t);
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 4010,
+            bytes: 7_210_000_000,
+        },
+        t,
+    );
+    l.apply(
+        &Event::Total {
+            party: Party::Peer,
+            files: 0,
+            bytes: 0,
+        },
+        t,
+    );
+    l.transfer_done = true;
+    l.xfr = 4010;
+    let lines = render(&l, &Geometry::fixed(100, 30), t + Duration::from_secs(176));
+    assert!(
+        lines[1].starts_with("list      done  4,010 entries"),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("transfer  done  ")
+            && lines[2].contains("4,010 files")
+            && lines[2].contains("0:02:56"),
+        "{}",
+        lines[2]
+    );
+    assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn rows_are_capped_to_half_the_height() {
+    let t = Instant::now();
+    let mut l = live();
+    for i in 0..40 {
+        l.apply(&Event::FileStart(rp(&format!("f{i:02}")), 100 - i), t);
+    }
+    let lines = render(&l, &Geometry::fixed(100, 24), t);
+    assert!(lines.len() <= 12, "{}", lines.len());
+    assert!(lines.last().unwrap().contains("… and"), "{lines:?}");
+    let lines = render(&l, &Geometry::fixed(100, 6), t);
+    assert!(
+        lines.iter().filter(|l| l.starts_with("  [")).count() >= 3,
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn long_paths_are_truncated_in_the_middle_never_wrapped() {
+    let t = Instant::now();
+    let mut l = live();
+    let long = "a/".repeat(80) + "end.bin";
+    l.apply(&Event::FileStart(rp(&long), 10), t);
+    let g = Geometry::fixed(60, 20);
+    let lines = render(&l, &g, t);
+    for line in &lines {
+        assert!(line.chars().count() <= 60, "{line:?}");
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains('…') && l.contains("end.bin")),
+        "{lines:?}"
+    );
+    assert_eq!(truncate_middle("abcdefghij", 7, &g), "abc…hij");
+}
+
+#[test]
+fn narrow_terminals_drop_columns() {
+    let (l, t) = mid_sync();
+    let lines = render(&l, &Geometry::fixed(59, 30), t);
+    let row = lines.iter().find(|l| l.contains("clip_0007")).unwrap();
+    assert!(row.contains('[') && !row.contains("B/s"), "{row}");
+    let lines = render(&l, &Geometry::fixed(39, 30), t);
+    let row = lines.iter().find(|l| l.contains("clip_0007")).unwrap();
+    assert!(!row.contains('[') && row.contains("36%"), "{row}");
+    for line in &lines {
+        assert!(line.chars().count() <= 39, "{line:?}");
+    }
+}
+
+#[test]
+fn ascii_glyphs_without_utf8_locale() {
+    let mut g = Geometry::fixed(80, 20);
+    assert_eq!(bar(1, 2, 4, &g), "[██░░]");
+    g.unicode = false;
+    assert_eq!(bar(1, 2, 4, &g), "[##--]");
+    let (l, t) = mid_sync();
+    let lines = render(&l, &g, t);
+    assert!(lines.iter().all(|l| l.is_ascii()), "{lines:?}");
+}
+
+#[test]
+fn stalled_and_reconnecting_are_shown() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = mid_sync();
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 3 }), t);
+    let later = t + Duration::from_secs(8);
+    let lines = render(&l, &Geometry::fixed(120, 40), later);
+    assert!(
+        lines[2].contains("0B/s") && lines[2].contains("[reconnecting #3]"),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("clip_0007") && l.contains("stalled 8s")),
+        "{lines:?}"
+    );
+}

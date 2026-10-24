@@ -241,9 +241,14 @@ impl Live {
                     w.at = at.clone();
                 }
             }
-            Event::Total { party, bytes, .. } => {
+            Event::Total {
+                party,
+                files,
+                bytes,
+            } => {
                 let w = self.walk_mut(*party);
                 w.done = true;
+                w.entries = w.entries.max(*files);
                 w.bytes = *bytes;
             }
             Event::Delete { done, total, .. } => {
