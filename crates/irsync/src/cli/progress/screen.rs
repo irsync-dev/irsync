@@ -1,6 +1,6 @@
 //! Where the reporter draws: straight to a writer when stdout is not a
-//! terminal, or a live block of indicatif bars (one per rendered line) with
-//! scrolling lines printed above it.
+//! terminal, or a live block (one multi-line indicatif bar) with scrolling
+//! lines printed above it.
 
 use std::fmt;
 use std::io::{self, Write};
@@ -17,11 +17,12 @@ const REFRESH_HZ: u8 = 10;
 pub enum Screen {
     /// Not a terminal: lines go straight to the writer; no block.
     Plain(Box<dyn Write + Send>),
-    /// A terminal: lines print above the block, the block is a set of
-    /// indicatif bars with a `{msg}` template, one per rendered line.
+    /// A terminal: lines print above the block, the block is one indicatif
+    /// bar with a `{msg}` template whose message is the rendered lines
+    /// joined by `\n` (None while there is no block).
     Tty {
         mp: MultiProgress,
-        bars: Vec<ProgressBar>,
+        bar: Option<ProgressBar>,
         geometry: fn() -> Geometry,
         /// The terminal the block draws on, shared with `mp`: scrolling
         /// lines are written here with the block suspended, so they end in
@@ -42,7 +43,7 @@ impl Screen {
             ProgressDrawTarget::term_like_with_hz(Box::new(Shared(term.clone())), REFRESH_HZ);
         Screen::Tty {
             mp: MultiProgress::with_draw_target(target),
-            bars: Vec::new(),
+            bar: None,
             geometry,
             term,
         }
@@ -74,36 +75,38 @@ impl Screen {
         }
     }
 
-    /// Replaces the block with `lines` (adds/removes bars to match; empty
-    /// clears it).
+    /// Replaces the block with `lines` (empty clears it).
     pub fn set_block(&mut self, lines: &[String]) {
-        let Screen::Tty { mp, bars, .. } = self else {
+        let Screen::Tty { mp, bar, .. } = self else {
             return;
         };
-        while bars.len() > lines.len() {
-            if let Some(bar) = bars.pop() {
+        if lines.is_empty() {
+            if let Some(bar) = bar.take() {
                 bar.finish_and_clear();
                 mp.remove(&bar);
             }
+            return;
         }
-        while bars.len() < lines.len() {
-            let style = ProgressStyle::with_template("{msg}")
-                .unwrap_or_else(|_| ProgressStyle::default_spinner());
-            // Born with its line, so no repaint shows it empty.
-            let bar = ProgressBar::no_length()
-                .with_style(style)
-                .with_message(lines[bars.len()].clone());
-            bars.push(mp.add(bar));
-        }
-        for (bar, line) in bars.iter().zip(lines) {
-            // Every `set_message` asks for a repaint (rate-limited to
-            // REFRESH_HZ; the closing `tick` catches up): skip unchanged lines.
-            if bar.message() != *line {
-                bar.set_message(line.clone());
+        // One bar whose message is the whole block: indicatif splits it on
+        // `\n` into lines, and a frame is always drawn whole. (A bar per
+        // line only shows lines whose bar has drawn itself since it was
+        // added, so lines that never change never appeared.)
+        let msg = lines.join("\n");
+        match bar {
+            Some(bar) => {
+                // Every `set_message` asks for a repaint, rate-limited to
+                // REFRESH_HZ.
+                if bar.message() != msg {
+                    bar.set_message(msg);
+                }
             }
-        }
-        if let Some(last) = bars.last() {
-            last.tick();
+            None => {
+                let style = ProgressStyle::with_template("{msg}")
+                    .unwrap_or_else(|_| ProgressStyle::default_spinner());
+                let new = mp.add(ProgressBar::no_length().with_style(style));
+                new.set_message(msg);
+                *bar = Some(new);
+            }
         }
     }
 

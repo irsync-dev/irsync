@@ -429,3 +429,25 @@ async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
     assert!(t[first_done..].contains("1 files"), "{t:?}");
     r.finish(&Outcome::default(), Duration::from_secs(1));
 }
+
+#[test]
+fn every_line_of_the_block_reaches_the_terminal_even_if_it_never_changes() {
+    use irsync::cli::progress::screen::{Screen, WriterTerm};
+    let buf = Buf::default();
+    let mut screen = Screen::tty(
+        Box::new(WriterTerm::new(Box::new(buf.clone()), || (24, 80))),
+        || irsync::cli::progress::render::Geometry::fixed(80, 24),
+    );
+    // The rule and the `list` line stay the same from frame to frame; only
+    // the transfer line moves. All three must be on the terminal.
+    let block = |t: &str| vec!["─".repeat(80), "list      done".to_string(), t.to_string()];
+    screen.set_block(&block("transfer  1%"));
+    screen.set_block(&block("transfer  2%"));
+    let t = buf.text();
+    let last = t.rfind("transfer  ").expect("transfer line drawn");
+    let frame_start = t[..last].rfind('\r').unwrap_or(0);
+    let frame = &t[frame_start..];
+    assert!(frame.contains(&"─".repeat(80)), "rule drawn: {t:?}");
+    assert!(frame.contains("list      done"), "list line drawn: {t:?}");
+    screen.clear();
+}
