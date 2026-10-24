@@ -473,3 +473,148 @@ fn connection_state_survives_at_80_columns() {
     assert!(lines[2].contains("[reconnecting #2]"), "{}", lines[2]);
     assert!(lines[2].chars().count() <= 80);
 }
+
+#[test]
+fn skips_re_reported_after_a_reconnect_are_not_counted_twice() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 3,
+            bytes: 1000,
+        },
+        t,
+    );
+    l.apply(&Event::FileDone(rp("a"), 200), t);
+    l.apply(&Event::Skipped(rp("b"), 100), t);
+    assert_eq!(l.transfer_fraction(), (300, 1000));
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 1 }), t);
+    assert_eq!(l.transfer_fraction(), (300, 1000), "never backwards");
+    // The new connection re-reports the unchanged file (not the placed one).
+    l.apply(&Event::Skipped(rp("b"), 100), t);
+    assert_eq!(l.transfer_fraction(), (300, 1000));
+    // A genuinely new skip.
+    l.apply(&Event::Skipped(rp("c"), 200), t);
+    assert_eq!(l.transfer_fraction(), (500, 1000));
+    // A second reconnect keeps the larger total.
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 2 }), t);
+    l.apply(&Event::Skipped(rp("b"), 100), t);
+    assert_eq!(l.transfer_fraction(), (500, 1000));
+}
+
+#[test]
+fn a_reconnect_shows_the_listing_walking_again() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 5,
+            bytes: 50,
+        },
+        t,
+    );
+    l.apply(
+        &Event::Total {
+            party: Party::Peer,
+            files: 4,
+            bytes: 40,
+        },
+        t,
+    );
+    assert!(l.local.done && l.peer.done);
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 1 }), t);
+    // A resumed connection with a complete stored plan lists nothing: the
+    // walks stay done until one of them actually restarts.
+    assert!(l.local.done && l.peer.done);
+    l.apply(&Event::Conn(ConnState::Direct), t);
+    l.apply(
+        &Event::Scanned {
+            party: Party::Local,
+            entries: 2,
+            bytes: 20,
+            at: Some(rp("d")),
+        },
+        t,
+    );
+    assert!(!l.local.done, "the local walk restarted");
+    assert!(l.peer.done, "the peer's has not (yet)");
+    assert_eq!((l.local.entries, l.local.bytes), (5, 50), "counts kept");
+    assert_eq!((l.peer.entries, l.peer.bytes), (4, 40));
+    let list = render(&l, &Geometry::fixed(80, 24), t)[1].clone();
+    assert!(list.contains("5 entries  walking d/"), "{list}");
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 5,
+            bytes: 50,
+        },
+        t,
+    );
+    assert!(l.local.done);
+    // A later scan of a finished walk (no reconnect since) changes nothing.
+    l.apply(
+        &Event::Scanned {
+            party: Party::Local,
+            entries: 5,
+            bytes: 50,
+            at: Some(rp("d")),
+        },
+        t,
+    );
+    assert!(l.local.done);
+}
+
+#[test]
+fn rows_awaiting_their_ack_or_their_stream_do_not_expire() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 3,
+            bytes: 30,
+        },
+        t,
+    );
+    // Sent, ack outstanding.
+    l.apply(&Event::FileStart(rp("s"), 10), t);
+    l.apply(&Event::FileBytes(rp("s"), 10), t);
+    l.apply(&Event::FileSent(rp("s")), t);
+    // Pending: matched before its stream opened.
+    l.apply(&Event::FileMatched(rp("p"), 4), t);
+    // Moving, opened, unsent: still expires.
+    l.apply(&Event::FileStart(rp("m"), 10), t);
+    l.apply(&Event::FileBytes(rp("m"), 3), t);
+    l.tick(t + ROW_EXPIRY + Duration::from_secs(1));
+    assert!(l.rows.contains_key(&rp("s")), "sent row kept");
+    assert!(l.rows.contains_key(&rp("p")), "pending row kept");
+    assert!(!l.rows.contains_key(&rp("m")), "idle moving row dropped");
+    assert_eq!(l.transfer_fraction(), (14, 30));
+}
+
+#[test]
+fn wide_characters_are_measured_in_cells() {
+    let t = Instant::now();
+    let mut l = live();
+    l.apply(&Event::FileStart(rp("照片/2024/视频_0007.mov"), 1 << 30), t);
+    l.apply(
+        &Event::FileStart(rp(&("照片/".repeat(40) + "视频_0007.mov")), 10),
+        t,
+    );
+    let g = Geometry::fixed(60, 20);
+    let lines = render(&l, &g, t);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("照片/") && l.contains(".mov")),
+        "{lines:?}"
+    );
+    for line in &lines {
+        assert!(console::measure_text_width(line) <= 60, "{line:?}");
+    }
+    let cut = truncate_middle("日本語日本語", 7, &g);
+    assert!(console::measure_text_width(&cut) <= 7, "{cut:?}");
+    assert!(cut.contains('…'), "{cut:?}");
+    assert_eq!(truncate_middle("日本語日本語", 12, &g), "日本語日本語");
+}

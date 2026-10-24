@@ -160,7 +160,9 @@ block starts fresh for the next source. Totals in the trailer stay
 combined, as today.
 
 A reconnect does not reset anything. Listing restarts on the new
-connection, but counters never go backwards: the `list` line shows the
+connection (unless it resumes a complete stored plan, which lists
+nothing and leaves the `list` line `done`), but counters never go
+backwards: the `list` line shows the
 larger of the old and new counts until the new walk passes it, and a
 `FileStart` for a file that already has a row refreshes the row rather
 than adding one.

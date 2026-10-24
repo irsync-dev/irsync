@@ -333,6 +333,25 @@ impl Planner {
         self.report.errors.push((path.clone(), msg));
     }
 
+    /// A source file found up to date: counted, reported on the bus and
+    /// added to the bytes the heartbeat tells the peer about. A file an
+    /// earlier connection of this session placed is only counted: its
+    /// `FileDone` already put its size in the progress percent.
+    fn note_skipped(&mut self, path: &RelPath, size: u64) {
+        self.report.skipped += 1;
+        if matches!(self.prior.by_path.get(path), Some(&(_, true))) {
+            return;
+        }
+        self.ctx
+            .hooks
+            .bus
+            .emit(crate::session::Event::Skipped(path.clone(), size));
+        self.ctx
+            .busy
+            .skipped_bytes
+            .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn touch_parent(&mut self, path: &RelPath) {
         if !path.as_bytes().is_empty() {
             self.report.touched.insert(parent_of(path));
@@ -489,15 +508,7 @@ impl Planner {
             if is_dir {
                 self.ok_dirs.insert(path);
             } else if src.entry.kind() == Kind::Regular && decision == Decision::Skip {
-                self.report.skipped += 1;
-                self.ctx
-                    .hooks
-                    .bus
-                    .emit(crate::session::Event::Skipped(path.clone(), src.entry.size));
-                self.ctx
-                    .busy
-                    .skipped_bytes
-                    .fetch_add(src.entry.size, std::sync::atomic::Ordering::Relaxed);
+                self.note_skipped(&path, src.entry.size);
             }
             return;
         }
@@ -514,15 +525,7 @@ impl Planner {
                         apply: false,
                     });
                 } else if matches!(entry.kind(), Kind::Regular | Kind::Hardlink) {
-                    self.report.skipped += 1;
-                    self.ctx
-                        .hooks
-                        .bus
-                        .emit(crate::session::Event::Skipped(path.clone(), entry.size));
-                    self.ctx
-                        .busy
-                        .skipped_bytes
-                        .fetch_add(entry.size, std::sync::atomic::Ordering::Relaxed);
+                    self.note_skipped(&path, entry.size);
                 }
                 return;
             }
@@ -650,15 +653,7 @@ impl Planner {
     fn file_id(&mut self, path: &RelPath, size: u64) -> Option<u64> {
         match self.prior.by_path.get(path) {
             Some(&(_, true)) => {
-                self.report.skipped += 1;
-                self.ctx
-                    .hooks
-                    .bus
-                    .emit(crate::session::Event::Skipped(path.clone(), size));
-                self.ctx
-                    .busy
-                    .skipped_bytes
-                    .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+                self.note_skipped(path, size);
                 None
             }
             Some(&(id, false)) => Some(id),

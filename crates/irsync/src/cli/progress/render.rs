@@ -1,9 +1,9 @@
 //! Pure rendering of the live progress block: [`Live`] and a terminal
 //! geometry in, lines out. Nothing here touches the terminal.
 //!
-//! Widths are measured in `chars()`, not display cells: paths reach this
-//! module already escaped by `escape_path` (control and invalid bytes become
-//! `\ooo`), so no wide-character table is needed.
+//! Widths are display cells ([`console::measure_text_width`]): paths reach
+//! this module escaped by `escape_path` (control and invalid bytes become
+//! `\ooo`), but CJK and emoji pass through and take two cells each.
 
 use std::time::{Duration, Instant};
 
@@ -99,22 +99,48 @@ pub fn bar(num: u64, den: u64, cells: usize, g: &Geometry) -> String {
     out
 }
 
+/// Display width of `s` in terminal cells (ANSI styling not counted).
+fn cells(s: &str) -> usize {
+    console::measure_text_width(s)
+}
+
+/// The longest prefix of `s` at most `max` cells wide.
+fn head_cells(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        out.push(c);
+        if cells(&out) > max {
+            out.pop();
+            break;
+        }
+    }
+    out
+}
+
+/// The longest suffix of `s` at most `max` cells wide.
+fn tail_cells(s: &str, max: usize) -> String {
+    let mut start = s.len();
+    for (i, _) in s.char_indices().rev() {
+        if cells(&s[i..]) > max {
+            break;
+        }
+        start = i;
+    }
+    s[start..].to_string()
+}
+
 /// `s` shortened to `max` cells with `…` in the middle (unicode) or `...`
 /// (ascii).
 pub fn truncate_middle(s: &str, max: usize, g: &Geometry) -> String {
-    let len = s.chars().count();
-    if len <= max {
+    if cells(s) <= max {
         return s.to_string();
     }
     let dots = g.ellipsis();
-    let keep = max.saturating_sub(dots.len().min(dots.chars().count()));
-    let keep = keep.min(len);
-    let head = keep / 2;
-    let tail = keep - head;
-    let mut out: String = s.chars().take(head).collect();
-    out.push_str(dots);
-    out.extend(s.chars().skip(len - tail));
-    out.chars().take(max).collect()
+    let keep = max.saturating_sub(cells(dots));
+    let head = head_cells(s, keep / 2);
+    // A wide character that did not fit in the head leaves its cell to the tail.
+    let tail = tail_cells(&s[head.len()..], keep - cells(&head));
+    head_cells(&format!("{head}{dots}{tail}"), max)
 }
 
 /// A line under construction: the plain text decides what fits, the styled
@@ -138,7 +164,7 @@ impl Line {
     }
 
     fn width(&self) -> usize {
-        self.plain.chars().count()
+        cells(&self.plain)
     }
 
     fn finish(self) -> String {
@@ -156,16 +182,15 @@ fn yellow() -> Style {
     Style::new().yellow()
 }
 
-/// `text` cut to `width` chars (with an ellipsis) when longer.
+/// `text` cut to `width` cells (with an ellipsis) when wider.
 fn fit(text: &str, width: usize, g: &Geometry) -> String {
-    if text.chars().count() <= width {
+    if cells(text) <= width {
         return text.to_string();
     }
     let dots = g.ellipsis();
-    let keep = width.saturating_sub(dots.chars().count());
-    let mut out: String = text.chars().take(keep).collect();
+    let mut out = head_cells(text, width.saturating_sub(cells(dots)));
     out.push_str(dots);
-    out.chars().take(width).collect()
+    head_cells(&out, width)
 }
 
 fn plain_line(text: String, g: &Geometry) -> String {
@@ -326,7 +351,7 @@ fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
         let Some(i) = optional.iter().position(|(p, ..)| *p == prio) else {
             continue;
         };
-        let need = 2 + optional[i].1.chars().count();
+        let need = 2 + cells(&optional[i].1);
         // Skip what does not fit; a shorter, less important field may.
         if need > room {
             continue;

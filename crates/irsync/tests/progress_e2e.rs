@@ -30,6 +30,16 @@ fn opts(extra: &[&str]) -> SyncOptions {
 /// drained while the session runs, as the reporter does: per-file events
 /// for many files outgrow its capacity.
 async fn run(h: &Harness, o: &SyncOptions, flow: Flow) -> (Outcome, Vec<Event>) {
+    run_with(h, o, flow, ReconnectOpts::default()).await
+}
+
+/// [`run`] with these reconnect options.
+async fn run_with(
+    h: &Harness,
+    o: &SyncOptions,
+    flow: Flow,
+    ropts: ReconnectOpts,
+) -> (Outcome, Vec<Event>) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let local = h.local_side();
     let mut rx = local.hooks.bus.subscribe();
@@ -55,9 +65,7 @@ async fn run(h: &Harness, o: &SyncOptions, flow: Flow) -> (Outcome, Vec<Event>) 
         }
         events
     });
-    let (out, _) = h
-        .run_reconnect(o, flow, ReconnectOpts::default(), local)
-        .await;
+    let (out, _) = h.run_reconnect(o, flow, ropts, local).await;
     let _ = stop.send(());
     let events = collector.await.expect("event collector");
     (out.expect("sync session"), events)
@@ -294,6 +302,62 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
             x as u8
         })
         .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_reconnect_files_placed_earlier_are_not_reported_skipped() {
+    use irsync::session::reconnect::ConnState;
+    within30(async {
+        let h = Harness::new().await;
+        let src = h.src(Flow::Pull);
+        fs::write(src.join("same.txt"), b"unchanged").unwrap();
+        run(&h, &opts(&[]), Flow::Pull).await;
+        for i in 0..10 {
+            fs::write(src.join(format!("f{i:02}.bin")), noise(2 << 20, i + 1)).unwrap();
+        }
+        h.daemon.fault.drop_after_bytes(9 << 20);
+        let fast = ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..ReconnectOpts::default()
+        };
+        // With `--delete` the stored plan is not reused: the second
+        // connection lists and plans afresh, past the files the first placed.
+        let (out, events) = run_with(&h, &opts(&["--delete"]), Flow::Pull, fast).await;
+        assert!(h.daemon.fault.fired(), "the fault never fired");
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        let cut = events
+            .iter()
+            .position(|e| matches!(e, Event::Conn(ConnState::Reconnecting { .. })))
+            .expect("a reconnect");
+        let placed: BTreeSet<RelPath> = events[..cut]
+            .iter()
+            .filter_map(|e| match e {
+                Event::FileDone(p, _) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(!placed.is_empty(), "nothing placed before the drop");
+        let skipped_after: BTreeSet<RelPath> = events[cut..]
+            .iter()
+            .filter_map(|e| match e {
+                Event::Skipped(p, _) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            placed.is_disjoint(&skipped_after),
+            "placed on the first connection {placed:?}, skipped on the second {skipped_after:?}"
+        );
+        assert!(
+            skipped_after.contains(&RelPath::new(b"same.txt").unwrap()),
+            "the unchanged file is still reported: {skipped_after:?} {:?}",
+            events
+                .iter()
+                .filter(|e| !matches!(e, Event::FileBytes(..) | Event::Bytes(_)))
+                .collect::<Vec<_>>()
+        );
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

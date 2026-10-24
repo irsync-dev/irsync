@@ -12,7 +12,7 @@ use crate::session::{Event, Party};
 
 /// A file that has moved no literal bytes for this long counts as stalled.
 pub const STALL_AFTER: Duration = Duration::from_secs(2);
-/// A row with no event for this long is dropped.
+/// A shown row with no event for this long is dropped.
 pub const ROW_EXPIRY: Duration = Duration::from_secs(30);
 /// Minimum window over which a per-row rate is computed.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
@@ -24,6 +24,10 @@ pub struct Walk {
     pub bytes: u64,
     pub at: Option<RelPath>,
     pub done: bool,
+    /// The walk finished on a connection since lost: the next `Scanned`
+    /// means the new connection walks again (a resumed one with a complete
+    /// stored plan does not).
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,8 +135,12 @@ pub struct Live {
     pub literal: u64,
     /// Sum of `FileDone` sizes.
     pub done_bytes: u64,
-    /// Sum of `Skipped` sizes.
+    /// Sum of `Skipped` sizes on this connection.
     pub skipped_local: u64,
+    /// The largest `skipped_local` of the earlier connections: a new
+    /// connection re-reports every unchanged file, so the two are not
+    /// added up; the percent counts the larger.
+    pub skipped_before: u64,
     /// Latest `PeerSkipped`.
     pub skipped_peer: u64,
     pub xfr: u64,
@@ -154,6 +162,7 @@ impl Live {
             literal: 0,
             done_bytes: 0,
             skipped_local: 0,
+            skipped_before: 0,
             skipped_peer: 0,
             xfr: 0,
             rows: BTreeMap::new(),
@@ -288,6 +297,12 @@ impl Live {
                 at,
             } => {
                 let w = self.walk_mut(*party);
+                if w.stale {
+                    // Walking again: shown as `walking` with the larger
+                    // count until the new walk's `Total`.
+                    w.done = false;
+                    w.stale = false;
+                }
                 w.entries = w.entries.max(*entries);
                 w.bytes = w.bytes.max(*bytes);
                 if at.is_some() {
@@ -301,6 +316,7 @@ impl Live {
             } => {
                 let w = self.walk_mut(*party);
                 w.done = true;
+                w.stale = false;
                 w.entries = w.entries.max(*files);
                 w.bytes = *bytes;
             }
@@ -319,16 +335,31 @@ impl Live {
                 }
                 self.session = (*index, *of);
             }
-            Event::Conn(c) => self.conn = *c,
+            Event::Conn(c) => {
+                if matches!(c, ConnState::Reconnecting { .. }) {
+                    // The next connection may list and plan again: its
+                    // skips start from zero, and a finished walk that
+                    // restarts shows as walking (see `Walk::stale`).
+                    self.skipped_before = self.skipped_before.max(self.skipped_local);
+                    self.skipped_local = 0;
+                    for w in [&mut self.local, &mut self.peer] {
+                        w.stale = w.done;
+                    }
+                }
+                self.conn = *c;
+            }
             _ => {}
         }
     }
 
-    /// Drops rows idle for [`ROW_EXPIRY`]; recomputes rates; marks the
-    /// delete phase finished. Called each redraw.
+    /// Drops shown rows idle for [`ROW_EXPIRY`]; recomputes rates; marks the
+    /// delete phase finished. Called each redraw. A sent row (waiting for
+    /// a slow receiver's ack) or a pending one is not drawn and its bytes
+    /// belong in the percent, so it stays until its `FileDone` or the end
+    /// of the session.
     pub fn tick(&mut self, now: Instant) {
         self.rows
-            .retain(|_, r| now.saturating_duration_since(r.last_event) < ROW_EXPIRY);
+            .retain(|_, r| !r.shown() || now.saturating_duration_since(r.last_event) < ROW_EXPIRY);
         for row in self.rows.values_mut() {
             if !matches!(row.state, RowState::Moving { .. }) {
                 continue;
@@ -358,7 +389,7 @@ impl Live {
         let in_flight: u64 = self.rows.values().map(Row::position).sum();
         let done = self
             .done_bytes
-            .saturating_add(self.skipped_local)
+            .saturating_add(self.skipped_before.max(self.skipped_local))
             .saturating_add(self.skipped_peer)
             .saturating_add(in_flight);
         (done.min(total), total)
