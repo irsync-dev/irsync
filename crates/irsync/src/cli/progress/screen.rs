@@ -147,6 +147,14 @@ impl LogWriter {
     pub fn attach(&self, mp: Option<MultiProgress>) {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = mp;
     }
+
+    /// One line on stderr, above the block when there is one (a bare
+    /// `eprintln!` would land on the block's last line and be erased by
+    /// the next repaint).
+    pub fn eprintln(&self, line: &str) {
+        let mut w = tracing_subscriber::fmt::MakeWriter::make_writer(self);
+        let _ = writeln!(w, "{line}");
+    }
 }
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {

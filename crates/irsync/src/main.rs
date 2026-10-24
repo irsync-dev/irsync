@@ -115,7 +115,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             tokio::spawn(r.run(bus.subscribe(), None))
         });
         let start = Instant::now();
-        let result = sync(args, opts, &bus).await;
+        let result = sync(args, opts, &bus, &log).await;
         // Every session has dropped its sender clone: the reporter drains and stops.
         drop(bus);
         let reporter = match task {
@@ -124,6 +124,13 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         };
         (result, reporter, start.elapsed())
     });
+    // The block goes before anything is printed on stderr: indicatif leaves
+    // the cursor at the end of its last line, so a line printed under a live
+    // block lands on it and the next repaint (or the final clear) erases it.
+    let mut reporter = reporter;
+    if let Some(r) = &mut reporter {
+        r.clear();
+    }
     match result {
         Ok(Totals {
             outcome,
@@ -323,7 +330,13 @@ fn direction_of(args: &Args) -> anyhow::Result<Direction> {
     Ok(locations(args)?.2)
 }
 
-async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result<Totals> {
+/// `log`: where a failed source is reported (above the live block).
+async fn sync(
+    args: &Args,
+    opts: &SyncOptions,
+    bus: &EventBus,
+    log: &LogWriter,
+) -> anyhow::Result<Totals> {
     let (srcs, dest, direction) = locations(args)?;
     let remote = match direction {
         Direction::ClientSends => &dest,
@@ -465,7 +478,7 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
             Ok(out) => out,
             Err(e) => {
                 // Keep what earlier sources achieved; report this one and go on.
-                eprintln!("irsync: {}: {e:#}", path.display());
+                log.eprintln(&format!("irsync: {}: {e:#}", path.display()));
                 failed += 1;
                 continue;
             }
@@ -670,7 +683,11 @@ fn finish(cmd: &str, r: anyhow::Result<()>) -> i32 {
 }
 
 fn file_paths(f: &FilesArgs) -> Paths {
-    Paths::resolve(f.config.as_deref(), f.hosts.as_deref(), f.exports.as_deref())
+    Paths::resolve(
+        f.config.as_deref(),
+        f.hosts.as_deref(),
+        f.exports.as_deref(),
+    )
 }
 
 fn run_add(a: &AddArgs) -> i32 {
@@ -756,9 +773,10 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
             let spec = match who.map(|w| (w, PeerSpec::parse(w, &hosts))) {
                 None => None,
                 Some((_, Ok(s))) => Some(s),
-                Some((w, Err(manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))))) => {
-                    Some(PeerSpec::Alias(w.to_string()))
-                }
+                Some((
+                    w,
+                    Err(manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))),
+                )) => Some(PeerSpec::Alias(w.to_string())),
                 Some((_, Err(e))) => return Err(e.into()),
             };
             let mut doc = manage::load_doc(&paths.exports)?;

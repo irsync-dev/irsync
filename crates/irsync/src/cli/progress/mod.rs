@@ -372,6 +372,13 @@ impl Reporter {
         self.screen.set_block(&lines);
     }
 
+    /// Erases the block, leaving the cursor at the start of a blank line, so
+    /// that other writers to the terminal (stderr) can print. Idempotent;
+    /// [`Reporter::finish`] calls it too.
+    pub fn clear(&mut self) {
+        self.screen.clear();
+    }
+
     /// Prints the closing lines: the `--stats` block and rsync's
     /// `sent .. received ..` / `total size is ..` trailer.
     pub fn finish(&mut self, outcome: &Outcome, elapsed: Duration) {

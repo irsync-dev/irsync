@@ -452,3 +452,50 @@ fn every_line_of_the_block_reaches_the_terminal_even_if_it_never_changes() {
     assert!(frame.contains("list      done"), "list line drawn: {t:?}");
     screen.clear();
 }
+
+/// Whether `t` holds a cursor-up sequence (`\x1b[{n}A`).
+fn has_cursor_up(t: &str) -> bool {
+    let mut rest = t;
+    while let Some(i) = rest.find("\x1b[") {
+        rest = &rest[i + 2..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && rest[digits..].starts_with('A') {
+            return true;
+        }
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_line_written_after_clear_survives_finish() {
+    let buf = Buf::default();
+    let mut r = feed(
+        reporter(&buf, true, 0, true, false),
+        vec![
+            Event::Total {
+                party: Party::Local,
+                files: 2,
+                bytes: 20,
+            },
+            Event::FileStart(rp("a"), 10),
+            Event::FileBytes(rp("a"), 5),
+        ],
+    )
+    .await;
+    assert!(buf.text().contains("transfer"), "block drawn");
+    r.clear();
+    r.clear();
+    // What main prints on stderr (the same terminal) between `clear` and
+    // `finish`: a per-file error.
+    let foreign = "irsync: x: Permission denied (os error 13)\n";
+    buf.clone().write_all(foreign.as_bytes()).unwrap();
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    let at = t.rfind(foreign).expect("foreign line intact");
+    assert!(
+        !has_cursor_up(&t[at..]),
+        "nothing after the foreign line moves the cursor up: {:?}",
+        &t[at..]
+    );
+    assert!(t[at..].contains("Number of files"), "--stats printed after");
+}
