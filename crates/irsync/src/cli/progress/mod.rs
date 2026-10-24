@@ -6,6 +6,8 @@
 //! the engine down; if it lags it loses events (never the final totals,
 //! which come from the [`Outcome`]).
 
+pub mod state;
+
 use std::io::Write;
 use std::time::{Duration, Instant};
 
