@@ -116,6 +116,8 @@ pub(super) fn spawn_reader(
         let mut announced = false;
         // Receiver role: what the peer lists, reported at its `ListingEnd`.
         let mut seen = crate::scan::ListStats::default();
+        // Set at the peer's `ListingEnd`: a later heartbeat's walk position is stale.
+        let mut listing_ended = false;
         loop {
             let frame = read_msg::<Control, _>(&mut recv).await;
             activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -149,8 +151,10 @@ pub(super) fn spawn_reader(
                     // progress this side cannot otherwise see.
                     Msg::Heartbeat(h) => {
                         use crate::session::{Event, Party};
-                        if !h.walking.is_empty() {
-                            if let Ok(at) = RelPath::new(&h.walking) {
+                        let walking = h.walking.filter(|_| !listing_ended);
+                        if let Some(walking) = walking {
+                            // Empty bytes are the root.
+                            if let Ok(at) = RelPath::new(&walking) {
                                 bus.emit(Event::Scanned {
                                     party: Party::Peer,
                                     entries: seen.files(),
@@ -177,6 +181,7 @@ pub(super) fn spawn_reader(
                             bytes: seen.total_size,
                         });
                         listing = None;
+                        listing_ended = true;
                         let _ = events.send(Ev::Ctrl(m));
                     }
                     m => {

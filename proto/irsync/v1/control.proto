@@ -100,7 +100,7 @@ message Itemized {
 // inactivity watchdog stays quiet. Carries what the peer cannot otherwise see
 // about this side's progress.
 message Heartbeat {
-  bytes walking = 1;        // directory this side's listing walk is in; empty when not listing
+  optional bytes walking = 1; // directory this side's listing walk is in (empty = the root); unset when not listing
   uint64 skipped_bytes = 2; // bytes of source files this side's planner found up to date (cumulative)
   uint64 deleted = 3;       // paths this side's deletion pass removed so far
   uint64 delete_total = 4;  // its candidate count once known, else 0

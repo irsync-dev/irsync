@@ -543,8 +543,7 @@ impl Busy {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map(|p| p.as_bytes().to_vec())
-            .unwrap_or_default();
+            .map(|p| p.as_bytes().to_vec());
         irsync_proto::v1::Heartbeat {
             walking,
             skipped_bytes: self.skipped_bytes.load(Relaxed),

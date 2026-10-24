@@ -432,8 +432,9 @@ async fn push_sees_the_peer_walk_position() {
             fs::write(h.dst(Flow::Push).join(format!("old/stuff/f{i}")), b"x").unwrap();
         }
         let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
-        // The walk's first heartbeat names the root; a later one may name
-        // `old/stuff` if the walk outlived a tick. Either proves the path.
+        // The walk sends a heartbeat before its first entry (naming the
+        // root) and again at its 1000th entry (naming `old/stuff`); either
+        // one is enough here.
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -442,6 +443,26 @@ async fn push_sees_the_peer_walk_position() {
                     at: Some(_),
                     ..
                 }
+            )),
+            "{events:?}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_sees_the_peer_root_before_any_entry() {
+    within30(async {
+        let h = Harness::new().await;
+        fs::create_dir_all(h.dst(Flow::Push)).unwrap();
+        for i in 0..3 {
+            fs::write(h.dst(Flow::Push).join(format!("f{i}")), b"x").unwrap();
+        }
+        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Scanned { party: Party::Peer, at: Some(p), .. } if p.as_bytes().is_empty()
             )),
             "{events:?}"
         );
