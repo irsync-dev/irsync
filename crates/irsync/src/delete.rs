@@ -55,7 +55,6 @@ pub struct DeleteReport {
 
 /// Collects deletion candidates while the planner walks the merged listings,
 /// then removes them in one [`DeletePass::execute`].
-#[derive(Debug)]
 pub struct DeletePass {
     mode: DeleteMode,
     max_delete: Option<u64>,
@@ -73,7 +72,23 @@ pub struct DeletePass {
     kept: HashSet<RelPath>,
     /// Bumped per path handled (the session's inactivity watchdogs read it).
     activity: Arc<AtomicU64>,
+    /// Told (handled, total) before the first candidate and after each one.
+    progress: Option<DeleteProgress>,
 }
+
+impl std::fmt::Debug for DeletePass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeletePass")
+            .field("mode", &self.mode)
+            .field("max_delete", &self.max_delete)
+            .field("dry_run", &self.dry_run)
+            .field("candidates", &self.candidates.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Told (done, total) per candidate handled; `total` is the candidate count.
+pub type DeleteProgress = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 impl DeletePass {
     pub fn new(
@@ -94,6 +109,7 @@ impl DeletePass {
             unreliable: false,
             kept: HashSet::new(),
             activity: Arc::default(),
+            progress: None,
         }
     }
 
@@ -109,6 +125,11 @@ impl DeletePass {
     /// Share the session's activity marker: a long pass counts as progress.
     pub fn set_activity(&mut self, activity: Arc<AtomicU64>) {
         self.activity = activity;
+    }
+
+    /// Report (handled, total) per candidate; called from the blocking thread.
+    pub fn set_progress(&mut self, p: DeleteProgress) {
+        self.progress = Some(p);
     }
 
     /// Deletions already made by earlier connections of this session.
@@ -181,33 +202,46 @@ impl DeletePass {
         let mut rep = DeleteReport::default();
         let mut count = self.spent;
         let mut real_dirs: HashSet<PathBuf> = HashSet::new();
-        for (path, _) in std::mem::take(&mut self.candidates) {
+        let candidates = std::mem::take(&mut self.candidates);
+        let total = candidates.len() as u64;
+        let report = |handled: u64| {
+            if let Some(p) = &self.progress {
+                p(handled, total);
+            }
+        };
+        report(0);
+        let mut handled = 0u64;
+        'all: for (path, _) in candidates {
             self.activity.fetch_add(1, Ordering::Relaxed);
-            if self.kept.contains(&path) {
-                tracing::info!(?path, "not deleting a directory that holds excluded files");
-                continue;
-            }
-            if self.max_delete.is_some_and(|max| count >= max) {
-                rep.stopped_at_max = true;
-                break;
-            }
-            if self.dry_run {
-                rep.would_delete.push(path);
-                count += 1;
-                continue;
-            }
-            match remove_one(root, &path, &mut real_dirs) {
-                Ok(true) => {
-                    tracing::info!(?path, "deleted");
-                    rep.deleted.push(path);
+            'one: {
+                if self.kept.contains(&path) {
+                    tracing::info!(?path, "not deleting a directory that holds excluded files");
+                    break 'one;
+                }
+                if self.max_delete.is_some_and(|max| count >= max) {
+                    rep.stopped_at_max = true;
+                    break 'all;
+                }
+                if self.dry_run {
+                    rep.would_delete.push(path);
                     count += 1;
+                    break 'one;
                 }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(?path, error = %e, "delete failed");
-                    rep.errors.push((path, format!("delete: {e}")));
+                match remove_one(root, &path, &mut real_dirs) {
+                    Ok(true) => {
+                        tracing::info!(?path, "deleted");
+                        rep.deleted.push(path);
+                        count += 1;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(?path, error = %e, "delete failed");
+                        rep.errors.push((path, format!("delete: {e}")));
+                    }
                 }
             }
+            handled += 1;
+            report(handled);
         }
         if rep.stopped_at_max {
             tracing::warn!(

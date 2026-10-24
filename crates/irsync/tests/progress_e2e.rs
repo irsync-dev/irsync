@@ -469,3 +469,32 @@ async fn push_sees_the_peer_root_before_any_entry() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_progress_events_both_directions() {
+    for flow in [Flow::Pull, Flow::Push] {
+        within30(async {
+            let h = Harness::new().await;
+            fs::write(h.src(flow).join("keep"), b"k").unwrap();
+            for i in 0..5 {
+                fs::write(h.dst(flow).join(format!("extra{i}")), b"x").unwrap();
+            }
+            let (_, events) = run(&h, &opts(&["--delete"]), flow).await;
+            let party = if flow == Flow::Pull {
+                Party::Local
+            } else {
+                Party::Peer
+            };
+            let last = events.iter().rev().find_map(|e| match e {
+                Event::Delete {
+                    party: p,
+                    done,
+                    total,
+                } if *p == party => Some((*done, *total)),
+                _ => None,
+            });
+            assert_eq!(last, Some((5, Some(5))), "{flow:?}: {events:?}");
+        })
+        .await;
+    }
+}

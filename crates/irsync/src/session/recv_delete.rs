@@ -14,6 +14,19 @@ impl Receiver {
         self.await_own_walk().await;
         pass.set_spent(self.persist.deleted());
         pass.set_activity(self.ctx.activity.clone());
+        let busy = self.ctx.busy.clone();
+        let bus = self.ctx.hooks.bus.clone();
+        pass.set_progress(std::sync::Arc::new(move |done, total| {
+            busy.deleted
+                .store(done, std::sync::atomic::Ordering::Relaxed);
+            busy.delete_total
+                .store(total, std::sync::atomic::Ordering::Relaxed);
+            bus.emit(crate::session::Event::Delete {
+                party: crate::session::Party::Local,
+                done,
+                total: Some(total),
+            });
+        }));
         let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
         match pass.execute(self.ctx.root.clone(), incomplete).await {
             Ok(rep) => {

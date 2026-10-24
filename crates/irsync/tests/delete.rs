@@ -410,3 +410,25 @@ async fn excluded_dst_files_are_protected_without_delete_excluded() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn delete_pass_reports_progress_per_candidate() {
+    use irsync::cli::DeleteMode;
+    use irsync::delete::DeletePass;
+    use irsync_proto::v1::file_entry::Kind;
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("a"), b"a").unwrap();
+    fs::write(root.path().join("b"), b"b").unwrap();
+    let mut pass = DeletePass::new(DeleteMode::After, None, false, false, false);
+    pass.plan(RelPath::new(b"a").unwrap(), Kind::Regular);
+    pass.plan(RelPath::new(b"b").unwrap(), Kind::Regular);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = seen.clone();
+    pass.set_progress(Arc::new(move |d, t| s.lock().unwrap().push((d, t))));
+    let rep = pass
+        .execute(root.path().to_path_buf(), false)
+        .await
+        .unwrap();
+    assert_eq!(rep.deleted.len(), 2);
+    assert_eq!(*seen.lock().unwrap(), vec![(0, 2), (1, 2), (2, 2)]);
+}
