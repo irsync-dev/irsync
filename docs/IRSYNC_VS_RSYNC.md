@@ -89,6 +89,7 @@ it send `FileAck DONE`.
 | Compression | `-z` | none (deferred in the design) |
 | Largest file | no protocol limit | no frame limit; 2^24 chunks per list, about 4 TiB of typical data (see 3.5) |
 | Transport | TCP or SSH | iroh QUIC, NAT traversal, pinned Ed25519 identities |
+| Progress display | `--progress`: a line per file; `--info=progress2`: one total line; only when asked, and also into a pipe or file | on a terminal, always a live block at the bottom: the listing walk on both sides, a total bar with `progress2`'s meaning (skipped and matched files count as done), a bar per file in flight with its own rate, the deletion pass and the link state; `-q` turns it off. `--progress` and `--info=progress*` are accepted and change nothing. Off a terminal no progress is printed, so piped output is the plain `-v`/`-i`/`--stats` lines |
 
 ## 3. The shortcomings found, and how each was closed
 

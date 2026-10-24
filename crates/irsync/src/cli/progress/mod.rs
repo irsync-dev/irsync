@@ -2,6 +2,44 @@
 //! lines, `-i` itemize codes and the `--stats` block, driven by the session's
 //! [`Event`]s.
 //!
+//! When stdout is a terminal (and `TERM` is not `dumb`) and `-q` is not
+//! given, a block sits under the scrolling output:
+//!
+//! ```text
+//! ──────────────────────────────────────────────────────────────────────
+//! list      18,204 entries  walking 2023/  peer 9,120 entries  walking 2022/
+//! transfer  [██████████░░░░░░░░░░░░░░░░░░░░]   33%  41.20MB/s  0:01:23  xfr#1,882  [direct]
+//!   [███████░░░░░░░░░░░░░]   36%  2024/trip/clip_0007.mov  1.90G  8.10MB/s
+//!   hashing                       2024/trip/clip_0009.mov  2.40G
+//!   … and 28 more
+//! delete    waiting (--delete-after)
+//! ```
+//!
+//! One line per phase (`list`, `transfer`, `delete` with a `--delete*` flag),
+//! each collapsing to `done` and a summary when it ends, and one row per file
+//! the local side is working on (an open stream or a hash), largest first,
+//! capped at half the terminal. The transfer percent has rsync's
+//! `--info=progress2` meaning: skipped and matched bytes count as done. Lines
+//! are fitted to the terminal width, which is re-read on every redraw (at most
+//! every 100 ms, at once on a connection state change). At the end of a
+//! session the block is erased before the trailer; with several sources each
+//! finished session leaves its `done` lines in the scrollback.
+//!
+//! The work is split three ways:
+//! - [`state`](mod@state): [`Live`], what the block knows, folded from events
+//!   ([`Live::apply`]); no I/O, no clock of its own.
+//! - [`render`](mod@render): [`Live`] plus a [`Geometry`] (size, colour, unicode) in,
+//!   lines out; pure, so tests assert on frames for a given size.
+//! - [`screen`](mod@screen): where lines go. [`Screen::Plain`] writes straight to the
+//!   writer; [`Screen::Tty`] draws the block through indicatif and prints
+//!   scrolling lines (and, via [`screen::LogWriter`], tracing output on
+//!   stderr) above it.
+//!
+//! Off a terminal nothing of this is drawn: the output is the same `-v`,
+//! `-i`, `--stats` and trailer lines, byte for byte, as before the block
+//! existed. `--progress` and `--info=progress*` are accepted and change
+//! nothing.
+//!
 //! The reporter only ever reads from a broadcast channel, so it cannot slow
 //! the engine down; if it lags it loses events (never the final totals,
 //! which come from the [`Outcome`]).
