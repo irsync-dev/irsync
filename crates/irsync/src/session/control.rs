@@ -145,8 +145,31 @@ pub(super) fn spawn_reader(
                     Msg::Listing(ListingEntry { entry: None }) => {
                         tracing::warn!("listing frame without entry; ignored");
                     }
-                    // Already counted as activity above; nothing else to do.
-                    Msg::Heartbeat(_) => {}
+                    // Counted as activity above; it also carries the peer's
+                    // progress this side cannot otherwise see.
+                    Msg::Heartbeat(h) => {
+                        use crate::session::{Event, Party};
+                        if !h.walking.is_empty() {
+                            if let Ok(at) = RelPath::new(&h.walking) {
+                                bus.emit(Event::Scanned {
+                                    party: Party::Peer,
+                                    entries: seen.files(),
+                                    bytes: seen.total_size,
+                                    at: Some(at),
+                                });
+                            }
+                        }
+                        if h.skipped_bytes > 0 {
+                            bus.emit(Event::PeerSkipped(h.skipped_bytes));
+                        }
+                        if h.deleted > 0 || h.delete_total > 0 {
+                            bus.emit(Event::Delete {
+                                party: Party::Peer,
+                                done: h.deleted,
+                                total: (h.delete_total > 0).then_some(h.delete_total),
+                            });
+                        }
+                    }
                     m @ Msg::ListingEnd(_) => {
                         bus.emit(crate::session::Event::Total {
                             party: crate::session::Party::Peer,
@@ -202,6 +225,11 @@ pub(super) struct ListingSpec {
     pub bus: Option<super::EventBus>,
     /// Receiver: where to note regular files without a fresh index row.
     pub cold: Option<Arc<crate::warm::Cold>>,
+    /// Where the walk is, for this side's heartbeats; the listing also sends
+    /// one before its first entry and at every `Scanned`.
+    pub busy: Option<Arc<super::Busy>>,
+    /// Bumped per listed entry, so heartbeats go out while only this side walks.
+    pub activity: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Test hook: extra entries to list right after an entry.
     #[cfg(feature = "test-hooks")]
     pub inject: Option<super::ListingHook>,
@@ -236,6 +264,12 @@ pub(super) fn spawn_listing(
         // `-H`: the first listed name of each (dev, inode) with nlink > 1.
         let mut first_names: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
         let mut last_emit = std::time::Instant::now();
+        // The directory last published to `spec.busy.walking`.
+        let mut walking = RelPath::root();
+        if let Some(busy) = &spec.busy {
+            *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = Some(walking.clone());
+            out.send(Msg::Heartbeat(busy.heartbeat()));
+        }
         while let Some(item) = rx.blocking_recv() {
             if is_own_temp(&item.path) || under_skip(&item.path) {
                 continue;
@@ -281,10 +315,17 @@ pub(super) fn spawn_listing(
                     bytes: d.hash.to_vec(),
                 });
             }
-            let due = spec.bus.is_some()
+            let due = (spec.bus.is_some() || spec.busy.is_some())
                 && ((count + 1).is_multiple_of(1000)
                     || last_emit.elapsed() >= std::time::Duration::from_millis(250));
             let at = due.then(|| path.parent());
+            if let Some(busy) = &spec.busy {
+                let dir = path.parent();
+                if dir != walking {
+                    walking = dir;
+                    *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = Some(walking.clone());
+                }
+            }
             if entry.kind() == Kind::Regular {
                 if let Some(l) = &listed {
                     l.lock().unwrap_or_else(|e| e.into_inner()).insert(path);
@@ -304,14 +345,22 @@ pub(super) fn spawn_listing(
                 let _ = tx.send(Side { entry, digest });
             }
             count += 1;
-            if let (Some(b), Some(at)) = (&spec.bus, at) {
+            if let Some(a) = &spec.activity {
+                a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(at) = at {
                 last_emit = std::time::Instant::now();
-                b.emit(super::Event::Scanned {
-                    party: super::Party::Local,
-                    entries: count,
-                    bytes: stats.total_size,
-                    at: Some(at),
-                });
+                if let Some(busy) = &spec.busy {
+                    out.send(Msg::Heartbeat(busy.heartbeat()));
+                }
+                if let Some(b) = &spec.bus {
+                    b.emit(super::Event::Scanned {
+                        party: super::Party::Local,
+                        entries: count,
+                        bytes: stats.total_size,
+                        at: Some(at),
+                    });
+                }
             }
         }
         let mut summary = summary.blocking_recv().unwrap_or_else(|_| ScanSummary {
@@ -328,6 +377,9 @@ pub(super) fn spawn_listing(
         }
         for (p, e) in &summary.errors {
             tracing::warn!(path = ?p, error = %e, "walk error");
+        }
+        if let Some(busy) = &spec.busy {
+            *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         out.send(Msg::ListingEnd(ListingEnd {
             incomplete: summary.incomplete,

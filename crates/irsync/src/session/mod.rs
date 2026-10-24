@@ -521,6 +521,39 @@ impl Default for EventBus {
     }
 }
 
+/// This side's progress the peer cannot see, carried on `Heartbeat`.
+#[derive(Default)]
+pub struct Busy {
+    /// The directory this side's listing walk is in, while it walks.
+    pub walking: std::sync::Mutex<Option<RelPath>>,
+    /// Bytes of source files this side's planner found up to date.
+    pub skipped_bytes: std::sync::atomic::AtomicU64,
+    /// Paths this side's deletion pass removed so far.
+    pub deleted: std::sync::atomic::AtomicU64,
+    /// The deletion pass's candidate count once known, else 0.
+    pub delete_total: std::sync::atomic::AtomicU64,
+}
+
+impl Busy {
+    /// The frame that tells the peer where this side is.
+    pub fn heartbeat(&self) -> irsync_proto::v1::Heartbeat {
+        use std::sync::atomic::Ordering::Relaxed;
+        let walking = self
+            .walking
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|p| p.as_bytes().to_vec())
+            .unwrap_or_default();
+        irsync_proto::v1::Heartbeat {
+            walking,
+            skipped_bytes: self.skipped_bytes.load(Relaxed),
+            deleted: self.deleted.load(Relaxed),
+            delete_total: self.delete_total.load(Relaxed),
+        }
+    }
+}
+
 /// Test-only hooks (plus the event bus); the hooks are empty in normal builds.
 #[derive(Clone, Default)]
 pub struct SideHooks {

@@ -575,6 +575,10 @@ impl Receiver {
                     .hooks
                     .bus
                     .emit(super::Event::Skipped(f.path.clone(), f.entry.size));
+                self.ctx
+                    .busy
+                    .skipped_bytes
+                    .fetch_add(f.entry.size, Ordering::Relaxed);
                 self.ctx.hooks.event("identical", &f.path);
                 if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
                     emit_itemized(&self.ctx, &self.out, &f.path, code);
@@ -964,6 +968,8 @@ pub(super) async fn run(
                     hard_links: false,
                     bus: Some(ctx.hooks.bus.clone()),
                     cold: Some(ctx.cold.clone()),
+                    busy: Some(ctx.busy.clone()),
+                    activity: Some(ctx.activity.clone()),
                     #[cfg(feature = "test-hooks")]
                     inject: None,
                 },
@@ -1046,6 +1052,9 @@ pub(super) async fn run(
     let mut errors = std::mem::take(&mut r.walk_errors);
     errors.append(&mut report.errors);
     errors.append(&mut r.errors);
+    // The final skipped and deletion counts, even for a session shorter
+    // than one heartbeat interval.
+    out.send(Msg::Heartbeat(ctx.busy.heartbeat()));
     out.send(Msg::Done(SessionDone {
         files: r.files_done,
         bytes: bytes_total,

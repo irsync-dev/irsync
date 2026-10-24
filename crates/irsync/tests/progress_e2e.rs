@@ -403,3 +403,48 @@ async fn peer_listing_is_counted_on_push_and_local_walk_says_where_it_is() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_learns_peer_skipped_bytes_from_the_heartbeat() {
+    within30(async {
+        let h = Harness::new().await;
+        tree(h.src(Flow::Push));
+        run(&h, &opts(&[]), Flow::Push).await;
+        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        let max = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::PeerSkipped(n) => Some(*n),
+                _ => None,
+            })
+            .max();
+        assert_eq!(max, Some(3 + 5000), "{events:?}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_sees_the_peer_walk_position() {
+    within30(async {
+        let h = Harness::new().await;
+        fs::create_dir_all(h.dst(Flow::Push).join("old/stuff")).unwrap();
+        for i in 0..3000 {
+            fs::write(h.dst(Flow::Push).join(format!("old/stuff/f{i}")), b"x").unwrap();
+        }
+        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        // The walk's first heartbeat names the root; a later one may name
+        // `old/stuff` if the walk outlived a tick. Either proves the path.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Scanned {
+                    party: Party::Peer,
+                    at: Some(_),
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+    })
+    .await;
+}

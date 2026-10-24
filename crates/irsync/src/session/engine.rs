@@ -251,6 +251,8 @@ pub(super) struct Ctx {
     /// Bumped for every control frame received, every data chunk moved, and
     /// local progress (hashing, chunk writes, finalize, deletions).
     pub activity: Arc<AtomicU64>,
+    /// What this side's heartbeats tell the peer.
+    pub busy: Arc<super::Busy>,
     /// Drop the connection after this long without activity.
     pub idle_timeout: Option<Duration>,
     #[cfg(feature = "test-hooks")]
@@ -556,6 +558,7 @@ pub(super) async fn run_client_inner(
         remote_id: None,
         progress: attempt.progress.clone(),
         activity,
+        busy: Arc::default(),
         idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
         fault: None,
@@ -764,6 +767,7 @@ pub async fn serve_daemon(
         remote_id: Some(remote.as_bytes().to_vec()),
         progress: Arc::default(),
         activity,
+        busy: Arc::default(),
         idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT))
             .filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
@@ -836,7 +840,11 @@ async fn run_role(
     let watchdog = ctx
         .idle_timeout
         .map(|t| tokio::spawn(watch_idle(ctx.clone(), t, idle.clone())));
-    let heartbeat = tokio::spawn(heartbeat(ctx.activity.clone(), out.clone()));
+    let heartbeat = tokio::spawn(heartbeat(
+        ctx.activity.clone(),
+        ctx.busy.clone(),
+        out.clone(),
+    ));
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {
@@ -900,16 +908,17 @@ const CLOSE_IDLE: u32 = 4;
 /// below: anything shorter than a few intervals is unreliable.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Sends a `Heartbeat` every [`HEARTBEAT_INTERVAL`] in which `activity` moved.
-async fn heartbeat(activity: Arc<AtomicU64>, out: control::Out) {
-    use irsync_proto::v1::{control::Msg, Heartbeat};
+/// Sends a `Heartbeat` every [`HEARTBEAT_INTERVAL`] in which `activity`
+/// moved, carrying `busy`.
+async fn heartbeat(activity: Arc<AtomicU64>, busy: Arc<super::Busy>, out: control::Out) {
+    use irsync_proto::v1::control::Msg;
     let mut seen = activity.load(Ordering::Relaxed);
     loop {
         tokio::time::sleep(HEARTBEAT_INTERVAL).await;
         let now = activity.load(Ordering::Relaxed);
         if now != seen {
             seen = now;
-            out.send(Msg::Heartbeat(Heartbeat {}));
+            out.send(Msg::Heartbeat(busy.heartbeat()));
         }
     }
 }

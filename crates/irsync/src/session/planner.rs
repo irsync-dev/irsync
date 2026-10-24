@@ -494,6 +494,10 @@ impl Planner {
                     .hooks
                     .bus
                     .emit(crate::session::Event::Skipped(path.clone(), src.entry.size));
+                self.ctx
+                    .busy
+                    .skipped_bytes
+                    .fetch_add(src.entry.size, std::sync::atomic::Ordering::Relaxed);
             }
             return;
         }
@@ -515,6 +519,10 @@ impl Planner {
                         .hooks
                         .bus
                         .emit(crate::session::Event::Skipped(path.clone(), entry.size));
+                    self.ctx
+                        .busy
+                        .skipped_bytes
+                        .fetch_add(entry.size, std::sync::atomic::Ordering::Relaxed);
                 }
                 return;
             }
@@ -647,6 +655,10 @@ impl Planner {
                     .hooks
                     .bus
                     .emit(crate::session::Event::Skipped(path.clone(), size));
+                self.ctx
+                    .busy
+                    .skipped_bytes
+                    .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
                 None
             }
             Some(&(id, false)) => Some(id),

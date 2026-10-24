@@ -142,6 +142,8 @@ impl SenderRole {
                 hard_links: self.ctx.opts.preserve.hard_links,
                 bus: Some(self.ctx.hooks.bus.clone()),
                 cold: None,
+                busy: Some(self.ctx.busy.clone()),
+                activity: Some(self.ctx.activity.clone()),
                 #[cfg(feature = "test-hooks")]
                 inject: self.ctx.hooks.inject_listing.clone(),
             },
