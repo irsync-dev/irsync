@@ -327,8 +327,9 @@ fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
             continue;
         };
         let need = 2 + optional[i].1.chars().count();
+        // Skip what does not fit; a shorter, less important field may.
         if need > room {
-            break;
+            continue;
         }
         room -= need;
         keep[i] = true;

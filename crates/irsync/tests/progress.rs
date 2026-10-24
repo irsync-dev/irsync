@@ -225,40 +225,6 @@ async fn stats_block_has_rsync_headings() {
 }
 
 #[tokio::test]
-async fn progress_line_shows_connection_state() {
-    let buf = Buf::default();
-    let r = reporter(&buf, true, 0, false, false);
-    feed(
-        r,
-        vec![
-            Event::Conn(ConnState::Direct),
-            Event::Bytes(1024 * 1024),
-            Event::Conn(ConnState::Reconnecting { attempt: 1 }),
-        ],
-    )
-    .await;
-    let t = buf.text();
-    let d = t.find("[direct]").expect("direct");
-    let r = t.find("[reconnecting #1]").expect("reconnecting");
-    assert!(d < r, "{t:?}");
-    assert!(t.contains("\r"), "redrawn with carriage returns");
-}
-
-#[test]
-fn progress_line_format_with_hint() {
-    let buf = Buf::default();
-    let mut r = reporter(&buf, true, 0, false, false);
-    r.handle(Event::Bytes(1 << 30));
-    r.handle(Event::FileDone(rp("f"), 1));
-    let line = r.progress_line(Duration::from_secs(83));
-    assert!(line.starts_with("       1.00G"), "{line}");
-    assert!(line.contains("0:01:23"), "{line}");
-    assert!(line.contains("(xfr#1)"), "{line}");
-    assert_eq!(human(456 * 1024 + 800), "456.78K");
-    assert_eq!(human(12), "12");
-}
-
-#[tokio::test]
 async fn lagging_reporter_survives() {
     let (tx, rx) = tokio::sync::broadcast::channel(2);
     for i in 0..50u64 {
@@ -317,33 +283,6 @@ fn root_item_prints_dot_slash() {
     assert_eq!(buf.text(), ".d..t...... ./\n");
 }
 
-#[test]
-fn progress_line_shows_percentage_after_total() {
-    let buf = Buf::default();
-    let mut r = reporter(&buf, true, 0, false, false);
-    r.handle(Event::Bytes(500));
-    let before = r.progress_line(Duration::from_secs(1));
-    assert!(
-        !before.contains('%') && !before.contains("to-chk"),
-        "{before}"
-    );
-    r.handle(Event::Total {
-        party: Party::Local,
-        files: 10,
-        bytes: 1000,
-    });
-    // Only the first Total counts.
-    r.handle(Event::Total {
-        party: Party::Local,
-        files: 99,
-        bytes: 99,
-    });
-    r.handle(Event::FileDone(rp("a"), 500));
-    let line = r.progress_line(Duration::from_secs(1));
-    assert!(line.contains(" 50%"), "{line}");
-    assert!(line.contains("(xfr#1, to-chk=9/10)"), "{line}");
-}
-
 #[tokio::test]
 async fn reporter_task_terminates_when_bus_dropped() {
     let bus = irsync::session::EventBus::default();
@@ -357,4 +296,83 @@ async fn reporter_task_terminates_when_bus_dropped() {
         .await
         .expect("reporter did not stop")
         .unwrap();
+}
+
+#[test]
+fn frame_shows_connection_state_and_percent() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, true, 0, false, false);
+    r.handle(Event::Conn(ConnState::Direct));
+    r.handle(Event::Total {
+        party: Party::Local,
+        files: 10,
+        bytes: 1000,
+    });
+    r.handle(Event::FileDone(rp("a"), 500));
+    let f = r.frame(std::time::Instant::now());
+    assert!(
+        f[2].contains(" 50%") && f[2].contains("[direct]") && f[2].contains("xfr#1"),
+        "{f:?}"
+    );
+    r.handle(Event::Conn(ConnState::Reconnecting { attempt: 1 }));
+    let f = r.frame(std::time::Instant::now());
+    assert!(f[2].contains("[reconnecting #1]"), "{f:?}");
+    assert_eq!(human(456 * 1024 + 800), "456.78K");
+    assert_eq!(human(12), "12");
+}
+
+#[tokio::test]
+async fn tty_reporter_draws_a_block_and_clears_it_before_the_trailer() {
+    let buf = Buf::default();
+    let mut r = feed(
+        reporter(&buf, true, 1, false, false),
+        vec![
+            Event::FileStart(rp("a"), 10),
+            Event::FileBytes(rp("a"), 10),
+            Event::FileDone(rp("a"), 10),
+        ],
+    )
+    .await;
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    assert!(t.contains("transfer"), "block drawn: {t:?}");
+    assert!(t.contains("\x1b["), "cursor movement used: {t:?}");
+    let trailer = t.rfind("sent ").expect("trailer");
+    assert!(
+        !t[trailer..].contains("transfer"),
+        "block gone before the trailer: {t:?}"
+    );
+    assert!(t.contains("a\n"), "-v line printed above: {t:?}");
+}
+
+#[tokio::test]
+async fn plain_reporter_output_is_unchanged_with_new_events() {
+    let buf = Buf::default();
+    feed(
+        reporter(&buf, false, 1, false, false),
+        vec![
+            Event::FileHashing(rp("a"), 10),
+            Event::FileHashed(rp("a")),
+            Event::FileStart(rp("a"), 10),
+            Event::FileMatched(rp("a"), 5),
+            Event::FileBytes(rp("a"), 5),
+            Event::Skipped(rp("s"), 1),
+            Event::PeerSkipped(3),
+            Event::Scanned {
+                party: Party::Peer,
+                entries: 1,
+                bytes: 1,
+                at: None,
+            },
+            Event::Delete {
+                party: Party::Local,
+                done: 0,
+                total: Some(1),
+            },
+            Event::SessionStart { index: 0, of: 1 },
+            Event::FileDone(rp("a"), 10),
+        ],
+    )
+    .await;
+    assert_eq!(buf.text(), "a\n");
 }

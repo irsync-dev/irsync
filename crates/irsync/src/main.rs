@@ -6,6 +6,8 @@ use std::time::Instant;
 use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
+use irsync::cli::progress::render::Geometry;
+use irsync::cli::progress::screen::{Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, HostAddArgs, HostCmd,
@@ -21,7 +23,7 @@ use irsync::index::Index;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
-use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome, HASH_WORKERS};
+use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -83,23 +85,30 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     };
     let (result, reporter, elapsed) = rt.block_on(async {
         let bus = EventBus::default();
-        // `-q` silences everything but errors. The live progress line is
-        // drawn only on a terminal and only when asked for.
-        let progress = opts.progress
-            || opts.info.as_deref().is_some_and(|i| {
-                i.split(',')
-                    .any(|f| matches!(f.trim(), "progress1" | "progress2"))
-            });
-        let tty = progress && std::io::stdout().is_terminal();
+        // `-q` silences everything but errors. On a terminal the live
+        // progress block is always drawn; `TERM=dumb` is not a terminal.
+        let tty =
+            std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb");
         let task = (!opts.quiet).then(|| {
-            let r = Reporter::new(
-                Box::new(std::io::stdout()),
-                tty,
-                opts.verbose,
-                opts.stats,
-                opts.itemize,
-                opts.dry_run,
-            );
+            let screen = if tty {
+                Screen::tty(
+                    Box::new(WriterTerm::new(Box::new(std::io::stdout()), || {
+                        console::Term::stdout().size()
+                    })),
+                    Geometry::detect,
+                )
+            } else {
+                Screen::plain(Box::new(std::io::stdout()))
+            };
+            // A bad command line fails in `sync` below with the same error.
+            let source = match direction_of(args) {
+                Ok(Direction::DaemonSends) => Party::Peer,
+                Ok(Direction::ClientSends) | Err(_) => Party::Local,
+            };
+            let r =
+                Reporter::with_screen(screen, opts.verbose, opts.stats, opts.itemize, opts.dry_run)
+                    .with_delete_mode(opts.delete)
+                    .with_source(source);
             tokio::spawn(r.run(bus.subscribe(), None))
         });
         let start = Instant::now();
@@ -293,7 +302,8 @@ struct Totals {
     failed: usize,
 }
 
-async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result<Totals> {
+/// The sources, the destination and which way the data flows.
+fn locations(args: &Args) -> anyhow::Result<(Vec<Location>, Location, Direction)> {
     let srcs = args
         .sync
         .src()
@@ -302,6 +312,16 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
         .collect::<Result<Vec<_>, _>>()?;
     let dest = Location::parse(args.sync.dest().context("missing destination")?)?;
     let direction = validate(&srcs, &dest)?;
+    Ok((srcs, dest, direction))
+}
+
+/// Which way the data flows, from the source and destination arguments.
+fn direction_of(args: &Args) -> anyhow::Result<Direction> {
+    Ok(locations(args)?.2)
+}
+
+async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result<Totals> {
+    let (srcs, dest, direction) = locations(args)?;
     let remote = match direction {
         Direction::ClientSends => &dest,
         Direction::DaemonSends => &srcs[0],

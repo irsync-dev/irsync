@@ -1,4 +1,4 @@
-//! User-facing output: rsync-style `--info=progress2` line, `-v` per-file
+//! User-facing output: the live progress block on a terminal, `-v` per-file
 //! lines, `-i` itemize codes and the `--stats` block, driven by the session's
 //! [`Event`]s.
 //!
@@ -7,6 +7,7 @@
 //! which come from the [`Outcome`]).
 
 pub mod render;
+pub mod screen;
 pub mod state;
 
 use std::io::Write;
@@ -14,35 +15,28 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast;
 
+use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
 use crate::plan::DELETING;
 use crate::session::reconnect::ConnState;
-use crate::session::{Event, Outcome};
+use crate::session::{Event, Outcome, Party};
+use render::{render, Geometry};
+use screen::{Screen, WriterTerm};
+use state::Live;
 
-/// Redraw the progress line at most this often.
+/// Redraw the progress block at most this often.
 const REDRAW: Duration = Duration::from_millis(100);
 
 pub struct Reporter {
-    out: Box<dyn Write + Send>,
-    tty: bool,
+    screen: Screen,
+    live: Live,
     verbosity: u8,
     stats: bool,
     itemize: bool,
     dry_run: bool,
-    // Running totals, from events.
-    bytes: u64,
-    xfr: u64,
-    scanned: u64,
-    conn: ConnState,
-    hint: Option<(u64, u64)>,
-    /// The hint came from the caller or a `Total` event: later ones are ignored.
-    hint_fixed: bool,
     /// Events lost because this reporter lagged.
     lagged: u64,
-    start: Instant,
     last_draw: Option<Instant>,
-    /// A progress line is on screen (no newline yet).
-    drawn: bool,
 }
 
 /// rsync's human-readable size: `123`, `456.78K`, `12.34M`, `1.23G`, `T`.
@@ -138,9 +132,9 @@ pub(super) fn conn_label(c: ConnState) -> String {
 }
 
 impl Reporter {
-    /// `tty`: draw the live progress line (the caller decides whether the
-    /// user asked for it). `verbosity`: `-v` count. Output errors (a closed
-    /// pipe) are ignored.
+    /// `tty`: draw the live block, through a fixed 24x80 terminal over `out`
+    /// (production uses [`Reporter::with_screen`]). `verbosity`: `-v` count.
+    /// Output errors (a closed pipe) are ignored.
     pub fn new(
         out: Box<dyn Write + Send>,
         tty: bool,
@@ -149,39 +143,76 @@ impl Reporter {
         itemize: bool,
         dry_run: bool,
     ) -> Reporter {
+        let screen = if tty {
+            Screen::tty(Box::new(WriterTerm::new(out, || (24, 80))), || {
+                Geometry::fixed(80, 24)
+            })
+        } else {
+            Screen::plain(out)
+        };
+        Reporter::with_screen(screen, verbosity, stats, itemize, dry_run)
+    }
+
+    /// Production: draw on this screen (built in main from stdout).
+    pub fn with_screen(
+        screen: Screen,
+        verbosity: u8,
+        stats: bool,
+        itemize: bool,
+        dry_run: bool,
+    ) -> Reporter {
         Reporter {
-            out,
-            tty,
+            screen,
+            live: Live::new(Party::Local, DeleteMode::Off, Instant::now()),
             verbosity,
             stats,
             itemize,
             dry_run,
-            bytes: 0,
-            xfr: 0,
-            scanned: 0,
-            conn: ConnState::Connecting,
-            hint: None,
-            hint_fixed: false,
             lagged: 0,
-            start: Instant::now(),
             last_draw: None,
-            drawn: false,
         }
     }
 
+    /// The deletion pass to show (`Off`: no `delete` line).
+    pub fn with_delete_mode(mut self, mode: DeleteMode) -> Reporter {
+        self.live = Live::new(self.live.source, mode, self.live.start);
+        self
+    }
+
+    /// Which party is the source (its listing total is the transfer
+    /// denominator). Default [`Party::Local`].
+    pub fn with_source(mut self, source: Party) -> Reporter {
+        self.live.source = source;
+        self
+    }
+
+    /// The block as it would be drawn now (for tests).
+    pub fn frame(&self, now: Instant) -> Vec<String> {
+        render(&self.live, &self.screen.geometry(), now)
+    }
+
     /// Consumes events until the channel closes, then hands the reporter
-    /// back for [`Reporter::finish`]. `total_hint` is (files, bytes) when
-    /// known up front, for the percentage and `to-chk`.
+    /// back for [`Reporter::finish`]. `total_hint` is (files, bytes) of the
+    /// source when known up front, for the percentage.
     pub async fn run(
         mut self,
         mut rx: broadcast::Receiver<Event>,
         total_hint: Option<(u64, u64)>,
     ) -> Reporter {
-        if total_hint.is_some() {
-            self.hint = total_hint;
-            self.hint_fixed = true;
+        let start = Instant::now();
+        self.live.start = start;
+        if let Some((files, bytes)) = total_hint {
+            let party = self.live.source;
+            self.live.apply(
+                &Event::Total {
+                    party,
+                    files,
+                    bytes,
+                },
+                start,
+            );
         }
-        self.start = Instant::now();
+        let tty = self.screen.is_tty();
         let mut tick = tokio::time::interval(REDRAW);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -192,8 +223,12 @@ impl Reporter {
                     Err(broadcast::error::RecvError::Lagged(n)) => self.lagged += n,
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
-                _ = tick.tick(), if self.tty => self.draw(false),
+                _ = tick.tick(), if tty => self.draw(false),
             }
+        }
+        self.live.transfer_done = true;
+        if let Some(d) = &mut self.live.delete {
+            d.finished = true;
         }
         self.draw(true);
         self
@@ -201,26 +236,14 @@ impl Reporter {
 
     /// Applies one event (the unit the tests drive directly).
     pub fn handle(&mut self, ev: Event) {
+        self.live.apply(&ev, Instant::now());
         match ev {
-            Event::Bytes(n) => self.bytes += n,
-            Event::FileStart(_, _) => {}
             Event::FileDone(p, _) => {
-                self.xfr += 1;
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&shown(&p));
                 }
             }
-            Event::Scanned { entries, .. } => self.scanned = entries,
-            Event::Total { files, bytes, .. } => {
-                if !self.hint_fixed {
-                    self.hint = Some((files, bytes));
-                    self.hint_fixed = true;
-                }
-            }
-            Event::Conn(c) => {
-                self.conn = c;
-                self.draw(true);
-            }
+            Event::Conn(_) => self.draw(true),
             Event::Deleted(p) => {
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&format!("deleting {}", shown(&p)));
@@ -239,7 +262,16 @@ impl Reporter {
                     self.line(&format!("{code} {}", shown(&p)));
                 }
             }
-            Event::FileHashing(..)
+            Event::Hardlinked(p, target) => {
+                if self.verbosity >= 1 && !self.itemize {
+                    self.line(&format!("{} => {}", shown(&p), shown(&target)));
+                }
+            }
+            Event::Bytes(_)
+            | Event::FileStart(..)
+            | Event::Scanned { .. }
+            | Event::Total { .. }
+            | Event::FileHashing(..)
             | Event::FileHashed(_)
             | Event::FileBytes(..)
             | Event::FileMatched(..)
@@ -247,54 +279,18 @@ impl Reporter {
             | Event::PeerSkipped(_)
             | Event::Delete { .. }
             | Event::SessionStart { .. } => {}
-            Event::Hardlinked(p, target) => {
-                if self.verbosity >= 1 && !self.itemize {
-                    self.line(&format!("{} => {}", shown(&p), shown(&target)));
-                }
-            }
         }
     }
 
-    /// One output line, below any progress line.
+    /// One output line, above any progress block.
     fn line(&mut self, s: &str) {
-        if self.drawn {
-            let _ = write!(self.out, "\r\x1b[K");
-            self.drawn = false;
-        }
-        let _ = writeln!(self.out, "{s}");
-        // Keep the progress line below the text.
-        self.last_draw = None;
+        self.screen.println(s);
     }
 
-    /// The progress line for the current totals.
-    pub fn progress_line(&self, elapsed: Duration) -> String {
-        let secs = elapsed.as_secs_f64().max(0.001);
-        let rate = format!("{}B/s", human((self.bytes as f64 / secs) as u64));
-        let pct = match self.hint {
-            Some((_, total)) if total > 0 => {
-                format!("{:>3}%", (self.bytes.saturating_mul(100) / total).min(100))
-            }
-            _ => "    ".to_string(),
-        };
-        let chk = match self.hint {
-            Some((files, _)) => format!(
-                "(xfr#{}, to-chk={}/{})",
-                self.xfr,
-                files.saturating_sub(self.xfr),
-                files
-            ),
-            None => format!("(xfr#{})", self.xfr),
-        };
-        format!(
-            "{:>12}  {pct}  {rate:>11}  {}  {chk}  [{}]",
-            human(self.bytes),
-            clock(elapsed),
-            conn_label(self.conn)
-        )
-    }
-
+    /// Repaints the block, at most every [`REDRAW`] unless `force`; only on
+    /// a terminal.
     fn draw(&mut self, force: bool) {
-        if !self.tty {
+        if !self.screen.is_tty() {
             return;
         }
         let now = Instant::now();
@@ -302,19 +298,15 @@ impl Reporter {
             return;
         }
         self.last_draw = Some(now);
-        let line = self.progress_line(now - self.start);
-        let _ = write!(self.out, "\r\x1b[K{line}");
-        let _ = self.out.flush();
-        self.drawn = true;
+        self.live.tick(now);
+        let lines = render(&self.live, &self.screen.geometry(), now);
+        self.screen.set_block(&lines);
     }
 
     /// Prints the closing lines: the `--stats` block and rsync's
     /// `sent .. received ..` / `total size is ..` trailer.
     pub fn finish(&mut self, outcome: &Outcome, elapsed: Duration) {
-        if self.drawn {
-            let _ = writeln!(self.out);
-            self.drawn = false;
-        }
+        self.screen.clear();
         if self.lagged > 0 {
             eprintln!(
                 "irsync: note: {} progress events were dropped (output may be incomplete)",
@@ -359,9 +351,9 @@ impl Reporter {
                 format!("Total bytes received: {}", commas(o.bytes_received)),
             ];
             for r in rows {
-                let _ = writeln!(self.out, "{r}");
+                self.line(&r);
             }
-            let _ = writeln!(self.out);
+            self.line("");
         }
         if self.verbosity >= 1 || self.stats {
             let (sent, recv) = (o.bytes_sent, o.bytes_received);
@@ -371,21 +363,18 @@ impl Reporter {
             } else {
                 0.0
             };
-            let _ = writeln!(
-                self.out,
+            self.line(&format!(
                 "sent {} bytes  received {} bytes  {:.2} bytes/sec",
                 commas(sent),
                 commas(recv),
                 rate
-            );
-            let _ = writeln!(
-                self.out,
+            ));
+            self.line(&format!(
                 "total size is {}  speedup is {:.2}{}",
                 commas(o.listed.total_size),
                 speedup,
                 if self.dry_run { " (DRY RUN)" } else { "" }
-            );
+            ));
         }
-        let _ = self.out.flush();
     }
 }

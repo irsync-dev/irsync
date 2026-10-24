@@ -200,8 +200,11 @@ rsync-compatible, same spelling and semantics:
 | `--numeric-ids` | accepted; always on |
 | `--partial-dir` | where partial files live (pull only) |
 | `--ignore-errors` | delete even after I/O errors |
-| `--stats`, `--progress`, `--info=progress2`, `-i` / `--itemize-changes` | reporting |
+| `--stats`, `-i` / `--itemize-changes` | reporting |
+| `--progress`, `--info=progress2` | accepted; the live progress block is always on when stdout is a terminal and off with `-q` |
 | `--timeout` | inactivity timeout in seconds: a connection that moves nothing for this long is dropped and the session reconnects |
+
+On a terminal the client draws a live block at the bottom of the screen: the listing walk on both sides, a transfer bar with rsync's percent semantics, one bar per file in flight, and the deletion pass. `-q` turns it off; piped output is unchanged.
 
 irsync-specific:
 
