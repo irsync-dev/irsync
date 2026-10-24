@@ -44,6 +44,13 @@ pub struct Row {
     pub rate_bytes: u64,
     /// Bytes per second, last computed.
     pub rate: f64,
+    /// The local side is working on the file (a hash or an open stream). A
+    /// row made by an early `FileMatched` is pending until then: it counts
+    /// toward the percent but is not shown.
+    pub opened: bool,
+    /// Every stream is done and only the receiver's ack is outstanding:
+    /// counts toward the percent until `FileDone`, not shown.
+    pub sent: bool,
 }
 
 impl Row {
@@ -56,14 +63,29 @@ impl Row {
             rate_from: now,
             rate_bytes: 0,
             rate: 0.0,
+            opened: false,
+            sent: false,
         }
     }
 
-    /// Position in the file, capped at `size`.
+    /// Whether the row is drawn and counted in flight.
+    pub fn shown(&self) -> bool {
+        self.opened && !self.sent
+    }
+
+    /// Position in the file, capped at `size` once that is known (a row
+    /// made by an early `FileMatched` has none until its `FileStart`).
     pub fn position(&self) -> u64 {
         match self.state {
             RowState::Hashing => 0,
-            RowState::Moving { literal, matched } => literal.saturating_add(matched).min(self.size),
+            RowState::Moving { literal, matched } => {
+                let at = literal.saturating_add(matched);
+                if self.size > 0 {
+                    at.min(self.size)
+                } else {
+                    at
+                }
+            }
         }
     }
 
@@ -160,6 +182,7 @@ impl Live {
                     .or_insert_with(|| Row::new(*size, RowState::Hashing, now));
                 row.size = *size;
                 row.state = RowState::Hashing;
+                row.opened = true;
                 row.last_event = now;
             }
             Event::FileHashed(p) => {
@@ -186,6 +209,8 @@ impl Live {
                 if row.state == RowState::Hashing {
                     row.state = moving;
                 }
+                row.opened = true;
+                row.sent = false;
                 row.last_event = now;
                 row.rate_from = now;
                 row.rate_bytes = 0;
@@ -213,6 +238,8 @@ impl Live {
                     }
                 }
                 row.rate_bytes = row.rate_bytes.saturating_add(*n);
+                row.opened = true;
+                row.sent = false;
                 row.last_event = now;
             }
             Event::FileMatched(p, n) => {
@@ -238,6 +265,12 @@ impl Live {
                     }
                 }
                 row.last_event = now;
+            }
+            Event::FileSent(p) => {
+                if let Some(row) = self.rows.get_mut(p) {
+                    row.sent = true;
+                    row.last_event = now;
+                }
             }
             Event::FileDone(p, size) => {
                 self.rows.remove(p);
@@ -337,8 +370,9 @@ impl Live {
         (den > 0).then(|| (num as u128 * 100 / den as u128) as u8)
     }
 
+    /// Rows shown: hashing or with a stream open, not yet sent in full.
     pub fn in_flight(&self) -> usize {
-        self.rows.len()
+        self.rows.values().filter(|r| r.shown()).count()
     }
 
     /// Clears per-session state for a new session; keeps `conn`, the source

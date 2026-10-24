@@ -324,6 +324,7 @@ impl Reporter {
             | Event::FileHashed(_)
             | Event::FileBytes(..)
             | Event::FileMatched(..)
+            | Event::FileSent(_)
             | Event::Skipped(..)
             | Event::PeerSkipped(_)
             | Event::Delete { .. }

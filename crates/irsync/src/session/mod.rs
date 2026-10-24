@@ -450,8 +450,12 @@ pub enum Event {
     /// Literal bytes moved on a data stream for this file.
     FileBytes(RelPath, u64),
     /// Bytes of this file that need no transfer (matched basis chunks,
-    /// local copies). Absolute, sent once per open.
+    /// local copies). Absolute: the latest value replaces the one before
+    /// (the sender re-reports it as more of the file is requested).
     FileMatched(RelPath, u64),
+    /// The sender finished all data streams for this file; the receiver's
+    /// ack is still outstanding.
+    FileSent(RelPath),
     /// A file was placed (receiver) or acknowledged (sender); its size.
     FileDone(RelPath, u64),
     /// The planner found this regular file up to date; its size.

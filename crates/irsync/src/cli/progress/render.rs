@@ -197,7 +197,7 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
 
     let fixed = 1 + 2 + usize::from(delete.is_some()) + 1;
     let cap = (g.height / 2).saturating_sub(fixed).max(3);
-    let mut rows: Vec<(&RelPath, &Row)> = live.rows.iter().collect();
+    let mut rows: Vec<(&RelPath, &Row)> = live.rows.iter().filter(|(_, r)| r.shown()).collect();
     rows.sort_by(|a, b| b.1.size.cmp(&a.1.size).then_with(|| a.0.cmp(b.0)));
     let overflow = rows.len().saturating_sub(cap);
     for (path, row) in rows.into_iter().take(cap) {

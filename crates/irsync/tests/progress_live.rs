@@ -95,12 +95,63 @@ fn restarted_file_refreshes_its_row() {
 
 #[test]
 fn matched_before_start_is_kept() {
+    use irsync::cli::progress::render::{render, Geometry};
     let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 1,
+            bytes: 400,
+        },
+        t,
+    );
     l.apply(&Event::FileMatched(rp("d"), 300), t);
+    // Matched but no stream yet: counted, not shown.
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.transfer_fraction(), (300, 400));
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert!(!lines.iter().any(|x| x.contains(" d ")), "{lines:?}");
     l.apply(&Event::FileStart(rp("d"), 400), t);
+    assert_eq!(l.in_flight(), 1);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert!(lines.iter().any(|x| x.contains(" d ")), "{lines:?}");
     l.apply(&Event::FileBytes(rp("d"), 50), t);
     assert_eq!(l.rows[&rp("d")].position(), 350);
     assert_eq!(l.in_flight(), 1);
+    // A later, smaller match (more of the file requested) replaces it.
+    l.apply(&Event::FileMatched(rp("d"), 200), t);
+    assert_eq!(l.rows[&rp("d")].position(), 250);
+}
+
+#[test]
+fn sent_rows_leave_the_block_but_keep_their_bytes() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 1,
+            bytes: 100,
+        },
+        t,
+    );
+    l.apply(&Event::FileStart(rp("a"), 100), t);
+    l.apply(&Event::FileBytes(rp("a"), 100), t);
+    assert_eq!(l.in_flight(), 1);
+    l.apply(&Event::FileSent(rp("a")), t);
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.transfer_fraction().0, 100);
+    assert_eq!(l.transfer_percent(), Some(100));
+    // A re-request opens a stream again: the row is back.
+    l.apply(&Event::FileStart(rp("a"), 100), t);
+    assert_eq!(l.in_flight(), 1);
+    l.apply(&Event::FileSent(rp("a")), t);
+    l.apply(&Event::FileDone(rp("a"), 100), t);
+    assert_eq!(l.transfer_fraction().0, 100);
+    assert_eq!(l.transfer_percent(), Some(100));
+    assert_eq!(l.xfr, 1);
+    // Sent for a file without a row: ignored.
+    l.apply(&Event::FileSent(rp("zz")), t);
+    assert!(l.rows.is_empty());
 }
 
 #[test]

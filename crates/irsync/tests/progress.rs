@@ -356,6 +356,7 @@ async fn plain_reporter_output_is_unchanged_with_new_events() {
             Event::FileStart(rp("a"), 10),
             Event::FileMatched(rp("a"), 5),
             Event::FileBytes(rp("a"), 5),
+            Event::FileSent(rp("a")),
             Event::Skipped(rp("s"), 1),
             Event::PeerSkipped(3),
             Event::Scanned {

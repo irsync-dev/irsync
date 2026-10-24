@@ -283,6 +283,51 @@ async fn per_file_events_in_both_directions() {
     }
 }
 
+/// `n` bytes that do not repeat (so chunks and blocks are all distinct).
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_delta_never_reports_the_whole_file_matched() {
+    within30(async {
+        // Two small edits: every changed chunk gets a basis, so the
+        // receiver's first request (chunks without one) is empty and the
+        // rest follow after the signatures.
+        let h = Harness::new().await;
+        let old = noise(12_000_000, 7);
+        let mut new = old.clone();
+        new[3_000_000..3_000_100].fill(0);
+        new[9_000_000..9_000_100].fill(0);
+        fs::write(h.dst(Flow::Push).join("big.bin"), &old).unwrap();
+        fs::write(h.src(Flow::Push).join("big.bin"), &new).unwrap();
+        let (out, events) = run(&h, &opts(&[]), Flow::Push).await;
+        assert!(out.bytes_transferred < 4_000_000, "a delta: {out:?}");
+        let matched: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::FileMatched(p, n) if big(p) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert!(!matched.is_empty(), "{events:?}");
+        assert!(
+            matched.iter().all(|&n| n < 12_000_000),
+            "matched never covers the chunks still to send: {matched:?}"
+        );
+        assert!(matched.iter().any(|&n| n > 0), "{matched:?}");
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hashing_events_when_a_file_is_read() {
     within30(async {
@@ -347,6 +392,24 @@ async fn sender_file_start_means_a_stream_opened_not_a_plan() {
         // streams closing, so allow some slack. Before this change every
         // planned file started at once and this peaked at 50.
         assert!(max_open <= 10, "in flight peaked at {max_open}: {events:?}");
+        // `FileSent` sits between a file's `FileStart` and its `FileDone`.
+        // (Not every file gets one: when the ack is handled before the
+        // send's own completion, the file is already done.)
+        for (i, e) in events.iter().enumerate() {
+            let Event::FileSent(p) = e else { continue };
+            assert!(
+                events[..i]
+                    .iter()
+                    .any(|e| matches!(e, Event::FileStart(q, _) if q == p)),
+                "FileSent({p:?}) before its FileStart: {events:?}"
+            );
+            assert!(
+                events[i..]
+                    .iter()
+                    .any(|e| matches!(e, Event::FileDone(q, _) if q == p)),
+                "FileSent({p:?}) without a FileDone after it: {events:?}"
+            );
+        }
     })
     .await;
 }

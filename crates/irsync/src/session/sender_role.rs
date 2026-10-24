@@ -70,8 +70,13 @@ struct SFile {
     /// Bases the receiver offered for chunks it is about to request, by
     /// chunk index; each is used for one request and dropped.
     bases: HashMap<u32, Basis>,
-    /// `FileMatched` was emitted (once per file, on its first request).
-    matched_reported: bool,
+    /// Chunk indices the receiver asked for so far under this digest: the
+    /// rest of the file is matched (`FileMatched`). A request may come in
+    /// several parts (chunks without a basis first, then those with one).
+    requested: HashSet<u32>,
+    /// Send tasks of this generation still running; `FileSent` when the
+    /// last one finishes.
+    streams: u32,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
 }
@@ -235,6 +240,8 @@ impl SenderRole {
         f.gen += 1;
         f.digest = None;
         f.bases.clear();
+        f.requested.clear();
+        f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
         self.spawn_digest(file_id, gen, path, true, false);
     }
@@ -255,7 +262,8 @@ impl SenderRole {
                 append_from,
                 digest: None,
                 bases: HashMap::new(),
-                matched_reported: false,
+                requested: HashSet::new(),
+                streams: 0,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
@@ -378,9 +386,14 @@ impl SenderRole {
             .into_iter()
             .filter(|&i| (i as usize) < digest.chunks.len())
             .collect();
-        if !f.matched_reported {
-            f.matched_reported = true;
-            let needed: u64 = idxs
+        // Everything not requested so far is matched. An empty request says
+        // nothing (it may be "nothing for now", with chunks that have a
+        // basis still to come), so it reports nothing: a file the receiver
+        // needs nothing of is accounted for by its `FileDone`.
+        if !idxs.is_empty() {
+            f.requested.extend(idxs.iter().copied());
+            let needed: u64 = f
+                .requested
                 .iter()
                 .map(|&i| digest.chunks[i as usize].len as u64)
                 .sum();
@@ -413,6 +426,7 @@ impl SenderRole {
         #[cfg(feature = "test-hooks")]
         let path = f.path.clone();
         self.sending += 1;
+        f.streams += 1;
         tokio::spawn(async move {
             #[cfg(feature = "test-hooks")]
             let result = match hook {
@@ -453,6 +467,17 @@ impl SenderRole {
 
     fn on_sent(&mut self, file_id: u64, gen: u32, result: io::Result<u64>) {
         self.sending -= 1;
+        // The last send of the current generation: only the ack is left.
+        // (A superseded send must not mark the re-offered file sent.)
+        if let Some(f) = self.files.get_mut(&file_id).filter(|f| f.gen == gen) {
+            f.streams = f.streams.saturating_sub(1);
+            if f.streams == 0 && result.is_ok() {
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(super::Event::FileSent(f.path.clone()));
+            }
+        }
         match result {
             // Counted even if the file was acknowledged meanwhile.
             Ok(b) => {
