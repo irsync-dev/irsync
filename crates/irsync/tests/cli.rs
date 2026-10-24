@@ -211,6 +211,19 @@ fn location_remote_with_trailing_slash() {
 }
 
 #[test]
+fn location_missing_export_explains_the_address_form() {
+    // rsync-over-ssh habit: an absolute path after the host.
+    let err = Location::parse("eowyn:/tmp/xxx").unwrap_err().to_string();
+    assert_eq!(
+        err,
+        "missing export in \"eowyn:/tmp/xxx\": remote addresses are HOST:EXPORT/PATH, \
+         where EXPORT is a directory the daemon shares by name (irsync add NAME:PATH)"
+    );
+    let err = Location::parse("home:").unwrap_err().to_string();
+    assert!(err.starts_with("missing export in \"home:\": remote addresses are"));
+}
+
+#[test]
 fn location_local_with_colon_after_slash_is_local() {
     let local = |p: &str, c: bool| Location::Local {
         path: PathBuf::from(p),
