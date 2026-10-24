@@ -380,3 +380,35 @@ fn stalled_and_reconnecting_are_shown() {
         "{lines:?}"
     );
 }
+
+#[test]
+fn phase_bars_are_dropped_when_they_do_not_fit() {
+    let (mut l, t) = mid_sync();
+    l.apply(
+        &Event::Delete {
+            done: 5,
+            total: Some(10),
+            party: Party::Local,
+        },
+        t,
+    );
+    let lines = render(&l, &Geometry::fixed(44, 30), t);
+    let transfer = lines.iter().find(|l| l.starts_with("transfer")).unwrap();
+    let delete = lines.iter().find(|l| l.starts_with("delete")).unwrap();
+    assert!(
+        transfer.contains('%') && !transfer.contains('░'),
+        "{transfer}"
+    );
+    assert!(delete.contains("50%") && !delete.contains('░'), "{delete}");
+    assert!(!transfer.contains('…') && !delete.contains('…'));
+}
+
+#[test]
+fn connection_state_survives_at_80_columns() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = mid_sync();
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 2 }), t);
+    let lines = render(&l, &Geometry::fixed(80, 30), t);
+    assert!(lines[2].contains("[reconnecting #2]"), "{}", lines[2]);
+    assert!(lines[2].chars().count() <= 80);
+}

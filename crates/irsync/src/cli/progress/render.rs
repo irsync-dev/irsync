@@ -23,6 +23,8 @@ const ROW_BAR: usize = 20;
 const NARROW: usize = 60;
 /// Below this width rows and the transfer line drop the bar.
 const TINY: usize = 40;
+/// Below this width the phase lines drop the bar (prefix + bar + percent).
+const PHASE_BAR_MIN: usize = PHASE_COL + PHASE_BAR + 2 + 2 + 4;
 /// Width of the phase name column.
 const PHASE_COL: usize = 10;
 
@@ -302,27 +304,40 @@ fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
         return cut(line, g);
     }
     let (num, den) = live.transfer_fraction();
-    if g.width >= TINY {
+    if g.width >= PHASE_BAR_MIN {
         line.push(&bar(num, den, PHASE_BAR, g), Some(&blue()), g);
         line.push("  ", None, g);
     }
     line.push(&pct_cell(live.transfer_percent()), None, g);
 
     let conn = format!("[{}]", conn_label(live.conn));
-    let optional: [(String, Option<Style>); 6] = [
-        (format!("{}/{}", human(num), human(den)), None),
-        (rate_text(rate), None),
-        (clock(elapsed), None),
-        (format!("xfr#{}", live.xfr), None),
-        (format!("{} in flight", live.in_flight()), None),
-        (conn, reconnecting.then(yellow)),
+    // (keep priority, 0 = keep first; text; style), in display order.
+    let optional: [(usize, String, Option<Style>); 6] = [
+        (3, format!("{}/{}", human(num), human(den)), None),
+        (1, rate_text(rate), None),
+        (2, clock(elapsed), None),
+        (5, format!("xfr#{}", live.xfr), None),
+        (4, format!("{} in flight", live.in_flight()), None),
+        (0, conn, reconnecting.then(yellow)),
     ];
-    for (text, style) in optional {
-        if line.width() + 2 + text.chars().count() > g.width {
+    let mut room = g.width.saturating_sub(line.width());
+    let mut keep = [false; 6];
+    for prio in 0..6 {
+        let Some(i) = optional.iter().position(|(p, ..)| *p == prio) else {
+            continue;
+        };
+        let need = 2 + optional[i].1.chars().count();
+        if need > room {
             break;
         }
-        line.push("  ", None, g);
-        line.push(&text, style.as_ref(), g);
+        room -= need;
+        keep[i] = true;
+    }
+    for (i, (_, text, style)) in optional.iter().enumerate() {
+        if keep[i] {
+            line.push("  ", None, g);
+            line.push(text, style.as_ref(), g);
+        }
     }
     cut(line, g)
 }
@@ -385,7 +400,7 @@ fn delete_line(d: &DeletePhase, g: &Geometry) -> String {
         line.push(&format!("waiting (--delete-{mode})"), None, g);
     } else if let Some(total) = d.total {
         let pct = (total > 0).then(|| (d.done.min(total) as u128 * 100 / total as u128) as u8);
-        if g.width >= TINY {
+        if g.width >= PHASE_BAR_MIN {
             line.push(&bar(d.done, total, PHASE_BAR, g), Some(&blue()), g);
             line.push("  ", None, g);
         }
