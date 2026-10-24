@@ -181,7 +181,11 @@ impl Live {
                     .entry(p.clone())
                     .or_insert_with(|| Row::new(*size, moving.clone(), now));
                 row.size = *size;
-                row.state = moving;
+                // A re-request (another stream for the same file) or a
+                // `FileMatched` that came first keeps what the row has.
+                if row.state == RowState::Hashing {
+                    row.state = moving;
+                }
                 row.last_event = now;
                 row.rate_from = now;
                 row.rate_bytes = 0;
@@ -212,12 +216,28 @@ impl Live {
                 row.last_event = now;
             }
             Event::FileMatched(p, n) => {
-                if let Some(row) = self.rows.get_mut(p) {
-                    if let RowState::Moving { matched, .. } = &mut row.state {
-                        *matched = *n;
+                // The sender knows the match before its first stream opens:
+                // the row starts here, sized by the `FileStart` to come.
+                let row = self.rows.entry(p.clone()).or_insert_with(|| {
+                    Row::new(
+                        0,
+                        RowState::Moving {
+                            literal: 0,
+                            matched: 0,
+                        },
+                        now,
+                    )
+                });
+                match &mut row.state {
+                    RowState::Moving { matched, .. } => *matched = *n,
+                    state @ RowState::Hashing => {
+                        *state = RowState::Moving {
+                            literal: 0,
+                            matched: *n,
+                        }
                     }
-                    row.last_event = now;
                 }
+                row.last_event = now;
             }
             Event::FileDone(p, size) => {
                 self.rows.remove(p);

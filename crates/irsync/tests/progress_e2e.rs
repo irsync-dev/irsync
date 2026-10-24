@@ -299,6 +299,7 @@ async fn hashing_events_when_a_file_is_read() {
         let open = events
             .iter()
             .position(|e| matches!(e, Event::FileStart(p, _) if big(p)));
+        assert!(start.is_some(), "no FileHashing: {events:?}");
         assert!(
             start < end && end <= open,
             "hashing, then hashed, then the stream: {events:?}"

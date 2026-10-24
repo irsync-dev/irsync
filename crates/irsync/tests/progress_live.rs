@@ -86,11 +86,21 @@ fn restarted_file_refreshes_its_row() {
     assert_eq!(
         l.rows[&rp("f")].state,
         RowState::Moving {
-            literal: 0,
+            literal: 4,
             matched: 0
         }
     );
     assert_eq!(l.rows[&rp("f")].started, t);
+}
+
+#[test]
+fn matched_before_start_is_kept() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileMatched(rp("d"), 300), t);
+    l.apply(&Event::FileStart(rp("d"), 400), t);
+    l.apply(&Event::FileBytes(rp("d"), 50), t);
+    assert_eq!(l.rows[&rp("d")].position(), 350);
+    assert_eq!(l.in_flight(), 1);
 }
 
 #[test]
