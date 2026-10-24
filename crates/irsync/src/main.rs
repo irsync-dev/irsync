@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::cli::location::Location;
 use irsync::cli::progress::render::Geometry;
-use irsync::cli::progress::screen::{Screen, WriterTerm};
+use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, HostAddArgs, HostCmd,
@@ -56,7 +56,7 @@ fn main() {
     }
 }
 
-fn init_logging(verbose: u8, quiet: bool) {
+fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
     let default = match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn",
@@ -68,14 +68,15 @@ fn init_logging(verbose: u8, quiet: bool) {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(writer)
         .init();
 }
 
 /// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial
 /// transfer, 25 deletions stopped at `--max-delete`.
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
-    init_logging(opts.verbose, opts.quiet);
+    let log = LogWriter::new();
+    init_logging(opts.verbose, opts.quiet, log.clone());
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -100,6 +101,8 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             } else {
                 Screen::plain(Box::new(std::io::stdout()))
             };
+            // Log lines now print above the block.
+            log.attach(screen.multi());
             // A bad command line fails in `sync` below with the same error.
             let source = match direction_of(args) {
                 Ok(Direction::DaemonSends) => Party::Peer,
@@ -206,7 +209,7 @@ fn run_keygen(out: Option<&std::path::Path>) -> i32 {
 /// `irsync gc`: collects stale resume state for every root with an index
 /// under the state directory.
 fn run_gc(dry_run: bool, verbose: u8) -> i32 {
-    init_logging(verbose, false);
+    init_logging(verbose, false, LogWriter::new());
     let result = (|| -> anyhow::Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -541,7 +544,7 @@ async fn session(
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
-    init_logging(verbose, false);
+    init_logging(verbose, false, LogWriter::new());
     let result = (|| -> anyhow::Result<i32> {
         // (state directory, root) per target.
         let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {

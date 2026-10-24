@@ -376,3 +376,25 @@ async fn plain_reporter_output_is_unchanged_with_new_events() {
     .await;
     assert_eq!(buf.text(), "a\n");
 }
+
+#[test]
+fn log_lines_are_written_through_suspend_not_into_the_block() {
+    use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
+    use tracing_subscriber::fmt::MakeWriter;
+    let buf = Buf::default();
+    let mut screen = Screen::tty(
+        Box::new(WriterTerm::new(Box::new(buf.clone()), || (24, 80))),
+        || irsync::cli::progress::render::Geometry::fixed(80, 24),
+    );
+    screen.set_block(&["─".repeat(80), "transfer  x".into()]);
+    let w = LogWriter::new();
+    w.attach(screen.multi());
+    {
+        let mut line = w.make_writer();
+        line.write_all(b"irsync: warn: something\n").unwrap();
+    }
+    // The block is still the last thing drawn, and the writer did not panic
+    // with the block up. (The log line itself went to the real stderr.)
+    screen.set_block(&["─".repeat(80), "transfer  y".into()]);
+    assert!(buf.text().contains("transfer  y"));
+}

@@ -268,7 +268,7 @@ pub async fn run_with_reconnect(
     let mut session = match stored_session(&local, key).await {
         Some(rec) if !sync_opts.no_resume => {
             if !sync_opts.quiet {
-                eprintln!(
+                tracing::warn!(
                     "resuming session {} from {}",
                     hex(&rec.id[..4]),
                     local_time(rec.updated_at)

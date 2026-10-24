@@ -129,6 +129,77 @@ impl Screen {
     }
 }
 
+/// A tracing `MakeWriter` whose lines print above the block (or straight
+/// to stderr when there is no block).
+#[derive(Clone, Default)]
+pub struct LogWriter(Arc<Mutex<Option<MultiProgress>>>);
+
+impl LogWriter {
+    /// Detached: lines go straight to stderr until `attach`.
+    pub fn new() -> LogWriter {
+        LogWriter::default()
+    }
+
+    /// Called once the screen exists; before that, lines go to stderr.
+    pub fn attach(&self, mp: Option<MultiProgress>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = mp;
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
+    type Writer = LogLine;
+
+    fn make_writer(&'a self) -> LogLine {
+        LogLine {
+            buf: Vec::new(),
+            mp: self.0.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        }
+    }
+}
+
+/// Buffers one log line; on flush and on drop writes it to stderr, with the
+/// block hidden when there is one.
+pub struct LogLine {
+    buf: Vec<u8>,
+    mp: Option<MultiProgress>,
+}
+
+impl LogLine {
+    fn emit(&mut self) {
+        if self.buf.is_empty() {
+            return;
+        }
+        let buf = std::mem::take(&mut self.buf);
+        let write = || {
+            let mut err = io::stderr().lock();
+            let _ = err.write_all(&buf);
+            let _ = err.flush();
+        };
+        match &self.mp {
+            Some(mp) => mp.suspend(write),
+            None => write(),
+        }
+    }
+}
+
+impl Write for LogLine {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.emit();
+        Ok(())
+    }
+}
+
+impl Drop for LogLine {
+    fn drop(&mut self) {
+        self.emit();
+    }
+}
+
 /// Hands indicatif a terminal the screen also writes to.
 #[derive(Debug)]
 struct Shared(Arc<dyn TermLike>);
