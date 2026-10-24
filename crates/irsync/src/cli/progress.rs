@@ -200,15 +200,15 @@ impl Reporter {
     pub fn handle(&mut self, ev: Event) {
         match ev {
             Event::Bytes(n) => self.bytes += n,
-            Event::FileStart(_) => {}
+            Event::FileStart(_, _) => {}
             Event::FileDone(p, _) => {
                 self.xfr += 1;
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&shown(&p));
                 }
             }
-            Event::Scanned(n) => self.scanned = n,
-            Event::Total { files, bytes } => {
+            Event::Scanned { entries, .. } => self.scanned = entries,
+            Event::Total { files, bytes, .. } => {
                 if !self.hint_fixed {
                     self.hint = Some((files, bytes));
                     self.hint_fixed = true;
@@ -236,6 +236,14 @@ impl Reporter {
                     self.line(&format!("{code} {}", shown(&p)));
                 }
             }
+            Event::FileHashing(..)
+            | Event::FileHashed(_)
+            | Event::FileBytes(..)
+            | Event::FileMatched(..)
+            | Event::Skipped(..)
+            | Event::PeerSkipped(_)
+            | Event::Delete { .. }
+            | Event::SessionStart { .. } => {}
             Event::Hardlinked(p, target) => {
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&format!("{} => {}", shown(&p), shown(&target)));

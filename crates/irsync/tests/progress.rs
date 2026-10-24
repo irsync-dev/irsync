@@ -11,7 +11,7 @@ use irsync::fs::paths::RelPath;
 use irsync::plan::{itemize, Decision, Side};
 use irsync::scan::ListStats;
 use irsync::session::reconnect::ConnState;
-use irsync::session::{Event, Outcome};
+use irsync::session::{Event, Outcome, Party};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 #[derive(Clone, Default)]
@@ -85,7 +85,7 @@ async fn verbose_lists_each_file() {
     feed(
         r,
         vec![
-            Event::FileStart(rp("a/one")),
+            Event::FileStart(rp("a/one"), 10),
             Event::Bytes(10),
             Event::FileDone(rp("a/one"), 10),
             Event::FileDone(rp("two"), 0),
@@ -328,11 +328,13 @@ fn progress_line_shows_percentage_after_total() {
         "{before}"
     );
     r.handle(Event::Total {
+        party: Party::Local,
         files: 10,
         bytes: 1000,
     });
     // Only the first Total counts.
     r.handle(Event::Total {
+        party: Party::Local,
         files: 99,
         bytes: 99,
     });

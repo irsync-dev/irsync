@@ -10,7 +10,7 @@ use std::time::Duration;
 use common::{Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::session::reconnect::ReconnectOpts;
-use irsync::session::{Event, Outcome};
+use irsync::session::{Event, Outcome, Party};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(30), f)
@@ -185,9 +185,12 @@ async fn scanned_event_emitted_on_push() {
             fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
         let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
-        assert!(events.contains(&Event::Scanned(1000)), "no Scanned(1000)");
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Scanned { party: Party::Local, entries, .. } if *entries >= 1000)),
+            "no local Scanned >= 1000: {events:?}"
+        );
         let total = events.iter().find_map(|e| match e {
-            Event::Total { files, bytes } => Some((*files, *bytes)),
+            Event::Total { party: Party::Local, files, bytes } => Some((*files, *bytes)),
             _ => None,
         });
         assert_eq!(total, Some((1100, 1100)));
@@ -202,7 +205,11 @@ async fn pull_reports_total_from_peer_listing() {
         tree(h.src(Flow::Pull));
         let (_, events) = run(&h, &opts(&[]), Flow::Pull).await;
         let total = events.iter().find_map(|e| match e {
-            Event::Total { files, bytes } => Some((*files, *bytes)),
+            Event::Total {
+                party: Party::Peer,
+                files,
+                bytes,
+            } => Some((*files, *bytes)),
             _ => None,
         });
         assert_eq!(total, Some((2, 3 + 5000)));

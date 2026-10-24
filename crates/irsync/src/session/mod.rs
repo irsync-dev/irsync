@@ -429,19 +429,61 @@ pub type FirstChunkHook =
 #[cfg(feature = "test-hooks")]
 pub type PathHook = Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
+/// Which side of the session an event describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Party {
+    Local,
+    Peer,
+}
+
 /// Something worth telling the user about, emitted as a session runs.
 /// Events are best-effort: a slow reporter loses some (`Lagged`), and the
 /// final [`Outcome`] is authoritative for totals.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// A file's transfer began.
-    FileStart(RelPath),
+    /// A data stream for this file is open (both roles); its size.
+    FileStart(RelPath, u64),
+    /// A hasher started reading this file; its size.
+    FileHashing(RelPath, u64),
+    /// The hasher finished reading this file.
+    FileHashed(RelPath),
+    /// Literal bytes moved on a data stream for this file.
+    FileBytes(RelPath, u64),
+    /// Bytes of this file that need no transfer (matched basis chunks,
+    /// local copies). Absolute, sent once per open.
+    FileMatched(RelPath, u64),
     /// A file was placed (receiver) or acknowledged (sender); its size.
     FileDone(RelPath, u64),
-    /// File data bytes moved on a data stream.
+    /// The planner found this regular file up to date; its size.
+    Skipped(RelPath, u64),
+    /// Bytes of source files the peer's planner skipped so far (cumulative).
+    PeerSkipped(u64),
+    /// File data bytes moved on a data stream (aggregate, as before).
     Bytes(u64),
-    /// Entries listed so far (every 1000).
-    Scanned(u64),
+    /// Listing progress for one side.
+    Scanned {
+        party: Party,
+        entries: u64,
+        bytes: u64,
+        at: Option<RelPath>,
+    },
+    /// One side's listing is complete: regular files and their total size.
+    Total {
+        party: Party,
+        files: u64,
+        bytes: u64,
+    },
+    /// Deletion pass progress for one side.
+    Delete {
+        party: Party,
+        done: u64,
+        total: Option<u64>,
+    },
+    /// A new session (one source) starts: its 0-based index and the count.
+    SessionStart {
+        index: usize,
+        of: usize,
+    },
     Conn(reconnect::ConnState),
     Deleted(RelPath),
     /// `--dry-run`: this path would be deleted.
@@ -450,11 +492,6 @@ pub enum Event {
     Itemized(RelPath, String),
     /// A hard link `path` to `target` was made.
     Hardlinked(RelPath, RelPath),
-    /// The listing is complete: regular files and their total size.
-    Total {
-        files: u64,
-        bytes: u64,
-    },
 }
 
 /// The channel events travel on. Sending never blocks; with nobody

@@ -140,6 +140,7 @@ pub(super) fn spawn_reader(
                     m @ Msg::ListingEnd(_) => {
                         if listing.is_some() {
                             bus.emit(crate::session::Event::Total {
+                                party: crate::session::Party::Peer,
                                 files: seen.reg,
                                 bytes: seen.total_size,
                             });
@@ -292,7 +293,12 @@ pub(super) fn spawn_listing(
             count += 1;
             if count.is_multiple_of(1000) {
                 if let Some(b) = &spec.bus {
-                    b.emit(super::Event::Scanned(count));
+                    b.emit(super::Event::Scanned {
+                        party: super::Party::Local,
+                        entries: count,
+                        bytes: stats.total_size,
+                        at: None,
+                    });
                 }
             }
         }
@@ -303,6 +309,7 @@ pub(super) fn spawn_listing(
         summary.listed = stats;
         if let Some(b) = &spec.bus {
             b.emit(crate::session::Event::Total {
+                party: crate::session::Party::Local,
                 files: stats.reg,
                 bytes: stats.total_size,
             });

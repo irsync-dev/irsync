@@ -258,7 +258,7 @@ impl SenderRole {
         self.ctx
             .hooks
             .bus
-            .emit(super::Event::FileStart(path.clone()));
+            .emit(super::Event::FileStart(path.clone(), 0));
         self.persist.plan(PlanEntry {
             file_id,
             path: p.path,
