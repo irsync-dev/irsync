@@ -398,3 +398,34 @@ fn log_lines_are_written_through_suspend_not_into_the_block() {
     screen.set_block(&["─".repeat(80), "transfer  y".into()]);
     assert!(buf.text().contains("transfer  y"));
 }
+
+#[tokio::test]
+async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
+    let buf = Buf::default();
+    let mut r = feed(
+        reporter(&buf, true, 0, false, false),
+        vec![
+            Event::SessionStart { index: 0, of: 2 },
+            Event::Total {
+                party: Party::Local,
+                files: 1,
+                bytes: 5,
+            },
+            Event::FileStart(rp("a"), 5),
+            Event::FileBytes(rp("a"), 5),
+            Event::FileDone(rp("a"), 5),
+            Event::SessionStart { index: 1, of: 2 },
+            Event::FileStart(rp("b"), 7),
+        ],
+    )
+    .await;
+    let f = r.frame(std::time::Instant::now());
+    assert_eq!(r.live().xfr, 0, "second session starts fresh");
+    assert!(f.iter().any(|l| l.contains("b")), "{f:?}");
+    let t = buf.text();
+    let first_done = t
+        .find("transfer  done")
+        .expect("first session's done line printed");
+    assert!(t[first_done..].contains("1 files"), "{t:?}");
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+}

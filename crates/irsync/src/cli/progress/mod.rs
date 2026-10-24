@@ -24,6 +24,9 @@ use render::{render, Geometry};
 use screen::{Screen, WriterTerm};
 use state::Live;
 
+/// The 10-character prefixes of the phase lines in a rendered block.
+const PHASES: [&str; 3] = ["list      ", "transfer  ", "delete    "];
+
 /// Redraw the progress block at most this often.
 const REDRAW: Duration = Duration::from_millis(100);
 
@@ -186,6 +189,11 @@ impl Reporter {
         self
     }
 
+    /// The live state (for tests).
+    pub fn live(&self) -> &Live {
+        &self.live
+    }
+
     /// The block as it would be drawn now (for tests).
     pub fn frame(&self, now: Instant) -> Vec<String> {
         render(&self.live, &self.screen.geometry(), now)
@@ -236,6 +244,9 @@ impl Reporter {
 
     /// Applies one event (the unit the tests drive directly).
     pub fn handle(&mut self, ev: Event) {
+        if matches!(ev, Event::SessionStart { index, .. } if index > 0) {
+            self.print_finished_session();
+        }
         self.live.apply(&ev, Instant::now());
         match ev {
             Event::FileDone(p, _) => {
@@ -279,6 +290,25 @@ impl Reporter {
             | Event::PeerSkipped(_)
             | Event::Delete { .. }
             | Event::SessionStart { .. } => {}
+        }
+    }
+
+    /// The finished session's `list`/`transfer`/`delete` lines, into the
+    /// scrollback (a terminal only), before the block restarts.
+    fn print_finished_session(&mut self) {
+        if !self.screen.is_tty() {
+            return;
+        }
+        let mut done = self.live.clone();
+        done.transfer_done = true;
+        if let Some(d) = &mut done.delete {
+            d.finished = true;
+        }
+        let now = Instant::now();
+        for l in render(&done, &self.screen.geometry(), now) {
+            if PHASES.iter().any(|p| l.starts_with(p)) {
+                self.screen.println(&l);
+            }
         }
     }
 

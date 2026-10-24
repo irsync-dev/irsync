@@ -23,7 +23,7 @@ use irsync::index::Index;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
-use irsync::session::{resolve_roots, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -400,7 +400,9 @@ async fn sync(args: &Args, opts: &SyncOptions, bus: &EventBus) -> anyhow::Result
     let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
     let mut total = Outcome::default();
     let (mut sessions, mut failed) = (0, 0);
-    for (src, dst) in pairs {
+    let of = pairs.len();
+    for (index, (src, dst)) in pairs.into_iter().enumerate() {
+        bus.emit(Event::SessionStart { index, of });
         let (local, remote) = match direction {
             Direction::ClientSends => (src, dst),
             Direction::DaemonSends => (dst, src),
