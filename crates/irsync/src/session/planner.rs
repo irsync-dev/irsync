@@ -80,7 +80,26 @@ pub(super) struct Itemize {
 /// acknowledged) per session; the planner waits for a slot before the next.
 pub(super) const MAX_INFLIGHT: usize = 4096;
 
-/// [`MAX_INFLIGHT`], or a test's smaller cap.
+/// Descriptors a file in flight may hold: its `.part` and, for a `DELTA`
+/// or `APPEND`, the old file.
+const FDS_PER_INFLIGHT: usize = 2;
+
+/// Open files the in-flight window leaves to everything else: the
+/// connection, the index and its journal, logs, hasher workers, local
+/// chunk copies.
+const NOFILE_RESERVE: usize = 256;
+
+/// The in-flight window the process's soft open-file limit allows
+/// ([`MAX_INFLIGHT`] at most, one at least).
+fn inflight_for_limit(soft: u64) -> usize {
+    let spare = usize::try_from(soft)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(NOFILE_RESERVE);
+    (spare / FDS_PER_INFLIGHT).clamp(1, MAX_INFLIGHT)
+}
+
+/// [`MAX_INFLIGHT`] (or a test's smaller cap), reduced to what the
+/// open-file limit allows.
 pub(super) fn inflight_cap(ctx: &Ctx) -> usize {
     #[cfg(feature = "test-hooks")]
     let cap = ctx.hooks.max_inflight.unwrap_or(MAX_INFLIGHT);
@@ -89,7 +108,8 @@ pub(super) fn inflight_cap(ctx: &Ctx) -> usize {
         let _ = ctx;
         MAX_INFLIGHT
     };
-    cap.max(1)
+    cap.min(inflight_for_limit(crate::fs::rlimit::nofile_soft()))
+        .max(1)
 }
 
 /// A hard link (`-H`) the planner decided on: placed by the receiver after
@@ -849,6 +869,20 @@ mod tests {
     use super::*;
     use crate::fs::meta::ApplyOpts;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn inflight_cap_fits_the_open_file_limit() {
+        // A generous limit allows the whole window.
+        assert_eq!(inflight_for_limit(524_288), MAX_INFLIGHT);
+        // The common soft limit of 1024: two descriptors per file in flight
+        // (the `.part` and the old file) plus the reserve must fit, and
+        // most of the limit should still go to files.
+        let cap = inflight_for_limit(1024);
+        assert!(cap * FDS_PER_INFLIGHT + NOFILE_RESERVE <= 1024, "{cap}");
+        assert!(cap >= 256, "{cap}");
+        // Never zero, however small the limit.
+        assert_eq!(inflight_for_limit(0), 1);
+    }
 
     #[test]
     fn place_hardlink_never_follows_symlinked_components() {

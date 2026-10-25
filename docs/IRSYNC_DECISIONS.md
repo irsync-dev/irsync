@@ -209,7 +209,14 @@ cross-referenced from commit messages and review notes.
   planned files in flight per session. Bounded channels were deliberately
   avoided to prevent the reader/writer deadlock cycle; redesigning that in a
   late fix wave was judged riskier than memory growth from an *authorised*
-  peer. Tracked follow-up (see below).
+  peer. Tracked follow-up (see below). Amended 2026-10-25: a file in flight
+  holds its `.part` open (and the old file for a `DELTA`) from its chunk
+  list to its finalize, while the sender streams only 32 files at a time,
+  so thousands of descriptors were held and a receiver under the common
+  soft limit of 1024 failed files with `EMFILE`. The process now raises its
+  soft `RLIMIT_NOFILE` to the hard limit at startup (`fs::rlimit`), and the
+  window is the smaller of 4096 and what the limit leaves after a reserve
+  of 256, at two descriptors per file (`planner::inflight_for_limit`).
 - **R34 (process) — One narrowly scoped follow-up fix was dispatched after
   the single final fix wave**, deviating from the "one fix wave" rule, because
   the fix wave itself introduced the idle-timeout regression and it hit the

@@ -30,6 +30,8 @@ use irsync_proto::PROTOCOL_VERSION;
 
 fn main() {
     let args = Args::parse();
+    // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
+    let _ = irsync::fs::rlimit::raise_nofile();
     match &args.cmd {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d, args.sync.verbose)),
         Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
