@@ -81,7 +81,9 @@ pub fn host_remove(doc: &mut DocumentMut, alias: &str) -> Result<(), ManageError
 pub fn host_list(doc: &DocumentMut) -> Vec<String> {
     let mut out = Vec::new();
     for (alias, item) in doc.iter() {
-        let Some(t) = item.as_table_like() else { continue };
+        let Some(t) = item.as_table_like() else {
+            continue;
+        };
         let id = t.get("endpoint_id").and_then(Item::as_str).unwrap_or("?");
         out.push(format!("{alias}: {id}"));
         for (k, v) in t.iter().filter(|(k, _)| *k != "endpoint_id") {

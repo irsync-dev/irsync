@@ -4,8 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use common::{
-    client_endpoint, spawn_daemon, spawn_daemon_with, spawn_daemon_with_state, within,
-    DaemonHandle,
+    client_endpoint, spawn_daemon, spawn_daemon_with, spawn_daemon_with_state, within, DaemonHandle,
 };
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
@@ -209,7 +208,12 @@ async fn ungranted_export_reply_does_not_reveal_whether_it_exists() {
         // "ro" exists (the key has no grant on it); "nope" does not exist.
         let existing = reply(exchange_with(only_rw(), hello("ro", path, dir)).await);
         let missing = reply(exchange_with(only_rw(), hello("nope", path, dir)).await);
-        assert_eq!(existing.0, Code::Unauthorized as i32, "{dir:?} {path:?}: {}", existing.1);
+        assert_eq!(
+            existing.0,
+            Code::Unauthorized as i32,
+            "{dir:?} {path:?}: {}",
+            existing.1
+        );
         // Any difference in the message would be a leak; the export name is
         // the client's own input, so echoing it back is fine.
         let strip = |m: &str| m.replace("\"ro\"", "<name>").replace("\"nope\"", "<name>");
@@ -315,14 +319,22 @@ async fn index_open_failure_is_an_internal_error_reply() {
     let daemon = spawn_daemon_with_state(authz, state).await;
     std::fs::write(
         &exports,
-        format!("[data]\npath = {:?}\nro = [\"{}\"]\n", d.path().join("data"), client.id()),
+        format!(
+            "[data]\npath = {:?}\nro = [\"{}\"]\n",
+            d.path().join("data"),
+            client.id()
+        ),
     )
     .unwrap();
     let h = hello("data", b"", Direction::DaemonSends);
     match exchange_against(&daemon, &client, h).await {
         Ok(HelloAckOrError::Err(e)) => {
             assert_eq!(e.code, Code::Internal as i32, "{}", e.message);
-            assert!(e.message.contains("cannot open index for export \"data\""), "{}", e.message);
+            assert!(
+                e.message.contains("cannot open index for export \"data\""),
+                "{}",
+                e.message
+            );
         }
         Ok(HelloAckOrError::Ack(_)) => panic!("expected INTERNAL, got ack"),
         Err(e) => panic!("expected an INTERNAL error reply, got a dropped connection: {e}"),

@@ -125,8 +125,16 @@ fn add_and_allow_take_effect_without_restart() {
     let sync_args = ["-a", "--reconnect", "0", "--address", &address, &from, &to];
     let o = irsync(&client, &sync_args);
     assert!(!o.status.success(), "sync before add should fail");
-    assert!(stderr(&o).contains("rejected this client's key"), "{}", stderr(&o));
-    assert!(stderr(&o).contains(&format!("irsync allow data {client_id}")), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("rejected this client's key"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(
+        stderr(&o).contains(&format!("irsync allow data {client_id}")),
+        "{}",
+        stderr(&o)
+    );
     let log_now = std::fs::read_to_string(&log).unwrap();
     assert!(log_now.contains("unauthorized"), "{log_now}");
 
@@ -138,7 +146,11 @@ fn add_and_allow_take_effect_without_restart() {
 
     // 6. The same sync now works.
     let o = irsync(&client, &sync_args);
-    assert!(o.status.success(), "sync after allow failed: {}", stderr(&o));
+    assert!(
+        o.status.success(),
+        "sync after allow failed: {}",
+        stderr(&o)
+    );
     assert_eq!(std::fs::read(data.join("a.txt")).unwrap(), b"hello");
 
     // 7. Revoking takes effect on the next connection too.
@@ -146,8 +158,16 @@ fn add_and_allow_take_effect_without_restart() {
     assert!(o.status.success(), "{}", stderr(&o));
     let o = irsync(&client, &sync_args);
     assert!(!o.status.success(), "sync after revoke should fail");
-    assert!(stderr(&o).contains("rejected this client's key"), "{}", stderr(&o));
-    assert!(stderr(&o).contains(&format!("irsync allow data {client_id}")), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("rejected this client's key"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(
+        stderr(&o).contains(&format!("irsync allow data {client_id}")),
+        "{}",
+        stderr(&o)
+    );
     let log_now = std::fs::read_to_string(&log).unwrap();
     assert!(log_now.matches("unauthorized").count() >= 2, "{log_now}");
     assert!(daemon.0.try_wait().unwrap().is_none(), "daemon exited");

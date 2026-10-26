@@ -16,11 +16,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
     #[error("{}: {source}", path.display())]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error("{}: {source}", path.display())]
-    Toml { path: PathBuf, source: toml_edit::TomlError },
+    Toml {
+        path: PathBuf,
+        source: toml_edit::TomlError,
+    },
     #[error("export {0:?} already exists")]
     Exists(String),
     #[error("no such entry {0:?}")]
@@ -29,7 +35,9 @@ pub enum ManageError {
     BadName(String),
     #[error("{0:?} is a reserved name (rw, ro, all)")]
     Reserved(String),
-    #[error("{0:?} is not a valid alias: must not contain ':' or '/' and must not be an EndpointId")]
+    #[error(
+        "{0:?} is not a valid alias: must not contain ':' or '/' and must not be an EndpointId"
+    )]
     BadAlias(String),
     #[error("no open access: a peer must be named (an alias, an EndpointId, a public key line or a .pub file)")]
     NoOpenAccess,
@@ -56,16 +64,27 @@ pub fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, ManageError> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(source) => return Err(ManageError::Io { path: path.to_path_buf(), source }),
+        Err(source) => {
+            return Err(ManageError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
     };
     text.parse::<toml_edit::DocumentMut>()
-        .map_err(|source| ManageError::Toml { path: path.to_path_buf(), source })
+        .map_err(|source| ManageError::Toml {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// Atomically write `doc` to `path` (temp file in the same directory, then
 /// rename), creating the parent directory and using mode 0644.
 pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    let io = |source| ManageError::Io { path: path.to_path_buf(), source };
+    let io = |source| ManageError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -78,21 +97,28 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o644)).map_err(io)?;
     }
-    tmp.persist(path).map_err(|e| ManageError::Io { path: path.to_path_buf(), source: e.error })?;
+    tmp.persist(path).map_err(|e| ManageError::Io {
+        path: path.to_path_buf(),
+        source: e.error,
+    })?;
     Ok(())
 }
 
 /// Save `exports.toml`, refusing a document that would not load.
 pub fn save_exports(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    Exports::parse(&doc.to_string(), path)
-        .map_err(|source| ManageError::Invalid { path: path.to_path_buf(), source })?;
+    Exports::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
+        path: path.to_path_buf(),
+        source,
+    })?;
     save_doc(path, doc)
 }
 
 /// Save `hosts.toml`, refusing a document that would not load.
 pub fn save_hosts(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    Hosts::parse(&doc.to_string(), path)
-        .map_err(|source| ManageError::Invalid { path: path.to_path_buf(), source })?;
+    Hosts::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
+        path: path.to_path_buf(),
+        source,
+    })?;
     save_doc(path, doc)
 }
 
@@ -100,7 +126,10 @@ pub fn save_hosts(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), Manag
 #[derive(Debug, Clone)]
 pub enum PeerSpec {
     Alias(String),
-    Id { id: EndpointId, comment: Option<String> },
+    Id {
+        id: EndpointId,
+        comment: Option<String>,
+    },
 }
 
 impl PeerSpec {
@@ -137,7 +166,11 @@ impl PeerSpec {
         let Some(id) = endpoint_id_of_public_key(pk) else {
             return Ok(None);
         };
-        let comment = if comment.is_empty() { None } else { Some(comment.to_string()) };
+        let comment = if comment.is_empty() {
+            None
+        } else {
+            Some(comment.to_string())
+        };
         Ok(Some(PeerSpec::Id { id, comment }))
     }
 

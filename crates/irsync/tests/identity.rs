@@ -224,7 +224,10 @@ fn write_new_never_replaces_an_existing_file() {
     let e = write_new(&p, b"second", 0o600).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
     assert_eq!(std::fs::read(&p).unwrap(), b"first");
-    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     // No temporary file is left behind.
     assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
 }

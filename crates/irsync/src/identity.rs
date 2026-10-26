@@ -12,7 +12,10 @@ pub enum IdentityError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{}: {source}", path.display())]
-    File { path: PathBuf, source: std::io::Error },
+    File {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("SSH key error: {0}")]
     Ssh(#[from] ssh_key::Error),
     #[error("private key is encrypted; a passphrase is required")]
@@ -148,13 +151,23 @@ pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, Identit
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(IdentityError::AlreadyExists(path.to_path_buf()))
         }
-        Err(source) => return Err(IdentityError::File { path: path.to_path_buf(), source }),
+        Err(source) => {
+            return Err(IdentityError::File {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
     }
     let line = format!("{}\n", key.public_key().to_openssh()?);
     match write_new(&pub_path, line.as_bytes(), 0o644) {
         // Another process wrote it first: the private key is what counts.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(source) => return Err(IdentityError::File { path: pub_path, source }),
+        Err(source) => {
+            return Err(IdentityError::File {
+                path: pub_path,
+                source,
+            })
+        }
         Ok(()) => {}
     }
     secret_of(&key)

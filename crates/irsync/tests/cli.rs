@@ -369,13 +369,35 @@ fn index_subcommand_parses_roots_or_daemon_exports() {
 
 #[test]
 fn management_commands_parse() {
-    let a = parse(&["add", "photos:/srv/photos", "--ro", "--warm-index", "--exports", "/e"]);
-    let Some(Command::Add(x)) = a.cmd else { panic!() };
-    assert!(x.target == "photos:/srv/photos" && x.ro && x.warm_index && x.files.exports == Some("/e".into()));
-    assert!(matches!(parse(&["remove", "photos"]).cmd, Some(Command::Remove { ref name, .. }) if name == "photos"));
-    assert!(matches!(parse(&["allow", "photos", "laptop", "--ro"]).cmd, Some(Command::Allow { ref export, ref who, ro: true, .. }) if export == "photos" && who == "laptop"));
-    assert!(matches!(parse(&["revoke", "laptop"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 1));
-    assert!(matches!(parse(&["revoke", "photos", "all"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 2));
+    let a = parse(&[
+        "add",
+        "photos:/srv/photos",
+        "--ro",
+        "--warm-index",
+        "--exports",
+        "/e",
+    ]);
+    let Some(Command::Add(x)) = a.cmd else {
+        panic!()
+    };
+    assert!(
+        x.target == "photos:/srv/photos"
+            && x.ro
+            && x.warm_index
+            && x.files.exports == Some("/e".into())
+    );
+    assert!(
+        matches!(parse(&["remove", "photos"]).cmd, Some(Command::Remove { ref name, .. }) if name == "photos")
+    );
+    assert!(
+        matches!(parse(&["allow", "photos", "laptop", "--ro"]).cmd, Some(Command::Allow { ref export, ref who, ro: true, .. }) if export == "photos" && who == "laptop")
+    );
+    assert!(
+        matches!(parse(&["revoke", "laptop"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 1)
+    );
+    assert!(
+        matches!(parse(&["revoke", "photos", "all"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 2)
+    );
     assert!(Args::try_parse_from(["irsync", "revoke"]).is_err());
     assert!(Args::try_parse_from(["irsync", "revoke", "a", "b", "c"]).is_err());
 }
@@ -383,19 +405,72 @@ fn management_commands_parse() {
 #[test]
 fn host_subcommands_parse() {
     use irsync::cli::HostCmd;
-    let a = parse(&["host", "add", "home", "abc", "--relay", "https://r", "--address", "1.2.3.4:1", "--address", "h:2", "--parallel", "8", "--reconnect", "2h", "--dht", "no", "--mdns", "yes", "--hosts", "/h"]);
-    let Some(Command::Host(HostCmd::Add(h))) = a.cmd else { panic!() };
-    assert!(h.alias == "home" && h.id == "abc" && h.address.len() == 2 && h.dht == Some(false) && h.mdns == Some(true) && h.files.hosts == Some("/h".into()));
-    assert!(Args::try_parse_from(["irsync", "host", "add", "home", "abc", "--dht", "maybe"]).is_err());
-    assert!(matches!(parse(&["host", "remove", "home"]).cmd, Some(Command::Host(HostCmd::Remove { ref alias, .. })) if alias == "home"));
-    assert!(matches!(parse(&["host", "list"]).cmd, Some(Command::Host(HostCmd::List { .. }))));
+    let a = parse(&[
+        "host",
+        "add",
+        "home",
+        "abc",
+        "--relay",
+        "https://r",
+        "--address",
+        "1.2.3.4:1",
+        "--address",
+        "h:2",
+        "--parallel",
+        "8",
+        "--reconnect",
+        "2h",
+        "--dht",
+        "no",
+        "--mdns",
+        "yes",
+        "--hosts",
+        "/h",
+    ]);
+    let Some(Command::Host(HostCmd::Add(h))) = a.cmd else {
+        panic!()
+    };
+    assert!(
+        h.alias == "home"
+            && h.id == "abc"
+            && h.address.len() == 2
+            && h.dht == Some(false)
+            && h.mdns == Some(true)
+            && h.files.hosts == Some("/h".into())
+    );
+    assert!(
+        Args::try_parse_from(["irsync", "host", "add", "home", "abc", "--dht", "maybe"]).is_err()
+    );
+    assert!(
+        matches!(parse(&["host", "remove", "home"]).cmd, Some(Command::Host(HostCmd::Remove { ref alias, .. })) if alias == "home")
+    );
+    assert!(matches!(
+        parse(&["host", "list"]).cmd,
+        Some(Command::Host(HostCmd::List { .. }))
+    ));
 }
 
 #[test]
 fn id_and_show_parse() {
-    assert!(matches!(parse(&["id"]).cmd, Some(Command::Id { daemon: false, all: false, .. })));
-    assert!(matches!(parse(&["id", "--daemon"]).cmd, Some(Command::Id { daemon: true, .. })));
-    assert!(matches!(parse(&["id", "-a"]).cmd, Some(Command::Id { all: true, .. })));
+    assert!(matches!(
+        parse(&["id"]).cmd,
+        Some(Command::Id {
+            daemon: false,
+            all: false,
+            ..
+        })
+    ));
+    assert!(matches!(
+        parse(&["id", "--daemon"]).cmd,
+        Some(Command::Id { daemon: true, .. })
+    ));
+    assert!(matches!(
+        parse(&["id", "-a"]).cmd,
+        Some(Command::Id { all: true, .. })
+    ));
     assert!(Args::try_parse_from(["irsync", "id", "--daemon", "--all"]).is_err());
-    assert!(matches!(parse(&["show", "--config", "/c"]).cmd, Some(Command::Show { .. })));
+    assert!(matches!(
+        parse(&["show", "--config", "/c"]).cmd,
+        Some(Command::Show { .. })
+    ));
 }

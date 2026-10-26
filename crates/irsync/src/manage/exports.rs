@@ -145,7 +145,10 @@ pub fn allow(
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<(), ManageError> {
-    if let PeerSpec::Id { comment: Some(c), .. } = who {
+    if let PeerSpec::Id {
+        comment: Some(c), ..
+    } = who
+    {
         check_comment(c)?;
     }
     let table = target(doc, export)?;

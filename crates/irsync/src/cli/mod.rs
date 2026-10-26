@@ -221,7 +221,9 @@ pub struct HostAddArgs {
 
 /// Accepts a duration the config files accept; keeps the user's text.
 fn validate_duration(s: &str) -> Result<String, String> {
-    duration::parse(s).map(|_| s.to_string()).map_err(|e| e.to_string())
+    duration::parse(s)
+        .map(|_| s.to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn parse_yes_no(s: &str) -> Result<bool, String> {

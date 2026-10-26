@@ -268,6 +268,22 @@ More: [docs/daemon.md](docs/daemon.md) for running the daemon,
 [docs/DELTA_RECEIVE.md](docs/DELTA_RECEIVE.md) for how a changed file is
 received.
 
+## Developing
+
+The repository's git remote is not on GitHub, so the CI workflow in
+`.github/workflows/ci.yml` does not run on pushes. The pre-push hook in
+`.githooks/` enforces its formatting check locally instead: every commit
+being pushed is checked with `cargo fmt --all -- --check` in a throwaway
+worktree, and the push is refused if any file is not rustfmt-clean. Install
+it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Clippy (`cargo clippy --workspace --all-targets --all-features -- -D
+warnings`) and the tests are not part of the hook; run them before pushing.
+
 ## fileset
 
 This workspace also contains `fileset`, an independent manifest-and-verify tool
