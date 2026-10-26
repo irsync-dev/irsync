@@ -113,6 +113,12 @@ calls `index_old_file` itself; by then that is a cache hit.
 4. **Open** the locked `.part` (`FileWriter::open_tracked`). The writer
    adopts earlier progress recorded for that `.part` and keeps a `verified`
    bit per chunk; `missing_chunks()` lists the indices whose bit is clear.
+   When nothing is at the `.part` name and there is no old file to clone,
+   the open is deferred: the writer holds no descriptor until its first
+   write (or `finalize`, for an empty file) creates and locks the `.part`.
+   A file waiting for the sender's stream thus costs no open file, however
+   many are in flight; the lock still covers every byte written to the
+   `.part` up to its rename.
 5. **Partition** the missing chunks. One blocking pass holds the index lock
    and asks `find_chunk` for each missing chunk's hash. A hit yields a path
    (an index key, turned absolute with `ctx.full_key`) and an offset inside

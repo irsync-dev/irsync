@@ -429,6 +429,38 @@ async fn hashing_events_when_a_file_is_read() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receiver_opens_a_part_only_when_its_data_arrives() {
+    within30(async {
+        let h = Harness::new().await;
+        // Distinct contents: nothing can be filled from a local copy, so
+        // every file waits for the sender's stream.
+        for i in 0..50 {
+            fs::write(h.src(Flow::Push).join(format!("f{i}")), format!("file {i}")).unwrap();
+        }
+        let (out, _) = run(&h, &opts(&["--parallel", "2"]), Flow::Push).await;
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        // The daemon receives: a `.part` is open from `open:` to `placed:`.
+        // Every file is planned at once, but the sender streams two at a
+        // time, so few `.part` files should be open at any moment.
+        let log = h.daemon.events.lock().unwrap().clone();
+        let mut open = BTreeSet::new();
+        let (mut peak, mut placed) = (0, 0);
+        for e in &log {
+            if let Some(p) = e.strip_prefix("open:") {
+                open.insert(p.to_string());
+                peak = peak.max(open.len());
+            } else if let Some(p) = e.strip_prefix("placed:") {
+                open.remove(p);
+                placed += 1;
+            }
+        }
+        assert_eq!(placed, 50, "{log:?}");
+        assert!(peak <= 10, "open .part files peaked at {peak}: {log:?}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sender_file_start_means_a_stream_opened_not_a_plan() {
     within30(async {
         let h = Harness::new().await;

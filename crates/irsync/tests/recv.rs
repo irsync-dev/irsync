@@ -281,13 +281,13 @@ async fn partial_dir_and_copy_local() {
     fs::write(&src, &data).unwrap();
     let pd = e.root.join(".partials");
     let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pd), e.index.clone()).unwrap();
-    assert!(pd.join("dir/.irsync.f.bin.part").exists());
     // A wrong source offset is caught by the hash check.
     let err = w.copy_local(0, &src, 1).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     for (idx, c) in cl.chunks.iter().enumerate() {
         w.copy_local(idx as u32, &src, c.offset).await.unwrap();
     }
+    assert!(pd.join("dir/.irsync.f.bin.part").exists());
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
     assert!(!pd.join("dir/.irsync.f.bin.part").exists());
@@ -538,7 +538,9 @@ async fn second_writer_waits_and_never_takes_a_placed_file() {
     let data = content(89);
     let cl = chunk_list(&data);
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
-    // A second writer on the same .part waits for the lock...
+    // The first write creates and locks the `.part`; a second writer on
+    // the same .part then waits for the lock...
+    w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap();
     let (root, cl2, index) = (e.root.clone(), cl.clone(), e.index.clone());
     let second =
         tokio::task::spawn_blocking(move || FileWriter::open(&root, &rel(), &cl2, None, index));
@@ -559,7 +561,8 @@ async fn busy_part_waits_for_previous_holder() {
     let e = env();
     let data = content(97);
     let cl = chunk_list(&data);
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap();
     // The previous connection's writer (e.g. a finalize that outlived it)
     // lets go after 2 s.
     tokio::spawn(async move {
@@ -899,4 +902,38 @@ async fn open_inplace_refuses_a_destination_that_is_not_the_hashed_file() {
     .err()
     .expect("another inode at the destination must be refused");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn fresh_writer_creates_the_part_only_on_its_first_chunk() {
+    let e = env();
+    let data = content(47);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    // Nothing on disk until there is something to write: a file waiting
+    // for the sender's stream holds no descriptor.
+    assert!(
+        !part_path(&e.root).exists(),
+        "fresh .part opened before any data"
+    );
+    assert_eq!(w.missing_chunks().len(), cl.chunks.len());
+    w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap();
+    assert!(part_path(&e.root).exists());
+    let missing = w.missing_chunks();
+    write_all(&mut w, &data, &cl, &missing).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
+    assert!(!part_path(&e.root).exists());
+}
+
+#[tokio::test]
+async fn fresh_empty_file_is_placed_without_a_chunk() {
+    let e = env();
+    let cl = chunk_list(b"");
+    assert!(cl.chunks.is_empty());
+    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert!(w.missing_chunks().is_empty());
+    w.finalize(&entry(0), &OPTS).await.unwrap();
+    assert_eq!(fs::metadata(final_path(&e.root)).unwrap().len(), 0);
+    assert!(!part_path(&e.root).exists());
 }

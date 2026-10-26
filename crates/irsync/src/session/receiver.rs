@@ -606,6 +606,9 @@ impl Receiver {
             }
             Opened::Writer(fill) => *fill,
         };
+        if fill.writer.is_open() {
+            self.ctx.hooks.event("open", &f.path);
+        }
         f.digest = Some(fill.digest.clone());
         if let Some(i) = f.deferred.itemize.take() {
             emit_itemized(&self.ctx, &self.out, &f.path, i.planned);

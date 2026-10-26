@@ -80,7 +80,7 @@ it send `FileAck DONE`.
 | Serial disk passes before first data byte, one big changed file | 1 (basis checksums) | 1 (the sender's hash and the receiver's old-file hash run concurrently; local copies overlap the transfer) |
 | Extra receiver pass after last byte | none (MD5 computed while writing) | none (BLAKE3 folded from the verified chunks) |
 | Streams | one, in order | many QUIC streams, 32 at a time, files split at 64 MiB |
-| Files in flight | pipelined, bounded by the window | up to 4096, fewer when the open-file limit is low (two descriptors per file) |
+| Files in flight | pipelined, bounded by the window | up to 4096, fewer when the open-file limit is low; a fresh file's `.part` is opened by its first write, so only resumed and changed files in flight hold descriptors |
 | Resume | `--partial` keeps bytes; next run re-checksums them | chunk-granular, verified ranges persisted; plan persisted |
 | In-place / append | `--inplace`, `--append`, `--append-verify` | the same three; by default a `.part` that is a reflink clone of the old file where the filesystem allows, so only changed chunks are written and still renamed into place |
 | Per-block integrity | 4-byte rolling + 2..16-byte MD5 | 32-byte BLAKE3, checked at send and at write |
@@ -548,8 +548,9 @@ Each file costs four control messages in strict alternation (`PlanItem`,
 data byte. rsync's generator runs ahead and the sender's token stream
 follows with no synchronous turn-around. irsync hides the latency with up
 to 4096 files in flight (fewer where the open-file limit, raised to the
-hard limit at startup, leaves no room: each holds its `.part` open), which
-is enough that throughput on small files is bounded by the control
+hard limit at startup, leaves no room: a resumed or changed file holds its
+`.part` open from its chunk list on, a fresh one only from its first
+write), which is enough that throughput on small files is bounded by the control
 stream's serialisation rather than by RTT; but each
 `PlanItem` is sent only after the planner has acquired an in-flight slot
 (`Planner::one`), and each slot is released only at `DONE`, so one slow

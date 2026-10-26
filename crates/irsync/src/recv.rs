@@ -81,7 +81,9 @@ pub struct FileWriter {
     rel: RelPath,
     dest: PathBuf,
     part: PathBuf,
-    file: Arc<File>,
+    /// The `.part`, locked. Absent until the first write when nothing was
+    /// there to adopt: a file waiting for its data holds no descriptor.
+    file: Option<Arc<File>>,
     size: u64,
     whole_hash: [u8; 32],
     /// The whole-file hash, folded from the verified chunks as they come
@@ -309,6 +311,16 @@ fn open_part(part: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Whether anything is at the `.part` name (a regular file to adopt, or
+/// something `open_part` will refuse).
+fn part_exists(part: &Path) -> io::Result<bool> {
+    match std::fs::symlink_metadata(part) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Fails unless the `.part` path still names the file we hold open, so a
 /// rename by path can only move the file that was verified.
 fn still_same_file(file: &File, part: &Path) -> io::Result<()> {
@@ -445,6 +457,14 @@ impl FileWriter {
         if let Some(dir) = part.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        // Nothing to adopt and nothing to clone: the `.part` is opened by
+        // the first write (or by `finalize`), so a file waiting for the
+        // sender's stream holds no descriptor.
+        if clone.is_none() && !part_exists(&part)? {
+            let mut w = Self::new(rel, dest, part, None, expected, chunks, index, activity);
+            w.hole_from = 0;
+            return Ok(w);
+        }
         // One writer per `.part`: a second (another session on the same
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
@@ -457,40 +477,25 @@ impl FileWriter {
                 hole_from = file.metadata()?.len();
             }
         }
-        let mut w = FileWriter {
-            rel: rel.clone(),
+        let mut w = Self::new(
+            rel,
             dest,
             part,
-            file: Arc::new(file),
-            size: expected.size,
-            whole_hash: expected.hash,
-            tree: Box::new(TreeHash::new(expected.size)),
-            verified: vec![false; chunks.len()],
+            Some(Arc::new(file)),
+            expected,
             chunks,
             index,
-            chunks_since_persist: 0,
-            last_persist: Instant::now(),
-            done: false,
-            sparse: false,
-            hole_from,
             activity,
-            cloned,
-            inplace: false,
-            verify_whole: true,
-            #[cfg(feature = "test-hooks")]
-            written: 0,
-            #[cfg(feature = "test-hooks")]
-            fail_at: None,
-            #[cfg(feature = "test-hooks")]
-            finalize_delay: Duration::ZERO,
-        };
+        );
+        w.hole_from = hole_from;
+        w.cloned = cloned;
         let adopted_from_record = w.adopt_recorded()?;
         if cloned {
             w.adopt_from(clone.as_ref().expect("cloned from a source").digest)?;
         } else if !adopted_from_record {
             w.adopt_unrecorded()?;
         }
-        w.file.set_len(w.size)?;
+        w.held()?.set_len(w.size)?;
         if !adopted_from_record && w.verified.iter().any(|&v| v) {
             w.persist_sync()?;
         }
@@ -520,11 +525,49 @@ impl FileWriter {
             return Err(invalid("destination is no longer the file that was hashed"));
         }
         let hole_from = now.len();
-        let mut w = FileWriter {
+        let mut w = Self::new(
+            rel,
+            dest.clone(),
+            dest,
+            Some(Arc::new(file)),
+            expected,
+            chunks,
+            index,
+            activity,
+        );
+        w.hole_from = hole_from;
+        w.inplace = true;
+        let adopted_from_record = w.adopt_recorded()?;
+        w.adopt_from(old.digest)?;
+        // Grown now; shrunk only at finalize (forward copies may still
+        // read above the new size).
+        if w.size > hole_from {
+            w.held()?.set_len(w.size)?;
+        }
+        if !adopted_from_record && w.verified.iter().any(|&v| v) {
+            w.persist_sync()?;
+        }
+        Ok(w)
+    }
+
+    /// A writer over `chunks` with nothing verified yet; `hole_from`,
+    /// `cloned` and `inplace` are set by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        rel: &RelPath,
+        dest: PathBuf,
+        part: PathBuf,
+        file: Option<Arc<File>>,
+        expected: &FileDigest,
+        chunks: Vec<ChunkRecord>,
+        index: IndexHandle,
+        activity: Arc<AtomicU64>,
+    ) -> FileWriter {
+        FileWriter {
             rel: rel.clone(),
-            dest: dest.clone(),
-            part: dest,
-            file: Arc::new(file),
+            dest,
+            part,
+            file,
             size: expected.size,
             whole_hash: expected.hash,
             tree: Box::new(TreeHash::new(expected.size)),
@@ -535,10 +578,10 @@ impl FileWriter {
             last_persist: Instant::now(),
             done: false,
             sparse: false,
-            hole_from,
+            hole_from: 0,
             activity,
             cloned: false,
-            inplace: true,
+            inplace: false,
             verify_whole: true,
             #[cfg(feature = "test-hooks")]
             written: 0,
@@ -546,18 +589,46 @@ impl FileWriter {
             fail_at: None,
             #[cfg(feature = "test-hooks")]
             finalize_delay: Duration::ZERO,
-        };
-        let adopted_from_record = w.adopt_recorded()?;
-        w.adopt_from(old.digest)?;
-        // Grown now; shrunk only at finalize (forward copies may still
-        // read above the new size).
-        if w.size > hole_from {
-            w.file.set_len(w.size)?;
         }
-        if !adopted_from_record && w.verified.iter().any(|&v| v) {
-            w.persist_sync()?;
+    }
+
+    /// The held `.part` (adoption only runs on an opened writer).
+    fn held(&self) -> io::Result<Arc<File>> {
+        self.file
+            .clone()
+            .ok_or_else(|| io::Error::other("internal: .part not open"))
+    }
+
+    /// Whether the `.part` is open (and locked) yet.
+    pub fn is_open(&self) -> bool {
+        self.file.is_some()
+    }
+
+    /// The `.part`, opened and locked now if the open was deferred: created
+    /// (with its directory), sized, and from here on a descriptor held
+    /// until the file is placed. Waits for a busy lock like `open` does.
+    async fn ensure_open(&mut self) -> io::Result<Arc<File>> {
+        if let Some(f) = &self.file {
+            return Ok(f.clone());
         }
-        Ok(w)
+        let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
+        let (file, len) = tokio::task::spawn_blocking(move || {
+            if let Some(dir) = part.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let file = open_locked_part(&part, &activity)?;
+            // Another writer may have left bytes here meanwhile: below
+            // this length nothing is known to be a hole.
+            let len = file.metadata()?.len();
+            file.set_len(size)?;
+            Ok::<_, io::Error>((file, len))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        self.hole_from = len;
+        let file = Arc::new(file);
+        self.file = Some(file.clone());
+        Ok(file)
     }
 
     /// The `.part` started as a clone of the old file.
@@ -587,7 +658,8 @@ impl FileWriter {
     /// an offset where the new list wants the same chunk: verified by
     /// reading, never copied.
     fn adopt_from(&mut self, old: &FileDigest) -> io::Result<()> {
-        let file_len = self.file.metadata()?.len();
+        let file = self.held()?;
+        let file_len = file.metadata()?.len();
         for o in &old.chunks {
             let Ok(i) = self.chunks.binary_search_by_key(&o.offset, |c| c.offset) else {
                 continue;
@@ -596,7 +668,7 @@ impl FileWriter {
             if self.verified[i] || c != *o || c.offset + u64::from(c.len) > file_len {
                 continue;
             }
-            let bytes = read_chunk(&self.file, &c)?;
+            let bytes = read_chunk(&file, &c)?;
             if *blake3::hash(&bytes).as_bytes() == c.hash {
                 self.verified[i] = true;
                 self.tree.add(c.offset, &bytes);
@@ -628,12 +700,13 @@ impl FileWriter {
                 .map(|r| (r.offset, r.offset.saturating_add(r.length)))
                 .collect(),
         );
-        let file_len = self.file.metadata()?.len();
+        let file = self.held()?;
+        let file_len = file.metadata()?.len();
         for (i, c) in self.chunks.iter().enumerate() {
             let end = c.offset + u64::from(c.len);
             let covered = ranges.iter().any(|&(s, e)| s <= c.offset && end <= e);
             if covered && end <= file_len {
-                let bytes = read_chunk(&self.file, c)?;
+                let bytes = read_chunk(&file, c)?;
                 if *blake3::hash(&bytes).as_bytes() == c.hash {
                     self.verified[i] = true;
                     self.tree.add(c.offset, &bytes);
@@ -645,15 +718,16 @@ impl FileWriter {
 
     /// Adopt chunks of a `.part` file that has no index record by re-chunking it.
     fn adopt_unrecorded(&mut self) -> io::Result<()> {
-        if self.file.metadata()?.len() == 0 {
+        let file = self.held()?;
+        if file.metadata()?.len() == 0 {
             return Ok(());
         }
-        let found = digest_held(&self.file, &self.activity)?;
+        let found = digest_held(&file, &self.activity)?;
         for f in found.chunks {
             if let Ok(i) = self.chunks.binary_search_by_key(&f.offset, |c| c.offset) {
                 if self.chunks[i] == f {
                     self.verified[i] = true;
-                    self.tree.add(f.offset, &read_chunk(&self.file, &f)?);
+                    self.tree.add(f.offset, &read_chunk(&file, &f)?);
                 }
             }
         }
@@ -718,13 +792,13 @@ impl FileWriter {
         let inject = self.fail_at == Some(idx);
         #[cfg(not(feature = "test-hooks"))]
         let inject = false;
+        let file = self.ensure_open().await?;
         // A hole (`set_len` past the opened length) already reads as zeros;
         // below `hole_from` an earlier writer's bytes may be there.
         let hole = self.sparse && c.offset >= self.hole_from && data.iter().all(|&b| b == 0);
         let res = if hole && !inject {
             Ok(())
         } else {
-            let file = self.file.clone();
             let buf = data.to_vec();
             #[cfg(feature = "test-hooks")]
             {
@@ -826,6 +900,7 @@ impl FileWriter {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
+        let file = self.ensure_open().await?;
         self.activity.fetch_add(1, Ordering::Relaxed);
         self.persist().await?;
         // Folded from the bytes verified in memory: no read of the `.part`.
@@ -833,8 +908,7 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (file, part, dest, size, expected, inplace) = (
-            self.file.clone(),
+        let (part, dest, size, expected, inplace) = (
             self.part.clone(),
             self.dest.clone(),
             self.size,

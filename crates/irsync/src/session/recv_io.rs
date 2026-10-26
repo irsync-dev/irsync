@@ -668,7 +668,7 @@ pub(super) async fn copy_local_chunks(
         let Some(w) = guard.as_mut() else {
             break; // The writer was retired (new chunk list, failure).
         };
-        if let Err(e) = w.write_chunk(idx, &data).await {
+        if let Err(e) = write_into(&ctx, &route, w, idx, &data).await {
             // Stale bytes never verify; any failure leaves the chunk
             // missing for the follow-up request.
             tracing::debug!(from = ?from, idx, error = %e, "local copy rejected");
@@ -677,6 +677,23 @@ pub(super) async fn copy_local_chunks(
     }
     ctx.hooks.event("copied", &route.path);
     finish_unit(&route, &events, file_id, 1).await;
+}
+
+/// Writes a chunk into the file's current writer, noting the `.part` open
+/// a first write performs.
+async fn write_into(
+    ctx: &Ctx,
+    route: &Route,
+    w: &mut FileWriter,
+    idx: u32,
+    data: &[u8],
+) -> io::Result<()> {
+    let was_open = w.is_open();
+    let res = w.write_chunk(idx, data).await;
+    if !was_open && w.is_open() {
+        ctx.hooks.event("open", &route.path);
+    }
+    res
 }
 
 /// In place: chunk `idx` is done with (written, rejected or given up).
@@ -739,7 +756,12 @@ pub(super) async fn finalize(
     if let Some(d) = ctx.hooks.slow_finalize {
         w.slow_finalize(d);
     }
+    if !w.is_open() {
+        // Nothing was ever written (an empty file): finalize opens it.
+        ctx.hooks.event("open", &path);
+    }
     let hash = w.finalize(&entry, &apply).await?;
+    ctx.hooks.event("placed", &path);
     record(&ctx, &path, &digest, hash).await;
     Ok(())
 }
@@ -919,7 +941,7 @@ async fn read_range(
             stop(s, 0);
             return n;
         };
-        match w.write_chunk(idx, &data).await {
+        match write_into(ctx, route, w, idx, &data).await {
             Ok(()) => {
                 ctx.hooks.event("chunk", &route.path);
                 if rebuilt {

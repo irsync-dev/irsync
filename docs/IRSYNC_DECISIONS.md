@@ -217,6 +217,11 @@ cross-referenced from commit messages and review notes.
   soft `RLIMIT_NOFILE` to the hard limit at startup (`fs::rlimit`), and the
   window is the smaller of 4096 and what the limit leaves after a reserve
   of 256, at two descriptors per file (`planner::inflight_for_limit`).
+  Also, a fresh `.part` (nothing to adopt, nothing to clone) is created
+  and locked by its first write rather than when the chunk list arrives
+  (`FileWriter::ensure_open`), so a file waiting for the sender's stream
+  holds no descriptor; the window's descriptor cost falls on resumed and
+  `DELTA` files only.
 - **R34 (process) — One narrowly scoped follow-up fix was dispatched after
   the single final fix wave**, deviating from the "one fix wave" rule, because
   the fix wave itself introduced the idle-timeout regression and it hit the
