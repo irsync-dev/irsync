@@ -657,3 +657,71 @@ async fn delete_progress_events_both_directions() {
         .await;
     }
 }
+
+fn failed(events: &[Event], path: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Failed(p, msg) if p.as_bytes() == path.as_bytes() => Some(msg.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    within30(async {
+        let h = Harness::new().await;
+        let src = h.src(Flow::Push);
+        fs::write(src.join("ok.txt"), b"fine").unwrap();
+        fs::write(src.join("locked.bin"), vec![1u8; 3000]).unwrap();
+        fs::set_permissions(src.join("locked.bin"), fs::Permissions::from_mode(0o000)).unwrap();
+        let (out, events) = run(&h, &opts(&[]), Flow::Push).await;
+        let msgs = failed(&events, "locked.bin");
+        assert_eq!(msgs.len(), 1, "one Failed event: {events:?}");
+        assert!(msgs[0].contains("ermission denied"), "{msgs:?}");
+        assert!(
+            out.errors
+                .iter()
+                .any(|(p, m)| p.as_bytes() == b"locked.bin" && m == &msgs[0]),
+            "the outcome records the same error: {:?}",
+            out.errors
+        );
+        assert!(failed(&events, "ok.txt").is_empty());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipping: running as root, a read-only directory does not stop writes");
+        return;
+    }
+    within30(async {
+        let h = Harness::new().await;
+        let src = h.src(Flow::Pull);
+        fs::create_dir(src.join("ro")).unwrap();
+        fs::write(src.join("ro/x.bin"), vec![2u8; 3000]).unwrap();
+        let dst = h.dst(Flow::Pull);
+        fs::create_dir(dst.join("ro")).unwrap();
+        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        let (out, events) = run(&h, &opts(&[]), Flow::Pull).await;
+        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        let msgs = failed(&events, "ro/x.bin");
+        assert_eq!(msgs.len(), 1, "one Failed event: {events:?}");
+        assert!(msgs[0].contains("ermission denied"), "{msgs:?}");
+        assert!(
+            out.errors.iter().any(|(p, _)| p.as_bytes() == b"ro/x.bin"),
+            "the outcome records the error: {:?}",
+            out.errors
+        );
+    })
+    .await;
+}

@@ -371,6 +371,7 @@ async fn plain_reporter_output_is_unchanged_with_new_events() {
                 total: Some(1),
             },
             Event::SessionStart { index: 0, of: 1 },
+            Event::Failed(rp("b"), "boom".into()),
             Event::FileDone(rp("a"), 10),
         ],
     )
@@ -498,4 +499,50 @@ async fn a_line_written_after_clear_survives_finish() {
         &t[at..]
     );
     assert!(t[at..].contains("Number of files"), "--stats printed after");
+}
+
+#[test]
+fn frame_ends_with_the_error_count_and_the_last_three_errors() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, true, 0, false, false);
+    r.handle(Event::FileStart(rp("a"), 10));
+    let before = r.frame(std::time::Instant::now());
+    assert!(
+        !before.iter().any(|l| l.starts_with("errors")),
+        "no errors line without a failure: {before:?}"
+    );
+    for i in 1..=4 {
+        r.handle(Event::Failed(rp(&format!("bad{i}")), format!("boom {i}")));
+    }
+    let f = r.frame(std::time::Instant::now());
+    let at = f
+        .iter()
+        .position(|l| l.starts_with("errors    4"))
+        .unwrap_or_else(|| panic!("errors line with the count: {f:?}"));
+    assert_eq!(f[at + 1].trim(), "bad2: boom 2", "{f:?}");
+    assert_eq!(f[at + 2].trim(), "bad3: boom 3", "{f:?}");
+    assert_eq!(f[at + 3].trim(), "bad4: boom 4", "{f:?}");
+    assert_eq!(f.len(), at + 4, "the errors close the block: {f:?}");
+    assert!(!f.iter().any(|l| l.contains("bad1")), "{f:?}");
+}
+
+#[test]
+fn a_long_error_is_cut_to_the_width_instead_of_wrapping() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, true, 0, false, false);
+    let path = "share/emacs/30.1/etc/schema/".repeat(4) + "xhtml-csismap.rnc";
+    r.handle(Event::Failed(
+        rp(&path),
+        "receiver: opening partial file: Too many open files (os error 24)".into(),
+    ));
+    let f = r.frame(std::time::Instant::now());
+    let line = f
+        .iter()
+        .find(|l| l.contains("xhtml-csismap.rnc") || l.contains("…"))
+        .unwrap();
+    assert!(console::measure_text_width(line) <= 80, "{line:?}");
+    assert!(
+        line.ends_with("Too many open files (os error 24)"),
+        "the message survives: {line:?}"
+    );
 }

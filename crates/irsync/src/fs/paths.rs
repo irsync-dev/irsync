@@ -24,8 +24,16 @@ fn valid_name(c: &[u8]) -> bool {
 /// A canonical path relative to a root: no leading slash, `/`-separated raw
 /// bytes, no empty, `.` or `..` components, no NUL; the root is the empty path.
 /// Canonical form makes derived `Eq`/`Hash` consistent with the component-wise `Ord`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
 pub struct RelPath(Vec<u8>);
+
+/// The escaped path in quotes (`"a/b\\012"`), not the byte list, so that
+/// `?path` in a log line reads as a path.
+impl std::fmt::Debug for RelPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\"{}\"", escape_path(&self.0))
+    }
+}
 
 impl RelPath {
     pub fn root() -> RelPath {
@@ -93,9 +101,62 @@ pub fn is_contained(_root: &Path, rel: &[u8]) -> bool {
     RelPath::new(rel).is_ok()
 }
 
+/// A path as rsync prints it: bytes that are not valid UTF-8, control
+/// characters and backslashes become `\ooo` (octal); never fails.
+fn octal(out: &mut String, b: u8) {
+    out.push_str(&format!("\\{b:03o}"));
+}
+
+pub fn escape_path(p: &[u8]) -> String {
+    let mut out = String::new();
+    let mut rest = p;
+    while !rest.is_empty() {
+        let (good, bad) = match std::str::from_utf8(rest) {
+            Ok(s) => (s, 0),
+            Err(e) => {
+                let (g, _) = rest.split_at(e.valid_up_to());
+                // `g` is valid by construction.
+                (
+                    std::str::from_utf8(g).unwrap_or(""),
+                    e.error_len().unwrap_or(rest.len() - g.len()),
+                )
+            }
+        };
+        for c in good.chars() {
+            if c.is_control() || c == '\\' {
+                // Control characters and `\` are all ASCII or C1 (2 bytes).
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf)
+                    .bytes()
+                    .for_each(|b| octal(&mut out, b));
+            } else {
+                out.push(c);
+            }
+        }
+        rest = &rest[good.len()..];
+        rest[..bad].iter().for_each(|&b| octal(&mut out, b));
+        rest = &rest[bad..];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_shows_the_escaped_path_not_the_bytes() {
+        assert_eq!(
+            format!("{:?}", RelPath::new(b"a/b\n").unwrap()),
+            r#""a/b\012""#
+        );
+        assert_eq!(
+            format!("{:?}", RelPath::new("caf\u{e9}".as_bytes()).unwrap()),
+            "\"caf\u{e9}\""
+        );
+        assert_eq!(format!("{:?}", RelPath::new(b"\xff").unwrap()), r#""\377""#);
+        assert_eq!(format!("{:?}", RelPath::root()), r#""""#);
+    }
 
     #[test]
     fn parent_drops_the_last_component() {

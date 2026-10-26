@@ -377,7 +377,11 @@ impl Receiver {
             return;
         };
         self.active -= 1;
-        tracing::warn!(path = ?f.path, error = %msg, "file failed");
+        tracing::info!(path = ?f.path, error = %msg, "file failed");
+        self.ctx
+            .hooks
+            .bus
+            .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.failed.insert(f.path.clone());
         self.errors.push((f.path, msg.clone()));
         if let Some(status) = ack {

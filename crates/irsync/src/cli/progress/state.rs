@@ -2,7 +2,7 @@
 //! found, which files are in flight, and the rsync-style transfer percent.
 //! Nothing here touches the terminal; the renderer reads it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::cli::DeleteMode;
@@ -16,6 +16,8 @@ pub const STALL_AFTER: Duration = Duration::from_secs(2);
 pub const ROW_EXPIRY: Duration = Duration::from_secs(30);
 /// Minimum window over which a per-row rate is computed.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+/// Failed files kept for the block's `errors` section (the newest).
+pub const RECENT_ERRORS: usize = 3;
 
 /// One side's listing progress.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -151,6 +153,10 @@ pub struct Live {
     /// (index, of)
     pub session: (usize, usize),
     pub start: Instant,
+    /// `Failed` events over the whole run (every session).
+    pub failed: u64,
+    /// The last [`RECENT_ERRORS`] of them, oldest first.
+    pub recent_errors: VecDeque<(RelPath, String)>,
 }
 
 impl Live {
@@ -171,6 +177,8 @@ impl Live {
             transfer_done: false,
             session: (0, 1),
             start,
+            failed: 0,
+            recent_errors: VecDeque::new(),
         }
     }
 
@@ -184,6 +192,13 @@ impl Live {
     /// Applies one event at `now`.
     pub fn apply(&mut self, ev: &Event, now: Instant) {
         match ev {
+            Event::Failed(p, msg) => {
+                self.failed += 1;
+                if self.recent_errors.len() == RECENT_ERRORS {
+                    self.recent_errors.pop_front();
+                }
+                self.recent_errors.push_back((p.clone(), msg.clone()));
+            }
             Event::FileHashing(p, size) => {
                 let row = self
                     .rows
@@ -407,12 +422,14 @@ impl Live {
     }
 
     /// Clears per-session state for a new session; keeps `conn`, the source
-    /// party and the delete mode.
+    /// party, the delete mode and the errors so far.
     pub fn reset(&mut self, now: Instant) {
         let mode = self.delete.as_ref().map(|d| d.mode);
         *self = Live {
             conn: self.conn,
             delete: mode.map(DeletePhase::new),
+            failed: self.failed,
+            recent_errors: std::mem::take(&mut self.recent_errors),
             ..Live::new(self.source, DeleteMode::Off, now)
         };
     }

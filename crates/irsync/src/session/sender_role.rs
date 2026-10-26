@@ -215,7 +215,11 @@ impl SenderRole {
         let Some(f) = self.files.remove(&file_id) else {
             return;
         };
-        tracing::warn!(path = ?f.path, error = %msg, "cannot send file");
+        tracing::info!(path = ?f.path, error = %msg, "cannot send file");
+        self.ctx
+            .hooks
+            .bus
+            .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.errors.push((f.path.clone(), msg.clone()));
         self.abandoned.insert(file_id, f.path);
         self.out.send(Msg::Ack(FileAck {
@@ -544,7 +548,11 @@ impl SenderRole {
             Ok(Status::WriteError) => {
                 if let Some(f) = self.files.remove(&file_id) {
                     let msg = format!("receiver: {}", a.message);
-                    tracing::warn!(path = ?f.path, error = %msg, "file failed");
+                    tracing::info!(path = ?f.path, error = %msg, "file failed");
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(super::Event::Failed(f.path.clone(), msg.clone()));
                     self.errors.push((f.path, msg));
                 }
             }

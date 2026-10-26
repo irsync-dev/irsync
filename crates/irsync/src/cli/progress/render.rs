@@ -181,6 +181,9 @@ fn green() -> Style {
 fn yellow() -> Style {
     Style::new().yellow()
 }
+fn red() -> Style {
+    Style::new().red()
+}
 
 /// `text` cut to `width` cells (with an ellipsis) when wider.
 fn fit(text: &str, width: usize, g: &Geometry) -> String {
@@ -208,9 +211,10 @@ fn rate_text(bytes_per_sec: f64) -> String {
     format!("{}B/s", human(bytes_per_sec as u64))
 }
 
-/// The block: a rule line, the phase lines, the in-flight rows and the
-/// "… and N more" line. Every line fits in `g.width` cells. Empty when
-/// there is nothing to show yet (no events).
+/// The block: a rule line, the phase lines, the in-flight rows, the
+/// "… and N more" line and, once a file has failed, the `errors` section.
+/// Every line fits in `g.width` cells. Empty when there is nothing to show
+/// yet (no events).
 pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
     if !has_activity(live) {
         return Vec::new();
@@ -219,8 +223,9 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
     lines.push(list_line(live, g));
     lines.push(transfer_line(live, g, now));
     let delete = live.delete.as_ref().map(|d| delete_line(d, g));
+    let errors = error_lines(live, g);
 
-    let fixed = 1 + 2 + usize::from(delete.is_some()) + 1;
+    let fixed = 1 + 2 + usize::from(delete.is_some()) + 1 + errors.len();
     let cap = (g.height / 2).saturating_sub(fixed).max(3);
     let mut rows: Vec<(&RelPath, &Row)> = live.rows.iter().filter(|(_, r)| r.shown()).collect();
     rows.sort_by(|a, b| b.1.size.cmp(&a.1.size).then_with(|| a.0.cmp(b.0)));
@@ -233,6 +238,7 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
         lines.push(plain_line(text, g));
     }
     lines.extend(delete);
+    lines.extend(errors);
     lines
 }
 
@@ -245,6 +251,7 @@ fn has_activity(live: &Live) -> bool {
         || live.literal > 0
         || live.xfr > 0
         || live.delete.as_ref().is_some_and(|d| d.started)
+        || live.failed > 0
 }
 
 fn rule(g: &Geometry) -> String {
@@ -436,4 +443,24 @@ fn delete_line(d: &DeletePhase, g: &Geometry) -> String {
         line.push(&format!("{} deleted", commas(d.done)), None, g);
     }
     cut(line, g)
+}
+
+/// The `errors` section: the count, then the newest failures, oldest
+/// first, one line each (`  path: message`). The path is cut in the
+/// middle so the message stays readable. Empty while nothing has failed.
+fn error_lines(live: &Live, g: &Geometry) -> Vec<String> {
+    if live.failed == 0 {
+        return Vec::new();
+    }
+    let mut head = Line::default();
+    head.push(&phase("errors"), None, g);
+    head.push(&commas(live.failed), Some(&red()), g);
+    let mut lines = vec![cut(head, g)];
+    for (path, msg) in &live.recent_errors {
+        let tail = format!(": {msg}");
+        let room = g.width.saturating_sub(2 + cells(&tail));
+        let path = truncate_middle(&shown(path), room.max(4), g);
+        lines.push(plain_line(format!("  {path}{tail}"), g));
+    }
+    lines
 }

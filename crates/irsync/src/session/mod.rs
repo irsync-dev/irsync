@@ -496,6 +496,8 @@ pub enum Event {
     Itemized(RelPath, String),
     /// A hard link `path` to `target` was made.
     Hardlinked(RelPath, RelPath),
+    /// This file failed; the message is the one the [`Outcome`] records.
+    Failed(RelPath, String),
 }
 
 /// The channel events travel on. Sending never blocks; with nobody

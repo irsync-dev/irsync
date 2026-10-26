@@ -174,6 +174,16 @@ the logging setup in `main.rs` so those lines are printed above the
 block too (indicatif's `suspend`/`println`, via a tracing `MakeWriter`
 that wraps the `MultiProgress`). Off a TTY nothing changes.
 
+*Amended 2026-10-26.* Per-file failures no longer reach the terminal as
+tracing lines: each one printed a `WARN` with the path as a byte list,
+five or six wrapped rows per file, and a burst of them pushed the block
+down the screen. The roles now emit `Event::Failed(path, message)` and
+log at `info`; the block closes with an `errors` section (the count and
+the newest three failures, one fitted line each), and the complete list
+is still printed on stderr after the block is cleared. `Debug` for
+`RelPath` prints the escaped path, so the remaining `?path` log lines
+read as paths.
+
 ### Behaviour on resize and narrow terminals
 
 The block re-reads the terminal size on every redraw. Below 60 columns

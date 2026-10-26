@@ -618,3 +618,34 @@ fn wide_characters_are_measured_in_cells() {
     assert!(cut.contains('…'), "{cut:?}");
     assert_eq!(truncate_middle("日本語日本語", 12, &g), "日本語日本語");
 }
+
+#[test]
+fn failed_events_are_counted_and_the_last_three_kept_in_order() {
+    let mut l = live();
+    let now = Instant::now();
+    for i in 1..=4 {
+        l.apply(
+            &Event::Failed(rp(&format!("f{i}")), format!("boom {i}")),
+            now,
+        );
+    }
+    assert_eq!(l.failed, 4);
+    let recent: Vec<(String, String)> = l
+        .recent_errors
+        .iter()
+        .map(|(p, m)| {
+            (
+                String::from_utf8_lossy(p.as_bytes()).into_owned(),
+                m.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recent,
+        vec![
+            ("f2".to_string(), "boom 2".to_string()),
+            ("f3".to_string(), "boom 3".to_string()),
+            ("f4".to_string(), "boom 4".to_string()),
+        ]
+    );
+}

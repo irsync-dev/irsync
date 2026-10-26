@@ -112,7 +112,10 @@ enum Next {
     Fresh,
     /// The daemon closed the connection with a final answer (see
     /// [`FINAL_CLOSE_CODES`]); `reason` is its close reason, as text.
-    ClosedByDaemon { code: u32, reason: String },
+    ClosedByDaemon {
+        code: u32,
+        reason: String,
+    },
     Fatal,
 }
 
@@ -373,7 +376,10 @@ mod tests {
         assert!(msg.contains(&format!("irsync allow photos {id}")), "{msg}");
         assert!(msg.contains("irsync id"), "{msg}");
         let other = describe_close(2, "hello timeout", "photos", &id);
-        assert!(other.contains("hello timeout") && !other.contains("allow"), "{other}");
+        assert!(
+            other.contains("hello timeout") && !other.contains("allow"),
+            "{other}"
+        );
     }
 
     #[test]

@@ -13,12 +13,18 @@
 //!   hashing                       2024/trip/clip_0009.mov  2.40G
 //!   … and 28 more
 //! delete    waiting (--delete-after)
+//! errors    3
+//!   share/emacs/30.1/etc/sch…/xhtml-csismap.rnc: receiver: opening partial file: Too many open files (os error 24)
 //! ```
 //!
 //! One line per phase (`list`, `transfer`, `delete` with a `--delete*` flag),
 //! each collapsing to `done` and a summary when it ends, and one row per file
 //! the local side is working on (an open stream or a hash), largest first,
-//! capped at half the terminal. The transfer percent has rsync's
+//! capped at half the terminal. Once a file has failed an `errors` section
+//! closes the block: the count and the newest three failures, one fitted
+//! line each (the full list is printed on stderr after the block is
+//! cleared). The roles log a failed file at `info`, so by default nothing
+//! scrolls for it on the client while the daemon's log still records it. The transfer percent has rsync's
 //! `--info=progress2` meaning: skipped and matched bytes count as done. Lines
 //! are fitted to the terminal width, which is re-read on every redraw (at most
 //! every 100 ms, at once on a connection state change). At the end of a
@@ -115,44 +121,7 @@ pub(super) fn commas(n: u64) -> String {
     out
 }
 
-/// A path as rsync prints it: bytes that are not valid UTF-8, control
-/// characters and backslashes become `\ooo` (octal); never fails.
-fn octal(out: &mut String, b: u8) {
-    out.push_str(&format!("\\{b:03o}"));
-}
-
-pub fn escape_path(p: &[u8]) -> String {
-    let mut out = String::new();
-    let mut rest = p;
-    while !rest.is_empty() {
-        let (good, bad) = match std::str::from_utf8(rest) {
-            Ok(s) => (s, 0),
-            Err(e) => {
-                let (g, _) = rest.split_at(e.valid_up_to());
-                // `g` is valid by construction.
-                (
-                    std::str::from_utf8(g).unwrap_or(""),
-                    e.error_len().unwrap_or(rest.len() - g.len()),
-                )
-            }
-        };
-        for c in good.chars() {
-            if c.is_control() || c == '\\' {
-                // Control characters and `\` are all ASCII or C1 (2 bytes).
-                let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf)
-                    .bytes()
-                    .for_each(|b| octal(&mut out, b));
-            } else {
-                out.push(c);
-            }
-        }
-        rest = &rest[good.len()..];
-        rest[..bad].iter().for_each(|&b| octal(&mut out, b));
-        rest = &rest[bad..];
-    }
-    out
-}
+pub use crate::fs::paths::escape_path;
 
 /// A path as shown in a line: `./` for the session root.
 pub(super) fn shown(p: &RelPath) -> String {
@@ -328,6 +297,7 @@ impl Reporter {
             | Event::Skipped(..)
             | Event::PeerSkipped(_)
             | Event::Delete { .. }
+            | Event::Failed(..)
             | Event::SessionStart { .. } => {}
         }
     }

@@ -83,8 +83,13 @@ impl Receiver {
                         .emit(crate::session::Event::Hardlinked(path, target));
                 }
                 Err(e) => {
-                    tracing::warn!(?path, error = %e, "hard link failed");
-                    self.errors.push((path, format!("hard link: {e}")));
+                    tracing::info!(?path, error = %e, "hard link failed");
+                    let msg = format!("hard link: {e}");
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(crate::session::Event::Failed(path.clone(), msg.clone()));
+                    self.errors.push((path, msg));
                 }
             }
         }

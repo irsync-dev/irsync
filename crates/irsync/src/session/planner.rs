@@ -349,7 +349,11 @@ struct Planner {
 impl Planner {
     fn error(&mut self, path: &RelPath, msg: impl Into<String>) {
         let msg = msg.into();
-        tracing::warn!(?path, error = %msg, "receiver");
+        tracing::info!(?path, error = %msg, "receiver");
+        self.ctx
+            .hooks
+            .bus
+            .emit(crate::session::Event::Failed(path.clone(), msg.clone()));
         self.report.errors.push((path.clone(), msg));
     }
 
