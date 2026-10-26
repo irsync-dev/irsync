@@ -375,7 +375,9 @@ fn names_file(file: &File, part: &Path) -> io::Result<bool> {
 fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
     let start = Instant::now();
     loop {
-        let file = open_part(part)?;
+        // A momentary descriptor shortage is waited out rather than failing
+        // the file (see `fs::transient`).
+        let file = crate::fs::transient::retry(|| open_part(part))?;
         match file.try_lock() {
             Ok(()) if names_file(&file, part)? => return Ok(file),
             Ok(()) => continue,

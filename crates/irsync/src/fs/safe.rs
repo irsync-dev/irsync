@@ -48,14 +48,17 @@ pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
 
 /// Opens `path` read-only, refusing a symlink as the final component and
 /// anything that is not a regular file (`O_NONBLOCK` so a FIFO planted
-/// there cannot block the open; it has no effect on regular files).
+/// there cannot block the open; it has no effect on regular files). A
+/// momentary descriptor shortage is waited out (see [`super::transient`]).
 pub fn open_regular_nofollow(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
-        .open(path)
-        .map_err(|e| nofollow_error(e, path))?;
+    let f = super::transient::retry(|| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
+            .open(path)
+    })
+    .map_err(|e| nofollow_error(e, path))?;
     require_regular(&f, path)?;
     Ok(f)
 }

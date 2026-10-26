@@ -221,7 +221,14 @@ cross-referenced from commit messages and review notes.
   and locked by its first write rather than when the chunk list arrives
   (`FileWriter::ensure_open`), so a file waiting for the sender's stream
   holds no descriptor; the window's descriptor cost falls on resumed and
-  `DELTA` files only.
+  `DELTA` files only. Amended 2026-10-26: a file open that still hits a
+  momentary shortage (`EMFILE`, `ENFILE`, `EAGAIN`, `ENOMEM`, `ENOBUFS`)
+  is tried again on a bounded schedule of six waits doubling from 15 ms,
+  about a second in all (`fs::transient`), at both open primitives: the
+  `.part` open and `safe::open_regular_nofollow` (sources, old files,
+  local copies, both roles). Errors that will not fix themselves fail the
+  file at once, as before; a failed file is otherwise retried only by a
+  reconnect's resume or by the next run.
 - **R34 (process) — One narrowly scoped follow-up fix was dispatched after
   the single final fix wave**, deviating from the "one fix wave" rule, because
   the fix wave itself introduced the idle-timeout regression and it hit the
