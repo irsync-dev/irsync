@@ -155,6 +155,7 @@ impl RoleOpts {
                 group: true,
                 owner: true,
                 devices: true,
+                specials: true,
                 hard_links: true,
                 sparse: true,
             },

@@ -95,6 +95,7 @@ impl SessionKey {
             p.group,
             p.owner,
             p.devices,
+            p.specials,
             p.hard_links,
             p.sparse,
         ]

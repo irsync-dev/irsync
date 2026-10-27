@@ -93,13 +93,23 @@ fn skip_or_meta(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> Decision {
     }
 }
 
+/// Whether a device node or special file of `kind` is transferred at all:
+/// rsync's `--devices` covers the device nodes, `--specials` the rest.
+fn wants_special(kind: Kind, p: &Preserve) -> bool {
+    match kind {
+        Kind::CharDev | Kind::BlockDev => p.devices,
+        Kind::Fifo | Kind::Socket => p.specials,
+        _ => false,
+    }
+}
+
 /// Decision for a source entry that has to be created (no usable destination entry).
 fn create(src: &Side, opts: &PlanOpts, lookup: Option<&dyn HashLookup>) -> Decision {
     match kind_of(&src.entry) {
         Some(Kind::Directory) => Decision::Mkdir,
         Some(Kind::Symlink) => Decision::Symlink,
-        Some(Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket) => {
-            if opts.preserve.devices {
+        Some(k @ (Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket)) => {
+            if wants_special(k, &opts.preserve) {
                 Decision::Special
             } else {
                 Decision::Skip
@@ -162,8 +172,8 @@ pub fn decide(
                 Decision::Symlink
             }
         }
-        Some(Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket) => {
-            if !p.devices {
+        Some(k @ (Kind::CharDev | Kind::BlockDev | Kind::Fifo | Kind::Socket)) => {
+            if !wants_special(k, p) {
                 Decision::Skip
             } else if se.rdev != de.rdev {
                 Decision::Special

@@ -426,10 +426,15 @@ pub struct SyncArgs {
     /// Preserve the owner (only when the receiving side runs as root).
     #[arg(short = 'o', long = "owner")]
     pub owner: bool,
-    /// Preserve device nodes and FIFOs, as rsync's --devices --specials
-    /// (sockets are never copied).
+    /// Same as --devices --specials.
     #[arg(short = 'D')]
+    pub devices_and_specials: bool,
+    /// Preserve character and block device nodes.
+    #[arg(long)]
     pub devices: bool,
+    /// Preserve special files, that is FIFOs (sockets are never copied).
+    #[arg(long)]
+    pub specials: bool,
     /// Preserve hard links: files linked together in the source are linked
     /// together in the destination.
     #[arg(short = 'H', long = "hard-links")]
@@ -637,7 +642,10 @@ pub struct Preserve {
     pub times: bool,
     pub group: bool,
     pub owner: bool,
+    /// Character and block device nodes.
     pub devices: bool,
+    /// FIFOs (and sockets, which are never copied).
+    pub specials: bool,
     pub hard_links: bool,
     pub sparse: bool,
 }
@@ -689,7 +697,8 @@ impl SyncOptions {
             times: a.archive || a.times,
             group: a.archive || a.group,
             owner: a.archive || a.owner,
-            devices: a.archive || a.devices,
+            devices: a.archive || a.devices_and_specials || a.devices,
+            specials: a.archive || a.devices_and_specials || a.specials,
             hard_links: a.hard_links,
             sparse: a.sparse,
         };

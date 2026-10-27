@@ -20,8 +20,21 @@ fn loc(s: &str) -> Location {
 #[test]
 fn archive_expands_to_rlptgod() {
     let p = opts(&["-a", "src", "h:m/"]).preserve;
-    assert!(p.recursive && p.links && p.perms && p.times && p.group && p.owner && p.devices);
+    assert!(p.recursive && p.links && p.perms && p.times && p.group && p.owner);
+    assert!(p.devices && p.specials);
     assert!(!p.hard_links && !p.sparse);
+}
+
+#[test]
+fn big_d_is_devices_and_specials() {
+    let p = opts(&["-D", "src", "h:m/"]).preserve;
+    assert!(p.devices && p.specials);
+    let p = opts(&["--devices", "src", "h:m/"]).preserve;
+    assert!(p.devices && !p.specials);
+    let p = opts(&["--specials", "src", "h:m/"]).preserve;
+    assert!(!p.devices && p.specials);
+    let p = opts(&["src", "h:m/"]).preserve;
+    assert!(!p.devices && !p.specials);
 }
 
 #[test]

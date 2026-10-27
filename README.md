@@ -189,7 +189,8 @@ rsync-compatible, same spelling and semantics:
 
 | Flag | Meaning |
 | --- | --- |
-| `-a`, `-r`, `-l`, `-p`, `-t`, `-g`, `-o`, `-D`, `-H`, `-S` | archive, recursion, links, permissions, times, group, owner, devices/specials, hard links, sparse files |
+| `-a`, `-r`, `-l`, `-p`, `-t`, `-g`, `-o`, `-D`, `-H`, `-S` | archive, recursion, links, permissions, times, group, owner, devices and specials, hard links, sparse files |
+| `--devices`, `--specials` | device nodes, FIFOs (`-D` is both, as in rsync) |
 | `-v`, `-q` | more / less output |
 | `-n`, `--dry-run` | change nothing |
 | `-c`, `--checksum` | compare by content, not size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read |

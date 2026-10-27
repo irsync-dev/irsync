@@ -125,8 +125,17 @@ fn missing_dst_by_kind() {
     );
     let mut o = opts();
     assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Skip);
+    // A FIFO is a special, not a device: --devices alone leaves it out.
     o.preserve.devices = true;
+    assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Skip);
+    o.preserve.specials = true;
     assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Special);
+    // And --specials alone leaves a device node out.
+    let c = side("c", Kind::CharDev, 0o600);
+    o.preserve.devices = false;
+    assert_eq!(decide(Some(&c), None, &o, &NoLookup), Decision::Skip);
+    o.preserve.devices = true;
+    assert_eq!(decide(Some(&c), None, &o, &NoLookup), Decision::Special);
 }
 
 #[test]
@@ -452,7 +461,7 @@ fn special_metadata_only_difference_is_meta_only() {
     s.entry.mtime_sec = 100;
     let mut d = s.clone();
     let mut o = opts();
-    o.preserve.devices = true;
+    o.preserve.specials = true;
     o.preserve.times = true;
     o.preserve.perms = true;
     assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
