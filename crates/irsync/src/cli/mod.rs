@@ -46,6 +46,7 @@ pub fn validate(src: &[Location], dest: &Location) -> Result<Direction, UsageErr
     version = crate::build::LONG_VERSION.as_str(),
     about = "rsync-like directory sync over iroh",
     help_template = HELP_TEMPLATE,
+    after_help = AFTER_HELP,
     propagate_version = true
 )]
 #[command(args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
@@ -61,10 +62,24 @@ pub struct Args {
 const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
                              {usage-heading} {usage}\n\n{all-args}{after-help}";
 
+/// Cross-cutting facts about a sync that no single flag's help can carry.
+const AFTER_HELP: &str = "\
+Notes:
+  A push (local -> remote) always applies -lptgoD on the daemon's side,
+  whatever the flags say; they matter on a pull.
+  Filters apply on the sending side only, so a push with --delete and
+  filters also needs --delete-excluded.
+  Exit codes as rsync: 0 ok, 1 usage or connection error, 23 partial
+  transfer, 25 deletions stopped at --max-delete.";
+
 impl Args {
-    /// The command with the help template applied to the subcommands too.
+    /// The command with the help template applied to the subcommands too,
+    /// at every level (`irsync host add --help` included).
     fn command_tree() -> clap::Command {
-        Args::command().mut_subcommands(|c| c.help_template(HELP_TEMPLATE))
+        fn apply(c: clap::Command) -> clap::Command {
+            c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
+        }
+        Args::command().mut_subcommands(apply)
     }
 
     /// Like `Parser::try_parse_from`, but also records the command-line order
@@ -117,14 +132,28 @@ fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the daemon.
+    ///
+    /// Serves the exports in exports.toml to the peers they are granted to
+    /// until interrupted, and prints its EndpointId at start. Logs go to
+    /// stderr at info level; RUST_LOG overrides the level.
     Daemon(DaemonArgs),
-    /// Generate an Ed25519 identity.
+    /// Generate an Ed25519 identity and print its public key line and
+    /// EndpointId.
     Keygen {
-        #[arg(long)]
+        /// Where to write the private key (default: id_ed25519, the
+        /// client's identity, in the config directory); the .pub file goes
+        /// beside it. Refuses to overwrite either file.
+        #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
     },
     /// Garbage-collect resume state.
+    ///
+    /// Removes abandoned partial files and dormant sessions older than 7
+    /// days under every local root irsync has synced, and prints the paths
+    /// removed and a count. A sync does the same for its own root at most
+    /// daily.
     Gc {
+        /// List what would be removed without removing anything.
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
@@ -158,6 +187,8 @@ pub enum Command {
     /// Remove grants: `revoke WHO`, `revoke EXPORT WHO` or `revoke EXPORT all`
     /// (`all` in place of EXPORT means everywhere, of WHO every peer).
     Revoke {
+        /// `WHO` alone, or `EXPORT WHO`; `all` stands for every export or
+        /// every peer.
         #[arg(required = true, num_args = 1..=2, value_name = "ARG")]
         args: Vec<String>,
         #[command(flatten)]
@@ -209,23 +240,30 @@ pub struct HostAddArgs {
     pub alias: String,
     /// The host's EndpointId.
     pub id: String,
-    /// Home relay URL.
-    #[arg(long)]
+    /// The host's home relay, used instead of the client settings' or n0's
+    /// default.
+    #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
-    /// Direct address `HOST:PORT` (repeatable; replaces the stored list).
-    #[arg(long)]
+    /// Dial the host at this `ip:port`, `[ipv6]:port` or `host:port`
+    /// directly, with relay and lookups off (repeatable; replaces the
+    /// stored list).
+    #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
-    /// Files in flight at once.
-    #[arg(long)]
+    /// Files in flight at once when syncing with this host (default: the
+    /// client settings', else 32).
+    #[arg(long, value_name = "N")]
     pub parallel: Option<u32>,
-    /// Reconnect window, e.g. `1h`.
-    #[arg(long, value_parser = validate_duration)]
+    /// How long a sync with this host keeps redialling after a dropped
+    /// connection: `<N>[s|m|h|d]`, e.g. `1h`; 0 gives up at once.
+    #[arg(long, value_name = "DUR", value_parser = validate_duration)]
     pub reconnect: Option<String>,
-    /// Use DHT discovery for this host (yes|no).
-    #[arg(long, value_parser = parse_yes_no)]
+    /// Look this host up in the mainline DHT (default: the client
+    /// settings', else yes).
+    #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub dht: Option<bool>,
-    /// Use mDNS discovery for this host (yes|no).
-    #[arg(long, value_parser = parse_yes_no)]
+    /// Look this host up with mDNS on the local network (default: the
+    /// client settings', else yes).
+    #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
     #[command(flatten)]
     pub files: FilesArgs,
@@ -267,7 +305,8 @@ pub struct AddArgs {
     /// Export read-only.
     #[arg(long)]
     pub ro: bool,
-    /// Keep the export's index warm in the background.
+    /// Hash the export's files into its index whenever the daemon starts,
+    /// so files irsync did not place are reused from the first session on.
     #[arg(long)]
     pub warm_index: bool,
     #[command(flatten)]
@@ -280,7 +319,8 @@ pub struct IndexArgs {
     /// targets are export names, all exports when none is given.
     #[arg(long)]
     pub daemon: bool,
-    /// The settings file (with `--daemon`).
+    /// The settings file (with `--daemon`; default: irsync.toml in the
+    /// config directory).
     #[arg(long, requires = "daemon", value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// The exports file (with `--daemon`; default: exports.toml in the
@@ -297,7 +337,8 @@ pub struct IndexArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DaemonArgs {
-    #[arg(long)]
+    /// The settings file (default: irsync.toml in the config directory).
+    #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// The host aliases file (default: hosts.toml in the config directory).
     #[arg(long, value_name = "PATH")]
@@ -305,6 +346,8 @@ pub struct DaemonArgs {
     /// The exports file (default: exports.toml in the config directory).
     #[arg(long, value_name = "PATH")]
     pub exports: Option<PathBuf>,
+    /// Print the daemon's EndpointId (generating its identity if missing)
+    /// and exit without serving.
     #[arg(long)]
     pub show_id: bool,
     /// Read the identity's passphrase from the first line of this file
@@ -334,78 +377,133 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
 
 #[derive(Debug, clap::Args)]
 pub struct SyncArgs {
-    /// `SRC... DEST`
+    /// Local paths or `HOST:EXPORT/PATH` (HOST: an alias from hosts.toml or
+    /// an EndpointId; EXPORT: a directory the daemon shares by name).
+    /// Exactly one side is remote; several sources only when pushing. A
+    /// trailing `/` copies a directory's contents, none the directory
+    /// itself.
     #[arg(value_name = "SRC... DEST")]
     pub paths: Vec<String>,
 
+    /// Archive mode: -rlptgoD (symlinks, permissions, times, group, owner,
+    /// devices and specials).
     #[arg(short, long)]
     pub archive: bool,
     /// Accepted for rsync compatibility: irsync always recurses into
     /// directories, with or without -r/-a.
     #[arg(short = 'r', long = "recursive")]
     pub recursive: bool,
+    /// Copy symlinks as symlinks (without it they are skipped).
     #[arg(short = 'l', long = "links")]
     pub links: bool,
+    /// Preserve permissions.
     #[arg(short = 'p', long = "perms")]
     pub perms: bool,
+    /// Preserve modification times.
     #[arg(short = 't', long = "times")]
     pub times: bool,
+    /// Preserve the group, where the receiving user may set it.
     #[arg(short = 'g', long = "group")]
     pub group: bool,
+    /// Preserve the owner (only when the receiving side runs as root).
     #[arg(short = 'o', long = "owner")]
     pub owner: bool,
+    /// Preserve device nodes and FIFOs, as rsync's --devices --specials
+    /// (sockets are never copied).
     #[arg(short = 'D')]
     pub devices: bool,
+    /// Preserve hard links: files linked together in the source are linked
+    /// together in the destination.
     #[arg(short = 'H', long = "hard-links")]
     pub hard_links: bool,
+    /// Write every run of zeros as a hole; without it only files that are
+    /// sparse in the source are written sparse.
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
+    /// List each file as it is handled, and log more per repeat (-vv:
+    /// debug, -vvv: trace).
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
+    /// Print errors only; also turns the live progress block off.
     #[arg(short, long)]
     pub quiet: bool,
+    /// Change nothing on either side; with -v or -i, list what would be
+    /// done.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+    /// Compare by content, not by size and time: every file on both sides
+    /// is read, no cached hash is trusted, and the index is refreshed from
+    /// what was read.
     #[arg(short, long)]
     pub checksum: bool,
+    /// Skip files that are newer on the destination.
     #[arg(short, long = "update")]
     pub update: bool,
+    /// Delete destination files that are gone from the source, after the
+    /// transfer (same as --delete-after). Nothing is deleted without one
+    /// of the --delete flags.
     #[arg(long)]
     pub delete: bool,
+    /// Delete before the transfer starts.
     #[arg(long)]
     pub delete_before: bool,
     /// Accepted for rsync compatibility; irsync runs it like --delete-after.
     #[arg(long)]
     pub delete_during: bool,
+    /// Delete after the transfer (what --delete does).
     #[arg(long)]
     pub delete_after: bool,
+    /// Also delete destination files the filters exclude (implies --delete;
+    /// required for a push with --delete and filters).
     #[arg(long)]
     pub delete_excluded: bool,
+    /// Stop deleting after N files; exit code 25 when the cap stops a run.
     #[arg(long, value_name = "N")]
     pub max_delete: Option<u64>,
+    /// Exclude paths matching this rsync pattern (`*`, `**`, `?`, `[..]`; a
+    /// leading `/` anchors it to the root, a trailing `/` matches
+    /// directories only). Rules apply in command-line order; the first
+    /// match wins.
     #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
     pub exclude: Vec<String>,
+    /// Include paths matching this pattern even if a later --exclude would
+    /// hide them.
     #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
     pub include: Vec<String>,
+    /// Read exclude patterns from FILE, one per line (blank lines and lines
+    /// starting with `#` or `;` are skipped).
     #[arg(long, value_name = "FILE", action = ArgAction::Append)]
     pub exclude_from: Vec<String>,
+    /// Read include patterns from FILE, one per line, as --exclude-from.
     #[arg(long, value_name = "FILE", action = ArgAction::Append)]
     pub include_from: Vec<String>,
     /// Bytes/s limit: KiB/s by default, or with k/m/g suffix; 0 = unlimited.
     #[arg(long, value_name = "RATE", value_parser = parse_bwlimit)]
     pub bwlimit: Option<u64>,
+    /// Accepted for rsync compatibility: owners and groups are always
+    /// transferred as numbers, never mapped by name.
     #[arg(long)]
     pub numeric_ids: bool,
+    /// Keep the partial files of interrupted transfers under DIR (relative
+    /// to the destination root, or absolute) instead of beside their
+    /// files. Pull only; a push with it is refused.
     #[arg(long, value_name = "DIR")]
     pub partial_dir: Option<PathBuf>,
+    /// Run the deletion pass even when a listing was cut short by I/O
+    /// errors (by default it is skipped then).
     #[arg(long)]
     pub ignore_errors: bool,
+    /// Print a block of transfer statistics at the end.
     #[arg(long)]
     pub stats: bool,
+    /// Accepted for rsync compatibility: the live progress block is always
+    /// drawn when stdout is a terminal, and off with -q.
     #[arg(long)]
     pub progress: bool,
+    /// Accepted for rsync compatibility (e.g. `progress2`); see --progress.
     #[arg(long, value_name = "SPEC")]
     pub info: Option<String>,
+    /// Print rsync's per-file change summary (the itemize codes).
     #[arg(short = 'i', long)]
     pub itemize_changes: bool,
     /// Inactivity timeout: a connection that moves no data and no control
@@ -416,10 +514,16 @@ pub struct SyncArgs {
     /// the client settings, else 32).
     #[arg(long, value_name = "N")]
     pub parallel: Option<u32>,
+    /// How long to keep redialling after a dropped connection:
+    /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
+    /// from the host entry or the client settings, else 24h).
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
+    /// Use this relay server instead of the host entry's, the client
+    /// settings' or n0's default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
+    /// Do not look the daemon up in the mainline DHT.
     #[arg(long)]
     pub no_dht: bool,
     /// Dial the daemon at this `ip:port`, `[ipv6]:port` or `host:port`
@@ -433,14 +537,20 @@ pub struct SyncArgs {
     /// The host aliases file (default: hosts.toml in the config directory).
     #[arg(long, value_name = "PATH")]
     pub hosts: Option<PathBuf>,
+    /// The private key to connect with (default: `identity` in irsync.toml,
+    /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
     /// Read the identity's passphrase from the first line of this file
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]
     pub passphrase_file: Option<PathBuf>,
+    /// Start a fresh plan instead of resuming a dormant session (partial
+    /// files are still picked up).
     #[arg(long)]
     pub no_resume: bool,
+    /// Do not fill a new file from a destination file with the same
+    /// content; a moved or copied file is transferred again.
     #[arg(long)]
     pub no_rename_detection: bool,
     /// Write a changed file into the destination itself instead of a
