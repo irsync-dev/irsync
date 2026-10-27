@@ -41,3 +41,6 @@ console = { workspace = true }
 tempfile = { workspace = true }
 rand_core = { workspace = true }
 irsync = { path = ".", features = ["test-hooks"] }
+
+[build-dependencies]
+vergen-gitcl = "10"

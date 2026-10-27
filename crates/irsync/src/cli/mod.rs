@@ -43,8 +43,10 @@ pub fn validate(src: &[Location], dest: &Location) -> Result<Direction, UsageErr
 #[derive(Debug, Parser)]
 #[command(
     name = "irsync",
-    version,
-    about = "rsync-like directory sync over iroh"
+    version = crate::build::LONG_VERSION.as_str(),
+    about = "rsync-like directory sync over iroh",
+    help_template = HELP_TEMPLATE,
+    propagate_version = true
 )]
 #[command(args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
 pub struct Args {
@@ -54,7 +56,17 @@ pub struct Args {
     pub sync: SyncArgs,
 }
 
+/// clap's default template with the build info on top; subcommands get it
+/// in [`Args::command_tree`] since the template is not inherited.
+const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
+                             {usage-heading} {usage}\n\n{all-args}{after-help}";
+
 impl Args {
+    /// The command with the help template applied to the subcommands too.
+    fn command_tree() -> clap::Command {
+        Args::command().mut_subcommands(|c| c.help_template(HELP_TEMPLATE))
+    }
+
     /// Like `Parser::try_parse_from`, but also records the command-line order
     /// of the include/exclude options, which clap keeps per option.
     pub fn try_parse_from<I, T>(it: I) -> Result<Args, clap::Error>
@@ -62,7 +74,7 @@ impl Args {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        let m = Args::command().try_get_matches_from(it)?;
+        let m = Args::command_tree().try_get_matches_from(it)?;
         let mut args = Args::from_arg_matches(&m)?;
         if args.cmd.is_none() && (args.sync.paths.len() < 2) {
             return Err(Args::command().error(

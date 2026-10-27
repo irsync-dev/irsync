@@ -23,6 +23,46 @@ fn bytes(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i * 7 % 251) as u8).collect()
 }
 
+/// Sends each line of `r` down `tx` until either end closes.
+fn forward_lines<R: std::io::Read + Send + 'static>(r: R, tx: mpsc::Sender<String>) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(r).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Drops ANSI colour sequences, which tracing emits even on a pipe.
+fn plain(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = rest.find("\x1b[") {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 2..];
+        rest = rest.find('m').map_or("", |j| &rest[j + 1..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Waits for a line on `rx` matching `pred`, giving up after 15 s.
+fn expect_line(rx: &mpsc::Receiver<String>, what: &str, pred: impl Fn(&str) -> bool) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let line = rx
+            .recv_timeout(left)
+            .unwrap_or_else(|_| panic!("no line matching {what} within 15 s"));
+        let line = plain(&line);
+        if pred(&line) {
+            return line;
+        }
+    }
+}
+
 fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(args)
@@ -88,19 +128,14 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         .args(["--listen", "127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let mut daemon = DaemonGuard(child);
-    let stdout = daemon.0.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    forward_lines(daemon.0.stdout.take().unwrap(), tx);
+    let (etx, erx) = mpsc::channel::<String>();
+    forward_lines(daemon.0.stderr.take().unwrap(), etx);
 
     let (mut id, mut listen) = (None, None);
     while listen.is_none() {
@@ -125,7 +160,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let dest = format!("{id}:m/");
     let config = tmp.join("irsync.toml");
     let args = [
-        "-a",
+        "-av",
         "--reconnect",
         "0",
         "--address",
@@ -141,6 +176,41 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         "client failed: {}",
         String::from_utf8_lossy(&o.stderr)
     );
+    // Both ends announce their own build at startup, at info.
+    let build = irsync::build::BuildInfo::current();
+    let own = format!(
+        "version={} commit={} dirty={}",
+        build.version,
+        build.commit,
+        build.dirty.map_or("unknown".to_string(), |d| d.to_string())
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.lines()
+            .map(plain)
+            .any(|l| l.contains("INFO") && l.contains("starting") && l.contains(&own)),
+        "client stderr lacks its startup line:\n{err}"
+    );
+    expect_line(&erx, "daemon startup line", |l| {
+        l.contains("INFO") && l.contains("starting") && l.contains(&own)
+    });
+    // Each end also reports the other's build once the session is up;
+    // both ends run this same binary here.
+    let peer = format!(
+        "peer_version={} peer_commit={} peer_dirty={}",
+        build.version,
+        build.commit,
+        build.dirty_label()
+    );
+    assert!(
+        err.lines()
+            .map(plain)
+            .any(|l| l.contains("session started") && l.contains(&peer)),
+        "client stderr lacks the daemon's build:\n{err}"
+    );
+    expect_line(&erx, "daemon session line with the client's build", |l| {
+        l.contains("session started") && l.contains(&peer)
+    });
     assert!(key.exists(), "client identity under HOME");
     assert_eq!(std::fs::read(tmp.join("dst/a.txt")).unwrap(), b"hello");
     assert_eq!(

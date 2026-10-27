@@ -22,6 +22,11 @@ fn hello_roundtrips() {
         checksum: true,
         inplace: true,
         append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
+        build: Some(irsync_proto::v1::BuildInfo {
+            version: "0.1.0".into(),
+            commit: "abc1234".into(),
+            dirty: Some(true),
+        }),
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

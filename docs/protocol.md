@@ -80,7 +80,9 @@ A session is one logical sync job with a random 128-bit id, a plan and
 progress, both persisted on each side.
 
 1. A new session starts with `Hello` having an empty `session_id`; the daemon
-   answers with `HelloAck`, carrying the id it assigned.
+   answers with `HelloAck`, carrying the id it assigned. Both messages carry
+   the sender's `BuildInfo` (package version, short git commit, dirty flag),
+   which the other side logs at info once the session is up.
 2. After a connection loss the client redials and sends `Hello` with the same
    `session_id`. Both sides continue from their persisted progress; only
    unverified chunks are sent again.

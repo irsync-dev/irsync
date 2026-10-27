@@ -46,11 +46,19 @@ message Hello {
     APPEND_VERIFY = 2; // the prefix is verified too: a plain DELTA, with the skip rule
   }
   AppendMode append = 19;
+  BuildInfo build = 20; // the client's build, logged by the daemon
 }
 message HelloAck {
   bytes session_id = 1;
   bool resumed = 2;
   uint32 protocol_version = 3;
+  BuildInfo build = 4; // the daemon's build, logged by the client
+}
+// What a peer was built from; absent from an older peer.
+message BuildInfo {
+  string version = 1; // package version
+  string commit = 2; // short git commit, or "unknown"
+  optional bool dirty = 3; // uncommitted changes at build time; absent = unknown
 }
 message Error {
   enum Code {

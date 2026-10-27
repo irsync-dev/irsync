@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::build::BuildInfo;
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
@@ -500,10 +501,14 @@ pub(super) async fn run_client_inner(
     };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
+    let peer_build = BuildInfo::from_wire(ack.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
         resumed = ack.resumed,
         ?direction,
+        peer_version = %peer_build.version,
+        peer_commit = %peer_build.commit,
+        peer_dirty = %peer_build.dirty_label(),
         "session started"
     );
     let record = if ack.resumed {
@@ -711,6 +716,7 @@ pub async fn serve_daemon(
             session_id: session_id.to_vec(),
             resumed,
             protocol_version: PROTOCOL_VERSION,
+            build: Some(BuildInfo::current().to_wire()),
         },
     )
     .await?;
@@ -733,12 +739,16 @@ pub async fn serve_daemon(
         conn.closed().await;
         bail!("fault injection: stalled");
     }
+    let peer_build = BuildInfo::from_wire(hello.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
         peer = %remote.fmt_short(),
         export = %hello.export,
         ?direction,
         resumed,
+        peer_version = %peer_build.version,
+        peer_commit = %peer_build.commit,
+        peer_dirty = %peer_build.dirty_label(),
         "session started"
     );
     // The export's index is opened for the export root: hash and key paths

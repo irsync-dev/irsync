@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
+use irsync::build::BuildInfo;
 use irsync::cli::location::Location;
 use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
@@ -72,6 +73,7 @@ fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
         .with_env_filter(filter)
         .with_writer(writer)
         .init();
+    BuildInfo::current().log_startup();
 }
 
 /// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial
@@ -451,6 +453,7 @@ async fn sync(
             chunk_avg: CHUNK_PARAMS.avg,
             chunk_max: CHUNK_PARAMS.max,
             contents_only: *remote_co,
+            build: Some(BuildInfo::current().to_wire()),
             // The receiver-side options are filled in from `opts` by the session.
             ..Hello::default()
         };
@@ -637,6 +640,7 @@ fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
+    BuildInfo::current().log_startup();
 
     let result = (|| -> anyhow::Result<()> {
         let paths = Paths::resolve(
