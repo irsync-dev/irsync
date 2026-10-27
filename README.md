@@ -221,14 +221,14 @@ irsync-specific:
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 
-Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--show-id] [--listen ADDR]...`,
-the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] ROOT...` (or `irsync index
+Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--show-id] [--listen ADDR]... [-v|-q]`,
+the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] [-v|-q] ROOT...` (or `irsync index
 --daemon [--exports PATH] [NAME...]`), which hashes the files under a root
 into its index so that a destination irsync did not create (a prior rsync, a
 restore) is reused for renamed and copied files from the first session on
 (`-n` counts what would be read; a session also does this on its own for
 destination files of the size of a file it is about to fetch), and `irsync gc
-[-n]`, which removes abandoned
+[-n] [-v|-q]`, which removes abandoned
 partial files and dormant sessions (older than 7 days) for every local root
 irsync has synced. The client also does this for each root it syncs (at most
 daily, or sooner once a partial file has been left untouched for an hour), and

@@ -122,7 +122,7 @@ fn irsync_flags_and_misc() {
 fn subcommands_parse() {
     assert!(matches!(
         parse(&["gc", "--dry-run"]).cmd,
-        Some(Command::Gc { dry_run: true })
+        Some(Command::Gc { dry_run: true, .. })
     ));
     assert!(matches!(
         parse(&["keygen"]).cmd,
@@ -473,4 +473,24 @@ fn id_and_show_parse() {
         parse(&["show", "--config", "/c"]).cmd,
         Some(Command::Show { .. })
     ));
+}
+
+#[test]
+fn subcommands_take_verbose_and_quiet() {
+    match parse(&["daemon", "-vv"]).cmd {
+        Some(Command::Daemon(d)) => assert_eq!((d.log.verbose, d.log.quiet), (2, false)),
+        c => panic!("{c:?}"),
+    }
+    match parse(&["gc", "-n", "-q"]).cmd {
+        Some(Command::Gc { dry_run, log }) => assert!(dry_run && log.quiet && log.verbose == 0),
+        c => panic!("{c:?}"),
+    }
+    match parse(&["index", "-v", "/srv/a"]).cmd {
+        Some(Command::Index(ix)) => assert_eq!(ix.log.verbose, 1),
+        c => panic!("{c:?}"),
+    }
+    // One or the other.
+    assert!(Args::try_parse_from(["irsync", "daemon", "-v", "-q"]).is_err());
+    // Top-level flags still belong to a sync, not to a subcommand.
+    assert!(Args::try_parse_from(["irsync", "-v", "gc"]).is_err());
 }

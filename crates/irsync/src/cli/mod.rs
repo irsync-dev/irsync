@@ -135,7 +135,8 @@ pub enum Command {
     ///
     /// Serves the exports in exports.toml to the peers they are granted to
     /// until interrupted, and prints its EndpointId at start. Logs go to
-    /// stderr at info level; RUST_LOG overrides the level.
+    /// stderr at info level (-v: debug, -vv: trace, -q: errors only;
+    /// RUST_LOG overrides).
     Daemon(DaemonArgs),
     /// Generate an Ed25519 identity and print its public key line and
     /// EndpointId.
@@ -156,6 +157,8 @@ pub enum Command {
         /// List what would be removed without removing anything.
         #[arg(short = 'n', long)]
         dry_run: bool,
+        #[command(flatten)]
+        log: LogArgs,
     },
     /// Hash the files under local roots (or daemon exports) into their
     /// index, so a destination irsync did not create contributes chunks
@@ -284,6 +287,17 @@ fn parse_yes_no(s: &str) -> Result<bool, String> {
     }
 }
 
+/// How much the commands that log (`daemon`, `gc`, `index`) say on stderr.
+#[derive(Debug, Clone, Copy, Default, clap::Args)]
+pub struct LogArgs {
+    /// Log more; repeat for more still (up to -vvv).
+    #[arg(short, long, action = ArgAction::Count, conflicts_with = "quiet")]
+    pub verbose: u8,
+    /// Log errors only, and print no summary.
+    #[arg(short, long)]
+    pub quiet: bool,
+}
+
 /// The config files the management commands read and edit.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
@@ -330,6 +344,8 @@ pub struct IndexArgs {
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
+    #[command(flatten)]
+    pub log: LogArgs,
     /// Local roots to index, or with `--daemon` export names.
     #[arg(value_name = "TARGET")]
     pub targets: Vec<PathBuf>,
@@ -359,6 +375,8 @@ pub struct DaemonArgs {
     /// one IPv4 and one IPv6.
     #[arg(long, value_name = "ADDR")]
     pub listen: Vec<HostPort>,
+    #[command(flatten)]
+    pub log: LogArgs,
 }
 
 fn parse_bwlimit(s: &str) -> Result<u64, String> {

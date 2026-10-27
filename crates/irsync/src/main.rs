@@ -12,7 +12,7 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, HostAddArgs, HostCmd,
-    IndexArgs, SyncOptions,
+    IndexArgs, LogArgs, SyncOptions,
 };
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
@@ -34,10 +34,10 @@ fn main() {
     // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
     let _ = irsync::fs::rlimit::raise_nofile();
     match &args.cmd {
-        Some(Command::Daemon(d)) => std::process::exit(run_daemon(d, args.sync.verbose)),
+        Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
         Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
-        Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, args.sync.verbose)),
-        Some(Command::Index(ix)) => std::process::exit(run_index(ix, args.sync.verbose)),
+        Some(Command::Gc { dry_run, log }) => std::process::exit(run_gc(*dry_run, *log)),
+        Some(Command::Index(ix)) => std::process::exit(run_index(ix)),
         Some(Command::Add(a)) => std::process::exit(run_add(a)),
         Some(Command::Remove { name, files }) => std::process::exit(run_remove(name, files)),
         Some(Command::Allow {
@@ -67,6 +67,14 @@ fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
         (false, 2) => "info,irsync=debug",
         _ => "debug,irsync=trace",
     };
+    init_logging_at(default, writer);
+}
+
+/// `default` is the filter unless `RUST_LOG` is set.
+fn init_logging_at<W>(default: &str, writer: W)
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt()
@@ -219,15 +227,17 @@ fn run_keygen(out: Option<&std::path::Path>) -> i32 {
 
 /// `irsync gc`: collects stale resume state for every root with an index
 /// under the state directory.
-fn run_gc(dry_run: bool, verbose: u8) -> i32 {
-    init_logging(verbose, false, LogWriter::new());
+fn run_gc(dry_run: bool, log: LogArgs) -> i32 {
+    init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let dir = state_dir();
             let (mut parts, mut sessions) = (0usize, 0u32);
             let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
-                println!("0 part file(s), 0 session(s) {}", verb(dry_run));
+                if !log.quiet {
+                    println!("0 part file(s), 0 session(s) {}", verb(dry_run));
+                }
                 return Ok(());
             };
             let mut files: Vec<PathBuf> = rd
@@ -254,7 +264,9 @@ fn run_gc(dry_run: bool, verbose: u8) -> i32 {
                 match irsync::daemon::gc(index, &root, CLIENT_GC_AGE, dry_run).await {
                     Ok(r) => {
                         for p in &r.parts_removed {
-                            println!("{}", root.join(p.to_os()).display());
+                            if !log.quiet {
+                                println!("{}", root.join(p.to_os()).display());
+                            }
                         }
                         for (p, msg) in &r.errors {
                             eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
@@ -265,10 +277,12 @@ fn run_gc(dry_run: bool, verbose: u8) -> i32 {
                     Err(e) => eprintln!("irsync: {}: {e}", root.display()),
                 }
             }
-            println!(
-                "{parts} part file(s), {sessions} session(s) {}",
-                verb(dry_run)
-            );
+            if !log.quiet {
+                println!(
+                    "{parts} part file(s), {sessions} session(s) {}",
+                    verb(dry_run)
+                );
+            }
             Ok(())
         })
     })();
@@ -563,8 +577,8 @@ async fn session(
 /// `irsync index`: hashes every regular file under each target into its
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
-fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
-    init_logging(verbose, false, LogWriter::new());
+fn run_index(a: &IndexArgs) -> i32 {
+    init_logging(a.log.verbose, a.log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<i32> {
         // (state directory, root) per target.
         let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {
@@ -605,13 +619,15 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
                     eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
                 }
                 let what = if a.dry_run { "to hash" } else { "hashed" };
-                println!(
-                    "{}: {} file(s), {} {what} ({} bytes)",
-                    root.display(),
-                    r.examined,
-                    r.hashed,
-                    r.bytes
-                );
+                if !a.log.quiet {
+                    println!(
+                        "{}: {} file(s), {} {what} ({} bytes)",
+                        root.display(),
+                        r.examined,
+                        r.hashed,
+                        r.bytes
+                    );
+                }
                 if !r.errors.is_empty() || r.incomplete {
                     code = 23;
                 }
@@ -628,19 +644,14 @@ fn run_index(a: &IndexArgs, verbose: u8) -> i32 {
     }
 }
 
-fn run_daemon(d: &DaemonArgs, verbose: u8) -> i32 {
-    let default = match verbose {
-        0 => "info",
-        1 => "debug",
+fn run_daemon(d: &DaemonArgs) -> i32 {
+    let default = match (d.log.quiet, d.log.verbose) {
+        (true, _) => "error",
+        (false, 0) => "info",
+        (false, 1) => "debug",
         _ => "trace",
     };
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-    BuildInfo::current().log_startup();
+    init_logging_at(default, std::io::stderr);
 
     let result = (|| -> anyhow::Result<()> {
         let paths = Paths::resolve(
