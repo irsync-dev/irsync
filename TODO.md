@@ -62,11 +62,6 @@ User-visible, left as is on purpose; revisit if they bite.
 
 ## Housekeeping
 
-- [ ] Spec status lines are stale: `2026-10-28-remote-path-design.md` and
-      `2026-10-28-single-config-design.md` say "approved design, not yet
-      planned" although both shipped; the isolated-network, filegen,
-      fileset, stress-harness and tty-progress specs still say "draft,
-      awaiting approval".
 - [ ] The stress harness writes the daemon's exports to a split
       `exports.toml` (`crates/stress/src/daemon.rs`, `write_config`). It
       works, but one `irsync.toml` would match the documented layout.

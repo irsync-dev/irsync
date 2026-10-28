@@ -1,7 +1,7 @@
 # irsync design
 
 Date: 2026-10-17
-Status: approved 2026-10-17
+Status: implemented (plan: `../plans/2026-10-17-irsync-v1.md`); parts since superseded as noted below
 
 ## Intent
 

@@ -1,7 +1,7 @@
 # irsync stress harness — design
 
 Date: 2026-10-21
-Status: draft, awaiting approval
+Status: implemented 2026-10-21 (plan: `../plans/2026-10-21-stress-harness.md`)
 
 ## Intent
 

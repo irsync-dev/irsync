@@ -1,7 +1,7 @@
 # fileset — design
 
 Date: 2026-10-19
-Status: draft, awaiting approval
+Status: implemented 2026-10-19 (plan: `../plans/2026-10-19-fileset.md`)
 
 ## Intent
 

@@ -1,6 +1,6 @@
 # Remote paths: one syntax for exports and real paths
 
-Date: 2026-10-28. Status: approved design, not yet planned.
+Date: 2026-10-28. Status: implemented 2026-10-28 (plan: `../plans/2026-10-28-remote-path.md`).
 
 Builds on `2026-10-23-zero-config-cli-design.md` (hosts, exports, grants)
 and `2026-10-28-config-cli-design.md` (the `host`, `export`, `grant` and

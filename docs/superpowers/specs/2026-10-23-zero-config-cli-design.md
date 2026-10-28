@@ -1,6 +1,6 @@
 # Zero-config defaults and the exports CLI
 
-Status: design, 2026-10-23. Supersedes the identity, configuration and
+Status: implemented 2026-10-23 (plan: `../plans/2026-10-23-zero-config-cli.md`); parts since superseded as noted below. Supersedes the identity, configuration and
 authorisation sections of `2026-10-17-irsync-design.md` where they differ.
 There are no users yet; nothing here keeps compatibility with the current
 files, flags or wire protocol.

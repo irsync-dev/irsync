@@ -1,6 +1,6 @@
 # One config file, and `irsync config get|set|unset|list`
 
-Date: 2026-10-28. Status: approved design, not yet planned.
+Date: 2026-10-28. Status: implemented 2026-10-28 (plan: `../plans/2026-10-28-single-config.md`).
 
 Builds on `2026-10-23-zero-config-cli-design.md` (the three files),
 `2026-10-28-config-cli-design.md` (the `host`, `export`, `grant` and `id`

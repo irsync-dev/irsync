@@ -1,7 +1,7 @@
 # irsync isolated network mode — design
 
 Date: 2026-10-21
-Status: draft, awaiting approval
+Status: implemented 2026-10-21 (plan: `../plans/2026-10-21-isolated-network.md`)
 
 ## Intent
 

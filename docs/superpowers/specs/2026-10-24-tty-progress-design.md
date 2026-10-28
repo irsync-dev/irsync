@@ -1,6 +1,6 @@
 # Live progress block on a TTY
 
-Date: 2026-10-24. Status: draft, awaiting approval.
+Date: 2026-10-24. Status: implemented 2026-10-24 (plan: `../plans/2026-10-24-tty-progress.md`).
 
 ## Intent
 

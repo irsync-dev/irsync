@@ -1,7 +1,7 @@
 # filegen — design
 
 Date: 2026-10-20
-Status: draft, awaiting approval
+Status: implemented 2026-10-20 (plan: `../plans/2026-10-20-filegen.md`)
 
 ## Intent
 
