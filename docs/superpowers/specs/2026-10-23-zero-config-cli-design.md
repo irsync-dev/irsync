@@ -384,6 +384,9 @@ Flags: `--config`, `--hosts`, `--exports`, `--show-id`,
 
 ### `irsync index --daemon [NAME...]`
 
+> Superseded 2026-10-28: this is now `irsync export update [NAME...]`,
+> taking `--config` and `--exports` from the `export` noun.
+
 Reads the exports file instead of the daemon config; targets are export
 names.
 

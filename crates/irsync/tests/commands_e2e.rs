@@ -556,3 +556,49 @@ fn grant_remove_all_all_locks_everyone_out() {
         format!("laptop ({id}):\n")
     );
 }
+
+#[test]
+fn export_update_hashes_the_named_export_into_the_daemon_state() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("srv/photos")).unwrap();
+    std::fs::write(home.join("srv/photos/a.jpg"), vec![1u8; 4096]).unwrap();
+    std::fs::write(home.join("srv/photos/b.jpg"), vec![2u8; 8192]).unwrap();
+    let target = format!("photos:{}", home.join("srv/photos").display());
+    assert!(irsync(&home, &["export", "add", &target]).status.success());
+    let state = home.join("xdg/irsync");
+    std::fs::write(
+        home.join(".config/irsync/irsync.toml"),
+        format!("state_dir = {:?}\n", state),
+    )
+    .unwrap();
+    // A dry run reads nothing and creates no index.
+    let o = irsync(&home, &["export", "update", "-n"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        out.contains("2 file(s), 2 to hash (12288 bytes)"),
+        "{out:?}"
+    );
+    let o = irsync(&home, &["export", "update", "photos"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(out.contains("2 file(s), 2 hashed (12288 bytes)"), "{out:?}");
+    assert!(std::fs::read_dir(state.join("index"))
+        .unwrap()
+        .next()
+        .is_some());
+    // A second run finds every row fresh.
+    let o = irsync(&home, &["export", "update"]);
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(out.contains("2 file(s), 0 hashed (0 bytes)"), "{out:?}");
+    // An unknown name fails and names the file.
+    let o = irsync(&home, &["export", "update", "music"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("irsync export update: no export \"music\" in"),
+        "{err}"
+    );
+    assert!(err.contains("exports.toml"), "{err}");
+}

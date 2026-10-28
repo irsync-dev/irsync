@@ -572,69 +572,86 @@ async fn session(
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs) -> i32 {
     init_logging(a.log.verbose, a.log.quiet, LogWriter::new());
-    let result = (|| -> anyhow::Result<i32> {
-        // (state directory, root) per target.
-        let targets: Vec<(PathBuf, PathBuf)> = if a.daemon {
-            let paths = Paths::resolve(a.config.as_deref(), None, a.exports.as_deref());
-            let settings = Settings::load(&paths.config)?;
-            let exports = Exports::load(&paths.exports)?;
-            let names: Vec<String> = if a.targets.is_empty() {
-                exports.exports.keys().cloned().collect()
-            } else {
-                a.targets
-                    .iter()
-                    .map(|t| t.to_string_lossy().into_owned())
-                    .collect()
-            };
-            names
-                .into_iter()
-                .map(|n| {
-                    let m = exports.exports.get(&n).with_context(|| {
-                        format!("no export {n:?} in {}", exports.path.display())
-                    })?;
-                    Ok((settings.state_dir.clone(), m.path.clone()))
-                })
-                .collect::<anyhow::Result<_>>()?
-        } else {
-            a.targets.iter().map(|t| (state_dir(), t.clone())).collect()
-        };
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            let mut code = 0;
-            for (state, root) in targets {
-                let index = Index::open(&state, &root)
-                    .with_context(|| format!("open index for {}", root.display()))?
-                    .into_handle();
-                let r = irsync::warm::index_root(index, &root, HASH_WORKERS, a.dry_run)
-                    .await
-                    .with_context(|| format!("indexing {}", root.display()))?;
-                for (p, msg) in &r.errors {
-                    eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
-                }
-                let what = if a.dry_run { "to hash" } else { "hashed" };
-                if !a.log.quiet {
-                    println!(
-                        "{}: {} file(s), {} {what} ({} bytes)",
-                        root.display(),
-                        r.examined,
-                        r.hashed,
-                        r.bytes
-                    );
-                }
-                if !r.errors.is_empty() || r.incomplete {
-                    code = 23;
-                }
-            }
-            Ok(code)
-        })
-    })();
-    match result {
+    let targets = a.targets.iter().map(|t| (state_dir(), t.clone())).collect();
+    match index_roots(targets, a.dry_run, a.log.quiet) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync index: {e:#}");
             1
         }
     }
+}
+
+/// `export update`: the named exports (every export when `names` is empty)
+/// under the daemon's state directory.
+fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
+    init_logging(log.verbose, log.quiet, LogWriter::new());
+    let result = (|| -> anyhow::Result<i32> {
+        let settings = Settings::load(&paths.config)?;
+        let exports = Exports::load(&paths.exports)?;
+        let names: Vec<&str> = if names.is_empty() {
+            exports.exports.keys().map(String::as_str).collect()
+        } else {
+            names.iter().map(String::as_str).collect()
+        };
+        let targets = names
+            .into_iter()
+            .map(|n| {
+                let m = exports
+                    .exports
+                    .get(n)
+                    .with_context(|| format!("no export {n:?} in {}", exports.path.display()))?;
+                Ok((settings.state_dir.clone(), m.path.clone()))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        index_roots(targets, dry_run, log.quiet)
+    })();
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("irsync export update: {e:#}");
+            1
+        }
+    }
+}
+
+/// Hashes each `(state directory, root)` into the root's index and prints
+/// a summary line per root. Exit code 23 when a root had errors or was
+/// left incomplete.
+fn index_roots(
+    targets: Vec<(PathBuf, PathBuf)>,
+    dry_run: bool,
+    quiet: bool,
+) -> anyhow::Result<i32> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let mut code = 0;
+        for (state, root) in targets {
+            let index = Index::open(&state, &root)
+                .with_context(|| format!("open index for {}", root.display()))?
+                .into_handle();
+            let r = irsync::warm::index_root(index, &root, HASH_WORKERS, dry_run)
+                .await
+                .with_context(|| format!("indexing {}", root.display()))?;
+            for (p, msg) in &r.errors {
+                eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
+            }
+            let what = if dry_run { "to hash" } else { "hashed" };
+            if !quiet {
+                println!(
+                    "{}: {} file(s), {} {what} ({} bytes)",
+                    root.display(),
+                    r.examined,
+                    r.hashed,
+                    r.bytes
+                );
+            }
+            if !r.errors.is_empty() || r.incomplete {
+                code = 23;
+            }
+        }
+        Ok(code)
+    })
 }
 
 fn run_daemon(d: &DaemonArgs) -> i32 {
@@ -735,6 +752,11 @@ fn run_export(e: &ExportArgs) -> i32 {
                 Ok(())
             })(),
         ),
+        ExportCmd::Update {
+            dry_run,
+            log,
+            names,
+        } => export_update(&paths, names, *dry_run, *log),
         ExportCmd::List => finish(
             "export list",
             (|| {

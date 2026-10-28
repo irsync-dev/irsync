@@ -75,8 +75,8 @@ file is the same as an empty one. The commands below edit `hosts.toml` and
 The three management nouns (`host`, `export`, `grant`), `id`, `show` and
 `daemon` accept `--config`, `--hosts` and `--exports` to use other paths; for
 a noun the flags go anywhere after it (`irsync export --exports E add ...` or
-`irsync export add ... --exports E`). A sync takes `--config` and `--hosts`,
-`index` takes `--config` and `--exports`, and `keygen` and `gc` take none.
+`irsync export add ... --exports E`). A sync takes `--config` and `--hosts`;
+`index`, `keygen` and `gc` take none.
 Unknown keys are errors that name the file, table and key.
 
 `irsync.toml`: settings for the client and the daemon. These are the defaults
@@ -157,7 +157,7 @@ every export.
 
 ## Managing hosts, exports and grants
 
-Three nouns, each with `add`, `remove` and `list`:
+Three nouns, each with `add`, `remove` and `list` (and `export update`):
 
 | Command | Effect |
 | --- | --- |
@@ -167,6 +167,7 @@ Three nouns, each with `add`, `remove` and `list`:
 | `irsync export add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
 | `irsync export remove NAME` | stop exporting; its grants go with it |
 | `irsync export list` | list exports with their paths, flags and grants (the exports section of `show`) |
+| `irsync export update [-n] [-v\|-q] [NAME...]` | hash the files of the named exports (all, when none is named) into their indexes under the daemon's `state_dir`, so files irsync did not place are reused from the next session on; `-n` counts what would be read |
 | `irsync grant add EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
@@ -233,12 +234,13 @@ irsync-specific:
 | `--no-rename-detection` | do not reuse content of moved files |
 
 Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--show-id] [--listen ADDR]... [-v|-q]`,
-the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] [-v|-q] ROOT...` (or `irsync index
---daemon [--exports PATH] [NAME...]`), which hashes the files under a root
-into its index so that a destination irsync did not create (a prior rsync, a
-restore) is reused for renamed and copied files from the first session on
-(`-n` counts what would be read; a session also does this on its own for
-destination files of the size of a file it is about to fetch), and `irsync gc
+the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] [-v|-q] ROOT...`, which
+hashes the files under a local root into its index so that a destination
+irsync did not create (a prior rsync, a restore) is reused for renamed and
+copied files from the first session on (`irsync export update` is the same
+for the daemon's exports; `-n` counts what would be read; a session also does
+this on its own for destination files of the size of a file it is about to
+fetch), and `irsync gc
 [-n] [-v|-q]`, which removes abandoned
 partial files and dormant sessions (older than 7 days) for every local root
 irsync has synced. The client also does this for each root it syncs (at most

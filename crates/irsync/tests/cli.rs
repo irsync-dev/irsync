@@ -175,15 +175,41 @@ fn daemon_flags() {
 }
 
 #[test]
-fn index_daemon_takes_exports_file() {
-    let a = parse(&["index", "--daemon", "--exports", "/e", "photos"]);
-    let Some(Command::Index(ix)) = a.cmd else {
-        panic!()
-    };
-    assert!(
-        ix.daemon && ix.exports == Some("/e".into()) && ix.targets == vec![PathBuf::from("photos")]
-    );
+fn export_update_takes_the_noun_file_flags_in_either_position() {
+    use irsync::cli::ExportCmd;
+    for args in [
+        &[
+            "export",
+            "update",
+            "--exports",
+            "/e",
+            "--config",
+            "/c",
+            "photos",
+        ][..],
+        &[
+            "export",
+            "--exports",
+            "/e",
+            "--config",
+            "/c",
+            "update",
+            "photos",
+        ][..],
+    ] {
+        let Some(Command::Export(e)) = parse(args).cmd else {
+            panic!("{args:?}")
+        };
+        assert_eq!(e.files.exports, Some(PathBuf::from("/e")));
+        assert_eq!(e.files.config, Some(PathBuf::from("/c")));
+        assert!(
+            matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["photos"])
+        );
+    }
+    // The old spelling is gone: `index` has no --daemon and no file flags.
+    assert!(Args::try_parse_from(["irsync", "index", "--daemon", "photos"]).is_err());
     assert!(Args::try_parse_from(["irsync", "index", "--exports", "/e", "photos"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "index", "--config", "/c", "/srv/a"]).is_err());
 }
 
 #[test]
@@ -350,11 +376,11 @@ fn address_flag_repeats_and_conflicts_with_relay() {
 }
 
 #[test]
-fn index_subcommand_parses_roots_or_daemon_exports() {
+fn index_parses_local_roots_and_requires_one() {
     let a = parse(&["index", "-n", "/srv/a", "/srv/b"]);
     match a.cmd {
         Some(Command::Index(ix)) => {
-            assert!(ix.dry_run && !ix.daemon && ix.config.is_none());
+            assert!(ix.dry_run);
             assert_eq!(
                 ix.targets,
                 [PathBuf::from("/srv/a"), PathBuf::from("/srv/b")]
@@ -362,22 +388,35 @@ fn index_subcommand_parses_roots_or_daemon_exports() {
         }
         other => panic!("{other:?}"),
     }
-    let a = parse(&["index", "--daemon", "--config", "/etc/x.toml", "photos"]);
+    assert!(Args::try_parse_from(["irsync", "index"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "index", "-n"]).is_err());
+}
+
+#[test]
+fn export_update_parses_export_names_or_none_for_every_export() {
+    use irsync::cli::ExportCmd;
+    let a = parse(&["export", "update", "-n", "-v", "photos", "music"]);
     match a.cmd {
-        Some(Command::Index(ix)) => {
-            assert!(!ix.dry_run && ix.daemon);
-            assert_eq!(ix.config, Some(PathBuf::from("/etc/x.toml")));
-            assert_eq!(ix.targets, [PathBuf::from("photos")]);
-        }
+        Some(Command::Export(e)) => match e.cmd {
+            ExportCmd::Update {
+                names,
+                dry_run,
+                log,
+            } => {
+                assert_eq!(names, ["photos", "music"]);
+                assert!(dry_run && log.verbose == 1 && !log.quiet);
+            }
+            c => panic!("{c:?}"),
+        },
         other => panic!("{other:?}"),
     }
     // Every export when none is named.
-    let a = parse(&["index", "--daemon"]);
-    assert!(matches!(a.cmd, Some(Command::Index(ix)) if ix.daemon && ix.targets.is_empty()));
-    // `--config` is the daemon's; a local root is required otherwise.
-    assert!(Args::try_parse_from(["irsync", "index", "--config", "/x", "photos"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "index"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "index", "-n"]).is_err());
+    let a = parse(&["export", "update"]);
+    assert!(matches!(
+        a.cmd,
+        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names.is_empty())
+    ));
+    assert!(Args::try_parse_from(["irsync", "export", "update", "-v", "-q"]).is_err());
 }
 
 #[test]

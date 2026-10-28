@@ -97,14 +97,6 @@ impl Args {
                 "the following required arguments were not provided:\n  <SRC>... <DEST>",
             ));
         }
-        if let Some(Command::Index(ix)) = &args.cmd {
-            if !ix.daemon && ix.targets.is_empty() {
-                return Err(Args::command().error(
-                    clap::error::ErrorKind::MissingRequiredArgument,
-                    "the following required arguments were not provided:\n  <TARGET>... (or --daemon)",
-                ));
-            }
-        }
         args.sync.filters = ordered_filters(&m);
         Ok(args)
     }
@@ -160,9 +152,10 @@ pub enum Command {
         #[command(flatten)]
         log: LogArgs,
     },
-    /// Hash the files under local roots (or daemon exports) into their
-    /// index, so a destination irsync did not create contributes chunks
-    /// and rename candidates from the first session on.
+    /// Hash the files under local roots into their index, so a
+    /// destination irsync did not create contributes chunks and rename
+    /// candidates from the first session on (`export update` does the
+    /// same for the daemon's exports).
     Index(IndexArgs),
     /// Manage host aliases (edits hosts.toml).
     Host(HostArgs),
@@ -230,6 +223,19 @@ pub enum ExportCmd {
     },
     /// List the exports with their paths, flags and grants.
     List,
+    /// Hash the exports' files into their indexes under the daemon's
+    /// state directory, so files irsync did not place are reused from
+    /// the next session on (what `warm_index` does at every start).
+    Update {
+        /// Walk and count what would be hashed; read nothing.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        #[command(flatten)]
+        log: LogArgs,
+        /// Export names; every export when none is given.
+        #[arg(value_name = "NAME")]
+        names: Vec<String>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -359,25 +365,13 @@ pub struct ExportAddArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct IndexArgs {
-    /// Index daemon exports under the daemon's state directory: the
-    /// targets are export names, all exports when none is given.
-    #[arg(long)]
-    pub daemon: bool,
-    /// The settings file (with `--daemon`; default: irsync.toml in the
-    /// config directory).
-    #[arg(long, requires = "daemon", value_name = "PATH")]
-    pub config: Option<PathBuf>,
-    /// The exports file (with `--daemon`; default: exports.toml in the
-    /// config directory).
-    #[arg(long, requires = "daemon", value_name = "PATH")]
-    pub exports: Option<PathBuf>,
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
     #[command(flatten)]
     pub log: LogArgs,
-    /// Local roots to index, or with `--daemon` export names.
-    #[arg(value_name = "TARGET")]
+    /// Local roots to index.
+    #[arg(value_name = "ROOT", required = true)]
     pub targets: Vec<PathBuf>,
 }
 

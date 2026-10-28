@@ -73,6 +73,9 @@ irsync -av ~/Photos home:photos/
 - Changing `show`, `id`, `daemon`, `index`, `gc` or `keygen`. Folding
   `index --daemon` into `export index`, `daemon --show-id` into `id
   --daemon`, and the fate of `keygen` are the next round, not this one.
+  (Done the same day: `index --daemon` became `export update`; `export
+  index` was rejected as ambiguous between exporting an index and
+  indexing an export.)
 - A command that edits `irsync.toml` (`config set`). The settings file is
   untouched.
 - Letting `[all]` carry anything but grants (for example a default
