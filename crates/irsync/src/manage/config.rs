@@ -3,7 +3,7 @@
 use super::ManageError;
 use crate::config::duration;
 use crate::config::settings::{RelayMode, Settings};
-use toml_edit::{DocumentMut, Item, Key, TableLike, Value};
+use toml_edit::{Array, DocumentMut, Item, Key, Table, TableLike, Value};
 
 /// What a key holds, which decides how `set` reads a value and how `get`
 /// prints one.
@@ -186,4 +186,135 @@ pub fn list(doc: &DocumentMut) -> Vec<String> {
     let mut out = Vec::new();
     walk(doc.as_table(), "", &mut out);
     out
+}
+
+/// `VALUE...` read in the key's kind: `true`/`false`, an integer, a
+/// duration as the file spells it, a path, a URL, an EndpointId (stored as
+/// typed), or, for an array kind, one element per value (none: an empty
+/// array). A scalar kind takes exactly one value; a table cannot be set.
+pub fn parse_value(kind: Kind, values: &[String]) -> Result<Value, ManageError> {
+    let bad = |m: String| ManageError::BadValue(m);
+    let one = || -> Result<&str, ManageError> {
+        match values {
+            [v] => Ok(v.as_str()),
+            [] => Err(bad("a value is required".into())),
+            _ => Err(bad(
+                "one value, not several (only an array key takes several)".into(),
+            )),
+        }
+    };
+    let strings = |check: &dyn Fn(&str) -> Result<(), String>| -> Result<Value, ManageError> {
+        let mut a = Array::new();
+        for v in values {
+            check(v).map_err(bad)?;
+            a.push(v.as_str());
+        }
+        Ok(Value::Array(a))
+    };
+    Ok(match kind {
+        Kind::Bool => match one()? {
+            "true" => Value::from(true),
+            "false" => Value::from(false),
+            v => return Err(bad(format!("expected true or false, got {v:?}"))),
+        },
+        Kind::Int => {
+            let v = one()?;
+            Value::from(
+                v.parse::<i64>()
+                    .map_err(|_| bad(format!("expected an integer, got {v:?}")))?,
+            )
+        }
+        Kind::Duration => {
+            let v = one()?;
+            duration::parse(v).map_err(|e| bad(e.to_string()))?;
+            Value::from(v)
+        }
+        Kind::Str | Kind::Path => Value::from(one()?),
+        Kind::Url => {
+            let v = one()?;
+            url::Url::parse(v).map_err(|e| bad(format!("expected a URL: {e}")))?;
+            Value::from(v)
+        }
+        Kind::Id => {
+            let v = one()?;
+            crate::identity::parse_endpoint_id(v).map_err(|e| bad(e.to_string()))?;
+            Value::from(v)
+        }
+        Kind::StrArray => strings(&|_| Ok(()))?,
+        Kind::AddrArray => strings(&|v| {
+            v.parse::<crate::net::addr::HostPort>()
+                .map(|_| ())
+                .map_err(|e| format!("expected host:port, got {v:?}: {e}"))
+        })?,
+        Kind::Table => return Err(bad("a table cannot be set; set its keys".into())),
+    })
+}
+
+/// The table at `path`, created on demand: tables created on the way are
+/// implicit (no header of their own), the last one is a real table.
+fn table_at<'a>(
+    doc: &'a mut DocumentMut,
+    path: &[String],
+) -> Result<&'a mut dyn TableLike, ManageError> {
+    let mut table: &mut dyn TableLike = doc.as_table_mut();
+    for (i, seg) in path.iter().enumerate() {
+        let implicit = i + 1 < path.len();
+        let item = table.entry(seg).or_insert_with(|| {
+            let mut t = Table::new();
+            t.set_implicit(implicit);
+            Item::Table(t)
+        });
+        if !item.is_table_like() {
+            return Err(ManageError::NotATable(path[..=i].join(".")));
+        }
+        table = item.as_table_like_mut().expect("checked");
+    }
+    Ok(table)
+}
+
+/// Sets `path` to `value`, keeping the key's comments and the rest of the
+/// document. A table key or an unknown key is an error.
+pub fn set(doc: &mut DocumentMut, path: &[String], value: Value) -> Result<(), ManageError> {
+    match kind_of(path) {
+        None => return Err(ManageError::UnknownKey(path.join("."))),
+        Some(Kind::Table) => {
+            return Err(ManageError::BadValue(format!(
+                "{} is a table; set its keys",
+                path.join(".")
+            )))
+        }
+        Some(_) => {}
+    }
+    let (leaf, parents) = path.split_last().expect("parse_key refuses an empty key");
+    let table = table_at(doc, parents)?;
+    match table.get_mut(leaf).and_then(Item::as_value_mut) {
+        Some(old) => {
+            let decor = old.decor().clone();
+            *old = value;
+            *old.decor_mut() = decor;
+        }
+        None => {
+            table.insert(leaf, Item::Value(value));
+        }
+    }
+    Ok(())
+}
+
+/// Removes `path`: a key, or a whole table. Absent: `NothingToRemove`.
+pub fn unset(doc: &mut DocumentMut, path: &[String]) -> Result<(), ManageError> {
+    if kind_of(path).is_none() {
+        return Err(ManageError::UnknownKey(path.join(".")));
+    }
+    let (leaf, parents) = path.split_last().expect("parse_key refuses an empty key");
+    let mut table: &mut dyn TableLike = doc.as_table_mut();
+    for seg in parents {
+        table = match table.get_mut(seg).and_then(Item::as_table_like_mut) {
+            Some(t) => t,
+            None => return Err(ManageError::NothingToRemove(path.join("."))),
+        };
+    }
+    if table.remove(leaf).is_none() {
+        return Err(ManageError::NothingToRemove(path.join(".")));
+    }
+    Ok(())
 }

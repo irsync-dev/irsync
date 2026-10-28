@@ -23,7 +23,7 @@ pub fn parse(s: &str) -> Result<Duration, ConfigError> {
 pub fn format(d: Duration) -> String {
     let secs = d.as_secs();
     for (unit, mult) in [('d', 86400), ('h', 3600), ('m', 60)] {
-        if secs != 0 && secs % mult == 0 {
+        if secs != 0 && secs.is_multiple_of(mult) {
             return format!("{}{unit}", secs / mult);
         }
     }

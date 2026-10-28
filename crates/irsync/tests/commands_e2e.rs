@@ -1010,3 +1010,118 @@ fn list_covers_the_config_and_split_files() {
         format!("{id}\n")
     );
 }
+
+#[test]
+fn set_with_a_bad_value_leaves_the_file_untouched() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let config = cfg.join("irsync.toml");
+    std::fs::write(&config, "[client]\nparallel = 4\n").unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    for (args, needle) in [
+        (
+            &["config", "set", "hosts.home.endpoint_id", "nope"][..],
+            "hosts.home.endpoint_id",
+        ),
+        (
+            &["config", "set", "exports.p.path", "./x"],
+            "exports.p.path",
+        ),
+        (
+            &["config", "set", "client.parallel", "x"],
+            "client.parallel",
+        ),
+        (&["config", "set", "daemon.nope", "1"], "daemon.nope"),
+        (
+            &["config", "set", "hosts.all.endpoint_id", &id],
+            "hosts.all.endpoint_id",
+        ),
+        (&["config", "set", "hosts.home", "1"], "hosts.home"),
+        (&["config", "set", "client.parallel"], "client.parallel"),
+        (&["config", "unset", "client.reconnect"], "client.reconnect"),
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(needle), "{args:?}: {err}");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "[client]\nparallel = 4\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn set_unset_and_the_nouns_share_one_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    let p = home.join("p").to_str().unwrap().to_string();
+    ok(&home, &["config", "set", "exports.p.path", &p]);
+    ok(&home, &["config", "set", "exports.p.rw", &id]);
+    assert_eq!(
+        ok(&home, &["grant", "list", "p"]),
+        format!("p:\n    rw: {id}\n")
+    );
+    ok(&home, &["config", "set", "all.rw"]);
+    assert!(ok(&home, &["config", "get", "all.rw"]).is_empty());
+    assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
+        .unwrap()
+        .contains("rw = []"));
+    ok(
+        &home,
+        &["config", "set", "daemon.listen", "127.0.0.1:1", "[::1]:1"],
+    );
+    assert_eq!(
+        ok(&home, &["config", "get", "daemon.listen"]),
+        "127.0.0.1:1\n[::1]:1\n"
+    );
+    ok(&home, &["config", "set", "client.reconnect", "2h"]);
+    assert_eq!(ok(&home, &["config", "get", "client.reconnect"]), "2h\n");
+    ok(&home, &["config", "unset", "exports.p"]);
+    assert_eq!(ok(&home, &["export", "list"]), "");
+    // A hosts table kept in a split file is refused for set and unset too.
+    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    for args in [
+        &["config", "set", "hosts.laptop.endpoint_id", &id][..],
+        &["config", "unset", "hosts.laptop"],
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("hosts are kept in"),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn dotted_names_round_trip_quoted() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("w")).unwrap();
+    let w = home.join("w").to_str().unwrap().to_string();
+    ok(
+        &home,
+        &["config", "set", "exports.\"www.example.com\".path", &w],
+    );
+    let list = ok(&home, &["config", "list"]);
+    assert!(
+        list.contains(&format!("exports.\"www.example.com\".path = {w:?}")),
+        "{list}"
+    );
+    assert_eq!(
+        ok(
+            &home,
+            &["config", "get", "exports.\"www.example.com\".path"]
+        ),
+        format!("{w}\n")
+    );
+    assert!(ok(&home, &["export", "list"]).starts_with("www.example.com: "));
+}

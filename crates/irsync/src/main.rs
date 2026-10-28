@@ -807,6 +807,17 @@ fn doc_for(
     Ok(manage::load_doc(owner.unwrap_or(&paths.config))?)
 }
 
+/// A `hosts.*`, `exports.*` or `all.*` key is refused when a split file
+/// owns the table, like the nouns.
+fn config_editable(paths: &Paths, key: &[String]) -> anyhow::Result<()> {
+    let table = match key.first().map(String::as_str) {
+        Some("hosts") => manage::Table::Hosts,
+        Some("exports") | Some("all") => manage::Table::Exports,
+        _ => return Ok(()),
+    };
+    Ok(manage::ensure_editable(paths, table)?)
+}
+
 fn run_config(c: &ConfigArgs) -> i32 {
     use irsync::manage::config::{self as cfg, Got};
     let paths = file_paths(&c.files);
@@ -859,10 +870,31 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ConfigCmd::Set { .. } => finish("config set", Err(anyhow::anyhow!("not implemented yet"))),
-        ConfigCmd::Unset { .. } => {
-            finish("config unset", Err(anyhow::anyhow!("not implemented yet")))
-        }
+        ConfigCmd::Set { key, values } => finish(
+            "config set",
+            (|| {
+                let path = cfg::parse_key(key)?;
+                let kind =
+                    cfg::kind_of(&path).ok_or_else(|| anyhow::anyhow!("unknown key {key:?}"))?;
+                config_editable(&paths, &path)?;
+                let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
+                let mut doc = manage::load_doc(&paths.config)?;
+                cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
+                manage::save_config(&paths.config, &doc).with_context(|| key.to_string())?;
+                Ok(())
+            })(),
+        ),
+        ConfigCmd::Unset { key } => finish(
+            "config unset",
+            (|| {
+                let path = cfg::parse_key(key)?;
+                config_editable(&paths, &path)?;
+                let mut doc = manage::load_doc(&paths.config)?;
+                cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
+                manage::save_config(&paths.config, &doc).with_context(|| key.to_string())?;
+                Ok(())
+            })(),
+        ),
     }
 }
 

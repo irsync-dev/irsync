@@ -123,3 +123,70 @@ fn durations_format_in_the_largest_even_unit() {
     assert_eq!(format(Duration::from_secs(0)), "0s");
     assert_eq!(format(Duration::from_secs(7200)), "2h");
 }
+
+#[test]
+fn values_are_typed_by_kind() {
+    use irsync::manage::config::parse_value;
+    let v = |k, vals: &[&str]| {
+        parse_value(k, &vals.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .map(|v| v.to_string().trim().to_string())
+    };
+    assert_eq!(v(Kind::Bool, &["true"]).unwrap(), "true");
+    assert_eq!(v(Kind::Int, &["8"]).unwrap(), "8");
+    assert_eq!(v(Kind::Duration, &["30m"]).unwrap(), "\"30m\"");
+    assert_eq!(
+        v(Kind::AddrArray, &["a:1", "b:2"]).unwrap(),
+        "[\"a:1\", \"b:2\"]"
+    );
+    assert_eq!(v(Kind::StrArray, &[]).unwrap(), "[]");
+    assert_eq!(v(Kind::Id, &[&id()]).unwrap(), format!("{:?}", id()));
+    assert_eq!(v(Kind::Path, &["/x"]).unwrap(), "\"/x\"");
+    for (kind, vals) in [
+        (Kind::Bool, &["yes"][..]),
+        (Kind::Int, &["x"]),
+        (Kind::Duration, &["5x"]),
+        (Kind::Bool, &[]),
+        (Kind::Bool, &["true", "false"]),
+        (Kind::Id, &["nope"]),
+        (Kind::AddrArray, &["nope"]),
+        (Kind::Url, &["not a url"]),
+        (Kind::Table, &["x"]),
+    ] {
+        assert!(v(kind, vals).is_err(), "{kind:?} {vals:?}");
+    }
+}
+
+#[test]
+fn set_and_unset_edit_the_document_and_keep_the_rest() {
+    use irsync::manage::config::{parse_value, set, unset};
+    use irsync::manage::ManageError;
+    let mut d = doc("# keep me\n[client]\nparallel = 4   # inline\n");
+    let val = |k, s: &str| parse_value(k, &[s.to_string()]).unwrap();
+    set(&mut d, &p("client.parallel"), val(Kind::Int, "8")).unwrap();
+    set(&mut d, &p("hosts.home.endpoint_id"), val(Kind::Id, &id())).unwrap();
+    set(
+        &mut d,
+        &p("daemon.discovery.mdns"),
+        val(Kind::Bool, "false"),
+    )
+    .unwrap();
+    assert_eq!(
+        d.to_string(),
+        format!(
+            "# keep me\n[client]\nparallel = 8   # inline\n\n[hosts.home]\nendpoint_id = \"{}\"\n\n[daemon.discovery]\nmdns = false\n",
+            id()
+        )
+    );
+    unset(&mut d, &p("client.parallel")).unwrap();
+    unset(&mut d, &p("hosts.home")).unwrap();
+    let text = d.to_string();
+    assert!(
+        !text.contains("parallel") && !text.contains("hosts"),
+        "{text}"
+    );
+    assert!(matches!(
+        unset(&mut d, &p("client.parallel")),
+        Err(ManageError::NothingToRemove(_))
+    ));
+    assert!(set(&mut d, &p("hosts.home"), toml_edit::Value::from(1)).is_err());
+}

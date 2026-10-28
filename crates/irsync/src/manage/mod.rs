@@ -60,6 +60,8 @@ pub enum ManageError {
     BadKey(String),
     #[error("unknown key {0:?}")]
     UnknownKey(String),
+    #[error("{0}")]
+    BadValue(String),
     #[error("{table} are kept in {}; irsync edits irsync.toml only: move the [{table}] table into irsync.toml, or edit {0} by hand", file.display())]
     SplitFile { table: &'static str, file: PathBuf },
 }
