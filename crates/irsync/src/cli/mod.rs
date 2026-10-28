@@ -130,7 +130,7 @@ fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
 pub enum Command {
     /// Run the daemon.
     ///
-    /// Serves the exports in exports.toml to the peers they are granted to
+    /// Serves the exports in the config file to the peers they are granted to
     /// until interrupted, and prints its EndpointId at start. Logs go to
     /// stderr at info level (-v: debug, -vv: trace, -q: errors only;
     /// RUST_LOG overrides).
@@ -321,7 +321,7 @@ pub enum GrantCmd {
     Add {
         /// The export's name, or `all` for every export.
         export: String,
-        /// An alias from hosts.toml, an EndpointId, a public key line or a
+        /// A host alias, an EndpointId, a public key line or a
         /// .pub file.
         who: String,
         /// Read-only access (default: read-write).
@@ -474,7 +474,7 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
 
 #[derive(Debug, clap::Args)]
 pub struct SyncArgs {
-    /// Local paths or `HOST:EXPORT/PATH` (HOST: an alias from hosts.toml or
+    /// Local paths or `HOST:PATH` (HOST: a host alias or
     /// an EndpointId; EXPORT: a directory the daemon shares by name).
     /// Exactly one side is remote; several sources only when pushing. A
     /// trailing `/` copies a directory's contents, none the directory

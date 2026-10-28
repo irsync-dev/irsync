@@ -91,7 +91,13 @@ fn defaults_for_settings_keys() {
             .display()
             .to_string()])
     );
-    assert_eq!(default_of(&p("client.parallel")), None);
+    // The [client] keys the README lists with defaults: the effective ones.
+    assert_eq!(default_of(&p("client.parallel")), Some(vec!["32".into()]));
+    assert_eq!(default_of(&p("client.reconnect")), Some(vec!["1d".into()]));
+    assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
+    assert_eq!(default_of(&p("client.mdns")), Some(vec!["true".into()]));
+    assert_eq!(default_of(&p("client.relay")), None);
+    assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
     let _ = id();
 }
@@ -189,4 +195,28 @@ fn set_and_unset_edit_the_document_and_keep_the_rest() {
         Err(ManageError::NothingToRemove(_))
     ));
     assert!(set(&mut d, &p("hosts.home"), toml_edit::Value::from(1)).is_err());
+}
+
+#[test]
+fn get_and_list_ignore_comments_and_layout() {
+    let d = doc(
+        "[client]\nparallel = 4 # four streams\n[daemon]\nlisten = [\n  \"a:1\", # v4\n  \"b:2\",\n] # both\nportmap = false # no\n",
+    );
+    assert_eq!(get(&d, &p("client.parallel")).unwrap(), lines(&["4"]));
+    assert_eq!(
+        get(&d, &p("daemon.listen")).unwrap(),
+        lines(&["a:1", "b:2"])
+    );
+    assert_eq!(
+        get(&d, &p("daemon")).unwrap(),
+        lines(&["listen = [\"a:1\", \"b:2\"]", "portmap = false"])
+    );
+    assert_eq!(
+        list(&d),
+        vec![
+            "client.parallel = 4",
+            "daemon.listen = [\"a:1\", \"b:2\"]",
+            "daemon.portmap = false",
+        ]
+    );
 }

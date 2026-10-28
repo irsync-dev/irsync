@@ -131,4 +131,15 @@ fn ensure_editable_refuses_a_table_a_split_file_owns() {
         e.contains("exports are kept in") && e.contains("exports.toml"),
         "{e}"
     );
+    assert!(e.contains("[exports] and [all]"), "{e}");
+    // The message names the config file actually in use, not a fixed name.
+    let paths = Paths::resolve(Some(&d.path().join("daemon.toml")));
+    let e = ensure_editable(&paths, Table::Hosts)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains(&format!("into {}", d.path().join("daemon.toml").display()))
+            && !e.contains("irsync.toml"),
+        "{e}"
+    );
 }

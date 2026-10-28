@@ -78,6 +78,12 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
         ["identity"] => one(s.identity.display().to_string()),
+        // The effective [client] defaults, as the README lists them.
+        ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
+        ["client", "reconnect"] => one(duration::format(
+            crate::session::reconnect::ReconnectOpts::default().max,
+        )),
+        ["client", "dht"] | ["client", "mdns"] => one("true".to_string()),
         ["state_dir"] => one(s.state_dir.display().to_string()),
         ["daemon", "identity"] => one(s.daemon.identity.display().to_string()),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
@@ -107,8 +113,31 @@ pub enum Got {
     Unset,
 }
 
-/// A value in TOML spelling, without surrounding whitespace.
+/// Drops comments and whitespace decor from a value and its elements, and
+/// re-lays out arrays and inline tables on one line.
+fn strip(v: &mut Value) {
+    *v.decor_mut() = toml_edit::Decor::default();
+    match v {
+        Value::Array(a) => {
+            for e in a.iter_mut() {
+                strip(e);
+            }
+            a.fmt();
+        }
+        Value::InlineTable(t) => {
+            for (_, e) in t.iter_mut() {
+                strip(e);
+            }
+            t.fmt();
+        }
+        _ => {}
+    }
+}
+
+/// A value in TOML spelling: no comments, no layout, one line.
 fn repr(v: &Value) -> String {
+    let mut v = v.clone();
+    strip(&mut v);
     v.to_string().trim().to_string()
 }
 

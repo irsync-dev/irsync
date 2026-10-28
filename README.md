@@ -117,7 +117,7 @@ state_dir = "~/.local/state/irsync"
 
 [client]                     # defaults for every host
 parallel = 32
-reconnect = "24h"
+reconnect = "1d"
 dht = true
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays

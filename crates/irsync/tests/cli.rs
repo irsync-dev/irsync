@@ -642,3 +642,24 @@ fn config_noun_parses() {
     assert!(Args::try_parse_from(["irsync", "config"]).is_err());
     assert!(Args::try_parse_from(["irsync", "config", "get"]).is_err());
 }
+
+#[test]
+fn help_no_longer_names_the_old_files_as_the_ones_edited() {
+    use clap::CommandFactory;
+    fn render(cmd: &mut clap::Command, out: &mut String) {
+        out.push_str(&cmd.render_long_help().to_string());
+        for sub in cmd.get_subcommands_mut() {
+            render(sub, out);
+        }
+    }
+    let mut help = String::new();
+    render(&mut Args::command(), &mut help);
+    for stale in [
+        "in exports.toml",
+        "from hosts.toml",
+        "edits hosts.toml",
+        "edits exports.toml",
+    ] {
+        assert!(!help.contains(stale), "{stale:?} still in help");
+    }
+}

@@ -62,8 +62,14 @@ pub enum ManageError {
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
-    #[error("{table} are kept in {}; irsync edits irsync.toml only: move the [{table}] table into irsync.toml, or edit {0} by hand", file.display())]
-    SplitFile { table: &'static str, file: PathBuf },
+    #[error("{table} are kept in {}; irsync edits {} only: move the {tables} into {1}, or edit {0} by hand", file.display(), config.display())]
+    SplitFile {
+        table: &'static str,
+        /// `[hosts] table` or `[exports] and [all] tables`.
+        tables: &'static str,
+        file: PathBuf,
+        config: PathBuf,
+    },
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -141,14 +147,16 @@ pub enum Table {
 /// `table`, editing is refused and the user told to move the table or
 /// edit the split file by hand.
 pub fn ensure_editable(paths: &Paths, table: Table) -> Result<(), ManageError> {
-    let (word, file) = match table {
-        Table::Hosts => ("hosts", &paths.hosts),
-        Table::Exports => ("exports", &paths.exports),
+    let (word, tables, file) = match table {
+        Table::Hosts => ("hosts", "[hosts] table", &paths.hosts),
+        Table::Exports => ("exports", "[exports] and [all] tables", &paths.exports),
     };
     if file.exists() {
         return Err(ManageError::SplitFile {
             table: word,
+            tables,
             file: file.clone(),
+            config: paths.config.clone(),
         });
     }
     Ok(())

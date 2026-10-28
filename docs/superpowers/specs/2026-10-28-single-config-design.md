@@ -139,9 +139,12 @@ The fourth noun. `KEY` is a dotted TOML path: `identity`,
   keys as `KEY = VALUE` lines in file order, one per line, with the
   dotted path relative to the table (`endpoint_id = "k51..."`, `address =
   ["192.168.1.10:4000"]`). A settings key that is not set but has a
-  default prints the default (`config get daemon.idle_timeout` → `30m`);
-  a key that is not set and has no default (`client.parallel`,
-  `hosts.nope`) prints nothing and exits 1, like git. An unknown key
+  default prints the default (`config get daemon.idle_timeout` → `30m`;
+  the `[client]` keys print the effective defaults the README lists,
+  `parallel` 32, `reconnect` 1d, `dht` and `mdns` true: revised at the
+  branch review, the first text had them exit 1); a key that is not set
+  and has no default (`client.relay`, `hosts.nope`) prints nothing and
+  exits 1, like git. An unknown key
   (`daemon.nope`) is an error.
 - `irsync config set KEY VALUE...`: sets the key. The value is read in the
   key's type: booleans as `true`/`false`, integers, durations as the file
