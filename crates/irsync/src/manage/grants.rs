@@ -1,11 +1,17 @@
 //! Edits of the grant arrays in `exports.toml` for `grant add` and
 //! `grant remove`: the `[all]` table and the `rw`/`ro` arrays of each
-//! export. All functions are pure on a parsed document; loading and
-//! saving belong to the caller.
+//! export. The editing functions are pure on a parsed document; loading
+//! and saving belong to the caller. The `list_*` reporters behind
+//! `grant list` read the parsed files.
 
+use super::show::grant_lines;
 use super::{check_comment, ManageError, PeerSpec};
+use crate::authz::{Access, Snapshot};
+use crate::config::exports::Exports;
+use crate::config::hosts::Hosts;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
+use std::fmt::Write;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
@@ -177,4 +183,62 @@ pub fn grant_remove(
         return Err(ManageError::NothingToRemove(what));
     }
     Ok(n)
+}
+
+/// `NAME:` and the grant lines of one table; the header always.
+fn block(name: &str, rw: &[String], ro: &[String], hosts: &Hosts) -> String {
+    let mut out = format!("{name}:\n");
+    grant_lines(&mut out, rw, ro, hosts);
+    out
+}
+
+/// Every grant: the `all:` block, then one block per export in name order.
+pub fn list_all(exports: &Exports, hosts: &Hosts) -> String {
+    let mut out = block("all", &exports.rw, &exports.ro, hosts);
+    for (name, e) in &exports.exports {
+        out.push_str(&block(name, &e.rw, &e.ro, hosts));
+    }
+    out
+}
+
+/// The block of one export, or of `all`; `None` when no such export.
+pub fn list_export(exports: &Exports, hosts: &Hosts, name: &str) -> Option<String> {
+    if name == "all" {
+        return Some(block("all", &exports.rw, &exports.ro, hosts));
+    }
+    let e = exports.exports.get(name)?;
+    Some(block(name, &e.rw, &e.ro, hosts))
+}
+
+/// `{label}:` then one `    NAME: rw|ro` line per export `id` may reach:
+/// ` (all)` when the access comes from `[all]` rather than the export's
+/// own entry, ` (read_only export)` when a read-write grant is capped by
+/// the export's `read_only` flag.
+pub fn list_peer(exports: &Exports, hosts: &Hosts, label: &str, id: &EndpointId) -> String {
+    let grants = Snapshot::from_files(hosts, exports).grants(id);
+    let mut out = format!("{label}:\n");
+    for (name, e) in &exports.exports {
+        let (access, inherited) = match grants.exports.get(name) {
+            Some(a) => (*a, false),
+            None => match grants.all {
+                Some(a) => (a, true),
+                None => continue,
+            },
+        };
+        let capped = e.read_only && access == Access::ReadWrite;
+        let mode = if capped || access == Access::ReadOnly {
+            "ro"
+        } else {
+            "rw"
+        };
+        let _ = write!(out, "    {name}: {mode}");
+        if inherited {
+            out.push_str(" (all)");
+        }
+        if capped {
+            out.push_str(" (read_only export)");
+        }
+        out.push('\n');
+    }
+    out
 }

@@ -445,3 +445,65 @@ fn export_list_prints_the_export_blocks_of_show() {
         "{list_out}"
     );
 }
+
+#[test]
+fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    std::fs::create_dir_all(home.join("q")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    for args in [
+        vec!["host", "add", "laptop", &id],
+        vec!["export", "add", &format!("p:{}", home.join("p").display())],
+        vec![
+            "export",
+            "add",
+            &format!("q:{}", home.join("q").display()),
+            "--ro",
+        ],
+        vec!["grant", "add", "p", "laptop"],
+        vec!["grant", "add", "q", "laptop"],
+    ] {
+        let o = irsync(&home, &args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    let run = |args: &[&str]| {
+        let o = irsync(&home, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let all = run(&["grant", "list"]);
+    assert!(
+        all.starts_with("all:\n")
+            && all.contains("p:\n    rw: laptop (")
+            && all.contains("q:\n    rw: laptop ("),
+        "{all}"
+    );
+    assert_eq!(
+        run(&["grant", "list", "p"]),
+        format!("p:\n    rw: laptop ({id})\n")
+    );
+    assert_eq!(
+        run(&["grant", "list", "laptop"]),
+        format!("laptop ({id}):\n    p: rw\n    q: ro (read_only export)\n")
+    );
+    assert!(run(&["grant", "list", &id]).starts_with(&format!("{id}:\n")));
+    let o = irsync(&home, &["grant", "list", "ghost"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success()
+            && err.contains("\"ghost\" is not an export, an alias in")
+            && err.contains("hosts.toml")
+            && err.contains("EndpointId"),
+        "{err}"
+    );
+}

@@ -413,6 +413,15 @@ fn nouns_share_add_remove_list() {
         parse(&["export", "list"]).cmd,
         Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::List)
     ));
+    assert!(matches!(
+        parse(&["grant", "list"]).cmd,
+        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::List { target: None })
+    ));
+    assert!(matches!(
+        parse(&["grant", "list", "photos"]).cmd,
+        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::List { target: Some(ref t) } if t == "photos")
+    ));
+    assert!(Args::try_parse_from(["irsync", "grant", "list", "a", "b"]).is_err());
     // host add keeps every flag
     let a = parse(&[
         "host",

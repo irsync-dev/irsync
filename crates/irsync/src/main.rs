@@ -795,6 +795,35 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 Ok(())
             })(),
         ),
+        GrantCmd::List { target } => finish(
+            "grant list",
+            (|| {
+                let hosts = Hosts::load(&paths.hosts)?;
+                let exports = Exports::load(&paths.exports)?;
+                let text = match target.as_deref() {
+                    None => manage::grants::list_all(&exports, &hosts),
+                    Some(t) => match manage::grants::list_export(&exports, &hosts, t) {
+                        Some(block) => block,
+                        None => {
+                            let Ok(id) = hosts.resolve_peer(t) else {
+                                bail!(
+                                    "{t:?} is not an export, an alias in {} or an EndpointId",
+                                    paths.hosts.display()
+                                );
+                            };
+                            let label = if hosts.get(t).is_some() {
+                                format!("{t} ({id})")
+                            } else {
+                                id.to_string()
+                            };
+                            manage::grants::list_peer(&exports, &hosts, &label, &id)
+                        }
+                    },
+                };
+                print!("{text}");
+                Ok(())
+            })(),
+        ),
     }
 }
 

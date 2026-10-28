@@ -1,5 +1,6 @@
 use irsync::config::exports::Exports;
-use irsync::manage::grants::{grant_add, grant_remove};
+use irsync::config::hosts::Hosts;
+use irsync::manage::grants::{grant_add, grant_remove, list_all, list_export, list_peer};
 use irsync::manage::{ManageError, PeerSpec};
 use std::path::Path;
 use toml_edit::DocumentMut;
@@ -169,4 +170,62 @@ fn grant_add_to_all_creates_the_all_table() {
         "{s}"
     );
     assert!(Exports::parse(&s, Path::new("e")).unwrap().rw == vec![id(1).to_string()]);
+}
+
+fn fixture() -> (Hosts, Exports) {
+    let h = Hosts::parse(
+        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+        Path::new("h"),
+    )
+    .unwrap();
+    let e = Exports::parse(
+        &format!(
+            "[all]\nrw = [\"laptop\"]\n[exports.backups]\npath = \"/b\"\n[exports.docs]\npath = \"/d\"\nread_only = true\nrw = [\"laptop\"]\n[exports.photos]\npath = \"/p\"\nro = [\"{}\"]\n",
+            id(2)
+        ),
+        Path::new("e"),
+    )
+    .unwrap();
+    (h, e)
+}
+
+#[test]
+fn list_all_names_every_export_and_the_all_table() {
+    let (h, e) = fixture();
+    let s = list_all(&e, &h);
+    assert_eq!(
+        s,
+        format!(
+            "all:\n    rw: laptop ({l})\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
+            l = id(1),
+            o = id(2)
+        )
+    );
+    assert_eq!(
+        list_export(&e, &h, "docs").unwrap(),
+        format!("docs:\n    rw: laptop ({})\n", id(1))
+    );
+    assert_eq!(
+        list_export(&e, &h, "all").unwrap(),
+        format!("all:\n    rw: laptop ({})\n", id(1))
+    );
+    assert!(list_export(&e, &h, "nope").is_none());
+}
+
+#[test]
+fn list_peer_marks_inherited_and_capped_grants() {
+    let (h, e) = fixture();
+    let s = list_peer(&e, &h, &format!("laptop ({})", id(1)), &id(1));
+    assert_eq!(
+        s,
+        format!(
+            "laptop ({}):\n    backups: rw (all)\n    docs: ro (read_only export)\n    photos: rw (all)\n",
+            id(1)
+        )
+    );
+    assert_eq!(
+        list_peer(&e, &h, &id(2).to_string(), &id(2)),
+        format!("{}:\n    photos: ro\n", id(2))
+    );
+    assert_eq!(list_peer(&e, &h, "x", &id(3)), "x:\n");
 }

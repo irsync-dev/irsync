@@ -262,6 +262,12 @@ pub enum GrantCmd {
         /// `all` for every peer.
         who: String,
     },
+    /// List grants: all of them, one export's, or what one peer may reach.
+    List {
+        /// An export's name (`all`: the every-export grants), or a peer (an
+        /// alias or an EndpointId); nothing lists every grant.
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
