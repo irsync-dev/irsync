@@ -60,12 +60,6 @@ User-visible, left as is on purpose; revisit if they bite.
 - [ ] `config get` prints a set path verbatim (`~/...` stays `~/...`); only
       the daemon and client expand it.
 
-## Housekeeping
-
-- [ ] The stress harness writes the daemon's exports to a split
-      `exports.toml` (`crates/stress/src/daemon.rs`, `write_config`). It
-      works, but one `irsync.toml` would match the documented layout.
-
 ## fileset: deferred findings never triaged
 
 `docs/superpowers/plans/2026-10-19-fileset-deferred.md` lists the minors

@@ -34,11 +34,10 @@ pub struct DaemonConfig<'a> {
     pub client_id: &'a str,
 }
 
-/// The files [`write_config`] wrote.
+/// The file [`write_config`] wrote.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DaemonFiles {
     pub config: PathBuf,
-    pub exports: PathBuf,
 }
 
 /// A path as a quoted TOML string.
@@ -49,9 +48,9 @@ fn toml_path(p: &Path) -> Result<String> {
     Ok(toml::Value::String(s.to_string()).to_string())
 }
 
-/// Writes `<config_dir>/irsync.toml` and `<config_dir>/exports.toml`
-/// (export `data`, read-write for the client), creates `<config_dir>/state`,
-/// and returns both paths.
+/// Writes `<config_dir>/irsync.toml` with the daemon settings and one
+/// export, `data`, read-write for the client; creates `<config_dir>/state`;
+/// returns the file's path.
 pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
     let dir = c.config_dir;
     let state = dir.join("state");
@@ -65,23 +64,18 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
          [daemon.discovery]\n\
          dht = false\n\
          dns = false\n\
-         mdns = false\n",
+         mdns = false\n\
+         [exports.data]\n\
+         path = {}\n\
+         rw = [{}]\n",
         toml_path(&state)?,
         toml_path(&dir.join("daemon_ed25519"))?,
+        toml_path(c.export_path)?,
+        toml::Value::String(c.client_id.to_string()),
     );
     let config = dir.join("irsync.toml");
     std::fs::write(&config, settings).with_context(|| format!("writing {}", config.display()))?;
-    let exports = dir.join("exports.toml");
-    std::fs::write(
-        &exports,
-        format!(
-            "[exports.data]\npath = {}\nrw = [{}]\n",
-            toml_path(c.export_path)?,
-            toml::Value::String(c.client_id.to_string())
-        ),
-    )
-    .with_context(|| format!("writing {}", exports.display()))?;
-    Ok(DaemonFiles { config, exports })
+    Ok(DaemonFiles { config })
 }
 
 /// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private
@@ -297,8 +291,7 @@ enum StartFailure {
 }
 
 impl Daemon {
-    /// Spawns `<irsync> daemon --config <config> --listen 127.0.0.1:0`
-    /// (the `exports.toml` beside the config is read as a split file) and
+    /// Spawns `<irsync> daemon --config <config> --listen 127.0.0.1:0` and
     /// waits up to `timeout` for its startup lines. A child that exits first
     /// is reported at once with its status and the tail of its stderr.
     pub fn start(
@@ -491,7 +484,6 @@ mod tests {
     fn dev_null() -> DaemonFiles {
         DaemonFiles {
             config: PathBuf::from("/dev/null"),
-            exports: PathBuf::from("/dev/null"),
         }
     }
 
@@ -515,9 +507,9 @@ mod tests {
             files,
             DaemonFiles {
                 config: cfg.join("irsync.toml"),
-                exports: cfg.join("exports.toml"),
             }
         );
+        assert!(!cfg.join("exports.toml").exists(), "one file, no split");
         let read =
             |p: &Path| -> toml::Table { std::fs::read_to_string(p).unwrap().parse().unwrap() };
         let s = |p: PathBuf| toml::Value::String(p.to_str().unwrap().to_string());
@@ -530,10 +522,9 @@ mod tests {
         for k in ["dht", "dns", "mdns"] {
             assert_eq!(d["discovery"][k].as_bool(), Some(false));
         }
-        let exports = read(&files.exports);
-        assert_eq!(exports["exports"]["data"]["path"], s(export));
+        assert_eq!(parsed["exports"]["data"]["path"], s(export));
         assert_eq!(
-            exports["exports"]["data"]["rw"],
+            parsed["exports"]["data"]["rw"],
             toml::Value::Array(vec![toml::Value::String("abc".into())])
         );
         assert!(cfg.join("state").is_dir());
