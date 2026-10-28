@@ -162,7 +162,7 @@ fn describe_close(code: u32, reason: &str, export: &str, client: &EndpointId) ->
         1 => format!(
             "the daemon rejected this client's key ({reason}): it is not allowed to use \
              export {export:?}. On the daemon's machine run: irsync grant add {export} {client} \
-             (irsync id prints this id)"
+             (irsync id show prints this id)"
         ),
         _ => format!("the daemon closed the connection: {reason}"),
     }
@@ -377,7 +377,7 @@ mod tests {
             msg.contains(&format!("irsync grant add photos {id}")),
             "{msg}"
         );
-        assert!(msg.contains("irsync id"), "{msg}");
+        assert!(msg.contains("irsync id show"), "{msg}");
         let other = describe_close(2, "hello timeout", "photos", &id);
         assert!(
             other.contains("hello timeout") && !other.contains("grant"),

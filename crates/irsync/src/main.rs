@@ -12,7 +12,7 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, Args, Command, DaemonArgs, Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs,
-    GrantCmd, HostAddArgs, HostArgs, HostCmd, IndexArgs, LogArgs, SyncOptions,
+    GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd, IndexArgs, LogArgs, SyncOptions,
 };
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
@@ -41,9 +41,7 @@ fn main() {
         Some(Command::Host(h)) => std::process::exit(run_host(h)),
         Some(Command::Export(e)) => std::process::exit(run_export(e)),
         Some(Command::Grant(g)) => std::process::exit(run_grant(g)),
-        Some(Command::Id { daemon, all, files }) => {
-            std::process::exit(run_id(*daemon, *all, files))
-        }
+        Some(Command::Id(i)) => std::process::exit(run_id(i)),
         Some(Command::Show { files }) => std::process::exit(run_show(files)),
         None => {
             let opts = SyncOptions::from_args(&args);
@@ -675,10 +673,6 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             settings.daemon.listen = d.listen.clone();
         }
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
-        if d.show_id {
-            println!("{}", irsync::daemon::show_id(&settings, &pass)?);
-            return Ok(());
-        }
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let shutdown = tokio_util::sync::CancellationToken::new();
@@ -891,11 +885,12 @@ fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::Se
     Ok(secret)
 }
 
-fn run_id(daemon: bool, all: bool, f: &FilesArgs) -> i32 {
+fn run_id(i: &IdArgs) -> i32 {
+    let IdCmd::Show { daemon, all } = i.cmd;
     finish(
-        "id",
+        "id show",
         (|| {
-            let settings = Settings::load(&file_paths(f).config)?;
+            let settings = Settings::load(&file_paths(&i.files).config)?;
             let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
                 let secret = identity_of(path, comment)?;
                 println!("{}", irsync::identity::public_key_line(&secret, comment));

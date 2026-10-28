@@ -428,14 +428,6 @@ fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<Sec
     Ok(secret)
 }
 
-/// The daemon's EndpointId as a string, generating the identity if missing.
-/// `pass` unlocks an encrypted identity.
-pub fn show_id(settings: &Settings, pass: &PassphraseSource) -> Result<String> {
-    Ok(load_or_generate_identity(&settings.daemon.identity, pass)?
-        .public()
-        .to_string())
-}
-
 /// Runs the daemon: grants and exports are read from `paths.hosts` and
 /// `paths.exports` on every connection.
 pub async fn run_from_settings(

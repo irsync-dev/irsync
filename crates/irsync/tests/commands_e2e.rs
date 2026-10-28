@@ -144,7 +144,7 @@ fn host_add_then_grant_add_by_alias_then_list() {
 fn id_generates_and_prints_client_then_daemon_then_both() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let o = irsync(&home, &["id"]);
+    let o = irsync(&home, &["id", "show"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
     let out = String::from_utf8(o.stdout).unwrap();
@@ -153,13 +153,13 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
     assert!(lines[0].starts_with("ssh-ed25519 "));
     let client = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
     assert!(home.join(".config/irsync/id_ed25519").exists());
-    let o = irsync(&home, &["id", "--daemon"]);
+    let o = irsync(&home, &["id", "show", "--daemon"]);
     let daemon = irsync::identity::parse_endpoint_id(
         String::from_utf8(o.stdout).unwrap().lines().nth(1).unwrap(),
     )
     .unwrap();
     assert_ne!(client, daemon);
-    let o = irsync(&home, &["id", "--all"]);
+    let o = irsync(&home, &["id", "show", "--all"]);
     let out = String::from_utf8(o.stdout).unwrap();
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!((lines[0], lines[3]), ("client:", "daemon:"));
@@ -171,16 +171,16 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
         irsync::identity::parse_endpoint_id(lines[5]).unwrap(),
         daemon
     );
-    assert!(!String::from_utf8_lossy(&irsync(&home, &["id"]).stderr).contains("generated"));
+    assert!(!String::from_utf8_lossy(&irsync(&home, &["id", "show"]).stderr).contains("generated"));
 }
 
 #[test]
 fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    assert!(irsync(&home, &["id"]).status.success());
+    assert!(irsync(&home, &["id", "show"]).status.success());
     std::fs::remove_file(home.join(".config/irsync/id_ed25519.pub")).unwrap();
-    let o = irsync(&home, &["id"]);
+    let o = irsync(&home, &["id", "show"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     let lines: Vec<&str> = out.lines().collect();
@@ -283,21 +283,19 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
     use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    assert!(irsync(&home, &["id", "--daemon"]).status.success());
+    assert!(irsync(&home, &["id", "show", "--daemon"]).status.success());
     let key = home.join(".config/irsync/daemon_ed25519");
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read(&key).is_ok() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
         return;
     }
-    for args in [&["id", "--daemon"][..], &["daemon", "--show-id"][..]] {
-        let o = irsync(&home, args);
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            !o.status.success() && err.contains(key.to_str().unwrap()),
-            "{args:?}: {err}"
-        );
-    }
+    let o = irsync(&home, &["id", "show", "--daemon"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains(key.to_str().unwrap()),
+        "{err}"
+    );
     // `export add` needs the daemon identity, and adds nothing without it.
     std::fs::create_dir_all(home.join("p")).unwrap();
     let o = irsync(

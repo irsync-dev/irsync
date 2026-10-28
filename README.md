@@ -30,7 +30,7 @@ time a command needs it and says so on stderr (`generated identity <path>`).
 
 ```sh
 # laptop
-irsync id                              # public key line, then the client EndpointId
+irsync id show                         # public key line, then the client EndpointId
 
 # home server
 irsync export add photos:/srv/photos   # prints the daemon's EndpointId
@@ -45,8 +45,9 @@ irsync -av home:photos/ ~/Photos       # pull: daemon to laptop
 ```
 
 Two strings are copied by hand, one in each direction: the laptop's
-`EndpointId` (the second line of `irsync id`) to the server, and the server's
-(printed by `irsync export add`, `irsync daemon` and `irsync id --daemon`) to
+`EndpointId` (the second line of `irsync id show`) to the server, and the
+server's (printed by `irsync export add`, `irsync daemon` and `irsync id show
+--daemon`) to
 the laptop. The client pins the daemon's `EndpointId`; a mismatch is a hard error.
 There is no trust-on-first-use prompt. The alias is optional: the raw id can
 stand in for it, as in `irsync -av ~/Photos k51qzi5...:photos/`, and `irsync
@@ -72,10 +73,10 @@ Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
 Everything lives in `~/.config/irsync/` and every file is optional: a missing
 file is the same as an empty one. The commands below edit `hosts.toml` and
 `exports.toml` for you, preserving comments; you can also edit them by hand.
-The three management nouns (`host`, `export`, `grant`), `id`, `show` and
-`daemon` accept `--config`, `--hosts` and `--exports` to use other paths; for
-a noun the flags go anywhere after it (`irsync export --exports E add ...` or
-`irsync export add ... --exports E`). A sync takes `--config` and `--hosts`;
+The four nouns (`host`, `export`, `grant`, `id`), `show` and `daemon` accept
+`--config`, `--hosts` and `--exports` to use other paths; for a noun the flags
+go anywhere after it (`irsync export --exports E add ...` or `irsync export
+add ... --exports E`). A sync takes `--config` and `--hosts`;
 `index`, `keygen` and `gc` take none.
 Unknown keys are errors that name the file, table and key.
 
@@ -171,7 +172,7 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync grant add EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
-| `irsync id [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
+| `irsync id show [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
 | `irsync show` | print the file paths, identities, aliases, exports and grants |
 
 A running daemon picks up `host`, `export` and `grant` changes on the next
@@ -233,7 +234,7 @@ irsync-specific:
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 
-Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--show-id] [--listen ADDR]... [-v|-q]`,
+Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--listen ADDR]... [-v|-q]`,
 the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] [-v|-q] ROOT...`, which
 hashes the files under a local root into its index so that a destination
 irsync did not create (a prior rsync, a restore) is reused for renamed and

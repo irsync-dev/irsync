@@ -139,7 +139,7 @@ fn encrypted_identity_via_env_and_file() {
 }
 
 #[test]
-fn daemon_show_id_unlocks_encrypted_identity_from_env_without_tty() {
+fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     let dir = tempfile::tempdir().unwrap();
     let id = dir.path().join("id");
     let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
@@ -159,7 +159,7 @@ fn daemon_show_id_unlocks_encrypted_identity_from_env_without_tty() {
     .unwrap();
     let run = |pass: Option<&str>| {
         let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"));
-        c.args(["daemon", "--show-id", "--config"])
+        c.args(["id", "show", "--daemon", "--config"])
             .arg(&cfg)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(std::process::Stdio::null());
@@ -170,7 +170,8 @@ fn daemon_show_id_unlocks_encrypted_identity_from_env_without_tty() {
     };
     let o = run(Some("s3cret"));
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let shown = parse_endpoint_id(String::from_utf8(o.stdout).unwrap().trim()).unwrap();
+    let out = String::from_utf8(o.stdout).unwrap();
+    let shown = parse_endpoint_id(out.lines().last().unwrap()).unwrap();
     assert_eq!(
         shown.as_bytes(),
         &key.key_data().ed25519().unwrap().public.0

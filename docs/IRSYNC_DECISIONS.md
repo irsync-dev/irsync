@@ -301,7 +301,7 @@ cross-referenced from commit messages and review notes.
 - The v1 config-path environment variable and default-path branches of
   `ClientConfig::load` were untested; host matching was
   case-sensitive (ssh is insensitive); quoted values with spaces unsupported.
-- `irsync daemon --show-id` creates a new identity as a side effect if none
+- `irsync id show --daemon` creates a new identity as a side effect if none
   exists. Two exports sharing one path share one SQLite file via two handles
   (works under WAL; intent undecided).
 

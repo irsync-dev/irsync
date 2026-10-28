@@ -163,22 +163,34 @@ pub enum Command {
     Export(ExportArgs),
     /// Manage grants: who may use which export (edits exports.toml).
     Grant(GrantArgs),
-    /// Print this machine's public key line and EndpointId, generating the
-    /// identity if it does not exist.
-    Id {
-        /// The daemon's identity instead of the client's.
-        #[arg(long, conflicts_with = "all")]
-        daemon: bool,
-        /// Both identities, labelled.
-        #[arg(short = 'a', long)]
-        all: bool,
-        #[command(flatten)]
-        files: FilesArgs,
-    },
+    /// This machine's identities (the client's and the daemon's).
+    Id(IdArgs),
     /// Show the config files, identities, host aliases and exports.
     Show {
         #[command(flatten)]
         files: FilesArgs,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct IdArgs {
+    #[command(subcommand)]
+    pub cmd: IdCmd,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IdCmd {
+    /// Print the public key line and EndpointId of the client (default),
+    /// the daemon, or both; an identity is generated if it does not exist.
+    Show {
+        /// The daemon's identity instead of the client's.
+        #[arg(long, conflicts_with = "all")]
+        daemon: bool,
+        /// Both identities, labelled `client:` and `daemon:`.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
 }
 
@@ -386,10 +398,6 @@ pub struct DaemonArgs {
     /// The exports file (default: exports.toml in the config directory).
     #[arg(long, value_name = "PATH")]
     pub exports: Option<PathBuf>,
-    /// Print the daemon's EndpointId (generating its identity if missing)
-    /// and exit without serving.
-    #[arg(long)]
-    pub show_id: bool,
     /// Read the identity's passphrase from the first line of this file
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]

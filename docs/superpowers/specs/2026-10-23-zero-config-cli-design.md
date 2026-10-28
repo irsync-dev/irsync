@@ -361,6 +361,9 @@ line. Output is for humans; `irsync id` (with `--daemon` or `--all`) and
 
 ### `irsync id [--daemon | -a|--all]`
 
+> Superseded 2026-10-28: `irsync id show [--daemon|--all]`; `daemon
+> --show-id` is gone.
+
 Prints the client identity's public key line, then its EndpointId, on
 stdout, generating the key if needed. This is what a user hands to a daemon
 admin for `irsync allow`. `--daemon` prints the daemon identity's two lines

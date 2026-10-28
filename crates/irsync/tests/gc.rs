@@ -212,7 +212,7 @@ fn keygen_prints_endpoint_id_matching_pub() {
 }
 
 #[test]
-fn daemon_show_id_prints_only_the_id() {
+fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("d.toml");
     std::fs::write(
@@ -225,14 +225,20 @@ fn daemon_show_id_prints_only_the_id() {
     )
     .unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
-        .args(["daemon", "--show-id", "--config"])
+        .args(["id", "show", "--daemon", "--config"])
         .arg(&cfg)
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
-    assert_eq!(out.lines().count(), 1, "{out}");
-    irsync::identity::parse_endpoint_id(out.trim()).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines[0].starts_with("ssh-ed25519 "), "{out}");
+    irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+    assert!(
+        dir.path().join("id").exists(),
+        "generated at the configured path"
+    );
 }
 
 #[tokio::test]

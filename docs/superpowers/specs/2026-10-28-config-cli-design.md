@@ -39,7 +39,7 @@ The quick start becomes:
 
 ```sh
 # laptop
-irsync id                                  # public key line, then the client EndpointId
+irsync id show                             # public key line, then the client EndpointId
 
 # home server
 irsync export add photos:/srv/photos       # prints the daemon's EndpointId
@@ -75,7 +75,8 @@ irsync -av ~/Photos home:photos/
   --daemon`, and the fate of `keygen` are the next round, not this one.
   (Done the same day: `index --daemon` became `export update`; `export
   index` was rejected as ambiguous between exporting an index and
-  indexing an export.)
+  indexing an export. `daemon --show-id` was removed and `id` became a
+  noun: `irsync id show [--daemon|--all]`.)
 - A command that edits `irsync.toml` (`config set`). The settings file is
   untouched.
 - Letting `[all]` carry anything but grants (for example a default

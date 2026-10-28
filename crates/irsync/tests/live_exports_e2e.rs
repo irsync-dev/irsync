@@ -113,7 +113,7 @@ fn add_and_allow_take_effect_without_restart() {
     assert!(warning.contains("no exports defined"), "{warning}");
 
     // 3. The client's id.
-    let o = irsync(&client, &["id"]);
+    let o = irsync(&client, &["id", "show"]);
     assert!(o.status.success(), "{}", stderr(&o));
     let out = String::from_utf8(o.stdout).unwrap();
     let client_id = out.lines().nth(1).unwrap().to_string();

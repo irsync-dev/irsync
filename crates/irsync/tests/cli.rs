@@ -157,21 +157,17 @@ fn daemon_flags() {
         "/h",
         "--exports",
         "/e",
-        "--show-id",
     ]);
     let Some(Command::Daemon(d)) = a.cmd else {
         panic!()
     };
     assert_eq!(
-        (d.config, d.hosts, d.exports, d.show_id),
-        (
-            Some("/c".into()),
-            Some("/h".into()),
-            Some("/e".into()),
-            true
-        )
+        (d.config, d.hosts, d.exports),
+        (Some("/c".into()), Some("/h".into()), Some("/e".into()))
     );
     assert!(Args::try_parse_from(["irsync", "daemon", "--foreground"]).is_err());
+    // `id --daemon` is the one way to print the daemon's id.
+    assert!(Args::try_parse_from(["irsync", "daemon", "--show-id"]).is_err());
 }
 
 #[test]
@@ -555,23 +551,33 @@ fn file_flags_are_accepted_after_the_noun_in_either_position() {
 
 #[test]
 fn id_and_show_parse() {
+    use irsync::cli::IdCmd;
     assert!(matches!(
-        parse(&["id"]).cmd,
-        Some(Command::Id {
-            daemon: false,
-            all: false,
-            ..
-        })
+        parse(&["id", "show"]).cmd,
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: false })
     ));
     assert!(matches!(
-        parse(&["id", "--daemon"]).cmd,
-        Some(Command::Id { daemon: true, .. })
+        parse(&["id", "show", "--daemon"]).cmd,
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: true, all: false })
     ));
     assert!(matches!(
-        parse(&["id", "-a"]).cmd,
-        Some(Command::Id { all: true, .. })
+        parse(&["id", "show", "-a"]).cmd,
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: true })
     ));
-    assert!(Args::try_parse_from(["irsync", "id", "--daemon", "--all"]).is_err());
+    // The file flags belong to the noun, so they go on either side of the verb.
+    for args in [
+        &["id", "show", "--config", "/c"][..],
+        &["id", "--config", "/c", "show"][..],
+    ] {
+        let Some(Command::Id(i)) = parse(args).cmd else {
+            panic!("{args:?}")
+        };
+        assert_eq!(i.files.config, Some(PathBuf::from("/c")));
+    }
+    assert!(Args::try_parse_from(["irsync", "id", "show", "--daemon", "--all"]).is_err());
+    // `id` is a noun: it needs a verb.
+    assert!(Args::try_parse_from(["irsync", "id"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "id", "--daemon"]).is_err());
     assert!(matches!(
         parse(&["show", "--config", "/c"]).cmd,
         Some(Command::Show { .. })
