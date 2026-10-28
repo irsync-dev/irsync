@@ -79,11 +79,11 @@ fn host_add_writes_a_dotted_header_and_refuses_all() {
 }
 
 #[test]
-fn save_hosts_refuses_a_document_that_does_not_parse() {
+fn save_config_refuses_a_hosts_document_that_does_not_parse() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("hosts.toml");
     let doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
-    let e = irsync::manage::save_hosts(&path, &doc).unwrap_err();
+    let e = irsync::manage::save_config(&path, &doc).unwrap_err();
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
     assert!(!path.exists());
 }

@@ -814,18 +814,19 @@ fn run_export(e: &ExportArgs) -> i32 {
             (|| {
                 let (name, path) =
                     manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
-                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::ensure_editable(&paths, manage::Table::Exports)?;
+                let mut doc = manage::load_doc(&paths.config)?;
                 manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let settings = Config::load(&paths)?.settings;
                 let pass = PassphraseSource::from_env(None);
                 let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
-                manage::save_exports(&paths.exports, &doc)?;
+                manage::save_config(&paths.config, &doc)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
                     path.display(),
-                    paths.exports.display()
+                    paths.config.display()
                 );
                 println!("{}", secret.public());
                 Ok(())
@@ -834,11 +835,12 @@ fn run_export(e: &ExportArgs) -> i32 {
         ExportCmd::Remove { name } => finish(
             "export remove",
             (|| {
-                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::ensure_editable(&paths, manage::Table::Exports)?;
+                let mut doc = manage::load_doc(&paths.config)?;
                 manage::exports::remove_export(&mut doc, name)
-                    .with_context(|| format!("in {}", paths.exports.display()))?;
-                manage::save_exports(&paths.exports, &doc)?;
-                eprintln!("removed export {name} from {}", paths.exports.display());
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                manage::save_config(&paths.config, &doc)?;
+                eprintln!("removed export {name} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
@@ -867,11 +869,12 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
-                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::ensure_editable(&paths, manage::Table::Exports)?;
+                let mut doc = manage::load_doc(&paths.config)?;
                 let target = (export != "all").then_some(export.as_str());
                 manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
-                    .with_context(|| format!("in {}", paths.exports.display()))?;
-                manage::save_exports(&paths.exports, &doc)?;
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                manage::save_config(&paths.config, &doc)?;
                 let mode = if *ro { "ro" } else { "rw" };
                 match target {
                     Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
@@ -904,10 +907,11 @@ fn run_grant(g: &GrantArgs) -> i32 {
                     )) => Some(PeerSpec::Alias(w.to_string())),
                     Some((_, Err(e))) => return Err(e.into()),
                 };
-                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::ensure_editable(&paths, manage::Table::Exports)?;
+                let mut doc = manage::load_doc(&paths.config)?;
                 let n = manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
-                    .with_context(|| format!("in {}", paths.exports.display()))?;
-                manage::save_exports(&paths.exports, &doc)?;
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                manage::save_config(&paths.config, &doc)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
                 Ok(())
             })(),
@@ -924,7 +928,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
                             let Ok(id) = hosts.resolve_peer(t) else {
                                 bail!(
                                     "{t:?} is not an export, an alias in {} or an EndpointId",
-                                    paths.hosts.display()
+                                    paths.config.display()
                                 );
                             };
                             let label = if hosts.get(t).is_some() {
@@ -950,11 +954,12 @@ fn run_host(h: &HostArgs) -> i32 {
         HostCmd::Remove { alias } => finish(
             "host remove",
             (|| {
-                let mut doc = manage::load_doc(&paths.hosts)?;
+                manage::ensure_editable(&paths, manage::Table::Hosts)?;
+                let mut doc = manage::load_doc(&paths.config)?;
                 manage::hosts::host_remove(&mut doc, alias)
-                    .with_context(|| format!("in {}", paths.hosts.display()))?;
-                manage::save_hosts(&paths.hosts, &doc)?;
-                eprintln!("removed host {alias} from {}", paths.hosts.display());
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                manage::save_config(&paths.config, &doc)?;
+                eprintln!("removed host {alias} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
@@ -1116,9 +1121,10 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
         dht: a.dht,
         mdns: a.mdns,
     };
-    let mut doc = manage::load_doc(&paths.hosts)?;
+    manage::ensure_editable(paths, manage::Table::Hosts)?;
+    let mut doc = manage::load_doc(&paths.config)?;
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
-    manage::save_hosts(&paths.hosts, &doc)?;
+    manage::save_config(&paths.config, &doc)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),

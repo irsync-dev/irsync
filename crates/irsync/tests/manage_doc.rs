@@ -1,6 +1,10 @@
 use irsync::config::hosts::Hosts;
-use irsync::manage::{load_doc, save_doc, ManageError, PeerSpec};
+use irsync::config::paths::Paths;
+use irsync::manage::{
+    ensure_editable, load_doc, save_config, save_doc, ManageError, PeerSpec, Table,
+};
 use std::path::Path;
+use toml_edit::DocumentMut;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
@@ -84,5 +88,47 @@ fn peer_spec_forms() {
     assert_eq!(
         PeerSpec::parse(&id(2).to_string(), &hosts).unwrap().entry(),
         id(2).to_string()
+    );
+}
+
+#[test]
+fn save_config_refuses_a_document_that_does_not_load() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("irsync.toml");
+    let doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
+    let e = save_config(&path, &doc).unwrap_err();
+    assert!(e.to_string().contains("refusing to save"), "{e}");
+    assert!(!path.exists());
+    let doc: DocumentMut = "[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n"
+        .parse()
+        .unwrap();
+    save_config(&path, &doc).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn ensure_editable_refuses_a_table_a_split_file_owns() {
+    let d = tempfile::tempdir().unwrap();
+    let paths = Paths::resolve(Some(&d.path().join("irsync.toml")));
+    assert!(ensure_editable(&paths, Table::Hosts).is_ok());
+    std::fs::write(&paths.hosts, "").unwrap();
+    let e = ensure_editable(&paths, Table::Hosts)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("hosts are kept in")
+            && e.contains("hosts.toml")
+            && e.contains("edit")
+            && e.contains("by hand"),
+        "{e}"
+    );
+    assert!(ensure_editable(&paths, Table::Exports).is_ok());
+    std::fs::write(&paths.exports, "").unwrap();
+    let e = ensure_editable(&paths, Table::Exports)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("exports are kept in") && e.contains("exports.toml"),
+        "{e}"
     );
 }

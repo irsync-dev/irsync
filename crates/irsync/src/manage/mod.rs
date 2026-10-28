@@ -6,8 +6,9 @@ pub mod grants;
 pub mod hosts;
 pub mod show;
 
-use crate::config::exports::Exports;
+use crate::config::file::Config;
 use crate::config::hosts::Hosts;
+use crate::config::paths::Paths;
 use crate::config::ConfigError;
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
@@ -54,6 +55,8 @@ pub enum ManageError {
     BadComment(String),
     #[error("{}: refusing to save, the edited file would not load: {source}", path.display())]
     Invalid { path: PathBuf, source: ConfigError },
+    #[error("{table} are kept in {}; irsync edits irsync.toml only: move the [{table}] table into irsync.toml, or edit {0} by hand", file.display())]
+    SplitFile { table: &'static str, file: PathBuf },
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -109,22 +112,39 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
     Ok(())
 }
 
-/// Save `exports.toml`, refusing a document that would not load.
-pub fn save_exports(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    Exports::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
+/// Save the config file, refusing a document that would not load.
+pub fn save_config(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
+    Config::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
         path: path.to_path_buf(),
         source,
     })?;
     save_doc(path, doc)
 }
 
-/// Save `hosts.toml`, refusing a document that would not load.
-pub fn save_hosts(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    Hosts::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    save_doc(path, doc)
+/// A table group an editing command touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Table {
+    /// `[hosts]`.
+    Hosts,
+    /// `[exports]` and `[all]`.
+    Exports,
+}
+
+/// irsync edits the config file only: when a split file beside it holds
+/// `table`, editing is refused and the user told to move the table or
+/// edit the split file by hand.
+pub fn ensure_editable(paths: &Paths, table: Table) -> Result<(), ManageError> {
+    let (word, file) = match table {
+        Table::Hosts => ("hosts", &paths.hosts),
+        Table::Exports => ("exports", &paths.exports),
+    };
+    if file.exists() {
+        return Err(ManageError::SplitFile {
+            table: word,
+            file: file.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// How a command-line "who" argument is understood.
