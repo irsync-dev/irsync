@@ -76,7 +76,7 @@ that port directly, and nothing leaves the machine.
 - irsync's daemon prints `endpoint id: <id>` and then one `listening on:
   <addr>` line per bound socket to stdout, flushed before it accepts
   connections. That is the only way to learn a port-0 daemon's port.
-  `crates/irsync/tests/isolated_e2e.rs` shows the full recipe: keygen,
+  `crates/irsync/tests/isolated_e2e.rs` shows the full recipe: `id generate`,
   authorized_keys, daemon config, spawn, parse, dial with `--address`.
 - filegen refuses an output directory inside the tree it mutates, and a
   `--seed` run refuses to start if its log or state file already exists.

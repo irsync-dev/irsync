@@ -24,7 +24,7 @@ pub struct ClientSetup {
 }
 
 /// Creates the empty config file and the `home/` and `xdg/` directories under
-/// `config_dir`. `identity` comes from `client_keygen`.
+/// `config_dir`. `identity` comes from `client_id_generate`.
 pub fn setup(config_dir: &Path, identity: PathBuf) -> Result<ClientSetup> {
     let config = config_dir.join("irsync.toml");
     File::create(&config).with_context(|| format!("creating {}", config.display()))?;

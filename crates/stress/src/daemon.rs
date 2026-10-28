@@ -93,7 +93,7 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
 
 /// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private
 /// key path, the public key line (stdout line 1) and the EndpointId (line 2).
-pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String, String)> {
+pub fn client_id_generate(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String, String)> {
     let key = config_dir.join("id_ed25519");
     let out = process::output(
         Command::new(irsync)

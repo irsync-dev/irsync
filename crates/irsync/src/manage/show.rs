@@ -64,11 +64,12 @@ pub fn all_block(exports: &Exports, hosts: &Hosts) -> String {
 }
 
 /// The report: files, identities (`client` is the id and the public key
-/// line), hosts and exports. Missing files are flagged; aliases resolve
-/// through `hosts`.
+/// line), hosts (`host_lines`, what `host list` prints) and exports.
+/// Missing files are flagged; aliases resolve through `hosts`.
 pub fn report(
     paths: &Paths,
     hosts: &Hosts,
+    host_lines: &[String],
     exports: &Exports,
     client: (&EndpointId, &str),
     daemon: &EndpointId,
@@ -76,8 +77,8 @@ pub fn report(
     let mut out = file_line("config", &paths.config);
     let _ = writeln!(out, "client identity: {}\n{}", client.0, client.1);
     out.push_str(&file_line("hosts", &paths.hosts));
-    for (alias, h) in &hosts.entries {
-        let _ = writeln!(out, "    {alias}: {}", h.endpoint_id);
+    for line in host_lines {
+        let _ = writeln!(out, "{line}");
     }
     out.push_str(&file_line("exports", &paths.exports));
     let _ = writeln!(out, "daemon identity: {daemon}");

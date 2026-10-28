@@ -173,9 +173,9 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync grant add EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
-| `irsync id show [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
+| `irsync id show [--daemon \| -a\|--all] [--passphrase-file PATH]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
 | `irsync id generate [--daemon \| --out PATH] [-f\|--force]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; overwrites only with `--force` |
-| `irsync show` | print the file paths, identities, aliases, exports and grants |
+| `irsync show [--passphrase-file PATH]` | print the file paths, identities, aliases, exports and grants; the aliases are `host list` and the exports `export list`, line for line |
 
 A running daemon picks up `host`, `export` and `grant` changes on the next
 connection; see [docs/daemon.md](docs/daemon.md).
@@ -232,7 +232,7 @@ irsync-specific:
 | `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
 | `--config PATH`, `--hosts PATH` | settings file and host aliases file (default: `irsync.toml` and `hosts.toml` in `~/.config/irsync/`) |
 | `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, generated if missing) |
-| `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`) |
+| `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`, `irsync id show` and `irsync show`) |
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 

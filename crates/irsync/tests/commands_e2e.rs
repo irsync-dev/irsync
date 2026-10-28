@@ -712,3 +712,148 @@ fn id_generate_force_replaces_an_existing_identity() {
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("refusing to overwrite"));
 }
+
+fn ok(home: &Path, args: &[&str]) -> String {
+    let o = irsync(home, args);
+    assert!(
+        o.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    String::from_utf8(o.stdout).unwrap()
+}
+
+#[test]
+fn host_list_prints_the_hosts_section_of_show() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(
+        &home,
+        &[
+            "host",
+            "add",
+            "laptop",
+            &id,
+            "--relay",
+            "https://r.example/",
+            "--parallel",
+            "4",
+        ],
+    );
+    ok(&home, &["host", "add", "desk", &id]);
+    let list = ok(&home, &["host", "list"]);
+    assert_eq!(
+        list,
+        format!("laptop: {id}\n    relay = \"https://r.example/\"\n    parallel = 4\ndesk: {id}\n")
+    );
+    let show = ok(&home, &["show"]);
+    let section: Vec<&str> = show
+        .lines()
+        .skip_while(|l| !l.starts_with("hosts: "))
+        .skip(1)
+        .take_while(|l| !l.starts_with("exports: "))
+        .collect();
+    assert_eq!(list, section.join("\n") + "\n", "show:\n{show}");
+}
+
+#[test]
+fn grant_list_prefers_an_export_over_an_alias_of_the_same_name() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(&home, &["host", "add", "p", &id]);
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", "p"]);
+    // The export's block, not the peer's reach.
+    assert_eq!(
+        ok(&home, &["grant", "list", "p"]),
+        format!("p:\n    rw: p ({id})\n")
+    );
+    // The peer is still reachable by its id.
+    assert_eq!(
+        ok(&home, &["grant", "list", &id]),
+        format!("{id}:\n    p: rw\n")
+    );
+}
+
+#[test]
+fn grant_list_lines_appear_verbatim_in_show() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    std::fs::create_dir_all(home.join("q")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    let other = iroh::SecretKey::from_bytes(&[6; 32]).public().to_string();
+    ok(&home, &["host", "add", "laptop", &id]);
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(
+        &home,
+        &["export", "add", &format!("q:{}", home.join("q").display())],
+    );
+    ok(&home, &["grant", "add", "p", "laptop"]);
+    ok(&home, &["grant", "add", "p", &other, "--ro"]);
+    ok(&home, &["grant", "add", "all", "laptop", "--ro"]);
+    let list = ok(&home, &["grant", "list"]);
+    let show = ok(&home, &["show"]);
+    let show_lines: Vec<&str> = show.lines().collect();
+    let mut grant_lines = 0;
+    for line in list.lines() {
+        if line.starts_with("    ") || line == "all:" {
+            assert!(show_lines.contains(&line), "{line:?} not in show:\n{show}");
+            grant_lines += 1;
+        }
+    }
+    assert_eq!(grant_lines, 4, "{list}");
+    // The `all:` block is the tail of show, line for line.
+    let tail: Vec<&str> = show_lines
+        .iter()
+        .copied()
+        .skip_while(|l| *l != "all:")
+        .collect();
+    let all_block: Vec<&str> = list.lines().take_while(|l| !l.starts_with("p:")).collect();
+    assert_eq!(tail, all_block, "{show}");
+}
+
+#[test]
+fn grant_remove_with_a_star_points_at_all() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", &id]);
+    for (args, hint) in [
+        (
+            &["grant", "remove", "p", "*"][..],
+            "irsync grant remove p all",
+        ),
+        (
+            &["grant", "remove", "all", "*"][..],
+            "irsync grant remove all all",
+        ),
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("\"*\" names no peer") && err.contains(hint),
+            "{args:?}: {err}"
+        );
+    }
+    // Nothing was removed.
+    assert!(ok(&home, &["grant", "list", "p"]).contains(&id));
+    // `grant add` keeps its own wording: there is no open access to grant.
+    let o = irsync(&home, &["grant", "add", "p", "*"]);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no open access"));
+}

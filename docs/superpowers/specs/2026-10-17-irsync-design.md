@@ -486,6 +486,11 @@ incomplete (walk error, permission denied on a subtree) unless
 
 ### Command line
 
+> Superseded: see `2026-10-23-zero-config-cli-design.md` and
+> `2026-10-28-config-cli-design.md`. `--show-id` and `--foreground` are
+> gone, `keygen` is `irsync id generate`, and the configuration commands
+> are the `host`, `export`, `grant` and `id` nouns.
+
 ```
 irsync [OPTIONS] SRC... DEST
 irsync daemon [--config PATH] [--show-id] [--foreground]

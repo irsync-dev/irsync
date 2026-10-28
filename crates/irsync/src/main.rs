@@ -41,7 +41,10 @@ fn main() {
         Some(Command::Export(e)) => std::process::exit(run_export(e)),
         Some(Command::Grant(g)) => std::process::exit(run_grant(g)),
         Some(Command::Id(i)) => std::process::exit(run_id(i)),
-        Some(Command::Show { files }) => std::process::exit(run_show(files)),
+        Some(Command::Show {
+            passphrase_file,
+            files,
+        }) => std::process::exit(run_show(files, passphrase_file.clone())),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -685,7 +688,8 @@ fn run_export(e: &ExportArgs) -> i32 {
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let settings = Settings::load(&paths.config)?;
-                let secret = identity_of(&settings.daemon.identity, "irsync-daemon")?;
+                let pass = PassphraseSource::from_env(None);
+                let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
                 manage::save_exports(&paths.exports, &doc)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
@@ -751,6 +755,12 @@ fn run_grant(g: &GrantArgs) -> i32 {
             (|| {
                 let hosts = Hosts::load(&paths.hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                if who == "*" {
+                    bail!(
+                        "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
+                        if export == "all" { "in the file".to_string() } else { format!("on {export}") }
+                    );
+                }
                 let export = (export != "all").then_some(export.as_str());
                 let who = (who != "all").then_some(who.as_str());
                 // Text that names no known peer still matches entries literally
@@ -835,9 +845,12 @@ fn run_host(h: &HostArgs) -> i32 {
 }
 
 /// Loads (generating if missing, with a stderr notice) the identity at `path`.
-fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::SecretKey> {
-    let pass = PassphraseSource::from_env(None);
-    let (secret, generated) = load_or_generate(path, &pass, comment)
+fn identity_of(
+    path: &std::path::Path,
+    comment: &str,
+    pass: &PassphraseSource,
+) -> anyhow::Result<iroh::SecretKey> {
+    let (secret, generated) = load_or_generate(path, pass, comment)
         .with_context(|| format!("identity {}", path.display()))?;
     if generated {
         eprintln!("generated identity {}", path.display());
@@ -847,7 +860,11 @@ fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::Se
 
 fn run_id(i: &IdArgs) -> i32 {
     match &i.cmd {
-        IdCmd::Show { daemon, all } => id_show(&i.files, *daemon, *all),
+        IdCmd::Show {
+            daemon,
+            all,
+            passphrase_file,
+        } => id_show(&i.files, *daemon, *all, passphrase_file.clone()),
         IdCmd::Generate { daemon, out, force } => {
             id_generate(&i.files, *daemon, out.as_deref(), *force)
         }
@@ -900,13 +917,14 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
     )
 }
 
-fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
+fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathBuf>) -> i32 {
     finish(
         "id show",
         (|| {
             let settings = Settings::load(&file_paths(f).config)?;
+            let pass = PassphraseSource::from_env(passphrase_file);
             let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
-                let secret = identity_of(path, comment)?;
+                let secret = identity_of(path, comment, &pass)?;
                 println!("{}", irsync::identity::public_key_line(&secret, comment));
                 println!("{}", secret.public());
                 Ok(())
@@ -926,22 +944,26 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
     )
 }
 
-fn run_show(f: &FilesArgs) -> i32 {
+fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
     finish(
         "show",
         (|| {
             let paths = file_paths(f);
             let settings = Settings::load(&paths.config)?;
             let hosts = Hosts::load(&paths.hosts)?;
+            // The hosts section is `host list`, line for line.
+            let host_lines = manage::hosts::host_list(&manage::load_doc(&paths.hosts)?);
             let exports = Exports::load(&paths.exports)?;
-            let client = identity_of(&settings.identity, "irsync")?;
+            let pass = PassphraseSource::from_env(passphrase_file);
+            let client = identity_of(&settings.identity, "irsync", &pass)?;
             let client_line = irsync::identity::public_key_line(&client, "irsync");
-            let daemon = identity_of(&settings.daemon.identity, "irsync-daemon")?;
+            let daemon = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
             print!(
                 "{}",
                 manage::show::report(
                     &paths,
                     &hosts,
+                    &host_lines,
                     &exports,
                     (&client.public(), &client_line),
                     &daemon.public(),

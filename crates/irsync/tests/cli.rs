@@ -552,15 +552,15 @@ fn id_and_show_parse() {
     use irsync::cli::IdCmd;
     assert!(matches!(
         parse(&["id", "show"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: false })
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: false, .. })
     ));
     assert!(matches!(
         parse(&["id", "show", "--daemon"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: true, all: false })
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: true, all: false, .. })
     ));
     assert!(matches!(
         parse(&["id", "show", "-a"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: true })
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: true, .. })
     ));
     // The file flags belong to the noun, so they go on either side of the verb.
     for args in [
@@ -605,7 +605,20 @@ fn id_and_show_parse() {
     assert!(Args::try_parse_from(["irsync", "id", "--daemon"]).is_err());
     assert!(matches!(
         parse(&["show", "--config", "/c"]).cmd,
-        Some(Command::Show { .. })
+        Some(Command::Show {
+            passphrase_file: None,
+            ..
+        })
+    ));
+    // An encrypted identity can be unlocked from a file, as for a sync.
+    assert!(matches!(
+        parse(&["id", "show", "--daemon", "--passphrase-file", "/p"]).cmd,
+        Some(Command::Id(ref i))
+            if matches!(i.cmd, IdCmd::Show { daemon: true, passphrase_file: Some(ref p), .. } if p == &PathBuf::from("/p"))
+    ));
+    assert!(matches!(
+        parse(&["show", "--passphrase-file", "/p"]).cmd,
+        Some(Command::Show { passphrase_file: Some(ref p), .. }) if p == &PathBuf::from("/p")
     ));
 }
 

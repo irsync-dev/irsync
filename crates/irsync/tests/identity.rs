@@ -183,6 +183,34 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
+    // --passphrase-file, as for a sync and the daemon, on `id show` and `show`.
+    let pf = dir.path().join("pass");
+    std::fs::write(&pf, "s3cret\n").unwrap();
+    for args in [&["id", "show", "--daemon"][..], &["show"][..]] {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+            .args(args)
+            .arg("--config")
+            .arg(&cfg)
+            .arg("--hosts")
+            .arg(dir.path().join("hosts.toml"))
+            .arg("--exports")
+            .arg(dir.path().join("exports.toml"))
+            .arg("--passphrase-file")
+            .arg(&pf)
+            .env_remove("IRSYNC_PASSPHRASE")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&o.stdout).contains(&shown.to_string()),
+            "{args:?}"
+        );
+    }
 }
 
 #[test]

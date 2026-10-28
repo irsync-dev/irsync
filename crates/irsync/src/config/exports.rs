@@ -65,7 +65,10 @@ impl Exports {
         // Shape pass: every top-level key is `all` or `exports`, both tables.
         let shape: BTreeMap<String, Spanned<toml::Value>> =
             toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        for (name, value) in &shape {
+        // In file order, so the first offender is the one reported.
+        let mut keys: Vec<_> = shape.iter().collect();
+        keys.sort_by_key(|(_, v)| v.span().start);
+        for (name, value) in keys {
             let start = value.span().start;
             let value = value.get_ref();
             let message = match name.as_str() {

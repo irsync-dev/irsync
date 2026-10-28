@@ -199,7 +199,8 @@ fn start_daemon<'a>(
 ) -> Result<(RunningDaemon, Syncer<'a>)> {
     let (client_config, _) = layout.client_side(cli.direction);
     let (daemon_config, daemon_data) = layout.daemon_side(cli.direction);
-    let (key, _pub_line, client_id) = daemon::client_keygen(&tools.irsync.path, client_config)?;
+    let (key, _pub_line, client_id) =
+        daemon::client_id_generate(&tools.irsync.path, client_config)?;
     let files = daemon::write_config(&DaemonConfig {
         config_dir: daemon_config,
         export_path: daemon_data,

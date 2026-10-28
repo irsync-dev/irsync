@@ -107,6 +107,17 @@ fn hosts_old_layout_names_the_new_location() {
     let e = Hosts::parse("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
     assert!(Hosts::parse("[hosts]\n", p()).unwrap().entries.is_empty());
+    // The first offender in the file is reported, not the first by name.
+    let e = Hosts::parse(
+        "[zzz]\nendpoint_id = \"x\"\n[aaa]\nendpoint_id = \"x\"\n",
+        p(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("unknown table \"zzz\"") && e.contains(":1:"),
+        "{e}"
+    );
 }
 
 #[test]
@@ -164,6 +175,14 @@ fn exports_old_layout_names_the_new_location() {
     assert!(e.contains("[all]") && e.contains("path"), "{e}");
     let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
+    // The first offender in the file is reported, not the first by name.
+    let e = Exports::parse("[zzz]\npath = \"/x\"\n[aaa]\npath = \"/x\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("unknown table \"zzz\"") && e.contains(":1:"),
+        "{e}"
+    );
 }
 
 #[test]

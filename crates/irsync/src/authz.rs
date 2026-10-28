@@ -32,8 +32,8 @@ impl Grants {
         self.exports.is_empty() && self.all.is_none()
     }
 
-    /// The access this key has to `export`: its own entry, else the `*`
-    /// wildcard, else none.
+    /// The access this key has to `export`: its own entry, else what
+    /// `[all]` grants it, else none.
     pub fn access(&self, export: &str) -> Option<Access> {
         self.exports.get(export).copied().or(self.all)
     }

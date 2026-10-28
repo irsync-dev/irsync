@@ -158,6 +158,10 @@ pub enum Command {
     Id(IdArgs),
     /// Show the config files, identities, host aliases and exports.
     Show {
+        /// Read an encrypted identity's passphrase from the first line of
+        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: Option<PathBuf>,
         #[command(flatten)]
         files: FilesArgs,
     },
@@ -182,6 +186,10 @@ pub enum IdCmd {
         /// Both identities, labelled `client:` and `daemon:`.
         #[arg(short = 'a', long)]
         all: bool,
+        /// Read an encrypted identity's passphrase from the first line of
+        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: Option<PathBuf>,
     },
     /// Generate an Ed25519 identity and print its public key line and
     /// EndpointId. Refuses to overwrite an existing key or .pub file
