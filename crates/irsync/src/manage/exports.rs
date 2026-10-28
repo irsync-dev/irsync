@@ -5,24 +5,19 @@
 use super::ManageError;
 use crate::config::exports::RESERVED;
 use std::path::{Component, Path, PathBuf};
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 /// The `[exports]` table, created (implicit, so only its children print
-/// headers) when missing.
-fn exports_table(doc: &mut DocumentMut) -> &mut Table {
+/// headers) when missing. An inline `exports = { ... }` is edited in
+/// place; anything else under that key is refused, never overwritten.
+fn exports_table(doc: &mut DocumentMut) -> Result<&mut dyn TableLike, ManageError> {
     let item = doc.entry("exports").or_insert_with(|| {
         let mut t = Table::new();
         t.set_implicit(true);
         Item::Table(t)
     });
-    if !item.is_table() {
-        *item = {
-            let mut t = Table::new();
-            t.set_implicit(true);
-            Item::Table(t)
-        };
-    }
-    item.as_table_mut().expect("exports is a table")
+    item.as_table_like_mut()
+        .ok_or_else(|| ManageError::NotATable("exports".to_string()))
 }
 
 /// Add `[exports.name]` with `path` and the flags that are true.
@@ -36,12 +31,11 @@ pub fn add_export(
     if RESERVED.contains(&name) {
         return Err(ManageError::Reserved(name.to_string()));
     }
-    let exports = exports_table(doc);
+    let exports = exports_table(doc)?;
     if exports.contains_key(name) {
         return Err(ManageError::Exists(name.to_string()));
     }
-    exports[name] = toml_edit::table();
-    let t = &mut exports[name];
+    let mut t = Table::new();
     t["path"] = toml_edit::value(path.to_string_lossy().into_owned());
     if read_only {
         t["read_only"] = toml_edit::value(true);
@@ -49,6 +43,9 @@ pub fn add_export(
     if warm_index {
         t["warm_index"] = toml_edit::value(true);
     }
+    // Under a header this is `[exports.name]`; inside an inline
+    // `exports = { ... }` toml_edit stores it inline.
+    exports.insert(name, Item::Table(t));
     Ok(())
 }
 

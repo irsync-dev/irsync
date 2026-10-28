@@ -507,3 +507,52 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
         "{err}"
     );
 }
+
+#[test]
+fn host_list_refuses_an_old_layout_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+    std::fs::write(
+        cfg.join("hosts.toml"),
+        format!("[home]\nendpoint_id = \"{id}\"\n"),
+    )
+    .unwrap();
+    let o = irsync(&home, &["host", "list"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("hosts live under [hosts.home]"),
+        "{err}"
+    );
+}
+
+#[test]
+fn grant_remove_all_all_locks_everyone_out() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    for args in [
+        vec!["host", "add", "laptop", &id],
+        vec!["export", "add", &format!("p:{}", home.join("p").display())],
+        vec!["grant", "add", "p", "laptop"],
+        vec!["grant", "add", "all", "laptop", "--ro"],
+    ] {
+        let o = irsync(&home, &args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    let o = irsync(&home, &["grant", "remove", "all", "all"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("removed 2 entries"));
+    let o = irsync(&home, &["grant", "list", "laptop"]);
+    assert_eq!(
+        String::from_utf8(o.stdout).unwrap(),
+        format!("laptop ({id}):\n")
+    );
+}

@@ -845,6 +845,8 @@ fn run_host(h: &HostArgs) -> i32 {
         HostCmd::List => finish(
             "host list",
             (|| {
+                // Parse first: an old-layout file is an error, not an empty list.
+                Hosts::load(&paths.hosts)?;
                 let doc = manage::load_doc(&paths.hosts)?;
                 for line in manage::hosts::host_list(&doc) {
                     println!("{line}");

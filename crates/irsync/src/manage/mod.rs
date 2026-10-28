@@ -32,6 +32,8 @@ pub enum ManageError {
     Exists(String),
     #[error("no such entry {0:?}")]
     NotFound(String),
+    #[error("{0:?} is not a table; fix the file by hand")]
+    NotATable(String),
     #[error("{0:?} is not a valid export name")]
     BadName(String),
     #[error("{}", crate::config::exports::reserved(.0))]

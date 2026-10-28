@@ -229,3 +229,68 @@ fn list_peer_marks_inherited_and_capped_grants() {
     );
     assert_eq!(list_peer(&e, &h, "x", &id(3)), "x:\n");
 }
+
+#[test]
+fn grant_remove_all_all_empties_every_array_in_the_file() {
+    let mut doc: DocumentMut = format!(
+        "[all]\nrw = [\"{a}\"]\n[exports.p]\npath = \"/p\"\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.q]\npath = \"/q\"\nro = [\"lap\"]\n",
+        a = id(1),
+        b = id(2)
+    )
+    .parse()
+    .unwrap();
+    assert_eq!(grant_remove(&mut doc, None, None, &|_| None).unwrap(), 4);
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert!(x.rw.is_empty() && x.ro.is_empty());
+    assert!(
+        x.exports
+            .values()
+            .all(|e| e.rw.is_empty() && e.ro.is_empty()),
+        "{doc}"
+    );
+    assert!(matches!(
+        grant_remove(&mut doc, None, None, &|_| None),
+        Err(ManageError::NothingToRemove(_))
+    ));
+}
+
+#[test]
+fn grant_edits_reach_inline_tables() {
+    // `exports` as an inline table, one export inline under a header, and
+    // `all` inline: every form the parser accepts, the editors edit.
+    let text = format!(
+        "all = {{ rw = [\"{a}\"] }}\nexports = {{ photos = {{ path = \"/p\", rw = [\"{a}\"] }} }}\n",
+        a = id(1)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(
+        grant_remove(&mut doc, None, Some(&peer(1)), &|_| None).unwrap(),
+        2
+    );
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert!(
+        x.rw.is_empty() && x.exports["photos"].rw.is_empty(),
+        "{doc}"
+    );
+    grant_add(&mut doc, Some("photos"), &peer(2), true, &|_| None).unwrap();
+    grant_add(&mut doc, None, &peer(2), false, &|_| None).unwrap();
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert_eq!(x.exports["photos"].ro, vec![id(2).to_string()]);
+    assert_eq!(x.rw, vec![id(2).to_string()]);
+    let mut doc: DocumentMut = format!(
+        "[exports]\nphotos = {{ path = \"/p\", rw = [\"{a}\"] }}\n[exports.q]\npath = \"/q\"\nrw = [\"{a}\"]\n",
+        a = id(1)
+    )
+    .parse()
+    .unwrap();
+    assert_eq!(
+        grant_remove(&mut doc, None, Some(&peer(1)), &|_| None).unwrap(),
+        2
+    );
+    assert_eq!(
+        grant_remove(&mut doc, None, None, &|_| None)
+            .unwrap_err()
+            .to_string(),
+        "nothing to remove for \"all\""
+    );
+}

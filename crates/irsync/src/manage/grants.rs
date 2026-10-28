@@ -12,27 +12,28 @@ use crate::config::hosts::Hosts;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use std::fmt::Write;
-use toml_edit::{Array, DocumentMut, Item, Table, Value};
+use toml_edit::{Array, DocumentMut, Item, TableLike, Value};
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
 
 /// The table `export` names under `[exports]`, or `[all]` for `None`
-/// (created when missing).
+/// (created when missing). Inline tables count: anything the parser reads
+/// as a table, the editors edit.
 fn target<'a>(
     doc: &'a mut DocumentMut,
     export: Option<&str>,
-) -> Result<&'a mut Table, ManageError> {
+) -> Result<&'a mut dyn TableLike, ManageError> {
     match export {
         Some(n) => doc
             .get_mut("exports")
-            .and_then(Item::as_table_mut)
+            .and_then(Item::as_table_like_mut)
             .and_then(|t| t.get_mut(n))
-            .and_then(Item::as_table_mut)
+            .and_then(Item::as_table_like_mut)
             .ok_or_else(|| ManageError::NotFound(n.to_string())),
         None => doc
             .entry("all")
             .or_insert_with(toml_edit::table)
-            .as_table_mut()
+            .as_table_like_mut()
             .ok_or_else(|| ManageError::NotFound("all".to_string())),
     }
 }
@@ -57,7 +58,7 @@ fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Re
 }
 
 /// Remove the entries of `table[key]` for which `pred` holds; the count.
-fn remove_where(table: &mut Table, key: &str, pred: &dyn Fn(&str) -> bool) -> usize {
+fn remove_where(table: &mut dyn TableLike, key: &str, pred: &dyn Fn(&str) -> bool) -> usize {
     let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
         return 0;
     };
@@ -77,7 +78,7 @@ fn remove_where(table: &mut Table, key: &str, pred: &dyn Fn(&str) -> bool) -> us
     n
 }
 
-fn push_entry(table: &mut Table, key: &str, text: &str, comment: Option<&str>) {
+fn push_entry(table: &mut dyn TableLike, key: &str, text: &str, comment: Option<&str>) {
     let item = table
         .entry(key)
         .or_insert_with(|| toml_edit::value(Array::new()));
@@ -137,7 +138,7 @@ pub fn grant_add(
     Ok(())
 }
 
-fn remove_in(table: &mut Table, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
+fn remove_in(table: &mut dyn TableLike, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {
         None => remove_where(table, "rw", &|_| true) + remove_where(table, "ro", &|_| true),
         Some(w) => {
@@ -149,30 +150,30 @@ fn remove_in(table: &mut Table, who: Option<&PeerSpec>, resolve: Resolve) -> usi
 }
 
 /// Remove grants; the number of entries removed. `who = None` empties both
-/// arrays of `export` (or of `[all]`); `export = None` with a peer walks
-/// `[all]` and every export.
+/// arrays of `export` (or of `[all]`); `export = None` walks `[all]` and
+/// every export, so `(None, None)` empties every array in the file.
 pub fn grant_remove(
     doc: &mut DocumentMut,
     export: Option<&str>,
     who: Option<&PeerSpec>,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<usize, ManageError> {
-    let n = match (export, who) {
-        (None, Some(w)) => {
-            let mut n = match doc.get_mut("all").and_then(Item::as_table_mut) {
-                Some(all) => remove_in(all, Some(w), resolve),
+    let n = match export {
+        None => {
+            let mut n = match doc.get_mut("all").and_then(Item::as_table_like_mut) {
+                Some(all) => remove_in(all, who, resolve),
                 None => 0,
             };
-            if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_mut) {
+            if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
                 for (_, item) in exports.iter_mut() {
-                    if let Some(t) = item.as_table_mut() {
-                        n += remove_in(t, Some(w), resolve);
+                    if let Some(t) = item.as_table_like_mut() {
+                        n += remove_in(t, who, resolve);
                     }
                 }
             }
             n
         }
-        _ => remove_in(target(doc, export)?, who, resolve),
+        Some(_) => remove_in(target(doc, export)?, who, resolve),
     };
     if n == 0 {
         let what = match (who, export) {

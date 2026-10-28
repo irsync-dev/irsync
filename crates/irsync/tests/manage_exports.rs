@@ -202,3 +202,28 @@ fn remove_only_removes_an_export_table() {
         "[exports]\nx = 1\n[exports.p]\npath = \"/p\"\n"
     );
 }
+
+#[test]
+fn add_and_remove_keep_an_inline_exports_table() {
+    let mut doc: DocumentMut = "exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n"
+        .parse()
+        .unwrap();
+    add_export(&mut doc, "q", Path::new("/q"), false, false).unwrap();
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert_eq!(x.exports["photos"].rw, vec!["x"], "{doc}");
+    assert_eq!(x.exports["q"].path, Path::new("/q"));
+    assert!(matches!(
+        add_export(&mut doc, "photos", Path::new("/x"), false, false),
+        Err(ManageError::Exists(_))
+    ));
+    remove_export(&mut doc, "photos").unwrap();
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert!(
+        !x.exports.contains_key("photos") && x.exports.contains_key("q"),
+        "{doc}"
+    );
+    // A non-table `exports` is refused, never overwritten.
+    let mut odd: DocumentMut = "exports = 5\n".parse().unwrap();
+    assert!(add_export(&mut odd, "q", Path::new("/q"), false, false).is_err());
+    assert_eq!(odd.to_string(), "exports = 5\n");
+}
