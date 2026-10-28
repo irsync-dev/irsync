@@ -735,6 +735,15 @@ fn run_export(e: &ExportArgs) -> i32 {
                 Ok(())
             })(),
         ),
+        ExportCmd::List => finish(
+            "export list",
+            (|| {
+                let hosts = Hosts::load(&paths.hosts)?;
+                let exports = Exports::load(&paths.exports)?;
+                print!("{}", manage::show::export_blocks(&exports, &hosts));
+                Ok(())
+            })(),
+        ),
     }
 }
 

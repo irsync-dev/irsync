@@ -24,13 +24,43 @@ fn entry_text(entry: &str, hosts: &Hosts) -> String {
     }
 }
 
-fn grants(out: &mut String, rw: &[String], ro: &[String], hosts: &Hosts) {
+/// The `    rw: ...` and `    ro: ...` lines of one grant table, each only
+/// when its list is non-empty. The one spelling of a grant line, shared by
+/// `show`, `export list` and `grant list`.
+pub fn grant_lines(out: &mut String, rw: &[String], ro: &[String], hosts: &Hosts) {
     for (label, list) in [("rw", rw), ("ro", ro)] {
         if !list.is_empty() {
             let items: Vec<String> = list.iter().map(|e| entry_text(e, hosts)).collect();
             let _ = writeln!(out, "    {label}: {}", items.join(", "));
         }
     }
+}
+
+/// One block per export: `name: path`, then `    read_only` and
+/// `    warm_index` when set, then its grant lines.
+pub fn export_blocks(exports: &Exports, hosts: &Hosts) -> String {
+    let mut out = String::new();
+    for (name, e) in &exports.exports {
+        let _ = writeln!(out, "{name}: {}", e.path.display());
+        if e.read_only {
+            out.push_str("    read_only\n");
+        }
+        if e.warm_index {
+            out.push_str("    warm_index\n");
+        }
+        grant_lines(&mut out, &e.rw, &e.ro, hosts);
+    }
+    out
+}
+
+/// `all:` and its grant lines, or nothing when `[all]` grants nobody.
+pub fn all_block(exports: &Exports, hosts: &Hosts) -> String {
+    let mut out = String::new();
+    if !exports.rw.is_empty() || !exports.ro.is_empty() {
+        out.push_str("all:\n");
+        grant_lines(&mut out, &exports.rw, &exports.ro, hosts);
+    }
+    out
 }
 
 /// The report: files, identities (`client` is the id and the public key
@@ -51,19 +81,7 @@ pub fn report(
     }
     out.push_str(&file_line("exports", &paths.exports));
     let _ = writeln!(out, "daemon identity: {daemon}");
-    for (name, e) in &exports.exports {
-        let _ = writeln!(out, "{name}: {}", e.path.display());
-        if e.read_only {
-            out.push_str("    read_only\n");
-        }
-        if e.warm_index {
-            out.push_str("    warm_index\n");
-        }
-        grants(&mut out, &e.rw, &e.ro, hosts);
-    }
-    if !exports.rw.is_empty() || !exports.ro.is_empty() {
-        out.push_str("all:\n");
-        grants(&mut out, &exports.rw, &exports.ro, hosts);
-    }
+    out.push_str(&export_blocks(exports, hosts));
+    out.push_str(&all_block(exports, hosts));
     out
 }

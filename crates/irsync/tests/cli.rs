@@ -409,6 +409,10 @@ fn nouns_share_add_remove_list() {
         parse(&["host", "list"]).cmd,
         Some(Command::Host(ref h)) if matches!(h.cmd, HostCmd::List)
     ));
+    assert!(matches!(
+        parse(&["export", "list"]).cmd,
+        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::List)
+    ));
     // host add keeps every flag
     let a = parse(&[
         "host",

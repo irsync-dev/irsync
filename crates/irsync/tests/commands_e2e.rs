@@ -400,3 +400,48 @@ fn file_flags_after_the_noun_edit_the_named_files() {
     );
     assert!(!home.join(".config/irsync/exports.toml").exists());
 }
+
+#[test]
+fn export_list_prints_the_export_blocks_of_show() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    std::fs::create_dir_all(home.join("q")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    for args in [
+        vec!["host", "add", "laptop", &id],
+        vec![
+            "export",
+            "add",
+            &format!("p:{}", home.join("p").display()),
+            "--ro",
+        ],
+        vec!["export", "add", &format!("q:{}", home.join("q").display())],
+        vec!["grant", "add", "p", "laptop"],
+        vec!["grant", "add", "all", "laptop", "--ro"],
+    ] {
+        let o = irsync(&home, &args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    let show_out = String::from_utf8(irsync(&home, &["show"]).stdout).unwrap();
+    let o = irsync(&home, &["export", "list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let list_out = String::from_utf8(o.stdout).unwrap();
+    let blocks: Vec<&str> = show_out
+        .lines()
+        .skip_while(|l| !l.starts_with("daemon identity:"))
+        .skip(1)
+        .take_while(|l| *l != "all:")
+        .collect();
+    assert_eq!(list_out, blocks.join("\n") + "\n", "show:\n{show_out}");
+    assert!(
+        list_out.starts_with("p: ")
+            && list_out.contains("    read_only\n")
+            && list_out.contains("    rw: laptop ("),
+        "{list_out}"
+    );
+}

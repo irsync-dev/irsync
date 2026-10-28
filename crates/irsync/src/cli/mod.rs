@@ -228,6 +228,8 @@ pub enum ExportCmd {
         /// The export's name.
         name: String,
     },
+    /// List the exports with their paths, flags and grants.
+    List,
 }
 
 #[derive(Debug, clap::Args)]
