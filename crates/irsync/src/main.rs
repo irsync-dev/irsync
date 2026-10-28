@@ -582,14 +582,15 @@ fn run_index(a: &IndexArgs) -> i32 {
     }
 }
 
-/// `export update`: the named exports (every export when `names` is empty)
-/// under the daemon's state directory.
+/// `export update`: the named exports (`all`: every export) under the
+/// daemon's state directory.
 fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
     init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<i32> {
         let settings = Settings::load(&paths.config)?;
         let exports = Exports::load(&paths.exports)?;
-        let names: Vec<&str> = if names.is_empty() {
+        let names: Vec<&str> = if names.iter().any(|n| n == "all") {
+            anyhow::ensure!(names.len() == 1, "all names every export; give it alone");
             exports.exports.keys().map(String::as_str).collect()
         } else {
             names.iter().map(String::as_str).collect()

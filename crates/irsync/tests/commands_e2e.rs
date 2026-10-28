@@ -573,7 +573,7 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     )
     .unwrap();
     // A dry run reads nothing and creates no index.
-    let o = irsync(&home, &["export", "update", "-n"]);
+    let o = irsync(&home, &["export", "update", "-n", "all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
@@ -589,9 +589,17 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
         .next()
         .is_some());
     // A second run finds every row fresh.
-    let o = irsync(&home, &["export", "update"]);
+    let o = irsync(&home, &["export", "update", "all"]);
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("2 file(s), 0 hashed (0 bytes)"), "{out:?}");
+    // `all` stands alone.
+    let o = irsync(&home, &["export", "update", "all", "photos"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("irsync export update: all names every export; give it alone"),
+        "{err}"
+    );
     // An unknown name fails and names the file.
     let o = irsync(&home, &["export", "update", "music"]);
     assert_eq!(o.status.code(), Some(1));

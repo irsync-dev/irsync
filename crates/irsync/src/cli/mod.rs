@@ -232,8 +232,8 @@ pub enum ExportCmd {
         dry_run: bool,
         #[command(flatten)]
         log: LogArgs,
-        /// Export names; every export when none is given.
-        #[arg(value_name = "NAME")]
+        /// Export names, or `all` for every export.
+        #[arg(value_name = "NAME", required = true)]
         names: Vec<String>,
     },
 }

@@ -167,7 +167,7 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync export add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
 | `irsync export remove NAME` | stop exporting; its grants go with it |
 | `irsync export list` | list exports with their paths, flags and grants (the exports section of `show`) |
-| `irsync export update [-n] [-v\|-q] [NAME...]` | hash the files of the named exports (all, when none is named) into their indexes under the daemon's `state_dir`, so files irsync did not place are reused from the next session on; `-n` counts what would be read |
+| `irsync export update [-n] [-v\|-q] NAME...\|all` | hash the files of the named exports (`all`: every export) into their indexes under the daemon's `state_dir`, so files irsync did not place are reused from the next session on; `-n` counts what would be read |
 | `irsync grant add EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |

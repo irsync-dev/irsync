@@ -393,7 +393,7 @@ fn index_parses_local_roots_and_requires_one() {
 }
 
 #[test]
-fn export_update_parses_export_names_or_none_for_every_export() {
+fn export_update_parses_export_names_or_all() {
     use irsync::cli::ExportCmd;
     let a = parse(&["export", "update", "-n", "-v", "photos", "music"]);
     match a.cmd {
@@ -410,12 +410,14 @@ fn export_update_parses_export_names_or_none_for_every_export() {
         },
         other => panic!("{other:?}"),
     }
-    // Every export when none is named.
-    let a = parse(&["export", "update"]);
+    // `all` is the word for every export; a name is required.
+    let a = parse(&["export", "update", "all"]);
     assert!(matches!(
         a.cmd,
-        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names.is_empty())
+        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["all"])
     ));
+    assert!(Args::try_parse_from(["irsync", "export", "update"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "export", "update", "-n"]).is_err());
     assert!(Args::try_parse_from(["irsync", "export", "update", "-v", "-q"]).is_err());
 }
 
