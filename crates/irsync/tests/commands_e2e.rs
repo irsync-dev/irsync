@@ -15,7 +15,7 @@ fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn revoke_removes_an_alias_that_left_hosts_toml() {
+fn grant_remove_all_removes_an_alias_that_left_hosts_toml() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/p")).unwrap();
@@ -28,10 +28,12 @@ fn revoke_removes_an_alias_that_left_hosts_toml() {
     )
     .unwrap();
     let target = format!("p:{}", home.join("srv/p").display());
-    assert!(irsync(&home, &["add", &target]).status.success());
-    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
+    assert!(irsync(&home, &["export", "add", &target]).status.success());
+    assert!(irsync(&home, &["grant", "add", "p", "laptop"])
+        .status
+        .success());
     std::fs::write(cfg.join("hosts.toml"), "").unwrap();
-    let o = irsync(&home, &["revoke", "laptop"]);
+    let o = irsync(&home, &["grant", "remove", "all", "laptop"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!std::fs::read_to_string(cfg.join("exports.toml"))
         .unwrap()
@@ -39,12 +41,12 @@ fn revoke_removes_an_alias_that_left_hosts_toml() {
 }
 
 #[test]
-fn add_allow_revoke_remove_round_trip_with_default_paths() {
+fn export_add_grant_add_grant_remove_export_remove_round_trip_with_default_paths() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/photos")).unwrap();
     let target = format!("photos:{}", home.join("srv/photos").display());
-    let o = irsync(&home, &["add", &target]);
+    let o = irsync(&home, &["export", "add", &target]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     irsync::identity::parse_endpoint_id(out.trim()).expect("stdout is the daemon id");
@@ -55,22 +57,32 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
         format!("[exports.photos]\npath = {:?}\n", home.join("srv/photos"))
     );
     let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
-    assert!(irsync(&home, &["allow", "photos", &id]).status.success());
+    assert!(irsync(&home, &["grant", "add", "photos", &id])
+        .status
+        .success());
     assert!(std::fs::read_to_string(&exports)
         .unwrap()
         .contains(&format!("rw = [\"{id}\"]")));
-    let o = irsync(&home, &["allow", "photos", "all"]);
+    let o = irsync(&home, &["grant", "add", "photos", "all"]);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("no open access"));
     let o = irsync(
         &home,
-        &["add", &format!("all:{}", home.join("srv/photos").display())],
+        &[
+            "export",
+            "add",
+            &format!("all:{}", home.join("srv/photos").display()),
+        ],
     );
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("reserved"));
-    assert!(irsync(&home, &["revoke", &id]).status.success());
+    assert!(irsync(&home, &["grant", "remove", "all", &id])
+        .status
+        .success());
     assert!(!std::fs::read_to_string(&exports).unwrap().contains(&id));
-    assert!(irsync(&home, &["remove", "photos"]).status.success());
+    assert!(irsync(&home, &["export", "remove", "photos"])
+        .status
+        .success());
     assert_eq!(std::fs::read_to_string(&exports).unwrap().trim(), "");
-    let o = irsync(&home, &["remove", "photos"]);
+    let o = irsync(&home, &["export", "remove", "photos"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success()
@@ -81,7 +93,7 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
 }
 
 #[test]
-fn host_add_then_allow_by_alias_then_list() {
+fn host_add_then_grant_add_by_alias_then_list() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
@@ -95,12 +107,15 @@ fn host_add_then_allow_by_alias_then_list() {
         std::fs::read_to_string(home.join(".config/irsync/hosts.toml")).unwrap(),
         format!("[hosts.laptop]\nendpoint_id = \"{id}\"\nparallel = 4\n")
     );
-    assert!(
-        irsync(&home, &["add", &format!("p:{}", home.join("p").display())])
-            .status
-            .success()
-    );
-    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
+    assert!(irsync(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())]
+    )
+    .status
+    .success());
+    assert!(irsync(&home, &["grant", "add", "p", "laptop"])
+        .status
+        .success());
     assert!(
         std::fs::read_to_string(home.join(".config/irsync/exports.toml"))
             .unwrap()
@@ -187,12 +202,15 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     assert!(irsync(&home, &["host", "add", "laptop", &id])
         .status
         .success());
-    assert!(
-        irsync(&home, &["add", &format!("p:{}", home.join("p").display())])
-            .status
-            .success()
-    );
-    assert!(irsync(&home, &["allow", "p", "laptop"]).status.success());
+    assert!(irsync(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())]
+    )
+    .status
+    .success());
+    assert!(irsync(&home, &["grant", "add", "p", "laptop"])
+        .status
+        .success());
     std::fs::write(
         home.join(".config/irsync/exports.toml"),
         format!(
@@ -280,9 +298,12 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
             "{args:?}: {err}"
         );
     }
-    // `add` needs the daemon identity, and adds nothing without it.
+    // `export add` needs the daemon identity, and adds nothing without it.
     std::fs::create_dir_all(home.join("p")).unwrap();
-    let o = irsync(&home, &["add", &format!("p:{}", home.join("p").display())]);
+    let o = irsync(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains(key.to_str().unwrap()),
@@ -292,7 +313,7 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
 }
 
 #[test]
-fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
+fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let exports = home.join(".config/irsync/exports.toml");
@@ -301,7 +322,7 @@ fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let other = iroh::SecretKey::from_bytes(&[8; 32]).public();
     let evil = format!("{key} laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"{other}\"");
     // No exports.toml yet: nothing is created.
-    let o = irsync(&home, &["allow", "all", &evil]);
+    let o = irsync(&home, &["grant", "add", "all", &evil]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("control characters"),
@@ -309,13 +330,14 @@ fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     );
     assert!(!exports.exists());
     std::fs::create_dir_all(home.join("p")).unwrap();
-    assert!(
-        irsync(&home, &["add", &format!("p:{}", home.join("p").display())])
-            .status
-            .success()
-    );
+    assert!(irsync(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())]
+    )
+    .status
+    .success());
     let before = std::fs::read_to_string(&exports).unwrap();
-    let o = irsync(&home, &["allow", "p", &evil]);
+    let o = irsync(&home, &["grant", "add", "p", &evil]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("control characters"),
@@ -325,15 +347,56 @@ fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
 }
 
 #[test]
-fn add_of_a_bare_path_named_all_is_refused_and_writes_nothing() {
+fn export_add_of_a_bare_path_named_all_is_refused_and_writes_nothing() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/all")).unwrap();
-    let o = irsync(&home, &["add", home.join("srv/all").to_str().unwrap()]);
+    let o = irsync(
+        &home,
+        &["export", "add", home.join("srv/all").to_str().unwrap()],
+    );
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("\"all\" is reserved"),
         "{err}"
+    );
+    assert!(!home.join(".config/irsync/exports.toml").exists());
+}
+
+#[test]
+fn file_flags_after_the_noun_edit_the_named_files() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("dir")).unwrap();
+    let e = d.path().join("e.toml");
+    let e_str = e.to_str().unwrap();
+    let dir = home.join("dir");
+    let o = irsync(
+        &home,
+        &[
+            "export",
+            "--exports",
+            e_str,
+            "add",
+            &format!("p:{}", dir.display()),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = irsync(
+        &home,
+        &[
+            "export",
+            "add",
+            &format!("p2:{}", dir.display()),
+            "--exports",
+            e_str,
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&e).unwrap();
+    assert!(
+        text.contains("[exports.p]\n") && text.contains("[exports.p2]\n"),
+        "{text}"
     );
     assert!(!home.join(".config/irsync/exports.toml").exists());
 }

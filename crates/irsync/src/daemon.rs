@@ -452,7 +452,7 @@ pub async fn run_from_settings(
     let snap = authz.snapshot()?;
     if snap.exports.is_empty() {
         tracing::warn!(
-            "no exports defined in {}; run irsync add",
+            "no exports defined in {}; run irsync export add",
             paths.exports.display()
         );
     }

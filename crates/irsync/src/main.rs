@@ -11,8 +11,8 @@ use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, AddArgs, Args, Command, DaemonArgs, Direction, FilesArgs, HostAddArgs, HostCmd,
-    IndexArgs, LogArgs, SyncOptions,
+    validate, Args, Command, DaemonArgs, Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs,
+    GrantCmd, HostAddArgs, HostArgs, HostCmd, IndexArgs, LogArgs, SyncOptions,
 };
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
@@ -38,16 +38,9 @@ fn main() {
         Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
         Some(Command::Gc { dry_run, log }) => std::process::exit(run_gc(*dry_run, *log)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix)),
-        Some(Command::Add(a)) => std::process::exit(run_add(a)),
-        Some(Command::Remove { name, files }) => std::process::exit(run_remove(name, files)),
-        Some(Command::Allow {
-            export,
-            who,
-            ro,
-            files,
-        }) => std::process::exit(run_allow(export, who, *ro, files)),
-        Some(Command::Revoke { args, files }) => std::process::exit(run_revoke(args, files)),
         Some(Command::Host(h)) => std::process::exit(run_host(h)),
+        Some(Command::Export(e)) => std::process::exit(run_export(e)),
+        Some(Command::Grant(g)) => std::process::exit(run_grant(g)),
         Some(Command::Id { daemon, all, files }) => {
             std::process::exit(run_id(*daemon, *all, files))
         }
@@ -707,112 +700,102 @@ fn file_paths(f: &FilesArgs) -> Paths {
     )
 }
 
-fn run_add(a: &AddArgs) -> i32 {
-    finish(
-        "add",
-        (|| {
-            let (name, path) =
-                manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
-            let paths = file_paths(&a.files);
-            let mut doc = manage::load_doc(&paths.exports)?;
-            manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
-            // The daemon identity comes first: when it cannot be had, the
-            // export is not added either.
-            let settings = Settings::load(&paths.config)?;
-            let secret = identity_of(&settings.daemon.identity, "irsync-daemon")?;
-            manage::save_exports(&paths.exports, &doc)?;
-            eprintln!(
-                "added export {name} ({}) to {}",
-                path.display(),
-                paths.exports.display()
-            );
-            println!("{}", secret.public());
-            Ok(())
-        })(),
-    )
+fn run_export(e: &ExportArgs) -> i32 {
+    let paths = file_paths(&e.files);
+    match &e.cmd {
+        ExportCmd::Add(a) => finish(
+            "export add",
+            (|| {
+                let (name, path) =
+                    manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
+                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
+                // The daemon identity comes first: when it cannot be had, the
+                // export is not added either.
+                let settings = Settings::load(&paths.config)?;
+                let secret = identity_of(&settings.daemon.identity, "irsync-daemon")?;
+                manage::save_exports(&paths.exports, &doc)?;
+                eprintln!(
+                    "added export {name} ({}) to {}",
+                    path.display(),
+                    paths.exports.display()
+                );
+                println!("{}", secret.public());
+                Ok(())
+            })(),
+        ),
+        ExportCmd::Remove { name } => finish(
+            "export remove",
+            (|| {
+                let mut doc = manage::load_doc(&paths.exports)?;
+                manage::exports::remove_export(&mut doc, name)
+                    .with_context(|| format!("in {}", paths.exports.display()))?;
+                manage::save_exports(&paths.exports, &doc)?;
+                eprintln!("removed export {name} from {}", paths.exports.display());
+                Ok(())
+            })(),
+        ),
+    }
 }
 
-fn run_remove(name: &str, f: &FilesArgs) -> i32 {
-    finish(
-        "remove",
-        (|| {
-            let paths = file_paths(f);
-            let mut doc = manage::load_doc(&paths.exports)?;
-            manage::exports::remove_export(&mut doc, name)
-                .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_exports(&paths.exports, &doc)?;
-            eprintln!("removed export {name} from {}", paths.exports.display());
-            Ok(())
-        })(),
-    )
+fn run_grant(g: &GrantArgs) -> i32 {
+    let paths = file_paths(&g.files);
+    match &g.cmd {
+        GrantCmd::Add { export, who, ro } => finish(
+            "grant add",
+            (|| {
+                let hosts = Hosts::load(&paths.hosts)?;
+                let spec = PeerSpec::parse(who, &hosts)?;
+                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let mut doc = manage::load_doc(&paths.exports)?;
+                let target = (export != "all").then_some(export.as_str());
+                manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
+                    .with_context(|| format!("in {}", paths.exports.display()))?;
+                manage::save_exports(&paths.exports, &doc)?;
+                let mode = if *ro { "ro" } else { "rw" };
+                match target {
+                    Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
+                    None => eprintln!("{}: {mode} on all exports", spec.entry()),
+                }
+                Ok(())
+            })(),
+        ),
+        GrantCmd::Remove { export, who } => finish(
+            "grant remove",
+            (|| {
+                let hosts = Hosts::load(&paths.hosts)?;
+                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let export = (export != "all").then_some(export.as_str());
+                let who = (who != "all").then_some(who.as_str());
+                // Text that names no known peer still matches entries literally
+                // (an alias no longer in hosts.toml).
+                let spec = match who.map(|w| (w, PeerSpec::parse(w, &hosts))) {
+                    None => None,
+                    Some((_, Ok(s))) => Some(s),
+                    Some((
+                        w,
+                        Err(manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))),
+                    )) => Some(PeerSpec::Alias(w.to_string())),
+                    Some((_, Err(e))) => return Err(e.into()),
+                };
+                let mut doc = manage::load_doc(&paths.exports)?;
+                let n = manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
+                    .with_context(|| format!("in {}", paths.exports.display()))?;
+                manage::save_exports(&paths.exports, &doc)?;
+                eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
+                Ok(())
+            })(),
+        ),
+    }
 }
 
-fn run_allow(export: &str, who: &str, ro: bool, f: &FilesArgs) -> i32 {
-    finish(
-        "allow",
-        (|| {
-            let paths = file_paths(f);
-            let hosts = Hosts::load(&paths.hosts)?;
-            let spec = PeerSpec::parse(who, &hosts)?;
-            let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
-            let mut doc = manage::load_doc(&paths.exports)?;
-            let target = (export != "all").then_some(export);
-            manage::grants::grant_add(&mut doc, target, &spec, ro, &resolve)
-                .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_exports(&paths.exports, &doc)?;
-            let mode = if ro { "ro" } else { "rw" };
-            match target {
-                Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
-                None => eprintln!("{}: {mode} on all exports", spec.entry()),
-            }
-            Ok(())
-        })(),
-    )
-}
-
-fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
-    finish(
-        "revoke",
-        (|| {
-            let paths = file_paths(f);
-            let hosts = Hosts::load(&paths.hosts)?;
-            let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
-            let (export, who) = match args {
-                [w] => (None, Some(w.as_str())),
-                [e, w] => (
-                    (e != "all").then_some(e.as_str()),
-                    (w != "all").then_some(w.as_str()),
-                ),
-                _ => bail!("expected WHO or EXPORT WHO"),
-            };
-            // Text that names no known peer still matches entries literally
-            // (an alias no longer in hosts.toml).
-            let spec = match who.map(|w| (w, PeerSpec::parse(w, &hosts))) {
-                None => None,
-                Some((_, Ok(s))) => Some(s),
-                Some((
-                    w,
-                    Err(manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))),
-                )) => Some(PeerSpec::Alias(w.to_string())),
-                Some((_, Err(e))) => return Err(e.into()),
-            };
-            let mut doc = manage::load_doc(&paths.exports)?;
-            let n = manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
-                .with_context(|| format!("in {}", paths.exports.display()))?;
-            manage::save_exports(&paths.exports, &doc)?;
-            eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
-            Ok(())
-        })(),
-    )
-}
-
-fn run_host(h: &HostCmd) -> i32 {
-    match h {
-        HostCmd::Add(a) => finish("host add", host_add(a)),
-        HostCmd::Remove { alias, files } => finish(
+fn run_host(h: &HostArgs) -> i32 {
+    let paths = file_paths(&h.files);
+    match &h.cmd {
+        HostCmd::Add(a) => finish("host add", host_add(a, &paths)),
+        HostCmd::Remove { alias } => finish(
             "host remove",
             (|| {
-                let paths = file_paths(files);
                 let mut doc = manage::load_doc(&paths.hosts)?;
                 manage::hosts::host_remove(&mut doc, alias)
                     .with_context(|| format!("in {}", paths.hosts.display()))?;
@@ -821,10 +804,10 @@ fn run_host(h: &HostCmd) -> i32 {
                 Ok(())
             })(),
         ),
-        HostCmd::List { files } => finish(
+        HostCmd::List => finish(
             "host list",
             (|| {
-                let doc = manage::load_doc(&file_paths(files).hosts)?;
+                let doc = manage::load_doc(&paths.hosts)?;
                 for line in manage::hosts::host_list(&doc) {
                     println!("{line}");
                 }
@@ -897,7 +880,7 @@ fn run_show(f: &FilesArgs) -> i32 {
     )
 }
 
-fn host_add(a: &HostAddArgs) -> anyhow::Result<()> {
+fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
     let flags = manage::hosts::HostFlags {
         relay: a
@@ -911,7 +894,6 @@ fn host_add(a: &HostAddArgs) -> anyhow::Result<()> {
         dht: a.dht,
         mdns: a.mdns,
     };
-    let paths = file_paths(&a.files);
     let mut doc = manage::load_doc(&paths.hosts)?;
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
     manage::save_hosts(&paths.hosts, &doc)?;

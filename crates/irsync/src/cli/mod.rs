@@ -164,42 +164,12 @@ pub enum Command {
     /// index, so a destination irsync did not create contributes chunks
     /// and rename candidates from the first session on.
     Index(IndexArgs),
-    /// Export a directory from this machine's daemon (edits exports.toml)
-    /// and print the daemon's id.
-    Add(AddArgs),
-    /// Stop exporting a directory (edits exports.toml).
-    Remove {
-        /// The export's name.
-        name: String,
-        #[command(flatten)]
-        files: FilesArgs,
-    },
-    /// Grant a peer access to an export (edits exports.toml).
-    Allow {
-        /// The export's name (`all`: the top level, every export).
-        export: String,
-        /// An alias from hosts.toml, an EndpointId, a public key line or a
-        /// .pub file.
-        who: String,
-        /// Read-only access (default: read-write).
-        #[arg(long)]
-        ro: bool,
-        #[command(flatten)]
-        files: FilesArgs,
-    },
-    /// Remove grants: `revoke WHO`, `revoke EXPORT WHO` or `revoke EXPORT all`
-    /// (`all` in place of EXPORT means everywhere, of WHO every peer).
-    Revoke {
-        /// `WHO` alone, or `EXPORT WHO`; `all` stands for every export or
-        /// every peer.
-        #[arg(required = true, num_args = 1..=2, value_name = "ARG")]
-        args: Vec<String>,
-        #[command(flatten)]
-        files: FilesArgs,
-    },
     /// Manage host aliases (edits hosts.toml).
-    #[command(subcommand)]
-    Host(HostCmd),
+    Host(HostArgs),
+    /// Manage exports (edits exports.toml).
+    Export(ExportArgs),
+    /// Manage grants: who may use which export (edits exports.toml).
+    Grant(GrantArgs),
     /// Print this machine's public key line and EndpointId, generating the
     /// identity if it does not exist.
     Id {
@@ -219,6 +189,14 @@ pub enum Command {
     },
 }
 
+#[derive(Debug, clap::Args)]
+pub struct HostArgs {
+    #[command(subcommand)]
+    pub cmd: HostCmd,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum HostCmd {
     /// Add a host alias, or update the keys given for an existing one.
@@ -227,13 +205,60 @@ pub enum HostCmd {
     Remove {
         /// The alias.
         alias: String,
-        #[command(flatten)]
-        files: FilesArgs,
     },
     /// List host aliases.
-    List {
-        #[command(flatten)]
-        files: FilesArgs,
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ExportArgs {
+    #[command(subcommand)]
+    pub cmd: ExportCmd,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExportCmd {
+    /// Export a directory from this machine's daemon and print the
+    /// daemon's id.
+    Add(ExportAddArgs),
+    /// Stop exporting a directory, with its grants.
+    Remove {
+        /// The export's name.
+        name: String,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct GrantArgs {
+    #[command(subcommand)]
+    pub cmd: GrantCmd,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GrantCmd {
+    /// Grant a peer access to an export (`all`: every export).
+    Add {
+        /// The export's name, or `all` for every export.
+        export: String,
+        /// An alias from hosts.toml, an EndpointId, a public key line or a
+        /// .pub file.
+        who: String,
+        /// Read-only access (default: read-write).
+        #[arg(long)]
+        ro: bool,
+    },
+    /// Remove grants: of one peer or of every peer, on one export or on
+    /// every export.
+    Remove {
+        /// The export's name, or `all` for every export.
+        export: String,
+        /// An alias, an EndpointId, a public key line or a .pub file; or
+        /// `all` for every peer.
+        who: String,
     },
 }
 
@@ -268,8 +293,6 @@ pub struct HostAddArgs {
     /// client settings', else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 /// Accepts a duration the config files accept; keeps the user's text.
@@ -298,22 +321,23 @@ pub struct LogArgs {
     pub quiet: bool,
 }
 
-/// The config files the management commands read and edit.
+/// The config files the management commands read and edit. Global, so a
+/// noun accepts them before or after its verb.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
     /// The settings file (default: irsync.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// The host aliases file (default: hosts.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     pub hosts: Option<PathBuf>,
     /// The exports file (default: exports.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     pub exports: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
-pub struct AddArgs {
+pub struct ExportAddArgs {
     /// `NAME:PATH`, or a directory named by its final component.
     pub target: String,
     /// Export read-only.
@@ -323,8 +347,6 @@ pub struct AddArgs {
     /// so files irsync did not place are reused from the first session on.
     #[arg(long)]
     pub warm_index: bool,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, clap::Args)]

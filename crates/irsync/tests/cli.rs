@@ -230,7 +230,7 @@ fn location_missing_export_explains_the_address_form() {
     assert_eq!(
         err,
         "missing export in \"eowyn:/tmp/xxx\": remote addresses are HOST:EXPORT/PATH, \
-         where EXPORT is a directory the daemon shares by name (irsync add NAME:PATH)"
+         where EXPORT is a directory the daemon shares by name (irsync export add NAME:PATH)"
     );
     let err = Location::parse("home:").unwrap_err().to_string();
     assert!(err.starts_with("missing export in \"home:\": remote addresses are"));
@@ -381,43 +381,35 @@ fn index_subcommand_parses_roots_or_daemon_exports() {
 }
 
 #[test]
-fn management_commands_parse() {
-    let a = parse(&[
-        "add",
-        "photos:/srv/photos",
-        "--ro",
-        "--warm-index",
-        "--exports",
-        "/e",
-    ]);
-    let Some(Command::Add(x)) = a.cmd else {
-        panic!()
-    };
-    assert!(
-        x.target == "photos:/srv/photos"
-            && x.ro
-            && x.warm_index
-            && x.files.exports == Some("/e".into())
-    );
-    assert!(
-        matches!(parse(&["remove", "photos"]).cmd, Some(Command::Remove { ref name, .. }) if name == "photos")
-    );
-    assert!(
-        matches!(parse(&["allow", "photos", "laptop", "--ro"]).cmd, Some(Command::Allow { ref export, ref who, ro: true, .. }) if export == "photos" && who == "laptop")
-    );
-    assert!(
-        matches!(parse(&["revoke", "laptop"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 1)
-    );
-    assert!(
-        matches!(parse(&["revoke", "photos", "all"]).cmd, Some(Command::Revoke { ref args, .. }) if args.len() == 2)
-    );
-    assert!(Args::try_parse_from(["irsync", "revoke"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "revoke", "a", "b", "c"]).is_err());
-}
-
-#[test]
-fn host_subcommands_parse() {
-    use irsync::cli::HostCmd;
+fn nouns_share_add_remove_list() {
+    use irsync::cli::{ExportCmd, GrantCmd, HostCmd};
+    assert!(matches!(
+        parse(&["export", "add", "photos:/srv/photos", "--ro", "--warm-index"]).cmd,
+        Some(Command::Export(ref e))
+            if matches!(e.cmd, ExportCmd::Add(ref a) if a.target == "photos:/srv/photos" && a.ro && a.warm_index)
+    ));
+    assert!(matches!(
+        parse(&["export", "remove", "photos"]).cmd,
+        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Remove { ref name } if name == "photos")
+    ));
+    assert!(matches!(
+        parse(&["grant", "add", "photos", "laptop", "--ro"]).cmd,
+        Some(Command::Grant(ref g))
+            if matches!(g.cmd, GrantCmd::Add { ref export, ref who, ro: true } if export == "photos" && who == "laptop")
+    ));
+    assert!(matches!(
+        parse(&["grant", "remove", "all", "all"]).cmd,
+        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::Remove { .. })
+    ));
+    assert!(matches!(
+        parse(&["host", "remove", "home"]).cmd,
+        Some(Command::Host(ref h)) if matches!(h.cmd, HostCmd::Remove { ref alias } if alias == "home")
+    ));
+    assert!(matches!(
+        parse(&["host", "list"]).cmd,
+        Some(Command::Host(ref h)) if matches!(h.cmd, HostCmd::List)
+    ));
+    // host add keeps every flag
     let a = parse(&[
         "host",
         "add",
@@ -437,30 +429,74 @@ fn host_subcommands_parse() {
         "no",
         "--mdns",
         "yes",
-        "--hosts",
-        "/h",
     ]);
-    let Some(Command::Host(HostCmd::Add(h))) = a.cmd else {
+    let Some(Command::Host(h)) = a.cmd else {
         panic!()
     };
+    let HostCmd::Add(h) = h.cmd else { panic!() };
     assert!(
         h.alias == "home"
             && h.id == "abc"
             && h.address.len() == 2
             && h.dht == Some(false)
             && h.mdns == Some(true)
-            && h.files.hosts == Some("/h".into())
     );
     assert!(
         Args::try_parse_from(["irsync", "host", "add", "home", "abc", "--dht", "maybe"]).is_err()
     );
+}
+
+#[test]
+fn grant_positionals_are_always_two() {
+    for args in [
+        vec!["grant", "remove", "laptop"],
+        vec!["grant", "remove"],
+        vec!["grant", "add", "photos"],
+        vec!["grant", "remove", "a", "b", "c"],
+    ] {
+        let mut full = vec!["irsync"];
+        full.extend(args.iter());
+        assert!(Args::try_parse_from(full).is_err(), "{args:?}");
+    }
+}
+
+#[test]
+fn old_bare_verbs_are_gone() {
+    // No subcommand is named so: the words are the two paths of a sync.
+    for v in ["add", "remove", "allow", "revoke"] {
+        let a = parse(&[v, "photos"]);
+        assert!(
+            a.cmd.is_none() && a.sync.paths == vec![v, "photos"],
+            "{v}: {a:?}"
+        );
+    }
+}
+
+#[test]
+fn file_flags_are_accepted_after_the_noun_in_either_position() {
+    let after_noun = parse(&["host", "--hosts", "/h", "--config", "/c", "list"]);
+    let after_verb = parse(&["host", "list", "--hosts", "/h", "--config", "/c"]);
+    for a in [after_noun, after_verb] {
+        let Some(Command::Host(h)) = a.cmd else {
+            panic!()
+        };
+        assert_eq!(
+            (h.files.hosts, h.files.config, h.files.exports),
+            (Some("/h".into()), Some("/c".into()), None)
+        );
+    }
+    let a = parse(&["grant", "add", "photos", "laptop", "--exports", "/e"]);
+    let Some(Command::Grant(g)) = a.cmd else {
+        panic!()
+    };
+    assert_eq!(g.files.exports, Some("/e".into()));
+    // Before the noun the flag belongs to a sync, and after a sync's flag
+    // `host list` is its two paths, not a command.
+    let a = parse(&["--hosts", "/h", "host", "list"]);
     assert!(
-        matches!(parse(&["host", "remove", "home"]).cmd, Some(Command::Host(HostCmd::Remove { ref alias, .. })) if alias == "home")
+        a.cmd.is_none() && a.sync.paths == vec!["host", "list"],
+        "{a:?}"
     );
-    assert!(matches!(
-        parse(&["host", "list"]).cmd,
-        Some(Command::Host(HostCmd::List { .. }))
-    ));
 }
 
 #[test]

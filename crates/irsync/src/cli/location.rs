@@ -40,7 +40,7 @@ impl Location {
                     // Usually an rsync-over-ssh habit: `host:/abs/path`.
                     return Err(UsageError(format!(
                         "missing export in {s:?}: remote addresses are HOST:EXPORT/PATH, \
-                         where EXPORT is a directory the daemon shares by name (irsync add NAME:PATH)"
+                         where EXPORT is a directory the daemon shares by name (irsync export add NAME:PATH)"
                     )));
                 }
                 let path = if path.is_empty() {

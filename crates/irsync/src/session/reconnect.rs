@@ -156,12 +156,12 @@ fn classify(err: &anyhow::Error, conn: Option<&Connection>) -> Next {
 /// The message for a connection the daemon closed with a final code. An
 /// unauthorized key (code 1) is the likeliest first-run mistake, so that
 /// one names the export and this client's id and spells out the `irsync
-/// allow` line to run on the daemon's machine.
+/// grant add` line to run on the daemon's machine.
 fn describe_close(code: u32, reason: &str, export: &str, client: &EndpointId) -> String {
     match code {
         1 => format!(
             "the daemon rejected this client's key ({reason}): it is not allowed to use \
-             export {export:?}. On the daemon's machine run: irsync allow {export} {client} \
+             export {export:?}. On the daemon's machine run: irsync grant add {export} {client} \
              (irsync id prints this id)"
         ),
         _ => format!("the daemon closed the connection: {reason}"),
@@ -373,11 +373,14 @@ mod tests {
         let id = iroh::SecretKey::from_bytes(&[3u8; 32]).public();
         let msg = describe_close(1, "unauthorized", "photos", &id);
         assert!(msg.contains("rejected this client's key"), "{msg}");
-        assert!(msg.contains(&format!("irsync allow photos {id}")), "{msg}");
+        assert!(
+            msg.contains(&format!("irsync grant add photos {id}")),
+            "{msg}"
+        );
         assert!(msg.contains("irsync id"), "{msg}");
         let other = describe_close(2, "hello timeout", "photos", &id);
         assert!(
-            other.contains("hello timeout") && !other.contains("allow"),
+            other.contains("hello timeout") && !other.contains("grant"),
             "{other}"
         );
     }

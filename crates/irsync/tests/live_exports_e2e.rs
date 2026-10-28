@@ -1,4 +1,4 @@
-//! `irsync add` and `irsync allow` against a running daemon: the daemon
+//! `irsync export add` and `irsync grant add` against a running daemon: the daemon
 //! re-reads exports.toml per connection, so no restart is needed.
 
 use std::io::{BufRead, BufReader};
@@ -46,7 +46,7 @@ fn stderr(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// Start a daemon with no exports, then `irsync add` and `irsync allow`
+/// Start a daemon with no exports, then `irsync export add` and `irsync grant add`
 /// with the daemon running; the next sync succeeds without a restart.
 #[test]
 fn add_and_allow_take_effect_without_restart() {
@@ -131,7 +131,7 @@ fn add_and_allow_take_effect_without_restart() {
         stderr(&o)
     );
     assert!(
-        stderr(&o).contains(&format!("irsync allow data {client_id}")),
+        stderr(&o).contains(&format!("irsync grant add data {client_id}")),
         "{}",
         stderr(&o)
     );
@@ -139,32 +139,35 @@ fn add_and_allow_take_effect_without_restart() {
     assert!(log_now.contains("unauthorized"), "{log_now}");
 
     // 5. Export and authorize while the daemon runs.
-    let o = irsync(&server, &["add", &format!("data:{}", data.display())]);
+    let o = irsync(
+        &server,
+        &["export", "add", &format!("data:{}", data.display())],
+    );
     assert!(o.status.success(), "{}", stderr(&o));
-    let o = irsync(&server, &["allow", "data", &client_id]);
+    let o = irsync(&server, &["grant", "add", "data", &client_id]);
     assert!(o.status.success(), "{}", stderr(&o));
 
     // 6. The same sync now works.
     let o = irsync(&client, &sync_args);
     assert!(
         o.status.success(),
-        "sync after allow failed: {}",
+        "sync after grant add failed: {}",
         stderr(&o)
     );
     assert_eq!(std::fs::read(data.join("a.txt")).unwrap(), b"hello");
 
-    // 7. Revoking takes effect on the next connection too.
-    let o = irsync(&server, &["revoke", &client_id]);
+    // 7. Removing the grant takes effect on the next connection too.
+    let o = irsync(&server, &["grant", "remove", "all", &client_id]);
     assert!(o.status.success(), "{}", stderr(&o));
     let o = irsync(&client, &sync_args);
-    assert!(!o.status.success(), "sync after revoke should fail");
+    assert!(!o.status.success(), "sync after grant remove should fail");
     assert!(
         stderr(&o).contains("rejected this client's key"),
         "{}",
         stderr(&o)
     );
     assert!(
-        stderr(&o).contains(&format!("irsync allow data {client_id}")),
+        stderr(&o).contains(&format!("irsync grant add data {client_id}")),
         "{}",
         stderr(&o)
     );
