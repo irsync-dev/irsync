@@ -14,6 +14,7 @@ pub mod manage;
 pub mod net;
 pub mod plan;
 pub mod recv;
+pub mod resolve;
 pub mod scan;
 pub mod send;
 pub mod session;
