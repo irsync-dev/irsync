@@ -514,7 +514,7 @@ pub async fn run_from_settings(
     if snap.exports.is_empty() {
         tracing::warn!(
             "no exports defined in {}; run irsync export add",
-            paths.config.display()
+            snap.exports_file.display()
         );
     }
     let bind_addrs = listen_sockets(&settings.daemon.listen).await?;

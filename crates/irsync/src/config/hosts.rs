@@ -1,7 +1,8 @@
-//! `hosts.toml`: aliases for daemons.
+//! The `[hosts]` table: aliases for daemons, in `irsync.toml` or a split
+//! `hosts.toml` beside it.
 
 use super::settings::de_opt_duration;
-use super::{line_of, read_optional, toml_err, ConfigError};
+use super::{line_of, toml_err, ConfigError};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -141,17 +142,6 @@ impl Hosts {
             path: path.to_path_buf(),
             entries,
         })
-    }
-
-    /// A missing file yields no aliases.
-    pub fn load(path: &Path) -> Result<Hosts, ConfigError> {
-        match read_optional(path)? {
-            Some(text) => Self::parse(&text, path),
-            None => Ok(Hosts {
-                path: path.to_path_buf(),
-                entries: BTreeMap::new(),
-            }),
-        }
     }
 
     pub fn get(&self, alias: &str) -> Option<&HostEntry> {

@@ -84,12 +84,14 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.discovery.dht")),
         Some(vec!["true".into()])
     );
+    // Path defaults print as the file would hold them: home as `~`.
     assert_eq!(
         default_of(&p("identity")),
-        Some(vec![irsync::config::settings::Settings::default()
-            .identity
-            .display()
-            .to_string()])
+        Some(vec!["~/.config/irsync/id_ed25519".into()])
+    );
+    assert_eq!(
+        default_of(&p("daemon.identity")),
+        Some(vec!["~/.config/irsync/daemon_ed25519".into()])
     );
     // The [client] keys the README lists with defaults: the effective ones.
     assert_eq!(default_of(&p("client.parallel")), Some(vec!["32".into()]));
@@ -219,4 +221,14 @@ fn get_and_list_ignore_comments_and_layout() {
             "daemon.portmap = false",
         ]
     );
+}
+
+#[test]
+fn bare_seconds_set_a_duration_as_an_integer() {
+    use irsync::manage::config::parse_value;
+    let v = parse_value(Kind::Duration, &["600".to_string()]).unwrap();
+    assert_eq!(v.as_integer(), Some(600), "{v}");
+    let v = parse_value(Kind::Duration, &["10m".to_string()]).unwrap();
+    assert_eq!(v.as_str(), Some("10m"), "{v}");
+    assert!(parse_value(Kind::Duration, &["-5".to_string()]).is_err());
 }

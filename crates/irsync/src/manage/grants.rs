@@ -1,4 +1,4 @@
-//! Edits of the grant arrays in `exports.toml` for `grant add` and
+//! Edits of the grant arrays in `irsync.toml` for `grant add` and
 //! `grant remove`: the `[all]` table and the `rw`/`ro` arrays of each
 //! export. The editing functions are pure on a parsed document; loading
 //! and saving belong to the caller. The `list_*` reporters behind

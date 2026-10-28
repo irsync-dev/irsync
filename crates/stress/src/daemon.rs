@@ -39,9 +39,6 @@ pub struct DaemonConfig<'a> {
 pub struct DaemonFiles {
     pub config: PathBuf,
     pub exports: PathBuf,
-    /// Never written: an absent hosts file is empty, and naming it keeps the
-    /// daemon off the user's own `hosts.toml`.
-    pub hosts: PathBuf,
 }
 
 /// A path as a quoted TOML string.
@@ -84,11 +81,7 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
         ),
     )
     .with_context(|| format!("writing {}", exports.display()))?;
-    Ok(DaemonFiles {
-        config,
-        exports,
-        hosts: dir.join("hosts.toml"),
-    })
+    Ok(DaemonFiles { config, exports })
 }
 
 /// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private
@@ -499,7 +492,6 @@ mod tests {
         DaemonFiles {
             config: PathBuf::from("/dev/null"),
             exports: PathBuf::from("/dev/null"),
-            hosts: PathBuf::from("/dev/null"),
         }
     }
 
@@ -524,7 +516,6 @@ mod tests {
             DaemonFiles {
                 config: cfg.join("irsync.toml"),
                 exports: cfg.join("exports.toml"),
-                hosts: cfg.join("hosts.toml"),
             }
         );
         let read =

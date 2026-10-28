@@ -1,6 +1,7 @@
-//! `exports.toml`: what the daemon shares and who may use it.
+//! The `[exports]` and `[all]` tables: what the daemon shares and who may
+//! use it, in `irsync.toml` or a split `exports.toml` beside it.
 
-use super::{expand_tilde, line_of, read_optional, toml_err, ConfigError};
+use super::{expand_tilde, line_of, toml_err, ConfigError};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -152,13 +153,5 @@ impl Exports {
             at(line, format!("[all]: {}", e.message()))
         })?;
         exports_from_raw(raw.all, raw.exports, text, path)
-    }
-
-    /// A missing file yields no exports.
-    pub fn load(path: &Path) -> Result<Exports, ConfigError> {
-        match read_optional(path)? {
-            Some(text) => Self::parse(&text, path),
-            None => Self::parse("", path),
-        }
     }
 }

@@ -1,6 +1,6 @@
 //! `irsync.toml`: client and daemon settings.
 
-use super::{duration, paths, read_optional, ConfigError};
+use super::{duration, paths, ConfigError};
 use crate::net::addr::HostPort;
 use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
@@ -182,13 +182,5 @@ impl Settings {
     /// The settings of a merged document (see [`super::file::Config`]).
     pub fn parse(text: &str, path: &Path) -> Result<Settings, ConfigError> {
         super::file::Config::parse(text, path).map(|c| c.settings)
-    }
-
-    /// A missing file yields the defaults.
-    pub fn load(path: &Path) -> Result<Settings, ConfigError> {
-        match read_optional(path)? {
-            Some(text) => Self::parse(&text, path),
-            None => Ok(Settings::default()),
-        }
     }
 }

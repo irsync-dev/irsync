@@ -91,13 +91,12 @@ with the same `--config` the daemon gets (for the nouns the flag goes
 anywhere after the noun):
 
 ```sh
-F="--config /etc/irsync/irsync.toml"
-sudo -u irsync irsync export add photos:/srv/photos $F
-sudo -u irsync irsync grant add photos laptop $F
-sudo -u irsync irsync host add laptop <id> $F
-sudo -u irsync irsync config set daemon.listen 0.0.0.0:4433 $F
-sudo -u irsync irsync id show --daemon $F
-sudo -u irsync irsync show $F
+sudo -u irsync irsync export add photos:/srv/photos --config /etc/irsync/irsync.toml
+sudo -u irsync irsync grant add photos laptop --config /etc/irsync/irsync.toml
+sudo -u irsync irsync host add laptop <id> --config /etc/irsync/irsync.toml
+sudo -u irsync irsync config set daemon.listen 0.0.0.0:4433 --config /etc/irsync/irsync.toml
+sudo -u irsync irsync id show --daemon --config /etc/irsync/irsync.toml
+sudo -u irsync irsync show --config /etc/irsync/irsync.toml
 ```
 
 Running them as `irsync` keeps the files owned by the account that reads

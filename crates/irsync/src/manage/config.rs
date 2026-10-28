@@ -72,20 +72,28 @@ pub fn parse_key(key: &str) -> Result<Vec<String>, ManageError> {
 
 /// The default of a settings key, as `get` prints it (one element per
 /// line); `None` when the key has no default or is not a settings key.
+/// A default path as the file would hold it: the home directory as `~`.
+fn as_written(p: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => p.display().to_string(),
+    }
+}
+
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let s = Settings::default();
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
-        ["identity"] => one(s.identity.display().to_string()),
+        ["identity"] => one(as_written(&s.identity)),
         // The effective [client] defaults, as the README lists them.
         ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
         ["client", "reconnect"] => one(duration::format(
             crate::session::reconnect::ReconnectOpts::default().max,
         )),
         ["client", "dht"] | ["client", "mdns"] => one("true".to_string()),
-        ["state_dir"] => one(s.state_dir.display().to_string()),
-        ["daemon", "identity"] => one(s.daemon.identity.display().to_string()),
+        ["state_dir"] => one(as_written(&s.state_dir)),
+        ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
         ["daemon", "dormant_session_timeout"] => {
             one(duration::format(s.daemon.dormant_session_timeout))
@@ -256,7 +264,11 @@ pub fn parse_value(kind: Kind, values: &[String]) -> Result<Value, ManageError> 
         Kind::Duration => {
             let v = one()?;
             duration::parse(v).map_err(|e| bad(e.to_string()))?;
-            Value::from(v)
+            // Bare seconds are a number in the file, as the parser reads them.
+            match v.parse::<i64>() {
+                Ok(secs) => Value::from(secs),
+                Err(_) => Value::from(v),
+            }
         }
         Kind::Str | Kind::Path => Value::from(one()?),
         Kind::Url => {

@@ -265,7 +265,7 @@ fn verb(dry_run: bool) -> &'static str {
     }
 }
 
-/// The daemon's EndpointId: an alias from `hosts.toml`, else the host
+/// The daemon's EndpointId: an alias from the hosts table, else the host
 /// string itself must be an EndpointId.
 fn resolve_target(hosts: &Hosts, host: &str) -> anyhow::Result<EndpointId> {
     if let Some(entry) = hosts.get(host) {
@@ -888,6 +888,9 @@ fn run_config(c: &ConfigArgs) -> i32 {
             "config unset",
             (|| {
                 let path = cfg::parse_key(key)?;
+                if cfg::kind_of(&path).is_none() {
+                    bail!("unknown key {key:?}");
+                }
                 config_editable(&paths, &path)?;
                 let mut doc = manage::load_doc(&paths.config)?;
                 cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
@@ -1004,7 +1007,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 let export = (export != "all").then_some(export.as_str());
                 let who = (who != "all").then_some(who.as_str());
                 // Text that names no known peer still matches entries literally
-                // (an alias no longer in hosts.toml).
+                // (an alias no longer in the hosts table).
                 let spec = match who.map(|w| (w, PeerSpec::parse(w, &hosts))) {
                     None => None,
                     Some((_, Ok(s))) => Some(s),

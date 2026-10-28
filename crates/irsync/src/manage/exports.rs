@@ -1,4 +1,4 @@
-//! Edits of the export tables in `exports.toml` for `export add` and
+//! Edits of the export tables in `irsync.toml` for `export add` and
 //! `export remove`. All functions are pure on a parsed document; loading
 //! and saving belong to the caller.
 

@@ -1126,3 +1126,19 @@ fn dotted_names_round_trip_quoted() {
     );
     assert!(ok(&home, &["export", "list"]).starts_with("www.example.com: "));
 }
+
+#[test]
+fn unset_reports_an_unknown_key_before_a_split_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    let o = irsync(&home, &["config", "unset", "hosts.laptop.bogus"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("unknown key \"hosts.laptop.bogus\"") && !err.contains("kept in"),
+        "{err}"
+    );
+}

@@ -50,10 +50,13 @@ pub enum AuthzError {
     Config(#[from] ConfigError),
 }
 
-/// Who may use which export, as of one read of `hosts.toml` and `exports.toml`.
+/// Who may use which export, as of one read of the config and any split
+/// file beside it.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub exports: BTreeMap<String, Export>,
+    /// The file the exports were read from: the config, or a split file.
+    pub exports_file: std::path::PathBuf,
     grants: HashMap<EndpointId, Grants>,
 }
 
@@ -92,6 +95,7 @@ impl Snapshot {
         }
         Snapshot {
             exports: exports.exports.clone(),
+            exports_file: exports.path.clone(),
             grants,
         }
     }
@@ -135,8 +139,8 @@ impl MemoryAuthorizer {
     pub fn single(id: EndpointId, grants: Grants) -> Self {
         Self {
             snapshot: Snapshot {
-                exports: BTreeMap::new(),
                 grants: HashMap::from([(id, grants)]),
+                ..Snapshot::default()
             },
         }
     }

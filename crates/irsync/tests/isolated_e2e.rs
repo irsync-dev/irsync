@@ -335,3 +335,46 @@ fn no_listening_line_when_startup_fails_after_bind() {
         "ready lines printed although startup failed:\n{out}"
     );
 }
+
+#[test]
+fn no_exports_warning_names_the_split_file_that_holds_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    std::fs::create_dir_all(tmp.join("state")).unwrap();
+    std::fs::write(
+        tmp.join("irsync.toml"),
+        format!(
+            "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
+             relay_mode = \"disabled\"\nportmap = false\n\
+             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+            tmp.join("state"),
+            tmp.join("daemon_key"),
+        ),
+    )
+    .unwrap();
+    // The exports live in a split file, and there are none.
+    std::fs::write(tmp.join("exports.toml"), "[all]\n").unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["daemon", "--config"])
+        .arg(tmp.join("irsync.toml"))
+        .args(["--listen", "127.0.0.1:0"])
+        .env_remove("IRSYNC_PASSPHRASE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut daemon = DaemonGuard(child);
+    let (tx, rx) = mpsc::channel::<String>();
+    forward_lines(daemon.0.stdout.take().unwrap(), tx);
+    let (etx, erx) = mpsc::channel::<String>();
+    forward_lines(daemon.0.stderr.take().unwrap(), etx);
+    expect_line(&rx, "listening on:", |l| l.starts_with("listening on: "));
+    let warn = expect_line(&erx, "no exports warning", |l| {
+        l.contains("no exports defined in")
+    });
+    assert!(
+        warn.contains(&tmp.join("exports.toml").display().to_string()),
+        "{warn}"
+    );
+}

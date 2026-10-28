@@ -1,5 +1,5 @@
-//! Edits of `hosts.toml` for `host add` and `host remove`. Pure on a parsed
-//! document; loading and saving belong to the caller.
+//! Edits of the `[hosts]` table in `irsync.toml` for `host add` and
+//! `host remove`. Pure on a parsed document; loading and saving belong to the caller.
 
 use super::ManageError;
 use crate::config::hosts::valid_alias;

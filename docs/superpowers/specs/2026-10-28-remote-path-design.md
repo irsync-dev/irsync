@@ -8,6 +8,10 @@ and `2026-10-28-config-cli-design.md` (the `host`, `export`, `grant` and
 the daemon does with it, and one new listing. It does not change flags,
 the local operand, the config files or the management commands.
 
+> Updated 2026-10-28 by `2026-10-28-single-config-design.md`: the hosts
+> and exports named below live in `irsync.toml`; `hosts.toml` and
+> `exports.toml` are the optional split files read beside it.
+
 ## Intent
 
 Today a remote operand is `HOST:EXPORT/PATH`: the first path component is

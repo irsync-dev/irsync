@@ -56,7 +56,8 @@ fn settings_unknown_key_names_file_and_key() {
 #[test]
 fn settings_missing_file_is_default() {
     let d = tempfile::tempdir().unwrap();
-    let s = Settings::load(&d.path().join("none.toml")).unwrap();
+    let paths = Paths::resolve(Some(&d.path().join("none.toml")));
+    let s = Config::load(&paths).unwrap().settings;
     assert_eq!(s.client.parallel, None);
 }
 
@@ -225,7 +226,8 @@ fn exports_missing_path_and_unknown_key_are_errors_with_file() {
 #[test]
 fn exports_missing_file_is_empty() {
     let d = tempfile::tempdir().unwrap();
-    let x = Exports::load(&d.path().join("none.toml")).unwrap();
+    let paths = Paths::resolve(Some(&d.path().join("none.toml")));
+    let x = Config::load(&paths).unwrap().exports;
     assert!(x.exports.is_empty() && x.rw.is_empty());
 }
 
