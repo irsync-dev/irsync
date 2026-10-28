@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use toml::Spanned;
 
-/// Names that cannot be export names.
-pub const RESERVED: [&str; 3] = ["rw", "ro", "all"];
+/// Names that cannot be export names: `all` is the word `grant add all WHO`
+/// uses for every export.
+pub const RESERVED: [&str; 1] = ["all"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,8 +33,26 @@ pub struct Exports {
     pub exports: BTreeMap<String, Export>,
 }
 
-fn reserved(name: &str) -> String {
-    format!("{name:?} is a reserved name and cannot be used as an export name")
+/// The message for a reserved export name.
+pub fn reserved(name: &str) -> String {
+    format!("{name:?} is reserved: it is the word `grant add all WHO` uses for every export")
+}
+
+/// The `[all]` table: grants that apply to every export.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AllGrants {
+    rw: Vec<String>,
+    ro: Vec<String>,
+}
+
+/// The typed shape of the file, read once the top-level keys are known
+/// to be `all` and `exports`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawFile {
+    all: AllGrants,
+    exports: BTreeMap<String, Spanned<toml::Value>>,
 }
 
 impl Exports {
@@ -43,24 +62,38 @@ impl Exports {
             line: Some(line_of(text, offset)),
             message,
         };
-        let mut table: BTreeMap<String, Spanned<toml::Value>> =
+        // Shape pass: every top-level key is `all` or `exports`, both tables.
+        let shape: BTreeMap<String, Spanned<toml::Value>> =
             toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let mut list = |key: &str| -> Result<Vec<String>, ConfigError> {
-            match table.remove(key) {
-                None => Ok(Vec::new()),
-                Some(v) if v.get_ref().is_table() => Err(at(v.span().start, reserved(key))),
-                Some(v) => {
-                    let start = v.span().start;
-                    v.into_inner()
-                        .try_into()
-                        .map_err(|e: toml::de::Error| at(start, format!("{key}: {}", e.message())))
+        for (name, value) in &shape {
+            let start = value.span().start;
+            let value = value.get_ref();
+            let message = match name.as_str() {
+                "all" | "exports" if value.is_table() => continue,
+                "all" | "exports" => {
+                    format!("{name}: expected a table, found {}", value.type_str())
                 }
-            }
-        };
-        let rw = list("rw")?;
-        let ro = list("ro")?;
+                _ if value.is_table() => {
+                    format!("unknown table {name:?}; exports live under [exports.{name}]")
+                }
+                "rw" | "ro" => {
+                    format!("unknown key {name:?}; grants for every export live under [all]")
+                }
+                _ => format!("unknown key {name:?}"),
+            };
+            return Err(at(start, message));
+        }
+        // Typed pass over the same text, so the spans match.
+        let raw: RawFile = toml::from_str(text).map_err(|e| {
+            let line = e
+                .span()
+                .map(|s| s.start)
+                .or_else(|| shape.get("all").map(|v| v.span().start))
+                .unwrap_or(0);
+            at(line, format!("[all]: {}", e.message()))
+        })?;
         let mut exports = BTreeMap::new();
-        for (name, value) in table {
+        for (name, value) in raw.exports {
             let start = value.span().start;
             if RESERVED.contains(&name.as_str()) {
                 return Err(at(start, reserved(&name)));
@@ -70,20 +103,20 @@ impl Exports {
                 return Err(at(
                     start,
                     format!(
-                        "{name}: expected a table (an export), found {}",
+                        "exports.{name}: expected a table (an export), found {}",
                         value.type_str()
                     ),
                 ));
             }
-            let mut e: Export = value
-                .try_into()
-                .map_err(|e: toml::de::Error| at(start, format!("[{name}]: {}", e.message())))?;
+            let mut e: Export = value.try_into().map_err(|e: toml::de::Error| {
+                at(start, format!("[exports.{name}]: {}", e.message()))
+            })?;
             e.path = expand_tilde(&e.path.to_string_lossy());
             if !e.path.is_absolute() {
                 return Err(at(
                     start,
                     format!(
-                        "[{name}]: path {:?} must be absolute",
+                        "[exports.{name}]: path {:?} must be absolute",
                         e.path.to_string_lossy()
                     ),
                 ));
@@ -92,8 +125,8 @@ impl Exports {
         }
         Ok(Exports {
             path: path.to_path_buf(),
-            rw,
-            ro,
+            rw: raw.all.rw,
+            ro: raw.all.ro,
             exports,
         })
     }

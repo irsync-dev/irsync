@@ -95,30 +95,69 @@ fn alias_validity() {
 }
 
 #[test]
-fn exports_parse_top_level_arrays_and_tables() {
-    let t = "rw = [\"admin\"]\n[photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\n";
+fn exports_parse_all_table_and_exports_tables() {
+    let t = "[all]\nrw = [\"admin\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\n";
     let x = Exports::parse(t, p()).unwrap();
     assert_eq!(x.rw, vec!["admin"]);
     assert_eq!(x.exports["photos"].rw, vec!["laptop"]);
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
     assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
+    assert!(Exports::parse("[all]\n", p()).unwrap().rw.is_empty());
 }
 
 #[test]
-fn exports_reserved_table_name_is_error() {
-    let e = Exports::parse("\n[all]\npath = \"/x\"\n", p()).unwrap_err();
+fn exports_rw_and_ro_are_valid_export_names() {
+    for name in ["rw", "ro"] {
+        assert!(Exports::parse(&format!("[exports.{name}]\npath = \"/x\"\n"), p()).is_ok());
+    }
+}
+
+#[test]
+fn exports_all_is_the_only_reserved_name() {
+    let e = Exports::parse("\n[exports.all]\npath = \"/x\"\n", p()).unwrap_err();
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
     assert!(
-        e.starts_with("/x/f.toml:2:") && e.contains("\"all\" is a reserved name"),
+        e.contains("\"all\" is reserved: it is the word `grant add all WHO` uses for every export"),
         "{e}"
     );
+    assert!(e.contains(":2:"), "{e}");
+}
+
+#[test]
+fn exports_old_layout_names_the_new_location() {
+    let e = Exports::parse("\n[photos]\npath = \"/x\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("unknown table \"photos\"; exports live under [exports.photos]")
+            && e.contains(":2:"),
+        "{e}"
+    );
+    let e = Exports::parse("rw = [\"a\"]\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("unknown key \"rw\"; grants for every export live under [all]")
+            && e.contains(":1:"),
+        "{e}"
+    );
+    let e = Exports::parse("[all]\npath = \"/x\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("[all]") && e.contains("path"), "{e}");
+    let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
+    assert!(e.contains("unknown key \"x\""), "{e}");
 }
 
 #[test]
 fn exports_relative_path_is_error_with_file_and_line() {
-    let e = Exports::parse("[a]\npath = \"/a\"\n[b]\npath = \"srv/b\"\n", p()).unwrap_err();
+    let e = Exports::parse(
+        "[exports.a]\npath = \"/a\"\n[exports.b]\npath = \"srv/b\"\n",
+        p(),
+    )
+    .unwrap_err();
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
     assert!(
@@ -126,7 +165,7 @@ fn exports_relative_path_is_error_with_file_and_line() {
         "{e}"
     );
     // `~` expands to an absolute path and is accepted.
-    assert!(Exports::parse("[c]\npath = \"~/c\"\n", p())
+    assert!(Exports::parse("[exports.c]\npath = \"~/c\"\n", p())
         .unwrap()
         .exports["c"]
         .path
@@ -135,14 +174,16 @@ fn exports_relative_path_is_error_with_file_and_line() {
 
 #[test]
 fn exports_missing_path_and_unknown_key_are_errors_with_file() {
-    assert!(Exports::parse("[a]\nread_only = true\n", p())
+    assert!(Exports::parse("[exports.a]\nread_only = true\n", p())
         .unwrap_err()
         .to_string()
         .contains("/x/f.toml"));
-    assert!(Exports::parse("[a]\npath = \"/x\"\nbogus = 1\n", p())
-        .unwrap_err()
-        .to_string()
-        .contains("bogus"));
+    assert!(
+        Exports::parse("[exports.a]\npath = \"/x\"\nbogus = 1\n", p())
+            .unwrap_err()
+            .to_string()
+            .contains("bogus")
+    );
 }
 
 #[test]
@@ -186,25 +227,20 @@ fn hosts_bad_endpoint_id_has_line() {
 
 #[test]
 fn exports_schema_errors_have_lines() {
-    let e = Exports::parse("[a]\npath = \"/x\"\n[b]\npath = \"/y\"\nbogus = 1\n", p())
+    let e = Exports::parse(
+        "[exports.a]\npath = \"/x\"\n[exports.b]\npath = \"/y\"\nbogus = 1\n",
+        p(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("/x/f.toml:") && e.contains("bogus"), "{e}");
+    let e = Exports::parse("[all]\nrw = 5\n", p())
         .unwrap_err()
         .to_string();
-    assert!(e.contains("/x/f.toml:") && e.contains("bogus"), "{e}");
-    let e = Exports::parse("\n\nrw = 5\n", p()).unwrap_err().to_string();
-    assert!(e.contains("/x/f.toml:3:"), "{e}");
+    assert!(e.contains("/x/f.toml:2:"), "{e}");
     let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
-    assert!(e.contains("/x/f.toml:1:") && e.contains("table"), "{e}");
-}
-
-#[test]
-fn exports_rw_ro_tables_are_reserved() {
-    for name in ["rw", "ro"] {
-        let e = Exports::parse(&format!("[{name}]\npath = \"/x\"\n"), p()).unwrap_err();
-        assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
-        let e = e.to_string();
-        assert!(
-            e.starts_with("/x/f.toml:1:") && e.contains(&format!("{name:?} is a reserved name")),
-            "{e}"
-        );
-    }
+    assert!(
+        e.contains("/x/f.toml:1:") && e.contains("unknown key \"x\""),
+        "{e}"
+    );
 }

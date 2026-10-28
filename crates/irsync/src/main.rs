@@ -757,7 +757,7 @@ fn run_allow(export: &str, who: &str, ro: bool, f: &FilesArgs) -> i32 {
             let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
             let mut doc = manage::load_doc(&paths.exports)?;
             let target = (export != "all").then_some(export);
-            manage::exports::allow(&mut doc, target, &spec, ro, &resolve)
+            manage::grants::grant_add(&mut doc, target, &spec, ro, &resolve)
                 .with_context(|| format!("in {}", paths.exports.display()))?;
             manage::save_exports(&paths.exports, &doc)?;
             let mode = if ro { "ro" } else { "rw" };
@@ -797,7 +797,7 @@ fn run_revoke(args: &[String], f: &FilesArgs) -> i32 {
                 Some((_, Err(e))) => return Err(e.into()),
             };
             let mut doc = manage::load_doc(&paths.exports)?;
-            let n = manage::exports::revoke(&mut doc, export, spec.as_ref(), &resolve)
+            let n = manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
                 .with_context(|| format!("in {}", paths.exports.display()))?;
             manage::save_exports(&paths.exports, &doc)?;
             eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });

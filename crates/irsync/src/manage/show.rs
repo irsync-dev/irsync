@@ -62,7 +62,7 @@ pub fn report(
         grants(&mut out, &e.rw, &e.ro, hosts);
     }
     if !exports.rw.is_empty() || !exports.ro.is_empty() {
-        out.push_str("all exports:\n");
+        out.push_str("all:\n");
         grants(&mut out, &exports.rw, &exports.ro, hosts);
     }
     out

@@ -2,6 +2,7 @@
 //! TOML load/save and the interpretation of a command-line "who" argument.
 
 pub mod exports;
+pub mod grants;
 pub mod hosts;
 pub mod show;
 
@@ -33,7 +34,7 @@ pub enum ManageError {
     NotFound(String),
     #[error("{0:?} is not a valid export name")]
     BadName(String),
-    #[error("{0:?} is a reserved name (rw, ro, all)")]
+    #[error("{}", crate::config::exports::reserved(.0))]
     Reserved(String),
     #[error(
         "{0:?} is not a valid alias: must not contain ':' or '/' and must not be an EndpointId"

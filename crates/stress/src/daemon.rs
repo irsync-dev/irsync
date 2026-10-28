@@ -78,7 +78,7 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
     std::fs::write(
         &exports,
         format!(
-            "[data]\npath = {}\nrw = [{}]\n",
+            "[exports.data]\npath = {}\nrw = [{}]\n",
             toml_path(c.export_path)?,
             toml::Value::String(c.client_id.to_string())
         ),
@@ -543,9 +543,9 @@ mod tests {
             assert_eq!(d["discovery"][k].as_bool(), Some(false));
         }
         let exports = read(&files.exports);
-        assert_eq!(exports["data"]["path"], s(export));
+        assert_eq!(exports["exports"]["data"]["path"], s(export));
         assert_eq!(
-            exports["data"]["rw"],
+            exports["exports"]["data"]["rw"],
             toml::Value::Array(vec![toml::Value::String("abc".into())])
         );
         assert!(cfg.join("state").is_dir());

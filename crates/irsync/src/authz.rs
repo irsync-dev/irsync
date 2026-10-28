@@ -22,12 +22,12 @@ impl Access {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
     pub exports: BTreeMap<String, Access>,
-    /// Access granted by the `*` wildcard.
+    /// Access granted by the `[all]` table, to every export.
     pub all: Option<Access>,
 }
 
 impl Grants {
-    /// True when the grants cover no export at all (no entries and no `*`).
+    /// True when the grants cover no export at all (no entries and no `[all]`).
     pub fn is_empty(&self) -> bool {
         self.exports.is_empty() && self.all.is_none()
     }
@@ -69,7 +69,7 @@ impl Snapshot {
                     let Ok(id) = hosts.resolve_peer(entry) else {
                         tracing::warn!(
                             entry = %entry,
-                            export = export.unwrap_or("*"),
+                            export = export.unwrap_or("all"),
                             "grant entry matches nobody"
                         );
                         continue;

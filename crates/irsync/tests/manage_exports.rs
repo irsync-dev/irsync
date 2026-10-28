@@ -1,4 +1,5 @@
-use irsync::manage::exports::{add_export, allow, parse_add_target, remove_export, revoke};
+use irsync::config::exports::Exports;
+use irsync::manage::exports::{add_export, parse_add_target, remove_export};
 use irsync::manage::{ManageError, PeerSpec};
 use std::path::Path;
 use toml_edit::DocumentMut;
@@ -6,19 +7,13 @@ use toml_edit::DocumentMut;
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-fn peer(n: u8) -> PeerSpec {
-    PeerSpec::Id {
-        id: id(n),
-        comment: None,
-    }
-}
 
 #[test]
 fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
     let mut doc = DocumentMut::new();
     add_export(&mut doc, "photos", Path::new("/srv/photos"), false, false).unwrap();
     add_export(&mut doc, "docs", Path::new("/srv/docs"), true, true).unwrap();
-    let x = irsync::config::exports::Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
     assert!(!x.exports["photos"].read_only && !x.exports["photos"].warm_index);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
     assert!(
@@ -29,101 +24,53 @@ fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
         add_export(&mut doc, "photos", Path::new("/x"), false, false),
         Err(ManageError::Exists(_))
     ));
-    for r in ["rw", "ro", "all"] {
-        assert!(matches!(
-            add_export(&mut doc, r, Path::new("/x"), false, false),
-            Err(ManageError::Reserved(_))
-        ));
-    }
+    assert!(matches!(
+        add_export(&mut doc, "all", Path::new("/x"), false, false),
+        Err(ManageError::Reserved(_))
+    ));
+}
+
+#[test]
+fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
+    let mut doc = DocumentMut::new();
+    add_export(&mut doc, "photos", Path::new("/srv/photos"), false, false).unwrap();
+    assert_eq!(
+        doc.to_string(),
+        "[exports.photos]\npath = \"/srv/photos\"\n"
+    );
+    let e = add_export(&mut doc, "all", Path::new("/srv/all"), false, false).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "\"all\" is reserved: it is the word `grant add all WHO` uses for every export"
+    );
+    assert!(add_export(&mut doc, "rw", Path::new("/srv/rw"), false, false).is_ok());
+}
+
+#[test]
+fn remove_last_export_leaves_a_loadable_file() {
+    let mut doc: DocumentMut = "[all]\nrw = [\"x\"]\n[exports.a]\npath = \"/a\"\n"
+        .parse()
+        .unwrap();
+    remove_export(&mut doc, "a").unwrap();
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert!(x.exports.is_empty() && x.rw == vec!["x"]);
+    assert!(matches!(
+        remove_export(&mut doc, "all"),
+        Err(ManageError::NotFound(_))
+    ));
 }
 
 #[test]
 fn remove_drops_table_and_its_grants() {
-    let mut doc: DocumentMut = "[a]\npath = \"/a\"\nrw = [\"x\"]\n[b]\npath = \"/b\"\n"
-        .parse()
-        .unwrap();
+    let mut doc: DocumentMut =
+        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n[exports.b]\npath = \"/b\"\n"
+            .parse()
+            .unwrap();
     remove_export(&mut doc, "a").unwrap();
-    assert_eq!(doc.to_string(), "[b]\npath = \"/b\"\n");
+    assert_eq!(doc.to_string(), "[exports.b]\npath = \"/b\"\n");
     assert!(matches!(
         remove_export(&mut doc, "a"),
         Err(ManageError::NotFound(_))
-    ));
-}
-
-#[test]
-fn allow_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
-    let mut doc: DocumentMut = format!("[p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1))
-        .parse()
-        .unwrap();
-    let resolve = |s: &str| (s == "laptop").then(|| id(1));
-    allow(
-        &mut doc,
-        Some("p"),
-        &PeerSpec::Alias("laptop".into()),
-        false,
-        &resolve,
-    )
-    .unwrap(); // replaces the raw id
-    assert_eq!(doc["p"]["rw"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        doc["p"]["rw"].as_array().unwrap().get(0).unwrap().as_str(),
-        Some("laptop")
-    );
-    allow(
-        &mut doc,
-        Some("p"),
-        &PeerSpec::Alias("laptop".into()),
-        true,
-        &resolve,
-    )
-    .unwrap(); // rw -> ro
-    assert!(doc["p"]["rw"].as_array().unwrap().is_empty());
-    assert_eq!(doc["p"]["ro"].as_array().unwrap().len(), 1);
-    allow(
-        &mut doc,
-        Some("p"),
-        &PeerSpec::Id {
-            id: id(2),
-            comment: Some("mike@laptop".into()),
-        },
-        false,
-        &resolve,
-    )
-    .unwrap();
-    assert!(
-        doc.to_string()
-            .contains(&format!("rw = [\"{}\", # mike@laptop\n]", id(2))),
-        "{doc}"
-    );
-    allow(&mut doc, None, &peer(3), true, &resolve).unwrap(); // top level
-    assert_eq!(
-        doc["ro"].as_array().unwrap().get(0).unwrap().as_str(),
-        Some(id(3).to_string().as_str())
-    );
-    assert!(matches!(
-        allow(&mut doc, Some("zz"), &peer(3), false, &resolve),
-        Err(ManageError::NotFound(_))
-    ));
-}
-
-#[test]
-fn revoke_by_export_by_all_and_everywhere() {
-    let text = format!("rw = [\"{a}\"]\n[p]\npath = \"/p\"\nrw = [\"{a}\", \"{b}\"]\nro = [\"lap\"]\n[q]\npath = \"/q\"\nro = [\"{a}\"]\n", a = id(1), b = id(2));
-    let resolve = |s: &str| (s == "lap").then(|| id(1));
-    let mut doc: DocumentMut = text.parse().unwrap();
-    assert_eq!(
-        revoke(&mut doc, Some("p"), Some(&peer(1)), &resolve).unwrap(),
-        2
-    ); // raw id and the alias that resolves to it
-    assert_eq!(doc["p"]["rw"].as_array().unwrap().len(), 1);
-    assert!(doc["p"]["ro"].as_array().unwrap().is_empty());
-    let mut doc: DocumentMut = text.parse().unwrap();
-    assert_eq!(revoke(&mut doc, None, Some(&peer(1)), &resolve).unwrap(), 4); // everywhere
-    let mut doc: DocumentMut = text.parse().unwrap();
-    assert_eq!(revoke(&mut doc, Some("p"), None, &resolve).unwrap(), 3); // all of p
-    assert!(matches!(
-        revoke(&mut doc, Some("p"), None, &resolve),
-        Err(ManageError::NothingToRemove(_))
     ));
 }
 
@@ -160,38 +107,6 @@ fn add_target_forms() {
 }
 
 #[test]
-fn a_second_allow_after_a_comment_keeps_the_comment_and_valid_toml() {
-    let mut doc: DocumentMut = "[p]\npath = \"/p\"\n".parse().unwrap();
-    let none = |_: &str| None;
-    allow(
-        &mut doc,
-        Some("p"),
-        &PeerSpec::Id {
-            id: id(1),
-            comment: Some("c1".into()),
-        },
-        false,
-        &none,
-    )
-    .unwrap();
-    allow(&mut doc, Some("p"), &peer(2), false, &none).unwrap();
-    let text = doc.to_string();
-    let x = irsync::config::exports::Exports::parse(&text, Path::new("e")).unwrap();
-    assert_eq!(x.exports["p"].rw.len(), 2, "{text}");
-    assert!(text.contains(&format!("\"{}\", # c1\n", id(1))), "{text}");
-}
-
-#[test]
-fn revoke_matches_a_dangling_alias_by_literal_text() {
-    let mut doc: DocumentMut = "[p]\npath = \"/p\"\nrw = [\"gone\"]\n".parse().unwrap();
-    let none = |_: &str| None;
-    assert_eq!(
-        revoke(&mut doc, None, Some(&PeerSpec::Alias("gone".into())), &none).unwrap(),
-        1
-    );
-}
-
-#[test]
 fn add_target_edge_cases() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(d.path().join("a:b")).unwrap();
@@ -223,22 +138,6 @@ fn add_target_edge_cases() {
 const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
 
 #[test]
-fn allow_refuses_a_comment_with_control_characters_and_leaves_the_doc() {
-    let mut doc: DocumentMut = "[p]\npath = \"/p\"\n".parse().unwrap();
-    let before = doc.to_string();
-    let none = |_: &str| None;
-    for c in [INJECTED, "a\rb", "tab\there"] {
-        let evil = PeerSpec::Id {
-            id: id(1),
-            comment: Some(c.into()),
-        };
-        let r = allow(&mut doc, Some("p"), &evil, false, &none);
-        assert!(matches!(r, Err(ManageError::BadComment(_))), "{c:?}: {r:?}");
-        assert_eq!(doc.to_string(), before);
-    }
-}
-
-#[test]
 fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
     let hosts = irsync::config::hosts::Hosts::parse("", Path::new("h")).unwrap();
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
@@ -261,37 +160,45 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
 fn save_exports_refuses_a_document_that_does_not_parse() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("exports.toml");
-    std::fs::write(&path, "[p]\npath = \"/p\"\n").unwrap();
-    let doc: DocumentMut = "[p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
+    std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
+    let doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
     let e = irsync::manage::save_exports(&path, &doc).unwrap_err();
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "[p]\npath = \"/p\"\n"
+        "[exports.p]\npath = \"/p\"\n"
     );
-    let ok: DocumentMut = "[q]\npath = \"/q\"\n".parse().unwrap();
+    let ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
     irsync::manage::save_exports(&path, &ok).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "[q]\npath = \"/q\"\n"
+        "[exports.q]\npath = \"/q\"\n"
     );
 }
 
 #[test]
-fn remove_refuses_reserved_names_and_non_tables() {
-    let text = format!("rw = [\"{}\"]\nro = []\n[p]\npath = \"/p\"\n", id(1));
+fn remove_only_removes_an_export_table() {
+    let text = format!(
+        "[all]\nrw = [\"{}\"]\nro = []\n[exports.p]\npath = \"/p\"\n",
+        id(1)
+    );
     let mut doc: DocumentMut = text.parse().unwrap();
-    for r in ["rw", "ro", "all"] {
+    for r in ["all", "exports", "rw"] {
         assert!(
-            matches!(remove_export(&mut doc, r), Err(ManageError::Reserved(_))),
+            matches!(remove_export(&mut doc, r), Err(ManageError::NotFound(_))),
             "{r}"
         );
     }
-    let mut odd: DocumentMut = "x = 1\n[p]\npath = \"/p\"\n".parse().unwrap();
+    let mut odd: DocumentMut = "[exports]\nx = 1\n[exports.p]\npath = \"/p\"\n"
+        .parse()
+        .unwrap();
     assert!(matches!(
         remove_export(&mut odd, "x"),
         Err(ManageError::NotFound(_))
     ));
     assert_eq!(doc.to_string(), text);
-    assert_eq!(odd.to_string(), "x = 1\n[p]\npath = \"/p\"\n");
+    assert_eq!(
+        odd.to_string(),
+        "[exports]\nx = 1\n[exports.p]\npath = \"/p\"\n"
+    );
 }

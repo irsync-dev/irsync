@@ -111,7 +111,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     std::fs::write(
         tmp.join("exports.toml"),
         format!(
-            "[m]\npath = {:?}\nrw = [\"{}\"]\n",
+            "[exports.m]\npath = {:?}\nrw = [\"{}\"]\n",
             tmp.join("dst"),
             client_id
         ),
@@ -317,7 +317,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
     .unwrap();
     std::fs::write(
         tmp.join("exports.toml"),
-        format!("[m]\npath = {:?}\n", tmp.join("dst")),
+        format!("[exports.m]\npath = {:?}\n", tmp.join("dst")),
     )
     .unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))

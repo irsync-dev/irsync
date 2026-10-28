@@ -52,7 +52,7 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
     let exports = home.join(".config/irsync/exports.toml");
     assert_eq!(
         std::fs::read_to_string(&exports).unwrap(),
-        format!("[photos]\npath = {:?}\n", home.join("srv/photos"))
+        format!("[exports.photos]\npath = {:?}\n", home.join("srv/photos"))
     );
     let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
     assert!(irsync(&home, &["allow", "photos", &id]).status.success());
@@ -63,7 +63,7 @@ fn add_allow_revoke_remove_round_trip_with_default_paths() {
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("no open access"));
     let o = irsync(
         &home,
-        &["add", &format!("rw:{}", home.join("srv/photos").display())],
+        &["add", &format!("all:{}", home.join("srv/photos").display())],
     );
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("reserved"));
     assert!(irsync(&home, &["revoke", &id]).status.success());
@@ -196,7 +196,7 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     std::fs::write(
         home.join(".config/irsync/exports.toml"),
         format!(
-            "[p]\npath = {:?}\nrw = [\"laptop\", \"ghost\"]\n",
+            "[exports.p]\npath = {:?}\nrw = [\"laptop\", \"ghost\"]\n",
             home.join("p")
         ),
     )
@@ -322,4 +322,18 @@ fn allow_refuses_a_pasted_key_line_with_a_multi_line_comment() {
         "{err}"
     );
     assert_eq!(std::fs::read_to_string(&exports).unwrap(), before);
+}
+
+#[test]
+fn add_of_a_bare_path_named_all_is_refused_and_writes_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("srv/all")).unwrap();
+    let o = irsync(&home, &["add", home.join("srv/all").to_str().unwrap()]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("\"all\" is reserved"),
+        "{err}"
+    );
+    assert!(!home.join(".config/irsync/exports.toml").exists());
 }

@@ -274,7 +274,7 @@ async fn exports_file_is_read_on_every_connection() {
         "rejected before Hello: no grant"
     );
     let grant = format!(
-        "[data]\npath = {:?}\nro = [\"{}\"]\n",
+        "[exports.data]\npath = {:?}\nro = [\"{}\"]\n",
         d.path().join("data"),
         client.id()
     );
@@ -293,7 +293,7 @@ async fn exports_file_is_read_on_every_connection() {
     ));
     std::fs::write(
         &exports,
-        format!("[data]\npath = {:?}\n", d.path().join("data")),
+        format!("[exports.data]\npath = {:?}\n", d.path().join("data")),
     )
     .unwrap();
     assert!(
@@ -320,7 +320,7 @@ async fn index_open_failure_is_an_internal_error_reply() {
     std::fs::write(
         &exports,
         format!(
-            "[data]\npath = {:?}\nro = [\"{}\"]\n",
+            "[exports.data]\npath = {:?}\nro = [\"{}\"]\n",
             d.path().join("data"),
             client.id()
         ),

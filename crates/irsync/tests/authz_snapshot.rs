@@ -17,7 +17,7 @@ fn alias_and_raw_id_entries_both_grant() {
     let s = snap(
         &format!("[laptop]\nendpoint_id = \"{}\"\n", id(1)),
         &format!(
-            "[photos]\npath = \"/p\"\nrw = [\"laptop\"]\nro = [\"{}\"]\n",
+            "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\nro = [\"{}\"]\n",
             id(2)
         ),
     );
@@ -28,7 +28,7 @@ fn alias_and_raw_id_entries_both_grant() {
 
 #[test]
 fn per_export_entry_wins_over_top_level_and_rw_wins_over_ro() {
-    let s = snap("", &format!("rw = [\"{a}\"]\nro = [\"{b}\"]\n[x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
+    let s = snap("", &format!("[all]\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
     assert!(!s.grants(&id(1)).allows("x", true) && s.grants(&id(1)).allows("other", true));
     assert!(s.grants(&id(2)).allows("x", true) && !s.grants(&id(2)).allows("other", true));
     assert!(s.grants(&id(1)).allows("y", true));
@@ -37,7 +37,10 @@ fn per_export_entry_wins_over_top_level_and_rw_wins_over_ro() {
 
 #[test]
 fn unresolvable_entry_matches_nobody() {
-    let s = snap("", "[x]\npath = \"/x\"\nrw = [\"ghost\", \"not-an-id\"]\n");
+    let s = snap(
+        "",
+        "[exports.x]\npath = \"/x\"\nrw = [\"ghost\", \"not-an-id\"]\n",
+    );
     assert_eq!(s.exports.len(), 1);
     assert!(s.grants(&id(1)).is_empty());
 }
@@ -48,11 +51,15 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     let (h, e) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
     let a = FileAuthorizer::new(h.clone(), e.clone());
     assert!(a.snapshot().unwrap().exports.is_empty()); // missing = empty
-    std::fs::write(&e, format!("[x]\npath = \"/x\"\nrw = [\"{}\"]\n", id(1))).unwrap();
+    std::fs::write(
+        &e,
+        format!("[exports.x]\npath = \"/x\"\nrw = [\"{}\"]\n", id(1)),
+    )
+    .unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
     std::fs::write(&e, "[x\n").unwrap();
     assert!(a.snapshot().is_err()); // broken = error, not stale
-    std::fs::write(&e, "[x]\npath = \"/x\"\nrw = [\"lap\"]\n").unwrap();
+    std::fs::write(&e, "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n").unwrap();
     std::fs::write(&h, format!("[lap]\nendpoint_id = \"{}\"\n", id(1))).unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
 }
