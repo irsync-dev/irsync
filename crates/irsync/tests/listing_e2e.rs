@@ -98,3 +98,52 @@ fn host_colon_lists_reachable_exports_with_real_paths() {
     );
     assert!(String::from_utf8_lossy(&o.stdout).is_empty());
 }
+
+#[test]
+fn host_path_lists_the_directory_without_writing() {
+    let s = setup();
+    for operand in [
+        format!("{}:photos/", s.daemon_id),
+        format!("{}:{}", s.daemon_id, s.photos.display()),
+    ] {
+        let out = ok(&s.client, &["--address", &s.address, &operand]);
+        assert!(
+            out.contains("a/x.jpg") && out.contains("b.jpg"),
+            "{operand}: {out:?}"
+        );
+    }
+    // The export is untouched and nothing was pulled anywhere.
+    assert_eq!(std::fs::read(s.photos.join("b.jpg")).unwrap(), b"b");
+    assert!(!s.client.join("photos").exists());
+}
+
+#[test]
+fn directory_listing_leaves_no_state() {
+    let s = setup();
+    let operand = format!("{}:photos", s.daemon_id);
+    let out = ok(&s.client, &["--address", &s.address, &operand]);
+    assert!(out.contains("b.jpg"), "{out:?}");
+    assert!(
+        !s.client.join("xdg/irsync").exists(),
+        "a listing must not create the client's state directory"
+    );
+}
+
+#[test]
+fn listing_an_unreachable_path_prints_the_hint() {
+    let s = setup();
+    let client_id = ok(&s.client, &["id", "show"])
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let operand = format!("{}:/nowhere", s.daemon_id);
+    let o = irsync(&s.client, &["--address", &s.address, &operand]);
+    assert!(!o.status.success());
+    assert!(
+        stderr(&o).contains(&format!("irsync grant list {client_id}"))
+            && stderr(&o).contains("no access to"),
+        "{}",
+        stderr(&o)
+    );
+}

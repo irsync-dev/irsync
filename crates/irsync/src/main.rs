@@ -35,6 +35,10 @@ fn main() {
     let args = Args::parse();
     // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
     let _ = irsync::fs::rlimit::raise_nofile();
+    if args.cmd.is_none() && args.sync.paths.len() == 1 {
+        let opts = SyncOptions::from_args(&args);
+        std::process::exit(run_list(args, &opts));
+    }
     match &args.cmd {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
         Some(Command::Gc { dry_run, log }) => std::process::exit(run_gc(*dry_run, *log)),
@@ -49,9 +53,6 @@ fn main() {
         }) => std::process::exit(run_show(files, passphrase_file.clone())),
         None => {
             let opts = SyncOptions::from_args(&args);
-            if args.sync.paths.len() == 1 {
-                std::process::exit(run_list(&args, &opts));
-            }
             std::process::exit(run_sync(&args, &opts));
         }
     }
@@ -394,9 +395,38 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
     })
 }
 
+/// The client's state directory, unless a listing swapped in a throwaway one.
+static CLIENT_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn client_state_dir() -> PathBuf {
+    CLIENT_STATE.get().cloned().unwrap_or_else(state_dir)
+}
+
 /// `irsync HOST:` lists the exports this client may reach; `irsync
-/// HOST:PATH` lists a directory.
-fn run_list(args: &Args, opts: &SyncOptions) -> i32 {
+/// HOST:PATH` lists a directory: a dry-run pull into a temporary directory
+/// that also holds the run's index, so nothing is written or kept.
+fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
+    let operand = args.sync.paths[0].clone();
+    let dir_listing = match Location::parse(&operand) {
+        Ok(Location::Remote { path, .. }) => !path.is_empty(),
+        _ => false,
+    };
+    if dir_listing {
+        let tmp = match tempfile::tempdir() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("irsync: creating a temporary directory: {e}");
+                return 1;
+            }
+        };
+        let _ = CLIENT_STATE.set(tmp.path().join("state"));
+        let dest = tmp.path().join("list").to_string_lossy().into_owned();
+        args.sync.paths = vec![operand, dest];
+        let mut opts = opts.clone();
+        opts.dry_run = true;
+        opts.verbose = opts.verbose.max(1);
+        return run_sync(&args, &opts);
+    }
     let log = LogWriter::new();
     init_logging(opts.verbose, opts.quiet, log.clone());
     let rt = match tokio::runtime::Runtime::new() {
@@ -406,7 +436,7 @@ fn run_list(args: &Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
-    match rt.block_on(list(args, opts)) {
+    match rt.block_on(list_exports_of(&operand, opts)) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("irsync: {e:#}");
@@ -415,14 +445,10 @@ fn run_list(args: &Args, opts: &SyncOptions) -> i32 {
     }
 }
 
-async fn list(args: &Args, opts: &SyncOptions) -> anyhow::Result<()> {
-    let operand = &args.sync.paths[0];
-    let Location::Remote { host, path, .. } = Location::parse(operand)? else {
+async fn list_exports_of(operand: &str, opts: &SyncOptions) -> anyhow::Result<()> {
+    let Location::Remote { host, .. } = Location::parse(operand)? else {
         bail!("internal: a listing takes a remote operand");
     };
-    if !path.is_empty() {
-        bail!("listing a directory is not implemented yet");
-    }
     let c = connect_for(&host, opts).await?;
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
@@ -596,7 +622,7 @@ async fn session(
                 std::fs::create_dir_all(&root)
                     .with_context(|| format!("creating {}", root.display()))?;
             }
-            Ok(Index::open(&state_dir(), &root)
+            Ok(Index::open(&client_state_dir(), &root)
                 .with_context(|| format!("opening index for {}", root.display()))?
                 .into_handle())
         }
