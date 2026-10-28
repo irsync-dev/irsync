@@ -41,10 +41,14 @@ A daemon with no exports starts, logs a warning naming the exports file, and
 serves nothing until `irsync export add` creates one.
 
 A client whose key is not granted anything is closed on before any protocol
-message is read. The client reports that the daemon rejected its key and
-prints the exact `irsync grant add <export> <id>` line to run on the daemon's
-machine; the daemon's log shows `rejecting unauthorized key` with the first
-ten hex digits of the peer's id.
+message is read; a key with grants that names a path outside what it may
+use is refused at the hello with `no access to PATH`, the same answer
+whether the path is unexported or missing. In both cases the client reports
+that the daemon rejected its key for that address and prints its own id with
+the commands to run on the daemon's machine: `irsync grant list <id>` to see
+what the key may reach, `irsync grant add EXPORT <id>`, or `irsync export add
+NAME:PATH`. The daemon's log shows `rejecting unauthorized key` (or
+`rejecting session`) with the first ten hex digits of the peer's id.
 
 Settings in `irsync.toml` (`listen`, relays, discovery, `idle_timeout`, ...)
 are read once and need a restart.

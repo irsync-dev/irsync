@@ -34,14 +34,18 @@ irsync id show                         # public key line, then the client Endpoi
 
 # home server
 irsync export add photos:/srv/photos   # prints the daemon's EndpointId
+irsync export add backup:/backup
 irsync host add laptop <laptop-id>     # a readable name for the client
 irsync grant add photos laptop
+irsync grant add backup laptop
 irsync daemon
 
 # laptop
 irsync host add home <server-id>       # a readable name for the server
-irsync -av ~/Photos home:photos/       # push: laptop to daemon
+irsync home:                           # what this laptop may reach, with real paths
+irsync -av ~/Photos home:photos/       # push: laptop to daemon, by export name
 irsync -av home:photos/ ~/Photos       # pull: daemon to laptop
+irsync -av ~/Documents/ home:/backup/laptop/Documents/   # push, by real path
 ```
 
 Two strings are copied by hand, one in each direction: the laptop's
@@ -55,9 +59,24 @@ grant add photos <laptop-id>` works without `host add`. `grant add` also takes
 a pasted `ssh-ed25519 AAAA...` line or the path of a `.pub` file in place of
 the id; `--ro` grants pulling only.
 
-Addresses are `<name>:<export>/<path>`, and rsync's trailing-slash rule holds:
-`Photos/` copies the contents, `Photos` copies the directory itself. Exactly one
-of source and destination is remote.
+A remote address is `HOST:PATH`, where `HOST` is an alias or an `EndpointId`
+and `PATH` is resolved on the daemon's machine, in this order: an export
+name followed by a path inside it (`home:photos/2024`), a path relative to
+the daemon account's home directory (`home:Pictures`, `home:` is the home
+itself), or an absolute path (`home:/backup/laptop`). Whatever the spelling,
+the path must lie inside an exported directory, and that export's grants
+apply; when exports nest, the most specific one governs. A path outside
+every export the client may use is refused as "no access", whether or not
+it exists. To open everything the daemon's account can reach, export the
+root: `irsync export add root:/`; `irsync export add home:~` exports its
+home. rsync's trailing-slash rule holds on both sides: `Photos/` copies the
+contents, `Photos` copies the directory itself. Exactly one of source and
+destination is remote.
+
+A single remote operand lists instead of copying: `irsync home:` prints the
+exports this client may reach, one `NAME PATH ACCESS` line each (`rw` or
+`ro`, with `read_only` applied), and `irsync home:photos/` prints the files a
+pull would fetch, writing nothing.
 
 The client and the daemon use different keys (`id_ed25519` and
 `daemon_ed25519`), so both can run in one account on one machine and talk to

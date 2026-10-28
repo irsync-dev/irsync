@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
+    #[error("no home directory to expand ~")]
+    NoHome,
     #[error("{}: {source}", path.display())]
     Io {
         path: PathBuf,

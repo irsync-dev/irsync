@@ -227,3 +227,17 @@ fn add_and_remove_keep_an_inline_exports_table() {
     assert!(add_export(&mut odd, "q", Path::new("/q"), false, false).is_err());
     assert_eq!(odd.to_string(), "exports = 5\n");
 }
+
+#[test]
+fn add_target_expands_a_leading_tilde() {
+    let home = dirs::home_dir().unwrap();
+    let (name, path) = parse_add_target("home:~", Path::new("/cwd")).unwrap();
+    assert_eq!((name.as_str(), path), ("home", home.clone()));
+    let (_, path) = parse_add_target("x:~/", Path::new("/cwd")).unwrap();
+    assert_eq!(path, home);
+    // `~x` is a plain name, not a user.
+    assert!(matches!(
+        parse_add_target("x:~nobody", Path::new("/cwd")),
+        Err(ManageError::NotADirectory(_))
+    ));
+}

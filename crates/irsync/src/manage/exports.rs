@@ -64,9 +64,11 @@ pub fn remove_export(doc: &mut DocumentMut, name: &str) -> Result<(), ManageErro
 }
 
 /// `NAME:PATH` or a bare `PATH` (named by its final component). The text
-/// before the first `:` is a name only when it contains no `/`. The path is
-/// joined onto `cwd`, `.` and `..` are resolved lexically (symlinks are
-/// left alone), and it must be an existing directory.
+/// before the first `:` is a name only when it contains no `/`. A path
+/// that is `~` or starts with `~/` is under the home directory (the shell
+/// does not expand `~` after the colon); otherwise the path is joined onto
+/// `cwd`. `.` and `..` are resolved lexically (symlinks are left alone),
+/// and the result must be an existing directory.
 pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), ManageError> {
     let (name, raw) = match arg.split_once(':') {
         Some((n, p)) if !n.contains('/') => {
@@ -77,8 +79,14 @@ pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), Mana
         }
         _ => (None, arg),
     };
+    let joined = match raw.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => dirs::home_dir()
+            .ok_or(ManageError::NoHome)?
+            .join(rest.trim_start_matches('/')),
+        _ => cwd.join(raw),
+    };
     let mut path = PathBuf::new();
-    for c in cwd.join(raw).components() {
+    for c in joined.components() {
         match c {
             Component::CurDir => {}
             Component::ParentDir => {

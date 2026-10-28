@@ -107,6 +107,10 @@ docs, error messages, Rust identifiers, and the wire protocol
 `NO_SUCH_EXPORT`). The address syntax `<host>:<export>/<path>` is unchanged
 in form.
 
+> Superseded 2026-10-28 by `2026-10-28-remote-path-design.md`: the address
+> is `HOST:PATH`, resolved on the daemon (export name, home-relative or
+> absolute); `Hello.export` and `NO_SUCH_EXPORT` are gone.
+
 ## Files
 
 All paths are defaults; every command accepts `--config PATH` and
