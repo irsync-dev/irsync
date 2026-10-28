@@ -19,14 +19,16 @@ use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
+use irsync::fs::paths::escape_path;
 use irsync::identity::{load_or_generate, parse_endpoint_id, PassphraseSource};
 use irsync::index::Index;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
-use irsync::session::reconnect::{run_with_reconnect, ConnState, ReconnectOpts};
+use irsync::session::engine::list_exports;
+use irsync::session::reconnect::{explain, run_with_reconnect, ConnState, ReconnectOpts};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{hello, Hello};
+use irsync_proto::v1::{export_entry, hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
 
 fn main() {
@@ -47,6 +49,9 @@ fn main() {
         }) => std::process::exit(run_show(files, passphrase_file.clone())),
         None => {
             let opts = SyncOptions::from_args(&args);
+            if args.sync.paths.len() == 1 {
+                std::process::exit(run_list(&args, &opts));
+            }
             std::process::exit(run_sync(&args, &opts));
         }
     }
@@ -302,41 +307,42 @@ fn direction_of(args: &Args) -> anyhow::Result<Direction> {
     Ok(locations(args)?.2)
 }
 
-/// `log`: where a failed source is reported (above the live block).
-async fn sync(
-    args: &Args,
-    opts: &SyncOptions,
-    bus: &EventBus,
-    log: &LogWriter,
-) -> anyhow::Result<Totals> {
-    let (srcs, dest, direction) = locations(args)?;
-    let remote = match direction {
-        Direction::ClientSends => &dest,
-        Direction::DaemonSends => &srcs[0],
-    };
-    let Location::Remote { host, .. } = remote else {
-        bail!("internal: no remote location");
-    };
+/// A client endpoint ready to dial `host`, plus what the session setup
+/// still needs from the configuration.
+struct Connected {
+    endpoint: iroh::Endpoint,
+    target: EndpointAddr,
+    settings: Settings,
+    host_entry: Option<irsync::config::hosts::HostEntry>,
+    /// `opts` with the per-host and settings defaults filled in.
+    opts: SyncOptions,
+}
 
+/// Resolves `host`, the direct addresses, the client identity and the
+/// endpoint, the same way for a sync and for a listing.
+async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref(), opts.hosts.as_deref(), None);
     let settings = Settings::load(&paths.config)?;
     let hosts = Hosts::load(&paths.hosts)?;
-    let host_entry = hosts.get(host);
+    let host_entry = hosts.get(host).cloned();
     let target = resolve_target(&hosts, host)?;
     // Precedence: command line, then the host entry, then the client
     // settings, then the built-in default.
     let mut opts = opts.clone();
     if opts.parallel.is_none() {
         opts.parallel = host_entry
+            .as_ref()
             .and_then(|h| h.parallel)
             .or(settings.client.parallel);
     }
-    let opts = &opts;
     // Direct addresses: the command line's, else the host's. Any address
     // means isolated mode: dial those and nothing else. Resolved before the
     // identity is loaded so a bad address never prompts for a passphrase.
     let addresses = if opts.addresses.is_empty() {
-        host_entry.map(|h| h.address.clone()).unwrap_or_default()
+        host_entry
+            .as_ref()
+            .map(|h| h.address.clone())
+            .unwrap_or_default()
     } else {
         opts.addresses.clone()
     };
@@ -374,11 +380,110 @@ async fn sync(
         opts.relay.as_deref(),
         opts.no_dht,
         &settings.client,
-        host_entry,
+        host_entry.as_ref(),
         &addresses,
     )?;
     let endpoint = build_endpoint(endpoint_opts).await?;
     let target = EndpointAddr::from_parts(target, resolved.into_iter().map(TransportAddr::Ip));
+    Ok(Connected {
+        endpoint,
+        target,
+        settings,
+        host_entry,
+        opts,
+    })
+}
+
+/// `irsync HOST:` lists the exports this client may reach; `irsync
+/// HOST:PATH` lists a directory.
+fn run_list(args: &Args, opts: &SyncOptions) -> i32 {
+    let log = LogWriter::new();
+    init_logging(opts.verbose, opts.quiet, log.clone());
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("irsync: {e}");
+            return 1;
+        }
+    };
+    match rt.block_on(list(args, opts)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("irsync: {e:#}");
+            1
+        }
+    }
+}
+
+async fn list(args: &Args, opts: &SyncOptions) -> anyhow::Result<()> {
+    let operand = &args.sync.paths[0];
+    let Location::Remote { host, path, .. } = Location::parse(operand)? else {
+        bail!("internal: a listing takes a remote operand");
+    };
+    if !path.is_empty() {
+        bail!("listing a directory is not implemented yet");
+    }
+    let c = connect_for(&host, opts).await?;
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        direction: hello::Direction::ListExports as i32,
+        chunk_min: CHUNK_PARAMS.min,
+        chunk_avg: CHUNK_PARAMS.avg,
+        chunk_max: CHUNK_PARAMS.max,
+        build: Some(BuildInfo::current().to_wire()),
+        ..Hello::default()
+    };
+    let client = c.endpoint.id();
+    let conn = c
+        .endpoint
+        .connect(c.target.clone(), irsync_proto::ALPN)
+        .await
+        .map_err(|e| explain(e.into(), None, operand, &client))?;
+    let entries = list_exports(&conn, hello)
+        .await
+        .map_err(|e| explain(e, Some(&conn), operand, &client))?;
+    for e in entries {
+        let access = if e.access == export_entry::Access::Rw as i32 {
+            "rw"
+        } else {
+            "ro"
+        };
+        println!("{} {} {access}", e.name, escape_path(&e.path));
+    }
+    conn.close(0u32.into(), b"done");
+    c.endpoint.close().await;
+    Ok(())
+}
+
+/// `log`: where a failed source is reported (above the live block).
+async fn sync(
+    args: &Args,
+    opts: &SyncOptions,
+    bus: &EventBus,
+    log: &LogWriter,
+) -> anyhow::Result<Totals> {
+    let (srcs, dest, direction) = locations(args)?;
+    let remote = match direction {
+        Direction::ClientSends => &dest,
+        Direction::DaemonSends => &srcs[0],
+    };
+    let Location::Remote { host, .. } = remote else {
+        bail!("internal: no remote location");
+    };
+    // The operand as typed, for the no-access hint.
+    let remote_text: String = match direction {
+        Direction::ClientSends => args.sync.dest().unwrap_or_default().to_string(),
+        Direction::DaemonSends => args.sync.src()[0].clone(),
+    };
+
+    let Connected {
+        endpoint,
+        target,
+        settings,
+        host_entry,
+        opts,
+    } = connect_for(host, opts).await?;
+    let (opts, host_entry) = (&opts, host_entry.as_ref());
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
 
     // One session per source; several sources only when pushing.
@@ -436,6 +541,7 @@ async fn sync(
         let out = match session(
             &endpoint,
             target.clone(),
+            &remote_text,
             direction,
             root,
             *local_co,
@@ -471,6 +577,7 @@ async fn sync(
 async fn session(
     endpoint: &iroh::Endpoint,
     target: EndpointAddr,
+    remote: &str,
     direction: Direction,
     root: PathBuf,
     local_contents_only: bool,
@@ -524,7 +631,10 @@ async fn session(
             tracing::info!(attempt, "reconnecting")
         }
     };
-    run_with_reconnect(endpoint, target, hello_for, side, opts, ropts, on_state).await
+    run_with_reconnect(
+        endpoint, target, remote, hello_for, side, opts, ropts, on_state,
+    )
+    .await
 }
 
 /// `irsync index`: hashes every regular file under each target into its

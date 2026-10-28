@@ -153,19 +153,56 @@ fn classify(err: &anyhow::Error, conn: Option<&Connection>) -> Next {
     }
 }
 
+/// What to do about a key the daemon will not let use `remote` (`HOST:PATH`
+/// as typed). The daemon cannot say which export is missing a grant, or
+/// whether the path is exported at all, so the hint names both remedies.
+fn no_access_hint(remote: &str, client: &EndpointId) -> String {
+    format!(
+        "the daemon rejected this client's key: no access to {remote}. On the daemon's \
+         machine, irsync grant list {client} shows what this key may reach; \
+         irsync grant add EXPORT {client} grants an export, irsync export add NAME:PATH \
+         exports a directory (irsync id show prints this id)"
+    )
+}
+
 /// The message for a connection the daemon closed with a final code. An
-/// unauthorized key (code 1) is the likeliest first-run mistake, so that
-/// one names the export and this client's id and spells out the `irsync
-/// grant add` line to run on the daemon's machine.
-fn describe_close(code: u32, reason: &str, export: &str, client: &EndpointId) -> String {
+/// unauthorized key (code 1: no grants at all) is the likeliest first-run
+/// mistake, so that one is the hint.
+fn describe_close(code: u32, reason: &str, remote: &str, client: &EndpointId) -> String {
     match code {
-        1 => format!(
-            "the daemon rejected this client's key ({reason}): it is not allowed to use \
-             export {export:?}. On the daemon's machine run: irsync grant add {export} {client} \
-             (irsync id show prints this id)"
-        ),
+        1 => no_access_hint(remote, client),
         _ => format!("the daemon closed the connection: {reason}"),
     }
+}
+
+/// A failed one-shot exchange (a listing) explained the way a session's
+/// final failure is: the daemon's close code or its refusal become the
+/// no-access hint; anything else is returned as is.
+pub fn explain(
+    err: anyhow::Error,
+    conn: Option<&Connection>,
+    remote: &str,
+    client: &EndpointId,
+) -> anyhow::Error {
+    match classify(&err, conn) {
+        Next::ClosedByDaemon { code, reason } => {
+            anyhow::anyhow!(describe_close(code, &reason, remote, client))
+        }
+        _ => match err
+            .chain()
+            .find_map(|e| e.downcast_ref::<SessionRefused>())
+            .and_then(|r| describe_refusal(r, remote, client))
+        {
+            Some(hint) => anyhow::anyhow!(hint),
+            None => err,
+        },
+    }
+}
+
+/// The hint for a `Hello` the daemon refused as unauthorized (a key with
+/// grants, for a path it may not use); `None` for any other refusal.
+fn describe_refusal(r: &SessionRefused, remote: &str, client: &EndpointId) -> Option<String> {
+    (r.code == Code::Unauthorized).then(|| no_access_hint(remote, client))
 }
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`.
@@ -252,9 +289,11 @@ async fn watch_paths<F: std::future::Future>(
 /// failures are retried with backoff until `opts.max` has elapsed; a daemon
 /// that no longer knows the session gets one immediate fresh attempt; every
 /// other error is returned as is.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_with_reconnect(
     endpoint: &Endpoint,
     target: impl Into<EndpointAddr>,
+    remote: &str,
     hello_for: impl Fn(Option<[u8; 16]>) -> Hello,
     local: LocalSide,
     sync_opts: &SyncOptions,
@@ -334,15 +373,23 @@ pub async fn run_with_reconnect(
             }
             Some(Next::Retry) => {}
             Some(Next::ClosedByDaemon { code, reason }) => {
-                let export = crate::fs::paths::escape_path(&hello_for(None).path);
                 return Err(anyhow::anyhow!(describe_close(
                     code,
                     &reason,
-                    &export,
+                    remote,
                     &endpoint.id()
                 )));
             }
-            _ => return Err(err),
+            _ => {
+                let refused = err
+                    .chain()
+                    .find_map(|e| e.downcast_ref::<SessionRefused>())
+                    .and_then(|r| describe_refusal(r, remote, &endpoint.id()));
+                return Err(match refused {
+                    Some(hint) => anyhow::anyhow!(hint),
+                    None => err,
+                });
+            }
         }
         let now = Instant::now();
         outage.failed(now, progress);
@@ -369,16 +416,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unauthorized_close_tells_the_user_what_to_run() {
-        let id = iroh::SecretKey::from_bytes(&[3u8; 32]).public();
-        let msg = describe_close(1, "unauthorized", "photos", &id);
-        assert!(msg.contains("rejected this client's key"), "{msg}");
-        assert!(
-            msg.contains(&format!("irsync grant add photos {id}")),
-            "{msg}"
-        );
-        assert!(msg.contains("irsync id show"), "{msg}");
-        let other = describe_close(2, "hello timeout", "photos", &id);
+    fn unauthorized_close_and_refusal_share_the_hint() {
+        let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let close = describe_close(1, "unauthorized", "theoden:/srv/x", &id);
+        let refused = describe_refusal(
+            &SessionRefused {
+                code: Code::Unauthorized,
+                message: "no access to \"/srv/x\"".into(),
+            },
+            "theoden:/srv/x",
+            &id,
+        )
+        .unwrap();
+        for msg in [&close, &refused] {
+            assert!(msg.contains("no access to theoden:/srv/x"), "{msg}");
+            assert!(msg.contains(&format!("irsync grant list {id}")), "{msg}");
+            assert!(
+                msg.contains(&format!("irsync grant add EXPORT {id}")),
+                "{msg}"
+            );
+            assert!(msg.contains("irsync export add NAME:PATH"), "{msg}");
+            assert!(msg.contains("irsync id show"), "{msg}");
+        }
+        assert!(describe_refusal(
+            &SessionRefused {
+                code: Code::ReadOnly,
+                message: "x".into()
+            },
+            "t:/p",
+            &id
+        )
+        .is_none());
+        let other = describe_close(2, "hello timeout", "t:/p", &id);
         assert!(
             other.contains("hello timeout") && !other.contains("grant"),
             "{other}"

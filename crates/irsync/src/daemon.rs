@@ -11,11 +11,13 @@ use anyhow::{Context, Result};
 use iroh::endpoint::{Connection, Incoming, SendStream};
 use iroh::{Endpoint, SecretKey};
 use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello};
+use irsync_proto::v1::{
+    error::Code, export_entry, hello::Direction, Error, ExportEntry, ExportList, Hello,
+};
 use irsync_proto::PROTOCOL_VERSION;
 use tokio_util::sync::CancellationToken;
 
-use crate::authz::{Authorizer, FileAuthorizer, Grants, Snapshot};
+use crate::authz::{Access, Authorizer, FileAuthorizer, Grants, Snapshot};
 use crate::config::exports::Export;
 use crate::config::paths::Paths;
 use crate::config::settings::{listen_sockets, Settings};
@@ -320,6 +322,19 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
         .hellos
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+    if hello.direction == Direction::ListExports as i32 {
+        if let Err((code, message)) = version_check(&hello) {
+            tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting listing");
+            return reject(&conn, &mut send, code, message).await;
+        }
+        tracing::info!(peer = %id.fmt_short(), "listing exports");
+        write_msg(&mut send, &list_exports_for(&snap, &grants)).await?;
+        send.finish()?;
+        let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
+        conn.close(0u32.into(), b"done");
+        return Ok(());
+    }
+
     match validate(&snap, &grants, shared.home.as_deref(), &hello) {
         Ok((resolved, rel)) => {
             let root = resolved.export.path.clone();
@@ -366,12 +381,31 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
     }
 }
 
-fn validate<'a>(
-    snap: &'a Snapshot,
-    grants: &Grants,
-    home: Option<&Path>,
-    hello: &Hello,
-) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
+/// The exports `grants` cover, by name, with the real path and the
+/// effective access (`read_only` caps a read-write grant).
+fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
+    use std::os::unix::ffi::OsStrExt;
+    let exports = snap
+        .exports
+        .iter()
+        .filter_map(|(name, e)| {
+            let access = grants.access(name)?;
+            let access = if e.read_only || access == Access::ReadOnly {
+                export_entry::Access::Ro
+            } else {
+                export_entry::Access::Rw
+            };
+            Some(ExportEntry {
+                name: name.clone(),
+                path: e.path.as_os_str().as_bytes().to_vec(),
+                access: access as i32,
+            })
+        })
+        .collect();
+    ExportList { exports }
+}
+
+fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err((
             Code::VersionMismatch,
@@ -386,6 +420,16 @@ fn validate<'a>(
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
     }
+    Ok(())
+}
+
+fn validate<'a>(
+    snap: &'a Snapshot,
+    grants: &Grants,
+    home: Option<&Path>,
+    hello: &Hello,
+) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
+    version_check(hello)?;
     // The path is resolved (export name, home, absolute) and the export
     // containing it chosen before anything is said about it. The reply for
     // a path this key may not use is the same whether the path is outside
@@ -419,8 +463,9 @@ fn validate<'a>(
             }
         }
         Ok(Direction::DaemonSends) => {}
-        // No dedicated code for a malformed direction; UNKNOWN is the honest answer.
-        Err(_) => return Err((Code::Unknown, "bad direction".into())),
+        // A listing never reaches here; no dedicated code for a malformed
+        // direction either: UNKNOWN is the honest answer.
+        Ok(Direction::ListExports) | Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }
     Ok((resolved, rel))
 }

@@ -20,7 +20,7 @@ use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
 use irsync_proto::v1::hello::{AppendMode as WireAppend, DeleteMode as WireDeleteMode, Direction};
-use irsync_proto::v1::{error::Code, Error, FileEntry, Hello, HelloAck};
+use irsync_proto::v1::{error::Code, Error, ExportEntry, ExportList, FileEntry, Hello, HelloAck};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use rand_core::{OsRng, RngCore};
@@ -388,6 +388,30 @@ async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
     }
 }
 
+/// `irsync HOST:`: sends a `LIST_EXPORTS` hello and returns the daemon's
+/// list (sorted by name). A refusal is a [`SessionRefused`].
+pub async fn list_exports(conn: &Connection, hello: Hello) -> anyhow::Result<Vec<ExportEntry>> {
+    let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
+    write_msg(&mut send, &hello)
+        .await
+        .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
+    send.finish()?;
+    let body = read_frame(&mut recv)
+        .await
+        .map_err(|e| TransportError(format!("reading ExportList: {e}")))?;
+    if let Ok(list) = ExportList::decode(&body[..]) {
+        return Ok(list.exports);
+    }
+    match Error::decode(&body[..]) {
+        Ok(e) => Err(SessionRefused {
+            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+            message: e.message,
+        }
+        .into()),
+        Err(_) => bail!("malformed reply to Hello"),
+    }
+}
+
 fn remote_location(daemon: EndpointId, hello: &Hello) -> anyhow::Result<Location> {
     Ok(Location::Remote {
         host: daemon.to_string(),
@@ -413,6 +437,7 @@ pub async fn client_session_key(
     let (src, dst) = match direction {
         Direction::ClientSends => (local_loc, remote_loc),
         Direction::DaemonSends => (remote_loc, local_loc),
+        Direction::ListExports => bail!("a listing has no session"),
     };
     let o = opts.clone();
     Ok(

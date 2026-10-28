@@ -433,6 +433,7 @@ impl Harness {
         let out = run_with_reconnect(
             &self.client,
             self.daemon.addr.clone(),
+            "daemon:m/",
             |id| {
                 let mut h = Self::hello(flow);
                 h.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
@@ -591,4 +592,100 @@ pub fn assert_trees_equal(
             assert_trees_equal(&a.join(&n), &b.join(&n), preserve);
         }
     }
+}
+
+/// Kills a daemon started with [`spawn_daemon_binary`] when the test ends.
+pub struct DaemonGuard(pub std::process::Child);
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Runs the built `irsync` with `home` as HOME (and the state under it),
+/// bounded to 30 s so a protocol hang fails the test instead of blocking it.
+pub fn irsync_bin(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(args)
+        .env("HOME", home)
+        .env("XDG_STATE_HOME", home.join("xdg"))
+        .env_remove("IRSYNC_PASSPHRASE")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("irsync {args:?} did not finish within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// Starts the built `irsync daemon` with `server_home` as HOME, isolated
+/// (no relay, no lookup, no port mapper) on a loopback port. Returns the
+/// guard, the daemon's id, its listening address and its stderr log file.
+pub fn spawn_daemon_binary(
+    server_home: &std::path::Path,
+) -> (
+    DaemonGuard,
+    iroh::EndpointId,
+    std::net::SocketAddr,
+    std::path::PathBuf,
+) {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let cfg = server_home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("irsync.toml"),
+        "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+         [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+    )
+    .unwrap();
+    let log = server_home.join("daemon.stderr");
+    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["daemon", "--listen", "127.0.0.1:0"])
+        .env("HOME", server_home)
+        .env("XDG_STATE_HOME", server_home.join("xdg"))
+        .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let mut daemon = DaemonGuard(child);
+    let stdout = daemon.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let (mut id, mut listen) = (None, None);
+    while listen.is_none() {
+        let line = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("daemon printed no 'listening on:' line within 15 s");
+        if let Some(rest) = line.strip_prefix("endpoint id: ") {
+            id = Some(irsync::identity::parse_endpoint_id(rest.trim()).unwrap());
+        } else if let Some(rest) = line.strip_prefix("listening on: ") {
+            listen = Some(rest.trim().parse::<std::net::SocketAddr>().unwrap());
+        } else {
+            panic!("unexpected stdout line {line:?}");
+        }
+    }
+    (daemon, id.unwrap(), listen.unwrap(), log)
 }

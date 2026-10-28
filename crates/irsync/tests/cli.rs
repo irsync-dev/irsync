@@ -632,3 +632,14 @@ fn subcommands_take_verbose_and_quiet() {
     // Top-level flags still belong to a sync, not to a subcommand.
     assert!(Args::try_parse_from(["irsync", "-v", "gc"]).is_err());
 }
+
+#[test]
+fn one_remote_operand_is_a_listing() {
+    let a = parse(&["home:"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["home:"]);
+    let a = parse(&["-v", "home:photos/"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["home:photos/"]);
+    // A single local path is still a usage error.
+    assert!(Args::try_parse_from(["irsync", "./x"]).is_err());
+    assert!(Args::try_parse_from(["irsync"]).is_err());
+}

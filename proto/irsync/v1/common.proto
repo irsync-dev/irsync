@@ -16,6 +16,9 @@ message Hello {
   enum Direction {
     CLIENT_SENDS = 0;
     DAEMON_SENDS = 1;
+    // No session: the daemon answers with an ExportList of what this key
+    // may reach, then closes. `path` and `name` are empty.
+    LIST_EXPORTS = 2;
   }
   Direction direction = 5;
   uint32 chunk_min = 6;
@@ -53,6 +56,20 @@ message Hello {
   // On CLIENT_SENDS when the source had no trailing slash: its basename,
   // which the daemon joins to the resolved path (rsync's rule). Else empty.
   bytes name = 21;
+}
+// One export the asking key may use.
+message ExportEntry {
+  string name = 1;
+  bytes path = 2; // the export's directory on the daemon's machine
+  enum Access {
+    RO = 0;
+    RW = 1;
+  }
+  Access access = 3; // effective: read_only caps RW to RO
+}
+// The reply to a LIST_EXPORTS Hello, sorted by name.
+message ExportList {
+  repeated ExportEntry exports = 1;
 }
 message HelloAck {
   bytes session_id = 1;

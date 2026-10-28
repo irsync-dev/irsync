@@ -91,7 +91,12 @@ impl Args {
     {
         let m = Args::command_tree().try_get_matches_from(it)?;
         let mut args = Args::from_arg_matches(&m)?;
-        if args.cmd.is_none() && (args.sync.paths.len() < 2) {
+        // One operand is a listing when it is remote (`irsync HOST:` or
+        // `irsync HOST:PATH`); a lone local path is still a usage error.
+        let listing = args.sync.paths.len() == 1
+            && super::cli::location::Location::parse(&args.sync.paths[0])
+                .is_ok_and(|l| l.is_remote());
+        if args.cmd.is_none() && args.sync.paths.len() < 2 && !listing {
             return Err(Args::command().error(
                 clap::error::ErrorKind::MissingRequiredArgument,
                 "the following required arguments were not provided:\n  <SRC>... <DEST>",

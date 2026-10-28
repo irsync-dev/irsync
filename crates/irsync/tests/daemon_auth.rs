@@ -438,3 +438,78 @@ async fn read_only_export_and_ro_grant_still_refuse_sends() {
         Code::ReadOnly,
     );
 }
+
+/// `LIST_EXPORTS` answers with the exports the key may use, by name, with
+/// the real path and the effective access.
+async fn list_against(
+    d: &DaemonHandle,
+    client: &Endpoint,
+) -> Result<Vec<(String, Vec<u8>, i32)>, String> {
+    use irsync_proto::v1::ExportList;
+    let mut h = hello(b"", Direction::ListExports);
+    h.direction = Direction::ListExports as i32;
+    let conn = within(client.connect(d.addr.clone(), ALPN))
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut send, mut recv) = within(conn.open_bi()).await.map_err(|e| e.to_string())?;
+    within(write_msg(&mut send, &h))
+        .await
+        .map_err(|e| e.to_string())?;
+    send.finish().map_err(|e| e.to_string())?;
+    let list: ExportList = within(read_msg(&mut recv))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no reply")?;
+    Ok(list
+        .exports
+        .into_iter()
+        .map(|e| (e.name, e.path, e.access))
+        .collect())
+}
+
+#[tokio::test]
+async fn list_exports_names_only_what_the_key_may_use() {
+    use irsync_proto::v1::export_entry::Access as A;
+    use std::os::unix::ffi::OsStrExt;
+    let (dir, ..) = export_dir();
+    let path = dir.path().as_os_str().as_bytes().to_vec();
+    let client = client_endpoint().await;
+    let spawn = |g: Grants| {
+        spawn_daemon_home(
+            vec![
+                ("rw", dir.path().to_path_buf(), false),
+                ("ro", dir.path().to_path_buf(), true),
+            ],
+            MemoryAuthorizer::single(client.id(), g),
+            None,
+        )
+    };
+    // Granted on rw only: one entry.
+    let d = spawn(Grants {
+        exports: [("rw".to_string(), Access::ReadWrite)].into(),
+        all: None,
+    })
+    .await;
+    assert_eq!(
+        list_against(&d, &client).await.unwrap(),
+        vec![("rw".to_string(), path.clone(), A::Rw as i32)]
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+    // Granted everywhere: both, sorted by name, read_only capping to RO.
+    let d = spawn(grants(Access::ReadWrite)).await;
+    assert_eq!(
+        list_against(&d, &client).await.unwrap(),
+        vec![
+            ("ro".to_string(), path.clone(), A::Ro as i32),
+            ("rw".to_string(), path.clone(), A::Rw as i32),
+        ]
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+    // No grants at all: closed before Hello, as for a sync.
+    let d = spawn(Grants::default()).await;
+    assert!(list_against(&d, &client).await.is_err());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
