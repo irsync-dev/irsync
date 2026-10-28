@@ -124,10 +124,6 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
-        .arg("--hosts")
-        .arg(tmp.join("hosts.toml"))
-        .arg("--exports")
-        .arg(tmp.join("exports.toml"))
         .args(["--listen", "127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -283,8 +279,8 @@ fn unknown_alias_error_names_hosts_file() {
     let o = run_client(
         &[
             "-a",
-            "--hosts",
-            tmp.join("hosts.toml").to_str().unwrap(),
+            "--config",
+            tmp.join("irsync.toml").to_str().unwrap(),
             tmp.join("src/").to_str().unwrap(),
             "home:photos/",
         ],
@@ -292,9 +288,10 @@ fn unknown_alias_error_names_hosts_file() {
     );
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
+    // Without a hosts.toml beside it, the config file is where aliases live.
     assert!(
         err.contains("\"home\" is not an alias in")
-            && err.contains("hosts.toml")
+            && err.contains("irsync.toml")
             && err.contains("no such file"),
         "{err}"
     );
@@ -326,10 +323,6 @@ fn no_listening_line_when_startup_fails_after_bind() {
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
-        .arg("--hosts")
-        .arg(tmp.join("hosts.toml"))
-        .arg("--exports")
-        .arg(tmp.join("exports.toml"))
         .args(["--listen", "127.0.0.1:0"])
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null())

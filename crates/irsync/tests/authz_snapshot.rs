@@ -48,8 +48,8 @@ fn unresolvable_entry_matches_nobody() {
 #[test]
 fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     let d = tempfile::tempdir().unwrap();
-    let (h, e) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
-    let a = FileAuthorizer::new(h.clone(), e.clone());
+    let (h, e) = (d.path().join("hosts.toml"), d.path().join("irsync.toml"));
+    let a = FileAuthorizer::new(irsync::config::paths::Paths::resolve(Some(&e)));
     assert!(a.snapshot().unwrap().exports.is_empty()); // missing = empty
     std::fs::write(
         &e,

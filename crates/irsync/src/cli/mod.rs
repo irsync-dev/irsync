@@ -153,11 +153,11 @@ pub enum Command {
     /// candidates from the first session on (`export update` does the
     /// same for the daemon's exports).
     Index(IndexArgs),
-    /// Manage host aliases (edits hosts.toml).
+    /// Manage host aliases (edits irsync.toml).
     Host(HostArgs),
-    /// Manage exports (edits exports.toml).
+    /// Manage exports (edits irsync.toml).
     Export(ExportArgs),
-    /// Manage grants: who may use which export (edits exports.toml).
+    /// Manage grants: who may use which export (edits irsync.toml).
     Grant(GrantArgs),
     /// This machine's identities (the client's and the daemon's).
     Id(IdArgs),
@@ -372,15 +372,10 @@ pub struct LogArgs {
 /// noun accepts them before or after its verb.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
-    /// The settings file (default: irsync.toml in the config directory).
+    /// The config file (default: irsync.toml in the config directory). A
+    /// hosts.toml or exports.toml beside it is read too, but never edited.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
-    /// The host aliases file (default: hosts.toml in the config directory).
-    #[arg(long, global = true, value_name = "PATH")]
-    pub hosts: Option<PathBuf>,
-    /// The exports file (default: exports.toml in the config directory).
-    #[arg(long, global = true, value_name = "PATH")]
-    pub exports: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -410,15 +405,10 @@ pub struct IndexArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DaemonArgs {
-    /// The settings file (default: irsync.toml in the config directory).
+    /// The config file (default: irsync.toml in the config directory). A
+    /// hosts.toml or exports.toml beside it is read too.
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
-    /// The host aliases file (default: hosts.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
-    pub hosts: Option<PathBuf>,
-    /// The exports file (default: exports.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
-    pub exports: Option<PathBuf>,
     /// Read the identity's passphrase from the first line of this file
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]
@@ -607,12 +597,10 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The settings file (default: irsync.toml in the config directory).
+    /// The config file (default: irsync.toml in the config directory). A
+    /// hosts.toml beside it is read too.
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
-    /// The host aliases file (default: hosts.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
-    pub hosts: Option<PathBuf>,
     /// The private key to connect with (default: `identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
@@ -728,7 +716,6 @@ pub struct SyncOptions {
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
-    pub hosts: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
     pub no_resume: bool,
@@ -789,7 +776,6 @@ impl SyncOptions {
             no_dht: a.no_dht,
             addresses: a.address.clone(),
             config: a.config.clone(),
-            hosts: a.hosts.clone(),
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
             no_resume: a.no_resume,

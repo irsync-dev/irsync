@@ -500,8 +500,8 @@ fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<Sec
     Ok(secret)
 }
 
-/// Runs the daemon: grants and exports are read from `paths.hosts` and
-/// `paths.exports` on every connection.
+/// Runs the daemon: hosts, exports and grants are re-read from the config
+/// file (and any split file beside it) on every connection.
 pub async fn run_from_settings(
     settings: Settings,
     paths: &Paths,
@@ -509,15 +509,12 @@ pub async fn run_from_settings(
     shutdown: CancellationToken,
 ) -> Result<()> {
     let secret = load_or_generate_identity(&settings.daemon.identity, pass)?;
-    let authz = Arc::new(FileAuthorizer::new(
-        paths.hosts.clone(),
-        paths.exports.clone(),
-    ));
+    let authz = Arc::new(FileAuthorizer::new(paths.clone()));
     let snap = authz.snapshot()?;
     if snap.exports.is_empty() {
         tracing::warn!(
             "no exports defined in {}; run irsync export add",
-            paths.exports.display()
+            paths.config.display()
         );
     }
     let bind_addrs = listen_sockets(&settings.daemon.listen).await?;

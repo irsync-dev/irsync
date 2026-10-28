@@ -9,6 +9,7 @@ use common::{
 };
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
+use irsync::config::paths::Paths;
 use irsync::net::frame::{read_msg, write_msg};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello, HelloAck};
@@ -269,9 +270,9 @@ async fn wrong_chunk_params_rejected() {
 #[tokio::test]
 async fn exports_file_is_read_on_every_connection() {
     let d = tempfile::tempdir().unwrap();
-    let (hosts, exports) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
+    let exports = d.path().join("irsync.toml");
     let client = client_endpoint().await;
-    let authz = Arc::new(FileAuthorizer::new(hosts, exports.clone()));
+    let authz = Arc::new(FileAuthorizer::new(Paths::resolve(Some(&exports))));
     let daemon = spawn_daemon_with(authz).await;
     let h = hello(b"data", Direction::DaemonSends);
     assert!(
@@ -314,13 +315,13 @@ async fn exports_file_is_read_on_every_connection() {
 #[tokio::test]
 async fn index_open_failure_is_an_internal_error_reply() {
     let d = tempfile::tempdir().unwrap();
-    let (hosts, exports) = (d.path().join("hosts.toml"), d.path().join("exports.toml"));
+    let exports = d.path().join("irsync.toml");
     std::fs::create_dir_all(d.path().join("data")).unwrap();
     let client = client_endpoint().await;
     let state = tempfile::tempdir().unwrap();
     // The index directory cannot be created: a file is in its place.
     std::fs::write(state.path().join("index"), b"").unwrap();
-    let authz = Arc::new(FileAuthorizer::new(hosts, exports.clone()));
+    let authz = Arc::new(FileAuthorizer::new(Paths::resolve(Some(&exports))));
     let daemon = spawn_daemon_with_state(authz, state).await;
     std::fs::write(
         &exports,

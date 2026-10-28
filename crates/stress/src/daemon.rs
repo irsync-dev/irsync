@@ -304,8 +304,8 @@ enum StartFailure {
 }
 
 impl Daemon {
-    /// Spawns `<irsync> daemon --config <config> --exports <exports>
-    /// --hosts <hosts> --listen 127.0.0.1:0` and
+    /// Spawns `<irsync> daemon --config <config> --listen 127.0.0.1:0`
+    /// (the `exports.toml` beside the config is read as a split file) and
     /// waits up to `timeout` for its startup lines. A child that exits first
     /// is reported at once with its status and the tail of its stderr.
     pub fn start(
@@ -320,10 +320,6 @@ impl Daemon {
                 .arg("daemon")
                 .arg("--config")
                 .arg(&files.config)
-                .arg("--exports")
-                .arg(&files.exports)
-                .arg("--hosts")
-                .arg(&files.hosts)
                 .args(["--listen", "127.0.0.1:0"])
                 .env("RUST_LOG", log_level)
                 .env_remove("IRSYNC_PASSPHRASE")

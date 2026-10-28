@@ -14,7 +14,7 @@ use irsync::cli::{
     validate, Args, Command, DaemonArgs, Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs,
     GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd, IndexArgs, LogArgs, SyncOptions,
 };
-use irsync::config::exports::Exports;
+use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
@@ -323,8 +323,9 @@ struct Connected {
 /// endpoint, the same way for a sync and for a listing.
 async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref());
-    let settings = Settings::load(&paths.config)?;
-    let hosts = Hosts::load(&paths.hosts)?;
+    let Config {
+        settings, hosts, ..
+    } = Config::load(&paths)?;
     let host_entry = hosts.get(host).cloned();
     let target = resolve_target(&hosts, host)?;
     // Precedence: command line, then the host entry, then the client
@@ -686,8 +687,8 @@ fn run_index(a: &IndexArgs) -> i32 {
 fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
     init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<i32> {
-        let settings = Settings::load(&paths.config)?;
-        let exports = Exports::load(&paths.exports)?;
+        let config = Config::load(paths)?;
+        let (settings, exports) = (config.settings, config.exports);
         let names: Vec<&str> = if names.iter().any(|n| n == "all") {
             anyhow::ensure!(names.len() == 1, "all names every export; give it alone");
             exports.exports.keys().map(String::as_str).collect()
@@ -765,7 +766,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
 
     let result = (|| -> anyhow::Result<()> {
         let paths = Paths::resolve(d.config.as_deref());
-        let mut settings = Settings::load(&paths.config)?;
+        let mut settings = Config::load(&paths)?.settings;
         if !d.listen.is_empty() {
             settings.daemon.listen = d.listen.clone();
         }
@@ -817,7 +818,7 @@ fn run_export(e: &ExportArgs) -> i32 {
                 manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
-                let settings = Settings::load(&paths.config)?;
+                let settings = Config::load(&paths)?.settings;
                 let pass = PassphraseSource::from_env(None);
                 let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
                 manage::save_exports(&paths.exports, &doc)?;
@@ -849,8 +850,7 @@ fn run_export(e: &ExportArgs) -> i32 {
         ExportCmd::List => finish(
             "export list",
             (|| {
-                let hosts = Hosts::load(&paths.hosts)?;
-                let exports = Exports::load(&paths.exports)?;
+                let Config { hosts, exports, .. } = Config::load(&paths)?;
                 print!("{}", manage::show::export_blocks(&exports, &hosts));
                 Ok(())
             })(),
@@ -864,7 +864,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
         GrantCmd::Add { export, who, ro } => finish(
             "grant add",
             (|| {
-                let hosts = Hosts::load(&paths.hosts)?;
+                let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
                 let mut doc = manage::load_doc(&paths.exports)?;
@@ -883,7 +883,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
         GrantCmd::Remove { export, who } => finish(
             "grant remove",
             (|| {
-                let hosts = Hosts::load(&paths.hosts)?;
+                let hosts = Config::load(&paths)?.hosts;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
                 if who == "*" {
                     bail!(
@@ -915,8 +915,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
         GrantCmd::List { target } => finish(
             "grant list",
             (|| {
-                let hosts = Hosts::load(&paths.hosts)?;
-                let exports = Exports::load(&paths.exports)?;
+                let Config { hosts, exports, .. } = Config::load(&paths)?;
                 let text = match target.as_deref() {
                     None => manage::grants::list_all(&exports, &hosts),
                     Some(t) => match manage::grants::list_export(&exports, &hosts, t) {
@@ -962,9 +961,9 @@ fn run_host(h: &HostArgs) -> i32 {
         HostCmd::List => finish(
             "host list",
             (|| {
-                // Parse first: an old-layout file is an error, not an empty list.
-                Hosts::load(&paths.hosts)?;
-                let doc = manage::load_doc(&paths.hosts)?;
+                // Load first: an old-layout file is an error, not an empty list.
+                let config = Config::load(&paths)?;
+                let doc = manage::load_doc(&config.hosts.path)?;
                 for line in manage::hosts::host_list(&doc) {
                     println!("{line}");
                 }
@@ -1013,7 +1012,7 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                     if daemon { "irsync-daemon" } else { "irsync" },
                 ),
                 None => {
-                    let settings = Settings::load(&file_paths(f).config)?;
+                    let settings = Config::load(&file_paths(f))?.settings;
                     if daemon {
                         (settings.daemon.identity, "irsync-daemon")
                     } else {
@@ -1051,7 +1050,7 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
     finish(
         "id show",
         (|| {
-            let settings = Settings::load(&file_paths(f).config)?;
+            let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
             let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
                 let secret = identity_of(path, comment, &pass)?;
@@ -1079,11 +1078,11 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
         "show",
         (|| {
             let paths = file_paths(f);
-            let settings = Settings::load(&paths.config)?;
-            let hosts = Hosts::load(&paths.hosts)?;
-            // The hosts section is `host list`, line for line.
-            let host_lines = manage::hosts::host_list(&manage::load_doc(&paths.hosts)?);
-            let exports = Exports::load(&paths.exports)?;
+            let config = Config::load(&paths)?;
+            let settings = &config.settings;
+            // The hosts section is `host list`, line for line, from the
+            // file that holds the table.
+            let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
             let pass = PassphraseSource::from_env(passphrase_file);
             let client = identity_of(&settings.identity, "irsync", &pass)?;
             let client_line = irsync::identity::public_key_line(&client, "irsync");
@@ -1092,9 +1091,8 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
                 "{}",
                 manage::show::report(
                     &paths,
-                    &hosts,
+                    &config,
                     &host_lines,
-                    &exports,
                     (&client.public(), &client_line),
                     &daemon.public(),
                 )

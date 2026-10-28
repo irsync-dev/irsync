@@ -1,6 +1,7 @@
 //! The report printed by `irsync show`.
 
 use crate::config::exports::Exports;
+use crate::config::file::Config;
 use crate::config::hosts::Hosts;
 use crate::config::paths::Paths;
 use iroh::EndpointId;
@@ -63,24 +64,34 @@ pub fn all_block(exports: &Exports, hosts: &Hosts) -> String {
     out
 }
 
-/// The report: files, identities (`client` is the id and the public key
-/// line), hosts (`host_lines`, what `host list` prints) and exports.
-/// Missing files are flagged; aliases resolve through `hosts`.
+/// The report: the config file, identities (`client` is the id and the
+/// public key line), hosts (`host_lines`, what `host list` prints) and
+/// exports. The hosts and exports lines name the file that holds each
+/// table, `(also read)` when it is a split file beside the config.
 pub fn report(
     paths: &Paths,
-    hosts: &Hosts,
+    config: &Config,
     host_lines: &[String],
-    exports: &Exports,
     client: (&EndpointId, &str),
     daemon: &EndpointId,
 ) -> String {
+    let hosts = &config.hosts;
+    let exports = &config.exports;
+    let owner = |label: &str, path: &Path, split: bool| {
+        let suffix = if split { " (also read)" } else { "" };
+        format!("{label}: {}{suffix}\n", path.display())
+    };
     let mut out = file_line("config", &paths.config);
     let _ = writeln!(out, "client identity: {}\n{}", client.0, client.1);
-    out.push_str(&file_line("hosts", &paths.hosts));
+    out.push_str(&owner("hosts", &hosts.path, config.split_hosts.is_some()));
     for line in host_lines {
         let _ = writeln!(out, "{line}");
     }
-    out.push_str(&file_line("exports", &paths.exports));
+    out.push_str(&owner(
+        "exports",
+        &exports.path,
+        config.split_exports.is_some(),
+    ));
     let _ = writeln!(out, "daemon identity: {daemon}");
     out.push_str(&export_blocks(exports, hosts));
     out.push_str(&all_block(exports, hosts));

@@ -1,11 +1,12 @@
 //! Authorisation: which endpoint may access which exports.
 
 use crate::config::exports::{Export, Exports};
+use crate::config::file::Config;
 use crate::config::hosts::Hosts;
+use crate::config::paths::Paths;
 use crate::config::ConfigError;
 use iroh::EndpointId;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -106,23 +107,22 @@ pub trait Authorizer: Send + Sync {
     fn snapshot(&self) -> Result<Snapshot, AuthzError>;
 }
 
-/// Reads `hosts.toml` and `exports.toml` afresh on every [`Authorizer::snapshot`].
+/// Reads the config (and any split file beside it) afresh on every
+/// [`Authorizer::snapshot`].
 pub struct FileAuthorizer {
-    hosts: PathBuf,
-    exports: PathBuf,
+    paths: Paths,
 }
 
 impl FileAuthorizer {
-    pub fn new(hosts: PathBuf, exports: PathBuf) -> Self {
-        Self { hosts, exports }
+    pub fn new(paths: Paths) -> Self {
+        Self { paths }
     }
 }
 
 impl Authorizer for FileAuthorizer {
     fn snapshot(&self) -> Result<Snapshot, AuthzError> {
-        let hosts = Hosts::load(&self.hosts)?;
-        let exports = Exports::load(&self.exports)?;
-        Ok(Snapshot::from_files(&hosts, &exports))
+        let config = Config::load(&self.paths)?;
+        Ok(Snapshot::from_files(&config.hosts, &config.exports))
     }
 }
 

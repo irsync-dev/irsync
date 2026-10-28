@@ -861,3 +861,35 @@ fn grant_remove_with_a_star_points_at_all() {
     let o = irsync(&home, &["grant", "add", "p", "*"]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("no open access"));
 }
+
+#[test]
+fn show_names_split_files_it_read() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+    let out = ok(&home, &["show"]);
+    assert!(
+        out.lines()
+            .any(|l| l == format!("hosts: {}", cfg.join("irsync.toml").display())),
+        "{out}"
+    );
+    std::fs::write(
+        cfg.join("hosts.toml"),
+        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
+    )
+    .unwrap();
+    let out = ok(&home, &["show"]);
+    assert!(
+        out.lines()
+            .any(|l| l == format!("hosts: {} (also read)", cfg.join("hosts.toml").display())),
+        "{out}"
+    );
+    assert!(out.contains(&format!("laptop: {id}")), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l == format!("exports: {}", cfg.join("irsync.toml").display())),
+        "{out}"
+    );
+}

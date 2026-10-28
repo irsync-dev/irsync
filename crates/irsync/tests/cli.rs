@@ -112,8 +112,6 @@ fn irsync_flags_and_misc() {
         "--timeout=9",
         "--config",
         "cfg",
-        "--hosts",
-        "hosts",
         "--no-dht",
         "--max-delete=5",
         "--partial-dir=.p",
@@ -125,7 +123,6 @@ fn irsync_flags_and_misc() {
     assert_eq!(o.parallel, Some(4));
     assert_eq!(o.timeout, Some(Duration::from_secs(9)));
     assert_eq!(o.config, Some(PathBuf::from("cfg")));
-    assert_eq!(o.hosts, Some(PathBuf::from("hosts")));
     assert!(o.no_dht && o.numeric_ids);
     assert_eq!(o.max_delete, Some(5));
     assert_eq!(o.partial_dir, Some(PathBuf::from(".p")));
@@ -147,22 +144,11 @@ fn subcommands_parse() {
 
 #[test]
 fn daemon_flags() {
-    let a = parse(&[
-        "daemon",
-        "--config",
-        "/c",
-        "--hosts",
-        "/h",
-        "--exports",
-        "/e",
-    ]);
+    let a = parse(&["daemon", "--config", "/c"]);
     let Some(Command::Daemon(d)) = a.cmd else {
         panic!()
     };
-    assert_eq!(
-        (d.config, d.hosts, d.exports),
-        (Some("/c".into()), Some("/h".into()), Some("/e".into()))
-    );
+    assert_eq!(d.config, Some("/c".into()));
     assert!(Args::try_parse_from(["irsync", "daemon", "--foreground"]).is_err());
     // `id --daemon` is the one way to print the daemon's id.
     assert!(Args::try_parse_from(["irsync", "daemon", "--show-id"]).is_err());
@@ -172,29 +158,12 @@ fn daemon_flags() {
 fn export_update_takes_the_noun_file_flags_in_either_position() {
     use irsync::cli::ExportCmd;
     for args in [
-        &[
-            "export",
-            "update",
-            "--exports",
-            "/e",
-            "--config",
-            "/c",
-            "photos",
-        ][..],
-        &[
-            "export",
-            "--exports",
-            "/e",
-            "--config",
-            "/c",
-            "update",
-            "photos",
-        ][..],
+        &["export", "update", "--config", "/c", "photos"][..],
+        &["export", "--config", "/c", "update", "photos"][..],
     ] {
         let Some(Command::Export(e)) = parse(args).cmd else {
             panic!("{args:?}")
         };
-        assert_eq!(e.files.exports, Some(PathBuf::from("/e")));
         assert_eq!(e.files.config, Some(PathBuf::from("/c")));
         assert!(
             matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["photos"])
@@ -309,16 +278,22 @@ fn multiple_sources_with_remote_source_rejected() {
 }
 
 #[test]
-fn daemon_hosts_and_exports_flags_parse() {
-    match parse(&["daemon", "--hosts", "h.toml", "--exports", "e.toml"]).cmd {
-        Some(Command::Daemon(d)) => {
-            assert_eq!(d.hosts, Some(PathBuf::from("h.toml")));
-            assert_eq!(d.exports, Some(PathBuf::from("e.toml")));
-        }
-        c => panic!("{c:?}"),
+fn hosts_and_exports_flags_are_gone() {
+    for args in [
+        &["daemon", "--hosts", "h"][..],
+        &["daemon", "--exports", "e"],
+        &["host", "list", "--hosts", "h"],
+        &["grant", "list", "--exports", "e"],
+        &["show", "--hosts", "h"],
+        &["-a", "--hosts", "h", "a", "b:c"],
+    ] {
+        assert!(
+            Args::try_parse_from([&["irsync"][..], args].concat()).is_err(),
+            "{args:?}"
+        );
     }
     match parse(&["daemon"]).cmd {
-        Some(Command::Daemon(d)) => assert!(d.hosts.is_none() && d.exports.is_none()),
+        Some(Command::Daemon(d)) => assert!(d.config.is_none()),
         c => panic!("{c:?}"),
     }
 }
@@ -513,25 +488,22 @@ fn old_bare_verbs_are_gone() {
 
 #[test]
 fn file_flags_are_accepted_after_the_noun_in_either_position() {
-    let after_noun = parse(&["host", "--hosts", "/h", "--config", "/c", "list"]);
-    let after_verb = parse(&["host", "list", "--hosts", "/h", "--config", "/c"]);
+    let after_noun = parse(&["host", "--config", "/c", "list"]);
+    let after_verb = parse(&["host", "list", "--config", "/c"]);
     for a in [after_noun, after_verb] {
         let Some(Command::Host(h)) = a.cmd else {
             panic!()
         };
-        assert_eq!(
-            (h.files.hosts, h.files.config, h.files.exports),
-            (Some("/h".into()), Some("/c".into()), None)
-        );
+        assert_eq!(h.files.config, Some("/c".into()));
     }
-    let a = parse(&["grant", "add", "photos", "laptop", "--exports", "/e"]);
+    let a = parse(&["grant", "add", "photos", "laptop", "--config", "/c"]);
     let Some(Command::Grant(g)) = a.cmd else {
         panic!()
     };
-    assert_eq!(g.files.exports, Some("/e".into()));
+    assert_eq!(g.files.config, Some("/c".into()));
     // Before the noun the flag belongs to a sync, and after a sync's flag
     // `host list` is its two paths, not a command.
-    let a = parse(&["--hosts", "/h", "host", "list"]);
+    let a = parse(&["--config", "/c", "host", "list"]);
     assert!(
         a.cmd.is_none() && a.sync.paths == vec!["host", "list"],
         "{a:?}"
