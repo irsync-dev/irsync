@@ -327,7 +327,7 @@ async fn dry_run_push_into_missing_path_creates_nothing() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("a"), b"a").unwrap();
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"not/there".to_vec();
+        hello.path = b"m/not/there".to_vec();
         let o = opts(&["--delete", "-n"]);
         let (local, _) = side(&h, &o);
         let out = h.run_hello(&o, hello, local).await.unwrap();

@@ -1,8 +1,9 @@
 use super::UsageError;
-use crate::fs::paths::RelPath;
 use std::path::PathBuf;
 
-/// One side of a transfer, parsed with rsync's `host:export/path` rule.
+/// One side of a transfer: a local path, or `HOST:PATH` where `PATH` is
+/// passed to the daemon as typed (an export name, a path under the
+/// daemon's home, or an absolute path; the daemon resolves it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
     Local {
@@ -12,8 +13,9 @@ pub enum Location {
     Remote {
         /// A client-config host name or a literal EndpointId; resolved later.
         host: String,
-        export: String,
-        path: RelPath,
+        /// `PATH` as typed, without its trailing slash (`contents_only`);
+        /// a lone `/` is kept.
+        path: Vec<u8>,
         contents_only: bool,
     },
 }
@@ -31,28 +33,18 @@ impl Location {
         match colon {
             Some(c) if slash.is_none_or(|sl| c < sl) => {
                 let host = &s[..c];
-                let rest = s[c + 1..].trim_end_matches('/');
-                let (export, path) = rest.split_once('/').unwrap_or((rest, ""));
                 if host.is_empty() {
                     return Err(UsageError(format!("empty host in {s:?}")));
                 }
-                if export.is_empty() {
-                    // Usually an rsync-over-ssh habit: `host:/abs/path`.
-                    return Err(UsageError(format!(
-                        "missing export in {s:?}: remote addresses are HOST:EXPORT/PATH, \
-                         where EXPORT is a directory the daemon shares by name (irsync export add NAME:PATH)"
-                    )));
-                }
-                let path = if path.is_empty() {
-                    RelPath::root()
+                let rest = &s[c + 1..];
+                let path = if rest.chars().all(|ch| ch == '/') && !rest.is_empty() {
+                    "/"
                 } else {
-                    RelPath::new(path.as_bytes())
-                        .map_err(|_| UsageError(format!("invalid path in {s:?}")))?
+                    rest.trim_end_matches('/')
                 };
                 Ok(Location::Remote {
                     host: host.to_string(),
-                    export: export.to_string(),
-                    path,
+                    path: path.as_bytes().to_vec(),
                     contents_only,
                 })
             }

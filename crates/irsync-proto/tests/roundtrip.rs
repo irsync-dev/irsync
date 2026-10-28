@@ -5,7 +5,7 @@ fn hello_roundtrips() {
     let h = Hello {
         protocol_version: irsync_proto::PROTOCOL_VERSION,
         session_id: vec![7; 16],
-        export: "photos".into(),
+        name: b"photos".to_vec(),
         path: b"2024/\xff".to_vec(),
         direction: Direction::DaemonSends as i32,
         chunk_min: 65536,

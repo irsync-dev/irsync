@@ -44,8 +44,7 @@ async fn two_local_endpoints_exchange_hello() {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         session_id: vec![7; 16],
-        export: "photos".into(),
-        path: b"2026/oct".to_vec(),
+        path: b"photos/2026/oct".to_vec(),
         ..Default::default()
     };
     let (mut send, mut recv) = client.open_bi().await.expect("open_bi");

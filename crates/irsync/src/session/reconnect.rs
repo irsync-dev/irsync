@@ -334,7 +334,7 @@ pub async fn run_with_reconnect(
             }
             Some(Next::Retry) => {}
             Some(Next::ClosedByDaemon { code, reason }) => {
-                let export = hello_for(None).export;
+                let export = crate::fs::paths::escape_path(&hello_for(None).path);
                 return Err(anyhow::anyhow!(describe_close(
                     code,
                     &reason,

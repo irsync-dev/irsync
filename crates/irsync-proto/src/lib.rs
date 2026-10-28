@@ -9,4 +9,4 @@ pub mod v1 {
 /// ALPN identifier for the irsync protocol.
 pub const ALPN: &[u8] = b"irsync/1";
 /// Current protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;

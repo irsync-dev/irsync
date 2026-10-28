@@ -213,47 +213,38 @@ fn sync_requires_positionals() {
 }
 
 #[test]
-fn location_remote_with_trailing_slash() {
-    match loc("home:data/photos/") {
-        Location::Remote {
-            host,
-            export,
-            path,
-            contents_only,
-        } => {
-            assert_eq!(host, "home");
-            assert_eq!(export, "data");
-            assert_eq!(path.as_bytes(), b"photos");
-            assert!(contents_only);
+fn remote_path_is_passed_as_typed() {
+    let cases: [(&str, &[u8], bool); 7] = [
+        ("home:photos/2024", b"photos/2024", false),
+        ("home:photos/2024/", b"photos/2024", true),
+        ("home:/srv/photos", b"/srv/photos", false),
+        ("home:/srv/photos/", b"/srv/photos", true),
+        ("home:", b"", false),
+        ("home:/", b"/", true),
+        ("home:~/x", b"~/x", false),
+    ];
+    for (s, path, co) in cases {
+        match Location::parse(s).unwrap() {
+            Location::Remote {
+                host,
+                path: p,
+                contents_only,
+            } => {
+                assert_eq!(
+                    (host.as_str(), p.as_slice(), contents_only),
+                    ("home", path, co),
+                    "{s}"
+                );
+            }
+            l => panic!("{s}: {l:?}"),
         }
-        l => panic!("{l:?}"),
     }
-    match loc("home:data") {
-        Location::Remote {
-            path,
-            contents_only,
-            ..
-        } => {
-            assert_eq!(path.as_bytes(), b"");
-            assert!(!contents_only);
-        }
-        l => panic!("{l:?}"),
-    }
-    assert!(Location::parse("home:").is_err());
-    assert!(Location::parse("home:m/../x").is_err());
-}
-
-#[test]
-fn location_missing_export_explains_the_address_form() {
-    // rsync-over-ssh habit: an absolute path after the host.
-    let err = Location::parse("eowyn:/tmp/xxx").unwrap_err().to_string();
-    assert_eq!(
-        err,
-        "missing export in \"eowyn:/tmp/xxx\": remote addresses are HOST:EXPORT/PATH, \
-         where EXPORT is a directory the daemon shares by name (irsync export add NAME:PATH)"
-    );
-    let err = Location::parse("home:").unwrap_err().to_string();
-    assert!(err.starts_with("missing export in \"home:\": remote addresses are"));
+    assert!(Location::parse(":x").is_err());
+    // Validity (`..`, NUL) is the daemon's call now; the client passes it on.
+    assert!(matches!(
+        Location::parse("home:m/../x").unwrap(),
+        Location::Remote { .. }
+    ));
 }
 
 #[test]
@@ -272,9 +263,9 @@ fn location_local_with_colon_after_slash_is_local() {
 fn endpoint_id_literal_is_remote_host() {
     let id = iroh::SecretKey::from_bytes(&[7u8; 32]).public().to_string();
     match loc(&format!("{id}:mod/x")) {
-        Location::Remote { host, export, .. } => {
+        Location::Remote { host, path, .. } => {
             assert_eq!(host, id);
-            assert_eq!(export, "mod");
+            assert_eq!(path, b"mod/x");
         }
         l => panic!("{l:?}"),
     }

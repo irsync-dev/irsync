@@ -391,8 +391,7 @@ async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
 fn remote_location(daemon: EndpointId, hello: &Hello) -> anyhow::Result<Location> {
     Ok(Location::Remote {
         host: daemon.to_string(),
-        export: hello.export.clone(),
-        path: RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid remote path"))?,
+        path: hello.path.clone(),
         contents_only: hello.contents_only,
     })
 }
@@ -652,20 +651,33 @@ fn prepare_root(export_root: &Path, rel: &RelPath, missing: Missing) -> io::Resu
 }
 
 /// Serves one session on the daemon after `Hello` was validated: replies
+/// Where a session lives on the daemon: the export's directory, its name
+/// and the resolved path below it (the push basename already joined).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub root: PathBuf,
+    pub export: String,
+    pub rel: RelPath,
+}
+
 /// `HelloAck` and plays the role opposite to the client's.
 pub async fn serve_daemon(
     conn: Connection,
     mut send: SendStream,
     recv: RecvStream,
-    export_root: PathBuf,
+    place: Place,
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
 ) -> anyhow::Result<Outcome> {
+    let Place {
+        root: export_root,
+        export: export_name,
+        rel,
+    } = place;
     let direction = Direction::try_from(hello.direction).context("bad direction")?;
     // The daemon sends when the client receives.
     let sends = direction == Direction::DaemonSends;
-    let rel = RelPath::new(&hello.path).map_err(|_| anyhow::anyhow!("invalid path"))?;
     let missing = match (sends, hello.dry_run) {
         (true, _) => Missing::Refuse,
         (false, false) => Missing::Create,
@@ -683,7 +695,7 @@ pub async fn serve_daemon(
         }
     };
     let remote = conn.remote_id();
-    let key = SessionKey::for_daemon(remote, &hello).into_bytes();
+    let key = SessionKey::for_daemon(remote, &export_name, &rel, &hello).into_bytes();
     let (session_id, record, _claim) = if hello.session_id.is_empty() {
         let mut id = [0u8; 16];
         OsRng.fill_bytes(&mut id);
@@ -744,7 +756,8 @@ pub async fn serve_daemon(
     tracing::info!(
         session = %control::hex(&session_id),
         peer = %remote.fmt_short(),
-        export = %hello.export,
+        export = %export_name,
+        path = ?rel,
         ?direction,
         resumed,
         peer_version = %peer_build.version,

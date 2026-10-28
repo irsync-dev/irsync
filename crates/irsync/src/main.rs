@@ -398,7 +398,6 @@ async fn sync(
                 contents_only: local_co,
             },
             Location::Remote {
-                export,
                 path: rpath,
                 contents_only: remote_co,
                 ..
@@ -407,12 +406,12 @@ async fn sync(
         else {
             bail!("internal: unexpected location kinds");
         };
-        let (root, rpath) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
+        let (root, name) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             session_id: vec![],
-            export: export.clone(),
-            path: rpath.as_bytes().to_vec(),
+            path: rpath.clone(),
+            name,
             direction: match direction {
                 Direction::ClientSends => hello::Direction::ClientSends,
                 Direction::DaemonSends => hello::Direction::DaemonSends,

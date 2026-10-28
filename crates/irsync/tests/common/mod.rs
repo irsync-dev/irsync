@@ -176,6 +176,37 @@ pub async fn spawn_daemon(
     spawn_daemon_exports(exports, authz).await
 }
 
+/// As [`spawn_daemon`], with `home` as the directory relative remote paths
+/// resolve against.
+pub async fn spawn_daemon_home(
+    exports: Vec<(&str, std::path::PathBuf, bool)>,
+    authz: irsync::authz::MemoryAuthorizer,
+    home: Option<std::path::PathBuf>,
+) -> DaemonHandle {
+    use irsync::config::exports::Export;
+    let map = exports
+        .into_iter()
+        .map(|(name, path, read_only)| {
+            (
+                name.to_string(),
+                Export {
+                    path,
+                    read_only,
+                    warm_index: false,
+                    rw: Vec::new(),
+                    ro: Vec::new(),
+                },
+            )
+        })
+        .collect();
+    spawn_daemon_full(
+        std::sync::Arc::new(authz.with_exports(map)),
+        tempfile::tempdir().unwrap(),
+        home,
+    )
+    .await
+}
+
 /// Starts a daemon on a loopback endpoint serving `exports` as configured.
 pub async fn spawn_daemon_exports(
     exports: Vec<(&str, irsync::config::exports::Export)>,
@@ -200,6 +231,15 @@ pub async fn spawn_daemon_with_state(
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
     state: tempfile::TempDir,
 ) -> DaemonHandle {
+    spawn_daemon_full(authz, state, dirs::home_dir()).await
+}
+
+/// As [`spawn_daemon_with_state`], with the daemon's home directory.
+pub async fn spawn_daemon_full(
+    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+    state: tempfile::TempDir,
+    home: Option<std::path::PathBuf>,
+) -> DaemonHandle {
     use irsync::config::settings::Settings;
     let settings = Settings {
         state_dir: state.path().to_path_buf(),
@@ -207,7 +247,7 @@ pub async fn spawn_daemon_with_state(
     };
     let ep = loopback_endpoint().await;
     let (addr, id) = (addr_of(&ep), ep.id());
-    let daemon = irsync::daemon::Daemon::new(&settings, authz, ep).expect("daemon");
+    let daemon = irsync::daemon::Daemon::with_home(&settings, authz, ep, home).expect("daemon");
     let hellos = daemon.hello_counter();
     let (sessions, hashed) = daemon.session_counters();
     let fault = daemon.fault_injector();
@@ -347,8 +387,7 @@ impl Harness {
         irsync_proto::v1::Hello {
             protocol_version: irsync_proto::PROTOCOL_VERSION,
             session_id: vec![],
-            export: "m".into(),
-            path: vec![],
+            path: b"m".to_vec(),
             direction: match flow {
                 Flow::Push => Direction::ClientSends,
                 Flow::Pull => Direction::DaemonSends,

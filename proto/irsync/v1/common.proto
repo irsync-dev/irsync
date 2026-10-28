@@ -8,8 +8,11 @@ message Hash {
 message Hello {
   uint32 protocol_version = 1; // 1
   bytes session_id = 2; // 16 bytes; empty = new session
-  string export = 3; // the daemon-side export
-  bytes path = 4; // relative to export root
+  reserved 3; // was the export name; the daemon resolves `path` now
+  // PATH as typed: an export name followed by a path inside it, a path
+  // relative to the daemon's home, or an absolute path; a trailing slash
+  // is stripped and sets contents_only.
+  bytes path = 4;
   enum Direction {
     CLIENT_SENDS = 0;
     DAEMON_SENDS = 1;
@@ -47,6 +50,9 @@ message Hello {
   }
   AppendMode append = 19;
   BuildInfo build = 20; // the client's build, logged by the daemon
+  // On CLIENT_SENDS when the source had no trailing slash: its basename,
+  // which the daemon joins to the resolved path (rsync's rule). Else empty.
+  bytes name = 21;
 }
 message HelloAck {
   bytes session_id = 1;
@@ -64,7 +70,7 @@ message Error {
   enum Code {
     UNKNOWN = 0;
     UNAUTHORIZED = 1;
-    NO_SUCH_EXPORT = 2;
+    reserved 2; // was NO_SUCH_EXPORT: a path the key may not use is UNAUTHORIZED
     READ_ONLY = 3;
     BAD_PATH = 4;
     VERSION_MISMATCH = 5;

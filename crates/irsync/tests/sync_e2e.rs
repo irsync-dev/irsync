@@ -448,7 +448,7 @@ async fn daemon_index_rows_are_export_relative() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("f.bin"), data(300 * KIB, 5)).unwrap();
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"sub".to_vec();
+        hello.path = b"m/sub".to_vec();
         let out = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_eq!(
@@ -468,7 +468,7 @@ async fn daemon_index_rows_are_export_relative() {
         // Pulling the same sub-path reuses those rows: nothing is re-hashed.
         let before = h.daemon_files_hashed();
         let mut hello = Harness::hello(Flow::Pull);
-        hello.path = b"sub".to_vec();
+        hello.path = b"m/sub".to_vec();
         let pulled = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let index = irsync::index::Index::open(state.path(), pulled.path())

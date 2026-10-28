@@ -54,21 +54,24 @@ fn join(base: PathBuf, parts: &[&[u8]]) -> PathBuf {
 }
 
 /// `path` as typed, to an absolute path: an export's directory when the
-/// first component names one, else under `home` when relative (`~` as the
-/// first component is `home` too), else as is. `Ok(None)` when the path is
-/// relative and there is no home.
-pub fn resolve_path(
+/// first component names one (that name is returned too), else under
+/// `home` when relative (`~` as the first component is `home` too), else
+/// as is. `Ok(None)` when the path is relative and there is no home.
+pub fn resolve_path<'a>(
     path: &[u8],
     home: Option<&Path>,
-    exports: &BTreeMap<String, Export>,
-) -> Result<Option<PathBuf>, ResolveError> {
+    exports: &'a BTreeMap<String, Export>,
+) -> Result<Option<(PathBuf, Option<&'a str>)>, ResolveError> {
     let (absolute, parts) = components(path)?;
     if absolute {
-        return Ok(Some(join(PathBuf::from("/"), &parts)));
+        return Ok(Some((join(PathBuf::from("/"), &parts), None)));
     }
     if let Some(first) = parts.first() {
-        if let Some(e) = std::str::from_utf8(first).ok().and_then(|n| exports.get(n)) {
-            return Ok(Some(join(e.path.clone(), &parts[1..])));
+        if let Some((name, e)) = std::str::from_utf8(first)
+            .ok()
+            .and_then(|n| exports.get_key_value(n))
+        {
+            return Ok(Some((join(e.path.clone(), &parts[1..]), Some(name))));
         }
     }
     let Some(home) = home else {
@@ -78,7 +81,7 @@ pub fn resolve_path(
         Some(&b"~") => &parts[1..],
         _ => &parts[..],
     };
-    Ok(Some(join(home.to_path_buf(), rest)))
+    Ok(Some((join(home.to_path_buf(), rest), None)))
 }
 
 /// Component-wise, with `.` and empty components dropped (an export path
@@ -92,33 +95,42 @@ fn parts_of(p: &Path) -> Vec<&[u8]> {
 }
 
 /// The export containing `abs`: the longest path wins, whatever the peer's
-/// grants; between equal paths the one the peer has the best access to
-/// wins. `None` when no export contains `abs` or the winner is one the
-/// peer may not use, so a peer learns nothing from the difference.
+/// grants; between equal paths `prefer` (the export a short name named)
+/// wins, then the one the peer has the best effective access to
+/// (`read_only` applied). `None` when no export contains `abs` or the
+/// winner is one the peer may not use, so a peer learns nothing from the
+/// difference.
 pub fn containing<'a>(
     abs: &Path,
     exports: &'a BTreeMap<String, Export>,
     grants: &Grants,
+    prefer: Option<&str>,
 ) -> Option<Resolved<'a>> {
     let target = parts_of(abs);
-    let rank = |a: Option<Access>| match a {
-        Some(Access::ReadWrite) => 2,
-        Some(Access::ReadOnly) => 1,
+    let rank = |a: Option<Access>, e: &Export| match a {
+        Some(Access::ReadWrite) if !e.read_only => 2,
+        Some(_) => 1,
         None => 0,
     };
-    let mut best: Option<(usize, u8, &'a str, &'a Export, Option<Access>)> = None;
+    // (path length, named by the client, effective access), then the export.
+    type Candidate<'a> = ((usize, bool, u8), &'a str, &'a Export, Option<Access>);
+    let mut best: Option<Candidate<'a>> = None;
     for (name, export) in exports {
         let prefix = parts_of(&export.path);
         if prefix.len() > target.len() || prefix != target[..prefix.len()] {
             continue;
         }
         let access = grants.access(name);
-        let key = (prefix.len(), rank(access));
-        if best.is_none_or(|(len, r, ..)| key > (len, r)) {
-            best = Some((prefix.len(), rank(access), name, export, access));
+        let key = (
+            prefix.len(),
+            prefer == Some(name.as_str()),
+            rank(access, export),
+        );
+        if best.is_none_or(|(k, ..)| key > k) {
+            best = Some((key, name, export, access));
         }
     }
-    let (len, _, name, export, access) = best?;
+    let ((len, ..), name, export, access) = best?;
     let rel = RelPath::new(&target[len..].join(&b'/')).expect("components are valid names");
     Some(Resolved {
         name,
@@ -136,5 +148,6 @@ pub fn resolve<'a>(
     exports: &'a BTreeMap<String, Export>,
     grants: &Grants,
 ) -> Result<Option<Resolved<'a>>, ResolveError> {
-    Ok(resolve_path(path, home, exports)?.and_then(|abs| containing(&abs, exports, grants)))
+    Ok(resolve_path(path, home, exports)?
+        .and_then(|(abs, named)| containing(&abs, exports, grants, named)))
 }

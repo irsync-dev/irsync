@@ -20,13 +20,14 @@ use crate::config::exports::Export;
 use crate::config::paths::Paths;
 use crate::config::settings::{listen_sockets, Settings};
 use crate::filter::FilterSet;
-use crate::fs::paths::{is_contained, RelPath};
+use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
+use crate::resolve::{resolve, ResolveError, Resolved};
 use crate::scan::WalkOpts;
-use crate::session::engine::serve_daemon;
+use crate::session::engine::{serve_daemon, Place};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, HASH_WORKERS};
@@ -44,6 +45,8 @@ struct Shared {
     /// Consulted afresh on every connection.
     authz: Arc<dyn Authorizer>,
     state_dir: PathBuf,
+    /// The home directory relative paths resolve against; `None` = unknown.
+    home: Option<PathBuf>,
     /// One open index per export path, opened on first use and kept (with
     /// its GC and warm-up tasks) even if the export is later removed.
     indexes: Mutex<HashMap<PathBuf, IndexHandle>>,
@@ -78,10 +81,22 @@ impl Daemon {
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
+        Self::with_home(settings, authz, endpoint, dirs::home_dir())
+    }
+
+    /// As [`Daemon::new`], with `home` as the directory relative remote
+    /// paths resolve against (`None`: such paths are unresolvable).
+    pub fn with_home(
+        settings: &Settings,
+        authz: Arc<dyn Authorizer>,
+        endpoint: Endpoint,
+        home: Option<PathBuf>,
+    ) -> Result<Daemon> {
         let snap = authz.snapshot()?;
         let shared = Arc::new(Shared {
             authz,
             state_dir: settings.state_dir.clone(),
+            home,
             indexes: Mutex::new(HashMap::new()),
             tasks: CancellationToken::new(),
             dormant: settings.daemon.dormant_session_timeout,
@@ -305,14 +320,15 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
         .hellos
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    match validate(&snap, &grants, &hello) {
-        Ok(export) => {
-            let root = export.path.clone();
-            let index = match index_for(&shared, &hello.export, export) {
+    match validate(&snap, &grants, shared.home.as_deref(), &hello) {
+        Ok((resolved, rel)) => {
+            let root = resolved.export.path.clone();
+            let name = resolved.name.to_string();
+            let index = match index_for(&shared, &name, resolved.export) {
                 Ok(ix) => ix,
                 Err(e) => {
-                    tracing::warn!(export = %hello.export, "cannot open index: {e:#}");
-                    let message = format!("cannot open index for export {:?}: {e:#}", hello.export);
+                    tracing::warn!(export = %name, "cannot open index: {e:#}");
+                    let message = format!("cannot open index for export {name:?}: {e:#}");
                     let res = reject(&conn, &mut send, Code::Internal, message).await;
                     #[cfg(feature = "test-hooks")]
                     shared
@@ -322,7 +338,12 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
                 }
             };
             let hosting = shared.hosting.clone();
-            let res = serve_daemon(conn, send, recv, root, hello, index, hosting).await;
+            let place = Place {
+                root,
+                export: name,
+                rel,
+            };
+            let res = serve_daemon(conn, send, recv, place, hello, index, hosting).await;
             #[cfg(feature = "test-hooks")]
             {
                 use std::sync::atomic::Ordering::SeqCst;
@@ -348,8 +369,9 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
 fn validate<'a>(
     snap: &'a Snapshot,
     grants: &Grants,
+    home: Option<&Path>,
     hello: &Hello,
-) -> Result<&'a Export, (Code, String)> {
+) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err((
             Code::VersionMismatch,
@@ -364,30 +386,35 @@ fn validate<'a>(
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
     }
-    // The grant is checked before anything about the export itself, and
-    // the reply for a name this key may not use is the same whether or
-    // not such an export exists: a key must not be able to probe for the
-    // names of exports it was not given. Only a key that may use the name
-    // learns that it is missing, that a path escapes it, or that it is
-    // read-only.
-    let Some(access) = grants.access(&hello.export) else {
-        return Err((
+    // The path is resolved (export name, home, absolute) and the export
+    // containing it chosen before anything is said about it. The reply for
+    // a path this key may not use is the same whether the path is outside
+    // every export, inside an export the key has no grant for, or missing:
+    // a key must not be able to probe the daemon's layout. Only a key that
+    // may use the containing export learns that the path is invalid or
+    // that the export is read-only.
+    let no_access = || {
+        (
             Code::Unauthorized,
-            format!("no access to export {:?}", hello.export),
-        ));
+            format!("no access to {}", escape_path(&hello.path)),
+        )
     };
-    let Some(export) = snap.exports.get(&hello.export) else {
-        return Err((
-            Code::NoSuchExport,
-            format!("no such export {:?}", hello.export),
-        ));
+    let resolved = match resolve(&hello.path, home, &snap.exports, grants) {
+        Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
+        Ok(None) => return Err(no_access()),
+        Ok(Some(r)) => r,
     };
-    if !is_contained(&export.path, &hello.path) {
-        return Err((Code::BadPath, "path escapes export".into()));
-    }
+    let rel = if hello.name.is_empty() {
+        resolved.rel.clone()
+    } else {
+        resolved
+            .rel
+            .join(&hello.name)
+            .map_err(|_| (Code::BadPath, "invalid name".into()))?
+    };
     match Direction::try_from(hello.direction) {
         Ok(Direction::ClientSends) => {
-            if export.read_only || !access.permits(true) {
+            if resolved.export.read_only || !resolved.access.permits(true) {
                 return Err((Code::ReadOnly, "export is read-only for this key".into()));
             }
         }
@@ -395,7 +422,7 @@ fn validate<'a>(
         // No dedicated code for a malformed direction; UNKNOWN is the honest answer.
         Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }
-    Ok(export)
+    Ok((resolved, rel))
 }
 
 async fn reject(

@@ -59,16 +59,13 @@ fn location_bytes(l: &Location) -> Vec<u8> {
         }
         // The host string is an alias; the daemon id passed alongside identifies it.
         Location::Remote {
-            export,
             path,
             contents_only,
             ..
         } => {
             v.extend_from_slice(b"remote\0");
             v.push(*contents_only as u8);
-            v.extend_from_slice(&(export.len() as u64).to_le_bytes());
-            v.extend_from_slice(export.as_bytes());
-            v.extend_from_slice(path.as_bytes());
+            v.extend_from_slice(path);
         }
     }
     v
@@ -132,13 +129,20 @@ impl SessionKey {
         SessionKey(h.finalize().as_bytes().to_vec())
     }
 
-    /// The daemon's key for a session: the client's identity plus what it asked for.
-    pub fn for_daemon(client: EndpointId, hello: &Hello) -> SessionKey {
+    /// The daemon's key for a session: the client's identity plus the
+    /// resolved place (`export` and `rel`, so every spelling of it resumes
+    /// the same session) and the flags.
+    pub fn for_daemon(
+        client: EndpointId,
+        export: &str,
+        rel: &RelPath,
+        hello: &Hello,
+    ) -> SessionKey {
         let mut h = blake3::Hasher::new();
         field(&mut h, b"irsync-daemon-session-key", b"v1");
         field(&mut h, b"client", client.as_bytes());
-        field(&mut h, b"export", hello.export.as_bytes());
-        field(&mut h, b"path", &hello.path);
+        field(&mut h, b"export", export.as_bytes());
+        field(&mut h, b"path", rel.as_bytes());
         field(
             &mut h,
             b"flags",
@@ -770,34 +774,39 @@ impl Outcome {
     }
 }
 
-/// Applies rsync's trailing-slash rule to the source: `src` (no slash) copies
-/// the directory itself, so its name is appended on the destination side.
-/// Returns the local root and the remote path to put in `Hello`.
+/// Applies rsync's trailing-slash rule. On a push, `src` without a slash
+/// copies the directory itself: its basename is returned as `Hello.name`
+/// for the daemon to join after resolving `remote`. On a pull, the last
+/// component of `remote` names the local directory. The remote path is
+/// never changed here: the daemon resolves it.
 pub fn resolve_roots(
     direction: Direction,
     local: &Path,
     local_contents_only: bool,
-    remote: &RelPath,
+    remote: &[u8],
     remote_contents_only: bool,
-) -> (PathBuf, RelPath) {
+) -> (PathBuf, Vec<u8>) {
     use std::os::unix::ffi::OsStrExt;
     match direction {
         Direction::ClientSends => {
             let name = (!local_contents_only)
                 .then(|| local.file_name())
                 .flatten()
-                .and_then(|n| remote.join(n.as_bytes()).ok());
-            (local.to_path_buf(), name.unwrap_or_else(|| remote.clone()))
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_default();
+            (local.to_path_buf(), name)
         }
         Direction::DaemonSends => {
-            let last = remote.components().last();
+            let last = remote
+                .rsplit(|&b| b == b'/')
+                .find(|c| !c.is_empty() && *c != b"." && *c != b"~");
             let root = match last {
                 Some(name) if !remote_contents_only => {
                     local.join(std::ffi::OsStr::from_bytes(name))
                 }
                 _ => local.to_path_buf(),
             };
-            (root, remote.clone())
+            (root, Vec::new())
         }
     }
 }
@@ -807,24 +816,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trailing_slash_rule() {
-        let m = RelPath::new(b"dir").unwrap();
-        let (l, r) = resolve_roots(Direction::ClientSends, Path::new("/x/a"), false, &m, false);
-        assert_eq!((l, r.as_bytes()), (PathBuf::from("/x/a"), &b"dir/a"[..]));
-        let (_, r) = resolve_roots(Direction::ClientSends, Path::new("/x/a"), true, &m, false);
-        assert_eq!(r.as_bytes(), b"dir");
-        let (l, _) = resolve_roots(Direction::DaemonSends, Path::new("/x"), false, &m, false);
-        assert_eq!(l, PathBuf::from("/x/dir"));
-        let (l, _) = resolve_roots(Direction::DaemonSends, Path::new("/x"), false, &m, true);
-        assert_eq!(l, PathBuf::from("/x"));
-        let (l, _) = resolve_roots(
-            Direction::DaemonSends,
-            Path::new("/x"),
-            false,
-            &RelPath::root(),
-            false,
+    fn trailing_slash_rule_puts_the_basename_in_name() {
+        use Direction::*;
+        let p = Path::new("/l/photos");
+        let r = |d, l: &Path, lco, rem: &[u8], rco| resolve_roots(d, l, lco, rem, rco);
+        assert_eq!(
+            r(ClientSends, p, false, b"", false),
+            (p.into(), b"photos".to_vec())
         );
-        assert_eq!(l, PathBuf::from("/x"));
+        assert_eq!(r(ClientSends, p, true, b"", false), (p.into(), vec![]));
+        assert_eq!(
+            r(ClientSends, p, false, b"/srv/x", false),
+            (p.into(), b"photos".to_vec())
+        );
+        // Pull: the remote's last component names the local directory; `name` stays empty.
+        let l = Path::new("/l");
+        assert_eq!(
+            r(DaemonSends, l, false, b"/srv/photos", false),
+            (PathBuf::from("/l/photos"), vec![])
+        );
+        assert_eq!(
+            r(DaemonSends, l, false, b"/srv/photos", true),
+            (PathBuf::from("/l"), vec![])
+        );
+        assert_eq!(
+            r(DaemonSends, l, false, b"", false),
+            (PathBuf::from("/l"), vec![])
+        );
+        assert_eq!(
+            r(DaemonSends, l, false, b"/", false),
+            (PathBuf::from("/l"), vec![])
+        );
+        assert_eq!(
+            r(DaemonSends, l, false, b"photos", false),
+            (PathBuf::from("/l/photos"), vec![])
+        );
+    }
+
+    #[test]
+    fn daemon_session_key_is_by_resolved_place() {
+        let c = iroh::SecretKey::from_bytes(&[1; 32]).public();
+        let rel = RelPath::new(b"2024").unwrap();
+        let h = |path: &[u8]| Hello {
+            path: path.to_vec(),
+            ..Hello::default()
+        };
+        assert_eq!(
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024")),
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"/srv/photos/2024"))
+        );
+        assert_ne!(
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024")),
+            SessionKey::for_daemon(c, "srv", &rel, &h(b"photos/2024"))
+        );
     }
 
     #[test]
