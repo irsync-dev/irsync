@@ -130,15 +130,6 @@ pub enum Command {
     /// stderr at info level (-v: debug, -vv: trace, -q: errors only;
     /// RUST_LOG overrides).
     Daemon(DaemonArgs),
-    /// Generate an Ed25519 identity and print its public key line and
-    /// EndpointId.
-    Keygen {
-        /// Where to write the private key (default: id_ed25519, the
-        /// client's identity, in the config directory); the .pub file goes
-        /// beside it. Refuses to overwrite either file.
-        #[arg(long, value_name = "PATH")]
-        out: Option<PathBuf>,
-    },
     /// Garbage-collect resume state.
     ///
     /// Removes abandoned partial files and dormant sessions older than 7
@@ -191,6 +182,18 @@ pub enum IdCmd {
         /// Both identities, labelled `client:` and `daemon:`.
         #[arg(short = 'a', long)]
         all: bool,
+    },
+    /// Generate an Ed25519 identity and print its public key line and
+    /// EndpointId. Refuses to overwrite an existing key or .pub file.
+    Generate {
+        /// The daemon's identity (its configured path) instead of the
+        /// client's.
+        #[arg(long, conflicts_with = "out")]
+        daemon: bool,
+        /// Write the private key here instead of the configured path; the
+        /// .pub file goes beside it.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
     },
 }
 

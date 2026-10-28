@@ -137,10 +137,8 @@ fn subcommands_parse() {
         parse(&["gc", "--dry-run"]).cmd,
         Some(Command::Gc { dry_run: true, .. })
     ));
-    assert!(matches!(
-        parse(&["keygen"]).cmd,
-        Some(Command::Keygen { out: None })
-    ));
+    // `keygen` is gone; a lone word is a sync missing its DEST.
+    assert!(Args::try_parse_from(["irsync", "keygen"]).is_err());
     let a = parse(&["-av", "a", "b", "h:m/"]);
     assert!(a.cmd.is_none());
     assert_eq!(a.sync.src(), vec!["a", "b"]);
@@ -575,6 +573,21 @@ fn id_and_show_parse() {
         assert_eq!(i.files.config, Some(PathBuf::from("/c")));
     }
     assert!(Args::try_parse_from(["irsync", "id", "show", "--daemon", "--all"]).is_err());
+    assert!(matches!(
+        parse(&["id", "generate"]).cmd,
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: false, out: None })
+    ));
+    assert!(matches!(
+        parse(&["id", "generate", "--daemon"]).cmd,
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: true, out: None })
+    ));
+    assert!(matches!(
+        parse(&["id", "generate", "--out", "/k"]).cmd,
+        Some(Command::Id(ref i))
+            if matches!(i.cmd, IdCmd::Generate { daemon: false, out: Some(ref p) } if p == &PathBuf::from("/k"))
+    ));
+    // `--out` names the file; `--daemon` picks the configured one.
+    assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());
     // `id` is a noun: it needs a verb.
     assert!(Args::try_parse_from(["irsync", "id"]).is_err());
     assert!(Args::try_parse_from(["irsync", "id", "--daemon"]).is_err());

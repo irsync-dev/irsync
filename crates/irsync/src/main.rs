@@ -35,7 +35,6 @@ fn main() {
     let _ = irsync::fs::rlimit::raise_nofile();
     match &args.cmd {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
-        Some(Command::Keygen { out }) => std::process::exit(run_keygen(out.as_deref())),
         Some(Command::Gc { dry_run, log }) => std::process::exit(run_gc(*dry_run, *log)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix)),
         Some(Command::Host(h)) => std::process::exit(run_host(h)),
@@ -179,45 +178,6 @@ const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86
 /// A partial record untouched this long makes the next run's GC walk due.
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// `irsync keygen`: writes the key pair, prints the public key line and the
-/// EndpointId (both on stdout, one per line).
-fn run_keygen(out: Option<&std::path::Path>) -> i32 {
-    let result = (|| -> anyhow::Result<()> {
-        let path = match out {
-            Some(p) => p.to_path_buf(),
-            None => dirs::home_dir()
-                .context("no home directory; use --out")?
-                .join(".config/irsync/id_ed25519"),
-        };
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        let secret = irsync::identity::generate_openssh(&path, "irsync")?;
-        let mut pub_path = path.as_os_str().to_owned();
-        pub_path.push(".pub");
-        let line = std::fs::read_to_string(&pub_path)
-            .with_context(|| format!("reading {}", std::path::Path::new(&pub_path).display()))?;
-        eprintln!(
-            "wrote {} and {}",
-            path.display(),
-            std::path::Path::new(&pub_path).display()
-        );
-        println!("{}", line.trim());
-        println!("{}", secret.public());
-        Ok(())
-    })();
-    match result {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("irsync keygen: {e:#}");
-            1
-        }
-    }
-}
-
-/// `irsync gc`: collects stale resume state for every root with an index
-/// under the state directory.
 fn run_gc(dry_run: bool, log: LogArgs) -> i32 {
     init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<()> {
@@ -886,11 +846,55 @@ fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::Se
 }
 
 fn run_id(i: &IdArgs) -> i32 {
-    let IdCmd::Show { daemon, all } = i.cmd;
+    match &i.cmd {
+        IdCmd::Show { daemon, all } => id_show(&i.files, *daemon, *all),
+        IdCmd::Generate { daemon, out } => id_generate(&i.files, *daemon, out.as_deref()),
+    }
+}
+
+/// `irsync id generate`: writes the key pair, prints the public key line
+/// and the EndpointId. Never replaces an existing file.
+fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>) -> i32 {
+    finish(
+        "id generate",
+        (|| {
+            let (path, comment) = match out {
+                Some(p) => (
+                    p.to_path_buf(),
+                    if daemon { "irsync-daemon" } else { "irsync" },
+                ),
+                None => {
+                    let settings = Settings::load(&file_paths(f).config)?;
+                    if daemon {
+                        (settings.daemon.identity, "irsync-daemon")
+                    } else {
+                        (settings.identity, "irsync")
+                    }
+                }
+            };
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            let secret = irsync::identity::generate_openssh(&path, comment)?;
+            let mut pub_path = path.as_os_str().to_owned();
+            pub_path.push(".pub");
+            let pub_path = PathBuf::from(pub_path);
+            let line = std::fs::read_to_string(&pub_path)
+                .with_context(|| format!("reading {}", pub_path.display()))?;
+            eprintln!("wrote {} and {}", path.display(), pub_path.display());
+            println!("{}", line.trim());
+            println!("{}", secret.public());
+            Ok(())
+        })(),
+    )
+}
+
+fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
     finish(
         "id show",
         (|| {
-            let settings = Settings::load(&file_paths(&i.files).config)?;
+            let settings = Settings::load(&file_paths(f).config)?;
             let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
                 let secret = identity_of(path, comment)?;
                 println!("{}", irsync::identity::public_key_line(&secret, comment));

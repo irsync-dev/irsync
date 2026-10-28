@@ -187,12 +187,12 @@ async fn gc_dry_run_removes_nothing() {
 }
 
 #[test]
-fn keygen_prints_endpoint_id_matching_pub() {
+fn id_generate_prints_endpoint_id_matching_pub() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("k/id_ed25519");
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_irsync"))
-            .args(["keygen", "--out"])
+            .args(["id", "generate", "--out"])
             .arg(&out)
             .output()
             .unwrap()

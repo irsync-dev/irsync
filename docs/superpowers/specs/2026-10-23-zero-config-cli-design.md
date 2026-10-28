@@ -250,6 +250,8 @@ no new key is ever generated over an existing one. Passphrase handling
 `irsync keygen [--out PATH]` stays as the explicit way to make a key, and
 still refuses to overwrite.
 
+> Superseded 2026-10-28: `irsync id generate [--daemon | --out PATH]`.
+
 Because the two identities differ, a daemon and a client in the same account
 on one machine have distinct EndpointIds and can talk to each other.
 

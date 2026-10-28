@@ -66,7 +66,8 @@ each other: add `--address 127.0.0.1:PORT` (or `irsync host add home ID
 directly.
 
 Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
-`irsync keygen [--out PATH]` makes one explicitly and refuses to overwrite.
+`irsync id generate [--daemon | --out PATH]` makes one explicitly and refuses
+to overwrite.
 
 ## Files
 
@@ -77,7 +78,7 @@ The four nouns (`host`, `export`, `grant`, `id`), `show` and `daemon` accept
 `--config`, `--hosts` and `--exports` to use other paths; for a noun the flags
 go anywhere after it (`irsync export --exports E add ...` or `irsync export
 add ... --exports E`). A sync takes `--config` and `--hosts`;
-`index`, `keygen` and `gc` take none.
+`index` and `gc` take none.
 Unknown keys are errors that name the file, table and key.
 
 `irsync.toml`: settings for the client and the daemon. These are the defaults
@@ -173,6 +174,7 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
 | `irsync id show [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
+| `irsync id generate [--daemon \| --out PATH]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; never overwrites |
 | `irsync show` | print the file paths, identities, aliases, exports and grants |
 
 A running daemon picks up `host`, `export` and `grant` changes on the next
@@ -235,7 +237,7 @@ irsync-specific:
 | `--no-rename-detection` | do not reuse content of moved files |
 
 Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--listen ADDR]... [-v|-q]`,
-the management commands above, `irsync keygen [--out PATH]`, `irsync index [-n] [-v|-q] ROOT...`, which
+the management commands above, `irsync index [-n] [-v|-q] ROOT...`, which
 hashes the files under a local root into its index so that a destination
 irsync did not create (a prior rsync, a restore) is reused for renamed and
 copied files from the first session on (`irsync export update` is the same

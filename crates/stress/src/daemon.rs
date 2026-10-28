@@ -91,38 +91,39 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
     })
 }
 
-/// Runs `irsync keygen --out <config_dir>/id_ed25519`; returns the private
+/// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private
 /// key path, the public key line (stdout line 1) and the EndpointId (line 2).
 pub fn client_keygen(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String, String)> {
     let key = config_dir.join("id_ed25519");
     let out = process::output(
         Command::new(irsync)
-            .args(["keygen", "--out"])
+            .args(["id", "generate", "--out"])
             .arg(&key)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     )
-    .with_context(|| format!("cannot run {} keygen", irsync.display()))?;
+    .with_context(|| format!("cannot run {} id generate", irsync.display()))?;
     if !out.status.success() {
         bail!(
-            "irsync keygen failed ({}): {}",
+            "irsync id generate failed ({}): {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let stdout = String::from_utf8(out.stdout).context("irsync keygen: stdout is not UTF-8")?;
+    let stdout =
+        String::from_utf8(out.stdout).context("irsync id generate: stdout is not UTF-8")?;
     let mut lines = stdout.lines().map(str::trim);
     let pub_line = lines
         .next()
         .filter(|l| !l.is_empty())
-        .ok_or_else(|| anyhow!("irsync keygen printed no public key line"))?
+        .ok_or_else(|| anyhow!("irsync id generate printed no public key line"))?
         .to_string();
     let id = lines
         .next()
         .filter(|l| !l.is_empty())
-        .ok_or_else(|| anyhow!("irsync keygen printed no endpoint id line"))?
+        .ok_or_else(|| anyhow!("irsync id generate printed no endpoint id line"))?
         .to_string();
     Ok((key, pub_line, id))
 }

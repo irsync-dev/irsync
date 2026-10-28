@@ -608,3 +608,55 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     );
     assert!(err.contains("exports.toml"), "{err}");
 }
+
+#[test]
+fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    // The client's identity by default.
+    let o = irsync(&home, &["id", "generate"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let key = cfg.join("id_ed25519");
+    assert!(String::from_utf8_lossy(&o.stderr).contains(&format!("wrote {}", key.display())));
+    assert!(key.exists() && cfg.join("id_ed25519.pub").exists());
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(
+        lines[0].starts_with("ssh-ed25519 ") && lines[0].ends_with(" irsync"),
+        "{out}"
+    );
+    let client = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+    // `id show` finds it rather than generating another.
+    let o = irsync(&home, &["id", "show"]);
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("generated"));
+    let shown = String::from_utf8(o.stdout).unwrap();
+    assert_eq!(shown.lines().nth(1).unwrap(), client.to_string());
+    // The daemon's with --daemon.
+    let o = irsync(&home, &["id", "generate", "--daemon"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(cfg.join("daemon_ed25519").exists());
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        out.lines().next().unwrap().ends_with(" irsync-daemon"),
+        "{out}"
+    );
+    // An existing key is never replaced.
+    let before = std::fs::read(&key).unwrap();
+    let o = irsync(&home, &["id", "generate"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.starts_with("irsync id generate: ") && err.contains("refusing to overwrite"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&key).unwrap(), before);
+    // The paths come from the settings file.
+    let other = home.join("elsewhere/client_key");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("irsync.toml"), format!("identity = {:?}\n", other)).unwrap();
+    let o = irsync(&home, &["id", "generate"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(other.exists() && home.join("elsewhere/client_key.pub").exists());
+}

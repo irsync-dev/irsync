@@ -53,7 +53,7 @@ cross-referenced from commit messages and review notes.
   `docs/superpowers/specs/2026-10-23-zero-config-cli-design.md`.)
 - The daemon rejects unknown keys and keys with an empty grant set before
   reading a single byte of the stream (close code 1).
-- `irsync keygen` refuses to overwrite an existing key and chmods the private
+- `irsync id generate` refuses to overwrite an existing key and chmods the private
   key to 0600 explicitly.
 - Duplicate keys in the v1 key list file: first match wins (OpenSSH semantics).
   Non-Ed25519 lines are skipped with a warning.
