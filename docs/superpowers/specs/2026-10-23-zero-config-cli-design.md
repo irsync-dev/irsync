@@ -166,6 +166,8 @@ Unknown keys anywhere are an error naming the file, the table and the key.
 
 ### hosts.toml
 
+> **Superseded in part** by [2026-10-28-config-cli-design.md](2026-10-28-config-cli-design.md): aliases now live under `[hosts.ALIAS]` tables, and `all` and `*` are not aliases.
+
 ```toml
 [home]                       # the alias is the table name; was `Host home`
 endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32
@@ -187,6 +189,8 @@ alias is dialled as a destination. On a daemon's machine the file doubles
 as a list of known clients, so grants in `exports.toml` can name them.
 
 ### exports.toml
+
+> **Superseded in part** by [2026-10-28-config-cli-design.md](2026-10-28-config-cli-design.md): every-export grants now live in an `[all]` table and each export under `[exports.NAME]`; `all` is the only reserved name.
 
 ```toml
 # Grants for every export, present and future (was modules="*:...").
@@ -250,6 +254,8 @@ Because the two identities differ, a daemon and a client in the same account
 on one machine have distinct EndpointIds and can talk to each other.
 
 ## Commands
+
+> **Superseded in part** by [2026-10-28-config-cli-design.md](2026-10-28-config-cli-design.md): the management commands are now `host`, `export` and `grant`, each with `add`, `remove` and `list`; the bare `add`, `remove`, `allow` and `revoke` below no longer exist.
 
 All are top-level subcommands of `irsync`, beside `daemon`, `keygen`, `gc`
 and `index`. They take `--config PATH`, `--hosts PATH` and `--exports

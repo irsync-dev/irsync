@@ -1,8 +1,8 @@
 # Running the irsync daemon
 
 `irsync daemon` runs in the foreground and never daemonises itself; let
-systemd or launchd supervise it. It needs no setup beyond `irsync add` (see the
-[README](../README.md)).
+systemd or launchd supervise it. It needs no setup beyond `irsync export add`
+(see the [README](../README.md)).
 
 ## Files
 
@@ -20,15 +20,16 @@ There is no `/etc` lookup: a system-wide daemon passes the three paths
 explicitly (see [A system-wide daemon](#a-system-wide-daemon) below). `irsync id --daemon` prints the
 daemon's public key line and `EndpointId`; `irsync daemon --show-id` prints
 only the id, and generates the identity first if it does not exist yet.
-`irsync add` and `irsync show` print the id too.
+`irsync export add` and `irsync show` print the id too.
 
 ## Changing exports while it runs
 
 The daemon reads `hosts.toml` and `exports.toml` afresh on every accepted
 connection, after the handshake has proved the peer's `EndpointId`. `irsync
-add`, `remove`, `allow`, `revoke` and `host add`/`remove` therefore take effect
-on the next connection, with no restart. A `revoke` or `remove` does not end
-a session already in progress; it refuses only new connections. The commands
+export add`/`remove`, `grant add`/`remove` and `host add`/`remove` therefore
+take effect on the next connection, with no restart. A `grant remove` or
+`export remove` does not end a session already in progress; it refuses only
+new connections. The commands
 write the files
 atomically. If either file cannot be read or parsed, the daemon logs the error
 at `warn`, rejects that connection and keeps running: it fails closed and does
@@ -37,11 +38,11 @@ not fall back to an earlier copy. A missing file counts as empty. At startup an
 known alias nor an `EndpointId` matches nobody and is logged.
 
 A daemon with no exports starts, logs a warning naming the exports file, and
-serves nothing until `irsync add` creates one.
+serves nothing until `irsync export add` creates one.
 
 A client whose key is not granted anything is closed on before any protocol
 message is read. The client reports that the daemon rejected its key and
-prints the exact `irsync allow <export> <id>` line to run on the daemon's
+prints the exact `irsync grant add <export> <id>` line to run on the daemon's
 machine; the daemon's log shows `rejecting unauthorized key` with the first
 ten hex digits of the peer's id.
 
@@ -72,15 +73,16 @@ identity = "/etc/irsync/daemon_ed25519"
 ```
 
 The management commands edit whatever files they are given, and without
-flags those are the ones in your own `~/.config/irsync/`: there `irsync add`
-would write your `exports.toml` and generate a stray
+flags those are the ones in your own `~/.config/irsync/`: there `irsync
+export add` would write your `exports.toml` and generate a stray
 `~/.config/irsync/daemon_ed25519`, and print that key's id as "the daemon's".
-Run them as the daemon's account, with the same three paths the daemon gets:
+Run them as the daemon's account, with the same three paths the daemon gets
+(for `host`, `export` and `grant` the flags go anywhere after the noun):
 
 ```sh
 F="--config /etc/irsync/irsync.toml --hosts /etc/irsync/hosts.toml --exports /etc/irsync/exports.toml"
-sudo -u irsync irsync add photos:/srv/photos $F
-sudo -u irsync irsync allow photos laptop $F
+sudo -u irsync irsync export add photos:/srv/photos $F
+sudo -u irsync irsync grant add photos laptop $F
 sudo -u irsync irsync host add laptop <id> $F
 sudo -u irsync irsync id --daemon $F
 sudo -u irsync irsync show $F
@@ -287,7 +289,7 @@ The client dials directly when given at least one address, in the host's
 `host:port`, hostnames resolved with the system resolver):
 
 ```toml
-[local]
+[hosts.local]
 endpoint_id = "<id>"
 address = ["127.0.0.1:43210"]
 ```

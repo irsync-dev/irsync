@@ -33,9 +33,9 @@ time a command needs it and says so on stderr (`generated identity <path>`).
 irsync id                              # public key line, then the client EndpointId
 
 # home server
-irsync add photos:/srv/photos          # prints the daemon's EndpointId
+irsync export add photos:/srv/photos   # prints the daemon's EndpointId
 irsync host add laptop <laptop-id>     # a readable name for the client
-irsync allow photos laptop
+irsync grant add photos laptop
 irsync daemon
 
 # laptop
@@ -46,13 +46,13 @@ irsync -av home:photos/ ~/Photos       # pull: daemon to laptop
 
 Two strings are copied by hand, one in each direction: the laptop's
 `EndpointId` (the second line of `irsync id`) to the server, and the server's
-(printed by `irsync add`, `irsync daemon` and `irsync id --daemon`) to the
-laptop. The client pins the daemon's `EndpointId`; a mismatch is a hard error.
+(printed by `irsync export add`, `irsync daemon` and `irsync id --daemon`) to
+the laptop. The client pins the daemon's `EndpointId`; a mismatch is a hard error.
 There is no trust-on-first-use prompt. The alias is optional: the raw id can
 stand in for it, as in `irsync -av ~/Photos k51qzi5...:photos/`, and `irsync
-allow photos <laptop-id>` works without `host add`. `allow` also takes a
-pasted `ssh-ed25519 AAAA...` line or the path of a `.pub` file in place of the
-id; `--ro` grants pulling only.
+grant add photos <laptop-id>` works without `host add`. `grant add` also takes
+a pasted `ssh-ed25519 AAAA...` line or the path of a `.pub` file in place of
+the id; `--ro` grants pulling only.
 
 Addresses are `<name>:<export>/<path>`, and rsync's trailing-slash rule holds:
 `Photos/` copies the contents, `Photos` copies the directory itself. Exactly one
@@ -72,11 +72,12 @@ Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
 Everything lives in `~/.config/irsync/` and every file is optional: a missing
 file is the same as an empty one. The commands below edit `hosts.toml` and
 `exports.toml` for you, preserving comments; you can also edit them by hand.
-The management commands (`add`, `remove`, `allow`, `revoke`, `host`, `id`,
-`show`) and `daemon` accept `--config`, `--hosts` and `--exports` to use
-other paths; a sync takes `--config` and `--hosts`, `index` takes `--config`
-and `--exports`, and `keygen` and `gc` take none. Unknown keys are errors that name the
-file, table and key.
+The three management nouns (`host`, `export`, `grant`), `id`, `show` and
+`daemon` accept `--config`, `--hosts` and `--exports` to use other paths; for
+a noun the flags go anywhere after it (`irsync export --exports E add ...` or
+`irsync export add ... --exports E`). A sync takes `--config` and `--hosts`,
+`index` takes `--config` and `--exports`, and `keygen` and `gc` take none.
+Unknown keys are errors that name the file, table and key.
 
 `irsync.toml`: settings for the client and the daemon. These are the defaults
 except where marked.
@@ -107,11 +108,11 @@ dns = true
 mdns = true
 ```
 
-`hosts.toml`: one table per remote, named by its alias. On a daemon's machine
-the same file names the clients that exports can be granted to.
+`hosts.toml`: one `[hosts.ALIAS]` table per remote. On a daemon's machine the
+same file names the clients that exports can be granted to.
 
 ```toml
-[home]
+[hosts.home]
 endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32, as iroh prints it
 relay = "https://relay.example.net"   # the rest is optional
 address = ["192.168.1.10:4000"]       # dial directly: no relay or lookup
@@ -120,7 +121,7 @@ reconnect = "1h"
 dht = false
 mdns = false
 
-[laptop]
+[hosts.laptop]
 endpoint_id = "7f3a0c..."
 ```
 
@@ -128,43 +129,52 @@ A sync resolves each setting from the command-line flag, then the alias's
 table, then `[client]`, then the built-in default. Aliases match exactly; there
 are no patterns.
 
-`exports.toml`: what the daemon shares and with whom. Entries in `rw` and `ro`
-are aliases from `hosts.toml` or EndpointIds.
+`exports.toml`: what the daemon shares and with whom. `[all]` holds the grants
+that apply to every export; each export is an `[exports.NAME]` table. Entries
+in `rw` and `ro` are aliases from `hosts.toml` or EndpointIds.
 
 ```toml
-rw = ["9c4d..."]             # optional: grants for every export
+[all]                        # optional: grants for every export
+rw = ["9c4d..."]
 ro = []
 
-[photos]
+[exports.photos]
 path = "/srv/photos"
 rw = ["laptop", "k51qzi5..."]
 ro = ["b2e1..."]
 warm_index = false           # hash what is already there at start, so files irsync did not place are reused
 
-[docs]
+[exports.docs]
 path = "/srv/docs"
 read_only = true             # caps everyone, even ids under rw
 ro = ["7f3a0c..."]
 ```
 
 A key that no entry names is rejected before any protocol message is read;
-there is no open access. `read_only` refuses pushes from everyone.
+there is no open access. `read_only` refuses pushes from everyone. The one
+name an export cannot have is `all`, the word `grant add all WHO` uses for
+every export.
 
-## Managing exports and hosts
+## Managing hosts, exports and grants
+
+Three nouns, each with `add`, `remove` and `list`:
 
 | Command | Effect |
 | --- | --- |
-| `irsync add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
-| `irsync remove NAME` | stop exporting; its grants go with it |
-| `irsync allow EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
-| `irsync revoke EXPORT\|all WHO\|all` | remove grants; `irsync revoke WHO` removes `WHO` everywhere |
 | `irsync host add ALIAS ID [--relay URL] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dht yes\|no] [--mdns yes\|no]` | add an alias, or change the id and the keys given for an existing one |
-| `irsync host remove ALIAS`, `irsync host list` | remove or list aliases |
+| `irsync host remove ALIAS` | remove an alias |
+| `irsync host list` | list aliases with their ids and keys |
+| `irsync export add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
+| `irsync export remove NAME` | stop exporting; its grants go with it |
+| `irsync export list` | list exports with their paths, flags and grants (the exports section of `show`) |
+| `irsync grant add EXPORT\|all WHO [--ro]` | grant read-write (or read-only) access; `all` is every export; `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519` line or a `.pub` path |
+| `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
+| `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
 | `irsync id [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
 | `irsync show` | print the file paths, identities, aliases, exports and grants |
 
-A running daemon picks up `add`, `remove`, `allow`, `revoke` and `host`
-changes on the next connection; see [docs/daemon.md](docs/daemon.md).
+A running daemon picks up `host`, `export` and `grant` changes on the next
+connection; see [docs/daemon.md](docs/daemon.md).
 
 ### Resuming
 
