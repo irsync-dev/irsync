@@ -1,6 +1,6 @@
 //! `irsync.toml`: client and daemon settings.
 
-use super::{duration, expand_tilde, paths, read_optional, toml_err, ConfigError};
+use super::{duration, paths, read_optional, ConfigError};
 use crate::net::addr::HostPort;
 use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
@@ -179,12 +179,9 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The settings of a merged document (see [`super::file::Config`]).
     pub fn parse(text: &str, path: &Path) -> Result<Settings, ConfigError> {
-        let mut s: Settings = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        for p in [&mut s.identity, &mut s.state_dir, &mut s.daemon.identity] {
-            *p = expand_tilde(&p.to_string_lossy());
-        }
-        Ok(s)
+        super::file::Config::parse(text, path).map(|c| c.settings)
     }
 
     /// A missing file yields the defaults.

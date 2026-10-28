@@ -1,8 +1,10 @@
 use irsync::config::exports::Exports;
+use irsync::config::file::Config;
 use irsync::config::hosts::{valid_alias, Hosts};
+use irsync::config::paths::Paths;
 use irsync::config::settings::{RelayMode, Settings};
 use irsync::config::ConfigError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn id(n: u8) -> iroh::EndpointId {
@@ -277,4 +279,136 @@ fn exports_schema_errors_have_lines() {
         e.contains("/x/f.toml:1:") && e.contains("unknown key \"x\""),
         "{e}"
     );
+}
+
+fn merged(dir: &Path, text: &str) -> Result<Config, ConfigError> {
+    std::fs::write(dir.join("irsync.toml"), text).unwrap();
+    Config::load(&Paths::resolve(Some(&dir.join("irsync.toml"))))
+}
+
+#[test]
+fn merged_file_holds_every_table() {
+    let d = tempfile::tempdir().unwrap();
+    let c = merged(
+        d.path(),
+        &format!(
+            "state_dir = \"/var/lib/irsync\"\n[client]\nparallel = 4\n[daemon]\nlisten = [\"127.0.0.1:0\"]\n\
+             [hosts.home]\nendpoint_id = \"{}\"\n[all]\nro = [\"home\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
+            id(1)
+        ),
+    )
+    .unwrap();
+    assert_eq!(c.settings.state_dir, PathBuf::from("/var/lib/irsync"));
+    assert_eq!(c.settings.client.parallel, Some(4));
+    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, id(1));
+    assert_eq!(c.exports.ro, ["home"]);
+    assert_eq!(c.exports.exports["photos"].rw, ["home"]);
+    assert_eq!(
+        (c.hosts.path.clone(), c.exports.path.clone()),
+        (d.path().join("irsync.toml"), d.path().join("irsync.toml"))
+    );
+    assert!(c.split_hosts.is_none() && c.split_exports.is_none());
+}
+
+#[test]
+fn merged_shape_errors_keep_the_old_layout_hints() {
+    let d = tempfile::tempdir().unwrap();
+    for (text, needle) in [
+        (
+            "[home]\nendpoint_id = \"x\"\n",
+            "unknown table \"home\"; hosts live under [hosts.home]",
+        ),
+        (
+            "[photos]\npath = \"/x\"\n",
+            "unknown table \"photos\"; exports live under [exports.photos]",
+        ),
+        (
+            "rw = [\"a\"]\n",
+            "unknown key \"rw\"; grants for every export live under [all]",
+        ),
+        (
+            "[nothing]\nx = 1\n",
+            "hosts live under [hosts.nothing], exports under [exports.nothing]",
+        ),
+        ("[daemon]\nnope = 1\n", "nope"),
+        ("[exports.all]\npath = \"/x\"\n", "\"all\" is reserved"),
+        (
+            "[hosts.all]\nendpoint_id = \"x\"\n",
+            "invalid host alias \"all\"",
+        ),
+    ] {
+        let e = merged(d.path(), text).unwrap_err().to_string();
+        assert!(
+            e.contains(needle) && e.contains("irsync.toml"),
+            "{text:?}: {e}"
+        );
+    }
+}
+
+#[test]
+fn split_files_beside_the_config_are_read() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("hosts.toml"),
+        format!("[hosts.home]\nendpoint_id = \"{}\"\n", id(1)),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("exports.toml"),
+        "[exports.p]\npath = \"/p\"\n",
+    )
+    .unwrap();
+    let c = merged(d.path(), "[client]\nparallel = 2\n").unwrap();
+    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, id(1));
+    assert!(c.exports.exports.contains_key("p"));
+    assert_eq!(c.hosts.path, d.path().join("hosts.toml"));
+    assert_eq!(c.exports.path, d.path().join("exports.toml"));
+    assert_eq!(c.split_hosts, Some(d.path().join("hosts.toml")));
+    assert_eq!(c.split_exports, Some(d.path().join("exports.toml")));
+    // A missing config file with split files present still works.
+    std::fs::remove_file(d.path().join("irsync.toml")).unwrap();
+    let c = Config::load(&Paths::resolve(Some(&d.path().join("irsync.toml")))).unwrap();
+    assert!(c.hosts.get("home").is_some());
+}
+
+#[test]
+fn one_home_rule_names_both_files() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("hosts.toml"), "").unwrap();
+    let e = merged(d.path(), "[hosts]\n").unwrap_err().to_string();
+    assert!(
+        e.contains("hosts are in")
+            && e.contains("hosts.toml")
+            && e.contains("remove [hosts] from")
+            && e.contains("irsync.toml"),
+        "{e}"
+    );
+    std::fs::remove_file(d.path().join("hosts.toml")).unwrap();
+    std::fs::write(d.path().join("exports.toml"), "").unwrap();
+    for text in ["[all]\nrw = []\n", "[exports.p]\npath = \"/p\"\n"] {
+        let e = merged(d.path(), text).unwrap_err().to_string();
+        assert!(
+            e.contains("exports.toml") && e.contains("irsync.toml"),
+            "{text:?}: {e}"
+        );
+    }
+}
+
+#[test]
+fn a_split_file_accepts_only_its_own_tables() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("hosts.toml"), "[client]\nparallel = 1\n").unwrap();
+    let e = merged(d.path(), "").unwrap_err().to_string();
+    assert!(
+        e.contains("hosts.toml") && e.contains("unknown table \"client\""),
+        "{e}"
+    );
+}
+
+#[test]
+fn missing_everything_is_the_defaults() {
+    let d = tempfile::tempdir().unwrap();
+    let c = Config::load(&Paths::resolve(Some(&d.path().join("irsync.toml")))).unwrap();
+    assert_eq!(c.settings, Settings::default());
+    assert!(c.hosts.entries.is_empty() && c.exports.exports.is_empty());
 }

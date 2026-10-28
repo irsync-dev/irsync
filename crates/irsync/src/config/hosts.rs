@@ -25,7 +25,7 @@ pub struct HostEntry {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawHost {
+pub(crate) struct RawHost {
     endpoint_id: Spanned<String>,
     #[serde(default)]
     relay: Option<Url>,
@@ -47,11 +47,55 @@ pub struct Hosts {
     pub entries: BTreeMap<String, HostEntry>,
 }
 
-/// The typed shape of the file: every alias lives under `[hosts]`.
+/// The `[hosts]` table as deserialized: alias -> entry, with spans.
+pub(crate) type RawHosts = BTreeMap<String, Spanned<RawHost>>;
+
+/// The typed shape of the split file: every alias lives under `[hosts]`.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawFile {
-    hosts: BTreeMap<String, Spanned<RawHost>>,
+    hosts: RawHosts,
+}
+
+/// Validates the `[hosts]` table: alias rules and endpoint ids. `text` is
+/// the document the spans point into, `path` the file named in errors.
+pub(crate) fn hosts_from_raw(
+    raw: RawHosts,
+    text: &str,
+    path: &Path,
+) -> Result<BTreeMap<String, HostEntry>, ConfigError> {
+    let at = |offset: usize, message: String| ConfigError::File {
+        path: path.to_path_buf(),
+        line: Some(line_of(text, offset)),
+        message,
+    };
+    let mut entries = BTreeMap::new();
+    for (alias, r) in raw {
+        if !valid_alias(&alias) {
+            return Err(at(
+                r.span().start,
+                format!(
+                    "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+                ),
+            ));
+        }
+        let r = r.into_inner();
+        let endpoint_id = parse_endpoint_id(r.endpoint_id.get_ref())
+            .map_err(|e| at(r.endpoint_id.span().start, format!("host {alias:?}: {e}")))?;
+        entries.insert(
+            alias,
+            HostEntry {
+                endpoint_id,
+                relay: r.relay,
+                address: r.address,
+                parallel: r.parallel,
+                reconnect: r.reconnect,
+                dht: r.dht,
+                mdns: r.mdns,
+            },
+        );
+    }
+    Ok(entries)
 }
 
 /// An alias is non-empty, has no `:` or `/`, is not itself an EndpointId,
@@ -92,32 +136,7 @@ impl Hosts {
         }
         // Typed pass over the same text, so the spans match.
         let raw: RawFile = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let mut entries = BTreeMap::new();
-        for (alias, r) in raw.hosts {
-            if !valid_alias(&alias) {
-                return Err(at(
-                    r.span().start,
-                    format!(
-                        "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
-                    ),
-                ));
-            }
-            let r = r.into_inner();
-            let endpoint_id = parse_endpoint_id(r.endpoint_id.get_ref())
-                .map_err(|e| at(r.endpoint_id.span().start, format!("host {alias:?}: {e}")))?;
-            entries.insert(
-                alias,
-                HostEntry {
-                    endpoint_id,
-                    relay: r.relay,
-                    address: r.address,
-                    parallel: r.parallel,
-                    reconnect: r.reconnect,
-                    dht: r.dht,
-                    mdns: r.mdns,
-                },
-            );
-        }
+        let entries = hosts_from_raw(raw.hosts, text, path)?;
         Ok(Hosts {
             path: path.to_path_buf(),
             entries,

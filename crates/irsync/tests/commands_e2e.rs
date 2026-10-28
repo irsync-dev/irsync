@@ -362,19 +362,19 @@ fn export_add_of_a_bare_path_named_all_is_refused_and_writes_nothing() {
 }
 
 #[test]
-fn file_flags_after_the_noun_edit_the_named_files() {
+fn config_flag_after_the_noun_names_the_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("dir")).unwrap();
-    let e = d.path().join("e.toml");
-    let e_str = e.to_str().unwrap();
+    let c = d.path().join("elsewhere/irsync.toml");
+    let c_str = c.to_str().unwrap();
     let dir = home.join("dir");
     let o = irsync(
         &home,
         &[
             "export",
-            "--exports",
-            e_str,
+            "--config",
+            c_str,
             "add",
             &format!("p:{}", dir.display()),
         ],
@@ -386,17 +386,21 @@ fn file_flags_after_the_noun_edit_the_named_files() {
             "export",
             "add",
             &format!("p2:{}", dir.display()),
-            "--exports",
-            e_str,
+            "--config",
+            c_str,
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let text = std::fs::read_to_string(&e).unwrap();
+    // The table lands in the named file or, until the nouns move, in the
+    // exports.toml beside it; never under the default directory.
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+    let text = read(&c) + &read(&c.with_file_name("exports.toml"));
     assert!(
         text.contains("[exports.p]\n") && text.contains("[exports.p2]\n"),
         "{text}"
     );
     assert!(!home.join(".config/irsync/exports.toml").exists());
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
 }
 
 #[test]

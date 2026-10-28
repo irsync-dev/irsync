@@ -16,24 +16,28 @@ pub fn state_dir() -> PathBuf {
         .join("irsync")
 }
 
-/// The three config file locations; each defaults under [`config_dir`].
+/// The config file, and the two split files that may sit beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     pub config: PathBuf,
+    /// `hosts.toml` in the config file's directory; read when it exists.
     pub hosts: PathBuf,
+    /// `exports.toml` in the config file's directory; read when it exists.
     pub exports: PathBuf,
 }
 
 impl Paths {
-    pub fn resolve(config: Option<&Path>, hosts: Option<&Path>, exports: Option<&Path>) -> Paths {
-        let dir = config_dir();
-        let pick = |o: Option<&Path>, name: &str| {
-            o.map(Path::to_path_buf).unwrap_or_else(|| dir.join(name))
-        };
+    /// `config`, or `irsync.toml` under [`config_dir`]; the split files are
+    /// its siblings.
+    pub fn resolve(config: Option<&Path>) -> Paths {
+        let config = config
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| config_dir().join("irsync.toml"));
+        let dir = config.parent().map(Path::to_path_buf).unwrap_or_default();
         Paths {
-            config: pick(config, "irsync.toml"),
-            hosts: pick(hosts, "hosts.toml"),
-            exports: pick(exports, "exports.toml"),
+            hosts: dir.join("hosts.toml"),
+            exports: dir.join("exports.toml"),
+            config,
         }
     }
 }

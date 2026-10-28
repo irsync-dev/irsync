@@ -41,9 +41,65 @@ pub fn reserved(name: &str) -> String {
 /// The `[all]` table: grants that apply to every export.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct AllGrants {
-    rw: Vec<String>,
-    ro: Vec<String>,
+pub(crate) struct AllGrants {
+    pub(crate) rw: Vec<String>,
+    pub(crate) ro: Vec<String>,
+}
+
+/// The `[exports]` table as deserialized: name -> table, with spans.
+pub(crate) type RawExports = BTreeMap<String, Spanned<toml::Value>>;
+
+/// Validates `[all]` and every `[exports.NAME]`: reserved names, the
+/// export schema, absolute paths. `text` is the document the spans point
+/// into, `path` the file named in errors (and recorded as `Exports.path`).
+pub(crate) fn exports_from_raw(
+    all: AllGrants,
+    raw: RawExports,
+    text: &str,
+    path: &Path,
+) -> Result<Exports, ConfigError> {
+    let at = |offset: usize, message: String| ConfigError::File {
+        path: path.to_path_buf(),
+        line: Some(line_of(text, offset)),
+        message,
+    };
+    let mut exports = BTreeMap::new();
+    for (name, value) in raw {
+        let start = value.span().start;
+        if RESERVED.contains(&name.as_str()) {
+            return Err(at(start, reserved(&name)));
+        }
+        let value = value.into_inner();
+        if !value.is_table() {
+            return Err(at(
+                start,
+                format!(
+                    "exports.{name}: expected a table (an export), found {}",
+                    value.type_str()
+                ),
+            ));
+        }
+        let mut e: Export = value.try_into().map_err(|e: toml::de::Error| {
+            at(start, format!("[exports.{name}]: {}", e.message()))
+        })?;
+        e.path = expand_tilde(&e.path.to_string_lossy());
+        if !e.path.is_absolute() {
+            return Err(at(
+                start,
+                format!(
+                    "[exports.{name}]: path {:?} must be absolute",
+                    e.path.to_string_lossy()
+                ),
+            ));
+        }
+        exports.insert(name, e);
+    }
+    Ok(Exports {
+        path: path.to_path_buf(),
+        rw: all.rw,
+        ro: all.ro,
+        exports,
+    })
 }
 
 /// The typed shape of the file, read once the top-level keys are known
@@ -52,7 +108,7 @@ struct AllGrants {
 #[serde(default, deny_unknown_fields)]
 struct RawFile {
     all: AllGrants,
-    exports: BTreeMap<String, Spanned<toml::Value>>,
+    exports: RawExports,
 }
 
 impl Exports {
@@ -95,43 +151,7 @@ impl Exports {
                 .unwrap_or(0);
             at(line, format!("[all]: {}", e.message()))
         })?;
-        let mut exports = BTreeMap::new();
-        for (name, value) in raw.exports {
-            let start = value.span().start;
-            if RESERVED.contains(&name.as_str()) {
-                return Err(at(start, reserved(&name)));
-            }
-            let value = value.into_inner();
-            if !value.is_table() {
-                return Err(at(
-                    start,
-                    format!(
-                        "exports.{name}: expected a table (an export), found {}",
-                        value.type_str()
-                    ),
-                ));
-            }
-            let mut e: Export = value.try_into().map_err(|e: toml::de::Error| {
-                at(start, format!("[exports.{name}]: {}", e.message()))
-            })?;
-            e.path = expand_tilde(&e.path.to_string_lossy());
-            if !e.path.is_absolute() {
-                return Err(at(
-                    start,
-                    format!(
-                        "[exports.{name}]: path {:?} must be absolute",
-                        e.path.to_string_lossy()
-                    ),
-                ));
-            }
-            exports.insert(name, e);
-        }
-        Ok(Exports {
-            path: path.to_path_buf(),
-            rw: raw.all.rw,
-            ro: raw.all.ro,
-            exports,
-        })
+        exports_from_raw(raw.all, raw.exports, text, path)
     }
 
     /// A missing file yields no exports.

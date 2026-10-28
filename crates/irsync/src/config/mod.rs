@@ -2,6 +2,7 @@
 
 pub mod duration;
 pub mod exports;
+pub mod file;
 pub mod hosts;
 pub mod paths;
 pub mod settings;

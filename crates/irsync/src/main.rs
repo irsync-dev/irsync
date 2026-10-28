@@ -322,7 +322,7 @@ struct Connected {
 /// Resolves `host`, the direct addresses, the client identity and the
 /// endpoint, the same way for a sync and for a listing.
 async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected> {
-    let paths = Paths::resolve(opts.config.as_deref(), opts.hosts.as_deref(), None);
+    let paths = Paths::resolve(opts.config.as_deref());
     let settings = Settings::load(&paths.config)?;
     let hosts = Hosts::load(&paths.hosts)?;
     let host_entry = hosts.get(host).cloned();
@@ -764,11 +764,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
     init_logging_at(default, std::io::stderr);
 
     let result = (|| -> anyhow::Result<()> {
-        let paths = Paths::resolve(
-            d.config.as_deref(),
-            d.hosts.as_deref(),
-            d.exports.as_deref(),
-        );
+        let paths = Paths::resolve(d.config.as_deref());
         let mut settings = Settings::load(&paths.config)?;
         if !d.listen.is_empty() {
             settings.daemon.listen = d.listen.clone();
@@ -806,11 +802,7 @@ fn finish(cmd: &str, r: anyhow::Result<()>) -> i32 {
 }
 
 fn file_paths(f: &FilesArgs) -> Paths {
-    Paths::resolve(
-        f.config.as_deref(),
-        f.hosts.as_deref(),
-        f.exports.as_deref(),
-    )
+    Paths::resolve(f.config.as_deref())
 }
 
 fn run_export(e: &ExportArgs) -> i32 {
