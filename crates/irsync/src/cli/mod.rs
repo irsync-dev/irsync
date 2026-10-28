@@ -184,7 +184,8 @@ pub enum IdCmd {
         all: bool,
     },
     /// Generate an Ed25519 identity and print its public key line and
-    /// EndpointId. Refuses to overwrite an existing key or .pub file.
+    /// EndpointId. Refuses to overwrite an existing key or .pub file
+    /// unless --force is given.
     Generate {
         /// The daemon's identity (its configured path) instead of the
         /// client's.
@@ -194,6 +195,10 @@ pub enum IdCmd {
         /// .pub file goes beside it.
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
+        /// Replace an existing key and .pub file. The old key is gone for
+        /// good: every grant made for it stops working.
+        #[arg(short, long)]
+        force: bool,
     },
 }
 

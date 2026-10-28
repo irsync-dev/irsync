@@ -67,7 +67,7 @@ directly.
 
 Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
 `irsync id generate [--daemon | --out PATH]` makes one explicitly and refuses
-to overwrite.
+to overwrite unless given `-f`/`--force`.
 
 ## Files
 
@@ -174,7 +174,7 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync grant remove EXPORT\|all WHO\|all` | remove grants: `grant remove all WHO` removes `WHO` everywhere, `grant remove EXPORT all` empties an export's grants |
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
 | `irsync id show [--daemon \| -a\|--all]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
-| `irsync id generate [--daemon \| --out PATH]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; never overwrites |
+| `irsync id generate [--daemon \| --out PATH] [-f\|--force]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; overwrites only with `--force` |
 | `irsync show` | print the file paths, identities, aliases, exports and grants |
 
 A running daemon picks up `host`, `export` and `grant` changes on the next

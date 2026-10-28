@@ -575,16 +575,28 @@ fn id_and_show_parse() {
     assert!(Args::try_parse_from(["irsync", "id", "show", "--daemon", "--all"]).is_err());
     assert!(matches!(
         parse(&["id", "generate"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: false, out: None })
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: false, out: None, force: false })
     ));
     assert!(matches!(
         parse(&["id", "generate", "--daemon"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: true, out: None })
+        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: true, out: None, force: false })
     ));
+    for args in [
+        &["id", "generate", "--force"][..],
+        &["id", "generate", "-f", "--daemon"][..],
+    ] {
+        assert!(
+            matches!(
+                parse(args).cmd,
+                Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { force: true, .. })
+            ),
+            "{args:?}"
+        );
+    }
     assert!(matches!(
         parse(&["id", "generate", "--out", "/k"]).cmd,
         Some(Command::Id(ref i))
-            if matches!(i.cmd, IdCmd::Generate { daemon: false, out: Some(ref p) } if p == &PathBuf::from("/k"))
+            if matches!(i.cmd, IdCmd::Generate { daemon: false, out: Some(ref p), .. } if p == &PathBuf::from("/k"))
     ));
     // `--out` names the file; `--daemon` picks the configured one.
     assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());

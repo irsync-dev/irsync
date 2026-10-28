@@ -848,13 +848,15 @@ fn identity_of(path: &std::path::Path, comment: &str) -> anyhow::Result<iroh::Se
 fn run_id(i: &IdArgs) -> i32 {
     match &i.cmd {
         IdCmd::Show { daemon, all } => id_show(&i.files, *daemon, *all),
-        IdCmd::Generate { daemon, out } => id_generate(&i.files, *daemon, out.as_deref()),
+        IdCmd::Generate { daemon, out, force } => {
+            id_generate(&i.files, *daemon, out.as_deref(), *force)
+        }
     }
 }
 
 /// `irsync id generate`: writes the key pair, prints the public key line
-/// and the EndpointId. Never replaces an existing file.
-fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>) -> i32 {
+/// and the EndpointId. Replaces an existing file only with `force`.
+fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force: bool) -> i32 {
     finish(
         "id generate",
         (|| {
@@ -876,10 +878,18 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>) -> i3
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
-            let secret = irsync::identity::generate_openssh(&path, comment)?;
             let mut pub_path = path.as_os_str().to_owned();
             pub_path.push(".pub");
             let pub_path = PathBuf::from(pub_path);
+            if force {
+                for p in [&path, &pub_path] {
+                    if p.symlink_metadata().is_ok() {
+                        std::fs::remove_file(p)
+                            .with_context(|| format!("removing {}", p.display()))?;
+                    }
+                }
+            }
+            let secret = irsync::identity::generate_openssh(&path, comment)?;
             let line = std::fs::read_to_string(&pub_path)
                 .with_context(|| format!("reading {}", pub_path.display()))?;
             eprintln!("wrote {} and {}", path.display(), pub_path.display());

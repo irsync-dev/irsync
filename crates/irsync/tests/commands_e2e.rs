@@ -660,3 +660,55 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(other.exists() && home.join("elsewhere/client_key.pub").exists());
 }
+
+#[test]
+fn id_generate_force_replaces_an_existing_identity() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    let key = cfg.join("id_ed25519");
+    let pub_key = cfg.join("id_ed25519.pub");
+    let o = irsync(&home, &["id", "generate"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let old_id = String::from_utf8(o.stdout)
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let old_key = std::fs::read(&key).unwrap();
+    let old_pub = std::fs::read(&pub_key).unwrap();
+    for args in [
+        &["id", "generate", "--force"][..],
+        &["id", "generate", "-f"][..],
+    ] {
+        let o = irsync(&home, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(&format!("wrote {}", key.display())), "{err}");
+        let out = String::from_utf8(o.stdout).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        let new_id = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+        assert_ne!(new_id.to_string(), old_id);
+        assert_ne!(std::fs::read(&key).unwrap(), old_key);
+        assert_ne!(std::fs::read(&pub_key).unwrap(), old_pub);
+        assert!(lines[0].starts_with("ssh-ed25519 "));
+        assert_eq!(
+            std::fs::read_to_string(&pub_key).unwrap().trim(),
+            lines[0],
+            "the .pub file matches the printed line"
+        );
+        // `id show` now reports the new key.
+        let shown = String::from_utf8(irsync(&home, &["id", "show"]).stdout).unwrap();
+        assert_eq!(shown.lines().nth(1).unwrap(), new_id.to_string());
+    }
+    // Without the flag the refusal still stands.
+    let o = irsync(&home, &["id", "generate"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("refusing to overwrite"));
+}
