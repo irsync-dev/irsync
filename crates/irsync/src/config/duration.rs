@@ -17,3 +17,15 @@ pub fn parse(s: &str) -> Result<Duration, ConfigError> {
     let n: u64 = digits.parse().map_err(|_| bad())?;
     n.checked_mul(mult).map(Duration::from_secs).ok_or_else(bad)
 }
+
+/// A duration as the config spells it: the largest of `d`, `h`, `m`, `s`
+/// that divides it evenly (`1800s` is `30m`; `90s` stays `90s`).
+pub fn format(d: Duration) -> String {
+    let secs = d.as_secs();
+    for (unit, mult) in [('d', 86400), ('h', 3600), ('m', 60)] {
+        if secs != 0 && secs % mult == 0 {
+            return format!("{}{unit}", secs / mult);
+        }
+    }
+    format!("{secs}s")
+}

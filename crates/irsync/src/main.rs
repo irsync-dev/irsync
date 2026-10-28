@@ -11,8 +11,9 @@ use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, Args, Command, DaemonArgs, Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs,
-    GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd, IndexArgs, LogArgs, SyncOptions,
+    validate, Args, Command, ConfigArgs, ConfigCmd, DaemonArgs, Direction, ExportArgs, ExportCmd,
+    FilesArgs, GrantArgs, GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd, IndexArgs,
+    LogArgs, SyncOptions,
 };
 use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
@@ -47,6 +48,7 @@ fn main() {
         Some(Command::Export(e)) => std::process::exit(run_export(e)),
         Some(Command::Grant(g)) => std::process::exit(run_grant(g)),
         Some(Command::Id(i)) => std::process::exit(run_id(i)),
+        Some(Command::Config(c)) => std::process::exit(run_config(c)),
         Some(Command::Show {
             passphrase_file,
             files,
@@ -787,6 +789,79 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         Err(e) => {
             eprintln!("irsync daemon: {e:#}");
             1
+        }
+    }
+}
+
+/// The document a key lives in: a split file when one holds the table.
+fn doc_for(
+    paths: &Paths,
+    config: &Config,
+    key: &[String],
+) -> anyhow::Result<toml_edit::DocumentMut> {
+    let owner = match key.first().map(String::as_str) {
+        Some("hosts") => config.split_hosts.as_ref(),
+        Some("exports") | Some("all") => config.split_exports.as_ref(),
+        _ => None,
+    };
+    Ok(manage::load_doc(owner.unwrap_or(&paths.config))?)
+}
+
+fn run_config(c: &ConfigArgs) -> i32 {
+    use irsync::manage::config::{self as cfg, Got};
+    let paths = file_paths(&c.files);
+    match &c.cmd {
+        ConfigCmd::Get { key } => {
+            let r = (|| -> anyhow::Result<bool> {
+                let path = cfg::parse_key(key)?;
+                if cfg::kind_of(&path).is_none() {
+                    bail!("unknown key {key:?}");
+                }
+                let config = Config::load(&paths)?;
+                let doc = doc_for(&paths, &config, &path)?;
+                let lines = match cfg::get(&doc, &path)? {
+                    Got::Lines(lines) => lines,
+                    Got::Unset => match cfg::default_of(&path) {
+                        Some(lines) => lines,
+                        None => return Ok(false),
+                    },
+                };
+                for line in lines {
+                    println!("{line}");
+                }
+                Ok(true)
+            })();
+            match r {
+                Ok(true) => 0,
+                Ok(false) => 1,
+                Err(e) => {
+                    eprintln!("irsync config get: {e:#}");
+                    1
+                }
+            }
+        }
+        ConfigCmd::List => finish(
+            "config list",
+            (|| {
+                let config = Config::load(&paths)?;
+                let mut docs = vec![manage::load_doc(&paths.config)?];
+                for split in [&config.split_hosts, &config.split_exports]
+                    .into_iter()
+                    .flatten()
+                {
+                    docs.push(manage::load_doc(split)?);
+                }
+                for doc in &docs {
+                    for line in cfg::list(doc) {
+                        println!("{line}");
+                    }
+                }
+                Ok(())
+            })(),
+        ),
+        ConfigCmd::Set { .. } => finish("config set", Err(anyhow::anyhow!("not implemented yet"))),
+        ConfigCmd::Unset { .. } => {
+            finish("config unset", Err(anyhow::anyhow!("not implemented yet")))
         }
     }
 }

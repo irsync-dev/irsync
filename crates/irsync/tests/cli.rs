@@ -615,3 +615,30 @@ fn one_remote_operand_is_a_listing() {
     assert!(Args::try_parse_from(["irsync", "./x"]).is_err());
     assert!(Args::try_parse_from(["irsync"]).is_err());
 }
+
+#[test]
+fn config_noun_parses() {
+    use irsync::cli::ConfigCmd;
+    assert!(matches!(
+        parse(&["config", "get", "daemon.listen"]).cmd,
+        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Get { ref key } if key == "daemon.listen")
+    ));
+    assert!(matches!(
+        parse(&["config", "set", "daemon.listen", "a:1", "b:2"]).cmd,
+        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Set { ref values, .. } if values == &["a:1", "b:2"])
+    ));
+    assert!(matches!(
+        parse(&["config", "set", "all.rw"]).cmd,
+        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Set { ref values, .. } if values.is_empty())
+    ));
+    assert!(matches!(
+        parse(&["config", "unset", "x"]).cmd,
+        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Unset { ref key } if key == "x")
+    ));
+    assert!(matches!(
+        parse(&["config", "--config", "/c", "list"]).cmd,
+        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::List) && c.files.config == Some("/c".into())
+    ));
+    assert!(Args::try_parse_from(["irsync", "config"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "config", "get"]).is_err());
+}

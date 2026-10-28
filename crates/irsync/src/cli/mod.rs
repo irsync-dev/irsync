@@ -161,6 +161,10 @@ pub enum Command {
     Grant(GrantArgs),
     /// This machine's identities (the client's and the daemon's).
     Id(IdArgs),
+    /// Read and edit any key of the config file by its dotted path, as
+    /// `git config` does: `config get daemon.listen`, `config set
+    /// exports.photos.read_only true`.
+    Config(ConfigArgs),
     /// Show the config files, identities, host aliases and exports.
     Show {
         /// Read an encrypted identity's passphrase from the first line of
@@ -170,6 +174,38 @@ pub enum Command {
         #[command(flatten)]
         files: FilesArgs,
     },
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub cmd: ConfigCmd,
+    #[command(flatten)]
+    pub files: FilesArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCmd {
+    /// Print a key: a bare scalar, one array element per line, or a
+    /// table's keys as `key = value` lines. An unset settings key prints
+    /// its default; a key with no value and no default exits 1.
+    Get {
+        /// A dotted path such as `daemon.listen` or `hosts.home.relay`;
+        /// quote a segment that has a dot: `exports."www.example.com".path`.
+        key: String,
+    },
+    /// Set a key, in its type; for an array key every VALUE is one
+    /// element (no VALUE: an empty array). Tables are created as needed;
+    /// the edited file is validated before it is written.
+    Set {
+        key: String,
+        #[arg(value_name = "VALUE")]
+        values: Vec<String>,
+    },
+    /// Remove a key, or a whole table (`config unset hosts.home`).
+    Unset { key: String },
+    /// Every key the file sets, as `dotted.key = value`, file order.
+    List,
 }
 
 #[derive(Debug, clap::Args)]

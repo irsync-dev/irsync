@@ -1,6 +1,7 @@
 //! Shared editing layer for the config-managing commands: format-preserving
 //! TOML load/save and the interpretation of a command-line "who" argument.
 
+pub mod config;
 pub mod exports;
 pub mod grants;
 pub mod hosts;
@@ -55,6 +56,10 @@ pub enum ManageError {
     BadComment(String),
     #[error("{}: refusing to save, the edited file would not load: {source}", path.display())]
     Invalid { path: PathBuf, source: ConfigError },
+    #[error("invalid key {0:?}")]
+    BadKey(String),
+    #[error("unknown key {0:?}")]
+    UnknownKey(String),
     #[error("{table} are kept in {}; irsync edits irsync.toml only: move the [{table}] table into irsync.toml, or edit {0} by hand", file.display())]
     SplitFile { table: &'static str, file: PathBuf },
 }

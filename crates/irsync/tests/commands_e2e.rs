@@ -952,3 +952,61 @@ fn nouns_refuse_a_table_kept_in_a_split_file() {
     // Reading still works across the split.
     assert!(ok(&home, &["export", "list"]).starts_with("p: "));
 }
+
+#[test]
+fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    assert_eq!(
+        ok(&home, &["config", "get", "daemon.idle_timeout"]),
+        "30m\n"
+    );
+    let o = irsync(&home, &["config", "get", "daemon.listen"]);
+    assert!(o.status.success() && o.stdout.is_empty(), "{o:?}");
+    let o = irsync(&home, &["config", "get", "client.parallel"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(o.stdout.is_empty() && o.stderr.is_empty(), "{o:?}");
+    let o = irsync(&home, &["config", "get", "daemon.nope"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("unknown key \"daemon.nope\""),
+        "{o:?}"
+    );
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(&home, &["host", "add", "laptop", &id]);
+    assert_eq!(
+        ok(&home, &["config", "get", "hosts.laptop.endpoint_id"]),
+        format!("{id}\n")
+    );
+    assert_eq!(
+        ok(&home, &["config", "get", "hosts.laptop"]),
+        format!("endpoint_id = \"{id}\"\n")
+    );
+    let o = irsync(&home, &["config", "get", "hosts.desk"]);
+    assert_eq!(o.status.code(), Some(1));
+}
+
+#[test]
+fn list_covers_the_config_and_split_files() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    std::fs::write(cfg.join("irsync.toml"), "[client]\nparallel = 3\n").unwrap();
+    std::fs::write(
+        cfg.join("hosts.toml"),
+        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        ok(&home, &["config", "list"]),
+        format!("client.parallel = 3\nhosts.laptop.endpoint_id = \"{id}\"\n")
+    );
+    // get reads across the split too.
+    assert_eq!(
+        ok(&home, &["config", "get", "hosts.laptop.endpoint_id"]),
+        format!("{id}\n")
+    );
+}
