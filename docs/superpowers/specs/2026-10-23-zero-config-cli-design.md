@@ -113,6 +113,11 @@ in form.
 
 ## Files
 
+> Superseded 2026-10-28 by `2026-10-28-single-config-design.md`: one
+> `irsync.toml` holds every table; `hosts.toml` and `exports.toml` are
+> read when they sit beside it but never edited; the only flag is
+> `--config`.
+
 All paths are defaults; every command accepts `--config PATH` and
 `--hosts PATH`, and the daemon and management commands accept
 `--exports PATH`. The old `-F`,

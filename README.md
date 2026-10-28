@@ -93,18 +93,23 @@ to overwrite unless given `-f`/`--force`.
 
 ## Files
 
-Everything lives in `~/.config/irsync/` and every file is optional: a missing
-file is the same as an empty one. The commands below edit `hosts.toml` and
-`exports.toml` for you, preserving comments; you can also edit them by hand.
-The four nouns (`host`, `export`, `grant`, `id`), `show` and `daemon` accept
-`--config`, `--hosts` and `--exports` to use other paths; for a noun the flags
-go anywhere after it (`irsync export --exports E add ...` or `irsync export
-add ... --exports E`). A sync takes `--config` and `--hosts`;
-`index` and `gc` take none.
-Unknown keys are errors that name the file, table and key.
+One file holds everything: `~/.config/irsync/irsync.toml`, optional, a
+missing file being the same as an empty one. The commands below edit it for
+you, preserving comments; `irsync config` reads and writes any key in it;
+you can also edit it by hand. Every command takes `--config PATH` to use
+another file (for a noun the flag goes anywhere after it: `irsync export
+--config C add ...` or `irsync export add ... --config C`); `index` and `gc`
+take none. Unknown keys are errors that name the file, table and key.
 
-`irsync.toml`: settings for the client and the daemon. These are the defaults
-except where marked.
+If you prefer to keep the host aliases or the exports apart, put a
+`hosts.toml` holding the `[hosts.*]` tables, or an `exports.toml` holding
+`[all]` and `[exports.*]`, beside `irsync.toml`: they are read as if they
+were part of it, a table must then live in only one of the two files, and
+irsync never edits them: `host`, `export`, `grant` and `config set` refuse a
+table a split file owns and tell you to move it or edit that file by hand.
+`show` names any split file it read.
+
+`irsync.toml`, every table shown, with the defaults except where marked:
 
 ```toml
 identity = "~/.config/irsync/id_ed25519"
@@ -130,12 +135,9 @@ relay_mode = "default"       # or "disabled"
 dht = true
 dns = true
 mdns = true
-```
 
-`hosts.toml`: one `[hosts.ALIAS]` table per remote. On a daemon's machine the
-same file names the clients that exports can be granted to.
-
-```toml
+# Host aliases: one [hosts.ALIAS] table per remote. On a daemon's machine
+# the same tables name the clients that exports can be granted to.
 [hosts.home]
 endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32, as iroh prints it
 relay = "https://relay.example.net"   # the rest is optional
@@ -147,17 +149,10 @@ mdns = false
 
 [hosts.laptop]
 endpoint_id = "7f3a0c..."
-```
 
-A sync resolves each setting from the command-line flag, then the alias's
-table, then `[client]`, then the built-in default. Aliases match exactly; there
-are no patterns.
-
-`exports.toml`: what the daemon shares and with whom. `[all]` holds the grants
-that apply to every export; each export is an `[exports.NAME]` table. Entries
-in `rw` and `ro` are aliases from `hosts.toml` or EndpointIds.
-
-```toml
+# What the daemon shares and with whom. [all] holds the grants that apply
+# to every export; each export is an [exports.NAME] table. Entries in rw
+# and ro are aliases from [hosts.*] or EndpointIds.
 [all]                        # optional: grants for every export
 rw = ["9c4d..."]
 ro = []
@@ -174,14 +169,19 @@ read_only = true             # caps everyone, even ids under rw
 ro = ["7f3a0c..."]
 ```
 
+A sync resolves each setting from the command-line flag, then the alias's
+table, then `[client]`, then the built-in default. Aliases match exactly; there
+are no patterns.
+
 A key that no entry names is rejected before any protocol message is read;
 there is no open access. `read_only` refuses pushes from everyone. The one
 name an export cannot have is `all`, the word `grant add all WHO` uses for
 every export.
 
-## Managing hosts, exports and grants
+## Managing hosts, exports, grants and settings
 
-Three nouns, each with `add`, `remove` and `list` (and `export update`):
+Three nouns, each with `add`, `remove` and `list` (and `export update`),
+`id`, and `config` for any key:
 
 | Command | Effect |
 | --- | --- |
@@ -197,7 +197,18 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`):
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
 | `irsync id show [--daemon \| -a\|--all] [--passphrase-file PATH]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
 | `irsync id generate [--daemon \| --out PATH] [-f\|--force]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; overwrites only with `--force` |
+| `irsync config get KEY` | print a key by its dotted path (`daemon.listen`, `hosts.home.relay`, `exports."www.example.com".path`): a bare scalar, one array element per line, or a table's keys as `key = value` lines; an unset setting prints its default, a key with no value and no default exits 1 |
+| `irsync config set KEY VALUE...` | set a key in its type (`true`/`false`, an integer, a duration like `30m`, a path, a URL, an id); an array key takes one `VALUE` per element, none for an empty array; tables are created as needed and the edited file is validated before it is written |
+| `irsync config unset KEY` | remove a key, or a whole table (`config unset hosts.home`) |
+| `irsync config list` | every key the file sets, as `dotted.key = value`, in file order |
 | `irsync show [--passphrase-file PATH]` | print the file paths, identities, aliases, exports and grants; the aliases are `host list` and the exports `export list`, line for line |
+
+`config` writes what you say, the nouns know what you mean: `export add`
+joins a relative path onto the working directory and checks the directory
+exists, `grant add` takes a pasted key line or a `.pub` file, while `config
+set exports.photos.path ./x` is refused (the file wants an absolute path)
+and `config set exports.photos.rw ~/laptop.pub` writes that string as a
+grant entry that matches nobody.
 
 A running daemon picks up `host`, `export` and `grant` changes on the next
 connection; see [docs/daemon.md](docs/daemon.md).
@@ -252,13 +263,13 @@ irsync-specific:
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
 | `--no-dht` | do not use the mainline DHT for lookup |
 | `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
-| `--config PATH`, `--hosts PATH` | settings file and host aliases file (default: `irsync.toml` and `hosts.toml` in `~/.config/irsync/`) |
+| `--config PATH` | the config file (default: `~/.config/irsync/irsync.toml`); a `hosts.toml` beside it is read too |
 | `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, generated if missing) |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`, `irsync id show` and `irsync show`) |
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
 
-Subcommands: `irsync daemon [--config PATH] [--hosts PATH] [--exports PATH] [--listen ADDR]... [-v|-q]`,
+Subcommands: `irsync daemon [--config PATH] [--listen ADDR]... [-v|-q]`,
 the management commands above, `irsync index [-n] [-v|-q] ROOT...`, which
 hashes the files under a local root into its index so that a destination
 irsync did not create (a prior rsync, a restore) is reused for renamed and
@@ -292,8 +303,8 @@ partial files are waiting.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used, and keys under `~/.ssh` are not read unless `identity` or
   `--identity` names it.
-- Daemon settings in `irsync.toml` need a restart; exports, grants and host
-  aliases do not.
+- The `[daemon]` settings need a restart; exports, grants and host aliases
+  take effect on the next connection.
 - `--numeric-ids` is always on: owners and groups are transferred as numbers,
   never mapped by name.
 - The throughput target (filling a 1 Gbit/s link) applies to direct

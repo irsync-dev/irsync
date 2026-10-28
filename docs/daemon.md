@@ -6,17 +6,15 @@ systemd or launchd supervise it. It needs no setup beyond `irsync export add`
 
 ## Files
 
-All under `~/.config/irsync/`, all optional, each overridable on the command
-line:
+All under `~/.config/irsync/`, all optional:
 
-| File | Flag | Holds |
-| --- | --- | --- |
-| `irsync.toml` | `--config` | settings; the daemon reads the `[daemon]` tables and the top-level `state_dir` |
-| `hosts.toml` | `--hosts` | aliases for clients (and for servers, when this machine is also a client) |
-| `exports.toml` | `--exports` | the exports and who may use them |
+| File | Holds |
+| --- | --- |
+| `irsync.toml` (`--config`) | everything: the `[daemon]` tables and `state_dir`, the `[hosts.*]` aliases (clients, and servers when this machine is also a client), the `[exports.*]` tables and the `[all]` grants |
+| `hosts.toml`, `exports.toml` | optional split files beside `irsync.toml`, read as part of it for people who keep the aliases or the exports apart by hand; a table lives in one file only, and irsync never edits a split file |
 | `daemon_ed25519` (+ `.pub`) | `[daemon] identity` | the daemon's identity, generated if missing |
 
-There is no `/etc` lookup: a system-wide daemon passes the three paths
+There is no `/etc` lookup: a system-wide daemon passes `--config`
 explicitly (see [A system-wide daemon](#a-system-wide-daemon) below). `irsync id show --daemon` prints
 the daemon's public key line and `EndpointId` (the id alone is its last
 line), generating the identity first if it does not exist yet. `irsync
@@ -24,20 +22,21 @@ export add` and `irsync show` print the id too.
 
 ## Changing exports while it runs
 
-The daemon reads `hosts.toml` and `exports.toml` afresh on every accepted
-connection, after the handshake has proved the peer's `EndpointId`. `irsync
-export add`/`remove`, `grant add`/`remove` and `host add`/`remove` therefore
-take effect on the next connection, with no restart. A `grant remove` or
-`export remove` does not end a session already in progress; it refuses only
-new connections. The commands
-write the files
-atomically. If either file cannot be read or parsed, the daemon logs the error
-at `warn`, rejects that connection and keeps running: it fails closed and does
-not fall back to an earlier copy. A missing file counts as empty. At startup an
-`exports.toml` that does not parse is fatal. A grant entry that is neither a
-known alias nor an `EndpointId` matches nobody and is logged.
+The daemon reads `irsync.toml` (and any split file beside it) afresh on every
+accepted connection, after the handshake has proved the peer's `EndpointId`,
+and takes the hosts, exports and grants from it. `irsync export add`/`remove`,
+`grant add`/`remove`, `host add`/`remove` and `config set`/`unset` therefore
+take effect on the next connection, with no restart; the `[daemon]` settings
+are read once at startup. A `grant remove` or `export remove` does not end a
+session already in progress; it refuses only new connections. The commands
+write the file atomically. If the file cannot be read or parsed, in any
+table, the daemon logs the error at `warn` naming the file and line, rejects
+that connection and keeps running: it fails closed and does not fall back to
+an earlier copy. A missing file counts as empty. At startup a file that does
+not parse is fatal. A grant entry that is neither a known alias nor an
+`EndpointId` matches nobody and is logged.
 
-A daemon with no exports starts, logs a warning naming the exports file, and
+A daemon with no exports starts, logs a warning naming the config file, and
 serves nothing until `irsync export add` creates one.
 
 A remote path (`HOST:PATH`: an export name, a path under the daemon
@@ -84,18 +83,19 @@ state_dir = "/var/lib/irsync"
 identity = "/etc/irsync/daemon_ed25519"
 ```
 
-The management commands edit whatever files they are given, and without
-flags those are the ones in your own `~/.config/irsync/`: there `irsync
-export add` would write your `exports.toml` and generate a stray
-`~/.config/irsync/daemon_ed25519`, and print that key's id as "the daemon's".
-Run them as the daemon's account, with the same three paths the daemon gets
-(for `host`, `export` and `grant` the flags go anywhere after the noun):
+The management commands edit the file they are given, and without `--config`
+that is your own `~/.config/irsync/irsync.toml`: there `irsync export add`
+would write your file and generate a stray `~/.config/irsync/daemon_ed25519`,
+and print that key's id as "the daemon's". Run them as the daemon's account,
+with the same `--config` the daemon gets (for the nouns the flag goes
+anywhere after the noun):
 
 ```sh
-F="--config /etc/irsync/irsync.toml --hosts /etc/irsync/hosts.toml --exports /etc/irsync/exports.toml"
+F="--config /etc/irsync/irsync.toml"
 sudo -u irsync irsync export add photos:/srv/photos $F
 sudo -u irsync irsync grant add photos laptop $F
 sudo -u irsync irsync host add laptop <id> $F
+sudo -u irsync irsync config set daemon.listen 0.0.0.0:4433 $F
 sudo -u irsync irsync id show --daemon $F
 sudo -u irsync irsync show $F
 ```
@@ -121,7 +121,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml --hosts /etc/irsync/hosts.toml --exports /etc/irsync/exports.toml
+ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml
 Restart=on-failure
 RestartSec=5
 User=irsync
@@ -165,10 +165,6 @@ with the `/usr/local/etc/irsync/` paths):
     <string>daemon</string>
     <string>--config</string>
     <string>/usr/local/etc/irsync/irsync.toml</string>
-    <string>--hosts</string>
-    <string>/usr/local/etc/irsync/hosts.toml</string>
-    <string>--exports</string>
-    <string>/usr/local/etc/irsync/exports.toml</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -264,7 +260,7 @@ Set `[daemon] relay = "https://..."` to use your own relay, or
 - Users behind a symmetric NAT (many mobile and carrier-grade NATs) on both
   ends cannot hole-punch and stay on the relay. For them we recommend a
   self-hosted relay near the daemon (iroh ships `iroh-relay`), set as `relay`
-  in the daemon config and as `relay` in the client's `hosts.toml` table (or
+  in the daemon config and as `relay` in the client's `[hosts.*]` table (or
   `--relay`), instead of depending on the shared public relays.
 
 ### Isolated operation (localhost, LAN, no internet)

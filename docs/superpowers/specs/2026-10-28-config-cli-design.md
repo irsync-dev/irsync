@@ -242,6 +242,10 @@ way wherever it is printed.
 
 ## Files
 
+> Superseded 2026-10-28 by `2026-10-28-single-config-design.md`: the
+> tables below now live in `irsync.toml`; the split files are read when
+> present but never edited.
+
 ### `hosts.toml`
 
 ```toml
