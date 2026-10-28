@@ -40,6 +40,14 @@ known alias nor an `EndpointId` matches nobody and is logged.
 A daemon with no exports starts, logs a warning naming the exports file, and
 serves nothing until `irsync export add` creates one.
 
+A remote path (`HOST:PATH`: an export name, a path under the daemon
+account's home, or an absolute path) is served by the export containing it
+among those the peer has a grant for, the most specific one when several
+do. The grant covers the whole directory: a peer granted `/srv` reaches
+`/srv/photos` whether or not `photos` is also an export, and whatever that
+inner export's own grants or `read_only` say. To keep a subtree out of a
+peer's reach, do not grant the peer an export above it.
+
 A client whose key is not granted anything is closed on before any protocol
 message is read; a key with grants that names a path outside what it may
 use is refused at the hello with `no access to PATH`, the same answer

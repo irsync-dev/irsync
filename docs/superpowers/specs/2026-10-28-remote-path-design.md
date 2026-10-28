@@ -93,11 +93,18 @@ Resolution is lexical. `.` components are dropped; a `..` component, an
 empty component or a NUL byte is rejected (`BAD_PATH`). Symlinks are not
 resolved at this step; an export's path is used as configured, as today.
 
-The resolved path must lie inside an exported directory: the export's
-configured path is a component-wise prefix of it (or equal to it). When
-several exports contain the path, the one with the longest path governs
-(the most specific export wins); when two exports have the same path, the
-peer's best access among them wins, read-write over read-only. The chosen
+The resolved path must lie inside an exported directory the peer has a
+grant for: the export's configured path is a component-wise prefix of it
+(or equal to it). When several such exports contain the path, the one with
+the longest path governs (the most specific export wins); when two have
+the same path, the one a short name named wins, then the peer's best
+effective access, read-write over read-only. Exports the peer may not use
+take no part in the choice: a grant on an outer export reaches everything
+below it, an ungranted or `read_only` inner export included, and the reply
+for a path never depends on where ungranted exports sit. (Revised at the
+branch review on 2026-10-28; the earlier text let an ungranted inner
+export shadow a granted outer one, which revealed the inner export's
+location and protected nothing.) The chosen
 export is the session's root, the remainder is the session's relative
 path, and the export's index is the one used, exactly as if the client had
 named the export. Nothing below the hello handshake changes.

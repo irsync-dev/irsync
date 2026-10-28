@@ -64,10 +64,13 @@ and `PATH` is resolved on the daemon's machine, in this order: an export
 name followed by a path inside it (`home:photos/2024`), a path relative to
 the daemon account's home directory (`home:Pictures`, `home:` is the home
 itself), or an absolute path (`home:/backup/laptop`). Whatever the spelling,
-the path must lie inside an exported directory, and that export's grants
-apply; when exports nest, the most specific one governs. A path outside
-every export the client may use is refused as "no access", whether or not
-it exists. To open everything the daemon's account can reach, export the
+the path must lie inside an exported directory the client has a grant for,
+and that export's grants apply. A grant reaches everything below the
+export's directory, exports nested inside it included: when a client may
+use several nested exports, the most specific one decides the session's
+root and access, but a grant on an outer export is not stopped by an inner
+one, not even a `read_only` inner one. A path outside every export the
+client may use is refused as "no access", whether or not it exists. To open everything the daemon's account can reach, export the
 root: `irsync export add root:/`; `irsync export add home:~` exports its
 home. rsync's trailing-slash rule holds on both sides: `Photos/` copies the
 contents, `Photos` copies the directory itself. Exactly one of source and

@@ -111,11 +111,23 @@ fn longest_export_wins_and_remainder_is_relative_to_it() {
 fn only_exports_the_peer_may_use_count() {
     let ex = exports(&[("srv", "/srv"), ("photos", "/srv/photos")]);
     let g = only("srv", Access::ReadWrite);
-    // Inside photos (ungranted): none, not srv.
-    assert!(containing(Path::new("/srv/photos/x"), &ex, &g, None).is_none());
+    // Inside photos (ungranted): srv's grant reaches everything below /srv,
+    // so the reply is the same as for any other path under it; a peer
+    // cannot tell where ungranted exports sit.
+    let r = containing(Path::new("/srv/photos/x"), &ex, &g, None).unwrap();
+    assert_eq!((r.name, r.rel.as_bytes()), ("srv", &b"photos/x"[..]));
     assert_eq!(
         containing(Path::new("/srv/x"), &ex, &g, None).unwrap().name,
         "srv"
+    );
+    // Granted on the inner one only: the outer is not reachable.
+    let g = only("photos", Access::ReadWrite);
+    assert!(containing(Path::new("/srv/x"), &ex, &g, None).is_none());
+    assert_eq!(
+        containing(Path::new("/srv/photos/x"), &ex, &g, None)
+            .unwrap()
+            .name,
+        "photos"
     );
 }
 
@@ -191,9 +203,10 @@ fn a_short_name_prefers_its_export_among_equal_paths_and_ties_rank_by_effective_
             .name,
         "rw"
     );
-    // Named but ungranted: still the named one, hence no access.
+    // Named but ungranted: the granted twin on the same path serves it,
+    // since the peer reaches that directory either way.
     let g = only("ro", Access::ReadWrite);
-    assert!(resolve(b"rw", None, &ex, &g).unwrap().is_none());
+    assert_eq!(resolve(b"rw", None, &ex, &g).unwrap().unwrap().name, "ro");
     // Nesting still wins over the name: `srv/photos` is the inner export.
     let ex = exports(&[("srv", "/srv"), ("photos", "/srv/photos")]);
     assert_eq!(

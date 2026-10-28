@@ -187,16 +187,59 @@ async fn read_only_grant_cannot_send() {
     );
 }
 
+/// `rw` and `ro` share a directory: a key granted only `ro` reaches that
+/// directory under the name `rw` too (the grant is on the directory, and
+/// `ro` is read-only, so it still cannot write there).
 #[tokio::test]
-async fn grant_lacking_export_cannot_pull() {
-    let g = Grants {
+async fn an_ungranted_name_reaches_the_granted_twin_on_the_same_path() {
+    let g = || Grants {
         exports: [("ro".to_string(), Access::ReadWrite)].into(),
         all: None,
     };
+    assert!(matches!(
+        exchange_with(g(), hello(b"rw", Direction::DaemonSends))
+            .await
+            .unwrap(),
+        HelloAckOrError::Ack(_)
+    ));
     expect_err(
-        exchange_with(g, hello(b"rw", Direction::DaemonSends)).await,
-        Code::Unauthorized,
+        exchange_with(g(), hello(b"rw", Direction::ClientSends)).await,
+        Code::ReadOnly,
     );
+}
+
+/// A grant on an outer export reaches everything below it, an ungranted
+/// inner export included: the reply is the same as for any other path
+/// under the outer one, so a key cannot map where other exports sit.
+#[tokio::test]
+async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let (srv, inner) = (tmp.path().join("srv"), tmp.path().join("srv/photos"));
+    std::fs::create_dir_all(&inner).unwrap();
+    let client = client_endpoint().await;
+    let d = spawn_daemon_home(
+        vec![("srv", srv.clone(), false), ("photos", inner.clone(), true)],
+        MemoryAuthorizer::single(
+            client.id(),
+            Grants {
+                exports: [("srv".to_string(), Access::ReadWrite)].into(),
+                all: None,
+            },
+        ),
+        None,
+    )
+    .await;
+    for path in [
+        inner.as_os_str().as_bytes(),
+        &b"srv/photos"[..],
+        &b"srv/other"[..],
+    ] {
+        let r = exchange_against(&d, &client, hello(path, Direction::ClientSends)).await;
+        assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)), "{path:?}");
+    }
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
 }
 
 #[tokio::test]

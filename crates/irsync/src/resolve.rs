@@ -94,12 +94,13 @@ fn parts_of(p: &Path) -> Vec<&[u8]> {
         .collect()
 }
 
-/// The export containing `abs`: the longest path wins, whatever the peer's
-/// grants; between equal paths `prefer` (the export a short name named)
-/// wins, then the one the peer has the best effective access to
-/// (`read_only` applied). `None` when no export contains `abs` or the
-/// winner is one the peer may not use, so a peer learns nothing from the
-/// difference.
+/// The export containing `abs` among those the peer may use: the longest
+/// path wins; between equal paths `prefer` (the export a short name named)
+/// wins, then the one with the best effective access (`read_only`
+/// applied). Exports the peer has no grant for do not take part: a grant
+/// on an outer export reaches everything below it, and the reply for a
+/// path never depends on where ungranted exports sit. `None` when no
+/// export the peer may use contains `abs`.
 pub fn containing<'a>(
     abs: &Path,
     exports: &'a BTreeMap<String, Export>,
@@ -107,20 +108,21 @@ pub fn containing<'a>(
     prefer: Option<&str>,
 ) -> Option<Resolved<'a>> {
     let target = parts_of(abs);
-    let rank = |a: Option<Access>, e: &Export| match a {
-        Some(Access::ReadWrite) if !e.read_only => 2,
-        Some(_) => 1,
-        None => 0,
+    let rank = |a: Access, e: &Export| match a {
+        Access::ReadWrite if !e.read_only => 2,
+        _ => 1,
     };
     // (path length, named by the client, effective access), then the export.
-    type Candidate<'a> = ((usize, bool, u8), &'a str, &'a Export, Option<Access>);
+    type Candidate<'a> = ((usize, bool, u8), &'a str, &'a Export, Access);
     let mut best: Option<Candidate<'a>> = None;
     for (name, export) in exports {
+        let Some(access) = grants.access(name) else {
+            continue;
+        };
         let prefix = parts_of(&export.path);
         if prefix.len() > target.len() || prefix != target[..prefix.len()] {
             continue;
         }
-        let access = grants.access(name);
         let key = (
             prefix.len(),
             prefer == Some(name.as_str()),
@@ -136,7 +138,7 @@ pub fn containing<'a>(
         name,
         export,
         rel,
-        access: access?,
+        access,
     })
 }
 

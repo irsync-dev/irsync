@@ -425,6 +425,9 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         let mut opts = opts.clone();
         opts.dry_run = true;
         opts.verbose = opts.verbose.max(1);
+        // A listing is a question: with the daemon unreachable it fails
+        // now rather than waiting out a sync's reconnect window.
+        opts.reconnect = Some(std::time::Duration::ZERO);
         return run_sync(&args, &opts);
     }
     let log = LogWriter::new();
