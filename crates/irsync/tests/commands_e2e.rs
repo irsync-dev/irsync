@@ -24,7 +24,7 @@ fn revoke_removes_an_alias_that_left_hosts_toml() {
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     std::fs::write(
         cfg.join("hosts.toml"),
-        format!("[laptop]\nendpoint_id = \"{id}\"\n"),
+        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
     )
     .unwrap();
     let target = format!("p:{}", home.join("srv/p").display());
@@ -93,7 +93,7 @@ fn host_add_then_allow_by_alias_then_list() {
     );
     assert_eq!(
         std::fs::read_to_string(home.join(".config/irsync/hosts.toml")).unwrap(),
-        format!("[laptop]\nendpoint_id = \"{id}\"\nparallel = 4\n")
+        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\nparallel = 4\n")
     );
     assert!(
         irsync(&home, &["add", &format!("p:{}", home.join("p").display())])

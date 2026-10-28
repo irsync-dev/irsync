@@ -47,27 +47,55 @@ pub struct Hosts {
     pub entries: BTreeMap<String, HostEntry>,
 }
 
-/// An alias is non-empty, has no `:` or `/`, and is not itself an EndpointId.
+/// The typed shape of the file: every alias lives under `[hosts]`.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawFile {
+    hosts: BTreeMap<String, Spanned<RawHost>>,
+}
+
+/// An alias is non-empty, has no `:` or `/`, is not itself an EndpointId,
+/// and is neither `all` nor `*` (the words that mean every peer).
 pub fn valid_alias(s: &str) -> bool {
-    !s.is_empty() && !s.contains([':', '/']) && parse_endpoint_id(s).is_err()
+    !s.is_empty()
+        && !s.contains([':', '/'])
+        && s != "all"
+        && s != "*"
+        && parse_endpoint_id(s).is_err()
 }
 
 impl Hosts {
     pub fn parse(text: &str, path: &Path) -> Result<Hosts, ConfigError> {
-        let raw: BTreeMap<String, Spanned<RawHost>> =
+        let at = |offset: usize, message: String| ConfigError::File {
+            path: path.to_path_buf(),
+            line: Some(line_of(text, offset)),
+            message,
+        };
+        // Shape pass: the only top-level key is `hosts`, a table.
+        let shape: BTreeMap<String, Spanned<toml::Value>> =
             toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let mut entries = BTreeMap::new();
-        for (alias, r) in raw {
-            let at = |offset: usize, message: String| ConfigError::File {
-                path: path.to_path_buf(),
-                line: Some(line_of(text, offset)),
-                message,
+        for (name, value) in &shape {
+            let start = value.span().start;
+            let value = value.get_ref();
+            let message = match name.as_str() {
+                "hosts" if value.is_table() => continue,
+                "hosts" => format!("hosts: expected a table, found {}", value.type_str()),
+                _ if value.is_table() => {
+                    format!("unknown table {name:?}; hosts live under [hosts.{name}]")
+                }
+                _ => format!("unknown key {name:?}"),
             };
+            return Err(at(start, message));
+        }
+        // Typed pass over the same text, so the spans match.
+        let raw: RawFile = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
+        let mut entries = BTreeMap::new();
+        for (alias, r) in raw.hosts {
             if !valid_alias(&alias) {
                 return Err(at(
                     r.span().start,
                     format!(
-                        "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and not be an EndpointId"
+                        "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
                     ),
                 ));
             }

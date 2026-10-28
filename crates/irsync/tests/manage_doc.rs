@@ -43,7 +43,7 @@ fn save_preserves_comments_and_order() {
 #[test]
 fn peer_spec_forms() {
     let hosts = Hosts::parse(
-        &format!("[laptop]\nendpoint_id = \"{}\"\n", id(1)),
+        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
     .unwrap();

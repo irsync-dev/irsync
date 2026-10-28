@@ -37,7 +37,7 @@ pub enum ManageError {
     #[error("{}", crate::config::exports::reserved(.0))]
     Reserved(String),
     #[error(
-        "{0:?} is not a valid alias: must not contain ':' or '/' and must not be an EndpointId"
+        "{0:?} is not a valid alias: must not contain ':' or '/' and must be neither all, * nor an EndpointId"
     )]
     BadAlias(String),
     #[error("no open access: a peer must be named (an alias, an EndpointId, a public key line or a .pub file)")]

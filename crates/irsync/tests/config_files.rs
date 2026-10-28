@@ -60,7 +60,7 @@ fn settings_missing_file_is_default() {
 
 #[test]
 fn hosts_parse_and_resolve_alias_before_id() {
-    let t = format!("[home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[laptop]\nendpoint_id = \"{}\"\n", id(1), id(2));
+    let t = format!("[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1), id(2));
     let h = Hosts::parse(&t, p()).unwrap();
     assert_eq!(h.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(h.get("home").unwrap().parallel, Some(4));
@@ -78,7 +78,7 @@ fn hosts_parse_and_resolve_alias_before_id() {
 
 #[test]
 fn hosts_entry_without_endpoint_id_is_error_with_line() {
-    let e = Hosts::parse("[home]\nparallel = 4\n", p())
+    let e = Hosts::parse("[hosts.home]\nparallel = 4\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -92,6 +92,21 @@ fn alias_validity() {
     assert!(valid_alias("home-server"));
     assert!(!valid_alias("") && !valid_alias("a:b") && !valid_alias("a/b"));
     assert!(!valid_alias(&id(1).to_string()));
+    assert!(!valid_alias("all") && !valid_alias("*"));
+}
+
+#[test]
+fn hosts_old_layout_names_the_new_location() {
+    let e = Hosts::parse("\n[home]\nendpoint_id = \"x\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("unknown table \"home\"; hosts live under [hosts.home]") && e.contains(":2:"),
+        "{e}"
+    );
+    let e = Hosts::parse("x = 1\n", p()).unwrap_err().to_string();
+    assert!(e.contains("unknown key \"x\""), "{e}");
+    assert!(Hosts::parse("[hosts]\n", p()).unwrap().entries.is_empty());
 }
 
 #[test]
@@ -195,7 +210,7 @@ fn exports_missing_file_is_empty() {
 
 #[test]
 fn syntax_error_carries_its_line() {
-    let e = Hosts::parse("[a]\nendpoint_id = \n", p())
+    let e = Hosts::parse("[hosts.a]\nendpoint_id = \n", p())
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("/x/f.toml:2:"), "{e}");
@@ -204,13 +219,13 @@ fn syntax_error_carries_its_line() {
 #[test]
 fn hosts_invalid_alias_in_file_is_error_with_line() {
     let t = format!(
-        "[ok]\nendpoint_id = \"{}\"\n[\"a:b\"]\nendpoint_id = \"{}\"\n",
+        "[hosts.ok]\nendpoint_id = \"{}\"\n[hosts.\"a:b\"]\nendpoint_id = \"{}\"\n",
         id(1),
         id(2)
     );
     let e = Hosts::parse(&t, p()).unwrap_err().to_string();
     assert!(e.contains("/x/f.toml:3:") && e.contains("a:b"), "{e}");
-    let t = format!("[{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
+    let t = format!("[hosts.{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
     assert!(Hosts::parse(&t, p())
         .unwrap_err()
         .to_string()
@@ -219,7 +234,7 @@ fn hosts_invalid_alias_in_file_is_error_with_line() {
 
 #[test]
 fn hosts_bad_endpoint_id_has_line() {
-    let e = Hosts::parse("[a]\nendpoint_id = \"zzz\"\n", p())
+    let e = Hosts::parse("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("/x/f.toml:2:"), "{e}");

@@ -15,7 +15,7 @@ fn snap(hosts: &str, exports: &str) -> Snapshot {
 #[test]
 fn alias_and_raw_id_entries_both_grant() {
     let s = snap(
-        &format!("[laptop]\nendpoint_id = \"{}\"\n", id(1)),
+        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
         &format!(
             "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\nro = [\"{}\"]\n",
             id(2)
@@ -60,6 +60,6 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     std::fs::write(&e, "[x\n").unwrap();
     assert!(a.snapshot().is_err()); // broken = error, not stale
     std::fs::write(&e, "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n").unwrap();
-    std::fs::write(&h, format!("[lap]\nendpoint_id = \"{}\"\n", id(1))).unwrap();
+    std::fs::write(&h, format!("[hosts.lap]\nendpoint_id = \"{}\"\n", id(1))).unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
 }
