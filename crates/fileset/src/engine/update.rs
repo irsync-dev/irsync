@@ -23,8 +23,14 @@ const BATCH_SIZE: usize = 2000;
 /// `Update` requires an existing manifest and refuses to create one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    Init { backend: Option<Backend> },
-    Update { rehash: bool },
+    Init {
+        backend: Option<Backend>,
+    },
+    Update {
+        rehash: bool,
+        /// Read xattrs even where the manifest's are known to be current.
+        force_xattr_reads: bool,
+    },
 }
 
 pub struct UpdateOpts {
@@ -40,9 +46,12 @@ pub fn update(
 ) -> anyhow::Result<Outcome> {
     let common = &opts.common;
     let root = canonical_root(&common.root)?;
-    let (requested, rehash) = match opts.mode {
-        Mode::Init { backend } => (backend, false),
-        Mode::Update { rehash } => (None, rehash),
+    let (requested, rehash, force_xattr_reads) = match opts.mode {
+        Mode::Init { backend } => (backend, false, false),
+        Mode::Update {
+            rehash,
+            force_xattr_reads,
+        } => (None, rehash, force_xattr_reads),
     };
     let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
     let mut warnings = Warnings::new(err, common.verbose);
@@ -105,7 +114,13 @@ pub fn update(
         ..old_meta.clone()
     })?;
 
-    let cfg = walk_config(common, &root, &loc);
+    let mut cfg = walk_config(common, &root, &loc);
+    cfg.force_xattr_reads = force_xattr_reads;
+    // The walk threads look every entry up themselves; a new manifest has nothing to find.
+    let reader = match opts.mode {
+        Mode::Init { .. } => None,
+        Mode::Update { .. } => Some(store.borrow().reader()?),
+    };
 
     let mut summary = UpdateSummary {
         entries: 0,
@@ -121,13 +136,13 @@ pub fn update(
     let mut seen = Seen::default();
 
     let decide = |obs: &mut Observed| {
-        let stored = match store.borrow().get(&obs.path) {
-            Ok(s) => s,
-            Err(err) => {
-                lookup_error.get_or_insert(err);
-                None
-            }
-        };
+        if let Some(e) = obs.lookup_error.take() {
+            lookup_error.get_or_insert(anyhow::anyhow!(
+                "cannot look up {} in the manifest: {e}",
+                escape(&obs.path)
+            ));
+        }
+        let stored = obs.stored.take();
         let decision = reuse_or_hash(stored.as_ref(), obs, rehash);
         if matches!(decision, Decision::Skip) && obs.entry.blake3.is_some() {
             summary.reused += 1;
@@ -191,7 +206,7 @@ pub fn update(
     };
     let run = pipeline::run(
         common.jobs,
-        move |emit| walk::walk(&cfg, emit),
+        move |emit| walk::walk(&cfg, reader.as_deref(), emit),
         decide,
         sink,
     );

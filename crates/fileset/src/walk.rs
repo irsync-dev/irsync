@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 
 use crate::escape::escape;
-use crate::model::{Entry, Flags};
-use crate::store::{FJALL_NAME, SQLITE_NAME};
+use crate::model::{Entry, Flags, Partial};
+use crate::store::{Reader, FJALL_NAME, SQLITE_NAME};
 
 #[derive(Clone, Debug)]
 pub struct WalkConfig {
@@ -27,6 +27,8 @@ pub struct WalkConfig {
     pub builtin_excludes: bool,
     /// Threads that list directories and read metadata.
     pub threads: usize,
+    /// Read every entry's xattrs, even those the manifest holds as current.
+    pub force_xattr_reads: bool,
 }
 
 /// Walk threads unless asked otherwise. Metadata calls stop scaling well beyond this:
@@ -50,6 +52,10 @@ pub struct Observed {
     pub abs: PathBuf,
     pub entry: Entry,
     pub hash_error: Option<String>,
+    /// What the manifest holds for this path, when the walk was given a reader.
+    pub stored: Option<Entry>,
+    /// Why the manifest could not be asked; `stored` is then `None`.
+    pub lookup_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -83,23 +89,56 @@ pub fn excluded_info(rel: &[u8]) -> String {
     format!("skipping built-in exclude {}", escape(rel))
 }
 
-pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
-    let (entry, partial) = Entry::from_path(&cfg.root)?;
+/// Walks the tree at `cfg.root`. With a `reader` over the manifest, each entry carries what
+/// the manifest holds for it, and xattrs the manifest holds as current are not read again.
+pub fn walk(
+    cfg: &WalkConfig,
+    reader: Option<&dyn Reader>,
+    sink: &mut Sink<'_>,
+) -> anyhow::Result<()> {
+    let (obs, partial) = observe(cfg, reader, cfg.root.clone(), b".".to_vec())?;
     for p in &partial {
         sink(WalkEvent::Warning(p.warning(".")))?;
     }
-    let root_dev = entry.dev;
-    let is_dir = entry.kind == crate::model::Kind::Dir;
-    sink(WalkEvent::Entry(Observed {
-        path: b".".to_vec(),
-        abs: cfg.root.clone(),
-        entry,
-        hash_error: None,
-    }))?;
+    let root_dev = obs.entry.dev;
+    let is_dir = obs.entry.kind == crate::model::Kind::Dir;
+    sink(WalkEvent::Entry(obs))?;
     if is_dir {
-        walk_dir(cfg, root_dev, root_dev, true, &cfg.root, b".", sink)?;
+        walk_dir(cfg, reader, root_dev, root_dev, true, &cfg.root, b".", sink)?;
     }
     Ok(())
+}
+
+/// Stats `abs` and looks `rel` up through `reader`. The xattrs are read unless the
+/// manifest's are current for the object found, and `force_xattr_reads` is off.
+fn observe(
+    cfg: &WalkConfig,
+    reader: Option<&dyn Reader>,
+    abs: PathBuf,
+    rel: Vec<u8>,
+) -> std::io::Result<(Observed, Vec<Partial>)> {
+    let (mut entry, mut partial) = Entry::stat(&abs)?;
+    let (stored, lookup_error) = match reader.map(|r| r.get(&rel)) {
+        None => (None, None),
+        Some(Ok(stored)) => (stored, None),
+        Some(Err(e)) => (None, Some(format!("{e:#}"))),
+    };
+    match stored
+        .as_ref()
+        .filter(|s| !cfg.force_xattr_reads && entry.xattrs_current_in(s))
+    {
+        Some(s) => entry.xattrs = s.xattrs.clone(),
+        None => entry.load_xattrs(&abs, &mut partial),
+    }
+    let obs = Observed {
+        path: rel,
+        abs,
+        entry,
+        hash_error: None,
+        stored,
+        lookup_error,
+    };
+    Ok((obs, partial))
 }
 
 fn is_sidecar(cfg: &WalkConfig, abs: &Path) -> bool {
@@ -190,8 +229,10 @@ const WINDOW_PER_THREAD: usize = 64;
 /// Walks below the directory `dir_abs` on `cfg.threads` threads and emits in sorted
 /// depth-first order, exactly as a single thread would. The threads list and stat whole
 /// directories, earliest in walk order first; the calling thread emits.
+#[allow(clippy::too_many_arguments)]
 fn walk_dir(
     cfg: &WalkConfig,
+    reader: Option<&dyn Reader>,
     root_dev: u64,
     dir_dev: u64,
     volume_top: bool,
@@ -224,7 +265,7 @@ fn walk_dir(
         let started = (0..threads).try_for_each(|i| {
             std::thread::Builder::new()
                 .name(format!("fileset-walk-{i}"))
-                .spawn_scoped(s, || lister(cfg, root_dev, &shared, window))
+                .spawn_scoped(s, || lister(cfg, reader, root_dev, &shared, window))
                 .map(drop)
                 .map_err(|e| anyhow::anyhow!("cannot start a walk thread: {e}"))
         });
@@ -283,7 +324,13 @@ fn take(shared: &Shared, key: &[u32]) -> anyhow::Result<Vec<Item>> {
 
 /// A walk thread: lists the earliest pending directory while fewer than `window` listings
 /// are held, or whenever it is the one the emitter waits for.
-fn lister(cfg: &WalkConfig, root_dev: u64, shared: &Shared, window: usize) {
+fn lister(
+    cfg: &WalkConfig,
+    reader: Option<&dyn Reader>,
+    root_dev: u64,
+    shared: &Shared,
+    window: usize,
+) {
     loop {
         let Pending(key, job) = {
             let mut st = shared.state.lock().unwrap();
@@ -306,7 +353,7 @@ fn lister(cfg: &WalkConfig, root_dev: u64, shared: &Shared, window: usize) {
         // A panic is handed to the emitter as an error; unwinding here would leave it
         // waiting for this listing forever.
         let listed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            list_dir(cfg, root_dev, &job)
+            list_dir(cfg, reader, root_dev, &job)
         }));
         let mut st = shared.state.lock().unwrap();
         let listing = match listed {
@@ -332,7 +379,12 @@ fn lister(cfg: &WalkConfig, root_dev: u64, shared: &Shared, window: usize) {
 
 /// Lists, sorts and stats one directory: its events in order, with an `Item::Descend` for
 /// each subdirectory to walk, and those subdirectories in the same order.
-fn list_dir(cfg: &WalkConfig, root_dev: u64, job: &DirJob) -> (Vec<Item>, Vec<DirJob>) {
+fn list_dir(
+    cfg: &WalkConfig,
+    reader: Option<&dyn Reader>,
+    root_dev: u64,
+    job: &DirJob,
+) -> (Vec<Item>, Vec<DirJob>) {
     let mut items = Vec::new();
     let mut subdirs = Vec::new();
     let dir_rel = job.rel.as_slice();
@@ -386,12 +438,12 @@ fn list_dir(cfg: &WalkConfig, root_dev: u64, job: &DirJob) -> (Vec<Item>, Vec<Di
             items.push(Item::Event(WalkEvent::Excluded(rel)));
             continue;
         }
-        let mut entry = match Entry::from_path(&abs) {
-            Ok((e, partial)) => {
+        let mut obs = match observe(cfg, reader, abs.clone(), rel.clone()) {
+            Ok((obs, partial)) => {
                 for p in &partial {
                     items.push(Item::Event(WalkEvent::Warning(p.warning(&escape(&rel)))));
                 }
-                e
+                obs
             }
             Err(err) => {
                 items.push(Item::Event(WalkEvent::Warning(format!(
@@ -405,7 +457,7 @@ fn list_dir(cfg: &WalkConfig, root_dev: u64, job: &DirJob) -> (Vec<Item>, Vec<Di
         };
         let is_store = cfg.store_path.as_deref() == Some(abs.as_path());
         if is_store {
-            entry.flags.insert(Flags::STORE);
+            obs.entry.flags.insert(Flags::STORE);
         } else if dir_rel != b"."
             && (name_bytes == SQLITE_NAME.as_bytes() || name_bytes == FJALL_NAME.as_bytes())
         {
@@ -413,15 +465,10 @@ fn list_dir(cfg: &WalkConfig, root_dev: u64, job: &DirJob) -> (Vec<Item>, Vec<Di
             // one in use (--manifest points elsewhere).
             items.push(Item::Event(WalkEvent::NestedManifest(rel.clone())));
         }
-        let is_dir = entry.kind == crate::model::Kind::Dir;
-        let dev = entry.dev;
+        let is_dir = obs.entry.kind == crate::model::Kind::Dir;
+        let dev = obs.entry.dev;
         let other_mount = is_dir && dev != root_dev && !cfg.cross_mount_points;
-        items.push(Item::Event(WalkEvent::Entry(Observed {
-            path: rel.clone(),
-            abs: abs.clone(),
-            entry,
-            hash_error: None,
-        })));
+        items.push(Item::Event(WalkEvent::Entry(obs)));
         if is_store || !is_dir {
             continue;
         }
@@ -457,7 +504,7 @@ mod tests {
 
     /// Entries, warnings and not-descended paths.
     fn run_all(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>, Vec<Vec<u8>>) {
-        let s = seen(|sink| walk(cfg, sink));
+        let s = seen(|sink| walk(cfg, None, sink));
         (s.entries, s.warnings, s.skipped)
     }
 
@@ -496,13 +543,14 @@ mod tests {
             store_path: store,
             builtin_excludes: true,
             threads: 4,
+            force_xattr_reads: false,
         }
     }
 
     /// Every event as a line, in emission order.
     fn event_log(cfg: &WalkConfig) -> Vec<String> {
         let mut log = Vec::new();
-        walk(cfg, &mut |ev| {
+        walk(cfg, None, &mut |ev| {
             log.push(match ev {
                 WalkEvent::Entry(o) => format!("entry {} {:?}", escape(&o.path), o.entry.kind),
                 WalkEvent::Warning(w) => format!("warning {w}"),
@@ -588,7 +636,7 @@ mod tests {
     fn walk_sink_error_stops_every_thread() {
         let (_t, r) = bushy_tree();
         let mut seen = 0;
-        let err = walk(&cfg(&r, None), &mut |_ev| {
+        let err = walk(&cfg(&r, None), None, &mut |_ev| {
             seen += 1;
             if seen == 10 {
                 anyhow::bail!("sink full")
@@ -742,7 +790,7 @@ mod tests {
     fn seen_from_foreign_device(cfg: &WalkConfig) -> Seen {
         let (root, _) = Entry::from_path(&cfg.root).unwrap();
         let dev = root.dev.wrapping_add(1);
-        seen(|sink| walk_dir(cfg, dev, dev, true, &cfg.root, b".", sink))
+        seen(|sink| walk_dir(cfg, None, dev, dev, true, &cfg.root, b".", sink))
     }
 
     #[test]
@@ -822,7 +870,7 @@ mod tests {
     #[test]
     fn walk_skips_builtin_excludes_at_the_root_only() {
         let (_t, r) = spotlight_tree();
-        let s = seen(|sink| walk(&cfg(&r, None), sink));
+        let s = seen(|sink| walk(&cfg(&r, None), None, sink));
         assert_eq!(paths(&s.entries), strs(&[".", "f", "sub", "sub/.Trashes"]));
         assert_eq!(s.excluded, strs(&[".Spotlight-V100", ".Trashes"]));
         assert!(s.warnings.is_empty(), "{:?}", s.warnings);
@@ -834,7 +882,7 @@ mod tests {
         let (_t, r) = spotlight_tree();
         let mut all = cfg(&r, None);
         all.builtin_excludes = false;
-        let s = seen(|sink| walk(&all, sink));
+        let s = seen(|sink| walk(&all, None, sink));
         assert_eq!(
             paths(&s.entries),
             strs(&[

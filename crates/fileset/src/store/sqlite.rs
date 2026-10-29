@@ -1,10 +1,11 @@
 //! SQLite backend.
 
-use super::{check_schema, Meta, OpenMode, Store, SCHEMA_VERSION};
+use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::{Entry, Flags, Kind, Timespec};
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const V1_SQL: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
@@ -84,7 +85,7 @@ fn migrate_with(
 pub struct SqliteStore {
     conn: Connection,
     mode: OpenMode,
-    path: std::path::PathBuf,
+    path: PathBuf,
 }
 
 fn now() -> i64 {
@@ -180,6 +181,47 @@ fn load_xattrs(conn: &Connection, path: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The entry at `path` with its xattrs.
+fn get_entry(conn: &Connection, path: &[u8]) -> Result<Option<Entry>> {
+    let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE path = ?");
+    // Called once per walked entry: parsing the SQL each time cost as much as the lookup.
+    let e = conn
+        .prepare_cached(&sql)?
+        .query_row([path], |r| row_to_entry(r, 0))
+        .optional()?;
+    match e {
+        Some(mut e) => {
+            e.xattrs = load_xattrs(conn, path)?;
+            Ok(Some(e))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Read-only connections of its own, one per thread that is reading at the moment; WAL
+/// mode lets them read while the store's own connection writes.
+struct SqliteReader {
+    path: PathBuf,
+    idle: Mutex<Vec<Connection>>,
+}
+
+impl Reader for SqliteReader {
+    fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
+        let idle = self.idle.lock().unwrap().pop();
+        let conn = match idle {
+            Some(c) => c,
+            None => Connection::open_with_flags(
+                &self.path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .with_context(|| format!("opening {}", self.path.display()))?,
+        };
+        let e = get_entry(&conn, path);
+        self.idle.lock().unwrap().push(conn);
+        e
+    }
+}
+
 impl SqliteStore {
     pub fn open(path: &Path, mode: OpenMode) -> Result<SqliteStore> {
         match mode {
@@ -253,20 +295,14 @@ impl Store for SqliteStore {
     }
 
     fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
-        let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE path = ?");
-        // Called once per walked entry: parsing the SQL each time cost as much as the lookup.
-        let e = self
-            .conn
-            .prepare_cached(&sql)?
-            .query_row([path], |r| row_to_entry(r, 0))
-            .optional()?;
-        match e {
-            Some(mut e) => {
-                e.xattrs = load_xattrs(&self.conn, path)?;
-                Ok(Some(e))
-            }
-            None => Ok(None),
-        }
+        get_entry(&self.conn, path)
+    }
+
+    fn reader(&self) -> Result<Box<dyn Reader>> {
+        Ok(Box::new(SqliteReader {
+            path: self.path.clone(),
+            idle: Mutex::new(Vec::new()),
+        }))
     }
 
     fn for_each(&self, f: &mut dyn FnMut(&[u8], &Entry) -> Result<()>) -> Result<()> {

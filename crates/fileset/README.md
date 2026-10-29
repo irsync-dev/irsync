@@ -59,6 +59,10 @@ All verbs:
 
 - `--rehash`: re-hash every regular file even if size, mtime and inode are
   unchanged
+- `--force-xattr-reads`: read every entry's extended attributes. By default an
+  entry whose inode, size, mtime and ctime match the manifest keeps the
+  attributes recorded there (changing an attribute updates the ctime), and
+  only an entry whose attributes could not be read in full is read again
 
 `check` only:
 

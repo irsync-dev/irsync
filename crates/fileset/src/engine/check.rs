@@ -124,7 +124,7 @@ pub fn check(
     };
     pipeline::run(
         common.jobs,
-        move |emit| walk::walk(&cfg, emit),
+        move |emit| walk::walk(&cfg, None, emit),
         decide,
         sink,
     )?;

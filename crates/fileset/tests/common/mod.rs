@@ -58,7 +58,10 @@ pub fn update_opts(
     fail_on_warnings: bool,
 ) -> UpdateOpts {
     let mode = if root.join(store_name(backend)).symlink_metadata().is_ok() {
-        Mode::Update { rehash }
+        Mode::Update {
+            rehash,
+            force_xattr_reads: false,
+        }
     } else {
         Mode::Init {
             backend: Some(backend),

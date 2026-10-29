@@ -63,6 +63,9 @@ for_both_backends! {
     update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall;
     update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall;
     update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall;
+    update_reuses_stored_xattrs_while_ctime_is_unchanged => update_reuses_stored_xattrs_while_ctime_is_unchanged_sqlite, update_reuses_stored_xattrs_while_ctime_is_unchanged_fjall;
+    update_force_xattr_reads_reads_every_entry => update_force_xattr_reads_reads_every_entry_sqlite, update_force_xattr_reads_reads_every_entry_fjall;
+    update_rereads_xattrs_it_could_not_read_in_full => update_rereads_xattrs_it_could_not_read_in_full_sqlite, update_rereads_xattrs_it_could_not_read_in_full_fjall;
     update_warns_on_unreadable => update_warns_on_unreadable_sqlite, update_warns_on_unreadable_fjall;
     update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall;
     init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
@@ -279,6 +282,69 @@ fn update_rewrites_a_row_whose_xattrs_changed(b: Backend) {
     );
 }
 
+/// Replaces the xattrs and flags stored for `rel`, leaving everything the walk compares
+/// untouched, so whether the next update reads the real xattrs shows in what it stores.
+fn plant_xattrs(root: &Path, b: Backend, rel: &str, flags: Flags) {
+    let mut st = store::open(&root.join(store_name(b)), b, OpenMode::ReadWrite).unwrap();
+    let mut e = st.get(rel.as_bytes()).unwrap().unwrap();
+    e.xattrs = vec![(b"user.planted".to_vec(), b"1".to_vec())];
+    e.flags = flags;
+    st.put_batch(&[(rel.as_bytes().to_vec(), e)]).unwrap();
+    st.close().unwrap();
+}
+
+fn planted() -> Vec<(Vec<u8>, Vec<u8>)> {
+    vec![(b"user.planted".to_vec(), b"1".to_vec())]
+}
+
+fn update_reuses_stored_xattrs_while_ctime_is_unchanged(b: Backend) {
+    let dir = tree(&[("f", "x"), ("d/g", "y")]);
+    run_update(dir.path(), b, false, false);
+    plant_xattrs(dir.path(), b, "f", Flags::default());
+    plant_xattrs(dir.path(), b, "d", Flags::default());
+    let (outcome, err) = run_update(dir.path(), b, false, false);
+    assert_eq!(err, "entries=5 hashed=0 reused=2 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+    let st = open_ro(dir.path(), b);
+    assert_eq!(st.get(b"f").unwrap().unwrap().xattrs, planted());
+    assert_eq!(st.get(b"d").unwrap().unwrap().xattrs, planted());
+}
+
+fn update_force_xattr_reads_reads_every_entry(b: Backend) {
+    let dir = tree(&[("f", "x"), ("d/g", "y")]);
+    run_update(dir.path(), b, false, false);
+    plant_xattrs(dir.path(), b, "f", Flags::default());
+    plant_xattrs(dir.path(), b, "d", Flags::default());
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.mode = Mode::Update {
+        rehash: false,
+        force_xattr_reads: true,
+    };
+    run_update_opts(&opts).unwrap();
+    let st = open_ro(dir.path(), b);
+    for rel in ["f", "d"] {
+        let on_disk = fileset::model::read_xattrs(&dir.path().join(rel)).0;
+        assert_eq!(
+            st.get(rel.as_bytes()).unwrap().unwrap().xattrs,
+            on_disk,
+            "{rel}"
+        );
+    }
+}
+
+fn update_rereads_xattrs_it_could_not_read_in_full(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    plant_xattrs(dir.path(), b, "f", Flags::XATTRS_PARTIAL);
+    run_update(dir.path(), b, false, false);
+    let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
+    assert_eq!(
+        e.xattrs,
+        fileset::model::read_xattrs(&dir.path().join("f")).0
+    );
+    assert!(!e.flags.contains(Flags::XATTRS_PARTIAL));
+}
+
 fn update_warns_on_unreadable(b: Backend) {
     let dir = tree(&[("f", "secret")]);
     let f = dir.path().join("f");
@@ -406,7 +472,10 @@ fn init_refuses_enclosing_manifest(b: Backend) {
 fn update_requires_existing_manifest(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let mut opts = update_opts(dir.path(), b, false, false);
-    opts.mode = Mode::Update { rehash: false };
+    opts.mode = Mode::Update {
+        rehash: false,
+        force_xattr_reads: false,
+    };
     let e = run_update_opts(&opts).expect_err("update without a manifest must fail");
     let msg = format!("{e:#}");
     assert!(
@@ -428,7 +497,10 @@ fn update_requires_existing_external_manifest(b: Backend) {
     let manifest = outside.path().join("m");
     let mut opts = update_opts(dir.path(), b, false, false);
     opts.common.manifest = Some(manifest.clone());
-    opts.mode = Mode::Update { rehash: false };
+    opts.mode = Mode::Update {
+        rehash: false,
+        force_xattr_reads: false,
+    };
     let e = run_update_opts(&opts).expect_err("update without a manifest must fail");
     let msg = format!("{e:#}");
     assert!(

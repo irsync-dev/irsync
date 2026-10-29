@@ -198,6 +198,8 @@ mod tests {
             abs: abs.to_path_buf(),
             entry: Entry::from_path(abs).unwrap().0,
             hash_error: None,
+            stored: None,
+            lookup_error: None,
         }
     }
 

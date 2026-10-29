@@ -79,6 +79,9 @@ pub struct UpdateArgs {
     /// Rehash all files regardless of cached metadata
     #[arg(long)]
     pub rehash: bool,
+    /// Read every entry's xattrs, also where size, mtime and ctime match the manifest
+    #[arg(long)]
+    pub force_xattr_reads: bool,
 }
 
 #[derive(Args, Debug)]

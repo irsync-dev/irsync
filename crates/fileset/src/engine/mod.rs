@@ -94,5 +94,6 @@ pub fn walk_config(common: &CommonOpts, root: &Path, loc: &Location) -> WalkConf
         sqlite_store: loc.backend == Backend::Sqlite,
         builtin_excludes: common.builtin_excludes,
         threads: common.walk_threads,
+        force_xattr_reads: false,
     }
 }

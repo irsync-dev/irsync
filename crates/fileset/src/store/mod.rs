@@ -37,9 +37,17 @@ pub struct Meta {
     pub unfinished: bool,
 }
 
+/// Lookups that several threads can share while the store stays open for writing.
+pub trait Reader: Send + Sync {
+    /// The entry as last committed, as [`Store::get`] returns it.
+    fn get(&self, path: &[u8]) -> anyhow::Result<Option<Entry>>;
+}
+
 pub trait Store: Send {
     fn meta(&self) -> anyhow::Result<Meta>;
     fn get(&self, path: &[u8]) -> anyhow::Result<Option<Entry>>;
+    /// A [`Reader`] over this store, to be dropped before `close`.
+    fn reader(&self) -> anyhow::Result<Box<dyn Reader>>;
     /// Visits every entry in byte-wise key order.
     fn for_each(
         &self,

@@ -242,6 +242,38 @@ deferred rather than fixed are listed in
     serves a query but stays, to avoid a schema migration; it costs only on
     the rows that are written.
 
+## Follow-up: xattrs are not re-read while ctime is unchanged (2026-10-29)
+
+36. **`update` reuses the manifest's xattrs for an entry whose kind, inode,
+    size, mtime and ctime match.** Setting, changing and removing an xattr
+    each update the ctime (checked on APFS). On the 1.7M-entry volume this
+    drops about 3.3M `listxattr`/`getxattr` calls: a no-change `update`
+    goes from 21.6 s to 17.5 s and its system time halves (57 s to 26.5 s).
+    `--force-xattr-reads` (update only, like `--rehash`) reads them all;
+    `init` has nothing to reuse and `check` always reads, since verifying is
+    its job.
+
+37. **The walk threads do the manifest lookups.** The reuse decision is made
+    right after the `lstat`, so each walk thread asks the manifest through a
+    `Reader` (SQLite: read-only connections of its own, which WAL lets read
+    while the store writes; fjall: a shared keyspace handle) and the entry
+    carries what it found to the engine, which no longer looks it up again.
+    A row is looked up before the engine can write it, since entries are
+    written only after they are emitted. Cost: with `--force-xattr-reads`
+    the walk threads carry both loads, and the run is slower than before
+    this change (26 s against 21.6 s on the volume above).
+
+38. **An entry whose xattrs could not be read in full is flagged
+    `XATTRS_PARTIAL` and read again on every update.** Without the flag the
+    partial set would be reused silently and its warning would show only
+    once; with it, `--fail-on-warnings` keeps failing until the attributes
+    can be read. The flag lives in the existing `flags` column, so no
+    migration.
+
+39. **The walk-thread default stays 4.** Without the xattr reads the walk
+    scales a little further (8 threads: 16.9 s against 17.9 s) at more than
+    twice the system time, so the gain does not justify a new default.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"

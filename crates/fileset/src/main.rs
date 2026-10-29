@@ -74,7 +74,10 @@ fn main() {
             let (common, quiet) = common_opts(a.common);
             let opts = UpdateOpts {
                 common,
-                mode: Mode::Update { rehash: a.rehash },
+                mode: Mode::Update {
+                    rehash: a.rehash,
+                    force_xattr_reads: a.force_xattr_reads,
+                },
             };
             update(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
         }

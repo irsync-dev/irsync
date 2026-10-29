@@ -31,6 +31,15 @@ fn only_init_takes_store_and_only_update_takes_rehash() {
 }
 
 #[test]
+fn only_update_takes_force_xattr_reads() {
+    for (verb, has) in [("init", false), ("update", true), ("check", false)] {
+        let out = bin().args([verb, "--help"]).output().unwrap();
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(s.contains("--force-xattr-reads"), has, "{verb}: {s}");
+    }
+}
+
+#[test]
 fn check_help_describes_comparison_flags() {
     let out = bin().args(["check", "--help"]).output().unwrap();
     assert!(out.status.success());

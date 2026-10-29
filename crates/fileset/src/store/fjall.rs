@@ -1,6 +1,6 @@
 //! fjall (LSM) backend with protobuf-encoded entry values.
 
-use super::{check_schema, Meta, OpenMode, Store, SCHEMA_VERSION};
+use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::{Entry, Flags, Kind, Timespec};
 use anyhow::{anyhow, bail, Context, Result};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
@@ -14,6 +14,15 @@ pub mod pb {
 
 /// Keys deleted per batch by `sweep`.
 const SWEEP_CHUNK: usize = 2000;
+
+/// A keyspace handle is shared between threads as it is.
+struct FjallReader(Keyspace);
+
+impl Reader for FjallReader {
+    fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
+        self.0.get(path)?.map(|v| decode(&v)).transpose()
+    }
+}
 
 pub struct FjallStore {
     db: Database,
@@ -190,7 +199,11 @@ impl Store for FjallStore {
     }
 
     fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
-        self.entries.get(path)?.map(|v| decode(&v)).transpose()
+        FjallReader(self.entries.clone()).get(path)
+    }
+
+    fn reader(&self) -> Result<Box<dyn Reader>> {
+        Ok(Box::new(FjallReader(self.entries.clone())))
     }
 
     fn for_each(&self, f: &mut dyn FnMut(&[u8], &Entry) -> Result<()>) -> Result<()> {

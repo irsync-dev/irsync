@@ -56,6 +56,9 @@ pub struct Flags(pub u32);
 impl Flags {
     pub const STORE: Flags = Flags(1);
     pub const UNREADABLE: Flags = Flags(2);
+    /// Reading the xattrs failed partway; the entry holds those read before. Such an
+    /// entry's xattrs are read again on every update.
+    pub const XATTRS_PARTIAL: Flags = Flags(4);
 
     pub fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0
@@ -119,6 +122,13 @@ impl Entry {
     /// Captures metadata of `abs` without following a final symlink. Only an lstat failure
     /// is an error; anything else that cannot be read is returned as a `Partial`.
     pub fn from_path(abs: &Path) -> io::Result<(Entry, Vec<Partial>)> {
+        let (mut entry, mut partial) = Entry::stat(abs)?;
+        entry.load_xattrs(abs, &mut partial);
+        Ok((entry, partial))
+    }
+
+    /// [`Entry::from_path`] without the xattrs, which are left empty.
+    pub fn stat(abs: &Path) -> io::Result<(Entry, Vec<Partial>)> {
         let md = std::fs::symlink_metadata(abs)?;
         let ft = md.file_type();
         let kind = if ft.is_dir() {
@@ -150,10 +160,6 @@ impl Entry {
         } else {
             None
         };
-        let (xattrs, xattr_err) = read_xattrs(abs);
-        if let Some(e) = xattr_err {
-            partial.push(Partial::Xattrs(e));
-        }
         let entry = Entry {
             kind,
             mode: md.mode() & 0o7777,
@@ -174,11 +180,33 @@ impl Entry {
             },
             blake3: None,
             target,
-            xattrs,
+            xattrs: Vec::new(),
             flags: Flags::default(),
             generation: 0,
         };
         Ok((entry, partial))
+    }
+
+    /// Reads the xattrs of `abs` into the entry; a failure partway is added to `partial`
+    /// and flags the entry `XATTRS_PARTIAL`.
+    pub fn load_xattrs(&mut self, abs: &Path, partial: &mut Vec<Partial>) {
+        let (xattrs, err) = read_xattrs(abs);
+        self.xattrs = xattrs;
+        if let Some(e) = err {
+            self.flags.insert(Flags::XATTRS_PARTIAL);
+            partial.push(Partial::Xattrs(e));
+        }
+    }
+
+    /// Whether `stored`, the manifest's record of this path, still holds its xattrs: the
+    /// same object, unchanged since. Changing an xattr updates the ctime.
+    pub fn xattrs_current_in(&self, stored: &Entry) -> bool {
+        stored.kind == self.kind
+            && stored.ino == self.ino
+            && stored.size == self.size
+            && stored.mtime == self.mtime
+            && stored.ctime == self.ctime
+            && !stored.flags.contains(Flags::XATTRS_PARTIAL)
     }
 }
 
@@ -258,6 +286,24 @@ mod tests {
             names,
             ["dir", "file", "symlink", "fifo", "socket", "chardev", "blockdev", "other"]
         );
+    }
+
+    #[test]
+    fn a_failed_xattr_read_flags_the_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        std::fs::write(&f, b"x").unwrap();
+        let (e, partial) = Entry::from_path(&f).unwrap();
+        assert!(partial.is_empty());
+        assert!(!e.flags.contains(Flags::XATTRS_PARTIAL));
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (e, partial) = Entry::from_path(&f).unwrap();
+        // Only some systems refuse the xattrs of an unreadable file (macOS does).
+        if !partial.iter().any(|p| matches!(p, Partial::Xattrs(_))) {
+            eprintln!("skipping: xattrs of an unreadable file are readable here");
+            return;
+        }
+        assert!(e.flags.contains(Flags::XATTRS_PARTIAL));
     }
 
     #[test]

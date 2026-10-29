@@ -135,3 +135,40 @@ fn fjall_suite() {
         store::open(p, Backend::Fjall, mode).unwrap()
     });
 }
+
+/// A reader shared by several threads sees what the open store has committed, and once
+/// dropped it does not keep the store from closing cleanly.
+fn reader_suite(backend: Backend) {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("m");
+    let mut s = store::open(&p, backend, OpenMode::Create).unwrap();
+    s.put_batch(&[(b"a".to_vec(), entry(1))]).unwrap();
+    let reader = s.reader().unwrap();
+    s.put_batch(&[(b"b".to_vec(), entry(2))]).unwrap();
+    std::thread::scope(|sc| {
+        for _ in 0..4 {
+            sc.spawn(|| {
+                for _ in 0..50 {
+                    assert_eq!(reader.get(b"a").unwrap(), Some(entry(1)));
+                    assert_eq!(reader.get(b"b").unwrap(), Some(entry(2)));
+                    assert_eq!(reader.get(b"c").unwrap(), None);
+                }
+            });
+        }
+    });
+    drop(reader);
+    assert_eq!(s.close().unwrap(), None);
+    if backend == Backend::Sqlite {
+        assert!(!dir.path().join("m-wal").exists());
+    }
+}
+
+#[test]
+fn sqlite_reader() {
+    reader_suite(Backend::Sqlite);
+}
+
+#[test]
+fn fjall_reader() {
+    reader_suite(Backend::Fjall);
+}
