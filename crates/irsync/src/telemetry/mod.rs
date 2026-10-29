@@ -5,12 +5,32 @@ pub mod flame;
 pub mod http;
 pub mod init;
 pub mod meter;
+#[cfg(feature = "otel")]
+pub mod otel;
+#[cfg(feature = "otel")]
+pub mod otel_bridge;
 pub mod process;
 pub mod publish;
 pub mod sampler;
 pub mod timing;
 
 pub use init::{init, OtlpConfig, Telemetry, TelemetryConfig};
+#[cfg(feature = "otel")]
+pub use otel::{extract, inject, set_parent};
+
+/// Without OTel export no span has a trace context: empty strings.
+#[cfg(not(feature = "otel"))]
+pub fn inject(_span: &tracing::Span) -> (String, String) {
+    (String::new(), String::new())
+}
+
+/// Without OTel export there is no context to extract: does nothing.
+#[cfg(not(feature = "otel"))]
+pub fn extract(_traceparent: &str, _tracestate: &str) {}
+
+/// Without OTel export there is no trace to join: does nothing.
+#[cfg(not(feature = "otel"))]
+pub fn set_parent(_span: &tracing::Span, _traceparent: &str, _tracestate: &str) {}
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

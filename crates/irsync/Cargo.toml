@@ -4,7 +4,17 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+default = ["otel"]
 test-hooks = []
+# OTLP export of spans and metrics.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "dep:tonic",
+    "dep:rustls",
+]
 
 [dependencies]
 irsync-proto = { path = "../irsync-proto" }
@@ -16,6 +26,14 @@ tracing = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+# Only for its native root certificates on gRPC over TLS.
+tonic = { workspace = true, optional = true, features = ["tls-native-roots"] }
+# Only to install a TLS crypto provider: iroh's reqwest ships none.
+rustls = { workspace = true, optional = true, features = ["ring"] }
 serde = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
@@ -44,7 +62,9 @@ console = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
 tempfile = { workspace = true }
 rand_core = { workspace = true }
-irsync = { path = ".", features = ["test-hooks"] }
+# No default features: `--no-default-features` must reach the test builds too.
+irsync = { path = ".", default-features = false, features = ["test-hooks"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 vergen-gitcl = "10"

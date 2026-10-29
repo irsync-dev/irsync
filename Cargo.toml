@@ -20,6 +20,12 @@ blake3 = "1"
 metrics = "0.24"
 metrics-util = "0.20"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "metrics", "grpc-tonic", "tls-ring", "http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "0.34", default-features = false, features = ["metrics"] }
+tonic = { version = "0.14", default-features = false }
+rustls = { version = "0.23", default-features = false }
 ssh-key = { version = "0.6", features = ["ed25519", "encryption", "std"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 jwalk = "0.9"
