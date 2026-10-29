@@ -15,8 +15,6 @@ pub enum Decision {
 
 pub const WALK_CAPACITY: usize = 1024;
 pub const JOB_CAPACITY: usize = 1024;
-/// Stack of the walk (producer) thread.
-const PRODUCER_STACK: usize = 256 * 1024 * 1024;
 
 type Job = (u64, Observed);
 
@@ -50,11 +48,8 @@ where
     let (done_tx, done_rx) = unbounded::<Job>();
 
     std::thread::scope(|s| {
-        // The walk recurses once per directory level, so its stack is sized for very deep
-        // trees; this reserves address space, memory is committed only as it is used.
         let producer = std::thread::Builder::new()
             .name("fileset-walk".into())
-            .stack_size(PRODUCER_STACK)
             .spawn_scoped(s, move || {
                 let mut emit = |ev: WalkEvent| {
                     walk_tx

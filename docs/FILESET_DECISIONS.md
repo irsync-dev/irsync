@@ -92,7 +92,7 @@ deferred rather than fixed are listed in
     - fjall sweep processes stale entries in chunks of 2000 so memory stays
       bounded during `update`;
     - the walker thread gets a 256 MiB stack so deep trees do not overflow
-      the recursive DFS;
+      the recursive DFS (superseded by 30: the walk no longer recurses);
     - xattr and readlink failures on an entry produce a warning and keep the
       entry rather than dropping the subtree.
     Cost if wrong: small; each is conservative.
@@ -188,6 +188,34 @@ deferred rather than fixed are listed in
 
 29. **The `INFO` channel lives on `Warnings`.** It is uncounted, goes to
     stderr like `WARN`, and prints only with `-v`.
+
+## Follow-up: parallel walk (2026-10-29)
+
+30. **Directories are listed on a pool, events still come out in walk
+    order.** A no-change `update` of a 1.7M-entry tree (370k directories,
+    nearly every file with an xattr) spent 52 s with one thread making
+    `lstat`, `listxattr` and `getxattr` calls one after another, and the
+    database thread idle 69% of that time. Now `--walk-threads` threads each
+    list, sort and stat one directory at a time; the walk thread emits.
+    Same tree: 56 s with 1 thread, 24 s with 4, and the manifests are
+    identical. The walk no longer recurses, so the walk thread's 256 MiB
+    stack is gone.
+
+31. **Listings run in walk order, behind a window.** Each directory is keyed
+    by its path of child indices, whose order is walk order; the pool takes
+    the earliest pending one. At most `64 × threads` listings may be held
+    ahead of the emitter, except the one it waits for, which always runs:
+    it is the earliest pending key, since it was queued when its parent
+    finished. Cost if wrong: a deadlock, which the window exception rules
+    out, or memory, which the window bounds.
+
+32. **The default is 4 threads, not the CPU count.** On a 16-core M4 Max over
+    an APFS SSD, a C walk of the same syscalls took 52 s on 1 thread, 16 s on
+    4, 15 s on 5, 24 s on 8 and 78 s on 16: xattr reads contend in the kernel.
+    The full `update` was fastest at 4 (24 s), then 5 (25 s), 6 (26 s) and
+    8 (30 s). It is separate from `-j`, which sizes the hash pool, where
+    reading file contents does scale. Cost if wrong: other filesystems may
+    prefer another count, which the flag covers.
 
 ## Parked (real, deferred, not fixed)
 

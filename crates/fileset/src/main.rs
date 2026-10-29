@@ -19,6 +19,7 @@ fn common_opts(a: CommonArgs) -> (CommonOpts, bool) {
         cross_mount_points: a.cross_mount_points,
         sort: !a.no_dir_sort,
         jobs,
+        walk_threads: a.walk_threads,
         fail_on_warnings: a.fail_on_warnings,
         builtin_excludes: !a.no_builtin_excludes,
         verbose: a.verbose,

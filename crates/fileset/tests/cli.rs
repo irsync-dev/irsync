@@ -65,16 +65,32 @@ fn jobs_must_be_at_least_one() {
 }
 
 #[test]
+fn walk_threads_must_be_at_least_one() {
+    let out = bin()
+        .args(["check", "--walk-threads", "0", "."])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("0 is not in 1..") && e.contains("--walk-threads"),
+        "{e}"
+    );
+}
+
+#[test]
 fn every_common_flag_parses() {
     let d = tree();
     let t = d.path().join("tree");
     let m = d.path().join("m.sqlite");
-    let flags: [&std::ffi::OsStr; 7] = [
+    let flags: [&std::ffi::OsStr; 9] = [
         "--fail-on-warnings".as_ref(),
         "--cross-mount-points".as_ref(),
         "--no-dir-sort".as_ref(),
         "-j".as_ref(),
         "2".as_ref(),
+        "--walk-threads".as_ref(),
+        "3".as_ref(),
         "--manifest".as_ref(),
         m.as_os_str(),
     ];

@@ -1,8 +1,12 @@
-//! Sorted depth-first filesystem walker with store and mount-point rules.
+//! Sorted depth-first filesystem walker with store and mount-point rules. Directories are
+//! listed and their entries stat'ed on a small pool of threads; events come out in the
+//! same order as from a single thread.
 
+use std::collections::{BinaryHeap, HashMap};
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
 
 use crate::escape::escape;
 use crate::model::{Entry, Flags};
@@ -21,7 +25,13 @@ pub struct WalkConfig {
     pub sqlite_store: bool,
     /// Skip the `BUILTIN_EXCLUDES` at the top of every volume the walk visits.
     pub builtin_excludes: bool,
+    /// Threads that list directories and read metadata.
+    pub threads: usize,
 }
+
+/// Walk threads unless asked otherwise. Metadata calls stop scaling well beyond this:
+/// on APFS, xattr reads contend in the kernel, and 16 threads walk slower than one.
+pub const DEFAULT_THREADS: usize = 4;
 
 /// Names macOS keeps at the top of a volume for its own use. They are unreadable there and
 /// junk anywhere else, so the walk neither records nor descends them.
@@ -112,8 +122,74 @@ fn cannot_read_dir(dir_rel: &[u8], err: &std::io::Error) -> String {
     format!("cannot read directory {}: {err}", escape(dir_rel))
 }
 
-// Recursion depth equals tree depth; the producer thread's stack is sized for it (pipeline).
-// `volume_top`: the directory is the root or a mount point, where built-in excludes live.
+/// A directory for a walk thread to list.
+struct DirJob {
+    abs: PathBuf,
+    rel: Vec<u8>,
+    dev: u64,
+    /// The root or a mount point, where built-in excludes live.
+    volume_top: bool,
+}
+
+/// One step of a listed directory, in emission order.
+// Boxing the event would cost an allocation per entry to shrink a one-word marker.
+#[allow(clippy::large_enum_variant)]
+enum Item {
+    Event(WalkEvent),
+    /// The next subdirectory's own listing goes here.
+    Descend,
+}
+
+/// Position of a directory in walk order: the index of each `Descend` taken from the
+/// first listed directory down. Ordering keys compares them in walk (preorder) order.
+type Key = Vec<u32>;
+
+struct Pending(Key, DirJob);
+
+impl PartialEq for Pending {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for Pending {}
+impl PartialOrd for Pending {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Pending {
+    // Reversed: the heap pops the earliest directory in walk order first.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+
+type Listing = Result<Vec<Item>, String>;
+
+struct State {
+    pending: BinaryHeap<Pending>,
+    done: HashMap<Key, Listing>,
+    /// Listings started or finished and not yet taken by the emitter.
+    held: usize,
+    /// The listing the emitter waits for; it may start even when `held` is at the window.
+    awaited: Option<Key>,
+    stop: bool,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    /// Signalled for the walk threads: new jobs, a freed slot, a new `awaited`, or stop.
+    work: Condvar,
+    /// Signalled for the emitter: a listing finished.
+    ready: Condvar,
+}
+
+/// Listings each walk thread may finish ahead of the emitter.
+const WINDOW_PER_THREAD: usize = 64;
+
+/// Walks below the directory `dir_abs` on `cfg.threads` threads and emits in sorted
+/// depth-first order, exactly as a single thread would. The threads list and stat whole
+/// directories, earliest in walk order first; the calling thread emits.
 fn walk_dir(
     cfg: &WalkConfig,
     root_dev: u64,
@@ -123,7 +199,144 @@ fn walk_dir(
     dir_rel: &[u8],
     sink: &mut Sink<'_>,
 ) -> anyhow::Result<()> {
-    let mut names: Vec<OsString> = match std::fs::read_dir(dir_abs) {
+    let threads = cfg.threads.max(1);
+    let shared = Shared {
+        state: Mutex::new(State {
+            pending: BinaryHeap::from([Pending(
+                Vec::new(),
+                DirJob {
+                    abs: dir_abs.to_path_buf(),
+                    rel: dir_rel.to_vec(),
+                    dev: dir_dev,
+                    volume_top,
+                },
+            )]),
+            done: HashMap::new(),
+            held: 0,
+            awaited: None,
+            stop: false,
+        }),
+        work: Condvar::new(),
+        ready: Condvar::new(),
+    };
+    let window = threads * WINDOW_PER_THREAD;
+    std::thread::scope(|s| {
+        let started = (0..threads).try_for_each(|i| {
+            std::thread::Builder::new()
+                .name(format!("fileset-walk-{i}"))
+                .spawn_scoped(s, || lister(cfg, root_dev, &shared, window))
+                .map(drop)
+                .map_err(|e| anyhow::anyhow!("cannot start a walk thread: {e}"))
+        });
+        let emitted = started.and_then(|()| emit_in_order(&shared, sink));
+        // Threads already started would otherwise wait for work forever, and the scope
+        // for them.
+        shared.state.lock().unwrap().stop = true;
+        shared.work.notify_all();
+        emitted
+    })
+}
+
+/// Takes listings in walk order and sends their events to `sink`.
+fn emit_in_order(shared: &Shared, sink: &mut Sink<'_>) -> anyhow::Result<()> {
+    let mut stack: Vec<(Key, std::vec::IntoIter<Item>, u32)> =
+        vec![(Vec::new(), take(shared, &[])?.into_iter(), 0)];
+    while let Some((key, items, descended)) = stack.last_mut() {
+        let child = match items.next() {
+            None => {
+                stack.pop();
+                continue;
+            }
+            Some(Item::Event(ev)) => {
+                sink(ev)?;
+                continue;
+            }
+            Some(Item::Descend) => {
+                let mut child = key.clone();
+                child.push(*descended);
+                *descended += 1;
+                child
+            }
+        };
+        let items = take(shared, &child)?.into_iter();
+        stack.push((child, items, 0));
+    }
+    Ok(())
+}
+
+/// Waits for the listing at `key`. Every key the emitter asks for was queued when its
+/// parent's listing finished, and is the earliest unemitted one, so it always gets to run.
+fn take(shared: &Shared, key: &[u32]) -> anyhow::Result<Vec<Item>> {
+    let mut st = shared.state.lock().unwrap();
+    st.awaited = Some(key.to_vec());
+    shared.work.notify_all();
+    loop {
+        if let Some(listing) = st.done.remove(key) {
+            st.held -= 1;
+            st.awaited = None;
+            shared.work.notify_all();
+            return listing.map_err(|msg| anyhow::anyhow!("walk thread panicked: {msg}"));
+        }
+        st = shared.ready.wait(st).unwrap();
+    }
+}
+
+/// A walk thread: lists the earliest pending directory while fewer than `window` listings
+/// are held, or whenever it is the one the emitter waits for.
+fn lister(cfg: &WalkConfig, root_dev: u64, shared: &Shared, window: usize) {
+    loop {
+        let Pending(key, job) = {
+            let mut st = shared.state.lock().unwrap();
+            loop {
+                if st.stop {
+                    return;
+                }
+                let runnable = st
+                    .pending
+                    .peek()
+                    .is_some_and(|p| st.held < window || st.awaited.as_ref() == Some(&p.0));
+                if runnable {
+                    break;
+                }
+                st = shared.work.wait(st).unwrap();
+            }
+            st.held += 1;
+            st.pending.pop().expect("peeked")
+        };
+        // A panic is handed to the emitter as an error; unwinding here would leave it
+        // waiting for this listing forever.
+        let listed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list_dir(cfg, root_dev, &job)
+        }));
+        let mut st = shared.state.lock().unwrap();
+        let listing = match listed {
+            Ok((items, subdirs)) => {
+                for (i, sub) in subdirs.into_iter().enumerate() {
+                    let mut k = key.clone();
+                    k.push(i as u32);
+                    st.pending.push(Pending(k, sub));
+                }
+                shared.work.notify_all();
+                Ok(items)
+            }
+            Err(panic) => Err(panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default()),
+        };
+        st.done.insert(key, listing);
+        shared.ready.notify_one();
+    }
+}
+
+/// Lists, sorts and stats one directory: its events in order, with an `Item::Descend` for
+/// each subdirectory to walk, and those subdirectories in the same order.
+fn list_dir(cfg: &WalkConfig, root_dev: u64, job: &DirJob) -> (Vec<Item>, Vec<DirJob>) {
+    let mut items = Vec::new();
+    let mut subdirs = Vec::new();
+    let dir_rel = job.rel.as_slice();
+    let mut names: Vec<OsString> = match std::fs::read_dir(&job.abs) {
         Ok(rd) => {
             let mut names = Vec::new();
             let mut warned = false;
@@ -132,7 +345,9 @@ fn walk_dir(
                     Ok(e) => names.push(e.file_name()),
                     Err(err) if !warned => {
                         warned = true;
-                        sink(WalkEvent::Warning(cannot_read_dir(dir_rel, &err)))?;
+                        items.push(Item::Event(WalkEvent::Warning(cannot_read_dir(
+                            dir_rel, &err,
+                        ))));
                     }
                     Err(_) => {}
                 }
@@ -140,21 +355,24 @@ fn walk_dir(
             names
         }
         Err(err) => {
-            sink(WalkEvent::Warning(cannot_read_dir(dir_rel, &err)))?;
-            return sink(WalkEvent::NotDescended(dir_rel.to_vec()));
+            items.push(Item::Event(WalkEvent::Warning(cannot_read_dir(
+                dir_rel, &err,
+            ))));
+            items.push(Item::Event(WalkEvent::NotDescended(dir_rel.to_vec())));
+            return (items, subdirs);
         }
     };
     if cfg.sort {
         names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     }
     for name in names {
-        let abs = dir_abs.join(&name);
+        let abs = job.abs.join(&name);
         if is_sidecar(cfg, &abs) {
             continue;
         }
         let name_bytes = name.into_vec();
         let excluded = cfg.builtin_excludes
-            && volume_top
+            && job.volume_top
             && BUILTIN_EXCLUDES.iter().any(|n| n.as_bytes() == name_bytes);
         let rel = if dir_rel == b"." {
             name_bytes.clone()
@@ -165,23 +383,23 @@ fn walk_dir(
             r
         };
         if excluded {
-            sink(WalkEvent::Excluded(rel))?;
+            items.push(Item::Event(WalkEvent::Excluded(rel)));
             continue;
         }
         let mut entry = match Entry::from_path(&abs) {
             Ok((e, partial)) => {
                 for p in &partial {
-                    sink(WalkEvent::Warning(p.warning(&escape(&rel))))?;
+                    items.push(Item::Event(WalkEvent::Warning(p.warning(&escape(&rel)))));
                 }
                 e
             }
             Err(err) => {
-                sink(WalkEvent::Warning(format!(
+                items.push(Item::Event(WalkEvent::Warning(format!(
                     "cannot stat {}: {}",
                     escape(&rel),
                     err
-                )))?;
-                sink(WalkEvent::NotDescended(rel))?;
+                ))));
+                items.push(Item::Event(WalkEvent::NotDescended(rel)));
                 continue;
             }
         };
@@ -193,31 +411,37 @@ fn walk_dir(
         {
             // Below the root only: a root-level manifest is the tree's own, merely not the
             // one in use (--manifest points elsewhere).
-            sink(WalkEvent::NestedManifest(rel.clone()))?;
+            items.push(Item::Event(WalkEvent::NestedManifest(rel.clone())));
         }
         let is_dir = entry.kind == crate::model::Kind::Dir;
         let dev = entry.dev;
         let other_mount = is_dir && dev != root_dev && !cfg.cross_mount_points;
-        sink(WalkEvent::Entry(Observed {
+        items.push(Item::Event(WalkEvent::Entry(Observed {
             path: rel.clone(),
             abs: abs.clone(),
             entry,
             hash_error: None,
-        }))?;
+        })));
         if is_store || !is_dir {
             continue;
         }
         if other_mount {
-            sink(WalkEvent::Warning(format!(
+            items.push(Item::Event(WalkEvent::Warning(format!(
                 "not crossing mount point at {}",
                 escape(&rel)
-            )))?;
-            sink(WalkEvent::NotDescended(rel))?;
+            ))));
+            items.push(Item::Event(WalkEvent::NotDescended(rel)));
             continue;
         }
-        walk_dir(cfg, root_dev, dev, dev != dir_dev, &abs, &rel, sink)?;
+        items.push(Item::Descend);
+        subdirs.push(DirJob {
+            abs,
+            rel,
+            dev,
+            volume_top: dev != job.dev,
+        });
     }
-    Ok(())
+    (items, subdirs)
 }
 
 #[cfg(test)]
@@ -271,7 +495,109 @@ mod tests {
                 .is_some_and(|p| !p.to_string_lossy().ends_with(".fjall")),
             store_path: store,
             builtin_excludes: true,
+            threads: 4,
         }
+    }
+
+    /// Every event as a line, in emission order.
+    fn event_log(cfg: &WalkConfig) -> Vec<String> {
+        let mut log = Vec::new();
+        walk(cfg, &mut |ev| {
+            log.push(match ev {
+                WalkEvent::Entry(o) => format!("entry {} {:?}", escape(&o.path), o.entry.kind),
+                WalkEvent::Warning(w) => format!("warning {w}"),
+                WalkEvent::NestedManifest(p) => format!("nested {}", escape(&p)),
+                WalkEvent::NotDescended(p) => format!("not-descended {}", escape(&p)),
+                WalkEvent::Excluded(p) => format!("excluded {}", escape(&p)),
+            });
+            Ok(())
+        })
+        .unwrap();
+        log
+    }
+
+    /// Directories at several depths, with names that sort around '/' ("a-b" < "a/x" < "a0"),
+    /// plus an exclude, a nested manifest and a symlink.
+    fn bushy_tree() -> (tempfile::TempDir, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        for a in ["a", "a-b", "a0", "b"] {
+            for b in ["x", "y-z", "y"] {
+                for c in ["1", "2"] {
+                    let d = r.join(a).join(b).join(c);
+                    std::fs::create_dir_all(&d).unwrap();
+                    std::fs::write(d.join("f"), b"").unwrap();
+                }
+                std::fs::write(r.join(a).join(b).join("g"), b"").unwrap();
+            }
+        }
+        std::fs::create_dir(r.join(".Trashes")).unwrap();
+        std::fs::write(r.join("a/x/.fileset.sqlite"), b"").unwrap();
+        std::os::unix::fs::symlink("a", r.join("s")).unwrap();
+        (t, r)
+    }
+
+    #[test]
+    fn walk_order_does_not_depend_on_the_thread_count() {
+        let (_t, r) = bushy_tree();
+        let mut one = cfg(&r, None);
+        one.threads = 1;
+        let expected = event_log(&one);
+        // Root; per top dir: itself and, per middle dir, itself, two dirs, their files and g;
+        // then the exclude, the nested manifest (event and entry) and the symlink.
+        assert_eq!(expected.len(), 1 + 4 * (1 + 3 * 6) + 1 + 2 + 1);
+        // Independently of the walker: sorted names, recursively, without the exclude.
+        fn reference(dir: &Path, rel: &str, out: &mut Vec<String>) {
+            let mut names: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            for n in names {
+                let r = if rel.is_empty() {
+                    n.clone()
+                } else {
+                    format!("{rel}/{n}")
+                };
+                if r == ".Trashes" {
+                    continue;
+                }
+                out.push(r.clone());
+                let p = dir.join(&n);
+                if p.symlink_metadata().unwrap().is_dir() {
+                    reference(&p, &r, out);
+                }
+            }
+        }
+        let mut want = vec![".".to_string()];
+        reference(&r, "", &mut want);
+        let got: Vec<String> = expected
+            .iter()
+            .filter_map(|l| l.strip_prefix("entry "))
+            .map(|l| l.rsplit_once(' ').unwrap().0.to_string())
+            .collect();
+        assert_eq!(got, want);
+        for threads in [2, 3, 8, 32] {
+            let mut many = cfg(&r, None);
+            many.threads = threads;
+            assert_eq!(event_log(&many), expected, "threads={threads}");
+        }
+    }
+
+    #[test]
+    fn walk_sink_error_stops_every_thread() {
+        let (_t, r) = bushy_tree();
+        let mut seen = 0;
+        let err = walk(&cfg(&r, None), &mut |_ev| {
+            seen += 1;
+            if seen == 10 {
+                anyhow::bail!("sink full")
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("sink full"), "{err:#}");
+        assert_eq!(seen, 10);
     }
 
     fn paths(entries: &[Observed]) -> Vec<Vec<u8>> {

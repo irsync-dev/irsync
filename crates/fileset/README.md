@@ -42,6 +42,9 @@ All verbs:
 - `--cross-mount-points`: descend into directories on other filesystems
 - `--no-dir-sort`: do not sort directory entries before iterating
 - `-j, --jobs <N>`: hashing threads (default: CPU count); `N` must be at least 1
+- `--walk-threads <N>`: threads that list directories and read metadata
+  (default: 4); `N` must be at least 1. More is often slower: on APFS the
+  kernel serialises much of the metadata work, and 8 threads already lose to 4
 - `--no-builtin-excludes`: walk the built-in excludes (below) like any other
   directory
 - `-q, --quiet`: suppress progress

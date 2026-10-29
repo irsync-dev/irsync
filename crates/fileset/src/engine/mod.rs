@@ -33,6 +33,7 @@ pub struct CommonOpts {
     pub cross_mount_points: bool,
     pub sort: bool,
     pub jobs: usize,
+    pub walk_threads: usize,
     pub fail_on_warnings: bool,
     pub builtin_excludes: bool,
     pub verbose: bool,
@@ -92,5 +93,6 @@ pub fn walk_config(common: &CommonOpts, root: &Path, loc: &Location) -> WalkConf
         store_path: store::store_path_inside(root, loc),
         sqlite_store: loc.backend == Backend::Sqlite,
         builtin_excludes: common.builtin_excludes,
+        threads: common.walk_threads,
     }
 }
