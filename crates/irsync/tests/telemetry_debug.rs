@@ -207,18 +207,33 @@ fn port_in_use_warns_and_continues() {
     let d = start_daemon(tmp, None);
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = taken.local_addr().unwrap().to_string();
-    // Without the fix this would wait forever: the output call returns only on exit.
-    let o = client(tmp, &d, &["--debug-addr", &addr]).output().unwrap();
-    assert_eq!(
-        o.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&o.stderr)
-    );
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(
-        err.lines().filter(|l| l.contains("debug port")).count(),
-        1,
+    let child = client(tmp, &d, &["--debug-addr", &addr])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut guard = Guard(child);
+    let (tx, rx) = mpsc::channel();
+    forward_lines(guard.0.stderr.take().unwrap(), tx);
+    // Without the fix the client would wait for a signal: no port is open.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = guard.0.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = guard.0.kill();
+            panic!("client still running after 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let err: Vec<String> = rx.iter().collect();
+    let err = err.join("\n");
+    assert_eq!(status.code(), Some(0), "{err}");
+    let warnings: Vec<_> = err.lines().filter(|l| l.contains("debug port")).collect();
+    assert_eq!(warnings.len(), 1, "{err}");
+    assert!(
+        warnings[0].contains(&format!("debug port {addr}: ")),
         "{err}"
     );
 }
