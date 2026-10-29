@@ -43,6 +43,8 @@ use crate::hasher::{HashEvent, HashProgress, Hasher};
 use crate::index::IndexHandle;
 use crate::net::frame::{write_msg, MAX_FRAME};
 use crate::send::DEFAULT_PARALLEL;
+use crate::telemetry::meter::Meter;
+use crate::telemetry::{self, Role, Side};
 
 /// The daemon refused the session: its `Error` reply to `Hello`.
 #[derive(Debug, Clone)]
@@ -302,6 +304,8 @@ pub(super) struct Ctx {
     /// Bumped for every control frame received, every data chunk moved, and
     /// local progress (hashing, chunk writes, finalize, deletions).
     pub activity: Arc<AtomicU64>,
+    /// Times this side's work and counts its bytes.
+    pub meter: Arc<Meter>,
     /// What this side's heartbeats tell the peer.
     pub busy: Arc<super::Busy>,
     /// Drop the connection after this long without activity.
@@ -616,6 +620,11 @@ pub(super) async fn run_client_inner(
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = local.hasher.activity().clone();
+    let meter = Meter::new(
+        Side::Client,
+        if sends { Role::Sender } else { Role::Receiver },
+        telemetry::enabled(),
+    );
     // Every file this side actually reads is reported on the bus.
     let on_hash: HashProgress = {
         let bus = local.hooks.bus.clone();
@@ -631,17 +640,23 @@ pub(super) async fn run_client_inner(
             Hasher::new(local.index.clone(), local.root.clone(), HASH_WORKERS)
                 .with_force(true)
                 .with_activity(activity.clone())
-                .with_progress(on_hash.clone()),
+                .with_progress(on_hash.clone())
+                .with_meter(meter.clone()),
         )
     } else {
         // Shares the side's worker limit and counters across attempts.
-        Arc::new(Hasher::clone(&local.hasher).with_progress(on_hash.clone()))
+        Arc::new(
+            Hasher::clone(&local.hasher)
+                .with_progress(on_hash.clone())
+                .with_meter(meter.clone()),
+        )
     };
     let forced = Arc::new(
         Hasher::new(local.index.clone(), local.root.clone(), 1)
             .with_force(true)
             .with_activity(activity.clone())
-            .with_progress(on_hash),
+            .with_progress(on_hash)
+            .with_meter(meter.clone()),
     );
     let ctx = Ctx {
         conn,
@@ -652,6 +667,7 @@ pub(super) async fn run_client_inner(
         remote_id: None,
         progress: attempt.progress.clone(),
         activity,
+        meter,
         busy: Arc::default(),
         idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
@@ -857,17 +873,24 @@ pub async fn serve_daemon(
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = Arc::new(AtomicU64::new(0));
+    let meter = Meter::new(
+        Side::Daemon,
+        if sends { Role::Sender } else { Role::Receiver },
+        telemetry::enabled(),
+    );
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
     let hasher = Arc::new(
         Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
             .with_force(hello.checksum)
-            .with_activity(activity.clone()),
+            .with_activity(activity.clone())
+            .with_meter(meter.clone()),
     );
     let forced = Arc::new(
         Hasher::new(index.clone(), export_root.clone(), 1)
             .with_force(true)
-            .with_activity(activity.clone()),
+            .with_activity(activity.clone())
+            .with_meter(meter.clone()),
     );
     let ctx = Ctx {
         conn,
@@ -878,6 +901,7 @@ pub async fn serve_daemon(
         remote_id: Some(remote.as_bytes().to_vec()),
         progress: Arc::default(),
         activity,
+        meter,
         busy: Arc::default(),
         idle_timeout: Some(shared.idle_timeout.unwrap_or(DAEMON_IDLE_TIMEOUT))
             .filter(|t| !t.is_zero()),
@@ -996,8 +1020,10 @@ async fn run_role(
         }
         r => r,
     };
+    ctx.meter.finish();
     match res {
-        Ok(o) => {
+        Ok(mut o) => {
+            o.usage = ctx.meter.usage();
             let _ = writer.await;
             reader.abort();
             tracing::info!(

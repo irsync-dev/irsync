@@ -736,6 +736,7 @@ async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them(
         None,
         e.index.clone(),
         Default::default(),
+        None,
         Some(clone_source(&old_file, &old_cl)),
     )
     .unwrap();
@@ -776,6 +777,7 @@ async fn clone_is_skipped_when_a_part_already_holds_progress() {
         None,
         e.index.clone(),
         Default::default(),
+        None,
         Some(clone_source(&old_file, &old_cl)),
     )
     .unwrap();
@@ -806,6 +808,7 @@ async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
         None,
         e.index.clone(),
         Default::default(),
+        None,
         Some(clone_source(&old_file, &old_cl)),
     )
     .unwrap();
@@ -838,6 +841,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
         &cl,
         e.index.clone(),
         Default::default(),
+        None,
         clone_source(&old_file, &old_cl),
     )
     .unwrap();
@@ -870,6 +874,7 @@ async fn open_inplace_shrinks_the_file_only_at_finalize() {
         &cl,
         e.index.clone(),
         Default::default(),
+        None,
         clone_source(&old_file, &old_cl),
     )
     .unwrap();
@@ -898,6 +903,7 @@ async fn open_inplace_refuses_a_destination_that_is_not_the_hashed_file() {
         &old_cl,
         e.index.clone(),
         Default::default(),
+        None,
         clone_source(&other_file, &old_cl),
     )
     .err()

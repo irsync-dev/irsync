@@ -264,6 +264,8 @@ pub(super) struct ListingSpec {
     pub busy: Option<Arc<super::Busy>>,
     /// Bumped per listed entry, so heartbeats go out while only this side walks.
     pub activity: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Times the walk.
+    pub meter: Option<Arc<crate::telemetry::meter::Meter>>,
     /// Test hook: extra entries to list right after an entry.
     #[cfg(feature = "test-hooks")]
     pub inject: Option<super::ListingHook>,
@@ -286,6 +288,7 @@ pub(super) fn spawn_listing(
             threads: WALK_THREADS,
             max_depth: (!spec.recursive).then_some(1),
         },
+        spec.meter.clone(),
     );
     tokio::task::spawn_blocking(move || {
         let under_skip = |p: &RelPath| {

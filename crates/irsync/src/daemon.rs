@@ -806,6 +806,7 @@ pub async fn gc(
             threads: 2,
             max_depth: None,
         },
+        None,
     );
     let mut on_disk = Vec::new();
     while let Some(ev) = rx.recv().await {

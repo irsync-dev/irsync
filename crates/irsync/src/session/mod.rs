@@ -26,6 +26,7 @@ use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::index::{IndexHandle, SessionRow};
+use crate::telemetry::meter::{Meter, Usage};
 
 /// Files hashed concurrently by a session's hasher.
 pub const HASH_WORKERS: usize = 4;
@@ -713,6 +714,33 @@ impl LocalSide {
     }
 }
 
+/// The start of a timed wait, when `m` is recording (it reads no clock otherwise).
+pub(crate) fn wait_start(m: &Meter) -> Option<std::time::Instant> {
+    m.is_enabled().then(std::time::Instant::now)
+}
+
+/// Records how long a role waited on its hasher.
+pub(crate) fn record_hash_wait(m: &Meter, since: Option<std::time::Instant>) {
+    if let Some(t) = since {
+        metrics::histogram!(
+            "irsync_hash_wait_seconds",
+            "side" => m.side().label(),
+            "role" => m.role().label()
+        )
+        .record(t.elapsed().as_secs_f64());
+    }
+}
+
+/// Records a transferred file: its size, and the time from its first request to its DONE.
+pub(crate) fn record_file(m: &Meter, since: Option<std::time::Instant>, size: u64) {
+    let Some(t) = since else { return };
+    let (side, role) = (m.side().label(), m.role().label());
+    metrics::histogram!("irsync_file_transfer_seconds", "side" => side, "role" => role)
+        .record(t.elapsed().as_secs_f64());
+    metrics::histogram!("irsync_file_size_bytes", "side" => side, "role" => role)
+        .record(size as f64);
+}
+
 /// What a session did, from one side's point of view.
 #[derive(Debug, Clone, Default)]
 pub struct Outcome {
@@ -744,6 +772,8 @@ pub struct Outcome {
     pub would_delete: Vec<RelPath>,
     /// Deletions stopped at `--max-delete` with candidates left.
     pub max_delete_reached: bool,
+    /// What this side spent its time and bytes on.
+    pub usage: Usage,
     /// Per-file records the role still held when it finished (should be 0).
     #[cfg(feature = "test-hooks")]
     pub retained_files: usize,
@@ -765,6 +795,7 @@ impl Outcome {
         self.deleted.extend(o.deleted);
         self.would_delete.extend(o.would_delete);
         self.max_delete_reached |= o.max_delete_reached;
+        self.usage.add(&o.usage);
     }
 
     /// rsync's convention: 0 ok, 23 partial transfer due to error, 25

@@ -112,6 +112,7 @@ pub async fn index_root(
             threads: WALK_THREADS,
             max_depth: None,
         },
+        None,
     );
     let report = Mutex::new(WarmReport::default());
     let (report_ref, hasher_ref) = (&report, &hasher);

@@ -45,6 +45,7 @@ use crate::fs::paths::RelPath;
 use crate::plan::{
     decide, itemize, merge_join, meta_differs, Decision, HashLookup, NoLookup, PlanOpts, Side,
 };
+use crate::telemetry::meter::Activity;
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -432,6 +433,8 @@ impl Planner {
     }
 
     async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
+        let meter = self.ctx.meter.clone();
+        let planning = meter.start(Activity::Plan);
         self.report.listed.count(&src.entry);
         let is_dir = src.entry.kind() == Kind::Directory;
         if is_own_temp(&path) {
@@ -661,10 +664,13 @@ impl Planner {
                     let (ctx, p) = (self.ctx.clone(), path.clone());
                     tokio::spawn(async move { index_old_file(&ctx, &p).await })
                 });
-                // Bounded in flight: wait until an earlier file is acknowledged.
+                // Bounded in flight: wait until an earlier file is acknowledged
+                // (the peer's doing, not planning time).
+                drop(planning);
                 let Ok(slot) = self.inflight.clone().acquire_owned().await else {
                     return;
                 };
+                let _planning = meter.start(Activity::Plan);
                 // Registered with the main loop before the request can be answered.
                 let _ = self.events.send(Ev::Recv(Done::Planned(Box::new(Planned {
                     file_id,
@@ -869,6 +875,7 @@ pub(super) async fn plan(
         preserve: ctx.opts.preserve,
         append: ctx.opts.append,
     };
+    let meter = ctx.meter.clone();
     let mut p = Planner {
         ctx,
         out,
@@ -899,7 +906,10 @@ pub(super) async fn plan(
         // Every candidate is known only once both listings have ended.
         let mut sources = Vec::new();
         while let Some((path, src, dst)) = joined.next().await {
-            p.consider(&path, src.as_ref(), dst.as_ref());
+            {
+                let _planning = meter.start(Activity::Plan);
+                p.consider(&path, src.as_ref(), dst.as_ref());
+            }
             if let Some(src) = src {
                 sources.push((path, src, dst));
             }
@@ -920,7 +930,10 @@ pub(super) async fn plan(
                     p.delete_during(&path, &gap).await;
                 }
             }
-            p.consider(&path, src.as_ref(), dst.as_ref());
+            {
+                let _planning = meter.start(Activity::Plan);
+                p.consider(&path, src.as_ref(), dst.as_ref());
+            }
             if let Some(src) = src {
                 p.one(path, src, dst).await;
             }

@@ -45,6 +45,7 @@ use crate::filter::FilterSet;
 use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError};
+use crate::telemetry::meter::Counter;
 use recv_delete::{capped_paths, MAX_DONE_PATHS};
 
 #[path = "recv_delete.rs"]
@@ -136,6 +137,8 @@ struct RFile {
     /// `NeedChunks` re-sent for chunks the data streams did not deliver.
     rerequests: u32,
     st: St,
+    /// When the file was requested; for the transfer histogram.
+    started: Option<std::time::Instant>,
     /// A chunk list that arrived while the `.part` was busy (opening or finalizing).
     pending: Option<Arc<FileDigest>>,
     /// A chunk list arriving in parts, until its last part.
@@ -298,6 +301,7 @@ impl Receiver {
                 mismatches: 0,
                 rerequests: 0,
                 st: St::Requested,
+                started: super::wait_start(&self.ctx.meter),
                 pending: None,
                 assembly: None,
                 abandoned: None,
@@ -600,6 +604,7 @@ impl Receiver {
                     .busy
                     .skipped_bytes
                     .fetch_add(f.entry.size, Ordering::Relaxed);
+                self.ctx.meter.add(Counter::BytesMatched, f.entry.size);
                 self.ctx.hooks.event("identical", &f.path);
                 if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
                     emit_itemized(&self.ctx, &self.out, &f.path, code);
@@ -655,6 +660,9 @@ impl Receiver {
             .filter_map(|&i| digest.chunks.get(i as usize))
             .map(|c| c.len as u64)
             .sum();
+        self.ctx
+            .meter
+            .add(Counter::BytesMatched, digest.size.saturating_sub(needed));
         self.ctx.hooks.bus.emit(super::Event::FileMatched(
             f.path.clone(),
             digest.size.saturating_sub(needed),
@@ -748,6 +756,7 @@ impl Receiver {
                 let (path, size) = (f.path.clone(), f.entry.size);
                 // Settled in place is a metadata-only update, not a transfer.
                 if !f.identical {
+                    super::record_file(&self.ctx.meter, f.started, size);
                     self.transferred_size += size;
                     self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
                     self.files_done += 1;
@@ -997,6 +1006,7 @@ pub(super) async fn run(
                     cold: Some(ctx.cold.clone()),
                     busy: Some(ctx.busy.clone()),
                     activity: Some(ctx.activity.clone()),
+                    meter: Some(ctx.meter.clone()),
                     #[cfg(feature = "test-hooks")]
                     inject: None,
                 },
@@ -1128,6 +1138,7 @@ pub(super) async fn run(
         deleted: r.deleted,
         would_delete: r.would_delete,
         max_delete_reached: r.max_delete_reached,
+        usage: Default::default(),
         #[cfg(feature = "test-hooks")]
         retained_files: r.files.len(),
     })

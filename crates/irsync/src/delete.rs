@@ -24,6 +24,7 @@ use irsync_proto::v1::file_entry::Kind;
 
 use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
+use crate::telemetry::meter::{Activity, Meter};
 
 /// The deletion pass was not run because a listing was incomplete: a path
 /// missing from the source listing may only be unreadable, not gone.
@@ -74,6 +75,8 @@ pub struct DeletePass {
     activity: Arc<AtomicU64>,
     /// Told (handled, total) before the first candidate and after each one.
     progress: Option<DeleteProgress>,
+    /// Times the removals.
+    meter: Option<Arc<Meter>>,
 }
 
 impl std::fmt::Debug for DeletePass {
@@ -110,6 +113,7 @@ impl DeletePass {
             kept: HashSet::new(),
             activity: Arc::default(),
             progress: None,
+            meter: None,
         }
     }
 
@@ -125,6 +129,11 @@ impl DeletePass {
     /// Share the session's activity marker: a long pass counts as progress.
     pub fn set_activity(&mut self, activity: Arc<AtomicU64>) {
         self.activity = activity;
+    }
+
+    /// Time the removals into `m`.
+    pub fn set_meter(&mut self, m: Arc<Meter>) {
+        self.meter = Some(m);
     }
 
     /// Report (handled, total) per candidate; called from the blocking thread.
@@ -206,6 +215,7 @@ impl DeletePass {
             kept: self.kept.clone(),
             activity: self.activity.clone(),
             progress: self.progress.clone(),
+            meter: self.meter.clone(),
         })
     }
 
@@ -237,6 +247,8 @@ impl DeletePass {
             let depth = |p: &RelPath| p.components().count();
             depth(b).cmp(&depth(a)).then_with(|| b.cmp(a))
         });
+        let meter = self.meter.clone();
+        let _timed = meter.as_deref().map(|m| m.start(Activity::Delete));
         let mut rep = DeleteReport::default();
         let mut count = self.spent;
         let mut real_dirs: HashSet<PathBuf> = HashSet::new();

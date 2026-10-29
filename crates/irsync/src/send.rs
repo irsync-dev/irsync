@@ -30,6 +30,7 @@ use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::net::frame::write_msg;
 use crate::scan::ScanItem;
+use crate::telemetry::meter::{Activity, Counter, Meter};
 
 pub const DEFAULT_PARALLEL: usize = 32;
 pub const DEFAULT_SPLIT_THRESHOLD: u64 = 64 * 1024 * 1024;
@@ -96,6 +97,8 @@ struct Inner {
     max_active: AtomicU32,
     /// Told of every file's first stream and every chunk put on the wire.
     progress: std::sync::OnceLock<ProgressFn>,
+    /// Times the disk reads and stream writes, and counts literal bytes.
+    meter: std::sync::OnceLock<Arc<Meter>>,
     #[cfg(feature = "test-hooks")]
     truncate: std::sync::OnceLock<Arc<TruncateHook>>,
 }
@@ -184,6 +187,7 @@ impl Sender {
                 active: AtomicU32::new(0),
                 max_active: AtomicU32::new(0),
                 progress: std::sync::OnceLock::new(),
+                meter: std::sync::OnceLock::new(),
                 #[cfg(feature = "test-hooks")]
                 truncate: std::sync::OnceLock::new(),
             }),
@@ -199,6 +203,11 @@ impl Sender {
     /// the length of every chunk sent.
     pub fn set_progress(&self, f: ProgressFn) {
         let _ = self.inner.progress.set(f);
+    }
+
+    /// Installs (once) the meter that times reads and stream writes.
+    pub fn set_meter(&self, m: Arc<Meter>) {
+        let _ = self.inner.meter.set(m);
     }
 
     /// Installs (once) a hook that cuts data streams short.
@@ -375,7 +384,7 @@ impl Inner {
         );
         // Verify the first chunk before opening a stream: the common
         // "file changed" case then never touches the wire.
-        let first = read_chunk(&file, &chunks[0], name, r.first).await?;
+        let first = read_chunk(&file, &chunks[0], name, r.first, self.meter.get()).await?;
         let mut send = self.conn.open_uni().await.map_err(io::Error::other)?;
         let res = self
             .write_range(
@@ -410,22 +419,29 @@ impl Inner {
             length: chunks.iter().map(|c| c.len as u64).sum(),
             first_chunk_idx: r.first as u32,
         };
-        write_msg(send, &header).await?;
+        let meter = self.meter.get().map(|m| &**m);
+        let timed = || meter.map(|m| m.start(Activity::Send));
+        {
+            let _send = timed();
+            write_msg(send, &header).await?;
+        }
         #[cfg(feature = "test-hooks")]
         let cut = self.truncate.get().and_then(|t| t.cut(chunks.len()));
         let mut next = Some(first);
         for (k, c) in chunks.iter().enumerate() {
             #[cfg(feature = "test-hooks")]
             if cut == Some(k) {
+                let _send = timed();
                 send.finish().map_err(io::Error::other)?;
                 return Ok(());
             }
             let data = match next.take() {
                 Some(d) => d,
-                None => read_chunk(file, c, name, r.first + k).await?,
+                None => read_chunk(file, c, name, r.first + k, self.meter.get()).await?,
             };
             let idx = (r.first + k) as u32;
             let (frame, n) = if bases.contains_key(&idx) {
+                let _send = timed();
                 payload(data, idx, bases.clone()).await?
             } else {
                 let n = data.len() as u64;
@@ -438,13 +454,22 @@ impl Inner {
                 )
             };
             self.throttle(n).await;
-            write_msg(send, &frame).await?;
+            {
+                let _send = timed();
+                write_msg(send, &frame).await?;
+            }
+            if let Some(m) = meter {
+                m.add(Counter::BytesLiteral, n);
+            }
             sent.fetch_add(n, Ordering::Relaxed);
             if let Some(p) = self.progress.get() {
                 p(rel, SendProgress::Sent(n));
             }
         }
-        send.finish().map_err(io::Error::other)?;
+        {
+            let _send = timed();
+            send.finish().map_err(io::Error::other)?;
+        }
         match tokio::time::timeout(STOPPED_TIMEOUT, send.stopped()).await {
             Ok(Ok(None)) => Ok(()),
             Ok(Ok(Some(code))) => Err(io::Error::other(format!(
@@ -498,11 +523,17 @@ async fn read_chunk(
     c: &ChunkRecord,
     name: &str,
     idx: usize,
+    meter: Option<&Arc<Meter>>,
 ) -> io::Result<Vec<u8>> {
     let (f, offset, len, want) = (file.clone(), c.offset, c.len as usize, c.hash);
+    let m = meter.cloned();
     let read = tokio::task::spawn_blocking(move || {
+        let _timed = m.as_deref().map(|m| m.start(Activity::Read));
         let mut buf = vec![0u8; len];
         f.read_exact_at(&mut buf, offset)?;
+        if let Some(m) = &m {
+            m.add(Counter::DiskRead, len as u64);
+        }
         Ok::<_, io::Error>(buf)
     })
     .await
@@ -513,6 +544,8 @@ async fn read_chunk(
             format!("{name}: chunk {idx} {why} since it was hashed"),
         )
     };
+    // Checking the bytes still match is part of reading them.
+    let _timed = meter.map(|m| m.start(Activity::Read));
     match read {
         Ok(buf) if blake3::hash(&buf).as_bytes() == &want => Ok(buf),
         Ok(_) => Err(changed("changed")),

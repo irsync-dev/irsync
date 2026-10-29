@@ -41,6 +41,7 @@ use crate::fs::paths::RelPath;
 use crate::net::frame::read_msg;
 use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
+use crate::telemetry::meter::{Activity, Counter, Meter};
 
 fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.to_owned())
@@ -266,7 +267,10 @@ async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
         entry: entry.clone(),
         ctime,
     };
-    match ctx.hasher.digest(&item).await {
+    let since = super::wait_start(&ctx.meter);
+    let hashed = ctx.hasher.digest(&item).await;
+    super::record_hash_wait(&ctx.meter, since);
+    match hashed {
         Ok(digest) => Some(OldFile {
             digest,
             entry,
@@ -407,12 +411,13 @@ pub(super) async fn open_writer(
         old_digest = Some(basis.digest);
         verify_whole = false;
     }
-    let (base, rel, index, pd, activity) = (
+    let (base, rel, index, pd, activity, meter) = (
         ctx.base.clone(),
         key.clone(),
         ctx.index().clone(),
         ctx.partial_dir_from_base(),
         ctx.activity.clone(),
+        Some(ctx.meter.clone()),
     );
     let expected = digest.clone();
     let (clone_file, clone_digest) = (old_file.clone(), old_digest);
@@ -425,11 +430,18 @@ pub(super) async fn open_writer(
         match clone {
             // In place needs the old file as hashed; otherwise a `.part`.
             Some(old) if inplace => {
-                FileWriter::open_inplace(&base, &rel, &expected, index, activity, old)
+                FileWriter::open_inplace(&base, &rel, &expected, index, activity, meter, old)
             }
-            clone => {
-                FileWriter::open_from(&base, &rel, &expected, pd.as_ref(), index, activity, clone)
-            }
+            clone => FileWriter::open_from(
+                &base,
+                &rel,
+                &expected,
+                pd.as_ref(),
+                index,
+                activity,
+                meter,
+                clone,
+            ),
         }
     })
     .await?;
@@ -533,10 +545,12 @@ pub(super) async fn offer_bases(
     file_id: u64,
 ) {
     for (idx, offset, len) in specs {
-        let f = old.clone();
+        let (f, meter) = (old.clone(), ctx.meter.clone());
         let basis = blocking(move || {
+            let _timed = meter.start(Activity::Read);
             let mut buf = vec![0u8; len as usize];
             f.read_exact_at(&mut buf, offset)?;
+            meter.add(Counter::DiskRead, u64::from(len));
             Ok(Basis::sign(offset, &buf))
         })
         .await;
@@ -573,7 +587,12 @@ pub(super) async fn offer_bases(
 }
 
 /// Rebuilds chunk `idx` from the sender's operations against the old file.
-async fn rebuild(route: &Route, idx: usize, ops: Vec<Op>) -> io::Result<Vec<u8>> {
+async fn rebuild(
+    route: &Route,
+    idx: usize,
+    ops: Vec<Op>,
+    meter: Arc<Meter>,
+) -> io::Result<Vec<u8>> {
     let old = route
         .old
         .clone()
@@ -584,7 +603,15 @@ async fn rebuild(route: &Route, idx: usize, ops: Vec<Op>) -> io::Result<Vec<u8>>
         .get(idx)
         .map(|c| c.len as usize)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk index out of range"))?;
-    blocking(move || decode(&ops, len, &mut |off, buf| old.read_exact_at(buf, off))).await
+    blocking(move || {
+        // Rebuilding mixes disk reads with literal bytes; all of it is the read side of the chunk.
+        let _timed = meter.start(Activity::Read);
+        decode(&ops, len, &mut |off, buf| {
+            meter.add(Counter::DiskRead, buf.len() as u64);
+            old.read_exact_at(buf, off)
+        })
+    })
+    .await
 }
 
 /// Settles a `DELTA` file whose destination already holds the content:
@@ -616,10 +643,17 @@ pub(super) async fn settle_identical(
 }
 
 /// Reads `len` bytes at `offset` of `from` (a regular file, never a symlink).
-async fn read_local(from: PathBuf, offset: u64, len: u32) -> io::Result<Vec<u8>> {
+async fn read_local(
+    from: PathBuf,
+    offset: u64,
+    len: u32,
+    meter: Arc<Meter>,
+) -> io::Result<Vec<u8>> {
     blocking(move || {
+        let _timed = meter.start(Activity::Read);
         let mut buf = vec![0u8; len as usize];
         crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
+        meter.add(Counter::DiskRead, u64::from(len));
         Ok(buf)
     })
     .await
@@ -645,7 +679,7 @@ pub(super) async fn copy_local_chunks(
             continue;
         };
         // Read outside the writer lock: network streams keep writing meanwhile.
-        let data = match read_local(from.clone(), offset, len).await {
+        let data = match read_local(from.clone(), offset, len, ctx.meter.clone()).await {
             Ok(d) => d,
             Err(e) => {
                 tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
@@ -822,7 +856,11 @@ async fn read_stream(
     bytes: Arc<AtomicU64>,
     mut s: RecvStream,
 ) {
-    let header: DataStreamHeader = match read_msg(&mut s).await {
+    let header = {
+        let _recv = ctx.meter.start(Activity::Recv);
+        read_msg(&mut s).await
+    };
+    let header: DataStreamHeader = match header {
         Ok(Some(h)) => h,
         Ok(None) => return,
         Err(e) => {
@@ -872,7 +910,11 @@ async fn read_range(
     };
     let mut arrived = 0;
     for k in 0..n {
-        let frame = match read_msg::<DataChunk, _>(s).await {
+        let frame = {
+            let _recv = ctx.meter.start(Activity::Recv);
+            read_msg::<DataChunk, _>(s).await
+        };
+        let frame = match frame {
             Ok(Some(c)) => c,
             Ok(None) => break,
             Err(e) => {
@@ -890,7 +932,10 @@ async fn read_range(
             let (ops, wire) = match ops {
                 Ok(ops) => {
                     let wire = encoded_len(&ops) as u64;
-                    (rebuild(route, first + k, ops).await, wire)
+                    (
+                        rebuild(route, first + k, ops, ctx.meter.clone()).await,
+                        wire,
+                    )
                 }
                 Err(e) => (Err(e), 0),
             };
@@ -911,6 +956,7 @@ async fn read_range(
             .bus
             .emit(super::Event::FileBytes(route.path.clone(), wire));
         ctx.hooks.bus.emit(super::Event::Bytes(wire));
+        ctx.meter.add(Counter::BytesLiteral, wire);
         let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
         #[cfg(feature = "test-hooks")]
         if let Some(f) = &ctx.fault {
@@ -973,6 +1019,7 @@ async fn read_range(
         }
     } else {
         // Read to the end so the sender sees a clean finish rather than STOP.
+        let _recv = ctx.meter.start(Activity::Recv);
         match read_msg::<DataChunk, _>(s).await {
             Ok(None) => {}
             Ok(Some(_)) => {

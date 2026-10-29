@@ -9,6 +9,7 @@
 use crate::fs::paths::RelPath;
 use crate::index::IndexHandle;
 use crate::scan::ScanItem;
+use crate::telemetry::meter::{Activity, Counter, Meter};
 use irsync_proto::chunk::{digest_reader, FileDigest};
 use irsync_proto::v1::file_entry::Kind;
 use irsync_proto::v1::Hash;
@@ -40,6 +41,8 @@ pub struct Hasher {
     activity: Arc<AtomicU64>,
     /// Told when a file is actually read for its digest, and when that ends.
     progress: Option<HashProgress>,
+    /// Times and counts the files actually read.
+    meter: Option<Arc<Meter>>,
 }
 
 /// What a hasher reports about a file it reads.
@@ -117,12 +120,19 @@ impl Hasher {
             stats: Arc::new(HashStats::default()),
             activity: Arc::default(),
             progress: None,
+            meter: None,
         }
     }
 
     /// Report every file actually read (not a cache hit) to `p`.
     pub fn with_progress(mut self, p: HashProgress) -> Self {
         self.progress = Some(p);
+        self
+    }
+
+    /// Meter every file actually read (not a cache hit) into `m`.
+    pub fn with_meter(mut self, m: Arc<Meter>) -> Self {
+        self.meter = Some(m);
         self
     }
 
@@ -178,6 +188,7 @@ impl Hasher {
         let force = self.force;
         let activity = self.activity.clone();
         let progress = self.progress.clone();
+        let meter = self.meter.clone();
         let res = tokio::task::spawn_blocking(move || {
             if !force {
                 if let Some(d) = lookup(&index, &item)? {
@@ -193,14 +204,20 @@ impl Hasher {
                     },
                 );
             }
+            let guard = meter.as_deref().map(|m| m.start(Activity::Hash));
             let d = crate::fs::safe::open_regular_nofollow(&full)
                 .and_then(|file| digest_reader(Ticking::new(file, &activity)));
+            drop(guard);
             if let Some(p) = &progress {
                 p(&item.path, HashEvent::Done);
             }
             let d = d?;
             stats.files_hashed.fetch_add(1, Ordering::Relaxed);
             stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
+            if let Some(m) = &meter {
+                m.add(Counter::FilesHashed, 1);
+                m.add(Counter::BytesHashed, d.size);
+            }
             let mut entry = item.entry;
             entry.whole_hash = Some(Hash {
                 bytes: d.hash.to_vec(),

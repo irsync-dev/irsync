@@ -125,6 +125,8 @@ struct IdleClock {
 
 /// Measures one session, and mirrors its busy time and counters into a process-wide meter.
 pub struct Meter {
+    side: Side,
+    role: Role,
     enabled: bool,
     started: Instant,
     busy: [AtomicU64; 9],
@@ -140,9 +142,11 @@ pub struct Timed<'a> {
 }
 
 impl Meter {
-    fn build(enabled: bool, global: Option<&'static Meter>) -> Meter {
+    fn build(side: Side, role: Role, enabled: bool, global: Option<&'static Meter>) -> Meter {
         let now = Instant::now();
         Meter {
+            side,
+            role,
             enabled,
             started: now,
             busy: Default::default(),
@@ -160,7 +164,20 @@ impl Meter {
 
     /// A session meter; when `enabled` is false every method is a no-op.
     pub fn new(side: Side, role: Role, enabled: bool) -> Arc<Meter> {
-        Arc::new(Meter::build(enabled, Some(global(side, role))))
+        Arc::new(Meter::build(side, role, enabled, Some(global(side, role))))
+    }
+
+    /// Whether this meter records anything.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    pub fn role(&self) -> Role {
+        self.role
     }
 
     /// Starts timing `a` until the returned guard drops.
@@ -274,7 +291,21 @@ impl Drop for Timed<'_> {
 /// The process-wide meter for one side and role; never finished.
 pub fn global(side: Side, role: Role) -> &'static Meter {
     static METERS: OnceLock<[Meter; 4]> = OnceLock::new();
-    let all = METERS.get_or_init(|| std::array::from_fn(|_| Meter::build(true, None)));
+    let all = METERS.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let side = if i / 2 == Side::Client as usize {
+                Side::Client
+            } else {
+                Side::Daemon
+            };
+            let role = if i % 2 == Role::Sender as usize {
+                Role::Sender
+            } else {
+                Role::Receiver
+            };
+            Meter::build(side, role, true, None)
+        })
+    });
     &all[(side as usize) * 2 + role as usize]
 }
 

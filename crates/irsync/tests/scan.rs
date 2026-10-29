@@ -18,6 +18,7 @@ async fn run(root: &Path, rules: &[FilterRule], follow: bool) -> (Vec<ScanItem>,
             threads: 4,
             max_depth: None,
         },
+        None,
     );
     let mut v = Vec::new();
     while let Some(ev) = rx.recv().await {

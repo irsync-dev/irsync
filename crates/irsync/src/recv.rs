@@ -10,6 +10,7 @@ use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
+use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
@@ -104,6 +105,8 @@ pub struct FileWriter {
     /// The session's activity marker: bumped by local progress (chunks
     /// written, finalize, re-hashing) so the inactivity watchdogs see it.
     activity: Arc<AtomicU64>,
+    /// Times and counts this writer's disk work (none outside a session).
+    meter: Option<Arc<Meter>>,
     /// The `.part` started as a clone of the old file.
     cloned: bool,
     /// `--inplace`: `part` is the destination itself; no rename at the end.
@@ -451,7 +454,15 @@ impl FileWriter {
         partial_dir: Option<&PartialDir>,
         index: IndexHandle,
     ) -> io::Result<FileWriter> {
-        Self::open_tracked(root, rel, expected, partial_dir, index, Arc::default())
+        Self::open_tracked(
+            root,
+            rel,
+            expected,
+            partial_dir,
+            index,
+            Arc::default(),
+            None,
+        )
     }
 
     /// [`FileWriter::open`], bumping `activity` on local progress (see the
@@ -463,14 +474,25 @@ impl FileWriter {
         partial_dir: Option<&PartialDir>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
+        meter: Option<Arc<Meter>>,
     ) -> io::Result<FileWriter> {
-        Self::open_from(root, rel, expected, partial_dir, index, activity, None)
+        Self::open_from(
+            root,
+            rel,
+            expected,
+            partial_dir,
+            index,
+            activity,
+            meter,
+            None,
+        )
     }
 
     /// [`FileWriter::open_tracked`] with the old destination file to clone
     /// a fresh `.part` from (see [`reflink`]). A `.part` that already holds
     /// bytes is adopted as it is; a clone the filesystem refuses costs
     /// nothing but the attempt.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_from(
         root: &Path,
         rel: &RelPath,
@@ -478,6 +500,7 @@ impl FileWriter {
         partial_dir: Option<&PartialDir>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
+        meter: Option<Arc<Meter>>,
         clone: Option<CloneSource<'_>>,
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
@@ -489,7 +512,9 @@ impl FileWriter {
         // the first write (or by `finalize`), so a file waiting for the
         // sender's stream holds no descriptor.
         if clone.is_none() && !part_exists(&part)? {
-            let mut w = Self::new(rel, dest, part, None, expected, chunks, index, activity);
+            let mut w = Self::new(
+                rel, dest, part, None, expected, chunks, index, activity, meter,
+            );
             w.hole_from = 0;
             return Ok(w);
         }
@@ -514,6 +539,7 @@ impl FileWriter {
             chunks,
             index,
             activity,
+            meter,
         );
         w.hole_from = hole_from;
         w.cloned = cloned;
@@ -543,6 +569,7 @@ impl FileWriter {
         expected: &FileDigest,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
+        meter: Option<Arc<Meter>>,
         old: CloneSource<'_>,
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
@@ -562,6 +589,7 @@ impl FileWriter {
             chunks,
             index,
             activity,
+            meter,
         );
         w.hole_from = hole_from;
         w.inplace = true;
@@ -590,6 +618,7 @@ impl FileWriter {
         chunks: Vec<ChunkRecord>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
+        meter: Option<Arc<Meter>>,
     ) -> FileWriter {
         FileWriter {
             rel: rel.clone(),
@@ -608,6 +637,7 @@ impl FileWriter {
             sparse: false,
             hole_from: 0,
             activity,
+            meter,
             cloned: false,
             inplace: false,
             verify_whole: true,
@@ -813,6 +843,8 @@ impl FileWriter {
         let c = *self.chunks.get(idx as usize).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
         })?;
+        let meter = self.meter.clone();
+        let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
         if data.len() != c.len as usize || *blake3::hash(data).as_bytes() != c.hash {
             return Err(invalid(format!("chunk {idx} does not match its hash")));
         }
@@ -848,6 +880,11 @@ impl FileWriter {
             }
             return Err(e);
         }
+        if let Some(m) = &meter {
+            if !hole || inject {
+                m.add(Counter::DiskWrite, data.len() as u64);
+            }
+        }
         self.activity.fetch_add(1, Ordering::Relaxed);
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
@@ -868,9 +905,14 @@ impl FileWriter {
             io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
         })?;
         let from = from.to_path_buf();
+        let meter = self.meter.clone();
         let data = tokio::task::spawn_blocking(move || {
+            let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
             let mut buf = vec![0u8; c.len as usize];
             crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
+            if let Some(m) = &meter {
+                m.add(Counter::DiskRead, buf.len() as u64);
+            }
             Ok::<_, io::Error>(buf)
         })
         .await
@@ -928,6 +970,8 @@ impl FileWriter {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
+        let meter = self.meter.clone();
+        let _timed = meter.as_deref().map(|m| m.start(Activity::Place));
         let file = self.ensure_open().await?;
         self.activity.fetch_add(1, Ordering::Relaxed);
         self.persist().await?;
@@ -945,6 +989,7 @@ impl FileWriter {
         );
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
+        let sync_meter = meter.clone();
         #[cfg(feature = "test-hooks")]
         let delay = self.finalize_delay;
         tokio::task::spawn_blocking(move || {
@@ -960,7 +1005,19 @@ impl FileWriter {
                 }
             }
             file.set_len(size)?;
+            let synced = sync_meter
+                .as_deref()
+                .filter(|m| m.is_enabled())
+                .map(|_| Instant::now());
             file.sync_all()?;
+            if let (Some(m), Some(t)) = (&sync_meter, synced) {
+                let took = t.elapsed();
+                m.add(
+                    Counter::FsyncNanos,
+                    u64::try_from(took.as_nanos()).unwrap_or(u64::MAX),
+                );
+                metrics::histogram!("irsync_fsync_seconds").record(took.as_secs_f64());
+            }
             activity.fetch_add(1, Ordering::Relaxed);
             if let Some(expected) = expected.filter(|e| *e != actual) {
                 return Err(FinalizeError::HashMismatch { expected, actual });

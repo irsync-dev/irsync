@@ -36,6 +36,7 @@ use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
+use crate::telemetry::meter::Counter;
 use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
@@ -77,6 +78,10 @@ struct SFile {
     /// Send tasks of this generation still running; `FileSent` when the
     /// last one finishes.
     streams: u32,
+    /// Bytes reported matched so far under this digest.
+    matched: u64,
+    /// When the receiver first asked for data; for the transfer histogram.
+    started: Option<std::time::Instant>,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
 }
@@ -151,6 +156,7 @@ impl SenderRole {
                 cold: None,
                 busy: Some(self.ctx.busy.clone()),
                 activity: Some(self.ctx.activity.clone()),
+                meter: Some(self.ctx.meter.clone()),
                 #[cfg(feature = "test-hooks")]
                 inject: self.ctx.hooks.inject_listing.clone(),
             },
@@ -197,11 +203,14 @@ impl SenderRole {
                     entry,
                     ctime,
                 };
-                if force {
+                let since = super::wait_start(&ctx.meter);
+                let digest = if force {
                     ctx.forced.digest(&item).await
                 } else {
                     sender.lookahead_digest(&item).await
-                }
+                };
+                super::record_hash_wait(&ctx.meter, since);
+                digest
             }
             .await;
             let _ = events.send(Ev::Send(Done::Digested {
@@ -247,6 +256,7 @@ impl SenderRole {
         f.digest = None;
         f.bases.clear();
         f.requested.clear();
+        f.matched = 0;
         f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
         self.spawn_digest(file_id, gen, path, true, false);
@@ -270,6 +280,8 @@ impl SenderRole {
                 bases: HashMap::new(),
                 requested: HashSet::new(),
                 streams: 0,
+                matched: 0,
+                started: None,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
             },
@@ -403,10 +415,18 @@ impl SenderRole {
                 .iter()
                 .map(|&i| digest.chunks[i as usize].len as u64)
                 .sum();
-            self.ctx.hooks.bus.emit(super::Event::FileMatched(
-                f.path.clone(),
-                digest.size.saturating_sub(needed),
-            ));
+            let matched = digest.size.saturating_sub(needed);
+            self.ctx
+                .meter
+                .add(Counter::BytesMatched, matched.saturating_sub(f.matched));
+            f.matched = matched;
+            if f.started.is_none() {
+                f.started = super::wait_start(&self.ctx.meter);
+            }
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::FileMatched(f.path.clone(), matched));
         }
         if idxs.is_empty() {
             return; // The receiver has everything; wait for its ack.
@@ -533,6 +553,7 @@ impl SenderRole {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(f) = self.files.remove(&file_id) {
                     let size = f.digest.as_ref().map_or(0, |d| d.size);
+                    super::record_file(&self.ctx.meter, f.started, size);
                     self.transferred_size += size;
                     self.ctx
                         .hooks
@@ -684,6 +705,7 @@ pub(super) async fn run(
         DEFAULT_SPLIT_THRESHOLD,
         ctx.opts.bwlimit,
     ));
+    sender.set_meter(ctx.meter.clone());
     {
         let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
         #[cfg(feature = "test-hooks")]
@@ -888,6 +910,7 @@ pub(super) async fn run(
         deleted: s.deleted,
         would_delete: s.would_delete,
         max_delete_reached: s.max_delete_reached,
+        usage: Default::default(),
         #[cfg(feature = "test-hooks")]
         retained_files: s.files.len(),
     })

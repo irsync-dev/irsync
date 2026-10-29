@@ -3,8 +3,10 @@
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
+use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::v1::FileEntry;
 use jwalk::{Parallelism, WalkDirGeneric};
+use std::cell::RefCell;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -98,11 +100,12 @@ pub fn walk(
     root: PathBuf,
     filters: Arc<FilterSet>,
     opts: WalkOpts,
+    meter: Option<Arc<Meter>>,
 ) -> (mpsc::Receiver<ScanEvent>, oneshot::Receiver<ScanSummary>) {
     let (tx, rx) = mpsc::channel(1024);
     let (stx, srx) = oneshot::channel();
     tokio::task::spawn_blocking(move || {
-        let summary = run_walk(root, filters, opts, tx);
+        let summary = run_walk(root, filters, opts, tx, meter);
         let _ = stx.send(summary);
     });
     (rx, srx)
@@ -113,7 +116,16 @@ fn run_walk(
     filters: Arc<FilterSet>,
     opts: WalkOpts,
     tx: mpsc::Sender<ScanEvent>,
+    meter: Option<Arc<Meter>>,
 ) -> ScanSummary {
+    // Timed while the walk works; released while it waits for room in the channel.
+    let timing = RefCell::new(meter.as_deref().map(|m| m.start(Activity::Walk)));
+    let emit = |ev: ScanEvent| -> bool {
+        timing.borrow_mut().take();
+        let sent = tx.blocking_send(ev).is_ok();
+        *timing.borrow_mut() = meter.as_deref().map(|m| m.start(Activity::Walk));
+        sent
+    };
     let mut sum = ScanSummary::default();
     if opts.follow_root_symlink && std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
         if let Ok(real) = std::fs::canonicalize(&root) {
@@ -125,20 +137,16 @@ fn run_walk(
     let gap = |sum: &mut ScanSummary, rel: RelPath, message: String| -> bool {
         sum.incomplete = true;
         sum.errors.push((rel.clone(), message.clone()));
-        tx.blocking_send(ScanEvent::Gap { path: rel, message })
-            .is_ok()
+        emit(ScanEvent::Gap { path: rel, message })
     };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
         match lstat_entry_with_ctime(&root, &rel) {
             Ok((entry, ctime)) => {
-                if tx
-                    .blocking_send(ScanEvent::Entry(ScanItem {
-                        path: rel,
-                        entry,
-                        ctime,
-                    }))
-                    .is_err()
-                {
+                if !emit(ScanEvent::Entry(ScanItem {
+                    path: rel,
+                    entry,
+                    ctime,
+                })) {
                     return false;
                 }
                 sum.entries += 1;
@@ -224,6 +232,7 @@ mod tests {
                 threads: 2,
                 max_depth: None,
             },
+            None,
         );
         let mut v = Vec::new();
         while let Some(ev) = rx.recv().await {

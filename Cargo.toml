@@ -17,6 +17,7 @@ iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
 fastcdc = "5"
 blake3 = "1"
+metrics = "0.24"
 ssh-key = { version = "0.6", features = ["ed25519", "encryption", "std"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 jwalk = "0.9"

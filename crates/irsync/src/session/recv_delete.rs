@@ -21,6 +21,7 @@ impl Receiver {
         let spent = self.persist.deleted();
         pass.set_spent(spent);
         pass.set_activity(self.ctx.activity.clone());
+        pass.set_meter(self.ctx.meter.clone());
         let busy = self.ctx.busy.clone();
         let bus = self.ctx.hooks.bus.clone();
         // Progress counts the session's deletions so far; a pass during the
