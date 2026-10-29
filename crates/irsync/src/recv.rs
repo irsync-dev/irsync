@@ -156,17 +156,43 @@ fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
     Ok(chunks)
 }
 
+/// Where `.part` files go instead of beside their files (`--partial-dir`):
+/// under `dir` (absolute, or relative to the writer's root), mirroring each
+/// file's parent directories. `skip` leading components of the file's path
+/// are not mirrored: the session root's depth below the writer's root, so a
+/// daemon receiving into `sub/` with `.p` writes `sub/.p/<parents>/`, not
+/// `sub/.p/sub/<parents>/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialDir {
+    pub dir: PathBuf,
+    pub skip: usize,
+}
+
+impl PartialDir {
+    /// A partial dir for a writer whose root is the session root.
+    pub fn new(dir: &Path) -> PartialDir {
+        PartialDir {
+            dir: dir.to_path_buf(),
+            skip: 0,
+        }
+    }
+}
+
 /// Paths of the destination and of its `.part` file.
-fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(PathBuf, PathBuf)> {
+fn paths(
+    root: &Path,
+    rel: &RelPath,
+    partial_dir: Option<&PartialDir>,
+) -> io::Result<(PathBuf, PathBuf)> {
     let comps: Vec<&[u8]> = rel.components().collect();
     let (name, parents) = comps
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty relative path"))?;
-    let mut part_dir = match partial_dir {
-        Some(pd) => root.join(pd),
-        None => root.to_path_buf(),
+    let (mut part_dir, skip) = match partial_dir {
+        Some(pd) => (root.join(&pd.dir), pd.skip),
+        None => (root.to_path_buf(), 0),
     };
-    for p in parents {
+    for p in parents.iter().skip(skip) {
         part_dir.push(OsStr::from_bytes(p));
     }
     if is_temp_name(name) {
@@ -187,7 +213,7 @@ fn paths(root: &Path, rel: &RelPath, partial_dir: Option<&Path>) -> io::Result<(
 pub fn discard_part(
     root: &Path,
     rel: &RelPath,
-    partial_dir: Option<&Path>,
+    partial_dir: Option<&PartialDir>,
     index: &IndexHandle,
 ) -> io::Result<()> {
     let (_, part) = paths(root, rel, partial_dir)?;
@@ -422,7 +448,7 @@ impl FileWriter {
         root: &Path,
         rel: &RelPath,
         expected: &FileDigest,
-        partial_dir: Option<&Path>,
+        partial_dir: Option<&PartialDir>,
         index: IndexHandle,
     ) -> io::Result<FileWriter> {
         Self::open_tracked(root, rel, expected, partial_dir, index, Arc::default())
@@ -434,7 +460,7 @@ impl FileWriter {
         root: &Path,
         rel: &RelPath,
         expected: &FileDigest,
-        partial_dir: Option<&Path>,
+        partial_dir: Option<&PartialDir>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
     ) -> io::Result<FileWriter> {
@@ -449,7 +475,7 @@ impl FileWriter {
         root: &Path,
         rel: &RelPath,
         expected: &FileDigest,
-        partial_dir: Option<&Path>,
+        partial_dir: Option<&PartialDir>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
         clone: Option<CloneSource<'_>>,

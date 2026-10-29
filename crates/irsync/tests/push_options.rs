@@ -1,6 +1,6 @@
 //! Options a pushing client sends to the receiving daemon (`-u`, `-c`,
-//! `-n -v`, the preserve flags `-l -p -t -D -H`) and options a push refuses
-//! (`--partial-dir`).
+//! `-n -v`, the preserve flags `-l -p -t -D -H`, a relative `--partial-dir`)
+//! and the one a push refuses (an absolute `--partial-dir`).
 
 mod common;
 
@@ -109,26 +109,103 @@ async fn dry_run_verbose_push_lists_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn push_with_partial_dir_is_refused() {
+async fn push_with_a_partial_dir_outside_the_destination_is_refused() {
     within30(async {
+        for bad in ["/tmp/elsewhere", "../up", "a/../../b"] {
+            let h = Harness::new().await;
+            fs::write(h.local.path().join("f"), b"x").unwrap();
+            let conn = h
+                .client
+                .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
+                .await
+                .unwrap();
+            let err = irsync::session::engine::run_client(
+                conn.clone(),
+                Harness::hello(Flow::Push),
+                h.local_side(),
+                &opts(&["--partial-dir", bad]),
+            )
+            .await
+            .unwrap_err();
+            conn.close(0u32.into(), b"done");
+            assert!(
+                format!("{err:#}").contains("--partial-dir"),
+                "{bad}: {err:#}"
+            );
+            assert!(!h.export.path().join("f").exists(), "{bad}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_with_a_relative_partial_dir_keeps_parts_under_the_destination_root() {
+    within30(async {
+        let o = opts(&["--partial-dir", ".p"]);
+        // Into a sub-path of the export: the directory goes under that root,
+        // not under the export.
         let h = Harness::new().await;
         fs::write(h.local.path().join("f"), b"x").unwrap();
-        let conn = h
-            .client
-            .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
-            .await
-            .unwrap();
-        let err = irsync::session::engine::run_client(
-            conn.clone(),
-            Harness::hello(Flow::Push),
-            h.local_side(),
-            &opts(&["--partial-dir", "/tmp/elsewhere"]),
-        )
-        .await
-        .unwrap_err();
-        conn.close(0u32.into(), b"done");
-        assert!(format!("{err:#}").contains("--partial-dir"), "{err:#}");
-        assert!(!h.export.path().join("f").exists());
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = b"m/sub".to_vec();
+        let out = h.run_hello(&o, hello, h.local_side()).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        let sub = h.export.path().join("sub");
+        assert_eq!(fs::read(sub.join("f")).unwrap(), b"x");
+        assert!(
+            sub.join(".p").is_dir(),
+            "the partial dir was not made under the root"
+        );
+        assert!(!h.export.path().join(".p").exists());
+        assert_eq!(
+            fs::read_dir(sub.join(".p")).unwrap().count(),
+            0,
+            "a finished file left a .part"
+        );
+
+        // A dropped connection leaves the unfinished files' .part under it.
+        let h = Harness::new().await;
+        for i in 0..8u8 {
+            fs::write(h.local.path().join(format!("f{i}")), vec![i; 2 << 20]).unwrap();
+        }
+        h.daemon.fault.drop_after_bytes(3 << 20);
+        let ropts = irsync::session::reconnect::ReconnectOpts {
+            max: Duration::ZERO,
+            ..Default::default()
+        };
+        let (res, _) = h.run_reconnect(&o, Flow::Push, ropts, h.local_side()).await;
+        assert!(res.is_err(), "the drop should have ended the session");
+        assert!(h.daemon.fault.fired());
+        let parts: Vec<String> = fs::read_dir(h.export.path().join(".p"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!parts.is_empty(), "no .part was kept under .p");
+        assert!(parts.iter().all(|n| n.ends_with(".part")), "{parts:?}");
+        for f in fs::read_dir(h.export.path()).unwrap() {
+            let name = f.unwrap().file_name();
+            assert!(
+                !name.to_string_lossy().ends_with(".part"),
+                "a .part beside its file: {name:?}"
+            );
+        }
+        // The next run resumes from them and finishes.
+        let out = h.run(&o, Flow::Push).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(fs::read_dir(h.export.path().join(".p")).unwrap().count(), 0);
+        for i in 0..8u8 {
+            assert_eq!(
+                fs::read(h.export.path().join(format!("f{i}"))).unwrap(),
+                vec![i; 2 << 20]
+            );
+        }
+        // Removing the empty partial dir touches the root; a no-op run puts
+        // the root's metadata back and makes nothing new.
+        fs::remove_dir(h.export.path().join(".p")).unwrap();
+        let out = h.run(&o, Flow::Push).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(!h.export.path().join(".p").exists());
+        common::assert_trees_equal(h.local.path(), h.export.path(), &o.preserve);
     })
     .await;
 }

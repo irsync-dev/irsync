@@ -80,6 +80,10 @@ message Hello {
     string pattern = 2; // rsync pattern as typed
   }
   repeated FilterRule filters = 23;
+  // --partial-dir, relative to the destination root (a canonical relative
+  // path: no `..`); honoured by a receiving daemon, which keeps the `.part`
+  // files of interrupted transfers under it. Empty: beside their files.
+  bytes partial_dir = 24;
 }
 // One export the asking key may use.
 message ExportEntry {

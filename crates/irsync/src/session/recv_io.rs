@@ -411,7 +411,7 @@ pub(super) async fn open_writer(
         ctx.base.clone(),
         key.clone(),
         ctx.index().clone(),
-        ctx.opts.partial_dir.clone(),
+        ctx.partial_dir_from_base(),
         ctx.activity.clone(),
     );
     let expected = digest.clone();
@@ -427,15 +427,9 @@ pub(super) async fn open_writer(
             Some(old) if inplace => {
                 FileWriter::open_inplace(&base, &rel, &expected, index, activity, old)
             }
-            clone => FileWriter::open_from(
-                &base,
-                &rel,
-                &expected,
-                pd.as_deref(),
-                index,
-                activity,
-                clone,
-            ),
+            clone => {
+                FileWriter::open_from(&base, &rel, &expected, pd.as_ref(), index, activity, clone)
+            }
         }
     })
     .await?;
@@ -608,10 +602,10 @@ pub(super) async fn settle_identical(
         ctx.base.clone(),
         ctx.key(&path),
         ctx.index().clone(),
-        ctx.opts.partial_dir.clone(),
+        ctx.partial_dir_from_base(),
     );
     blocking(move || {
-        if let Err(e) = discard_part(&base, &key, pd.as_deref(), &index) {
+        if let Err(e) = discard_part(&base, &key, pd.as_ref(), &index) {
             tracing::warn!(?key, error = %e, "discarding a stale partial file failed");
         }
         apply_metadata_fd(&file, &entry, &apply)

@@ -66,7 +66,7 @@ const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
 const AFTER_HELP: &str = "\
 Notes:
   The daemon honours the client's flags in both directions, filters
-  included; only --partial-dir is refused on a push.
+  included; only an absolute --partial-dir is refused on a push.
   Exit codes as rsync: 0 ok, 1 usage or connection error, 23 partial
   transfer, 25 deletions stopped at --max-delete.";
 
@@ -598,7 +598,8 @@ pub struct SyncArgs {
     pub numeric_ids: bool,
     /// Keep the partial files of interrupted transfers under DIR (relative
     /// to the destination root, or absolute) instead of beside their
-    /// files. Pull only; a push with it is refused.
+    /// files. On a push the daemon keeps them there; only a relative DIR
+    /// inside the destination is allowed then.
     #[arg(long, value_name = "DIR")]
     pub partial_dir: Option<PathBuf>,
     /// Run the deletion pass even when a listing was cut short by I/O

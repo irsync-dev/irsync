@@ -280,7 +280,8 @@ async fn partial_dir_and_copy_local() {
     let src = e.root.join("src.bin");
     fs::write(&src, &data).unwrap();
     let pd = e.root.join(".partials");
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pd), e.index.clone()).unwrap();
+    let pdir = irsync::recv::PartialDir::new(&pd);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
     // A wrong source offset is caught by the hash check.
     let err = w.copy_local(0, &src, 1).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);

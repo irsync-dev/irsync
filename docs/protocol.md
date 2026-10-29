@@ -61,7 +61,8 @@ One QUIC connection carries:
   honours in both directions; a `Hello` without them means everything. It
   also carries the client's include/exclude rules, compiled and in order: a
   sending daemon walks with them, a receiving daemon protects what they
-  exclude from deletion.
+  exclude from deletion. A relative `--partial-dir` travels too; a receiving
+  daemon refuses one that is absolute or leaves the destination.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

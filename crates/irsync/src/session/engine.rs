@@ -9,7 +9,9 @@
 //! plays which role follows `Hello.direction`.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -177,7 +179,9 @@ impl RoleOpts {
             checksum: receives && hello.checksum,
             update_only: receives && hello.update_only,
             rename_detection: true,
-            partial_dir: None,
+            // Validated by `serve_daemon` before this is used.
+            partial_dir: (receives && !hello.partial_dir.is_empty())
+                .then(|| PathBuf::from(OsStr::from_bytes(&hello.partial_dir))),
             parallel: DEFAULT_PARALLEL,
             bwlimit: None,
             delete,
@@ -201,6 +205,14 @@ impl RoleOpts {
 /// 19), which the daemon honours when it receives, the preserve flags (R36)
 /// and the compiled filter rules (R38), which it honours in both directions.
 pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet) {
+    // Relative only: an absolute one is this side's business (and refused on
+    // a push by `check_options`).
+    hello.partial_dir = o
+        .partial_dir
+        .as_deref()
+        .filter(|p| p.is_relative())
+        .map(|p| p.as_os_str().as_bytes().to_vec())
+        .unwrap_or_default();
     hello.filters = filters
         .rules()
         .iter()
@@ -245,14 +257,21 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
 
 /// Option combinations this protocol version cannot honour safely.
 ///
-/// `--partial-dir` names a directory on the receiving side: on a push that
-/// is the daemon's filesystem, which a client must not choose.
+/// `--partial-dir` names a directory on the receiving side. On a push that
+/// is the daemon's filesystem, so only a path inside the destination (a
+/// canonical relative path) may be chosen; an absolute one, or one with
+/// `..`, is refused.
 pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
-    if direction == Direction::ClientSends && o.partial_dir.is_some() {
-        bail!(
-            "--partial-dir is not supported when pushing: it would name a directory on the \
-             daemon's side"
-        );
+    if direction == Direction::ClientSends {
+        if let Some(pd) = &o.partial_dir {
+            if pd.is_absolute() || RelPath::new(pd.as_os_str().as_bytes()).is_err() {
+                bail!(
+                    "--partial-dir {} is not supported when pushing: it would name a directory \
+                     outside the destination on the daemon's side; use a relative path inside it",
+                    pd.display()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -314,6 +333,22 @@ impl Ctx {
     /// The index key of a session-relative path.
     pub fn key(&self, rel: &RelPath) -> RelPath {
         self.scope.key(rel)
+    }
+
+    /// `--partial-dir` for a file writer, which works from `base` with index
+    /// keys: the option is relative to the session root, so the root's path
+    /// below `base` is put in front (nothing, when they are the same).
+    pub fn partial_dir_from_base(&self) -> Option<crate::recv::PartialDir> {
+        let pd = self.opts.partial_dir.as_deref()?;
+        let below = self.root.strip_prefix(&self.base).unwrap_or(Path::new(""));
+        Some(crate::recv::PartialDir {
+            dir: if pd.is_absolute() {
+                pd.to_path_buf()
+            } else {
+                below.join(pd)
+            },
+            skip: below.components().count(),
+        })
     }
 
     /// Absolute path of an index key.
@@ -716,6 +751,15 @@ pub async fn serve_daemon(
         (false, false) => Missing::Create,
         (false, true) => Missing::Allow,
     };
+    // A partial dir from the client names a place on this side: only a
+    // canonical relative path, kept inside the destination, is acceptable.
+    if !sends && !hello.partial_dir.is_empty() && RelPath::new(&hello.partial_dir).is_err() {
+        let msg = format!(
+            "bad partial-dir {:?}: must be a relative path inside the destination",
+            String::from_utf8_lossy(&hello.partial_dir)
+        );
+        return refuse(&conn, &mut send, Code::BadPath, msg).await;
+    }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
         blocking(move || prepare_root(&m, &r, missing)).await

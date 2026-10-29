@@ -264,7 +264,7 @@ rsync-compatible, same spelling and semantics:
 | `--exclude`, `--include`, `--exclude-from`, `--include-from` | filter rules, in command-line order |
 | `--bwlimit` | rate limit (KiB/s, or `k`/`m`/`g` suffix) |
 | `--numeric-ids` | accepted; always on |
-| `--partial-dir` | where partial files live (pull only) |
+| `--partial-dir DIR` | where partial files live, relative to the destination root; on a push the daemon keeps them there, and only a relative DIR inside the destination is allowed |
 | `--ignore-errors` | delete even after I/O errors |
 | `--stats`, `-i` / `--itemize-changes` | reporting |
 | `--progress`, `--info=progress2` | accepted; the live progress block is always on when stdout is a terminal and off with `-q` |
@@ -309,8 +309,6 @@ partial files are waiting.
 - The daemon drops an authenticated connection that has been idle (no traffic
   and no local progress such as hashing or writing) for `idle_timeout`,
   30 minutes by default (the client reconnects and resumes).
-- `--partial-dir` is not supported on a push (it would name a directory on the
-  daemon); a push with it is refused.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used, and of the keys under `~/.ssh` only `id_ed25519` is tried
   unless `identity` or `--identity` names another.

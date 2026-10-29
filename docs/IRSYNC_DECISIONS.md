@@ -37,17 +37,24 @@ cross-referenced from commit messages and review notes.
   Wire-compatible addition.
 - **R30 — `Hello.update_only` (16) and `Hello.checksum` (17).** Silently
   ignoring `-u` on a push would overwrite newer files. `--partial-dir` on a
-  push is refused (it names a daemon-local path). Wire-compatible addition.
+  push was refused (it names a daemon-local path); see R39.
 - **R10 — No other client options cross the wire in v1.** The daemon side
   uses full archive preservation, checksum off, and filters apply only to the
   sender's own walk. Reversal cost: a `Hello` extension (see Open Points,
   daemon-side filters). (Superseded by R36 and R38: the preserve flags and
-  the filter rules cross; only `--partial-dir` stays client-side.)
+  the filter rules cross; R39 adds a relative `--partial-dir`.)
 - **R36 — `Hello.preserve` (22) carries the client's `-l -p -t -g -o -D
   -H -S`** (2026-10-29). A receiving daemon applies exactly what the client
   asked for, as the client does on a pull; a sending daemon lists hard
   links only with `-H`. A `Hello` without it (an older client) means
   everything, as before.
+- **R39 — `Hello.partial_dir` (24) carries a relative `--partial-dir`**
+  (2026-10-29). A receiving daemon keeps the `.part` files of interrupted
+  transfers under it, below the session root (a push into `m/sub` with
+  `.p` writes `sub/.p/`), and leaves it out of its own listing as the
+  client does. The client refuses an absolute path or one with `..` on a
+  push, and the daemon refuses the same with `BAD_PATH`: a client may not
+  name a directory outside the destination on the daemon's side.
 - **R38 — `Hello.filters` (23) carries the client's include/exclude rules**
   (2026-10-29), compiled on the client (`--exclude-from` and
   `--include-from` files read there), in command-line order. A sending
@@ -296,9 +303,9 @@ cross-referenced from commit messages and review notes.
    unreliable by construction (`engine::HEARTBEAT_INTERVAL`).
 3. **Daemon-side filters (R10/R22).** Done (R38): the rules travel in
    `Hello`.
-4. **Transmitting remaining client options.** Done for the preserve flags
-   (R36) and the filters (R38); `--partial-dir` stays client-side and a
-   push with it is refused.
+4. **Transmitting remaining client options.** Done: the preserve flags
+   (R36), the filters (R38) and a relative `--partial-dir` (R39); an
+   absolute one stays client-side and a push with it is refused.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
