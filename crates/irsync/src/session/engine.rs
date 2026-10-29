@@ -198,9 +198,17 @@ impl RoleOpts {
 }
 
 /// Puts the client's options into `Hello`: the receiver-side ones (Ruling
-/// 19), which the daemon honours when it receives, and the preserve flags
-/// (R36), which it honours in both directions.
-pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
+/// 19), which the daemon honours when it receives, the preserve flags (R36)
+/// and the compiled filter rules (R38), which it honours in both directions.
+pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet) {
+    hello.filters = filters
+        .rules()
+        .iter()
+        .map(|r| irsync_proto::v1::hello::FilterRule {
+            include: r.is_include(),
+            pattern: r.pattern().to_string(),
+        })
+        .collect();
     let p = &o.preserve;
     hello.preserve = Some(irsync_proto::v1::hello::Preserve {
         links: p.links,
@@ -237,11 +245,6 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
 
 /// Option combinations this protocol version cannot honour safely.
 ///
-/// Filters are not sent to the daemon, so a receiving daemon would see every
-/// destination path the client's filters exclude as extraneous and delete
-/// it: with `--delete` that breaks rsync's rule that excluded files are
-/// protected. Only `--delete-excluded` (which deletes them anyway) is allowed.
-///
 /// `--partial-dir` names a directory on the receiving side: on a push that
 /// is the daemon's filesystem, which a client must not choose.
 pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
@@ -249,17 +252,6 @@ pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()
         bail!(
             "--partial-dir is not supported when pushing: it would name a directory on the \
              daemon's side"
-        );
-    }
-    if direction == Direction::ClientSends
-        && o.delete != DeleteMode::Off
-        && !o.filters.is_empty()
-        && !o.delete_excluded
-    {
-        bail!(
-            "--delete with --include/--exclude is not supported when pushing: the daemon \
-             does not see the filters and would delete excluded files; add \
-             --delete-excluded to delete them deliberately"
         );
     }
     Ok(())
@@ -535,9 +527,8 @@ pub(super) async fn run_client_inner(
     let mut hello = hello;
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     check_options(direction, opts)?;
-    set_hello_options(&mut hello, opts);
+    set_hello_options(&mut hello, opts, &local.filters);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
-    warn_ignored_options(direction, opts);
 
     let (mut send, mut recv) = conn
         .open_bi()
@@ -634,17 +625,6 @@ pub(super) async fn run_client_inner(
         hooks: local.hooks,
     };
     run_role(Arc::new(ctx), send, recv, sends).await
-}
-
-/// v1 does not send filters: say so once when a pull sets some that only
-/// the daemon's (sending) walk could honour.
-fn warn_ignored_options(direction: Direction, o: &SyncOptions) {
-    if direction == Direction::DaemonSends && !o.filters.is_empty() {
-        tracing::warn!(
-            options = "--include/--exclude",
-            "ignored: the daemon side applies its own defaults in this protocol version"
-        );
-    }
 }
 
 /// What [`prepare_root`] does with missing components of the session root.
@@ -857,8 +837,15 @@ pub async fn serve_daemon(
         hasher,
         forced,
         cold: Arc::default(),
-        // v1: the client's filters are not transmitted; the daemon walks everything.
-        filters: Arc::new(FilterSet::new(vec![])),
+        // The client's rules: a sending daemon walks with them, a receiving
+        // one protects what they exclude from deletion.
+        filters: Arc::new(FilterSet::new(
+            hello
+                .filters
+                .iter()
+                .map(|r| crate::filter::Rule::from_parts(r.include, &r.pattern))
+                .collect(),
+        )),
         opts: {
             #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
             let mut o = RoleOpts::daemon(&hello, !sends);

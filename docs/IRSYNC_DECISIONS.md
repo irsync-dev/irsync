@@ -41,12 +41,19 @@ cross-referenced from commit messages and review notes.
 - **R10 — No other client options cross the wire in v1.** The daemon side
   uses full archive preservation, checksum off, and filters apply only to the
   sender's own walk. Reversal cost: a `Hello` extension (see Open Points,
-  daemon-side filters). (Partly superseded by R36: the preserve flags cross.)
+  daemon-side filters). (Superseded by R36 and R38: the preserve flags and
+  the filter rules cross; only `--partial-dir` stays client-side.)
 - **R36 — `Hello.preserve` (22) carries the client's `-l -p -t -g -o -D
   -H -S`** (2026-10-29). A receiving daemon applies exactly what the client
   asked for, as the client does on a pull; a sending daemon lists hard
   links only with `-H`. A `Hello` without it (an older client) means
   everything, as before.
+- **R38 — `Hello.filters` (23) carries the client's include/exclude rules**
+  (2026-10-29), compiled on the client (`--exclude-from` and
+  `--include-from` files read there), in command-line order. A sending
+  daemon walks with them, so a pull honours `--exclude`; a receiving daemon
+  protects what they exclude from deletion, so a push with `--delete` no
+  longer needs `--delete-excluded` (R22 reversed).
 - **R37 — `--no-relay` and `relay_mode` for the client** (2026-10-29): the
   client's counterpart of the daemon's `relay_mode = "disabled"`, in
   `[client]` and per host alias (`host add --relay-mode`), with lookups and
@@ -175,9 +182,9 @@ cross-referenced from commit messages and review notes.
   made stand, as with rsync. Root-level entries wait for the final pass
   after the transfers. Design: `superpowers/specs/2026-10-29-delete-during-design.md`.
 - **R22 — A push with `--delete` plus any include/exclude filter is refused
-  unless `--delete-excluded` is also given.** The daemon never sees the
-  client's filters (R10) and would otherwise delete files rsync would
-  protect. Reversal cost: transmitting filters in `Hello`.
+  unless `--delete-excluded` is also given.** (Reversed 2026-10-29 by R38:
+  the filters travel in `Hello`, and the daemon protects what they exclude
+  like any receiver.)
 - A deletion pass is refused outright when the source listing was
   incomplete or arrived out of order.
 
@@ -287,12 +294,11 @@ cross-referenced from commit messages and review notes.
    decodes an unknown oneof member as an empty `Control`, which the reader
    has always ignored. `--timeout` values below a few seconds remain
    unreliable by construction (`engine::HEARTBEAT_INTERVAL`).
-3. **Daemon-side filters (R10/R22).** Filters are not transmitted, so a push
-   with `--delete` and filters is refused unless `--delete-excluded`. rsync
-   parity needs a `Hello` extension carrying the filter rules.
-4. **Transmitting remaining client options.** Beyond delete/dry-run/itemize/
-   `-u`/`-c`, preservation flags and `--partial-dir` are not sent; the daemon
-   always preserves everything.
+3. **Daemon-side filters (R10/R22).** Done (R38): the rules travel in
+   `Hello`.
+4. **Transmitting remaining client options.** Done for the preserve flags
+   (R36) and the filters (R38); `--partial-dir` stays client-side and a
+   push with it is refused.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 

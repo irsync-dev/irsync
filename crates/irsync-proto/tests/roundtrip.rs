@@ -38,6 +38,16 @@ fn hello_roundtrips() {
             hard_links: false,
             sparse: true,
         }),
+        filters: vec![
+            irsync_proto::v1::hello::FilterRule {
+                include: true,
+                pattern: "keep.o".into(),
+            },
+            irsync_proto::v1::hello::FilterRule {
+                include: false,
+                pattern: "*.o".into(),
+            },
+        ],
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

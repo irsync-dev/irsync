@@ -65,10 +65,8 @@ const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
 /// Cross-cutting facts about a sync that no single flag's help can carry.
 const AFTER_HELP: &str = "\
 Notes:
-  A push (local -> remote) always applies -lptgoD on the daemon's side,
-  whatever the flags say; they matter on a pull.
-  Filters apply on the sending side only, so a push with --delete and
-  filters also needs --delete-excluded.
+  The daemon honours the client's flags in both directions, filters
+  included; only --partial-dir is refused on a push.
   Exit codes as rsync: 0 ok, 1 usage or connection error, 23 partial
   transfer, 25 deletions stopped at --max-delete.";
 
@@ -568,8 +566,7 @@ pub struct SyncArgs {
     /// Delete after the transfer (what --delete does).
     #[arg(long)]
     pub delete_after: bool,
-    /// Also delete destination files the filters exclude (implies --delete;
-    /// required for a push with --delete and filters).
+    /// Also delete destination files the filters exclude (implies --delete).
     #[arg(long)]
     pub delete_excluded: bool,
     /// Stop deleting after N files; exit code 25 when the cap stops a run.

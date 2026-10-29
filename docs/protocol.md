@@ -58,7 +58,10 @@ One QUIC connection carries:
   other list carries one). `Hello` carries the receiver-side options the
   daemon honours when it receives, among them `inplace` and `append`, and
   the client's preserve flags (`-l -p -t -g -o -D -H -S`), which the daemon
-  honours in both directions; a `Hello` without them means everything.
+  honours in both directions; a `Hello` without them means everything. It
+  also carries the client's include/exclude rules, compiled and in order: a
+  sending daemon walks with them, a receiving daemon protects what they
+  exclude from deletion.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

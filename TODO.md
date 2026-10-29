@@ -18,9 +18,6 @@ unfinished plan workspaces.
 
 Rough cost next to each. The last two are not things to fix.
 
-- [ ] Filters (`--exclude`, `--include`, ...) apply only on the sending
-      side, so a push with `--delete` plus filters also needs
-      `--delete-excluded`. Medium: a protocol change so the rules travel.
 - [ ] `--partial-dir` is refused on a push. Medium.
 - [ ] `--numeric-ids` is always on. Medium: owner and group name mapping.
 - [ ] irsync always recurses; `-r` is accepted and implied. Only worth doing

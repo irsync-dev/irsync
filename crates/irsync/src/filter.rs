@@ -29,6 +29,8 @@ enum Tok {
 /// A compiled rsync pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
+    /// As typed, so the rule can travel to the daemon.
+    text: String,
     anchored: bool,
     dir_only: bool,
     has_slash: bool,
@@ -37,6 +39,7 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn new(pat: &str) -> Pattern {
+        let text = pat.to_string();
         let mut b = pat.as_bytes();
         let anchored = b.first() == Some(&b'/');
         if anchored {
@@ -48,6 +51,7 @@ impl Pattern {
         }
         let has_slash = b.contains(&b'/');
         Pattern {
+            text,
             anchored,
             dir_only,
             has_slash,
@@ -195,6 +199,28 @@ pub enum Rule {
     Exclude(Pattern),
 }
 
+impl Rule {
+    pub fn is_include(&self) -> bool {
+        matches!(self, Rule::Include(_))
+    }
+
+    /// The pattern as typed.
+    pub fn pattern(&self) -> &str {
+        match self {
+            Rule::Include(p) | Rule::Exclude(p) => &p.text,
+        }
+    }
+
+    /// A rule from its wire form (see [`Rule::pattern`]).
+    pub fn from_parts(include: bool, pattern: &str) -> Rule {
+        if include {
+            Rule::Include(Pattern::new(pattern))
+        } else {
+            Rule::Exclude(Pattern::new(pattern))
+        }
+    }
+}
+
 /// Ordered rules; the first match wins, the default is include.
 #[derive(Debug, Clone, Default)]
 pub struct FilterSet {
@@ -213,6 +239,15 @@ fn read_patterns(path: &std::path::Path) -> io::Result<Vec<String>> {
 impl FilterSet {
     pub fn new(rules: Vec<Rule>) -> FilterSet {
         FilterSet { rules }
+    }
+
+    /// The rules in order, every `*From` file already expanded.
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
     }
 
     /// Build from command-line rules, expanding `*From` files in place.

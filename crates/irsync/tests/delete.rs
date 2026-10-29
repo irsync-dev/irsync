@@ -484,46 +484,27 @@ async fn delete_excluded_removes_excluded_dst_files() {
 async fn excluded_dst_files_are_protected_without_delete_excluded() {
     within30(async {
         let o = opts(&["--delete", "--exclude", "*.o", "--exclude", "build/"]);
-        // Pull: the client receives and applies its own filters.
-        let h = Harness::new().await;
-        let dst = h.dst(Flow::Pull);
-        fs::write(h.src(Flow::Pull).join("keep.txt"), b"k").unwrap();
-        fs::write(dst.join("junk.o"), b"j").unwrap();
-        fs::create_dir_all(dst.join("build/x")).unwrap();
-        fs::write(dst.join("build/x/out"), b"b").unwrap();
-        fs::create_dir(dst.join("gone")).unwrap();
-        fs::write(dst.join("gone/a.o"), b"a").unwrap();
-        fs::write(dst.join("gone/b.txt"), b"b").unwrap();
-        fs::write(dst.join("other.txt"), b"o").unwrap();
-        let (out, _) = run(&h, &o, Flow::Pull).await;
-        assert!(out.errors.is_empty(), "{:?}", out.errors);
-        assert!(dst.join("junk.o").exists());
-        assert!(dst.join("build/x/out").exists());
-        // An extraneous directory holding a protected file stays (without error).
-        assert!(dst.join("gone/a.o").exists());
-        assert_eq!(paths(&out.deleted), ["gone/b.txt", "other.txt"]);
-
-        // Push: the daemon cannot see the client's filters, so it would treat
-        // excluded files as extraneous; the client refuses.
-        let h = Harness::new().await;
-        fs::write(h.export.path().join("junk.o"), b"j").unwrap();
-        let (local, _) = side(&h, &o);
-        let conn = h
-            .client
-            .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
-            .await
-            .unwrap();
-        let res = irsync::session::engine::run_client(
-            conn.clone(),
-            Harness::hello(Flow::Push),
-            local,
-            &o,
-        )
-        .await;
-        conn.close(0u32.into(), b"done");
-        let err = res.unwrap_err();
-        assert!(format!("{err:#}").contains("--delete-excluded"), "{err:#}");
-        assert!(h.export.path().join("junk.o").exists());
+        // Pull: the client receives and applies its own filters. Push: the
+        // rules travel in Hello and the daemon applies them the same way.
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let dst = h.dst(flow);
+            fs::write(h.src(flow).join("keep.txt"), b"k").unwrap();
+            fs::write(dst.join("junk.o"), b"j").unwrap();
+            fs::create_dir_all(dst.join("build/x")).unwrap();
+            fs::write(dst.join("build/x/out"), b"b").unwrap();
+            fs::create_dir(dst.join("gone")).unwrap();
+            fs::write(dst.join("gone/a.o"), b"a").unwrap();
+            fs::write(dst.join("gone/b.txt"), b"b").unwrap();
+            fs::write(dst.join("other.txt"), b"o").unwrap();
+            let (out, _) = run(&h, &o, flow).await;
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert!(dst.join("junk.o").exists(), "{flow:?}");
+            assert!(dst.join("build/x/out").exists(), "{flow:?}");
+            // An extraneous directory holding a protected file stays (without error).
+            assert!(dst.join("gone/a.o").exists(), "{flow:?}");
+            assert_eq!(paths(&out.deleted), ["gone/b.txt", "other.txt"], "{flow:?}");
+        }
     })
     .await;
 }

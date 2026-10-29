@@ -71,6 +71,15 @@ message Hello {
     bool sparse = 9;
   }
   Preserve preserve = 22;
+  // The client's include/exclude rules, compiled (files from --exclude-from
+  // and --include-from already read), in command-line order. A sending
+  // daemon walks with them; a receiving daemon protects what they exclude
+  // from deletion. Absent: no rules.
+  message FilterRule {
+    bool include = 1;
+    string pattern = 2; // rsync pattern as typed
+  }
+  repeated FilterRule filters = 23;
 }
 // One export the asking key may use.
 message ExportEntry {
