@@ -86,14 +86,15 @@ impl Inner {
     }
 }
 
-/// Handle to a running sampler; [`SamplerHandle::stop`] takes the final sample.
+/// Handle to a running sampler; [`SamplerHandle::stop`] takes the final
+/// sample. Dropping it stops the sampler too.
 pub struct SamplerHandle {
     inner: Arc<Inner>,
     task: JoinHandle<()>,
 }
 
 /// Starts sampling for a session over `conn`; its process CPU counts from now.
-pub fn spawn(meter: Arc<Meter>, conn: Connection) -> SamplerHandle {
+pub fn spawn(meter: &Meter, conn: Connection) -> SamplerHandle {
     let inner = Arc::new(Inner {
         conn,
         labels: meter.labels(),
@@ -103,7 +104,7 @@ pub fn spawn(meter: Arc<Meter>, conn: Connection) -> SamplerHandle {
     let i = inner.clone();
     let task = tokio::spawn(async move {
         let mut tick = tokio::time::interval(INTERVAL);
-        while meter.is_enabled() {
+        loop {
             tick.tick().await;
             i.sample();
         }
@@ -118,5 +119,45 @@ impl SamplerHandle {
         self.inner.sample();
         let a = self.inner.acc.lock().unwrap();
         (a.process.clone(), a.net.clone())
+    }
+}
+
+impl Drop for SamplerHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::{build_endpoint, EndpointOpts};
+    use crate::telemetry::{Role, Side};
+
+    async fn loopback() -> iroh::Endpoint {
+        let mut opts = EndpointOpts::isolated(iroh::SecretKey::generate());
+        opts.bind_addrs = vec!["127.0.0.1:0".parse().unwrap()];
+        build_endpoint(opts).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn dropping_the_handle_ends_the_task() {
+        let (a, b) = (loopback().await, loopback().await);
+        let accept = async { b.accept().await.unwrap().await.unwrap() };
+        let (conn, _server) = tokio::join!(
+            async { a.connect(b.addr(), irsync_proto::ALPN).await.unwrap() },
+            accept
+        );
+        let meter = Meter::new(Side::Client, Role::Sender, None, true);
+        let handle = spawn(&meter, conn);
+        let task = handle.task.abort_handle();
+        drop(handle);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !task.is_finished() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("sampler task ended after the handle was dropped");
     }
 }

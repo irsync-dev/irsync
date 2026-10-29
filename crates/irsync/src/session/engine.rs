@@ -1141,7 +1141,7 @@ async fn run_role(
         heartbeat(ctx.activity.clone(), ctx.busy.clone(), out.clone()).instrument(session),
     );
     let sampler = crate::telemetry::enabled()
-        .then(|| crate::telemetry::sampler::spawn(ctx.meter.clone(), ctx.conn.clone()));
+        .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {
