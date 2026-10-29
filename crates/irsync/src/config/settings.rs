@@ -125,6 +125,9 @@ pub struct ClientSettings {
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
     pub relay: Option<Url>,
+    /// `"disabled"`: direct connections only, no relay fallback; the lookups
+    /// stay on. Unset: relays as usual.
+    pub relay_mode: Option<RelayMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

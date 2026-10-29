@@ -47,6 +47,11 @@ cross-referenced from commit messages and review notes.
   asked for, as the client does on a pull; a sending daemon lists hard
   links only with `-H`. A `Hello` without it (an older client) means
   everything, as before.
+- **R37 — `--no-relay` and `relay_mode` for the client** (2026-10-29): the
+  client's counterpart of the daemon's `relay_mode = "disabled"`, in
+  `[client]` and per host alias (`host add --relay-mode`), with lookups and
+  the port mapper left on. Precedence: `--relay` on the command line, then
+  `--no-relay`, then the host entry's mode, then `[client]`'s.
 - **R35 — No application-level heartbeat in v1.** A `Control.Heartbeat`
   frame is a protocol change better made deliberately; see Open Points.
 

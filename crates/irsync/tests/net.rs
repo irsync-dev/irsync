@@ -165,6 +165,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
     let he = HostEntry {
         endpoint_id: SecretKey::generate().public(),
         relay: Some("https://r.example".parse().unwrap()),
+        relay_mode: None,
         address: vec!["127.0.0.1:1".parse().unwrap()],
         parallel: None,
         reconnect: None,
@@ -175,6 +176,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         SecretKey::generate(),
         None,
         false,
+        false,
         &cs,
         Some(&he),
         &he.address,
@@ -184,16 +186,18 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
     assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
     // Addresses from the command line only.
     let cli = vec!["localhost:1".parse().unwrap()];
-    let o = client_endpoint_opts(SecretKey::generate(), None, false, &cs, None, &cli).unwrap();
+    let o =
+        client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, None, &cli).unwrap();
     assert_eq!(o.relay, RelayChoice::Disabled);
     assert!(!o.dns);
     // No addresses: the pre-existing defaults.
-    let o = client_endpoint_opts(SecretKey::generate(), None, true, &cs, None, &[]).unwrap();
+    let o = client_endpoint_opts(SecretKey::generate(), None, false, true, &cs, None, &[]).unwrap();
     assert_eq!(o.relay, RelayChoice::N0Default);
     assert!(!o.dht && o.dns && o.mdns && o.portmap && !o.publish);
     let o = client_endpoint_opts(
         SecretKey::generate(),
         Some("https://c.example"),
+        false,
         false,
         &cs,
         None,
@@ -208,6 +212,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
     assert!(client_endpoint_opts(
         SecretKey::generate(),
         Some("not a url"),
+        false,
         false,
         &cs,
         None,
@@ -241,5 +246,78 @@ fn daemon_opts_follow_the_isolated_config() {
     assert_eq!(
         o.relay,
         RelayChoice::Custom("https://r.example".parse().unwrap())
+    );
+}
+
+#[test]
+fn client_opts_disable_the_relay_but_keep_the_lookups() {
+    use irsync::config::hosts::HostEntry;
+    use irsync::config::settings::{ClientSettings, RelayMode};
+    use irsync::net::{client_endpoint_opts, RelayChoice};
+    let cs = ClientSettings::default();
+    // --no-relay: no relay, lookups and the port mapper as before.
+    let o = client_endpoint_opts(SecretKey::generate(), None, true, false, &cs, None, &[]).unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert!(o.dht && o.dns && o.mdns && o.portmap);
+    // [client] relay_mode = "disabled", even with a relay URL beside it.
+    let off = ClientSettings {
+        relay: Some("https://c.example".parse().unwrap()),
+        relay_mode: Some(RelayMode::Disabled),
+        ..ClientSettings::default()
+    };
+    let o =
+        client_endpoint_opts(SecretKey::generate(), None, false, false, &off, None, &[]).unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    // The host entry decides over the client settings, either way round.
+    let mut he = HostEntry {
+        endpoint_id: SecretKey::generate().public(),
+        relay: None,
+        relay_mode: Some(RelayMode::Default),
+        address: vec![],
+        parallel: None,
+        reconnect: None,
+        dht: None,
+        mdns: None,
+    };
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        None,
+        false,
+        false,
+        &off,
+        Some(&he),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        o.relay,
+        RelayChoice::Custom("https://c.example".parse().unwrap())
+    );
+    he.relay_mode = Some(RelayMode::Disabled);
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        None,
+        false,
+        false,
+        &cs,
+        Some(&he),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(o.relay, RelayChoice::Disabled);
+    // --relay on the command line beats a file's "disabled".
+    let o = client_endpoint_opts(
+        SecretKey::generate(),
+        Some("https://cli.example"),
+        false,
+        false,
+        &cs,
+        Some(&he),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        o.relay,
+        RelayChoice::Custom("https://cli.example".parse().unwrap())
     );
 }

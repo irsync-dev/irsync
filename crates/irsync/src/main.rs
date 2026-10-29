@@ -379,6 +379,7 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
     let endpoint_opts = client_endpoint_opts(
         secret,
         opts.relay.as_deref(),
+        opts.no_relay,
         opts.no_dht,
         &settings.client,
         host_entry.as_ref(),
@@ -1277,6 +1278,7 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
             .as_deref()
             .map(|r| r.parse().with_context(|| format!("--relay {r:?}")))
             .transpose()?,
+        relay_mode: a.relay_mode,
         address: (!a.address.is_empty()).then(|| a.address.clone()),
         parallel: a.parallel,
         reconnect: a.reconnect.clone(),

@@ -268,7 +268,10 @@ turn lookups off on their side).
 Connections start through a relay and upgrade to a direct path when hole
 punching succeeds. Relays are a fallback and much slower than a direct path.
 Set `[daemon] relay = "https://..."` to use your own relay, or
-`relay_mode = "disabled"` for direct-only operation.
+`relay_mode = "disabled"` for direct-only operation. A client does the same
+with `--no-relay`, or `relay_mode = "disabled"` in `[client]` or on a host
+alias: it still finds the daemon through the lookups but never falls back to
+a relay, so a sync that cannot hole-punch fails instead of running slowly.
 
 - Published DHT records carry relay-only addresses. With relays disabled they
   would carry none, so the daemon logs a warning if `dht` is on while

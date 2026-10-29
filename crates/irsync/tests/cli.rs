@@ -336,6 +336,44 @@ fn address_flag_repeats_and_conflicts_with_relay() {
 }
 
 #[test]
+fn no_relay_flag_parses_and_conflicts_with_relay() {
+    assert!(opts(&["--no-relay", "a", "h:m"]).no_relay);
+    assert!(!opts(&["a", "h:m"]).no_relay);
+    assert!(
+        Args::try_parse_from(["irsync", "--no-relay", "--relay", "https://r", "a", "h:m"]).is_err()
+    );
+    // host add takes the mode by name.
+    use irsync::config::settings::RelayMode;
+    let a = Args::try_parse_from([
+        "irsync",
+        "host",
+        "add",
+        "home",
+        "k51",
+        "--relay-mode",
+        "disabled",
+    ])
+    .unwrap();
+    match a.cmd {
+        Some(Command::Host(h)) => match h.cmd {
+            irsync::cli::HostCmd::Add(add) => assert_eq!(add.relay_mode, Some(RelayMode::Disabled)),
+            c => panic!("{c:?}"),
+        },
+        c => panic!("{c:?}"),
+    }
+    assert!(Args::try_parse_from([
+        "irsync",
+        "host",
+        "add",
+        "home",
+        "k51",
+        "--relay-mode",
+        "maybe"
+    ])
+    .is_err());
+}
+
+#[test]
 fn index_parses_local_roots_and_requires_one() {
     let a = parse(&["index", "-n", "/srv/a", "/srv/b"]);
     match a.cmd {

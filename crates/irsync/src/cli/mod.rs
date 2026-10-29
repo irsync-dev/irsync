@@ -355,6 +355,10 @@ pub struct HostAddArgs {
     /// default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
+    /// `disabled`: reach this host directly only, never through a relay;
+    /// `default`: relays as usual (default: the client settings').
+    #[arg(long, value_name = "default|disabled", value_parser = parse_relay_mode)]
+    pub relay_mode: Option<crate::config::settings::RelayMode>,
     /// Dial the host at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly, with relay and lookups off (repeatable; replaces the
     /// stored list).
@@ -383,6 +387,15 @@ fn validate_duration(s: &str) -> Result<String, String> {
     duration::parse(s)
         .map(|_| s.to_string())
         .map_err(|e| e.to_string())
+}
+
+fn parse_relay_mode(s: &str) -> Result<crate::config::settings::RelayMode, String> {
+    use crate::config::settings::RelayMode;
+    match s {
+        "default" => Ok(RelayMode::Default),
+        "disabled" => Ok(RelayMode::Disabled),
+        other => Err(format!("{other:?} is not `default` or `disabled`")),
+    }
 }
 
 fn parse_yes_no(s: &str) -> Result<bool, String> {
@@ -625,6 +638,10 @@ pub struct SyncArgs {
     /// settings' or n0's default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
+    /// Direct connections only: never fall back to a relay (the lookups stay
+    /// on). Default: `relay_mode` from the host entry or the client settings.
+    #[arg(long, conflicts_with = "relay")]
+    pub no_relay: bool,
     /// Do not look the daemon up in the mainline DHT.
     #[arg(long)]
     pub no_dht: bool,
@@ -749,6 +766,7 @@ pub struct SyncOptions {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub relay: Option<String>,
+    pub no_relay: bool,
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
@@ -809,6 +827,7 @@ impl SyncOptions {
             parallel: a.parallel,
             reconnect: a.reconnect,
             relay: a.relay.clone(),
+            no_relay: a.no_relay,
             no_dht: a.no_dht,
             addresses: a.address.clone(),
             config: a.config.clone(),

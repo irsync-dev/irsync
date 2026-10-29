@@ -129,6 +129,7 @@ reconnect = "1d"
 dht = true
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
+relay_mode = "default"       # or "disabled": direct connections only
 
 [daemon]
 identity = "~/.config/irsync/daemon_ed25519"
@@ -149,6 +150,7 @@ mdns = true
 [hosts.home]
 endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32, as iroh prints it
 relay = "https://relay.example.net"   # the rest is optional
+relay_mode = "disabled"               # direct only, lookups on
 address = ["192.168.1.10:4000"]       # dial directly: no relay or lookup
 parallel = 64
 reconnect = "1h"
@@ -193,7 +195,7 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`),
 
 | Command | Effect |
 | --- | --- |
-| `irsync host add ALIAS ID [--relay URL] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dht yes\|no] [--mdns yes\|no]` | add an alias, or change the id and the keys given for an existing one |
+| `irsync host add ALIAS ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dht yes\|no] [--mdns yes\|no]` | add an alias, or change the id and the keys given for an existing one |
 | `irsync host remove ALIAS` | remove an alias |
 | `irsync host list` | list aliases with their ids and keys |
 | `irsync export add NAME:PATH \| PATH [--ro] [--warm-index]` | export a directory (a bare `PATH` is named after its last component); prints the daemon's `EndpointId` on stdout |
@@ -277,6 +279,7 @@ irsync-specific:
 | `--parallel N` | files in flight at once (default: the host's `parallel`, else `[client]`'s, else 32) |
 | `--reconnect DURATION` | how long to keep redialling (`0` = give up like rsync) |
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
+| `--no-relay` | direct connections only: never fall back to a relay; lookups stay on (default: `relay_mode` of the host entry, else `[client]`'s) |
 | `--no-dht` | do not use the mainline DHT for lookup |
 | `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
 | `--config PATH` | the config file (default: `~/.config/irsync/irsync.toml`); a `hosts.toml` beside it is read too |

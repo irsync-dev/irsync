@@ -99,6 +99,11 @@ fn defaults_for_settings_keys() {
     assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("client.mdns")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("client.relay")), None);
+    assert_eq!(
+        default_of(&p("client.relay_mode")),
+        Some(vec!["default".to_string()])
+    );
+    assert!(kind_of(&p("hosts.home.relay_mode")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
     let _ = id();

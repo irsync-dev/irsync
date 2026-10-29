@@ -24,6 +24,7 @@ fn host_add_writes_given_keys_updates_id_and_keeps_others() {
     );
     let f = HostFlags {
         address: Some(vec!["10.0.0.1:4000".parse().unwrap()]),
+        relay_mode: Some(irsync::config::settings::RelayMode::Disabled),
         ..Default::default()
     };
     assert_eq!(host_add(&mut doc, "home", id(2), &f).unwrap(), Some(id(1)));
@@ -31,7 +32,8 @@ fn host_add_writes_given_keys_updates_id_and_keeps_others() {
     assert!(
         s.contains(&id(2).to_string())
             && s.contains("parallel = 4")
-            && s.contains("address = [\"10.0.0.1:4000\"]"),
+            && s.contains("address = [\"10.0.0.1:4000\"]")
+            && s.contains("relay_mode = \"disabled\""),
         "{s}"
     );
     assert_eq!(

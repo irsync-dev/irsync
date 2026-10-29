@@ -3,6 +3,7 @@
 
 use super::ManageError;
 use crate::config::hosts::valid_alias;
+use crate::config::settings::RelayMode;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -13,6 +14,7 @@ use url::Url;
 #[derive(Default)]
 pub struct HostFlags {
     pub relay: Option<Url>,
+    pub relay_mode: Option<RelayMode>,
     /// Replaces the whole `address` array.
     pub address: Option<Vec<HostPort>>,
     pub parallel: Option<u32>,
@@ -63,6 +65,12 @@ pub fn host_add(
     t["endpoint_id"] = toml_edit::value(id.to_string());
     if let Some(r) = &flags.relay {
         t["relay"] = toml_edit::value(r.as_str());
+    }
+    if let Some(m) = flags.relay_mode {
+        t["relay_mode"] = toml_edit::value(match m {
+            RelayMode::Default => "default",
+            RelayMode::Disabled => "disabled",
+        });
     }
     if let Some(a) = &flags.address {
         let arr: Array = a.iter().map(|h| h.to_string()).collect();

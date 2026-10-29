@@ -99,18 +99,26 @@ pub fn transport_config() -> QuicTransportConfig {
 /// The client's endpoint options. Any address in `addresses` (from the
 /// command line, else the host entry) means isolated mode: no relay, no
 /// lookups, no port mapper, whatever `cli_relay` is absent and the config
-/// says. Without addresses: the relay from `cli_relay`, else the host entry,
-/// else the client settings, else n0's; lookups likewise (host entry, then
-/// client settings, then on).
+/// says. Without addresses: the relay from `cli_relay`, else none when
+/// `no_relay` or a `relay_mode = "disabled"` (host entry, then client
+/// settings) says so, else the host entry's, else the client settings',
+/// else n0's; lookups likewise (host entry, then client settings, then on).
 pub fn client_endpoint_opts(
     secret: SecretKey,
     cli_relay: Option<&str>,
+    no_relay: bool,
     no_dht: bool,
     client: &ClientSettings,
     host: Option<&HostEntry>,
     addresses: &[HostPort],
 ) -> anyhow::Result<EndpointOpts> {
     let host_relay = host.and_then(|h| h.relay.as_ref());
+    // `--no-relay`, else the host entry's mode, else the client settings'.
+    let relay_off = no_relay
+        || host
+            .and_then(|h| h.relay_mode)
+            .or(client.relay_mode)
+            .is_some_and(|m| m == DaemonRelayMode::Disabled);
     let host_dht = host.and_then(|h| h.dht);
     let host_mdns = host.and_then(|h| h.mdns);
     if !addresses.is_empty() {
@@ -125,8 +133,10 @@ pub fn client_endpoint_opts(
         }
         return Ok(EndpointOpts::isolated(secret));
     }
+    // A `--relay` on the command line beats a config file's "disabled".
     let relay = match (cli_relay, host_relay.or(client.relay.as_ref())) {
         (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
+        _ if relay_off => RelayChoice::Disabled,
         (None, Some(u)) => RelayChoice::Custom(u.clone()),
         (None, None) => RelayChoice::N0Default,
     };
