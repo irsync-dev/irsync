@@ -283,10 +283,13 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
         let dir = Config::load(&file_paths(files))?.settings.state_dir;
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let (mut parts, mut sessions) = (0usize, 0u32);
+            let (mut parts, mut sessions, mut entries) = (0usize, 0u32, 0usize);
             let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
                 if !log.quiet {
-                    println!("0 part file(s), 0 session(s) {}", verb(dry_run));
+                    println!(
+                        "0 part file(s), 0 session(s), 0 index entries {}",
+                        verb(dry_run)
+                    );
                 }
                 return Ok(());
             };
@@ -323,13 +326,15 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         }
                         parts += r.parts_removed.len();
                         sessions += r.sessions_removed;
+                        entries += r.entries_removed;
                     }
                     Err(e) => eprintln!("irsync: {}: {e}", root.display()),
                 }
             }
             if !log.quiet {
                 println!(
-                    "{parts} part file(s), {sessions} session(s) {}",
+                    "{parts} part file(s), {sessions} session(s), {entries} index entr{} {}",
+                    if entries == 1 { "y" } else { "ies" },
                     verb(dry_run)
                 );
             }
@@ -770,6 +775,7 @@ async fn session(
             Ok(Some(r)) => tracing::debug!(
                 parts_removed = r.parts_removed.len(),
                 sessions_removed = r.sessions_removed,
+                entries_removed = r.entries_removed,
                 "gc finished"
             ),
             Ok(None) => tracing::debug!("gc not due"),

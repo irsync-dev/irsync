@@ -306,7 +306,8 @@ for the daemon's exports; `-n` counts what would be read; a session also does
 this on its own for destination files of the size of a file it is about to
 fetch), and `irsync gc
 [-n] [-v|-q] [--config PATH]`, which removes abandoned
-partial files and dormant sessions (older than 7 days) for every local root
+partial files and dormant sessions (older than 7 days), and forgets the
+index entries of files that are gone or were replaced, for every local root
 irsync has synced. The client also does this for each root it syncs (at most
 daily, or sooner once a partial file has been left untouched for an hour), and
 the daemon checks hourly but walks an export at most daily unless collectable

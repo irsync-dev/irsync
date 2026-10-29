@@ -420,6 +420,26 @@ impl Index {
         Ok(())
     }
 
+    /// Every entry's path, kind, inode and size.
+    pub fn entry_identities(&self) -> Result<Vec<(RelPath, i32, u64, u64)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT path, kind, inode, size FROM entries ORDER BY path")?;
+        let rows = st.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, i32>(1)?,
+                r.get::<_, i64>(2)? as u64,
+                r.get::<_, i64>(3)? as u64,
+            ))
+        })?;
+        rows.map(|r| {
+            let (p, kind, inode, size) = r?;
+            Ok((relpath(&p)?, kind, inode, size))
+        })
+        .collect()
+    }
+
     /// Forgets the entry at `path` and its chunk rows (its file is gone or
     /// was replaced).
     pub fn remove_entry(&mut self, path: &RelPath) -> Result<()> {

@@ -273,7 +273,11 @@ later pass as an orphan by its age.
 duration string as in the config). A live transfer is never affected: its
 partial record is refreshed as chunks arrive and its session lists its files.
 Only regular files named exactly `.irsync.<name>.part` are ever removed;
-symlinks are never followed. Each run logs a summary at `info`. On a client,
+symlinks are never followed. The same walk drops the index entries of files
+that are gone or were replaced (another inode or size), so their chunks are
+no longer offered for reuse; entries under a directory the walk could not
+read stay, and so do all of them when the walk finds no file at all (an
+unmounted filesystem's empty mount point). Each run logs a summary at `info`. On a client,
 `irsync gc` does the same for all local roots (add `-n` to only list).
 
 ## Relays, DHT and discovery

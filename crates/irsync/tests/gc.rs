@@ -447,3 +447,71 @@ async fn gc_handles_shortened_part_names() {
     assert!(ix.partial(&dest(b'r')).unwrap().is_some());
     assert!(ix.partial(&dest(b's')).unwrap().is_none());
 }
+
+/// Indexes `root/path` as it is on disk now.
+fn index_file(ix: &irsync::index::IndexHandle, root: &Path, path: &str) {
+    let (e, ctime) = irsync::fs::meta::lstat_entry_with_ctime(root, &rel(path)).unwrap();
+    ix.lock()
+        .unwrap()
+        .put_entry(&rel(path), &e, ctime, None)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn gc_prunes_entries_of_files_gone_or_replaced() {
+    let f = fixture();
+    let r = f.root.path();
+    std::fs::create_dir(r.join("locked")).unwrap();
+    for p in ["keep", "gone", "replaced", "locked/hidden"] {
+        std::fs::write(r.join(p), b"content").unwrap();
+        index_file(&f.ix, r, p);
+    }
+    std::fs::remove_file(r.join("gone")).unwrap();
+    // Another inode at the same path.
+    std::fs::write(r.join("new"), b"content").unwrap();
+    std::fs::rename(r.join("new"), r.join("replaced")).unwrap();
+    // A directory the walk cannot read hides its files; they stay indexed.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(r.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let dry = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), true)
+        .await
+        .unwrap();
+    assert_eq!(dry.entries_removed, 2);
+    assert!(f
+        .ix
+        .lock()
+        .unwrap()
+        .get_entry(&rel("gone"))
+        .unwrap()
+        .is_some());
+
+    let report = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    std::fs::set_permissions(r.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(report.entries_removed, 2);
+    let ix = f.ix.lock().unwrap();
+    assert!(ix.get_entry(&rel("gone")).unwrap().is_none());
+    assert!(ix.get_entry(&rel("replaced")).unwrap().is_none());
+    assert!(ix.get_entry(&rel("keep")).unwrap().is_some());
+    assert!(ix.get_entry(&rel("locked/hidden")).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn gc_keeps_entries_when_the_root_holds_no_files() {
+    // An empty root may be a mount point whose filesystem is not mounted:
+    // its files are not gone, so the index keeps them.
+    let state = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let ix = Index::open(state.path(), r).unwrap().into_handle();
+    std::fs::write(r.join("a"), b"content").unwrap();
+    index_file(&ix, r, "a");
+    std::fs::remove_file(r.join("a")).unwrap();
+    let report = gc(ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    assert_eq!(report.entries_removed, 0);
+    assert!(ix.lock().unwrap().get_entry(&rel("a")).unwrap().is_some());
+}

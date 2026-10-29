@@ -427,6 +427,7 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
                     parts_removed = r.parts_removed.len(),
                     parts_kept = r.parts_kept,
                     sessions_removed = r.sessions_removed,
+                    entries_removed = r.entries_removed,
                     "gc finished"
                 ),
                 Ok(None) => tracing::debug!(export = %name, "gc not due"),
@@ -723,6 +724,10 @@ pub struct GcReport {
     pub parts_kept: usize,
     /// Sessions removed (on a dry run: that would be removed).
     pub sessions_removed: u32,
+    /// Index entries of regular files that are gone or were replaced
+    /// (another inode or size) since they were indexed, removed with their
+    /// chunk rows (on a dry run: that would be removed).
+    pub entries_removed: usize,
     /// Stale records whose in-place `.part` file does not exist (for example
     /// it lives in a `--partial-dir`, which records do not remember). The
     /// record is dropped; the file, if any, is collected as an orphan later.
@@ -816,6 +821,8 @@ pub async fn gc(
         None,
     );
     let mut on_disk = Vec::new();
+    // Every regular file the walk saw, by inode and size.
+    let mut seen = std::collections::HashMap::new();
     while let Some(ev) = rx.recv().await {
         // Gaps are in the summary's errors.
         let crate::scan::ScanEvent::Entry(item) = ev else {
@@ -825,6 +832,8 @@ pub async fn gc(
         let named = item.path.components().last().is_some_and(is_part_name);
         if is_reg && named && item.entry.mtime_sec <= cutoff {
             on_disk.push(item.path);
+        } else if is_reg {
+            seen.insert(item.path, (item.entry.inode, item.entry.size));
         }
     }
     let mut walk_errors = Vec::new();
@@ -923,6 +932,7 @@ pub async fn gc(
                 .map_err(io_err)?
                 .len() as u32
         };
+        report.entries_removed = prune_entries(&mut ix, &root, &seen, &walk_errors, dry_run)?;
         report.errors.extend(walk_errors);
         if !dry_run {
             ix.set_last_gc_at(unix_now()).map_err(io_err)?;
@@ -931,6 +941,52 @@ pub async fn gc(
     })
     .await
     .map_err(io_err)?
+}
+
+/// Removes the index entries of regular files that are gone or were
+/// replaced (another inode or size), unless `dry_run`; returns how many.
+/// `seen` is what the walk found. A path under one of the walk's `errors`
+/// may only be unreadable, so it stays; one the walk missed or saw
+/// differently may have been placed since, so it is looked at once more
+/// (the index lock is held: a receiver cannot index it meanwhile). A walk
+/// that found no file at all prunes nothing: the root may be a mount point
+/// whose filesystem is not mounted.
+fn prune_entries(
+    ix: &mut crate::index::Index,
+    root: &Path,
+    seen: &std::collections::HashMap<RelPath, (u64, u64)>,
+    errors: &[(RelPath, String)],
+    dry_run: bool,
+) -> io::Result<usize> {
+    use std::os::unix::fs::MetadataExt;
+    if seen.is_empty() {
+        return Ok(0);
+    }
+    let regular = irsync_proto::v1::file_entry::Kind::Regular as i32;
+    let unreadable = |p: &RelPath| {
+        errors.iter().any(|(e, _)| {
+            let (e, p) = (e.as_bytes(), p.as_bytes());
+            e.is_empty() || p == e || (p.starts_with(e) && p.get(e.len()) == Some(&b'/'))
+        })
+    };
+    let mut removed = 0;
+    for (path, kind, inode, size) in ix.entry_identities().map_err(io_err)? {
+        if kind != regular || seen.get(&path) == Some(&(inode, size)) || unreadable(&path) {
+            continue;
+        }
+        let here = std::fs::symlink_metadata(root.join(path.to_os()))
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| (m.ino(), m.len()));
+        if here == Some((inode, size)) {
+            continue;
+        }
+        removed += 1;
+        if !dry_run {
+            ix.remove_entry(&path).map_err(io_err)?;
+        }
+    }
+    Ok(removed)
 }
 
 /// A full GC walk is due at most this often, unless stale partials wait.
