@@ -56,6 +56,21 @@ message Hello {
   // On CLIENT_SENDS when the source had no trailing slash: its basename,
   // which the daemon joins to the resolved path (rsync's rule). Else empty.
   bytes name = 21;
+  // The client's -l -p -t -g -o -D -H -S: what a receiving daemon applies
+  // and what a sending daemon lists as hard links. Absent (an older client):
+  // the daemon preserves everything it can.
+  message Preserve {
+    bool links = 1;
+    bool perms = 2;
+    bool times = 3;
+    bool group = 4;
+    bool owner = 5;
+    bool devices = 6;
+    bool specials = 7;
+    bool hard_links = 8;
+    bool sparse = 9;
+  }
+  Preserve preserve = 22;
 }
 // One export the asking key may use.
 message ExportEntry {

@@ -133,11 +133,11 @@ impl RoleOpts {
         }
     }
 
-    /// v1: transfer options are not negotiated, so the daemon preserves
-    /// everything it can. Only the receiver-side options carried in `Hello`
-    /// (deletion, dry run, `-u`, `-c`, itemize) are honoured, and only when
-    /// the daemon `receives` (the client pushes, which already requires
-    /// write access to a writable export).
+    /// The daemon's options come from `Hello`: the client's preserve flags
+    /// (`-l -p -t -g -o -D -H -S`; everything, from a client that sent none)
+    /// and, only when the daemon `receives` (the client pushes, which already
+    /// requires write access to a writable export), the receiver-side
+    /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, append).
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
             _ if !receives => DeleteMode::Off,
@@ -146,8 +146,20 @@ impl RoleOpts {
             WireDeleteMode::DeleteDuring => DeleteMode::During,
             WireDeleteMode::DeleteAfter => DeleteMode::After,
         };
-        RoleOpts {
-            preserve: Preserve {
+        let preserve = match &hello.preserve {
+            Some(p) => Preserve {
+                recursive: true,
+                links: p.links,
+                perms: p.perms,
+                times: p.times,
+                group: p.group,
+                owner: p.owner,
+                devices: p.devices,
+                specials: p.specials,
+                hard_links: p.hard_links,
+                sparse: p.sparse,
+            },
+            None => Preserve {
                 recursive: true,
                 links: true,
                 perms: true,
@@ -159,6 +171,9 @@ impl RoleOpts {
                 hard_links: true,
                 sparse: true,
             },
+        };
+        RoleOpts {
+            preserve,
             checksum: receives && hello.checksum,
             update_only: receives && hello.update_only,
             rename_detection: true,
@@ -182,9 +197,22 @@ impl RoleOpts {
     }
 }
 
-/// Puts the client's receiver-side options into `Hello` (Ruling 19): the
-/// daemon honours them when it receives.
+/// Puts the client's options into `Hello`: the receiver-side ones (Ruling
+/// 19), which the daemon honours when it receives, and the preserve flags
+/// (R36), which it honours in both directions.
 pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions) {
+    let p = &o.preserve;
+    hello.preserve = Some(irsync_proto::v1::hello::Preserve {
+        links: p.links,
+        perms: p.perms,
+        times: p.times,
+        group: p.group,
+        owner: p.owner,
+        devices: p.devices,
+        specials: p.specials,
+        hard_links: p.hard_links,
+        sparse: p.sparse,
+    });
     hello.delete_mode = match o.delete {
         DeleteMode::Off => WireDeleteMode::DeleteOff,
         DeleteMode::Before => WireDeleteMode::DeleteBefore,

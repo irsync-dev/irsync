@@ -310,9 +310,6 @@ partial files are waiting.
   daemon. Filters (`--exclude`, `--include`, ...) apply only on the sending
   side, so a push with `--delete` plus filters also needs `--delete-excluded`,
   otherwise the daemon would delete files your filters merely hid.
-- On a push the daemon applies full archive metadata (permissions, times,
-  owner and group where it may, symlinks, devices, hard links) whatever the
-  client's `-p -t -o -g -l -D` say.
 - `--partial-dir` is not supported on a push (it would name a directory on the
   daemon); a push with it is refused.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys

@@ -56,7 +56,9 @@ One QUIC connection carries:
   receiver holds and trusts (`append_from`); the sender's chunk list for it
   covers only the tail from there and carries no whole-file hash (every
   other list carries one). `Hello` carries the receiver-side options the
-  daemon honours when it receives, among them `inplace` and `append`.
+  daemon honours when it receives, among them `inplace` and `append`, and
+  the client's preserve flags (`-l -p -t -g -o -D -H -S`), which the daemon
+  honours in both directions; a `Hello` without them means everything.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

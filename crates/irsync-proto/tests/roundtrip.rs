@@ -27,6 +27,17 @@ fn hello_roundtrips() {
             commit: "abc1234".into(),
             dirty: Some(true),
         }),
+        preserve: Some(irsync_proto::v1::hello::Preserve {
+            links: true,
+            perms: false,
+            times: true,
+            group: false,
+            owner: true,
+            devices: false,
+            specials: true,
+            hard_links: false,
+            sparse: true,
+        }),
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

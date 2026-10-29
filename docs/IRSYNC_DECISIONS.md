@@ -41,7 +41,12 @@ cross-referenced from commit messages and review notes.
 - **R10 — No other client options cross the wire in v1.** The daemon side
   uses full archive preservation, checksum off, and filters apply only to the
   sender's own walk. Reversal cost: a `Hello` extension (see Open Points,
-  daemon-side filters).
+  daemon-side filters). (Partly superseded by R36: the preserve flags cross.)
+- **R36 — `Hello.preserve` (22) carries the client's `-l -p -t -g -o -D
+  -H -S`** (2026-10-29). A receiving daemon applies exactly what the client
+  asked for, as the client does on a pull; a sending daemon lists hard
+  links only with `-H`. A `Hello` without it (an older client) means
+  everything, as before.
 - **R35 — No application-level heartbeat in v1.** A `Control.Heartbeat`
   frame is a protocol change better made deliberately; see Open Points.
 
