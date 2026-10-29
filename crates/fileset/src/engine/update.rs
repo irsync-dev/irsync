@@ -1,9 +1,9 @@
-//! `init` and `update`: walk the tree, hash what changed, record it, sweep what
-//! disappeared. The two verbs share this engine and differ only in whether the manifest
+//! `init` and `update`: walk the tree, hash what changed, record what differs from the
+//! manifest, sweep what disappeared. The two verbs share this engine and differ only in whether the manifest
 //! must already exist.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +13,7 @@ use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
 use crate::report::UpdateSummary;
-use crate::store::{self, Backend, Meta, OpenMode, Store};
+use crate::store::{self, Backend, Meta, OpenMode};
 use crate::walk::{self, Observed, WalkEvent};
 
 /// Entries buffered before each `put_batch`.
@@ -98,8 +98,8 @@ pub fn update(
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
     let generation = old_meta.generation + 1;
-    // Claim the generation before writing any entry with it, so entries committed by a
-    // run that dies midway carry a generation the next run does not reuse and sweeps.
+    // Claim the generation before writing any entry with it, so no two runs, finished or
+    // not, write entries under the same number.
     store.borrow_mut().set_meta(&Meta {
         generation,
         ..old_meta.clone()
@@ -114,18 +114,27 @@ pub fn update(
         warnings: 0,
     };
     let mut lookup_error: Option<anyhow::Error> = None;
-    // One flag per entry, in walk order: whether `decide` sent it to be hashed.
-    let sent_to_hash: RefCell<VecDeque<bool>> = RefCell::new(VecDeque::new());
+    // Per entry, in walk order: whether `decide` sent it to be hashed, and what the
+    // manifest held for it.
+    let looked_up: RefCell<VecDeque<(bool, Option<Entry>)>> = RefCell::new(VecDeque::new());
     let mut batch: Vec<(Vec<u8>, Entry)> = Vec::with_capacity(BATCH_SIZE);
+    let mut seen = Seen::default();
 
     let decide = |obs: &mut Observed| {
-        let decision = reuse_or_hash(&**store.borrow(), obs, rehash, &mut lookup_error);
+        let stored = match store.borrow().get(&obs.path) {
+            Ok(s) => s,
+            Err(err) => {
+                lookup_error.get_or_insert(err);
+                None
+            }
+        };
+        let decision = reuse_or_hash(stored.as_ref(), obs, rehash);
         if matches!(decision, Decision::Skip) && obs.entry.blake3.is_some() {
             summary.reused += 1;
         }
-        sent_to_hash
+        looked_up
             .borrow_mut()
-            .push_back(matches!(decision, Decision::Hash));
+            .push_back((matches!(decision, Decision::Hash), stored));
         decision
     };
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
@@ -147,10 +156,10 @@ pub fn update(
             WalkEvent::Excluded(path) => return Ok(warnings.info(&walk::excluded_info(&path))?),
             WalkEvent::Entry(obs) => obs,
         };
-        let sent = sent_to_hash
+        let (sent, stored) = looked_up
             .borrow_mut()
             .pop_front()
-            .expect("one flag per entry, in walk order");
+            .expect("one lookup per entry, in walk order");
         match &obs.hash_error {
             // Attempted but not hashed: a warning, not a count.
             Some(e) => warnings.emit(&format!("cannot hash {}: {e}", escape(&obs.path)))?,
@@ -160,9 +169,19 @@ pub fn update(
             }
             None => {}
         }
+        // A row equal but for its generation stays as it is: rewriting it would only
+        // churn the manifest.
+        let unchanged = stored.is_some_and(|s| {
+            obs.entry.generation = s.generation;
+            obs.entry == s
+        });
         obs.entry.generation = generation;
         summary.entries += 1;
         progress.entry();
+        seen.insert(&obs.path);
+        if unchanged {
+            return Ok(());
+        }
         batch.push((obs.path, obs.entry));
         if batch.len() >= BATCH_SIZE {
             store.borrow_mut().put_batch(&batch)?;
@@ -195,7 +214,7 @@ pub fn update(
     if !batch.is_empty() {
         store.put_batch(&batch)?;
     }
-    store.sweep(generation)?;
+    store.sweep(&|path| seen.contains(path))?;
     store.set_meta(&Meta {
         generation,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -217,14 +236,28 @@ pub fn update(
     })
 }
 
+/// The paths a walk saw, kept as 128-bit hashes: 16 bytes an entry, whatever the path's
+/// length. An unseen path would survive the sweep only by sharing a seen one's hash.
+#[derive(Default)]
+struct Seen(HashSet<u128>);
+
+impl Seen {
+    fn key(path: &[u8]) -> u128 {
+        let h = blake3::hash(path);
+        u128::from_le_bytes(h.as_bytes()[..16].try_into().expect("16 bytes"))
+    }
+
+    fn insert(&mut self, path: &[u8]) {
+        self.0.insert(Self::key(path));
+    }
+
+    fn contains(&self, path: &[u8]) -> bool {
+        self.0.contains(&Self::key(path))
+    }
+}
+
 /// Reuses the stored hash of an unchanged regular file; hashes other regular files.
-/// The first store lookup failure is kept in `lookup_error` and the file is hashed.
-fn reuse_or_hash(
-    store: &dyn Store,
-    obs: &mut Observed,
-    rehash: bool,
-    lookup_error: &mut Option<anyhow::Error>,
-) -> Decision {
+fn reuse_or_hash(stored: Option<&Entry>, obs: &mut Observed, rehash: bool) -> Decision {
     let e = &mut obs.entry;
     if e.kind != Kind::File || e.flags.contains(Flags::STORE) {
         return Decision::Skip;
@@ -232,13 +265,6 @@ fn reuse_or_hash(
     if rehash {
         return Decision::Hash;
     }
-    let stored = match store.get(&obs.path) {
-        Ok(s) => s,
-        Err(err) => {
-            lookup_error.get_or_insert(err);
-            return Decision::Hash;
-        }
-    };
     match stored {
         Some(s)
             if s.kind == Kind::File

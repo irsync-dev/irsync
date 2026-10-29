@@ -39,6 +39,9 @@ CREATE TABLE xattrs(
 
 const MIGRATIONS: &[&str] = &[V1_SQL];
 
+/// Keys read per page by `sweep`.
+const SWEEP_CHUNK: usize = 2000;
+
 const ENTRY_COLS: &str = "kind, mode, uid, gid, size, nlink, ino, dev, rdev, mtime_sec, \
      mtime_nsec, ctime_sec, ctime_nsec, blake3, target, flags, generation";
 
@@ -320,15 +323,32 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn sweep(&mut self, keep: u64) -> Result<u64> {
+    fn sweep(&mut self, keep: &dyn Fn(&[u8]) -> bool) -> Result<u64> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "DELETE FROM xattrs WHERE path IN (SELECT path FROM entries WHERE generation != ?)",
-            [keep as i64],
-        )?;
-        let n = tx.execute("DELETE FROM entries WHERE generation != ?", [keep as i64])?;
+        let mut deleted = 0u64;
+        {
+            // Pages through the keys rather than deleting under an open cursor; the empty
+            // blob sorts before every path.
+            let mut page =
+                tx.prepare("SELECT path FROM entries WHERE path > ? ORDER BY path LIMIT ?")?;
+            let mut del = tx.prepare("DELETE FROM entries WHERE path = ?")?;
+            let mut delx = tx.prepare("DELETE FROM xattrs WHERE path = ?")?;
+            let mut after: Vec<u8> = Vec::new();
+            loop {
+                let paths: Vec<Vec<u8>> = page
+                    .query_map(params![after, SWEEP_CHUNK as i64], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let Some(last) = paths.last() else { break };
+                after = last.clone();
+                for p in paths.iter().filter(|p| !keep(p)) {
+                    delx.execute([p])?;
+                    del.execute([p])?;
+                    deleted += 1;
+                }
+            }
+        }
         tx.commit()?;
-        Ok(n as u64)
+        Ok(deleted)
     }
 
     fn set_meta(&mut self, meta: &Meta) -> Result<()> {
@@ -439,6 +459,38 @@ mod tests {
         let s = open(&p, Backend::Sqlite, OpenMode::ReadWrite).unwrap();
         assert_eq!(s.close().unwrap(), None);
         assert!(!dir.path().join("m.sqlite-wal").exists());
+    }
+
+    #[test]
+    fn sweep_count_is_exact_across_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(&dir.path().join("m"), Backend::Sqlite, OpenMode::Create).unwrap();
+        let mut with_xattr = dir_entry();
+        with_xattr.xattrs = vec![(b"user.a".to_vec(), b"1".to_vec())];
+        let items: Vec<_> = (0..5000u32)
+            .map(|i| (format!("k{i:05}").into_bytes(), with_xattr.clone()))
+            .collect();
+        s.put_batch(&items).unwrap();
+        let seen = |k: &[u8]| k.last().is_some_and(|d| (d - b'0').is_multiple_of(3));
+        let kept = items.iter().filter(|(k, _)| seen(k)).count();
+        assert_eq!(s.sweep(&seen).unwrap(), (5000 - kept) as u64);
+        let mut n = 0;
+        s.for_each(&mut |k, e| {
+            assert!(seen(k));
+            assert_eq!(e.xattrs.len(), 1);
+            n += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n, kept);
+        let s = s.close();
+        assert!(s.is_ok());
+        // The swept entries' xattrs went with them.
+        let conn = Connection::open(dir.path().join("m")).unwrap();
+        let xattrs: i64 = conn
+            .query_row("SELECT count(*) FROM xattrs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(xattrs as usize, kept);
     }
 
     fn dir_entry() -> Entry {

@@ -47,8 +47,8 @@ pub trait Store: Send {
     ) -> anyhow::Result<()>;
     /// Atomic upsert of all items (xattrs replaced wholesale).
     fn put_batch(&mut self, items: &[(Vec<u8>, Entry)]) -> anyhow::Result<()>;
-    /// Deletes every entry whose generation != keep. Returns count deleted.
-    fn sweep(&mut self, keep: u64) -> anyhow::Result<u64>;
+    /// Deletes every entry whose path `keep` rejects. Returns count deleted.
+    fn sweep(&mut self, keep: &dyn Fn(&[u8]) -> bool) -> anyhow::Result<u64>;
     fn set_meta(&mut self, meta: &Meta) -> anyhow::Result<()>;
     /// Flush, checkpoint, release. Must be called at the end of a successful update.
     /// Returns a note for the user when the release was incomplete but harmless.

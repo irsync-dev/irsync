@@ -210,7 +210,7 @@ impl Store for FjallStore {
         Ok(())
     }
 
-    fn sweep(&mut self, keep: u64) -> Result<u64> {
+    fn sweep(&mut self, keep: &dyn Fn(&[u8]) -> bool) -> Result<u64> {
         // Deletes as it goes, one bounded batch at a time, so memory does not grow with
         // the tree. Removing keys behind the iterator does not disturb it (snapshot read).
         let mut deleted = 0u64;
@@ -223,8 +223,8 @@ impl Store for FjallStore {
             b.commit()
         };
         for guard in self.entries.range::<&[u8], _>(..) {
-            let (k, v) = guard.into_inner()?;
-            if decode(&v)?.generation != keep {
+            let k = guard.key()?;
+            if !keep(&k) {
                 chunk.push(k.to_vec());
                 deleted += 1;
                 if chunk.len() >= SWEEP_CHUNK {
@@ -314,7 +314,7 @@ mod tests {
             (b"c".to_vec(), full_entry(2)),
         ])
         .unwrap();
-        assert_eq!(s.sweep(2).unwrap(), 2);
+        assert_eq!(s.sweep(&|k| k == b"c").unwrap(), 2);
         let mut keys = Vec::new();
         s.for_each(&mut |k, _| {
             keys.push(k.to_vec());
@@ -363,19 +363,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(&dir.path().join("m"), Backend::Fjall, OpenMode::Create).unwrap();
         let items: Vec<_> = (0..5000u32)
-            .map(|i| {
-                (
-                    format!("k{i:05}").into_bytes(),
-                    full_entry(1 + (i % 3 == 0) as u64),
-                )
-            })
+            .map(|i| (format!("k{i:05}").into_bytes(), full_entry(1)))
             .collect();
         s.put_batch(&items).unwrap();
-        let kept = items.iter().filter(|(_, e)| e.generation == 2).count();
-        assert_eq!(s.sweep(2).unwrap(), (5000 - kept) as u64);
+        let seen = |k: &[u8]| k.last().is_some_and(|d| (d - b'0').is_multiple_of(3));
+        let kept = items.iter().filter(|(k, _)| seen(k)).count();
+        assert_eq!(s.sweep(&seen).unwrap(), (5000 - kept) as u64);
         let mut n = 0;
-        s.for_each(&mut |_, e| {
-            assert_eq!(e.generation, 2);
+        s.for_each(&mut |k, _| {
+            assert!(seen(k));
             n += 1;
             Ok(())
         })

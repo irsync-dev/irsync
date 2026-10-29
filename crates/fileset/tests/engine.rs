@@ -60,6 +60,9 @@ for_both_backends! {
     update_rehash_forces => update_rehash_forces_sqlite, update_rehash_forces_fjall;
     update_rehashes_when_mtime_changes => update_rehashes_when_mtime_changes_sqlite, update_rehashes_when_mtime_changes_fjall;
     update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall;
+    update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall;
+    update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall;
+    update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall;
     update_warns_on_unreadable => update_warns_on_unreadable_sqlite, update_warns_on_unreadable_fjall;
     update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall;
     init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
@@ -201,6 +204,78 @@ fn update_sweeps_stale_generation(b: Backend) {
     assert_eq!(
         keys(&*open_ro(dir.path(), b)),
         sorted(vec![".", "f", store_name(b)])
+    );
+}
+
+/// The generation each key was last written in.
+fn generations(root: &Path, b: Backend) -> std::collections::BTreeMap<String, u64> {
+    let mut g = std::collections::BTreeMap::new();
+    open_ro(root, b)
+        .for_each(&mut |k, e| {
+            g.insert(String::from_utf8_lossy(k).into_owned(), e.generation);
+            Ok(())
+        })
+        .unwrap();
+    g
+}
+
+fn update_leaves_unchanged_rows_alone(b: Backend) {
+    let dir = tree(&[("d/f", "x"), ("g", "y")]);
+    symlink(dir.path(), "l", "g");
+    mkfifo(&dir.path().join("p"));
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("g"), "changed").unwrap();
+    let (_, err) = run_update(dir.path(), b, false, false);
+    assert_eq!(err, "entries=7 hashed=1 reused=1 warnings=0\n");
+    let mut g = generations(dir.path(), b);
+    // The root and the manifest itself change with every run.
+    g.remove(".");
+    g.remove(store_name(b));
+    let want: Vec<(String, u64)> = [("d", 1), ("d/f", 1), ("g", 2), ("l", 1), ("p", 1)]
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
+    assert_eq!(g.into_iter().collect::<Vec<_>>(), want);
+    assert_eq!(
+        open_ro(dir.path(), b).get(b"g").unwrap().unwrap().blake3,
+        Some(*blake3::hash(b"changed").as_bytes())
+    );
+}
+
+fn update_sweeps_deleted_entries_and_keeps_unchanged_ones(b: Backend) {
+    let dir = tree(&[("f", "x"), ("g", "y"), ("d/h", "z")]);
+    run_update(dir.path(), b, false, false);
+    std::fs::remove_file(dir.path().join("g")).unwrap();
+    std::fs::remove_dir_all(dir.path().join("d")).unwrap();
+    run_update(dir.path(), b, false, false);
+    let g = generations(dir.path(), b);
+    assert_eq!(
+        g.keys().cloned().collect::<Vec<_>>(),
+        sorted(vec![".", "f", store_name(b)])
+    );
+    assert_eq!(g["f"], 1);
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
+}
+
+fn update_rewrites_a_row_whose_xattrs_changed(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    let f = dir.path().join("f");
+    run_update(dir.path(), b, false, false);
+    if let Err(e) = xattr::set(&f, "user.fileset-test", b"v") {
+        eprintln!("skipping: cannot set an xattr here: {e}");
+        return;
+    }
+    run_update(dir.path(), b, false, false);
+    let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
+    assert_eq!(e.generation, 2);
+    assert!(
+        e.xattrs
+            .iter()
+            .any(|(n, v)| n == b"user.fileset-test" && v == b"v"),
+        "{:?}",
+        e.xattrs
     );
 }
 

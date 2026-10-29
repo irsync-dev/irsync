@@ -75,8 +75,8 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
         vec![b"a".to_vec(), b"a/c".to_vec(), b"b".to_vec(), b"x".to_vec()]
     );
 
-    // sweep: x is generation 1, others 2
-    assert_eq!(s.sweep(2).unwrap(), 1);
+    // sweep: only x was not seen
+    assert_eq!(s.sweep(&|k| k != b"x").unwrap(), 1);
     assert_eq!(s.get(b"x").unwrap(), None);
     assert!(s.get(b"a").unwrap().is_some());
 

@@ -102,7 +102,8 @@ deferred rather than fixed are listed in
     entries that a later sweep mistakes for current. The regression test
     interrupts a real update after a committed batch rather than planting a
     ghost entry, because the fixed binary can no longer produce one. Cost if
-    wrong: none.
+    wrong: none. (Since 33 the sweep goes by what the walk saw, not by
+    generation; the claim still gives every run's writes their own number.)
 
 14. **The deep-tree test uses depth 2000.** The plan said 2500, which
     exceeds `PATH_MAX` on Linux. Why: the test must create the tree it
@@ -216,6 +217,30 @@ deferred rather than fixed are listed in
     8 (30 s). It is separate from `-j`, which sizes the hash pool, where
     reading file contents does scale. Cost if wrong: other filesystems may
     prefer another count, which the flag covers.
+
+## Follow-up: unchanged rows are not rewritten (2026-10-29)
+
+33. **`update` writes only the rows that differ, and sweeps what the walk
+    did not see.** Every entry is looked up, directories and symlinks too,
+    and an entry equal to its row but for the generation is left alone; a
+    row's generation now says which run last wrote it. Without a fresh
+    generation on every row the sweep cannot go by generation, so the engine
+    keeps the set of paths the walk saw and the store deletes every other
+    key. A no-change `update` of the 1.7M-entry volume wrote about 2 GB
+    (every row and every xattr rewritten, then checkpointed) and now writes
+    next to nothing; its wall time hardly moves, since the walk sets it.
+
+34. **The seen set holds 128-bit BLAKE3 prefixes of the paths, not the
+    paths.** About 16 bytes an entry (some 40 MB for 1.7M entries) instead
+    of the paths themselves. Cost if wrong: a vanished path whose prefix
+    equals a seen path's would survive the sweep; with 2^-128 per pair that
+    is not a practical risk.
+
+35. **The SQLite sweep pages through the keys, 2000 at a time, inside one
+    transaction.** It deletes between pages rather than under an open
+    cursor on the same table. The `entries_generation` index no longer
+    serves a query but stays, to avoid a schema migration; it costs only on
+    the rows that are written.
 
 ## Parked (real, deferred, not fixed)
 
