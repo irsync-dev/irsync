@@ -366,7 +366,7 @@ git commit -m "feat(telemetry): session, phase and per-file spans on both sides"
     - `irsync_sessions_active` (daemon): incremented and decremented in `serve_daemon`
     - `irsync_streams_open`: up and down where data streams open and close in `send.rs` and `recv_io.rs`
     - `irsync_hash_queue_depth`: up and down around queued hasher jobs in `hasher.rs`
-  - Process metrics, set by the publisher each second from `process::sample()`: `process_cpu_seconds_total{mode}` (`user`/`sys`; a gauge in seconds, since a u64 counter can't hold fractional seconds), `process_resident_memory_bytes` and `process_open_fds`.
+  - Process metrics, set by the publisher each second from `process::sample()`: `process_cpu_seconds_total{mode}` (`user`/`sys`; a gauge in seconds, since a u64 counter can't hold fractional seconds), `process_max_resident_memory_bytes` and `process_open_fds`.
   - `describe_*!` with units for every metric, in `publish.rs`.
 
 - [ ] **Step 1: Write the failing tests:**

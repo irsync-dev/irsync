@@ -135,7 +135,7 @@ goes into `irsync_quic_rtt_seconds` as a histogram, sampled about once a
 second per live connection; lost packets into
 `irsync_quic_lost_packets_total` as a counter; cwnd and per-connection
 values go on the `session` span as fields set at its end.)
-- `process_cpu_seconds_total{mode}`, `process_resident_memory_bytes`,
+- `process_cpu_seconds_total{mode}`, `process_max_resident_memory_bytes`,
   `process_open_fds` (sampled; `getrusage` / `/proc/self` on Linux,
   best-effort elsewhere)
 

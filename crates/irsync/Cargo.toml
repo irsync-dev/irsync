@@ -41,6 +41,7 @@ indicatif = { workspace = true }
 console = { workspace = true }
 
 [dev-dependencies]
+nix = { workspace = true, features = ["signal"] }
 tempfile = { workspace = true }
 rand_core = { workspace = true }
 irsync = { path = ".", features = ["test-hooks"] }

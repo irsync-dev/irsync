@@ -137,8 +137,16 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             log.clone(),
         )
     };
+    let mut debug_port = None;
     let (result, reporter, elapsed) = rt.block_on(async {
-        telemetry.start().await;
+        match telemetry.start().await {
+            Ok(bound) => debug_port = bound,
+            Err(e) => {
+                if let Some(a) = opts.debug_addr {
+                    eprintln!("irsync: debug port {a}: {e}");
+                }
+            }
+        }
         let bus = EventBus::default();
         // `-q` silences everything but errors. On a terminal the live
         // progress block is always drawn; `TERM=dumb` is not a terminal.
@@ -177,7 +185,6 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             None => None,
         };
         let elapsed = start.elapsed();
-        telemetry.shutdown().await;
         (result, reporter, elapsed)
     });
     // The block goes before anything is printed on stderr: indicatif leaves
@@ -187,7 +194,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     if let Some(r) = &mut reporter {
         r.clear();
     }
-    match result {
+    let code = match result {
         Ok(Totals {
             outcome,
             sessions,
@@ -208,6 +215,30 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             eprintln!("irsync: {e:#}");
             1
         }
+    };
+    rt.block_on(async {
+        telemetry.flush();
+        if let (Some(addr), false) = (debug_port, opts.debug_no_wait) {
+            eprintln!("irsync: debug port open at {addr}; Ctrl-C to exit");
+            wait_for_signal().await;
+        }
+        telemetry.shutdown().await;
+    });
+    code
+}
+
+/// Returns on SIGINT or SIGHUP.
+async fn wait_for_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut int), Ok(mut hup)) = (
+        signal(SignalKind::interrupt()),
+        signal(SignalKind::hangup()),
+    ) else {
+        return;
+    };
+    tokio::select! {
+        _ = int.recv() => {}
+        _ = hup.recv() => {}
     }
 }
 
@@ -860,7 +891,13 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         let paths = Paths::resolve(d.config.as_deref());
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
         rt.block_on(async {
-            telemetry.start().await;
+            let debug = match telemetry.start().await {
+                Ok(bound) => bound,
+                Err(e) => {
+                    tracing::warn!("debug port: {e}");
+                    None
+                }
+            };
             let shutdown = tokio_util::sync::CancellationToken::new();
             let token = shutdown.clone();
             tokio::spawn(async move {
@@ -885,6 +922,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
                 d.listen.clone(),
                 shutdown,
                 reload,
+                debug,
             )
             .await;
             telemetry.shutdown().await;

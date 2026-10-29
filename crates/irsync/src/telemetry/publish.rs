@@ -141,7 +141,7 @@ pub fn describe() {
         "CPU time of the process, by mode (user/sys)"
     );
     describe_gauge!(
-        "process_resident_memory_bytes",
+        "process_max_resident_memory_bytes",
         Unit::Bytes,
         "Peak resident set size of the process"
     );
@@ -186,7 +186,7 @@ pub fn once(side: Side) {
         l.push(Label::from_static_parts("mode", mode));
         metrics::gauge!("process_cpu_seconds_total", l).set(t.as_secs_f64());
     }
-    metrics::gauge!("process_resident_memory_bytes", side_label()).set(p.max_rss_bytes as f64);
+    metrics::gauge!("process_max_resident_memory_bytes", side_label()).set(p.max_rss_bytes as f64);
     if let Some(n) = p.open_fds {
         metrics::gauge!("process_open_fds", side_label()).set(n as f64);
     }
@@ -245,6 +245,10 @@ mod tests {
             "process_cpu_seconds_total",
             &[("side", "daemon"), ("mode", "user")]
         ));
-        assert!(has(MetricKind::Gauge, "process_resident_memory_bytes", &[]));
+        assert!(has(
+            MetricKind::Gauge,
+            "process_max_resident_memory_bytes",
+            &[]
+        ));
     }
 }

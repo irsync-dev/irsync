@@ -1,9 +1,14 @@
 //! The process's tracing subscriber and metrics recorder, set up for the sinks that are on.
 
+use super::flame::{FlameLayer, FlameState};
+use super::http::{self, Routes};
+use super::timing::{TimingLayer, TimingState};
 use super::{publish, Side};
 use crate::config::settings::{OtlpProtocol, TelemetrySettings};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use std::io;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::Level;
@@ -108,6 +113,8 @@ pub struct Telemetry {
     prometheus: Option<PrometheusHandle>,
     /// A metrics recorder is installed, so the meters are worth publishing.
     recording: bool,
+    /// What the debug server renders, when the debug port is on.
+    routes: Option<Routes>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -124,8 +131,18 @@ where
     let fmt = tracing_subscriber::fmt::layer()
         .with_writer(writer)
         .with_filter(env);
-    let timing: Option<SpanLayer> = None;
-    let flame: Option<SpanLayer> = None;
+    let state = cfg.debug_addr.map(|_| {
+        (
+            Arc::new(TimingState::default()),
+            Arc::new(FlameState::default()),
+        )
+    });
+    let timing: Option<SpanLayer> = state
+        .as_ref()
+        .map(|(t, _)| TimingLayer::new(t.clone()).boxed());
+    let flame: Option<SpanLayer> = state
+        .as_ref()
+        .map(|(_, f)| FlameLayer::new(f.clone()).boxed());
     let otel: Option<SpanLayer> = None;
     let targets = sink_targets(cfg.trace_files);
     let sinks: Vec<SpanLayer> = [timing, flame, otel]
@@ -159,10 +176,17 @@ where
         publish::describe();
     }
     super::set_enabled(cfg.summary || cfg.debug_addr.is_some() || cfg.otlp.is_some());
+    let prometheus = handle.filter(|_| installed);
+    let routes = state.map(|(timing, flame)| Routes {
+        prometheus: prometheus.clone(),
+        timing,
+        flame,
+    });
     Telemetry {
         cfg,
-        prometheus: handle.filter(|_| installed),
+        prometheus,
         recording: installed,
+        routes,
         tasks: Vec::new(),
     }
 }
@@ -174,8 +198,9 @@ impl Telemetry {
     }
 
     /// Starts the background work the sinks need: publishing the meters
-    /// and the debug server. Returns the debug server's bound address.
-    pub async fn start(&mut self) -> Option<SocketAddr> {
+    /// and the debug server. Returns the debug server's bound address, or
+    /// the bind error; `None` when the debug port is off.
+    pub async fn start(&mut self) -> io::Result<Option<SocketAddr>> {
         if self.recording {
             self.tasks.push(publish::spawn(self.cfg.side));
         }
@@ -188,7 +213,19 @@ impl Telemetry {
                 }
             }));
         }
-        None
+        let (Some(addr), Some(routes)) = (self.cfg.debug_addr, self.routes.clone()) else {
+            return Ok(None);
+        };
+        let (bound, task) = http::serve(addr, routes).await?;
+        self.tasks.push(task);
+        Ok(Some(bound))
+    }
+
+    /// Publishes the meters now, so the debug port shows the final values.
+    pub fn flush(&self) {
+        if self.recording {
+            publish::once(self.cfg.side);
+        }
     }
 
     /// Stops the background work and publishes the meters a last time;

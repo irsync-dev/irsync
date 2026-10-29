@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -667,13 +668,15 @@ async fn endpoint_from_settings(settings: &Settings, pass: &PassphraseSource) ->
 /// Runs the daemon: hosts, exports and grants are re-read from the config
 /// file (and any split file beside it) on every connection; the `[daemon]`
 /// settings are re-read and applied when `reload` is signalled (`SIGHUP`).
-/// `listen` is the command line's override of the file's `listen`.
+/// `listen` is the command line's override of the file's `listen`; `debug`
+/// is the debug port's bound address, announced with the listening ones.
 pub async fn run_from_settings(
     paths: &Paths,
     pass: &PassphraseSource,
     listen: Vec<HostPort>,
     shutdown: CancellationToken,
     reload: Arc<Notify>,
+    debug: Option<SocketAddr>,
 ) -> Result<()> {
     let mut settings = Config::load(paths)?.settings;
     if !listen.is_empty() {
@@ -690,10 +693,13 @@ pub async fn run_from_settings(
     let endpoint = endpoint_from_settings(&settings, pass).await?;
     // Printed only once startup can no longer fail (and again after every
     // reload): a parent process that reads these lines may dial at once.
-    let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(|ep: &Endpoint| {
+    let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
         println!("endpoint id: {}", ep.id());
         for addr in ep.bound_sockets() {
             println!("listening on: {addr}");
+        }
+        if let Some(addr) = debug {
+            println!("debug port: {addr}");
         }
     });
     let daemon = Daemon::new(&settings, authz, endpoint)?.with_reload(Reloader {

@@ -62,7 +62,7 @@ fn cpu_dur(d: Duration) -> String {
     }
 }
 
-fn ms(d: Duration) -> String {
+pub(crate) fn ms(d: Duration) -> String {
     let v = d.as_secs_f64() * 1000.0;
     if v < 10.0 {
         format!("{v:.1}ms")

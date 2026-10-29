@@ -1,11 +1,14 @@
 //! Telemetry: a per-session meter of where time and bytes go, and the
 //! subscriber and metrics recorder its sinks need.
 
+pub mod flame;
+pub mod http;
 pub mod init;
 pub mod meter;
 pub mod process;
 pub mod publish;
 pub mod sampler;
+pub mod timing;
 
 pub use init::{init, OtlpConfig, Telemetry, TelemetryConfig};
 
