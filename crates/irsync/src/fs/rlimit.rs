@@ -6,11 +6,20 @@ use std::io;
 
 use nix::sys::resource::{getrlimit, setrlimit, Resource};
 
+/// `OPEN_MAX` from macOS's `<sys/syslimits.h>`: the soft `RLIMIT_NOFILE`
+/// its `setrlimit(2)` man page says to stay within (`min(OPEN_MAX,
+/// rlim_max)`); older kernels refused more. The `libc` crate does not
+/// export it, so it is spelled out here. It leaves room for the whole
+/// in-flight window, so a higher soft limit (which a shell may already
+/// have set) is left as it is rather than lowered.
+#[cfg(target_os = "macos")]
+const OPEN_MAX: u64 = 10240;
+
 /// The soft limit a raise aims for: the hard limit, or on macOS at most
-/// `OPEN_MAX`, which the kernel refuses to exceed.
+/// [`OPEN_MAX`].
 fn nofile_target(hard: u64) -> u64 {
     #[cfg(target_os = "macos")]
-    let hard = hard.min(nix::libc::OPEN_MAX as u64);
+    let hard = hard.min(OPEN_MAX);
     hard
 }
 
@@ -42,15 +51,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raise_nofile_lifts_the_soft_limit_as_far_as_the_hard_limit_allows() {
+    fn raise_nofile_lifts_the_soft_limit_to_the_target() {
         let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
-        // Lower the soft limit by one (far above what this process uses),
-        // then ask for the raise.
-        let lowered = soft - 1;
+        let target = nofile_target(hard);
+        // Lower the soft limit to one below the target (far above what
+        // this process uses), then ask for the raise. Starting from the
+        // current soft limit would not do: on macOS a shell's `ulimit -n`
+        // may already sit above `OPEN_MAX`, where there is nothing to raise.
+        let lowered = target - 1;
         setrlimit(Resource::RLIMIT_NOFILE, lowered, hard).unwrap();
+        assert_eq!(nofile_soft(), lowered);
         let raised = raise_nofile().unwrap();
-        assert!(raised > lowered, "{raised} <= {lowered}");
-        assert_eq!(raised, nofile_target(hard));
-        assert_eq!(nofile_soft(), raised);
+        assert_eq!(raised, target);
+        assert_eq!(nofile_soft(), target);
+        // A soft limit already at or above the target is left alone.
+        assert_eq!(raise_nofile().unwrap(), target);
+        setrlimit(Resource::RLIMIT_NOFILE, soft, hard).unwrap();
     }
 }

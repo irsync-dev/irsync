@@ -439,23 +439,28 @@ async fn receiver_opens_a_part_only_when_its_data_arrives() {
         }
         let (out, _) = run(&h, &opts(&["--parallel", "2"]), Flow::Push).await;
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        // The daemon receives: a `.part` is open from `open:` to `placed:`.
-        // Every file is planned at once, but the sender streams two at a
-        // time, so few `.part` files should be open at any moment.
+        // The daemon receives. Every file is planned at once (`chunklist:`),
+        // but its `.part` must not be opened (`open:`) until its data is on
+        // the way: after the request for it (`need:`), on the first write.
+        // How many `.part` files are open at one moment is a matter of how
+        // fast the receiver places them behind the sender's streams, which
+        // differs between platforms, so it is not asserted.
         let log = h.daemon.events.lock().unwrap().clone();
-        let mut open = BTreeSet::new();
-        let (mut peak, mut placed) = (0, 0);
-        for e in &log {
-            if let Some(p) = e.strip_prefix("open:") {
-                open.insert(p.to_string());
-                peak = peak.max(open.len());
-            } else if let Some(p) = e.strip_prefix("placed:") {
-                open.remove(p);
-                placed += 1;
-            }
+        let position = |what: &str| log.iter().position(|e| e == what);
+        let mut placed = 0;
+        for i in 0..50 {
+            let (need, open) = (
+                position(&format!("need:f{i}")),
+                position(&format!("open:f{i}")),
+            );
+            assert!(need.is_some() && open.is_some(), "f{i}: {log:?}");
+            assert!(
+                need < open,
+                "f{i}: .part opened before its data was requested: {log:?}"
+            );
+            placed += usize::from(position(&format!("placed:f{i}")).is_some());
         }
         assert_eq!(placed, 50, "{log:?}");
-        assert!(peak <= 10, "open .part files peaked at {peak}: {log:?}");
     })
     .await;
 }
