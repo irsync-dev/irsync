@@ -41,6 +41,10 @@ pub struct Meta {
 pub trait Reader: Send + Sync {
     /// The entry as last committed, as [`Store::get`] returns it.
     fn get(&self, path: &[u8]) -> anyhow::Result<Option<Entry>>;
+    /// The entries at `paths`, in order, read together.
+    fn get_many(&self, paths: &[&[u8]]) -> anyhow::Result<Vec<Option<Entry>>> {
+        paths.iter().map(|p| self.get(p)).collect()
+    }
 }
 
 pub trait Store: Send {

@@ -181,21 +181,26 @@ fn load_xattrs(conn: &Connection, path: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The entry at `path` with its xattrs.
+/// The entry at `path` with its xattrs, in one query: a row per xattr, or one without.
 fn get_entry(conn: &Connection, path: &[u8]) -> Result<Option<Entry>> {
-    let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE path = ?");
+    let sql = format!(
+        "SELECT {ENTRY_COLS}, x.name, x.value FROM entries e \
+         LEFT JOIN xattrs x ON x.path = e.path WHERE e.path = ? ORDER BY x.name"
+    );
     // Called once per walked entry: parsing the SQL each time cost as much as the lookup.
-    let e = conn
-        .prepare_cached(&sql)?
-        .query_row([path], |r| row_to_entry(r, 0))
-        .optional()?;
-    match e {
-        Some(mut e) => {
-            e.xattrs = load_xattrs(conn, path)?;
-            Ok(Some(e))
+    let mut st = conn.prepare_cached(&sql)?;
+    let mut rows = st.query([path])?;
+    let mut entry: Option<Entry> = None;
+    while let Some(row) = rows.next()? {
+        let e = match &mut entry {
+            Some(e) => e,
+            None => entry.insert(row_to_entry(row, 0)?),
+        };
+        if let Some(name) = row.get::<_, Option<Vec<u8>>>(17)? {
+            e.xattrs.push((name, row.get(18)?));
         }
-        None => Ok(None),
     }
+    Ok(entry)
 }
 
 /// Read-only connections of its own, one per thread that is reading at the moment; WAL
@@ -207,18 +212,41 @@ struct SqliteReader {
 
 impl Reader for SqliteReader {
     fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
+        let conn = self.take()?;
+        let e = get_entry(&conn, path);
+        self.idle.lock().unwrap().push(conn);
+        e
+    }
+
+    // One read transaction for the lot, instead of one per query.
+    fn get_many(&self, paths: &[&[u8]]) -> Result<Vec<Option<Entry>>> {
+        let conn = self.take()?;
+        let read = (|| {
+            let tx = conn.unchecked_transaction()?;
+            let entries = paths
+                .iter()
+                .map(|p| get_entry(&tx, p))
+                .collect::<Result<Vec<_>>>()?;
+            tx.finish()?;
+            Ok(entries)
+        })();
+        self.idle.lock().unwrap().push(conn);
+        read
+    }
+}
+
+impl SqliteReader {
+    /// An idle connection, or a new one.
+    fn take(&self) -> Result<Connection> {
         let idle = self.idle.lock().unwrap().pop();
-        let conn = match idle {
-            Some(c) => c,
+        match idle {
+            Some(c) => Ok(c),
             None => Connection::open_with_flags(
                 &self.path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
-            .with_context(|| format!("opening {}", self.path.display()))?,
-        };
-        let e = get_entry(&conn, path);
-        self.idle.lock().unwrap().push(conn);
-        e
+            .with_context(|| format!("opening {}", self.path.display())),
+        }
     }
 }
 

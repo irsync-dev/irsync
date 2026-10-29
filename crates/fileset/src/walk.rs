@@ -96,7 +96,8 @@ pub fn walk(
     reader: Option<&dyn Reader>,
     sink: &mut Sink<'_>,
 ) -> anyhow::Result<()> {
-    let (obs, partial) = observe(cfg, reader, cfg.root.clone(), b".".to_vec())?;
+    let looked_up = look_up(reader, &[b"."]).pop().expect("one lookup");
+    let (obs, partial) = observe(cfg, looked_up, cfg.root.clone(), b".".to_vec())?;
     for p in &partial {
         sink(WalkEvent::Warning(p.warning(".")))?;
     }
@@ -109,20 +110,40 @@ pub fn walk(
     Ok(())
 }
 
-/// Stats `abs` and looks `rel` up through `reader`. The xattrs are read unless the
+/// A name of a listed directory, before it is stat'ed.
+struct Named {
+    abs: PathBuf,
+    name: Vec<u8>,
+    rel: Vec<u8>,
+    /// A built-in exclude: reported, not stat'ed.
+    excluded: bool,
+}
+
+/// What the manifest holds for a path, or why it could not be asked.
+type LookedUp = (Option<Entry>, Option<String>);
+
+/// Looks `rels` up through `reader` in one go, in order; a failed read is every path's
+/// error. Without a reader nothing is found.
+fn look_up(reader: Option<&dyn Reader>, rels: &[&[u8]]) -> Vec<LookedUp> {
+    match reader.map(|r| r.get_many(rels)) {
+        None => rels.iter().map(|_| (None, None)).collect(),
+        Some(Ok(stored)) => stored.into_iter().map(|s| (s, None)).collect(),
+        Some(Err(e)) => {
+            let msg = format!("{e:#}");
+            rels.iter().map(|_| (None, Some(msg.clone()))).collect()
+        }
+    }
+}
+
+/// Stats `abs`, which the manifest holds as `looked_up`. The xattrs are read unless the
 /// manifest's are current for the object found, and `force_xattr_reads` is off.
 fn observe(
     cfg: &WalkConfig,
-    reader: Option<&dyn Reader>,
+    (stored, lookup_error): LookedUp,
     abs: PathBuf,
     rel: Vec<u8>,
 ) -> std::io::Result<(Observed, Vec<Partial>)> {
     let (mut entry, mut partial) = Entry::stat(&abs)?;
-    let (stored, lookup_error) = match reader.map(|r| r.get(&rel)) {
-        None => (None, None),
-        Some(Ok(stored)) => (stored, None),
-        Some(Err(e)) => (None, Some(format!("{e:#}"))),
-    };
     match stored
         .as_ref()
         .filter(|s| !cfg.force_xattr_reads && entry.xattrs_current_in(s))
@@ -418,6 +439,7 @@ fn list_dir(
     if cfg.sort {
         names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     }
+    let mut named = Vec::with_capacity(names.len());
     for name in names {
         let abs = job.abs.join(&name);
         if is_sidecar(cfg, &abs) {
@@ -435,11 +457,33 @@ fn list_dir(
             r.extend_from_slice(&name_bytes);
             r
         };
+        named.push(Named {
+            abs,
+            name: name_bytes,
+            rel,
+            excluded,
+        });
+    }
+    // The whole directory in one lookup: one read of the manifest instead of one per entry.
+    let rels: Vec<&[u8]> = named
+        .iter()
+        .filter(|n| !n.excluded)
+        .map(|n| n.rel.as_slice())
+        .collect();
+    let mut looked_up = look_up(reader, &rels).into_iter();
+    for Named {
+        abs,
+        name: name_bytes,
+        rel,
+        excluded,
+    } in named
+    {
         if excluded {
             items.push(Item::Event(WalkEvent::Excluded(rel)));
             continue;
         }
-        let mut obs = match observe(cfg, reader, abs.clone(), rel.clone()) {
+        let looked_up = looked_up.next().expect("one lookup per name");
+        let mut obs = match observe(cfg, looked_up, abs.clone(), rel.clone()) {
             Ok((obs, partial)) => {
                 for p in &partial {
                     items.push(Item::Event(WalkEvent::Warning(p.warning(&escape(&rel)))));

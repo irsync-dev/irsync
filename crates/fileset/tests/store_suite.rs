@@ -152,6 +152,11 @@ fn reader_suite(backend: Backend) {
                     assert_eq!(reader.get(b"a").unwrap(), Some(entry(1)));
                     assert_eq!(reader.get(b"b").unwrap(), Some(entry(2)));
                     assert_eq!(reader.get(b"c").unwrap(), None);
+                    assert_eq!(
+                        reader.get_many(&[b"c", b"b", b"a"]).unwrap(),
+                        vec![None, Some(entry(2)), Some(entry(1))]
+                    );
+                    assert_eq!(reader.get_many(&[]).unwrap(), vec![]);
                 }
             });
         }

@@ -284,6 +284,24 @@ deferred rather than fixed are listed in
     150–175 MB, since listings average under five entries. 16384 was no
     faster.
 
+## Follow-up: cheaper manifest lookups (2026-10-29)
+
+41. **A lookup is one query, and a directory's lookups share one read
+    transaction.** The row and its xattrs come back from one `LEFT JOIN`,
+    and `Reader::get_many` reads all the names of a listing in one
+    transaction (SQLite; the default loops over `get`). In the walk threads
+    lookups fell from 25% to 18% of the time, the per-query read-lock setup
+    from about 7% to under 1%, and waits on SQLite's internal mutexes from
+    about 5% to 2%. A no-change `update` of the 1.7M-entry volume goes from
+    13.1 s to 12.0 s, user time from 9.3 s to 7.0 s.
+
+42. **No mmap or larger page cache on the reader connections.** Most of the
+    remaining lookup time is `pread` from the OS cache. A 64 MiB page cache
+    per connection gained nothing and cost 300 MB; `mmap_size` saved about
+    0.7 s but counts the mapped manifest as resident (2.2 GB here). Turning
+    off SQLite's memory statistics was not tried: what remains of the mutex
+    wait is about 2%, and the switch is process-wide.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
