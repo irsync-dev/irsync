@@ -30,6 +30,20 @@ where
     D: FnMut(&mut Observed) -> Decision,
     S: FnMut(WalkEvent) -> anyhow::Result<()>,
 {
+    run_with(jobs, producer, decide, sink, hash_file)
+}
+
+/// [`run`] with the hash function supplied, for tests.
+fn run_with<P, D, S, H>(jobs: usize, producer: P, decide: D, sink: S, hash: H) -> anyhow::Result<()>
+where
+    P: FnOnce(&mut dyn FnMut(WalkEvent) -> anyhow::Result<()>) -> anyhow::Result<()>
+        + Send
+        + 'static,
+    D: FnMut(&mut Observed) -> Decision,
+    S: FnMut(WalkEvent) -> anyhow::Result<()>,
+    H: Fn(&std::path::Path) -> std::io::Result<[u8; 32]> + Sync,
+{
+    let hash = &hash;
     let jobs = jobs.max(1);
     let (walk_tx, walk_rx) = bounded::<WalkEvent>(WALK_CAPACITY);
     let (job_tx, job_rx) = bounded::<Job>(JOB_CAPACITY);
@@ -53,7 +67,7 @@ where
         for _ in 0..jobs {
             let job_rx = job_rx.clone();
             let done_tx = done_tx.clone();
-            s.spawn(move || hasher(job_rx, done_tx));
+            s.spawn(move || hasher(job_rx, done_tx, hash));
         }
         drop(job_rx);
         drop(done_tx);
@@ -70,9 +84,24 @@ where
     })
 }
 
-fn hasher(job_rx: Receiver<Job>, done_tx: Sender<Job>) {
+fn hasher<H: Fn(&std::path::Path) -> std::io::Result<[u8; 32]>>(
+    job_rx: Receiver<Job>,
+    done_tx: Sender<Job>,
+    hash: &H,
+) {
     for (seq, mut obs) in job_rx {
-        match hash_file(&obs.abs) {
+        // A panic in the hash is reported like a read error; letting it unwind the
+        // thread would leave the consumer waiting for this job forever.
+        let hashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hash(&obs.abs)))
+            .unwrap_or_else(|panic| {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(std::io::Error::other(format!("hasher panicked: {msg}")))
+            });
+        match hashed {
             Ok(h) => obs.entry.blake3 = Some(h),
             Err(e) => {
                 obs.entry.blake3 = None;
@@ -293,6 +322,56 @@ mod tests {
         assert_eq!(obs.entry.blake3, None);
         assert!(obs.entry.flags.contains(Flags::UNREADABLE));
         assert!(obs.hash_error.is_some());
+    }
+
+    #[test]
+    fn pipeline_turns_a_hasher_panic_into_a_hash_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<_> = (0..20)
+            .map(|i| {
+                let p = dir.path().join(format!("f{i:02}"));
+                std::fs::write(&p, b"x").unwrap();
+                p
+            })
+            .collect();
+        let produced = files.clone();
+        let mut seen = Vec::new();
+        run_with(
+            3,
+            move |emit: &mut dyn FnMut(WalkEvent) -> anyhow::Result<()>| {
+                for (i, p) in produced.iter().enumerate() {
+                    emit(WalkEvent::Entry(observed(p, &format!("f{i:02}"))))?;
+                }
+                Ok(())
+            },
+            |_obs: &mut Observed| Decision::Hash,
+            |ev| {
+                seen.push(ev);
+                Ok(())
+            },
+            |p: &Path| {
+                if p.ends_with("f07") {
+                    panic!("boom");
+                }
+                crate::hash::hash_file(p)
+            },
+        )
+        .expect("a panic in one hasher does not hang or fail the run");
+        assert_eq!(seen.len(), 20);
+        for (i, ev) in seen.iter().enumerate() {
+            let WalkEvent::Entry(obs) = ev else {
+                panic!("unexpected event {ev:?}")
+            };
+            if i == 7 {
+                assert!(obs.entry.blake3.is_none());
+                assert!(obs.entry.flags.contains(Flags::UNREADABLE));
+                let e = obs.hash_error.as_deref().unwrap();
+                assert!(e.contains("panicked") && e.contains("boom"), "{e}");
+            } else {
+                assert!(obs.entry.blake3.is_some(), "f{i:02}");
+                assert!(obs.hash_error.is_none());
+            }
+        }
     }
 
     #[test]

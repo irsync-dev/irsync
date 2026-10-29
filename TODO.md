@@ -39,18 +39,13 @@ Rough cost next to each. The last two are not things to fix.
 - Relays are a fallback and much slower than direct connections. By design.
 - Linux and macOS only. A port, not a fix.
 
-## fileset: deferred findings never triaged
+## fileset: deferred findings
 
-`docs/superpowers/plans/2026-10-19-fileset-deferred.md` lists the minors
-deferred from the fileset reviews. The ones with user-visible effect:
+`docs/superpowers/plans/2026-10-19-fileset-deferred.md` is the ledger of
+minors deferred from the fileset reviews. Everything user-visible in it has
+since been fixed (2026-10-29). What remains is internal:
 
-- [ ] fjall sweep buffers every doomed key before one batch; memory grows
-      with deletions, against the spec's memory bound.
-- [ ] A crash during `create` before commit leaves an empty
-      `.fileset.sqlite` that `create` then refuses; needs manual deletion.
-- [ ] `create` failing after the connection is open leaves a partial file.
-- [ ] sqlite `wal_checkpoint(TRUNCATE)` busy flag is discarded; close
-      reports success even when blocked.
-- [ ] `-j 0` is accepted unvalidated.
 - [ ] Missing tests listed per task in that file (schema migration paths,
       mount-point non-crossing, relative `--manifest`, and others).
+- [ ] Two duplicated blocks: the setup shared by `update` and `check`, and
+      the "cannot read directory" format string in the walk.

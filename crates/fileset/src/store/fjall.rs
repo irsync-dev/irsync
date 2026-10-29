@@ -67,7 +67,9 @@ fn from_pb(p: pb::Entry) -> Result<Entry> {
         None => None,
     };
     Ok(Entry {
-        kind: Kind::from_u8(p.kind as u8),
+        kind: Kind::from_u8(
+            u8::try_from(p.kind).map_err(|_| anyhow!("entry kind {} out of range", p.kind))?,
+        ),
         mode: p.mode,
         uid: p.uid,
         gid: p.gid,
@@ -109,6 +111,7 @@ fn read_meta(ks: &Keyspace) -> Result<Meta> {
         tool_version: get("tool_version")?,
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
+        unfinished: ks.get("unfinished")?.is_some(),
     })
 }
 
@@ -119,6 +122,11 @@ fn write_meta(db: &Database, ks: &Keyspace, m: &Meta) -> Result<()> {
     b.insert(ks, "tool_version", m.tool_version.as_str());
     b.insert(ks, "created_at", m.created_at.to_string());
     b.insert(ks, "updated_at", m.updated_at.to_string());
+    if m.unfinished {
+        b.insert(ks, "unfinished", "1");
+    } else {
+        b.remove(ks, "unfinished");
+    }
     b.commit()?;
     Ok(())
 }
@@ -160,6 +168,7 @@ impl FjallStore {
                     tool_version: env!("CARGO_PKG_VERSION").to_string(),
                     created_at: t,
                     updated_at: t,
+                    unfinished: true,
                 },
             )?;
         } else {
@@ -233,9 +242,9 @@ impl Store for FjallStore {
         write_meta(&self.db, &self.meta, meta)
     }
 
-    fn close(self: Box<Self>) -> Result<()> {
+    fn close(self: Box<Self>) -> Result<Option<String>> {
         self.db.persist(PersistMode::SyncAll)?;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -243,6 +252,18 @@ impl Store for FjallStore {
 mod tests {
     use super::*;
     use crate::store::{open, Backend};
+
+    #[test]
+    fn decode_refuses_a_kind_that_is_no_byte() {
+        let mut p = pb::Entry {
+            kind: 0x101, // would truncate to 1, a regular file
+            ..Default::default()
+        };
+        let e = decode(&p.encode_to_vec()).unwrap_err().to_string();
+        assert!(e.contains("kind") && e.contains("257"), "{e}");
+        p.kind = 7;
+        assert_eq!(decode(&p.encode_to_vec()).unwrap().kind, Kind::Other);
+    }
 
     fn full_entry(generation: u64) -> Entry {
         Entry {

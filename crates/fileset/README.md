@@ -18,7 +18,10 @@ fileset check  [OPTIONS] <PATH>
 ```
 
 `init` scans the tree and creates its manifest; it refuses to run if one
-already exists. Because nested filesets are not supported, it also refuses a
+already exists, unless that one was left by an `init` that was interrupted
+(killed, or the machine went down): such a manifest holds nothing worth
+keeping, `init` replaces it with a warning, and `update` refuses it and says
+to run `init` again. Because nested filesets are not supported, it also refuses a
 tree that lies inside an existing fileset (a `.fileset.sqlite` or
 `.fileset.fjall` in any parent directory of `<PATH>`, checked before anything
 is written) and a tree that holds one in any subdirectory (found when the

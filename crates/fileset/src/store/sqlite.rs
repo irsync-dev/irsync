@@ -81,6 +81,7 @@ fn migrate_with(
 pub struct SqliteStore {
     conn: Connection,
     mode: OpenMode,
+    path: std::path::PathBuf,
 }
 
 fn now() -> i64 {
@@ -104,6 +105,7 @@ fn read_meta(conn: &Connection) -> Result<Meta> {
         tool_version: get("tool_version")?,
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
+        unfinished: get("unfinished").is_ok(),
     })
 }
 
@@ -115,6 +117,11 @@ fn write_meta_rows(conn: &Connection, m: &Meta) -> Result<()> {
     st.execute(params!["tool_version", m.tool_version])?;
     st.execute(params!["created_at", m.created_at.to_string()])?;
     st.execute(params!["updated_at", m.updated_at.to_string()])?;
+    if m.unfinished {
+        st.execute(params!["unfinished", "1"])?;
+    } else {
+        conn.execute("DELETE FROM meta WHERE key = 'unfinished'", [])?;
+    }
     Ok(())
 }
 
@@ -187,9 +194,14 @@ impl SqliteStore {
                     tool_version: env!("CARGO_PKG_VERSION").to_string(),
                     created_at: t,
                     updated_at: t,
+                    unfinished: true,
                 };
                 migrate_with(&conn, MIGRATIONS, 0, |tx| write_meta_rows(tx, &initial))?;
-                Ok(SqliteStore { conn, mode })
+                Ok(SqliteStore {
+                    conn,
+                    mode,
+                    path: path.to_path_buf(),
+                })
             }
             OpenMode::ReadWrite => {
                 let conn = Connection::open_with_flags(
@@ -203,7 +215,11 @@ impl SqliteStore {
                 if meta.schema_version < SCHEMA_VERSION {
                     apply_migrations(&conn, MIGRATIONS, meta.schema_version)?;
                 }
-                Ok(SqliteStore { conn, mode })
+                Ok(SqliteStore {
+                    conn,
+                    mode,
+                    path: path.to_path_buf(),
+                })
             }
             OpenMode::ReadOnly => {
                 let conn = Connection::open_with_flags(
@@ -212,7 +228,11 @@ impl SqliteStore {
                 )
                 .with_context(|| format!("opening {}", path.display()))?;
                 check_schema(&read_meta(&conn)?, mode)?;
-                Ok(SqliteStore { conn, mode })
+                Ok(SqliteStore {
+                    conn,
+                    mode,
+                    path: path.to_path_buf(),
+                })
             }
         }
     }
@@ -313,15 +333,36 @@ impl Store for SqliteStore {
         write_meta(&self.conn, meta)
     }
 
-    fn close(self: Box<Self>) -> Result<()> {
+    fn close(self: Box<Self>) -> Result<Option<String>> {
+        let mut note = None;
         if self.mode != OpenMode::ReadOnly {
-            self.conn
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-            self.conn
-                .query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))?;
+            // A reader elsewhere pins the WAL: the checkpoint reports busy and the
+            // journal mode cannot change back. The data is committed either way.
+            let busy: i64 = self
+                .conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+            let journal: String = match self
+                .conn
+                .query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))
+            {
+                Ok(mode) => mode,
+                Err(rusqlite::Error::SqliteFailure(f, _))
+                    if f.code == rusqlite::ErrorCode::DatabaseBusy =>
+                {
+                    "wal".to_string()
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if busy != 0 || !journal.eq_ignore_ascii_case("delete") {
+                note = Some(format!(
+                    "another process has {} open, so its -wal sidecar stays; the next update \
+                     folds it in",
+                    self.path.display()
+                ));
+            }
         }
         self.conn.close().map_err(|(_, e)| e)?;
-        Ok(())
+        Ok(note)
     }
 }
 
@@ -372,6 +413,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, "1");
+    }
+
+    #[test]
+    fn close_notes_a_reader_that_keeps_the_wal_from_being_folded_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m.sqlite");
+        let mut s = open(&p, Backend::Sqlite, OpenMode::Create).unwrap();
+        s.put_batch(&[(b"a".to_vec(), dir_entry())]).unwrap();
+        // Another process reads the manifest meanwhile: a read transaction pins the WAL.
+        let reader = Connection::open(&p).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM entries;")
+            .unwrap();
+        let note = s.close().unwrap().expect("close says the WAL stayed");
+        assert!(
+            note.contains("another process") && note.contains("-wal"),
+            "{note}"
+        );
+        assert!(dir.path().join("m.sqlite-wal").exists());
+        drop(reader);
+        // Alone, the next close folds it in.
+        let s = open(&p, Backend::Sqlite, OpenMode::ReadWrite).unwrap();
+        assert_eq!(s.close().unwrap(), None);
+        assert!(!dir.path().join("m.sqlite-wal").exists());
+    }
+
+    fn dir_entry() -> Entry {
+        Entry {
+            kind: Kind::Dir,
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            nlink: 1,
+            ino: 1,
+            dev: 1,
+            rdev: 0,
+            mtime: Timespec { sec: 0, nsec: 0 },
+            ctime: Timespec { sec: 0, nsec: 0 },
+            blake3: None,
+            target: None,
+            xattrs: vec![],
+            flags: Flags::default(),
+            generation: 1,
+        }
     }
 
     #[test]

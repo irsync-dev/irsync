@@ -84,6 +84,9 @@ for_both_backends! {
     check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall;
     check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
     check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
+    check_reports_entries_under_a_directory_turned_symlink_as_deleted => check_reports_entries_under_a_directory_turned_symlink_as_deleted_sqlite, check_reports_entries_under_a_directory_turned_symlink_as_deleted_fjall;
+    init_replaces_the_manifest_an_interrupted_init_left => init_replaces_the_manifest_an_interrupted_init_left_sqlite, init_replaces_the_manifest_an_interrupted_init_left_fjall;
+    update_refuses_the_manifest_an_interrupted_init_left => update_refuses_the_manifest_an_interrupted_init_left_sqlite, update_refuses_the_manifest_an_interrupted_init_left_fjall;
     check_no_stored_checksum_warning_needs_blake3_and_a_file => check_no_stored_checksum_warning_needs_blake3_and_a_file_sqlite, check_no_stored_checksum_warning_needs_blake3_and_a_file_fjall;
     check_unopenable_manifest_suggests_manifest_flag => check_unopenable_manifest_suggests_manifest_flag_sqlite, check_unopenable_manifest_suggests_manifest_flag_fjall;
     update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
@@ -210,8 +213,9 @@ fn update_warns_on_unreadable(b: Backend) {
     let err = without_macos_xattr_warnings(&err);
     assert_eq!(outcome, Outcome::Clean);
     assert!(err.starts_with("WARN cannot hash f: "), "{err}");
+    // A file that could not be read was not hashed.
     assert!(
-        err.ends_with("\nentries=3 hashed=1 reused=0 warnings=1\n"),
+        err.ends_with("\nentries=3 hashed=0 reused=0 warnings=1\n"),
         "{err}"
     );
     let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
@@ -789,4 +793,61 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
     let text = format!("{e:#}");
     assert!(text.contains("cannot open manifest at "), "{text}");
     assert!(text.contains("--manifest"), "{text}");
+}
+
+fn check_reports_entries_under_a_directory_turned_symlink_as_deleted(b: Backend) {
+    let dir = tree(&[("d/f", "x"), ("e/f", "x")]);
+    run_update(dir.path(), b, false, false);
+    // `d` becomes a symlink to a directory that has an `f` too: the walk does not
+    // descend symlinks, so d/f is gone from the tree even though d/f resolves.
+    std::fs::remove_dir_all(dir.path().join("d")).unwrap();
+    symlink(dir.path(), "d", "e");
+    let (outcome, out, err) = run_check(dir.path(), Tier::Relaxed, &[], &[], false);
+    assert!(out.starts_with("CHG d kind=dir\u{2192}symlink"), "{out}");
+    assert!(out.contains("\nDEL d/f\n"), "{out}");
+    assert!(
+        err.ends_with("added=0 deleted=1 changed=1 unchanged=4 warnings=0\n"),
+        "{err}"
+    );
+    assert_eq!(outcome, Outcome::Differences);
+}
+
+/// A manifest whose init never finished: created and dropped, never closed.
+fn leave_unfinished(root: &Path, b: Backend) {
+    let s = store::open(&root.join(store_name(b)), b, OpenMode::Create).unwrap();
+    assert!(s.meta().unwrap().unfinished);
+    drop(s);
+}
+
+fn init_replaces_the_manifest_an_interrupted_init_left(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    leave_unfinished(dir.path(), b);
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.mode = Mode::Init { backend: Some(b) };
+    let (outcome, err) = run_update_opts(&opts).unwrap();
+    assert_eq!(outcome, Outcome::Clean);
+    assert!(
+        err.starts_with("WARN replacing the unfinished manifest an interrupted init left at "),
+        "{err}"
+    );
+    assert!(
+        err.ends_with("\nentries=3 hashed=1 reused=0 warnings=1\n"),
+        "{err}"
+    );
+    let s = open_ro(dir.path(), b);
+    assert!(!s.meta().unwrap().unfinished);
+    assert_eq!(keys(&*s), sorted(vec![".", "f", store_name(b)]));
+}
+
+fn update_refuses_the_manifest_an_interrupted_init_left(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    leave_unfinished(dir.path(), b);
+    let opts = update_opts(dir.path(), b, false, false);
+    assert!(matches!(opts.mode, Mode::Update { .. }));
+    let e = run_update_opts(&opts).expect_err("an unfinished manifest is not updatable");
+    let text = format!("{e:#}");
+    assert!(
+        text.contains("interrupted init") && text.contains("fileset init"),
+        "{text}"
+    );
 }

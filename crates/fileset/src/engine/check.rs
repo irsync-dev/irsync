@@ -71,6 +71,9 @@ pub fn check(
     // Prefixes (see `unobserved_prefix`) of what the walk could not observe; one per
     // directory not descended or object not stat'ed, never one per tree entry.
     let mut not_descended: BTreeSet<Vec<u8>> = BTreeSet::new();
+    // Prefixes of stored directories observed as something else (a symlink, a file): the
+    // walk does not look through them, and nothing stored below them is there any more.
+    let mut replaced: BTreeSet<Vec<u8>> = BTreeSet::new();
 
     let decide = |obs: &mut Observed| hash_or_skip(&**store.borrow(), obs, &sel, &mut lookup_error);
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
@@ -102,6 +105,9 @@ pub fn check(
         {
             warnings.emit(&format!("no stored checksum for {}", escape(&obs.path)))?;
         }
+        if stored.kind == Kind::Dir && obs.entry.kind != Kind::Dir {
+            replaced.insert(unobserved_prefix(&obs.path));
+        }
         let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
         let diffs = diff(mtime_exempt, &stored, &obs.entry, &sel);
         if diffs.is_empty() {
@@ -132,6 +138,11 @@ pub fn check(
         if is_under(&not_descended, path) {
             writeln!(out, "{}", unverified())?;
             summary.changed += 1;
+            return Ok(());
+        }
+        if is_under(&replaced, path) {
+            writeln!(out, "{}", line_del(path))?;
+            summary.deleted += 1;
             return Ok(());
         }
         match root.join(OsStr::from_bytes(path)).symlink_metadata() {

@@ -45,9 +45,28 @@ pub fn update(
         Mode::Update { rehash } => (None, rehash),
     };
     let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
+    let mut warnings = Warnings::new(err);
     let mode = match (opts.mode, loc.exists) {
+        (Mode::Init { .. }, true) if unfinished_manifest(&loc) => {
+            warnings.emit(&format!(
+                "replacing the unfinished manifest an interrupted init left at {}",
+                loc.path.display()
+            ))?;
+            remove_created(&loc).map_err(|e| {
+                anyhow::anyhow!(
+                    "cannot remove the unfinished manifest at {}: {e}",
+                    loc.path.display()
+                )
+            })?;
+            OpenMode::Create
+        }
         (Mode::Init { .. }, true) => anyhow::bail!(
             "manifest already exists at {}; run 'fileset update' to bring it up to date",
+            loc.path.display()
+        ),
+        (Mode::Update { .. }, true) if unfinished_manifest(&loc) => anyhow::bail!(
+            "the manifest at {} was left by an interrupted init and holds nothing yet; run \
+             'fileset init' to create it again",
             loc.path.display()
         ),
         (Mode::Update { .. }, false) => match common.manifest.as_deref() {
@@ -95,7 +114,6 @@ pub fn update(
         sqlite_store: loc.backend == Backend::Sqlite,
     };
 
-    let mut warnings = Warnings::new(err);
     let mut summary = UpdateSummary {
         entries: 0,
         hashed: 0,
@@ -134,12 +152,18 @@ pub fn update(
             WalkEvent::NotDescended(_) => return Ok(()),
             WalkEvent::Entry(obs) => obs,
         };
-        if sent_to_hash.borrow_mut().pop_front().unwrap_or(false) {
-            summary.hashed += 1;
-            progress.hashed_bytes(obs.entry.size);
-        }
-        if let Some(e) = &obs.hash_error {
-            warnings.emit(&format!("cannot hash {}: {e}", escape(&obs.path)))?;
+        let sent = sent_to_hash
+            .borrow_mut()
+            .pop_front()
+            .expect("one flag per entry, in walk order");
+        match &obs.hash_error {
+            // Attempted but not hashed: a warning, not a count.
+            Some(e) => warnings.emit(&format!("cannot hash {}: {e}", escape(&obs.path)))?,
+            None if sent => {
+                summary.hashed += 1;
+                progress.hashed_bytes(obs.entry.size);
+            }
+            None => {}
         }
         obs.entry.generation = generation;
         summary.entries += 1;
@@ -180,10 +204,13 @@ pub fn update(
     store.set_meta(&Meta {
         generation,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
-        updated_at: unix_now(),
+        updated_at: unix_now()?,
+        unfinished: false,
         ..old_meta
     })?;
-    store.close()?;
+    if let Some(note) = store.close()? {
+        warnings.emit(&note)?;
+    }
     progress.finish();
 
     summary.warnings = warnings.count();
@@ -232,6 +259,18 @@ fn reuse_or_hash(
     }
 }
 
+/// Whether the manifest at `loc` was left by an init that never finished. A manifest
+/// that cannot be opened or read is not one: the caller's own error names it.
+fn unfinished_manifest(loc: &store::Location) -> bool {
+    store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
+        .and_then(|s| {
+            let unfinished = s.meta()?.unfinished;
+            s.close()?;
+            Ok(unfinished)
+        })
+        .unwrap_or(false)
+}
+
 /// Deletes the manifest this run created, with any SQLite sidecars.
 fn remove_created(loc: &store::Location) -> std::io::Result<()> {
     match loc.backend {
@@ -250,9 +289,9 @@ fn remove_created(loc: &store::Location) -> std::io::Result<()> {
     }
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
+fn unix_now() -> anyhow::Result<i64> {
+    let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+        .map_err(|_| anyhow::anyhow!("the system clock is set before 1970"))?;
+    Ok(d.as_secs() as i64)
 }

@@ -40,6 +40,10 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
     let m = s.meta().unwrap();
     assert_eq!(m.schema_version, SCHEMA_VERSION);
     assert_eq!(m.generation, 0);
+    assert!(
+        m.unfinished,
+        "a manifest being created says so until set_meta clears it"
+    );
 
     // put/get round trip
     let e = entry(1);
@@ -83,6 +87,7 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
         tool_version: "t".into(),
         created_at: 10,
         updated_at: 20,
+        unfinished: false,
     };
     s.set_meta(&m2).unwrap();
     assert_eq!(s.meta().unwrap(), m2);
@@ -91,6 +96,7 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
     // reopen read-only
     let s = open(&p, OpenMode::ReadOnly);
     assert!(s.get(b"a/c").unwrap().is_some());
+    assert!(!s.meta().unwrap().unfinished);
     s.close().unwrap();
 
     // newer schema is refused

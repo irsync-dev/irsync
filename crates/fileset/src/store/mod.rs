@@ -32,6 +32,9 @@ pub struct Meta {
     pub created_at: i64,
     /// Unix seconds.
     pub updated_at: i64,
+    /// Being created by an `init` that has not finished; such a manifest holds nothing
+    /// worth keeping. Absent in manifests written before this flag existed.
+    pub unfinished: bool,
 }
 
 pub trait Store: Send {
@@ -48,7 +51,8 @@ pub trait Store: Send {
     fn sweep(&mut self, keep: u64) -> anyhow::Result<u64>;
     fn set_meta(&mut self, meta: &Meta) -> anyhow::Result<()>;
     /// Flush, checkpoint, release. Must be called at the end of a successful update.
-    fn close(self: Box<Self>) -> anyhow::Result<()>;
+    /// Returns a note for the user when the release was incomplete but harmless.
+    fn close(self: Box<Self>) -> anyhow::Result<Option<String>>;
 }
 
 /// Applies the schema-version policy shared by all backends.
