@@ -149,7 +149,8 @@ impl Meter {
             counters: Default::default(),
             active: AtomicUsize::new(0),
             idle: Mutex::new(IdleClock {
-                since: Some(now),
+                // A global meter has no clock of its own: it only sums finished sessions.
+                since: global.map(|_| now),
                 total: Duration::ZERO,
                 ended: None,
             }),
@@ -188,6 +189,9 @@ impl Meter {
 
     /// Re-decides the idle clock from the current guard count, under the lock.
     fn reconcile_idle(&self) {
+        if self.global.is_none() {
+            return;
+        }
         let mut clock = self.idle.lock().unwrap();
         if clock.ended.is_some() {
             return;
@@ -204,6 +208,9 @@ impl Meter {
     }
 
     pub fn usage(&self) -> Usage {
+        if !self.enabled {
+            return Usage::default();
+        }
         let clock = self.idle.lock().unwrap();
         let end = clock.ended.unwrap_or_else(Instant::now);
         let open = clock
@@ -290,6 +297,8 @@ mod tests {
         let u = m.usage();
         assert_eq!(u.busy(Activity::Hash), Duration::ZERO);
         assert_eq!(u.count(Counter::DiskRead), 0);
+        assert_eq!(u.wall, Duration::ZERO);
+        assert_eq!(u.peer_wait, Duration::ZERO);
     }
 
     #[test]
@@ -351,5 +360,16 @@ mod tests {
         let m = Meter::new(Side::Client, Role::Sender, true);
         m.add(Counter::BytesLiteral, 7);
         assert_eq!(g.usage().count(Counter::BytesLiteral), before + 7);
+    }
+
+    #[test]
+    fn global_peer_wait_is_the_sum_of_finished_sessions() {
+        let g = global(Side::Client, Role::Receiver);
+        let before = g.usage().peer_wait;
+        let m = Meter::new(Side::Client, Role::Receiver, true);
+        sleep(MS(10));
+        m.finish();
+        m.finish();
+        assert_eq!(g.usage().peer_wait, before + m.usage().peer_wait);
     }
 }
