@@ -128,7 +128,6 @@ pub fn update(
         reused: 0,
         warnings: 0,
     };
-    let mut lookup_error: Option<anyhow::Error> = None;
     // Per entry, in walk order: whether `decide` sent it to be hashed, and what the
     // manifest held for it.
     let looked_up: RefCell<VecDeque<(bool, Option<Entry>)>> = RefCell::new(VecDeque::new());
@@ -136,11 +135,10 @@ pub fn update(
     let mut seen = Seen::default();
 
     let decide = |obs: &mut Observed| {
-        if let Some(e) = obs.lookup_error.take() {
-            lookup_error.get_or_insert(anyhow::anyhow!(
-                "cannot look up {} in the manifest: {e}",
-                escape(&obs.path)
-            ));
+        // Not worth hashing: the sink stops the run when this entry's turn comes.
+        if obs.lookup_error.is_some() {
+            looked_up.borrow_mut().push_back((false, None));
+            return Decision::Skip;
         }
         let stored = obs.stored.take();
         let decision = reuse_or_hash(stored.as_ref(), obs, rehash);
@@ -175,6 +173,10 @@ pub fn update(
             .borrow_mut()
             .pop_front()
             .expect("one lookup per entry, in walk order");
+        // Without the manifest's view every file would look new and be hashed: stop here.
+        if let Some(e) = &obs.lookup_error {
+            anyhow::bail!("cannot look up {} in the manifest: {e}", escape(&obs.path));
+        }
         match &obs.hash_error {
             // Attempted but not hashed: a warning, not a count.
             Some(e) => warnings.emit(&format!("cannot hash {}: {e}", escape(&obs.path)))?,
@@ -210,7 +212,7 @@ pub fn update(
         decide,
         sink,
     );
-    if let Err(e) = run.and_then(|()| lookup_error.map_or(Ok(()), Err)) {
+    if let Err(e) = run {
         if mode == OpenMode::Create {
             // Nothing in a half-built manifest is worth keeping, and leaving it would make
             // the next `init` refuse with "already exists".

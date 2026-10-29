@@ -1125,3 +1125,65 @@ fn builtin_excludes_drop_quietly_from_an_old_manifest(b: Backend) {
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
 }
+
+/// Counts what an engine reports.
+#[derive(Default)]
+struct Counting {
+    entries: std::sync::atomic::AtomicU64,
+    hashed: std::sync::atomic::AtomicU64,
+}
+
+impl fileset::progress::Progress for Counting {
+    fn entry(&self) {
+        self.entries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn hashed_bytes(&self, n: u64) {
+        self.hashed
+            .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn finish(&self) {}
+}
+
+#[test]
+fn update_stops_at_the_first_failed_lookup() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::atomic::Ordering;
+    let dir = tree(&[("a", "x"), ("b", "y"), ("d/c", "z")]);
+    run_update(dir.path(), Backend::Sqlite, false, false);
+    let m = dir.path().join(store_name(Backend::Sqlite));
+    let (root_page, page_size) = {
+        let c = rusqlite::Connection::open(&m).unwrap();
+        let root: i64 = c
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'entries'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let size: i64 = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+        (root as u64, size as u64)
+    };
+    // Garbage where the entries table starts: meta still reads, every lookup fails.
+    let mut f = std::fs::OpenOptions::new().write(true).open(&m).unwrap();
+    f.seek(SeekFrom::Start((root_page - 1) * page_size))
+        .unwrap();
+    f.write_all(&vec![0xff; page_size as usize]).unwrap();
+    drop(f);
+
+    let counted = Counting::default();
+    let err = update(
+        &update_opts(dir.path(), Backend::Sqlite, false, false),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &counted,
+    )
+    .expect_err("a manifest that cannot be read must stop update");
+    assert!(
+        format!("{err:#}").contains("cannot look up . in the manifest"),
+        "{err:#}"
+    );
+    // Stopped at the root: nothing recorded, nothing hashed.
+    assert_eq!(counted.entries.load(Ordering::Relaxed), 0);
+    assert_eq!(counted.hashed.load(Ordering::Relaxed), 0);
+}

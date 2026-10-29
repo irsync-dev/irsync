@@ -302,6 +302,14 @@ deferred rather than fixed are listed in
     off SQLite's memory statistics was not tried: what remains of the mutex
     wait is about 2%, and the switch is process-wide.
 
+43. **`update` stops at the first lookup that fails.** It used to note the
+    error, treat the entry as new and carry on, failing only at the end: a
+    manifest that could not be read made every file look new, and the run
+    started re-hashing the whole 4.2 TB volume before it could report. Now
+    the entry is not sent to be hashed and the sink fails when its turn
+    comes, which stops the walk and the hashers. Entries ahead of it in walk
+    order are still recorded, as in any interrupted run.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
