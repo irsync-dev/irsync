@@ -32,6 +32,7 @@ use irsync_proto::v1::{
 };
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use super::control::{is_own_temp, Ev, Listed, Out};
 use super::engine::{blocking, Ctx};
@@ -46,6 +47,7 @@ use crate::plan::{
     decide, itemize, merge_join, meta_differs, Decision, HashLookup, NoLookup, PlanOpts, Side,
 };
 use crate::telemetry::meter::Activity;
+use crate::telemetry::PhaseKind;
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -849,6 +851,20 @@ impl Planner {
 
 /// Merge-joins the listings and acts on every path; reports at the end.
 pub(super) async fn plan(
+    ctx: Arc<Ctx>,
+    out: Out,
+    events: mpsc::UnboundedSender<Ev>,
+    peer: mpsc::UnboundedReceiver<Listed>,
+    local: mpsc::UnboundedReceiver<Listed>,
+    prior: Prior,
+) {
+    let phase = ctx.phase(PhaseKind::Plan);
+    plan_listings(ctx, out, events, peer, local, prior)
+        .instrument(phase.span().clone())
+        .await;
+}
+
+async fn plan_listings(
     ctx: Arc<Ctx>,
     out: Out,
     events: mpsc::UnboundedSender<Ev>,

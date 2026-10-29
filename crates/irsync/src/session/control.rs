@@ -16,6 +16,7 @@ use irsync_proto::v1::{
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use super::engine::Ctx;
 use super::{IndexScope, SessionRecord};
@@ -26,6 +27,7 @@ use crate::index::IndexHandle;
 use crate::net::frame::{read_msg, write_msg};
 use crate::plan::Side;
 use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
+use crate::telemetry::Phase;
 
 /// How long to wait for the peer to take our last bytes before giving up.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -75,17 +77,20 @@ pub(super) fn spawn_writer(
     events: mpsc::UnboundedSender<Ev>,
 ) -> (Out, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Option<Control>>();
-    let task = tokio::spawn(async move {
-        while let Some(Some(c)) = rx.recv().await {
-            if let Err(e) = write_msg(&mut send, &c).await {
-                let _ = events.send(Ev::WriterFailed(e.to_string()));
-                return;
+    let task = tokio::spawn(
+        async move {
+            while let Some(Some(c)) = rx.recv().await {
+                if let Err(e) = write_msg(&mut send, &c).await {
+                    let _ = events.send(Ev::WriterFailed(e.to_string()));
+                    return;
+                }
+            }
+            if send.finish().is_ok() {
+                let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
             }
         }
-        if send.finish().is_ok() {
-            let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
-        }
-    });
+        .instrument(tracing::Span::current()),
+    );
     (Out { tx }, task)
 }
 
@@ -124,7 +129,8 @@ pub(super) fn spawn_reader(
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    tokio::spawn(
+        async move {
         let mut announced = false;
         // Receiver role: what the peer lists, reported at its `ListingEnd`.
         let mut seen = crate::scan::ListStats::default();
@@ -226,7 +232,9 @@ pub(super) fn spawn_reader(
                 }
             }
         }
-    })
+    }
+        .instrument(tracing::Span::current()),
+    )
 }
 
 /// irsync's own temporary files (`.irsync.<name>.part` / `.tmp`) never appear
@@ -241,6 +249,8 @@ pub(super) fn is_own_temp(path: &RelPath) -> bool {
 pub(super) type ListedFiles = Arc<Mutex<HashSet<RelPath>>>;
 
 pub(super) struct ListingSpec {
+    /// The `list` phase; it ends with the walk.
+    pub phase: Phase,
     pub root: PathBuf,
     pub filters: Arc<FilterSet>,
     pub hasher: Arc<Hasher>,
@@ -291,6 +301,7 @@ pub(super) fn spawn_listing(
         spec.meter.clone(),
     );
     tokio::task::spawn_blocking(move || {
+        let _in_list = spec.phase.span().clone().entered();
         let under_skip = |p: &RelPath| {
             spec.skip.as_ref().is_some_and(|s| {
                 let (p, s) = (p.as_bytes(), s.as_bytes());

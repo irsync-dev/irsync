@@ -571,6 +571,7 @@ async fn sync(
                 .or(host_entry.and_then(|h| h.reconnect))
                 .or(settings.client.reconnect)
                 .unwrap_or(ReconnectOpts::default().max),
+            source_index: index,
             ..ReconnectOpts::default()
         };
         sessions += 1;

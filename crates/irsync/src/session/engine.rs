@@ -28,6 +28,7 @@ use prost::Message;
 use rand_core::{OsRng, RngCore};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use super::control::{self, Ev};
 use super::{
@@ -44,7 +45,7 @@ use crate::index::IndexHandle;
 use crate::net::frame::{write_msg, MAX_FRAME};
 use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
-use crate::telemetry::{self, Role, Side};
+use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
 
 /// The daemon refused the session: its `Error` reply to `Hello`.
 #[derive(Debug, Clone)]
@@ -288,6 +289,24 @@ pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()
     Ok(())
 }
 
+/// The `transfer` phase of a role: opened at the first file, closed when
+/// the role has no more files to move.
+#[derive(Default)]
+pub(super) struct TransferPhase(Option<Phase>);
+
+impl TransferPhase {
+    /// The `transfer` span, opened now if it is not yet.
+    pub(super) fn span(&mut self, ctx: &Ctx) -> &tracing::Span {
+        self.0
+            .get_or_insert_with(|| ctx.phase(PhaseKind::Transfer))
+            .span()
+    }
+
+    pub(super) fn end(&mut self) {
+        self.0 = None;
+    }
+}
+
 /// Everything a role works with.
 pub(super) struct Ctx {
     pub conn: Connection,
@@ -335,6 +354,11 @@ pub(super) struct Ctx {
 }
 
 impl Ctx {
+    /// A phase of this side's role, under the current span.
+    pub fn phase(&self, kind: PhaseKind) -> Phase {
+        phase(kind, self.meter.side(), Some(self.meter.role()))
+    }
+
     /// Absolute path of `rel` under the session root.
     pub fn full(&self, rel: &RelPath) -> PathBuf {
         if rel.as_bytes().is_empty() {
@@ -579,6 +603,12 @@ pub(super) async fn run_client_inner(
     set_hello_options(&mut hello, opts, &local.filters);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
 
+    let sends = direction == Direction::ClientSends;
+    let handshake = phase(
+        PhaseKind::Handshake,
+        Side::Client,
+        Some(role_of(Side::Client, hello.direction)),
+    );
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -594,6 +624,10 @@ pub(super) async fn run_client_inner(
     };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
+    drop(handshake);
+    let span = tracing::Span::current();
+    span.record("session_id", control::hex(&session_id));
+    span.record("resumed", ack.resumed);
     let peer_build = BuildInfo::from_wire(ack.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
@@ -610,7 +644,6 @@ pub(super) async fn run_client_inner(
         None
     };
 
-    let sends = direction == Direction::ClientSends;
     if !sends && !opts.dry_run {
         let root = local.root.clone();
         blocking(move || std::fs::create_dir_all(&root))
@@ -757,6 +790,77 @@ pub struct Place {
 /// `HelloAck` and plays the role opposite to the client's.
 pub async fn serve_daemon(
     conn: Connection,
+    send: SendStream,
+    recv: RecvStream,
+    place: Place,
+    hello: Hello,
+    index: IndexHandle,
+    shared: DaemonSessions,
+) -> anyhow::Result<Outcome> {
+    // A root span: the daemon's session never inherits an in-process parent
+    // (in tests the client runs in the same process).
+    let span = session_span(
+        Side::Daemon,
+        &hello,
+        conn.remote_id().fmt_short().to_string(),
+        0,
+    );
+    let res = serve_daemon_inner(conn, send, recv, place, hello, index, shared)
+        .instrument(span.clone())
+        .await;
+    if let Ok(out) = &res {
+        record_outcome(&span, out);
+    }
+    res
+}
+
+/// The `session` span of one session on one side: a root span, with the
+/// end-of-session fields declared empty for [`record_outcome`].
+pub(super) fn session_span(
+    side: Side,
+    hello: &Hello,
+    peer: String,
+    source_index: usize,
+) -> tracing::Span {
+    let direction = Direction::try_from(hello.direction).unwrap_or(Direction::ClientSends);
+    tracing::info_span!(
+        parent: None,
+        "session",
+        session_id = tracing::field::Empty,
+        direction = ?direction,
+        side = side.label(),
+        role = role_of(side, hello.direction).label(),
+        peer = %peer,
+        resumed = tracing::field::Empty,
+        source_index,
+        rtt_max_ms = tracing::field::Empty,
+        cwnd = tracing::field::Empty,
+        lost_packets = tracing::field::Empty,
+        reconnects = tracing::field::Empty,
+    )
+}
+
+/// The role `side` plays for a `Hello.direction` value.
+fn role_of(side: Side, direction: i32) -> Role {
+    let client_sends = direction == Direction::ClientSends as i32;
+    if client_sends == (side == Side::Client) {
+        Role::Sender
+    } else {
+        Role::Receiver
+    }
+}
+
+/// Records the fields a session knows only at its end.
+pub(super) fn record_outcome(span: &tracing::Span, out: &Outcome) {
+    let net = &out.usage.net;
+    span.record("rtt_max_ms", net.rtt_max.as_millis() as u64);
+    span.record("cwnd", net.cwnd);
+    span.record("lost_packets", net.lost_packets);
+    span.record("reconnects", u64::from(out.reconnects));
+}
+
+async fn serve_daemon_inner(
+    conn: Connection,
     mut send: SendStream,
     recv: RecvStream,
     place: Place,
@@ -764,6 +868,11 @@ pub async fn serve_daemon(
     index: IndexHandle,
     shared: DaemonSessions,
 ) -> anyhow::Result<Outcome> {
+    let handshake = phase(
+        PhaseKind::Handshake,
+        Side::Daemon,
+        Some(role_of(Side::Daemon, hello.direction)),
+    );
     let Place {
         root: export_root,
         export: export_name,
@@ -836,6 +945,10 @@ pub async fn serve_daemon(
         },
     )
     .await?;
+    drop(handshake);
+    let span = tracing::Span::current();
+    span.record("session_id", control::hex(&session_id));
+    span.record("resumed", resumed);
     #[cfg(feature = "test-hooks")]
     if shared.fault.as_ref().is_some_and(|f| f.drops_after_ack()) {
         let mut recv = recv;
@@ -992,14 +1105,14 @@ async fn run_role(
         ctx.activity.clone(),
     );
     let idle = Arc::new(AtomicBool::new(false));
-    let watchdog = ctx
-        .idle_timeout
-        .map(|t| tokio::spawn(watch_idle(ctx.clone(), t, idle.clone())));
-    let heartbeat = tokio::spawn(heartbeat(
-        ctx.activity.clone(),
-        ctx.busy.clone(),
-        out.clone(),
-    ));
+    // Spawned tasks do not inherit the span: their events belong to the session.
+    let session = tracing::Span::current();
+    let watchdog = ctx.idle_timeout.map(|t| {
+        tokio::spawn(watch_idle(ctx.clone(), t, idle.clone()).instrument(session.clone()))
+    });
+    let heartbeat = tokio::spawn(
+        heartbeat(ctx.activity.clone(), ctx.busy.clone(), out.clone()).instrument(session),
+    );
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(ctx.meter.clone(), ctx.conn.clone()));
     let res = if sends {

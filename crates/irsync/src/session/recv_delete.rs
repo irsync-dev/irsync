@@ -4,10 +4,13 @@
 //! was incomplete (so far, for a pass during the run) unless
 //! `--ignore-errors`.
 
+use tracing::Instrument;
+
 use super::Receiver;
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::fs::paths::RelPath;
+use crate::telemetry::PhaseKind;
 
 impl Receiver {
     /// Runs a deletion pass under the session root: refused when
@@ -39,7 +42,14 @@ impl Receiver {
                 total: is_final.then_some(total),
             });
         }));
-        match pass.execute(self.ctx.root.clone(), incomplete).await {
+        let phase = self.ctx.phase(PhaseKind::Delete);
+        phase.span().record("mode", format!("{:?}", pass.mode()));
+        let executed = pass
+            .execute(self.ctx.root.clone(), incomplete)
+            .instrument(phase.span().clone())
+            .await;
+        drop(phase);
+        match executed {
             Ok(rep) => {
                 for p in &rep.deleted {
                     self.ctx.hooks.event("delete", p);

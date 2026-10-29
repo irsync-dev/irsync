@@ -22,12 +22,13 @@ use irsync_proto::v1::{
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing::Instrument;
 
 use super::control::msg_name;
 use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
-use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
+use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
 use super::parts::{split, PART_RECORDS};
 use super::Outcome;
 use crate::delta::Basis;
@@ -37,6 +38,7 @@ use crate::fs::paths::RelPath;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
+use crate::telemetry::PhaseKind;
 use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
@@ -84,6 +86,8 @@ struct SFile {
     started: Option<std::time::Instant>,
     #[cfg(feature = "test-hooks")]
     hooked: bool,
+    /// The `file` span (debug level); its `hash` and `send` spans hang off it.
+    span: tracing::Span,
 }
 
 /// Whether this side walks and streams its listing.
@@ -123,6 +127,7 @@ struct SenderRole {
     sending: usize,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
+    transfer: TransferPhase,
     /// What the receiver deleted (or would have, on a dry run).
     deleted: Vec<RelPath>,
     would_delete: Vec<RelPath>,
@@ -144,6 +149,7 @@ impl SenderRole {
         tracing::debug!("listing the source");
         self.listing = Listing::Running(spawn_listing(
             ListingSpec {
+                phase: self.ctx.phase(PhaseKind::List),
                 root: self.ctx.root.clone(),
                 filters: self.ctx.filters.clone(),
                 hasher: self.ctx.hasher.clone(),
@@ -171,54 +177,63 @@ impl SenderRole {
     fn spawn_digest(&self, file_id: u64, gen: u32, path: RelPath, force: bool, check: bool) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
         let append_from = self.files.get(&file_id).and_then(|f| f.append_from);
-        tokio::spawn(async move {
-            let result = async {
-                if check {
-                    let (root, p, filters) = (ctx.root.clone(), path.clone(), ctx.filters.clone());
-                    if !blocking(move || Ok(walk_admits(&root, &p, &filters))).await? {
+        let hash = self.files.get(&file_id).map_or_else(
+            tracing::Span::none,
+            |f| tracing::debug_span!(parent: &f.span, "hash"),
+        );
+        tokio::spawn(
+            async move {
+                let result = async {
+                    if check {
+                        let (root, p, filters) =
+                            (ctx.root.clone(), path.clone(), ctx.filters.clone());
+                        if !blocking(move || Ok(walk_admits(&root, &p, &filters))).await? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "not a listed regular file",
+                            ));
+                        }
+                    }
+                    // Re-stat: the digest must describe the file as it is now.
+                    // Hashing works on index keys under the index root.
+                    let key = ctx.key(&path);
+                    let (base, rel) = (ctx.base.clone(), key.clone());
+                    let (entry, ctime) =
+                        blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
+                    if entry.kind() != Kind::Regular {
                         return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "not a listed regular file",
+                            io::ErrorKind::InvalidInput,
+                            "no longer a regular file",
                         ));
                     }
+                    if let Some(from) = append_from {
+                        // Only the tail: the receiver trusts its prefix.
+                        let full = ctx.full_key(&key);
+                        return blocking(move || tail_digest(&full, from)).await;
+                    }
+                    let item = ScanItem {
+                        path: key,
+                        entry,
+                        ctime,
+                    };
+                    let since = super::wait_start(&ctx.meter);
+                    let digest = if force {
+                        ctx.forced.digest(&item).await
+                    } else {
+                        sender.lookahead_digest(&item).await
+                    };
+                    super::record_hash_wait(&ctx.meter, since);
+                    digest
                 }
-                // Re-stat: the digest must describe the file as it is now.
-                // Hashing works on index keys under the index root.
-                let key = ctx.key(&path);
-                let (base, rel) = (ctx.base.clone(), key.clone());
-                let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
-                if entry.kind() != Kind::Regular {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "no longer a regular file",
-                    ));
-                }
-                if let Some(from) = append_from {
-                    // Only the tail: the receiver trusts its prefix.
-                    let full = ctx.full_key(&key);
-                    return blocking(move || tail_digest(&full, from)).await;
-                }
-                let item = ScanItem {
-                    path: key,
-                    entry,
-                    ctime,
-                };
-                let since = super::wait_start(&ctx.meter);
-                let digest = if force {
-                    ctx.forced.digest(&item).await
-                } else {
-                    sender.lookahead_digest(&item).await
-                };
-                super::record_hash_wait(&ctx.meter, since);
-                digest
+                .await;
+                let _ = events.send(Ev::Send(Done::Digested {
+                    file_id,
+                    gen,
+                    result,
+                }));
             }
-            .await;
-            let _ = events.send(Ev::Send(Done::Digested {
-                file_id,
-                gen,
-                result,
-            }));
-        });
+            .instrument(hash),
+        );
     }
 
     /// Gives up on the file and tells the receiver to stop waiting for it.
@@ -269,6 +284,18 @@ impl SenderRole {
         }
         let path = RelPath::new(&p.path).unwrap_or_default();
         let append_from = (p.action == Action::Append as i32).then_some(p.append_from);
+        let kind = if p.action == Action::Whole as i32 {
+            "new"
+        } else {
+            "delta"
+        };
+        let span = tracing::debug_span!(
+            parent: self.transfer.span(&self.ctx),
+            "file",
+            path = ?path,
+            size = tracing::field::Empty,
+            kind,
+        );
         self.files.insert(
             file_id,
             SFile {
@@ -284,6 +311,7 @@ impl SenderRole {
                 started: None,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
+                span,
             },
         );
         self.persist.plan(PlanEntry {
@@ -357,6 +385,7 @@ impl SenderRole {
                         }
                     }
                 }
+                f.span.record("size", d.size);
                 f.digest = Some(Arc::new(d));
             }
             Err(e) => self.source_error(file_id, e.to_string()),
@@ -453,42 +482,46 @@ impl SenderRole {
         let path = f.path.clone();
         self.sending += 1;
         f.streams += 1;
-        tokio::spawn(async move {
-            #[cfg(feature = "test-hooks")]
-            let result = match hook {
-                Some(h) if idxs.len() > 1 => {
-                    let first: HashMap<u32, Basis> =
-                        bases.remove_entry(&idxs[0]).into_iter().collect();
-                    match sender
-                        .send_chunks_against(file_id, &key, &digest, &idxs[..1], first)
-                        .await
-                    {
-                        Ok(n) => {
-                            h(&path).await;
-                            sender
-                                .send_chunks_against(file_id, &key, &digest, &idxs[1..], bases)
-                                .await
-                                .map(|m| n + m)
+        let send_span = tracing::debug_span!(parent: &f.span, "send");
+        tokio::spawn(
+            async move {
+                #[cfg(feature = "test-hooks")]
+                let result = match hook {
+                    Some(h) if idxs.len() > 1 => {
+                        let first: HashMap<u32, Basis> =
+                            bases.remove_entry(&idxs[0]).into_iter().collect();
+                        match sender
+                            .send_chunks_against(file_id, &key, &digest, &idxs[..1], first)
+                            .await
+                        {
+                            Ok(n) => {
+                                h(&path).await;
+                                sender
+                                    .send_chunks_against(file_id, &key, &digest, &idxs[1..], bases)
+                                    .await
+                                    .map(|m| n + m)
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
                     }
-                }
-                _ => {
-                    sender
-                        .send_chunks_against(file_id, &key, &digest, &idxs, bases)
-                        .await
-                }
-            };
-            #[cfg(not(feature = "test-hooks"))]
-            let result = sender
-                .send_chunks_against(file_id, &key, &digest, &idxs, bases)
-                .await;
-            let _ = events.send(Ev::Send(Done::Sent {
-                file_id,
-                gen,
-                result,
-            }));
-        });
+                    _ => {
+                        sender
+                            .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                            .await
+                    }
+                };
+                #[cfg(not(feature = "test-hooks"))]
+                let result = sender
+                    .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                    .await;
+                let _ = events.send(Ev::Send(Done::Sent {
+                    file_id,
+                    gen,
+                    result,
+                }));
+            }
+            .instrument(send_span),
+        );
     }
 
     fn on_sent(&mut self, file_id: u64, gen: u32, result: io::Result<u64>) {
@@ -756,6 +789,7 @@ pub(super) async fn run(
         sending: 0,
         errors: Vec::new(),
         persist,
+        transfer: TransferPhase::default(),
         deleted: Vec::new(),
         would_delete: Vec::new(),
         max_delete_reached: false,
@@ -850,6 +884,7 @@ pub(super) async fn run(
             break Err(e);
         }
     };
+    s.transfer.end();
     if res.is_ok() {
         // The receiver can finish before our last streams report back (it
         // has the data; we wait for the transport's acknowledgement): collect

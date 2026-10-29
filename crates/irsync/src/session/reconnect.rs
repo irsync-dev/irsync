@@ -12,12 +12,15 @@ use iroh::endpoint::{Connection, ConnectionError};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use irsync_proto::v1::{error::Code, Hello};
 use rand_core::{OsRng, RngCore};
+use tracing::Instrument;
 
 use super::engine::{
-    client_session_key, run_client_inner, Attempt, PeerError, SessionRefused, TransportError,
+    client_session_key, record_outcome, run_client_inner, session_span, Attempt, PeerError,
+    SessionRefused, TransportError,
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, CLOSE_SUPERSEDED};
 use crate::cli::SyncOptions;
+use crate::telemetry::{phase, Phase, PhaseKind, Side};
 
 /// How long to keep trying, and how long to wait between attempts.
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +31,8 @@ pub struct ReconnectOpts {
     /// The first wait; it doubles per attempt up to `backoff_max`, jittered.
     pub backoff_min: Duration,
     pub backoff_max: Duration,
+    /// Which source of the command line this session is (for its trace).
+    pub source_index: usize,
 }
 
 impl Default for ReconnectOpts {
@@ -36,6 +41,7 @@ impl Default for ReconnectOpts {
             max: Duration::from_secs(24 * 3600),
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
+            source_index: 0,
         }
     }
 }
@@ -288,9 +294,39 @@ async fn watch_paths<F: std::future::Future>(
 /// builds the `Hello` for a session id (`None`: a new session). Transport
 /// failures are retried with backoff until `opts.max` has elapsed; a daemon
 /// that no longer knows the session gets one immediate fresh attempt; every
-/// other error is returned as is.
+/// other error is returned as is. The whole run is one `session` span; each
+/// attempt is a `connect` span under it.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reconnect(
+    endpoint: &Endpoint,
+    target: impl Into<EndpointAddr>,
+    remote: &str,
+    hello_for: impl Fn(Option<[u8; 16]>) -> Hello,
+    local: LocalSide,
+    sync_opts: &SyncOptions,
+    opts: ReconnectOpts,
+    on_state: impl FnMut(ConnState),
+) -> anyhow::Result<Outcome> {
+    let target: EndpointAddr = target.into();
+    let span = session_span(
+        Side::Client,
+        &hello_for(None),
+        target.id.fmt_short().to_string(),
+        opts.source_index,
+    );
+    let res = attempts(
+        endpoint, target, remote, hello_for, local, sync_opts, opts, on_state,
+    )
+    .instrument(span.clone())
+    .await;
+    if let Ok(out) = &res {
+        record_outcome(&span, out);
+    }
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attempts(
     endpoint: &Endpoint,
     target: impl Into<EndpointAddr>,
     remote: &str,
@@ -303,11 +339,23 @@ pub async fn run_with_reconnect(
     let bus = local.hooks.bus.clone();
     // How the latest connection was made, for the outcome.
     let kind = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // The attempt's `connect` phase, open until the connection reports its path.
+    let connecting: std::sync::Arc<std::sync::Mutex<Option<Phase>>> = Default::default();
     let mut on_state = {
-        let kind = kind.clone();
+        let (kind, connecting) = (kind.clone(), connecting.clone());
         move |s: ConnState| {
             if matches!(s, ConnState::Direct | ConnState::Relay) {
                 *kind.lock().unwrap() = Some(s);
+                if let Some(p) = connecting.lock().unwrap().take() {
+                    p.span().record(
+                        "path",
+                        if s == ConnState::Direct {
+                            "direct"
+                        } else {
+                            "relay"
+                        },
+                    );
+                }
             }
             bus.emit(super::Event::Conn(s));
             on_state(s);
@@ -340,7 +388,14 @@ pub async fn run_with_reconnect(
             n => ConnState::Reconnecting { attempt: n },
         });
         let mut tried = Attempt::default();
-        let (res, conn) = match endpoint.connect(target.clone(), irsync_proto::ALPN).await {
+        let connect = phase(PhaseKind::Connect, Side::Client, None);
+        connect.span().record("attempt", attempt);
+        let dialled = endpoint
+            .connect(target.clone(), irsync_proto::ALPN)
+            .instrument(connect.span().clone())
+            .await;
+        *connecting.lock().unwrap() = Some(connect);
+        let (res, conn) = match dialled {
             Ok(conn) => {
                 let run = run_client_inner(
                     conn.clone(),
@@ -360,6 +415,7 @@ pub async fn run_with_reconnect(
                 None,
             ),
         };
+        connecting.lock().unwrap().take();
         let next = res.as_ref().err().map(|e| classify(e, conn.as_ref()));
         if let Some(c) = &conn {
             c.close(0u32.into(), b"done");
@@ -419,7 +475,12 @@ pub async fn run_with_reconnect(
             wait_ms = wait.as_millis() as u64,
             "connection lost; reconnecting"
         );
-        tokio::time::sleep(wait).await;
+        let reconnect = phase(PhaseKind::Reconnect, Side::Client, None);
+        reconnect.span().record("attempt", attempt);
+        reconnect.span().record("reason", format!("{err:#}"));
+        tokio::time::sleep(wait)
+            .instrument(reconnect.span().clone())
+            .await;
     }
 }
 

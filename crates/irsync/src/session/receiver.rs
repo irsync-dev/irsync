@@ -25,11 +25,12 @@ use irsync_proto::v1::{
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
+use tracing::Instrument;
 
 use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
-use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
+use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
 use super::parts::{assemble, Assembly};
 use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
@@ -46,6 +47,7 @@ use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError};
 use crate::telemetry::meter::Counter;
+use crate::telemetry::PhaseKind;
 use recv_delete::{capped_paths, MAX_DONE_PATHS};
 
 #[path = "recv_delete.rs"]
@@ -150,6 +152,10 @@ struct RFile {
     /// The planner's in-flight slot (none for a resumed plan), released
     /// when the file leaves `files`.
     _slot: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// The `file` span (debug level); `recv` and `place` hang off it.
+    span: tracing::Span,
+    /// The `recv` span, open while chunks are being received.
+    recv: Option<tracing::Span>,
 }
 
 /// Itemizes a file from the receiver: to the sending client when this is
@@ -198,6 +204,7 @@ struct Receiver {
     transferred_size: u64,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
+    transfer: TransferPhase,
     /// Open and finalize tasks, waited for when the session fails.
     tasks: TaskTracker,
     /// Hard links waiting for the final pass.
@@ -289,6 +296,13 @@ impl Receiver {
         if let Some(peak) = &self.ctx.hooks.inflight_peak {
             peak.fetch_max(self.active, Ordering::SeqCst);
         }
+        let span = tracing::debug_span!(
+            parent: self.transfer.span(&self.ctx),
+            "file",
+            path = ?path,
+            size = entry.size,
+            kind = if action == Action::Whole { "new" } else { "delta" },
+        );
         self.files.insert(
             file_id,
             RFile {
@@ -307,6 +321,8 @@ impl Receiver {
                 abandoned: None,
                 digest: None,
                 _slot: slot,
+                span,
+                recv: None,
             },
         );
     }
@@ -466,14 +482,18 @@ impl Receiver {
             f.path.clone(),
             f.entry.clone(),
         );
-        self.tasks.spawn(async move {
-            let result = finalize(ctx, w, path, entry, digest).await;
-            let _ = events.send(Ev::Recv(Done::Finalized {
-                file_id,
-                gen,
-                result,
-            }));
-        });
+        let place = tracing::debug_span!(parent: &f.span, "place");
+        self.tasks.spawn(
+            async move {
+                let result = finalize(ctx, w, path, entry, digest).await;
+                let _ = events.send(Ev::Recv(Done::Finalized {
+                    file_id,
+                    gen,
+                    result,
+                }));
+            }
+            .instrument(place),
+        );
     }
 
     async fn on_done(&mut self, d: Done) {
@@ -533,6 +553,7 @@ impl Receiver {
                     return;
                 }
                 f.st = St::Finalizing;
+                f.recv = None;
                 let digest = f.digest.clone();
                 self.routes
                     .lock()
@@ -679,6 +700,7 @@ impl Receiver {
             return;
         }
         f.st = St::Receiving;
+        f.recv = Some(tracing::debug_span!(parent: &f.span, "recv"));
         let route = Route {
             gen,
             slot: Arc::new(tokio::sync::Mutex::new(Some(writer))),
@@ -963,6 +985,7 @@ pub(super) async fn run(
         transferred_size: 0,
         errors: Vec::new(),
         persist,
+        transfer: TransferPhase::default(),
         tasks: TaskTracker::new(),
         links: Vec::new(),
         failed: HashSet::new(),
@@ -992,6 +1015,7 @@ pub(super) async fn run(
         } else {
             r.listing = Some(spawn_listing(
                 ListingSpec {
+                    phase: ctx.phase(PhaseKind::List),
                     root: ctx.root.clone(),
                     // Everything this side has: filters shape the sender's
                     // walk, and the planner applies them for deletions.
@@ -1015,14 +1039,17 @@ pub(super) async fn run(
                 None,
             ));
         }
-        let planner = tokio::spawn(plan(
-            ctx.clone(),
-            out.clone(),
-            events_tx.clone(),
-            peer_listing,
-            local_rx,
-            prior,
-        ));
+        let planner = tokio::spawn(
+            plan(
+                ctx.clone(),
+                out.clone(),
+                events_tx.clone(),
+                peer_listing,
+                local_rx,
+                prior,
+            )
+            .instrument(tracing::Span::current()),
+        );
         planner_abort = Some(planner.abort_handle());
         // A planner that dies without reporting must not leave us waiting.
         let events = events_tx.clone();
@@ -1054,6 +1081,7 @@ pub(super) async fn run(
             }
         }
     };
+    r.transfer.end();
     if let Err(e) = res {
         acceptor.abort();
         if let Some(p) = planner_abort {
