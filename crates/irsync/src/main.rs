@@ -9,6 +9,7 @@ use irsync::build::BuildInfo;
 use irsync::cli::location::Location;
 use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
+use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, Args, Command, ConfigArgs, ConfigCmd, DaemonArgs, Direction, ExportArgs, ExportCmd,
@@ -30,6 +31,7 @@ use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{explain, run_with_reconnect, ConnState, ReconnectOpts};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::telemetry::meter::Usage;
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{export_entry, hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -92,6 +94,7 @@ where
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let log = LogWriter::new();
     init_logging(opts.verbose, opts.quiet, log.clone());
+    irsync::telemetry::set_enabled(opts.verbose >= 1 && !opts.quiet);
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -571,7 +574,10 @@ async fn sync(
             ..ReconnectOpts::default()
         };
         sessions += 1;
-        let out = match session(
+        let started = Instant::now();
+        let operand_from = args.sync.src()[index].clone();
+        let operand_to = args.sync.dest().unwrap_or_default().to_string();
+        let result = session(
             &endpoint,
             target.clone(),
             &remote_text,
@@ -584,10 +590,39 @@ async fn sync(
             ropts,
             bus,
         )
-        .await
-        {
-            Ok(out) => out,
+        .await;
+        let mut summary = SessionSummary {
+            index,
+            of,
+            verb: match direction {
+                Direction::ClientSends => "push",
+                Direction::DaemonSends => "pull",
+            },
+            from: operand_from,
+            to: operand_to,
+            reconnects: 0,
+            conn: None,
+            usage: Usage::default(),
+            files_transferred: 0,
+            files_hashed: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+        };
+        let out = match result {
+            Ok(out) => {
+                summary.reconnects = out.reconnects;
+                summary.conn = out.conn;
+                summary.usage = out.usage.clone();
+                summary.files_transferred = out.files_transferred;
+                summary.files_hashed = out.files_hashed;
+                summary.bytes_sent = out.bytes_sent;
+                summary.bytes_received = out.bytes_received;
+                bus.emit(Event::SessionEnd(Arc::new(summary)));
+                out
+            }
             Err(e) => {
+                summary.usage.wall = started.elapsed();
+                bus.emit(Event::SessionEnd(Arc::new(summary)));
                 // Keep what earlier sources achieved; report this one and go on.
                 log.eprintln(&format!("irsync: {}: {e:#}", path.display()));
                 failed += 1;

@@ -72,7 +72,7 @@ impl Counter {
 }
 
 /// Process-level usage over a session.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessUsage {
     /// CPU time the whole process spent since the session started.
     pub cpu_user: Duration,
@@ -83,7 +83,7 @@ pub struct ProcessUsage {
 }
 
 /// QUIC path usage over a session; a zero RTT means no sample was taken.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NetUsage {
     pub rtt_min: Duration,
     pub rtt_max: Duration,
@@ -95,7 +95,7 @@ pub struct NetUsage {
 }
 
 /// A snapshot of a meter.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Usage {
     pub wall: Duration,
     /// Busy time per activity, indexed by `Activity as usize`.

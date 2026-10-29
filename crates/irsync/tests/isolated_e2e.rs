@@ -74,16 +74,19 @@ fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
         .unwrap()
 }
 
-#[test]
-fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
-    let dir = tempfile::tempdir().unwrap();
-    let tmp = dir.path();
-    for d in ["src/sub", "dst", "home", "xdg"] {
-        std::fs::create_dir_all(tmp.join(d)).unwrap();
-    }
-    std::fs::write(tmp.join("src/a.txt"), b"hello").unwrap();
-    std::fs::write(tmp.join("src/sub/b.bin"), bytes(64 * 1024)).unwrap();
+/// A daemon on localhost exporting `m` (read-write for the client's
+/// identity, created under `tmp/home`) at `tmp/dst`.
+struct Daemon {
+    guard: DaemonGuard,
+    /// Its stderr, line by line.
+    erx: mpsc::Receiver<String>,
+    id: iroh::EndpointId,
+    listen: SocketAddr,
+    config: std::path::PathBuf,
+    client_key: std::path::PathBuf,
+}
 
+fn start_daemon(tmp: &Path) -> Daemon {
     // The client generates its own identity under HOME on first use;
     // `irsync id show` creates it early and prints its EndpointId (line 2).
     let key = tmp.join("home/.config/irsync/id_ed25519");
@@ -153,6 +156,34 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let (id, listen) = (id.unwrap(), listen.unwrap());
     assert_eq!(listen.ip().to_string(), "127.0.0.1");
     assert_ne!(listen.port(), 0);
+    Daemon {
+        guard: daemon,
+        erx,
+        id,
+        listen,
+        config: config_path,
+        client_key: key,
+    }
+}
+
+#[test]
+fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["src/sub", "dst", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("src/a.txt"), b"hello").unwrap();
+    std::fs::write(tmp.join("src/sub/b.bin"), bytes(64 * 1024)).unwrap();
+
+    let Daemon {
+        guard: _daemon,
+        erx,
+        id,
+        listen,
+        config: _,
+        client_key: key,
+    } = start_daemon(tmp);
 
     let address = format!("localhost:{}", listen.port());
     let src = format!("{}/", tmp.join("src").display());
@@ -377,4 +408,50 @@ fn no_exports_warning_names_the_split_file_that_holds_them() {
         warn.contains(&tmp.join("exports.toml").display().to_string()),
         "{warn}"
     );
+}
+
+#[test]
+fn verbose_prints_one_summary_per_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["dst", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    let srcs: Vec<String> = (1..=3)
+        .map(|i| {
+            let d = tmp.join(format!("s{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("f.bin"), bytes(4096 * i)).unwrap();
+            d.display().to_string()
+        })
+        .collect();
+    let d = start_daemon(tmp);
+    let (address, dest) = (
+        format!("localhost:{}", d.listen.port()),
+        format!("{}:m/", d.id),
+    );
+    let mut args = vec![
+        "-v",
+        "--reconnect",
+        "0",
+        "--address",
+        &address,
+        "--config",
+        d.config.to_str().unwrap(),
+    ];
+    args.extend(srcs.iter().map(String::as_str));
+    args.push(&dest);
+    let o = run_client(&args, tmp);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let at = |needle: &str| {
+        out.find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in:\n{out}"))
+    };
+    let (a, b, c) = (at("session 1/3"), at("session 2/3"), at("session 3/3"));
+    assert!(a < b && b < c, "{out}");
+    assert!(c < at("\nsent "), "{out}");
+    assert_eq!(out.matches("session ").count(), 3, "{out}");
+    assert!(out.contains(&format!("push  {}", srcs[0])), "{out}");
+    assert!(out.contains(&format!("-> {dest}")), "{out}");
 }

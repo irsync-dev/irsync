@@ -546,3 +546,56 @@ fn a_long_error_is_cut_to_the_width_instead_of_wrapping() {
         "the message survives: {line:?}"
     );
 }
+
+fn summary(index: usize, of: usize) -> Event {
+    use irsync::cli::progress::summary::SessionSummary;
+    Event::SessionEnd(Arc::new(SessionSummary {
+        index,
+        of,
+        verb: "push",
+        from: format!("src{index}"),
+        to: "nas:/backup".into(),
+        reconnects: 0,
+        conn: Some(ConnState::Direct),
+        usage: Default::default(),
+        files_transferred: 0,
+        files_hashed: 0,
+        bytes_sent: 0,
+        bytes_received: 0,
+    }))
+}
+
+#[tokio::test]
+async fn no_summary_without_verbose() {
+    let buf = Buf::default();
+    let r = reporter(&buf, false, 0, true, false);
+    let events = (0..2)
+        .flat_map(|i| [Event::SessionStart { index: i, of: 2 }, summary(i, 2)])
+        .collect();
+    let mut r = feed(r, events).await;
+    let out = Outcome {
+        bytes_sent: 10,
+        bytes_received: 5,
+        ..Outcome::default()
+    };
+    r.finish(&out, Duration::from_secs(1));
+    let t = buf.text();
+    assert!(!t.contains("session 1/"), "{t}");
+    assert!(t.starts_with("Number of files: 0 (reg: 0"), "{t}");
+    assert!(t.contains("sent 10 bytes  received 5 bytes"), "{t}");
+}
+
+#[tokio::test]
+async fn a_summary_per_session_prints_above_the_trailer_under_v() {
+    let buf = Buf::default();
+    let events = (0..3)
+        .flat_map(|i| [Event::SessionStart { index: i, of: 3 }, summary(i, 3)])
+        .collect();
+    let mut r = feed(reporter(&buf, false, 1, false, false), events).await;
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    let at = |n: &str| t.find(n).unwrap_or_else(|| panic!("no {n:?} in:\n{t}"));
+    assert!(at("session 1/3") < at("session 2/3"));
+    assert!(at("session 2/3") < at("session 3/3"));
+    assert!(at("session 3/3") < at("sent 0 bytes"));
+}

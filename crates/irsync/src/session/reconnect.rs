@@ -301,9 +301,17 @@ pub async fn run_with_reconnect(
     mut on_state: impl FnMut(ConnState),
 ) -> anyhow::Result<Outcome> {
     let bus = local.hooks.bus.clone();
-    let mut on_state = move |s: ConnState| {
-        bus.emit(super::Event::Conn(s));
-        on_state(s);
+    // How the latest connection was made, for the outcome.
+    let kind = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut on_state = {
+        let kind = kind.clone();
+        move |s: ConnState| {
+            if matches!(s, ConnState::Direct | ConnState::Relay) {
+                *kind.lock().unwrap() = Some(s);
+            }
+            bus.emit(super::Event::Conn(s));
+            on_state(s);
+        }
     };
     let target: EndpointAddr = target.into();
     let key = client_session_key(target.id, &hello_for(None), &local, sync_opts).await?;
@@ -357,7 +365,11 @@ pub async fn run_with_reconnect(
             c.close(0u32.into(), b"done");
         }
         let err = match res {
-            Ok(out) => return Ok(out),
+            Ok(mut out) => {
+                out.reconnects = attempt;
+                out.conn = *kind.lock().unwrap();
+                return Ok(out);
+            }
             Err(e) => e,
         };
         if tried.acked.is_some() {

@@ -500,6 +500,8 @@ pub enum Event {
         index: usize,
         of: usize,
     },
+    /// A session (one source) ended, well or not: where its time went.
+    SessionEnd(std::sync::Arc<crate::cli::progress::summary::SessionSummary>),
     Conn(reconnect::ConnState),
     Deleted(RelPath),
     /// `--dry-run`: this path would be deleted.
@@ -774,6 +776,10 @@ pub struct Outcome {
     pub max_delete_reached: bool,
     /// What this side spent its time and bytes on.
     pub usage: Usage,
+    /// Times the client dialled again after losing the connection.
+    pub reconnects: u32,
+    /// How the last connection was made (`Direct` or `Relay`), if known.
+    pub conn: Option<reconnect::ConnState>,
     /// Per-file records the role still held when it finished (should be 0).
     #[cfg(feature = "test-hooks")]
     pub retained_files: usize,

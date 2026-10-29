@@ -1139,6 +1139,8 @@ pub(super) async fn run(
         would_delete: r.would_delete,
         max_delete_reached: r.max_delete_reached,
         usage: Default::default(),
+        reconnects: 0,
+        conn: None,
         #[cfg(feature = "test-hooks")]
         retained_files: r.files.len(),
     })

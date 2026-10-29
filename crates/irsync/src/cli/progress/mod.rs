@@ -53,6 +53,7 @@
 pub mod render;
 pub mod screen;
 pub mod state;
+pub mod summary;
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -262,6 +263,14 @@ impl Reporter {
                 }
             }
             Event::Conn(_) => self.draw(true),
+            Event::SessionEnd(s) => {
+                if self.verbosity >= 1 {
+                    let width = self.screen.geometry().width;
+                    for l in summary::render(&s, width) {
+                        self.line(&l);
+                    }
+                }
+            }
             Event::Deleted(p) => {
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&format!("deleting {}", shown(&p)));
