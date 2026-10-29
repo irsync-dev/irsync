@@ -204,7 +204,7 @@ deferred rather than fixed are listed in
 
 31. **Listings run in walk order, behind a window.** Each directory is keyed
     by its path of child indices, whose order is walk order; the pool takes
-    the earliest pending one. At most `64 × threads` listings may be held
+    the earliest pending one. At most `1024 × threads` listings may be held
     ahead of the emitter, except the one it waits for, which always runs:
     it is the earliest pending key, since it was queued when its parent
     finished. Cost if wrong: a deadlock, which the window exception rules
@@ -273,6 +273,16 @@ deferred rather than fixed are listed in
 39. **The walk-thread default stays 4.** Without the xattr reads the walk
     scales a little further (8 threads: 16.9 s against 17.9 s) at more than
     twice the system time, so the gain does not justify a new default.
+
+## Follow-up: a wider walk window (2026-10-29)
+
+40. **Each walk thread may finish 1024 listings ahead of the emitter, up
+    from 64.** A profile showed the walk threads idle a quarter of the time:
+    with one slow directory holding up the emitter, 256 listings filled the
+    window and the threads waited. On the 1.7M-entry volume a no-change
+    `update` goes from 15–18 s to about 13 s; peak memory stays around
+    150–175 MB, since listings average under five entries. 16384 was no
+    faster.
 
 ## Parked (real, deferred, not fixed)
 

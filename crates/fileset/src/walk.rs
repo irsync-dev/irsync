@@ -223,8 +223,9 @@ struct Shared {
     ready: Condvar,
 }
 
-/// Listings each walk thread may finish ahead of the emitter.
-const WINDOW_PER_THREAD: usize = 64;
+/// Listings each walk thread may finish ahead of the emitter. A small window stalls the
+/// threads behind one slow directory: 64 left them idle a quarter of the time.
+const WINDOW_PER_THREAD: usize = 1024;
 
 /// Walks below the directory `dir_abs` on `cfg.threads` threads and emits in sorted
 /// depth-first order, exactly as a single thread would. The threads list and stat whole
