@@ -831,7 +831,18 @@ pub async fn serve_daemon(
         cold: Arc::default(),
         // v1: the client's filters are not transmitted; the daemon walks everything.
         filters: Arc::new(FilterSet::new(vec![])),
-        opts: RoleOpts::daemon(&hello, !sends),
+        opts: {
+            let mut o = RoleOpts::daemon(&hello, !sends);
+            #[cfg(feature = "test-hooks")]
+            if let Some(p) = std::num::NonZeroUsize::new(
+                shared
+                    .sender_parallel
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            ) {
+                o.parallel = p.get();
+            }
+            o
+        },
         privs: Privs::current(),
         hooks: SideHooks {
             #[cfg(feature = "test-hooks")]

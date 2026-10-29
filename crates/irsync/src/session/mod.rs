@@ -418,6 +418,11 @@ pub struct DaemonSessions {
     /// settable after the daemon is built).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Arc<std::sync::Mutex<Option<Duration>>>,
+    /// Streams a daemon sender runs at once, instead of the default (test
+    /// hook; zero keeps the default). Bounded, a byte-count fault lands with
+    /// some files complete and others still to come.
+    #[cfg(feature = "test-hooks")]
+    pub sender_parallel: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and

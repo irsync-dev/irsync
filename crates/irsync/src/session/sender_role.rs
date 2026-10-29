@@ -489,10 +489,6 @@ impl SenderRole {
                 self.ctx
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                #[cfg(feature = "test-hooks")]
-                if let Some(f) = &self.ctx.fault {
-                    f.observe(self.bytes, &self.ctx.conn);
-                }
             }
             Err(e) => {
                 let Some(f) = self.files.get(&file_id) else {
@@ -688,6 +684,12 @@ pub(super) async fn run(
     ));
     {
         let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
+        #[cfg(feature = "test-hooks")]
+        let (fault, conn, wire) = (
+            ctx.fault.clone(),
+            ctx.conn.clone(),
+            std::sync::atomic::AtomicU64::new(0),
+        );
         sender.set_progress(Arc::new(move |path, p| {
             activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match p {
@@ -696,7 +698,15 @@ pub(super) async fn run(
                 }
                 SendProgress::Sent(n) => {
                     bus.emit(super::Event::FileBytes(path.clone(), n));
-                    bus.emit(super::Event::Bytes(n))
+                    bus.emit(super::Event::Bytes(n));
+                    // The fault counts bytes as they go on the wire, chunk by
+                    // chunk, like the receiver's; a per-send count would fire
+                    // only after every parallel stream had already left.
+                    #[cfg(feature = "test-hooks")]
+                    if let Some(f) = &fault {
+                        let total = wire.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
+                        f.observe(total, &conn);
+                    }
                 }
             }
         }));

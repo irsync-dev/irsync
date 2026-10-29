@@ -39,14 +39,6 @@ Rough cost next to each. The last two are not things to fix.
 - Relays are a fallback and much slower than direct connections. By design.
 - Linux and macOS only. A port, not a fix.
 
-## Flaky tests
-
-Seen once each under full-suite load, pass on rerun, never investigated. A
-looped run would show whether they are timing-dependent.
-
-- [ ] `resume::incomplete_plan_resumes_with_fresh_listing`
-- [ ] `progress_e2e::sender_file_start_means_a_stream_opened_not_a_plan`
-
 ## Config editing: behaviours ruled as standing in the single-config review
 
 User-visible, left as is on purpose; revisit if they bite.
