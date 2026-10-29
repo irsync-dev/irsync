@@ -145,6 +145,8 @@ impl SenderRole {
                 scope: self.ctx.scope.clone(),
                 skip: None,
                 hard_links: self.ctx.opts.preserve.hard_links,
+                recursive: self.ctx.opts.preserve.recursive,
+                dirs: self.ctx.opts.preserve.dirs,
                 bus: Some(self.ctx.hooks.bus.clone()),
                 cold: None,
                 busy: Some(self.ctx.busy.clone()),

@@ -16,6 +16,7 @@ async fn run(root: &Path, rules: &[FilterRule], follow: bool) -> (Vec<ScanItem>,
         WalkOpts {
             follow_root_symlink: follow,
             threads: 4,
+            max_depth: None,
         },
     );
     let mut v = Vec::new();

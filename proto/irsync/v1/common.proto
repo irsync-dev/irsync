@@ -69,6 +69,8 @@ message Hello {
     bool specials = 7;
     bool hard_links = 8;
     bool sparse = 9;
+    bool recursive = 10; // off: top-level entries only, directories skipped
+    bool dirs = 11; // with recursion off: directories themselves, without contents
   }
   Preserve preserve = 22;
   // The client's include/exclude rules, compiled (files from --exclude-from

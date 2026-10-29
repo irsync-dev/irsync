@@ -774,6 +774,10 @@ impl Planner {
         if decide(None, Some(dst), &self.popts, &NoLookup) != Decision::Delete {
             return;
         }
+        // Without -r a directory's contents were never compared: it stays.
+        if !self.popts.preserve.recursive && dst.entry.kind() == Kind::Directory {
+            return;
+        }
         if excluded && !pass.delete_excluded() {
             pass.protect(&path);
         } else {

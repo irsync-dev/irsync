@@ -18,8 +18,6 @@ unfinished plan workspaces.
 
 Rough cost next to each. The last two are not things to fix.
 
-- [ ] irsync always recurses; `-r` is accepted and implied. Only worth doing
-      if a non-recursive copy is ever wanted.
 - Relays are a fallback and much slower than direct connections. By design.
 - Linux and macOS only. A port, not a fix.
 

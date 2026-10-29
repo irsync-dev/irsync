@@ -83,6 +83,8 @@ pub struct WalkOpts {
     /// Walk the target if the root itself is a symlink to a directory.
     pub follow_root_symlink: bool,
     pub threads: usize,
+    /// Deepest entries to list (the root is depth 0); `None` for the whole tree.
+    pub max_depth: Option<usize>,
 }
 
 fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
@@ -154,6 +156,7 @@ fn run_walk(
         .sort(true)
         .skip_hidden(false)
         .follow_links(false)
+        .max_depth(opts.max_depth.unwrap_or(usize::MAX))
         .parallelism(Parallelism::RayonNewPool(opts.threads.max(1)))
         .process_read_dir(move |_, dir, _, children| {
             let Some(dir_rel) = rel_of(&cb_root, dir) else {
@@ -219,6 +222,7 @@ mod tests {
             WalkOpts {
                 follow_root_symlink: false,
                 threads: 2,
+                max_depth: None,
             },
         );
         let mut v = Vec::new();

@@ -991,6 +991,8 @@ pub(super) async fn run(
                     scope: ctx.scope.clone(),
                     skip: partial_dir_rel(ctx.opts.partial_dir.as_deref()),
                     hard_links: false,
+                    recursive: ctx.opts.preserve.recursive,
+                    dirs: ctx.opts.preserve.dirs,
                     bus: Some(ctx.hooks.bus.clone()),
                     cold: Some(ctx.cold.clone()),
                     busy: Some(ctx.busy.clone()),

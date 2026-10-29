@@ -133,8 +133,14 @@ cross-referenced from commit messages and review notes.
   code 3) is fatal to the stale client so a dead process cannot steal a
   session back.
 - **R33 — `--timeout` is the per-connection inactivity timeout** before a
-  reconnect attempt; `Parallel` from the client config is applied; `-r` is
-  implied (irsync always recurses; `--no-r` is refused).
+  reconnect attempt; `Parallel` from the client config is applied. (`-r`
+  was implied and `--no-r` refused until R41.)
+- **R41 — `-r` is real** (2026-10-29): recursion comes from `-r` or `-a`,
+  `--no-recursive` (`--no-r`) turns it off, and `-d`/`--dirs` transfers
+  directories without their contents. Without recursion both walks stop at
+  the top level (`WalkOpts::max_depth`), a sending side skips directories
+  (logged at `info`) unless `-d`, and `--delete` never makes a directory a
+  candidate. The flags travel in `Hello.preserve` (`recursive`, `dirs`).
 - **R34 — Activity for both idle watchdogs includes local progress** (chunk
   writes incl. local copies, digest completion, finalize start/end, delete
   pass), not only wire traffic. The daemon idle limit is

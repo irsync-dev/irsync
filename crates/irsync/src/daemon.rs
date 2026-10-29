@@ -804,6 +804,7 @@ pub async fn gc(
         WalkOpts {
             follow_root_symlink: false,
             threads: 2,
+            max_depth: None,
         },
     );
     let mut on_disk = Vec::new();

@@ -38,9 +38,18 @@ fn big_d_is_devices_and_specials() {
 }
 
 #[test]
-fn recursion_is_implied_without_r_or_a() {
-    assert!(opts(&["-t", "src", "h:m/"]).preserve.recursive);
-    assert!(opts(&["src", "h:m/"]).preserve.recursive);
+fn recursion_needs_r_or_a_and_no_recursive_turns_it_off() {
+    assert!(!opts(&["-t", "src", "h:m/"]).preserve.recursive);
+    assert!(!opts(&["src", "h:m/"]).preserve.recursive);
+    assert!(opts(&["-r", "src", "h:m/"]).preserve.recursive);
+    assert!(opts(&["-a", "src", "h:m/"]).preserve.recursive);
+    let p = opts(&["-a", "--no-recursive", "src", "h:m/"]).preserve;
+    assert!(!p.recursive && p.links && p.times);
+    assert!(!opts(&["-a", "--no-r", "src", "h:m/"]).preserve.recursive);
+    assert!(Args::try_parse_from(["irsync", "-r", "--no-recursive", "src", "h:m/"]).is_err());
+    assert!(!opts(&["-t", "src", "h:m/"]).preserve.dirs);
+    assert!(opts(&["-td", "src", "h:m/"]).preserve.dirs);
+    assert!(opts(&["--dirs", "src", "h:m/"]).preserve.dirs);
 }
 
 #[test]

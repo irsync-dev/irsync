@@ -497,10 +497,17 @@ pub struct SyncArgs {
     /// devices and specials).
     #[arg(short, long)]
     pub archive: bool,
-    /// Accepted for rsync compatibility: irsync always recurses into
-    /// directories, with or without -r/-a.
+    /// Recurse into directories (implied by -a). Without it only the
+    /// top-level entries are transferred and directories are skipped.
     #[arg(short = 'r', long = "recursive")]
     pub recursive: bool,
+    /// Turn the recursion implied by -a off.
+    #[arg(long = "no-recursive", alias = "no-r", conflicts_with = "recursive")]
+    pub no_recursive: bool,
+    /// Transfer directories without their contents (rsync's -d), where
+    /// recursion is off.
+    #[arg(short = 'd', long = "dirs")]
+    pub dirs: bool,
     /// Copy symlinks as symlinks (without it they are skipped).
     #[arg(short = 'l', long = "links")]
     pub links: bool,
@@ -729,6 +736,8 @@ pub enum DeleteMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Preserve {
     pub recursive: bool,
+    /// Without recursion: directories themselves are transferred (`-d`).
+    pub dirs: bool,
     pub links: bool,
     pub perms: bool,
     pub times: bool,
@@ -782,8 +791,8 @@ impl SyncOptions {
     pub fn from_args(args: &Args) -> SyncOptions {
         let a = &args.sync;
         let preserve = Preserve {
-            // Always: irsync syncs directory trees (-r is implied).
-            recursive: true,
+            recursive: (a.archive || a.recursive) && !a.no_recursive,
+            dirs: a.dirs,
             links: a.archive || a.links,
             perms: a.archive || a.perms,
             times: a.archive || a.times,

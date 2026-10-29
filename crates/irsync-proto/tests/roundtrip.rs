@@ -28,6 +28,8 @@ fn hello_roundtrips() {
             dirty: Some(true),
         }),
         preserve: Some(irsync_proto::v1::hello::Preserve {
+            recursive: false,
+            dirs: true,
             links: true,
             perms: false,
             times: true,

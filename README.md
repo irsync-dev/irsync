@@ -80,7 +80,7 @@ destination is remote.
 A single remote operand lists instead of copying: `irsync home:` prints the
 exports this client may reach, one `NAME PATH ACCESS` line each (`rw` or
 `ro`, with `read_only` applied), and `irsync home:photos/` prints the files a
-pull would fetch, writing nothing.
+pull would fetch, writing nothing; a listing recurses unless `--no-recursive`.
 
 The client and the daemon use different keys (`id_ed25519` and
 `daemon_ed25519`), so both can run in one account on one machine and talk to
@@ -255,6 +255,7 @@ rsync-compatible, same spelling and semantics:
 | Flag | Meaning |
 | --- | --- |
 | `-a`, `-r`, `-l`, `-p`, `-t`, `-g`, `-o`, `-D`, `-H`, `-S` | archive, recursion, links, permissions, times, group, owner, devices and specials, hard links, sparse files |
+| `--no-recursive` (`--no-r`), `-d`/`--dirs` | turn the recursion `-a` implies off; without recursion only the top-level entries are transferred and directories are skipped unless `-d` transfers them without their contents |
 | `--devices`, `--specials` | device nodes, FIFOs (`-D` is both, as in rsync) |
 | `-v`, `-q` | more / less output |
 | `-n`, `--dry-run` | change nothing |
@@ -305,7 +306,6 @@ partial files are waiting.
 
 ## Known limitations in version one
 
-- irsync always recurses: `-r` is accepted and implied, with or without `-a`.
 - The daemon drops an authenticated connection that has been idle (no traffic
   and no local progress such as hashing or writing) for `idle_timeout`,
   30 minutes by default (the client reconnects and resumes).

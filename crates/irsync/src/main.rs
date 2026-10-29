@@ -426,6 +426,9 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         let mut opts = opts.clone();
         opts.dry_run = true;
         opts.verbose = opts.verbose.max(1);
+        // A listing shows the tree, so it recurses unless told not to (a
+        // sync needs -r or -a for that).
+        opts.preserve.recursive = !args.sync.no_recursive;
         // A listing is a question: with the daemon unreachable it fails
         // now rather than waiting out a sync's reconnect window.
         opts.reconnect = Some(std::time::Duration::ZERO);

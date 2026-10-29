@@ -86,6 +86,7 @@ impl SessionKey {
         let p = &opts.preserve;
         let bits = [
             p.recursive,
+            p.dirs,
             p.links,
             p.perms,
             p.times,

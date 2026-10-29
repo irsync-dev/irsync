@@ -251,6 +251,10 @@ pub(super) struct ListingSpec {
     /// `-H` (sender): later names of a multiply-linked regular file are
     /// listed as `HARDLINK`s to the first one.
     pub hard_links: bool,
+    /// `-r`: list the whole tree; off, only the top-level entries, and
+    /// directories among them only with `dirs` (`-d`).
+    pub recursive: bool,
+    pub dirs: bool,
     /// Where to report scan progress (the sender's walk only).
     pub bus: Option<super::EventBus>,
     /// Receiver: where to note regular files without a fresh index row.
@@ -280,6 +284,7 @@ pub(super) fn spawn_listing(
         WalkOpts {
             follow_root_symlink: true,
             threads: WALK_THREADS,
+            max_depth: (!spec.recursive).then_some(1),
         },
     );
     tokio::task::spawn_blocking(move || {
@@ -319,6 +324,14 @@ pub(super) fn spawn_listing(
                 }
             };
             if is_own_temp(&item.path) || under_skip(&item.path) {
+                continue;
+            }
+            if !spec.recursive
+                && !spec.dirs
+                && item.entry.kind() == Kind::Directory
+                && !item.path.as_bytes().is_empty()
+            {
+                tracing::info!(path = ?item.path, "skipping directory (no -r)");
                 continue;
             }
             let ScanItem {

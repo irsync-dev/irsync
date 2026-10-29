@@ -154,7 +154,8 @@ impl RoleOpts {
         };
         let preserve = match &hello.preserve {
             Some(p) => Preserve {
-                recursive: true,
+                recursive: p.recursive,
+                dirs: p.dirs,
                 links: p.links,
                 perms: p.perms,
                 times: p.times,
@@ -167,6 +168,7 @@ impl RoleOpts {
             },
             None => Preserve {
                 recursive: true,
+                dirs: false,
                 links: true,
                 perms: true,
                 times: true,
@@ -228,6 +230,8 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
         .collect();
     let p = &o.preserve;
     hello.preserve = Some(irsync_proto::v1::hello::Preserve {
+        recursive: p.recursive,
+        dirs: p.dirs,
         links: p.links,
         perms: p.perms,
         times: p.times,

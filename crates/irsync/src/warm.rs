@@ -110,6 +110,7 @@ pub async fn index_root(
         WalkOpts {
             follow_root_symlink: true,
             threads: WALK_THREADS,
+            max_depth: None,
         },
     );
     let report = Mutex::new(WarmReport::default());
