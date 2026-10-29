@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
 
 use super::control::{
-    capped_errors, msg_name, spawn_listing, walk_errors, Ev, ListingSpec, Out, Persister,
+    capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
 use super::parts::{assemble, Assembly};
@@ -44,7 +44,6 @@ use crate::delete::DeletePass;
 use crate::filter::FilterSet;
 use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
-use crate::plan::Side;
 use crate::recv::{FileWriter, FinalizeError};
 use recv_delete::{capped_paths, MAX_DONE_PATHS};
 
@@ -73,6 +72,14 @@ pub(super) enum Done {
     /// `--delete-before`: every candidate is known; delete once both
     /// listings have ended and reply with what was deleted.
     DeleteBefore(Box<DeletePass>, oneshot::Sender<Vec<RelPath>>),
+    /// `--delete-during`: the candidates the merge has left behind; delete
+    /// now (`incomplete`: a listing has a gap so far) and reply with what
+    /// was deleted.
+    DeleteDuring {
+        pass: Box<DeletePass>,
+        incomplete: bool,
+        reply: oneshot::Sender<Vec<RelPath>>,
+    },
     Opened {
         file_id: u64,
         gen: u32,
@@ -176,6 +183,8 @@ struct Receiver {
     local_listing_incomplete: bool,
     /// A `--delete-before` pass waiting for the sender's `ListingEnd`.
     pending_before: Option<(DeletePass, oneshot::Sender<Vec<RelPath>>)>,
+    /// A deletion pass was refused (reported once, however many passes follow).
+    delete_refused: bool,
     deleted: Vec<RelPath>,
     would_delete: Vec<RelPath>,
     max_delete_reached: bool,
@@ -493,6 +502,14 @@ impl Receiver {
             Done::DeleteBefore(pass, reply) => {
                 self.pending_before = Some((*pass, reply));
                 self.maybe_delete_before().await;
+            }
+            Done::DeleteDuring {
+                pass,
+                incomplete,
+                reply,
+            } => {
+                let deleted = self.run_deletes(*pass, incomplete).await;
+                let _ = reply.send(deleted);
             }
             Done::Drained { file_id, gen } => self.on_drained(file_id, gen).await,
             Done::Opened {
@@ -901,7 +918,7 @@ pub(super) async fn run(
     out: Out,
     events_tx: mpsc::UnboundedSender<Ev>,
     mut events: Events,
-    peer_listing: mpsc::UnboundedReceiver<Side>,
+    peer_listing: mpsc::UnboundedReceiver<Listed>,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
     let persist = Persister::start(&ctx).await;
@@ -928,6 +945,7 @@ pub(super) async fn run(
         walk_errors: Vec::new(),
         local_listing_incomplete: false,
         pending_before: None,
+        delete_refused: false,
         deleted: Vec::new(),
         would_delete: Vec::new(),
         max_delete_reached: false,
@@ -1045,7 +1063,9 @@ pub(super) async fn run(
     // before the directory pass so directories that lost entries get their
     // metadata (mtime) applied again.
     if let Some(pass) = report.deletes.take() {
-        for p in r.run_deletes(pass).await {
+        r.await_own_walk().await;
+        let incomplete = r.peer_listing_incomplete || r.local_listing_incomplete;
+        for p in r.run_deletes(pass, incomplete).await {
             report.touched.insert(parent_of(&p));
         }
     }

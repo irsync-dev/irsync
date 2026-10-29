@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 
 use super::control::msg_name;
 use super::control::{
-    is_own_temp, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
+    is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransportError};
 use super::parts::{split, PART_RECORDS};
@@ -98,7 +98,7 @@ struct SenderRole {
     out: Out,
     events: mpsc::UnboundedSender<Ev>,
     sender: Arc<Sender>,
-    listed: Listed,
+    listed: ListedFiles,
     listing: Listing,
     /// Summed size of the files acknowledged placed.
     transferred_size: u64,

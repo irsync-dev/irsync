@@ -179,7 +179,7 @@ async fn delete_removes_extraneous_after_transfer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_before_frees_space_first() {
     within30(async {
-        for mode in ["--delete-before", "--delete-during"] {
+        for mode in ["--delete-before", "--delete-during", "--delete-after"] {
             let o = opts(&[mode]);
             for flow in [Flow::Push, Flow::Pull] {
                 let h = Harness::new().await;
@@ -191,12 +191,129 @@ async fn delete_before_frees_space_first() {
                 assert!(out.errors.is_empty(), "{mode} {flow:?}: {:?}", out.errors);
                 assert_trees_equal(h.src(flow), h.dst(flow), &o.preserve);
                 assert_eq!(paths(&out.deleted), ["a_old.bin", "old.bin"]);
-                if mode == "--delete-before" {
-                    assert!(
-                        last(&events, "delete:").unwrap() < first(&events, "plan:").unwrap(),
-                        "{flow:?}: {events:?}"
-                    );
+                // Only --delete-before frees the space first; root-level
+                // entries wait for the final pass in the other modes.
+                let before = last(&events, "delete:").unwrap() < first(&events, "plan:").unwrap();
+                assert_eq!(
+                    before,
+                    mode == "--delete-before",
+                    "{mode} {flow:?}: {events:?}"
+                );
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_during_deletes_each_directory_as_the_merge_leaves_it() {
+    within30(async {
+        let o = opts(&["--delete-during"]);
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let (src, dst) = (h.src(flow), h.dst(flow));
+            fs::create_dir(src.join("a")).unwrap();
+            fs::write(src.join("a/keep.txt"), b"keep").unwrap();
+            fs::create_dir(src.join("b")).unwrap();
+            fs::write(src.join("b/new.txt"), b"new").unwrap();
+            fs::create_dir_all(dst.join("a/gone")).unwrap();
+            fs::write(dst.join("a/gone/x.txt"), b"x").unwrap();
+            fs::write(dst.join("a/old.txt"), b"old").unwrap();
+            fs::create_dir(dst.join("b")).unwrap();
+            fs::write(dst.join("b/old2.txt"), b"old2").unwrap();
+            fs::write(dst.join("top_old.txt"), b"t").unwrap();
+
+            let (out, events) = run(&h, &o, flow).await;
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert_trees_equal(src, dst, &o.preserve);
+            assert_eq!(
+                paths(&out.deleted),
+                [
+                    "a/gone",
+                    "a/gone/x.txt",
+                    "a/old.txt",
+                    "b/old2.txt",
+                    "top_old.txt"
+                ],
+                "{flow:?}"
+            );
+            // Leaving `a` deletes what it held, before `b` is planned.
+            let pos = |e: &str| events.iter().position(|x| x == e);
+            assert!(
+                pos("delete:a/old.txt") < pos("plan:b/new.txt"),
+                "{flow:?}: {events:?}"
+            );
+            assert!(
+                pos("delete:a/gone/x.txt") < pos("delete:a/gone"),
+                "{flow:?}: {events:?}"
+            );
+            // A root-level entry waits for the final pass, after the transfers.
+            assert!(
+                pos("delete:top_old.txt") > last(&events, "plan:"),
+                "{flow:?}: {events:?}"
+            );
+            assert_eq!(out.exit_code(), 0);
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_during_stops_at_a_gap_in_the_source_listing() {
+    if is_root() {
+        eprintln!("skipped: permissions do not restrict root");
+        return;
+    }
+    within30(async {
+        for (extra, ignoring) in [
+            (&["--delete-during"][..], false),
+            (&["--delete-during", "--ignore-errors"][..], true),
+        ] {
+            let o = opts(extra);
+            for flow in [Flow::Push, Flow::Pull] {
+                let h = Harness::new().await;
+                let (src, dst) = (h.src(flow), h.dst(flow));
+                for d in ["a", "locked", "z"] {
+                    fs::create_dir(src.join(d)).unwrap();
+                    fs::create_dir(dst.join(d)).unwrap();
                 }
+                fs::write(src.join("a/keep.txt"), b"k").unwrap();
+                fs::write(src.join("locked/secret.txt"), b"s").unwrap();
+                fs::write(src.join("z/keep.txt"), b"k").unwrap();
+                fs::write(dst.join("a/old.txt"), b"o").unwrap();
+                fs::write(dst.join("locked/secret.txt"), b"s").unwrap();
+                fs::write(dst.join("z/old.txt"), b"o").unwrap();
+                fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+
+                let (out, _) = run(&h, &o, flow).await;
+                // `-a` copied the mode too: open both up to look inside.
+                for d in [src, dst] {
+                    fs::set_permissions(d.join("locked"), fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+                // Before the gap: deleted. The gap itself is never deleted into.
+                assert!(!dst.join("a/old.txt").exists(), "{flow:?} {extra:?}");
+                let refused = out
+                    .errors
+                    .iter()
+                    .filter(|(_, m)| m.contains("deletions skipped"))
+                    .count();
+                if ignoring {
+                    // rsync's --ignore-errors: what the source does not list goes.
+                    assert!(!dst.join("z/old.txt").exists(), "{flow:?}");
+                    assert!(!dst.join("locked/secret.txt").exists(), "{flow:?}");
+                    assert_eq!(refused, 0, "{flow:?}: {:?}", out.errors);
+                } else {
+                    assert!(dst.join("z/old.txt").exists(), "{flow:?}");
+                    assert!(dst.join("locked/secret.txt").exists(), "{flow:?}");
+                    assert_eq!(refused, 1, "{flow:?}: {:?}", out.errors);
+                    assert_eq!(paths(&out.deleted), ["a/old.txt"], "{flow:?}");
+                }
+                assert_ne!(
+                    out.exit_code(),
+                    0,
+                    "{flow:?} {extra:?}: an unreadable directory is an error"
+                );
             }
         }
     })

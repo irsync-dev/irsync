@@ -9,18 +9,22 @@
 //! unfiltered, so its filters are applied here). `--delete-before` buffers the
 //! merged listing until both listings have ended, has the main loop run the
 //! deletion pass, and only then acts on the source paths. `--delete-during`
-//! runs like `--delete-after`: whether the sender's listing is complete is
-//! only known at its `ListingEnd`, so no deletion may run before that, and
-//! deleting per directory as the merge leaves it could act on a listing
-//! that later turns out to be incomplete. On a dry run nothing is created,
-//! changed or requested.
+//! deletes as it goes: whenever the merge crosses a directory boundary, the
+//! candidates it has left behind (neither the current path nor an ancestor
+//! of it) are deleted in one pass before the planner goes on; what is still
+//! above the current path waits for the final pass, which runs after the
+//! transfers as for `--delete-after`. Either listing reports its gaps (a
+//! directory it could not read, an entry it could not stat) in path order,
+//! so a pass knows whether the listing it acts on is complete so far: a gap
+//! stops every later pass unless `--ignore-errors`. On a dry run nothing is
+//! created, changed or requested.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use irsync_proto::v1::{
@@ -29,7 +33,7 @@ use irsync_proto::v1::{
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use super::control::{is_own_temp, Ev, Out};
+use super::control::{is_own_temp, Ev, Listed, Out};
 use super::engine::{blocking, Ctx};
 use super::receiver::Done;
 use super::recv_io::{index_old_file, OldFile};
@@ -317,10 +321,29 @@ fn checked_order(
     })
 }
 
-fn stream_of<T: Send + 'static>(
-    rx: mpsc::UnboundedReceiver<T>,
-) -> impl futures::Stream<Item = T> + Send {
+/// The entries of a listing; a gap records its path in `gap` (the earliest
+/// of either listing) and is otherwise skipped.
+fn sides(
+    rx: mpsc::UnboundedReceiver<Listed>,
+    gap: Arc<Mutex<Option<RelPath>>>,
+) -> impl futures::Stream<Item = Side> + Send {
     futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
+        .filter_map(move |item| {
+            let gap = gap.clone();
+            async move {
+                match item {
+                    Listed::Side(s) => Some(s),
+                    Listed::Gap(path) => {
+                        tracing::debug!(?path, "a listing has a gap: no deletions past it");
+                        let mut first = gap.lock().unwrap_or_else(|e| e.into_inner());
+                        if first.as_ref().is_none_or(|f| path < *f) {
+                            *first = Some(path);
+                        }
+                        None
+                    }
+                }
+            }
+        })
 }
 
 struct Planner {
@@ -768,6 +791,33 @@ impl Planner {
         }
     }
 
+    /// `--delete-during`, at a directory boundary: hands the candidates the
+    /// merge has left behind to the receiver's main loop and waits for them
+    /// to be deleted. The pass is incomplete when a listing reported a gap
+    /// at or before its last candidate: the merge may have pulled a gap
+    /// past the current path already, which explains nothing before it.
+    async fn delete_during(&mut self, current: &RelPath, gap: &Mutex<Option<RelPath>>) {
+        let Some(ready) = self.deletes.as_mut().and_then(|d| d.split_ready(current)) else {
+            return;
+        };
+        let first_gap = gap.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let incomplete = match (first_gap, ready.last_candidate()) {
+            (Some(g), Some(last)) => g <= *last,
+            _ => false,
+        };
+        let (tx, rx) = oneshot::channel();
+        let _ = self.events.send(Ev::Recv(Done::DeleteDuring {
+            pass: Box::new(ready),
+            incomplete,
+            reply: tx,
+        }));
+        if let Ok(deleted) = rx.await {
+            for p in &deleted {
+                self.touch_parent(p);
+            }
+        }
+    }
+
     /// `--delete-before`: hands the candidates to the receiver's main loop,
     /// which deletes once both listings have ended, and waits for it.
     async fn delete_before(&mut self) {
@@ -792,8 +842,8 @@ pub(super) async fn plan(
     ctx: Arc<Ctx>,
     out: Out,
     events: mpsc::UnboundedSender<Ev>,
-    peer: mpsc::UnboundedReceiver<Side>,
-    local: mpsc::UnboundedReceiver<Side>,
+    peer: mpsc::UnboundedReceiver<Listed>,
+    local: mpsc::UnboundedReceiver<Listed>,
     prior: Prior,
 ) {
     let inflight = Arc::new(Semaphore::new(inflight_cap(&ctx)));
@@ -831,17 +881,17 @@ pub(super) async fn plan(
         regular_ok: HashSet::new(),
         inflight,
     };
-    let before = p
-        .deletes
-        .as_ref()
-        .is_some_and(|d| d.mode() == DeleteMode::Before);
+    let mode = p.deletes.as_ref().map(|d| d.mode());
     let disordered = Arc::new(AtomicBool::new(false));
+    // The first gap either listing reported, known before the merge yields
+    // any path after it (it may be known one path early).
+    let gap = Arc::new(Mutex::new(None));
     let joined = merge_join(
-        checked_order(stream_of(peer), disordered.clone()),
-        checked_order(stream_of(local), disordered.clone()),
+        checked_order(sides(peer, gap.clone()), disordered.clone()),
+        checked_order(sides(local, gap.clone()), disordered.clone()),
     );
     futures::pin_mut!(joined);
-    if before {
+    if mode == Some(DeleteMode::Before) {
         // Every candidate is known only once both listings have ended.
         let mut sources = Vec::new();
         while let Some((path, src, dst)) = joined.next().await {
@@ -856,7 +906,16 @@ pub(super) async fn plan(
             p.one(path, src, dst).await;
         }
     } else {
+        let during = mode == Some(DeleteMode::During);
+        let mut dir: Option<RelPath> = None;
         while let Some((path, src, dst)) = joined.next().await {
+            if during {
+                let parent = path.parent();
+                if dir.as_ref() != Some(&parent) {
+                    dir = Some(parent);
+                    p.delete_during(&path, &gap).await;
+                }
+            }
             p.consider(&path, src.as_ref(), dst.as_ref());
             if let Some(src) = src {
                 p.one(path, src, dst).await;

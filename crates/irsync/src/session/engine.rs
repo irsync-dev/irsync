@@ -832,6 +832,7 @@ pub async fn serve_daemon(
         // v1: the client's filters are not transmitted; the daemon walks everything.
         filters: Arc::new(FilterSet::new(vec![])),
         opts: {
+            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
             let mut o = RoleOpts::daemon(&hello, !sends);
             #[cfg(feature = "test-hooks")]
             if let Some(p) = std::num::NonZeroUsize::new(

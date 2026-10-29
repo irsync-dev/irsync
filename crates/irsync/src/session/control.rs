@@ -25,7 +25,7 @@ use crate::hasher::Hasher;
 use crate::index::IndexHandle;
 use crate::net::frame::{read_msg, write_msg};
 use crate::plan::Side;
-use crate::scan::{walk, ScanItem, ScanSummary, WalkOpts};
+use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
 
 /// How long to wait for the peer to take our last bytes before giving up.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -103,11 +103,19 @@ pub(super) fn side_of(entry: irsync_proto::v1::FileEntry) -> Side {
     Side { entry, digest }
 }
 
-/// Spawns the reader: listing entries go to `listing` (dropped when `None`),
-/// which is closed at `ListingEnd`; every other frame goes to `events`.
+/// One item of a listing as the receiver's planner consumes it.
+pub(super) enum Listed {
+    Side(Side),
+    /// Entries at or below this path are missing from the listing (see
+    /// `ScanEvent::Gap`); it is at its place in path order.
+    Gap(RelPath),
+}
+
+/// Spawns the reader: listing entries and gaps go to `listing` (dropped when
+/// `None`), which is closed at `ListingEnd`; every other frame goes to `events`.
 pub(super) fn spawn_reader(
     mut recv: RecvStream,
-    mut listing: Option<mpsc::UnboundedSender<Side>>,
+    mut listing: Option<mpsc::UnboundedSender<Listed>>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
@@ -135,7 +143,7 @@ pub(super) fn spawn_reader(
                         }
                         match &listing {
                             Some(tx) => {
-                                let _ = tx.send(side_of(e));
+                                let _ = tx.send(Listed::Side(side_of(e)));
                             }
                             None if !announced => {
                                 announced = true;
@@ -146,6 +154,15 @@ pub(super) fn spawn_reader(
                     }
                     Msg::Listing(ListingEntry { entry: None }) => {
                         tracing::warn!("listing frame without entry; ignored");
+                    }
+                    // The sender needs only the peer's `ListingEnd`; the
+                    // receiver's planner wants the gap in order with the entries.
+                    Msg::ListingError(e) => {
+                        tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
+                        if let Some(tx) = &listing {
+                            let path = RelPath::new(&e.path).unwrap_or_default();
+                            let _ = tx.send(Listed::Gap(path));
+                        }
                     }
                     // Counted as activity above; it also carries the peer's
                     // progress this side cannot otherwise see.
@@ -213,7 +230,7 @@ pub(super) fn is_own_temp(path: &RelPath) -> bool {
 }
 
 /// Paths of regular files this side has listed: the only paths it will send.
-pub(super) type Listed = Arc<Mutex<HashSet<RelPath>>>;
+pub(super) type ListedFiles = Arc<Mutex<HashSet<RelPath>>>;
 
 pub(super) struct ListingSpec {
     pub root: PathBuf,
@@ -246,8 +263,8 @@ pub(super) struct ListingSpec {
 pub(super) fn spawn_listing(
     spec: ListingSpec,
     out: Out,
-    local: Option<mpsc::UnboundedSender<Side>>,
-    listed: Option<Listed>,
+    local: Option<mpsc::UnboundedSender<Listed>>,
+    listed: Option<ListedFiles>,
 ) -> JoinHandle<ScanSummary> {
     let (mut rx, summary) = walk(
         spec.root.clone(),
@@ -275,7 +292,23 @@ pub(super) fn spawn_listing(
             *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = Some(walking.clone());
             out.send(Msg::Heartbeat(busy.heartbeat()));
         }
-        while let Some(item) = rx.blocking_recv() {
+        while let Some(ev) = rx.blocking_recv() {
+            let item = match ev {
+                ScanEvent::Entry(item) => item,
+                ScanEvent::Gap { path, message } => {
+                    out.send(Msg::ListingError(PathError {
+                        path: path.as_bytes().to_vec(),
+                        message,
+                    }));
+                    if let Some(tx) = &local {
+                        let _ = tx.send(Listed::Gap(path));
+                    }
+                    if let Some(a) = &spec.activity {
+                        a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    continue;
+                }
+            };
             if is_own_temp(&item.path) || under_skip(&item.path) {
                 continue;
             }
@@ -347,7 +380,7 @@ pub(super) fn spawn_listing(
             }
             stats.count(&entry);
             if let Some(tx) = &local {
-                let _ = tx.send(Side { entry, digest });
+                let _ = tx.send(Listed::Side(Side { entry, digest }));
             }
             count += 1;
             if let Some(a) = &spec.activity {
@@ -611,6 +644,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
     match m {
         Msg::Listing(_) => "ListingEntry",
         Msg::ListingEnd(_) => "ListingEnd",
+        Msg::ListingError(_) => "ListingError",
         Msg::Plan(_) => "PlanItem",
         Msg::ChunkListPart(_) => "ChunkListPart",
         Msg::Need(_) => "NeedChunks",

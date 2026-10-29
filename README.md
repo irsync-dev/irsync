@@ -229,7 +229,13 @@ fresh plan (partial files are still adopted).
 ### Deletions
 
 Like rsync, nothing is deleted by default. `--delete` removes destination files
-that are gone from the source. `-n` / `--dry-run` shows what would happen
+that are gone from the source, after the transfer (`--delete-after`);
+`--delete-before` removes them first, once both sides are listed, and
+`--delete-during` removes each directory's extraneous entries as the run
+leaves that directory, so space is freed as it goes. Nothing is ever deleted
+that might merely have been unreadable: a directory either side could not
+read, or an entry it could not stat, stops deletions from that point on
+(`--ignore-errors` deletes anyway). `-n` / `--dry-run` shows what would happen
 without changing anything; combine it with `--delete` first. `--max-delete N`
 caps the number of removals (exit code 25 when the cap stops a run), and
 `--delete-excluded` also removes excluded files.
@@ -290,7 +296,6 @@ partial files are waiting.
 
 ## Known limitations in version one
 
-- `--delete-during` runs as `--delete-after`.
 - irsync always recurses: `-r` is accepted and implied, with or without `-a`.
 - The daemon drops an authenticated connection that has been idle (no traffic
   and no local progress such as hashing or writing) for `idle_timeout`,

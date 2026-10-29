@@ -115,7 +115,14 @@ pub async fn index_root(
     let report = Mutex::new(WarmReport::default());
     let (report_ref, hasher_ref) = (&report, &hasher);
     let items =
-        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) });
+        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
+            .filter_map(|ev| async move {
+                match ev {
+                    crate::scan::ScanEvent::Entry(item) => Some(item),
+                    // Recorded in the summary at the end.
+                    crate::scan::ScanEvent::Gap { .. } => None,
+                }
+            });
     items
         .for_each_concurrent(workers, |item| async move {
             let (report, hasher) = (report_ref, hasher_ref);

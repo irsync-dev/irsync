@@ -12,6 +12,10 @@ message ListingEnd {
   bool incomplete = 1;
   uint64 count = 2;
 }
+// A gap in the listing, sent in path order where the missing entries would
+// have been: a directory that could not be read (right after its own entry)
+// or an entry that could not be stat'ed. The listing goes on; ListingEnd
+// then says incomplete.
 message PlanItem { // receiver -> sender
   uint64 file_id = 1;
   bytes path = 2;
@@ -119,5 +123,6 @@ message Control {
     Heartbeat heartbeat = 10;
     ChunkListPart chunk_list_part = 11;
     ChunkBasis chunk_basis = 12;
+    PathError listing_error = 13;
   }
 }

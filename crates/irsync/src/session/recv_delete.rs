@@ -1,22 +1,33 @@
 //! The receiver's deletion passes (`--delete*`): run under the session root
-//! before the transfers (once both listings have ended) or after them,
-//! refused when a listing was incomplete unless `--ignore-errors`.
+//! before the transfers (once both listings have ended), per directory as
+//! the planner leaves it, or after the transfers; refused when a listing
+//! was incomplete (so far, for a pass during the run) unless
+//! `--ignore-errors`.
 
 use super::Receiver;
+use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::fs::paths::RelPath;
 
 impl Receiver {
-    /// Runs a deletion pass under the session root: refused when either
-    /// listing was incomplete (unless `--ignore-errors`). Returns the paths
-    /// deleted.
-    pub(super) async fn run_deletes(&mut self, mut pass: DeletePass) -> Vec<RelPath> {
-        self.await_own_walk().await;
-        pass.set_spent(self.persist.deleted());
+    /// Runs a deletion pass under the session root: refused when
+    /// `incomplete` (a listing was incomplete) unless `--ignore-errors`.
+    /// Returns the paths deleted.
+    pub(super) async fn run_deletes(
+        &mut self,
+        mut pass: DeletePass,
+        incomplete: bool,
+    ) -> Vec<RelPath> {
+        let spent = self.persist.deleted();
+        pass.set_spent(spent);
         pass.set_activity(self.ctx.activity.clone());
         let busy = self.ctx.busy.clone();
         let bus = self.ctx.hooks.bus.clone();
+        // Progress counts the session's deletions so far; a pass during the
+        // run (`--delete-during`) has no total, the final pass gives it.
+        let is_final = pass.mode() != DeleteMode::During || self.report.is_some();
         pass.set_progress(std::sync::Arc::new(move |done, total| {
+            let (done, total) = (spent + done, spent + total);
             busy.deleted
                 .store(done, std::sync::atomic::Ordering::Relaxed);
             busy.delete_total
@@ -24,10 +35,9 @@ impl Receiver {
             bus.emit(crate::session::Event::Delete {
                 party: crate::session::Party::Local,
                 done,
-                total: Some(total),
+                total: is_final.then_some(total),
             });
         }));
-        let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
         match pass.execute(self.ctx.root.clone(), incomplete).await {
             Ok(rep) => {
                 for p in &rep.deleted {
@@ -53,7 +63,10 @@ impl Receiver {
                 rep.deleted
             }
             Err(refused) => {
-                self.errors.push((RelPath::root(), refused.to_string()));
+                if !self.delete_refused {
+                    self.delete_refused = true;
+                    self.errors.push((RelPath::root(), refused.to_string()));
+                }
                 Vec::new()
             }
         }
@@ -65,7 +78,9 @@ impl Receiver {
             return;
         }
         if let Some((pass, reply)) = self.pending_before.take() {
-            let deleted = self.run_deletes(pass).await;
+            self.await_own_walk().await;
+            let incomplete = self.peer_listing_incomplete || self.local_listing_incomplete;
+            let deleted = self.run_deletes(pass, incomplete).await;
             let _ = reply.send(deleted);
         }
     }

@@ -641,7 +641,11 @@ pub async fn gc(
         },
     );
     let mut on_disk = Vec::new();
-    while let Some(item) = rx.recv().await {
+    while let Some(ev) = rx.recv().await {
+        // Gaps are in the summary's errors.
+        let crate::scan::ScanEvent::Entry(item) = ev else {
+            continue;
+        };
         let is_reg = item.entry.kind() == irsync_proto::v1::file_entry::Kind::Regular;
         let named = item.path.components().last().is_some_and(is_part_name);
         if is_reg && named && item.entry.mtime_sec <= cutoff {

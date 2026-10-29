@@ -32,7 +32,11 @@ One QUIC connection carries:
 
 - a **control stream**: the first bidirectional stream, opened by the client.
   It carries `Hello`, the file listing, plan, acknowledgements, completion,
-  `Error` and `Heartbeat` messages, each as one framed protobuf. A
+  `Error` and `Heartbeat` messages, each as one framed protobuf. A listing
+  is `ListingEntry` frames in path order, with a `ListingError` wherever
+  entries are missing (a directory that could not be read, right after its
+  own entry; an entry that could not be stat'ed), then `ListingEnd`, which
+  says whether the listing was incomplete. A
   `Heartbeat` is empty and means "I am busy": a side sends one every 500 ms
   in which it made progress the peer cannot see (hashing, writing,
   finalizing), so the peer's inactivity watchdog stays quiet; an idle side

@@ -171,6 +171,44 @@ impl DeletePass {
         self.candidates.is_empty()
     }
 
+    /// The last candidate in path order (candidates arrive in that order).
+    pub fn last_candidate(&self) -> Option<&RelPath> {
+        self.candidates.last().map(|(p, _)| p)
+    }
+
+    /// `--delete-during`: a pass over the candidates that are ready now that
+    /// the merged listing has reached `current`: every candidate that is
+    /// neither `current` nor an ancestor of it, since listings are in path
+    /// order and nothing below those candidates can still come. The rest
+    /// stay here. The new pass shares this one's settings and protected
+    /// directories; `None` when nothing is ready.
+    pub fn split_ready(&mut self, current: &RelPath) -> Option<DeletePass> {
+        let under = |p: &RelPath| {
+            let (c, p) = (current.as_bytes(), p.as_bytes());
+            c.starts_with(p) && (c.len() == p.len() || p.is_empty() || c[p.len()] == b'/')
+        };
+        let (ready, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.candidates)
+            .into_iter()
+            .partition(|(p, _)| !under(p));
+        self.candidates = pending;
+        if ready.is_empty() {
+            return None;
+        }
+        Some(DeletePass {
+            mode: self.mode,
+            max_delete: self.max_delete,
+            delete_excluded: self.delete_excluded,
+            dry_run: self.dry_run,
+            ignore_errors: self.ignore_errors,
+            spent: self.spent,
+            candidates: ready,
+            unreliable: self.unreliable,
+            kept: self.kept.clone(),
+            activity: self.activity.clone(),
+            progress: self.progress.clone(),
+        })
+    }
+
     /// Runs the pass under `root` (blocking work off the async threads).
     /// Refuses when `listing_incomplete` unless `ignore_errors`.
     pub async fn execute(
@@ -415,6 +453,44 @@ mod tests {
         assert_eq!(rep.errors.len(), 1);
         assert_eq!(rep.errors[0].0, rel("d"));
         assert!(t.path().join("d/e/f").exists());
+    }
+
+    #[test]
+    fn split_ready_takes_what_the_merge_has_left_behind() {
+        // Candidates arrive in path order, so none is past the current path.
+        let mut p = pass(None, false, false);
+        for s in ["0_old", "a", "a/b", "a/b/x"] {
+            p.plan(rel(s), Kind::Regular);
+        }
+        p.protect(&rel("a/b/keep"));
+        // Inside a/b: only what is neither a/b/y nor above it.
+        let ready = p.split_ready(&rel("a/b/y")).unwrap();
+        let names = |p: &DeletePass| -> Vec<String> {
+            p.candidates
+                .iter()
+                .map(|(p, _)| String::from_utf8_lossy(p.as_bytes()).into_owned())
+                .collect()
+        };
+        assert_eq!(names(&ready), ["0_old", "a/b/x"]);
+        assert!(
+            ready.kept.contains(&rel("a/b")),
+            "protection travels with the pass"
+        );
+        assert_eq!(names(&p), ["a", "a/b"]);
+        // Nothing new is ready while still under a/b.
+        assert!(p.split_ready(&rel("a/b/z")).is_none());
+        // Leaving a/b for a/d: a/b itself, and a sibling seen since.
+        p.plan(rel("a/c"), Kind::Regular);
+        assert_eq!(names(&p.split_ready(&rel("a/d")).unwrap()), ["a/b", "a/c"]);
+        // Leaving a: the rest, including the ancestor itself.
+        p.plan(rel("a/old"), Kind::Regular);
+        assert_eq!(names(&p.split_ready(&rel("b")).unwrap()), ["a", "a/old"]);
+        assert!(p.is_empty());
+        // A root-level directory waits while the merge is below it, and a name
+        // that merely shares a prefix is not below it.
+        p.plan(rel("z"), Kind::Directory);
+        assert!(p.split_ready(&rel("z/x")).is_none());
+        assert_eq!(names(&p.split_ready(&rel("zz")).unwrap()), ["z"]);
     }
 
     #[tokio::test]

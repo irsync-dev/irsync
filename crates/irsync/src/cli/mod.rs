@@ -549,7 +549,7 @@ pub struct SyncArgs {
     /// Delete before the transfer starts.
     #[arg(long)]
     pub delete_before: bool,
-    /// Accepted for rsync compatibility; irsync runs it like --delete-after.
+    /// Delete each directory's extraneous entries as the run leaves that directory
     #[arg(long)]
     pub delete_during: bool,
     /// Delete after the transfer (what --delete does).

@@ -139,10 +139,17 @@ cross-referenced from commit messages and review notes.
 
 - **R20 — Exit code 25 when `--max-delete` stopped the pass**, taking
   precedence over 23; combined exit code order is 25 > 23 > 1 > 0.
-- **R21 — `--delete-during` runs as `--delete-after`** (documented in CLI
-  help and README). Whether the listing was incomplete is only known at
-  `ListingEnd`, and irsync never deletes on an incomplete listing. Cost:
-  later space-freeing than rsync.
+- **R21 — `--delete-during` deletes per directory, guarded by inline
+  listing gaps** (reversed 2026-10-29; it first ran as `--delete-after`
+  because an incomplete listing was only known at `ListingEnd`). Each
+  listing now reports a directory it could not read or an entry it could
+  not stat as a `ListingError` at that path's position, so the receiver
+  knows whether the listing is complete up to any point. At every
+  directory boundary of the merge, the candidates left behind are deleted
+  in one pass; a gap at or before a pass's last candidate refuses that pass
+  and every later one (unless `--ignore-errors`), while deletions already
+  made stand, as with rsync. Root-level entries wait for the final pass
+  after the transfers. Design: `superpowers/specs/2026-10-29-delete-during-design.md`.
 - **R22 — A push with `--delete` plus any include/exclude filter is refused
   unless `--delete-excluded` is also given.** The daemon never sees the
   client's filters (R10) and would otherwise delete files rsync would

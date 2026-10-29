@@ -3,7 +3,7 @@ mod common;
 use irsync::cli::FilterRule;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
-use irsync::scan::{walk, ScanItem, ScanSummary, WalkOpts};
+use irsync::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,8 +19,11 @@ async fn run(root: &Path, rules: &[FilterRule], follow: bool) -> (Vec<ScanItem>,
         },
     );
     let mut v = Vec::new();
-    while let Some(i) = rx.recv().await {
-        v.push(i);
+    while let Some(ev) = rx.recv().await {
+        // Gaps are checked through the summary here.
+        if let ScanEvent::Entry(i) = ev {
+            v.push(i);
+        }
     }
     (v, sum.await.unwrap())
 }

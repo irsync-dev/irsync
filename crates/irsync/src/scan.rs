@@ -17,6 +17,20 @@ pub struct ScanItem {
     pub ctime: (i64, u32),
 }
 
+/// What the walk streams, in `RelPath` order.
+#[derive(Debug, Clone)]
+pub enum ScanEvent {
+    Entry(ScanItem),
+    /// Something at or below `path` could not be listed, so entries are
+    /// missing from here: a directory that could not be read (sent right
+    /// after the directory's own entry) or an entry that could not be
+    /// stat'ed. The walk goes on; the summary says `incomplete`.
+    Gap {
+        path: RelPath,
+        message: String,
+    },
+}
+
 /// Entries seen by kind, for `--stats`. Hard links count as regular files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ListStats {
@@ -76,12 +90,13 @@ fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
     RelPath::new(rest.as_os_str().as_bytes()).ok()
 }
 
-/// Walk `root`, sending every non-filtered entry (root first) in increasing `RelPath` order.
+/// Walk `root`, sending every non-filtered entry (root first) in increasing `RelPath`
+/// order, with a `Gap` at the position of whatever could not be listed.
 pub fn walk(
     root: PathBuf,
     filters: Arc<FilterSet>,
     opts: WalkOpts,
-) -> (mpsc::Receiver<ScanItem>, oneshot::Receiver<ScanSummary>) {
+) -> (mpsc::Receiver<ScanEvent>, oneshot::Receiver<ScanSummary>) {
     let (tx, rx) = mpsc::channel(1024);
     let (stx, srx) = oneshot::channel();
     tokio::task::spawn_blocking(move || {
@@ -95,7 +110,7 @@ fn run_walk(
     mut root: PathBuf,
     filters: Arc<FilterSet>,
     opts: WalkOpts,
-    tx: mpsc::Sender<ScanItem>,
+    tx: mpsc::Sender<ScanEvent>,
 ) -> ScanSummary {
     let mut sum = ScanSummary::default();
     if opts.follow_root_symlink && std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
@@ -103,27 +118,32 @@ fn run_walk(
             root = real;
         }
     }
+    // A gap is recorded and streamed; the stream stays in path order because
+    // each gap is sent where its entries would have been.
+    let gap = |sum: &mut ScanSummary, rel: RelPath, message: String| -> bool {
+        sum.incomplete = true;
+        sum.errors.push((rel.clone(), message.clone()));
+        tx.blocking_send(ScanEvent::Gap { path: rel, message })
+            .is_ok()
+    };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
         match lstat_entry_with_ctime(&root, &rel) {
             Ok((entry, ctime)) => {
                 if tx
-                    .blocking_send(ScanItem {
+                    .blocking_send(ScanEvent::Entry(ScanItem {
                         path: rel,
                         entry,
                         ctime,
-                    })
+                    }))
                     .is_err()
                 {
                     return false;
                 }
                 sum.entries += 1;
+                true
             }
-            Err(e) => {
-                sum.incomplete = true;
-                sum.errors.push((rel, e.to_string()));
-            }
+            Err(e) => gap(sum, rel, e.to_string()),
         }
-        true
     };
     if !send(&mut sum, RelPath::root()) {
         return sum;
@@ -157,26 +177,141 @@ fn run_walk(
                 let Some(rel) = rel_of(&root, &e.path()) else {
                     continue;
                 };
-                if let Some(err) = e.read_children.as_ref().and_then(|r| r.error()) {
-                    sum.incomplete = true;
-                    sum.errors.push((rel.clone(), err.to_string()));
-                }
-                if e.depth() == 0 {
-                    continue;
-                }
-                if !send(&mut sum, rel) {
+                let unread = e
+                    .read_children
+                    .as_ref()
+                    .and_then(|r| r.error())
+                    .map(|err| err.to_string());
+                if e.depth() > 0 && !send(&mut sum, rel.clone()) {
                     return sum;
+                }
+                // After the directory's own entry: everything below it is missing.
+                if let Some(err) = unread {
+                    if !gap(&mut sum, rel, err) {
+                        return sum;
+                    }
                 }
             }
             Err(err) => {
-                sum.incomplete = true;
                 let rel = err
                     .path()
                     .and_then(|p| rel_of(&root, p))
                     .unwrap_or_default();
-                sum.errors.push((rel, err.to_string()));
+                if !gap(&mut sum, rel, err.to_string()) {
+                    return sum;
+                }
             }
         }
     }
     sum
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Every event of a walk of `root`, as (path, is_gap), in stream order.
+    async fn events(root: &Path) -> (Vec<(String, bool)>, ScanSummary) {
+        let (mut rx, summary) = walk(
+            root.to_path_buf(),
+            Arc::new(FilterSet::new(vec![])),
+            WalkOpts {
+                follow_root_symlink: false,
+                threads: 2,
+            },
+        );
+        let mut v = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            v.push(match ev {
+                ScanEvent::Entry(i) => (
+                    String::from_utf8_lossy(i.path.as_bytes()).into_owned(),
+                    false,
+                ),
+                ScanEvent::Gap { path, .. } => {
+                    (String::from_utf8_lossy(path.as_bytes()).into_owned(), true)
+                }
+            });
+        }
+        (v, summary.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_directory_is_a_gap_right_after_its_entry() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("a")).unwrap();
+        std::fs::write(t.path().join("a/x"), b"").unwrap();
+        std::fs::create_dir(t.path().join("locked")).unwrap();
+        std::fs::write(t.path().join("locked/secret"), b"").unwrap();
+        std::fs::write(t.path().join("z"), b"").unwrap();
+        std::fs::set_permissions(
+            t.path().join("locked"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        if std::fs::read_dir(t.path().join("locked")).is_ok() {
+            std::fs::set_permissions(
+                t.path().join("locked"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            eprintln!("skipping: running with privileges that bypass directory permissions");
+            return;
+        }
+        let (v, summary) = events(t.path()).await;
+        std::fs::set_permissions(
+            t.path().join("locked"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let want: Vec<(String, bool)> = [
+            ("", false),
+            ("a", false),
+            ("a/x", false),
+            ("locked", false),
+            ("locked", true),
+            ("z", false),
+        ]
+        .into_iter()
+        .map(|(p, g)| (p.to_string(), g))
+        .collect();
+        assert_eq!(v, want);
+        assert!(summary.incomplete);
+        assert_eq!(summary.errors.len(), 1);
+        assert_eq!(summary.errors[0].0.as_bytes(), b"locked");
+    }
+
+    #[tokio::test]
+    async fn an_unstatable_entry_is_a_gap_at_its_position() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("d")).unwrap();
+        std::fs::write(t.path().join("d/a"), b"").unwrap();
+        std::fs::write(t.path().join("d/b"), b"").unwrap();
+        std::fs::write(t.path().join("e"), b"").unwrap();
+        // Listable but not searchable: names are read, nothing in it can be stat'ed.
+        std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        if std::fs::symlink_metadata(t.path().join("d/a")).is_ok() {
+            std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            eprintln!("skipping: running with privileges that bypass directory permissions");
+            return;
+        }
+        let (v, summary) = events(t.path()).await;
+        std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let want: Vec<(String, bool)> = [
+            ("", false),
+            ("d", false),
+            ("d/a", true),
+            ("d/b", true),
+            ("e", false),
+        ]
+        .into_iter()
+        .map(|(p, g)| (p.to_string(), g))
+        .collect();
+        assert_eq!(v, want);
+        assert!(summary.incomplete);
+        assert_eq!(summary.errors.len(), 2);
+    }
 }

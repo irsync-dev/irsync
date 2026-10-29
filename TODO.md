@@ -18,8 +18,6 @@ unfinished plan workspaces.
 
 Rough cost next to each. The last two are not things to fix.
 
-- [ ] `--delete-during` runs as `--delete-after`. Small: local to the delete
-      code, delete per directory as it is transferred.
 - [ ] Keys under `~/.ssh` are not read unless `identity` or `--identity`
       names them. Small: a default lookup. Hardware and ssh-agent keys stay
       out, since iroh needs the raw secret for its transport.
