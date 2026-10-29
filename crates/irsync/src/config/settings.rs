@@ -161,7 +161,14 @@ impl Default for DaemonSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// The client identity: the key to load, or to generate when nothing
+    /// else serves (see `ssh_identity`).
     pub identity: PathBuf,
+    /// `~/.ssh/id_ed25519`, used when `identity` is not set in the file and
+    /// the key at `identity` does not exist yet; never generated. Not a file
+    /// key: `None` once the file names an identity.
+    #[serde(skip)]
+    pub ssh_identity: Option<PathBuf>,
     pub state_dir: PathBuf,
     pub client: ClientSettings,
     pub daemon: DaemonSettings,
@@ -171,6 +178,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             identity: paths::config_dir().join("id_ed25519"),
+            ssh_identity: paths::ssh_identity(),
             state_dir: paths::state_dir(),
             client: ClientSettings::default(),
             daemon: DaemonSettings::default(),

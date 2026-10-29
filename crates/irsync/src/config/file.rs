@@ -99,6 +99,13 @@ impl Config {
         let raw: RawMerged = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
         let defaults = Settings::default();
         let mut settings = Settings {
+            // A named identity is the whole answer; the ssh key is only
+            // consulted for the built-in default.
+            ssh_identity: raw
+                .identity
+                .is_none()
+                .then_some(defaults.ssh_identity)
+                .flatten(),
             identity: raw.identity.unwrap_or(defaults.identity),
             state_dir: raw.state_dir.unwrap_or(defaults.state_dir),
             client: raw.client,

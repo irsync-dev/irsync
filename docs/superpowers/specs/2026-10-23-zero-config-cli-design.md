@@ -169,7 +169,8 @@ Resolution for a sync: command-line flag, then the alias's table in
 built-in default. Per-host `identity_file` is dropped: one client identity
 per account.
 `~/.ssh/id_ed25519` is no longer consulted; a user who wants it sets
-`identity` or passes `--identity`.
+`identity` or passes `--identity`. (Superseded 2026-10-29, decision R33:
+it is consulted again, after the irsync key and before generating one.)
 
 Unknown keys anywhere are an error naming the file, the table and the key.
 

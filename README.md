@@ -26,7 +26,8 @@ Linux and macOS (x86_64 and aarch64) are supported, as client and as daemon.
 
 The example pushes a photo library from a laptop to a home server, then pulls
 it back. No file is written by hand. Each side generates its key the first
-time a command needs it and says so on stderr (`generated identity <path>`).
+time a command needs it and says so on stderr (`generated identity <path>`);
+a client that already has `~/.ssh/id_ed25519` uses that key instead.
 
 ```sh
 # laptop
@@ -87,9 +88,14 @@ each other: add `--address 127.0.0.1:PORT` (or `irsync host add home ID
 --address 127.0.0.1:PORT`), with the port the daemon prints, to dial it
 directly.
 
-Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`;
-`irsync id generate [--daemon | --out PATH]` makes one explicitly and refuses
-to overwrite unless given `-f`/`--force`.
+Only file-based Ed25519 keys work. Keys live in `~/.config/irsync/`. The
+client's key is looked up the way ssh picks one: `--identity`, else `identity`
+in `irsync.toml`, else `~/.config/irsync/id_ed25519` when it exists, else
+`~/.ssh/id_ed25519` when it exists (read as it is, never written; an
+encrypted one needs a passphrase, see `--passphrase-file`), else a key
+generated at `~/.config/irsync/id_ed25519`. `irsync id generate [--daemon |
+--out PATH]` makes a key explicitly, after which the ssh key is no longer
+consulted, and refuses to overwrite unless given `-f`/`--force`.
 
 ## Files
 
@@ -274,7 +280,7 @@ irsync-specific:
 | `--no-dht` | do not use the mainline DHT for lookup |
 | `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
 | `--config PATH` | the config file (default: `~/.config/irsync/irsync.toml`); a `hosts.toml` beside it is read too |
-| `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, generated if missing) |
+| `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, else `~/.ssh/id_ed25519`, else generated at the former) |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`, `irsync id show` and `irsync show`) |
 | `--no-resume` | start a fresh plan instead of resuming |
 | `--no-rename-detection` | do not reuse content of moved files |
@@ -310,8 +316,8 @@ partial files are waiting.
 - `--partial-dir` is not supported on a push (it would name a directory on the
   daemon); a push with it is refused.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
-  cannot be used, and keys under `~/.ssh` are not read unless `identity` or
-  `--identity` names it.
+  cannot be used, and of the keys under `~/.ssh` only `id_ed25519` is tried
+  unless `identity` or `--identity` names another.
 - The `[daemon]` settings need a restart; exports, grants and host aliases
   take effect on the next connection.
 - `--numeric-ids` is always on: owners and groups are transferred as numbers,

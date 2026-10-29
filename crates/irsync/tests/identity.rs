@@ -1,6 +1,7 @@
 use irsync::identity::{
-    endpoint_id_of_public_key, generate_openssh, load_identity_interactive, load_or_generate,
-    load_secret_key, parse_endpoint_id, write_new, IdentityError, PassphraseSource,
+    endpoint_id_of_public_key, generate_openssh, load_client_identity, load_identity_interactive,
+    load_or_generate, load_secret_key, parse_endpoint_id, write_new, IdentityError, KeySource,
+    PassphraseSource,
 };
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -271,4 +272,63 @@ fn load_or_generate_in_a_read_only_directory_names_the_path() {
     let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
     assert!(e.to_string().contains(p.to_str().unwrap()), "{e}");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn client_identity_prefers_the_irsync_key_then_the_ssh_key_then_generates() {
+    let d = tempfile::tempdir().unwrap();
+    let own = d.path().join("irsync/id_ed25519");
+    let ssh = d.path().join("ssh/id_ed25519");
+    let src = PassphraseSource::default();
+    // Nothing anywhere: generated at the irsync path, the ssh path untouched.
+    let (generated, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
+    assert_eq!(source, KeySource::Generated(own.clone()));
+    assert!(!ssh.exists());
+    // The irsync key exists: it wins over an ssh key that appears later.
+    std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
+    let ssh_key = generate_openssh(&ssh, "me@laptop").unwrap();
+    let (k, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
+    assert_eq!(source, KeySource::Loaded(own.clone()));
+    assert_eq!(k.public(), generated.public());
+    // No irsync key, an ssh key: the ssh key is used as it is, nothing is written.
+    std::fs::remove_file(&own).unwrap();
+    std::fs::remove_file(d.path().join("irsync/id_ed25519.pub")).unwrap();
+    let (k, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
+    assert_eq!(source, KeySource::Ssh(ssh.clone()));
+    assert_eq!(k.public(), ssh_key.public());
+    assert!(!own.exists());
+    // A named identity never falls back: it is generated even beside an ssh key.
+    let (k, source) = load_client_identity(&own, None, &src, "irsync").unwrap();
+    assert_eq!(source, KeySource::Generated(own.clone()));
+    assert_ne!(k.public(), ssh_key.public());
+}
+
+#[test]
+fn an_encrypted_ssh_key_without_a_passphrase_is_an_error_naming_it() {
+    let d = tempfile::tempdir().unwrap();
+    let own = d.path().join("irsync/id_ed25519");
+    let ssh = d.path().join("id_ed25519");
+    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut OsRng, "pw")
+        .unwrap()
+        .write_openssh_file(&ssh, LineEnding::LF)
+        .unwrap();
+    let e =
+        load_client_identity(&own, Some(&ssh), &PassphraseSource::default(), "irsync").unwrap_err();
+    assert!(
+        matches!(e, IdentityError::NoPassphraseSource(ref q) if q == &ssh),
+        "{e}"
+    );
+    // The passphrase unlocks it; no irsync key is made either way.
+    let src = PassphraseSource {
+        env: Some("pw".into()),
+        ..PassphraseSource::default()
+    };
+    let (k, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
+    assert_eq!(source, KeySource::Ssh(ssh.clone()));
+    assert_eq!(
+        k.public().as_bytes(),
+        &key.public_key().key_data().ed25519().unwrap().0
+    );
+    assert!(!own.exists());
 }

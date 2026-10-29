@@ -59,6 +59,14 @@ cross-referenced from commit messages and review notes.
   Non-Ed25519 lines are skipped with a warning.
 - Passphrase-protected keys unlock via `--passphrase-file`,
   `IRSYNC_PASSPHRASE`, or a tty prompt.
+- **R33 — The client identity is looked up like an ssh key** (2026-10-29,
+  reversing the zero-config design's choice to never read `~/.ssh`):
+  `--identity`, else `identity` in the config, else the irsync key when it
+  exists, else `~/.ssh/id_ed25519` when it exists (loaded as it is, never
+  written), else a key generated at the irsync path. A named path is the
+  whole answer. The daemon keeps its own key. Cost if wrong: a user with an
+  encrypted ssh key and no irsync key is asked for a passphrase on first
+  use instead of getting a silent new key; `irsync id generate` opts out.
 
 ### 1.3 Index (SQLite, WAL)
 

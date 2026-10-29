@@ -21,7 +21,9 @@ use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::escape_path;
-use irsync::identity::{load_or_generate, parse_endpoint_id, PassphraseSource};
+use irsync::identity::{
+    load_client_identity, load_or_generate, parse_endpoint_id, KeySource, PassphraseSource,
+};
 use irsync::index::Index;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
@@ -361,15 +363,10 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
         }
         resolved.extend(addrs);
     }
-    let identity = opts
-        .identity
-        .clone()
-        .unwrap_or_else(|| settings.identity.clone());
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
-    let (secret, generated) = load_or_generate(&identity, &pass, "irsync")
-        .with_context(|| format!("loading identity {}", identity.display()))?;
-    if generated {
-        eprintln!("generated identity {}", identity.display());
+    let (secret, source) = client_identity(opts.identity.as_deref(), &settings, &pass)?;
+    if let KeySource::Generated(path) = &source {
+        eprintln!("generated identity {}", path.display());
         eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
         eprintln!("{}", secret.public());
     }
@@ -1095,6 +1092,29 @@ fn run_host(h: &HostArgs) -> i32 {
     }
 }
 
+/// The client identity: `explicit` (`--identity`) or the config's `identity`
+/// when set, else the default key, else `~/.ssh/id_ed25519`, else a key
+/// generated at the default path. Says where it came from.
+fn client_identity(
+    explicit: Option<&std::path::Path>,
+    settings: &irsync::config::settings::Settings,
+    pass: &PassphraseSource,
+) -> anyhow::Result<(iroh::SecretKey, KeySource)> {
+    let (path, ssh) = match explicit {
+        Some(p) => (p, None),
+        None => (
+            settings.identity.as_path(),
+            settings.ssh_identity.as_deref(),
+        ),
+    };
+    let (secret, source) = load_client_identity(path, ssh, pass, "irsync")
+        .with_context(|| format!("loading identity {}", path.display()))?;
+    if let KeySource::Ssh(p) = &source {
+        tracing::info!(path = %p.display(), "using the ssh key as the client identity");
+    }
+    Ok((secret, source))
+}
+
 /// Loads (generating if missing, with a stderr notice) the identity at `path`.
 fn identity_of(
     path: &std::path::Path,
@@ -1174,21 +1194,34 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
-            let show = |path: &std::path::Path, comment: &str| -> anyhow::Result<()> {
-                let secret = identity_of(path, comment, &pass)?;
-                println!("{}", irsync::identity::public_key_line(&secret, comment));
+            let print = |secret: &iroh::SecretKey, comment: &str| {
+                println!("{}", irsync::identity::public_key_line(secret, comment));
                 println!("{}", secret.public());
+            };
+            let client = || -> anyhow::Result<()> {
+                let (secret, source) = client_identity(None, &settings, &pass)?;
+                if let KeySource::Generated(p) = &source {
+                    eprintln!("generated identity {}", p.display());
+                }
+                print(&secret, "irsync");
+                Ok(())
+            };
+            let show_daemon = || -> anyhow::Result<()> {
+                print(
+                    &identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?,
+                    "irsync-daemon",
+                );
                 Ok(())
             };
             if all {
                 println!("client:");
-                show(&settings.identity, "irsync")?;
+                client()?;
                 println!("daemon:");
-                show(&settings.daemon.identity, "irsync-daemon")?;
+                show_daemon()?;
             } else if daemon {
-                show(&settings.daemon.identity, "irsync-daemon")?;
+                show_daemon()?;
             } else {
-                show(&settings.identity, "irsync")?;
+                client()?;
             }
             Ok(())
         })(),
@@ -1206,7 +1239,10 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
             // file that holds the table.
             let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
             let pass = PassphraseSource::from_env(passphrase_file);
-            let client = identity_of(&settings.identity, "irsync", &pass)?;
+            let (client, source) = client_identity(None, settings, &pass)?;
+            if let KeySource::Generated(p) = &source {
+                eprintln!("generated identity {}", p.display());
+            }
             let client_line = irsync::identity::public_key_line(&client, "irsync");
             let daemon = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
             print!(

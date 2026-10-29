@@ -199,6 +199,51 @@ pub fn load_or_generate(
     }
 }
 
+/// Where a client identity came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeySource {
+    /// The key at the named (or default) path existed and was loaded.
+    Loaded(PathBuf),
+    /// No irsync key yet: the user's own ssh key was loaded (never written).
+    Ssh(PathBuf),
+    /// Nothing served: a key was generated at the path.
+    Generated(PathBuf),
+}
+
+impl KeySource {
+    pub fn path(&self) -> &Path {
+        match self {
+            KeySource::Loaded(p) | KeySource::Ssh(p) | KeySource::Generated(p) => p,
+        }
+    }
+}
+
+/// Resolves the client identity the way ssh picks a key: the key at `path`
+/// when it exists; else `ssh` (`~/.ssh/id_ed25519`) when it exists, loaded
+/// as it is; else a new key generated at `path`. `ssh` is `None` when the
+/// user named a path (`--identity`, or `identity` in the config): that path
+/// is then the whole answer.
+pub fn load_client_identity(
+    path: &Path,
+    ssh: Option<&Path>,
+    src: &PassphraseSource,
+    comment: &str,
+) -> Result<(SecretKey, KeySource), IdentityError> {
+    if path.symlink_metadata().is_err() {
+        if let Some(ssh) = ssh.filter(|s| s.symlink_metadata().is_ok()) {
+            let secret = load_identity_interactive(ssh, src)?;
+            return Ok((secret, KeySource::Ssh(ssh.to_path_buf())));
+        }
+    }
+    let (secret, generated) = load_or_generate(path, src, comment)?;
+    let source = if generated {
+        KeySource::Generated(path.to_path_buf())
+    } else {
+        KeySource::Loaded(path.to_path_buf())
+    };
+    Ok((secret, source))
+}
+
 /// The iroh endpoint id for an SSH public key, if it is Ed25519.
 pub fn endpoint_id_of_public_key(pk: &ssh_key::PublicKey) -> Option<EndpointId> {
     let ed = pk.key_data().ed25519()?;

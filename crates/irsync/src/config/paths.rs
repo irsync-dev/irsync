@@ -9,6 +9,11 @@ pub fn config_dir() -> PathBuf {
         .join(".config/irsync")
 }
 
+/// `~/.ssh/id_ed25519`, the key ssh itself tries first; `None` without a home.
+pub fn ssh_identity() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".ssh/id_ed25519"))
+}
+
 pub fn state_dir() -> PathBuf {
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))

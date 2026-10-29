@@ -176,6 +176,47 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
 }
 
 #[test]
+fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let ssh =
+        irsync::identity::generate_openssh(&home.join(".ssh/id_ed25519"), "me@laptop").unwrap();
+    let endpoint_of = |o: &std::process::Output| {
+        irsync::identity::parse_endpoint_id(
+            String::from_utf8_lossy(&o.stdout).lines().nth(1).unwrap(),
+        )
+        .unwrap()
+    };
+    // The user's ssh key is the identity; nothing is generated or written.
+    let o = irsync(&home, &["id", "show"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(endpoint_of(&o), ssh.public());
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("generated"));
+    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    assert!(irsync(&home, &["show"]).status.success());
+    // An irsync key, once made, takes precedence.
+    assert!(irsync(&home, &["id", "generate"]).status.success());
+    let o = irsync(&home, &["id", "show"]);
+    let own = endpoint_of(&o);
+    assert_ne!(own, ssh.public());
+    // A named identity is the whole answer: generated beside the ssh key.
+    let named = home.join("elsewhere/key");
+    std::fs::write(
+        home.join(".config/irsync/irsync.toml"),
+        format!("identity = {:?}\n", named.display().to_string()),
+    )
+    .unwrap();
+    let o = irsync(&home, &["id", "show"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    let from_named = endpoint_of(&o);
+    assert_ne!(from_named, ssh.public());
+    assert_ne!(from_named, own);
+    assert!(named.exists());
+}
+
+#[test]
 fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
