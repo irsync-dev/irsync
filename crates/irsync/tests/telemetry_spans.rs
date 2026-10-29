@@ -160,6 +160,10 @@ async fn push_span_tree() {
         "{:?}",
         client[0]
     );
+    // Not exporting: the endpoint id stays off the span (and the log lines).
+    for s in [client[0], daemon[0]] {
+        assert!(!s.fields.contains_key("endpoint_id"), "{s:?}");
+    }
     for phase in ["handshake", "list", "plan", "transfer"] {
         let spans = named(&all, phase);
         assert!(!spans.is_empty(), "no {phase} span");

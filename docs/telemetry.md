@@ -123,7 +123,13 @@ session            session_id, direction, side, role, endpoint_id, peer,
 daemon a child of the client's span (the client's W3C trace context travels
 in `Hello`), so one sync is one trace across both machines. The local
 endpoint id is the `endpoint_id` field on `session` spans, not a resource
-attribute. Events logged inside a span pick up its context.
+attribute; it is recorded only while spans are exported over OTLP. Events
+logged inside a span pick up its context.
+
+Log lines show that context too: the daemon's lines, and the client's under
+`-v`, are prefixed with the span stack and its fields, as in
+`session{session_id=… side="daemon" …}:transfer: …`,
+which tells concurrent sessions apart.
 
 ## Flamegraphs
 

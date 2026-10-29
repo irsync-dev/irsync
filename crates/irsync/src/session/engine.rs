@@ -838,7 +838,9 @@ pub async fn serve_daemon(
 }
 
 /// The `session` span of one session on one side: a root span, with the
-/// end-of-session fields declared empty for [`record_outcome`].
+/// end-of-session fields declared empty for [`record_outcome`]. `endpoint_id`
+/// is recorded only when spans are exported: log lines carry the span's
+/// fields, and the id would lengthen each of them.
 pub(super) fn session_span(
     side: Side,
     hello: &Hello,
@@ -847,14 +849,14 @@ pub(super) fn session_span(
     endpoint_id: &str,
 ) -> tracing::Span {
     let direction = Direction::try_from(hello.direction).unwrap_or(Direction::ClientSends);
-    tracing::info_span!(
+    let span = tracing::info_span!(
         parent: None,
         "session",
         session_id = tracing::field::Empty,
         direction = ?direction,
         side = side.label(),
         role = role_of(side, hello.direction).label(),
-        endpoint_id,
+        endpoint_id = tracing::field::Empty,
         peer = %peer,
         resumed = tracing::field::Empty,
         source_index,
@@ -862,7 +864,11 @@ pub(super) fn session_span(
         cwnd = tracing::field::Empty,
         lost_packets = tracing::field::Empty,
         reconnects = tracing::field::Empty,
-    )
+    );
+    if crate::telemetry::exporting() {
+        span.record("endpoint_id", endpoint_id);
+    }
+    span
 }
 
 /// The role `side` plays for a `Hello.direction` value.
