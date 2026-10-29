@@ -511,6 +511,11 @@ fn verbose_prints_one_summary_per_session() {
     assert!(a < b && b < c, "{out}");
     assert!(c < at("\nsent "), "{out}");
     assert_eq!(out.matches("session ").count(), 3, "{out}");
-    assert!(out.contains(&format!("push  {}", srcs[0])), "{out}");
-    assert!(out.contains(&format!("-> {dest}")), "{out}");
+    // The header wraps at 80 columns, and a long temp dir (macOS) pushes the
+    // source onto a line of its own.
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(&format!("push {} -> {dest}", srcs[0])),
+        "{out}"
+    );
 }

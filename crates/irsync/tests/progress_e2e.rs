@@ -30,15 +30,17 @@ fn opts(extra: &[&str]) -> SyncOptions {
 /// drained while the session runs, as the reporter does: per-file events
 /// for many files outgrow its capacity.
 async fn run(h: &Harness, o: &SyncOptions, flow: Flow) -> (Outcome, Vec<Event>) {
-    run_with(h, o, flow, ReconnectOpts::default()).await
+    run_with(h, o, flow, ReconnectOpts::default(), |_| {}).await
 }
 
-/// [`run`] with these reconnect options.
+/// [`run`] with these reconnect options, calling `on_event` with each event
+/// as it arrives.
 async fn run_with(
     h: &Harness,
     o: &SyncOptions,
     flow: Flow,
     ropts: ReconnectOpts,
+    mut on_event: impl FnMut(&Event) + Send + 'static,
 ) -> (Outcome, Vec<Event>) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let local = h.local_side();
@@ -50,7 +52,10 @@ async fn run_with(
             tokio::select! {
                 biased;
                 r = rx.recv() => match r {
-                    Ok(e) => events.push(e),
+                    Ok(e) => {
+                        on_event(&e);
+                        events.push(e);
+                    }
                     Err(RecvError::Lagged(n)) => panic!("the test lost {n} events"),
                     Err(RecvError::Closed) => break 'collect,
                 },
@@ -316,14 +321,23 @@ async fn after_a_reconnect_files_placed_earlier_are_not_reported_skipped() {
             fs::write(src.join(format!("f{i:02}.bin")), noise(2 << 20, i + 1)).unwrap();
         }
         h.daemon.sender_parallel(4);
-        h.daemon.fault.drop_after_bytes(9 << 20);
         let fast = ReconnectOpts {
             backoff_min: Duration::from_millis(100),
             ..ReconnectOpts::default()
         };
+        // Drop the connection at the daemon's next byte once the client has
+        // placed a file: a byte-count limit alone can land, on a loaded
+        // machine, before any file is placed.
+        let fault = h.daemon.fault.clone();
+        let same = RelPath::new(b"same.txt").unwrap();
+        let arm = move |e: &Event| {
+            if matches!(e, Event::FileDone(p, _) if *p != same) {
+                fault.drop_after_bytes(0);
+            }
+        };
         // With `--delete` the stored plan is not reused: the second
         // connection lists and plans afresh, past the files the first placed.
-        let (out, events) = run_with(&h, &opts(&["--delete"]), Flow::Pull, fast).await;
+        let (out, events) = run_with(&h, &opts(&["--delete"]), Flow::Pull, fast, arm).await;
         assert!(h.daemon.fault.fired(), "the fault never fired");
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let cut = events
