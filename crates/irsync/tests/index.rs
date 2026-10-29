@@ -298,3 +298,86 @@ fn remove_entry_forgets_the_entry_and_its_chunks() {
     // Nothing there: still fine.
     ix.remove_entry(&rp("b")).unwrap();
 }
+
+fn handle_with(paths: &[&str]) -> (tempfile::TempDir, irsync::index::IndexHandle, [u8; 32]) {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let h = Index::open(d.path(), &root).unwrap().into_handle();
+    let digest = digest_bytes(&[3u8; 4096]);
+    let mut e = entry("x", Some(digest.hash));
+    e.size = digest.size;
+    for p in paths {
+        h.lock()
+            .unwrap()
+            .put_entry(&rp(p), &e, (1, 2), Some(&digest))
+            .unwrap();
+    }
+    (d, h, digest.chunks[0].hash)
+}
+
+#[test]
+fn reads_neither_wait_for_nor_take_the_index_lock() {
+    let (_d, h, chunk) = handle_with(&["a"]);
+    let held = h.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = h.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(reader.read(|r| r.find_chunk(&chunk)).unwrap());
+    });
+    let found = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a read waited for the index lock");
+    assert_eq!(found.unwrap().0, rp("a"));
+    drop(held);
+}
+
+#[test]
+fn reads_see_committed_writes() {
+    let (_d, h, chunk) = handle_with(&[]);
+    assert!(h.read(|r| r.find_chunk(&chunk)).unwrap().is_none());
+    let digest = digest_bytes(&[3u8; 4096]);
+    let mut e = entry("b", Some(digest.hash));
+    e.size = digest.size;
+    h.lock()
+        .unwrap()
+        .put_entry(&rp("b"), &e, (1, 2), Some(&digest))
+        .unwrap();
+    assert_eq!(
+        h.read(|r| r.find_chunk(&chunk)).unwrap().unwrap().0,
+        rp("b")
+    );
+    let paths = h
+        .read(|r| r.find_paths_by_whole_hash(&digest.hash))
+        .unwrap();
+    assert_eq!(paths, vec![rp("b")]);
+}
+
+#[test]
+fn grouped_entries_from_many_threads_all_land() {
+    let (_d, h, _) = handle_with(&[]);
+    let digest = digest_bytes(&[5u8; 4096]);
+    std::thread::scope(|s| {
+        for i in 0..16 {
+            let (h, digest) = (h.clone(), digest.clone());
+            s.spawn(move || {
+                let path = format!("f{i:02}");
+                let mut e = entry(&path, Some(digest.hash));
+                e.size = digest.size;
+                h.put_entry_grouped(irsync::index::NewEntry {
+                    path: rp(&path),
+                    entry: e,
+                    ctime: (1, 2),
+                    digest: Some(digest),
+                })
+                .unwrap();
+                // Written by the time the call returns, by whichever task.
+                assert!(h.read(|r| r.get_entry(&rp(&path))).unwrap().is_some());
+            });
+        }
+    });
+    let paths = h
+        .read(|r| r.find_paths_by_whole_hash(&digest.hash))
+        .unwrap();
+    assert_eq!(paths.len(), 16);
+}

@@ -38,7 +38,7 @@ use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
-use crate::index::IndexHandle;
+use crate::index::{IndexHandle, NewEntry};
 use crate::net::frame::read_msg;
 use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
@@ -716,22 +716,25 @@ fn local_sources(
     let mut todo: Vec<usize> = (0..wanted.len()).collect();
     let mut live = HashSet::new();
     while !todo.is_empty() {
-        // Under the lock: the hits, and what the index says of each new source.
+        // On a read connection: the hits, and what the index says of each
+        // new source.
         let mut sources = HashMap::new();
-        {
-            let ix = index.lock().map_err(|_| poisoned())?;
-            for &k in &todo {
-                let hit = ix.find_chunk(&wanted[k].1).map_err(io::Error::other)?;
-                if let Some((p, _)) = &hit {
-                    if !live.contains(p) && !sources.contains_key(p) {
-                        let e = ix.get_entry(p).map_err(io::Error::other)?;
-                        sources.insert(p.clone(), e.map(|e| (e.entry.inode, e.entry.size)));
+        index
+            .read(|r| {
+                for &k in &todo {
+                    let hit = r.find_chunk(&wanted[k].1)?;
+                    if let Some((p, _)) = &hit {
+                        if !live.contains(p) && !sources.contains_key(p) {
+                            let e = r.get_entry(p)?;
+                            sources.insert(p.clone(), e.map(|e| (e.entry.inode, e.entry.size)));
+                        }
                     }
+                    hits[k].1 = hit;
                 }
-                hits[k].1 = hit;
-            }
-        }
-        // Without it: whether each is still the file the index describes.
+                Ok(())
+            })
+            .map_err(io::Error::other)?;
+        // Whether each is still the file the index describes.
         let mut gone = HashSet::new();
         for (p, indexed) in sources {
             let full = if p.as_bytes().is_empty() {
@@ -758,7 +761,8 @@ fn local_sources(
             ix.remove_entry(p).map_err(io::Error::other)?;
         }
         drop(ix);
-        // Every round drops a source, so this ends.
+        // Every round drops a source, so this ends (a reader sees the
+        // removal: it is committed before the next round reads).
         todo.retain(|&k| hits[k].1.as_ref().is_some_and(|(p, _)| gone.contains(p)));
     }
     Ok(hits)
@@ -875,11 +879,12 @@ async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest, hash: [u8; 32]) 
         e.whole_hash = Some(Hash {
             bytes: digest.hash.to_vec(),
         });
-        index
-            .lock()
-            .map_err(|_| io::Error::other("index poisoned"))?
-            .put_entry(&key, &e, ctime, Some(&digest))
-            .map_err(io::Error::other)
+        index.put_entry_grouped(NewEntry {
+            path: key,
+            entry: e,
+            ctime,
+            digest: Some(digest),
+        })
     })
     .await;
     if let Err(e) = rec {

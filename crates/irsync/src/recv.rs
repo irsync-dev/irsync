@@ -99,6 +99,10 @@ pub struct FileWriter {
     done: bool,
     /// Bytes of the chunks written from the sender's data (not local copies).
     received: u64,
+    /// Whether the index holds a partial record for this file (this writer
+    /// wrote or adopted one). Without one, finalizing writes none: a `.part`
+    /// left by a crash meanwhile is adopted by re-chunking it.
+    recorded: bool,
     /// `-S` / sparse source: all-zero chunks are not written (left as holes).
     sparse: bool,
     /// Length of the `.part` when opened: everything from here on is a hole
@@ -637,6 +641,7 @@ impl FileWriter {
             last_persist: Instant::now(),
             done: false,
             received: 0,
+            recorded: false,
             sparse: false,
             hole_from: 0,
             activity,
@@ -754,6 +759,7 @@ impl FileWriter {
             return Ok(false);
         }
         drop(ix);
+        self.recorded = true;
         let ranges = coalesce(
             p.ranges
                 .ranges
@@ -971,6 +977,7 @@ impl FileWriter {
             .map_err(index_err)?;
         self.chunks_since_persist = 0;
         self.last_persist = Instant::now();
+        self.recorded = true;
         Ok(())
     }
 
@@ -988,11 +995,13 @@ impl FileWriter {
         .map_err(io::Error::other)??;
         self.chunks_since_persist = 0;
         self.last_persist = Instant::now();
+        self.recorded = true;
         Ok(())
     }
 
     /// Verify the whole `.part`, apply metadata and rename it over the destination.
-    /// On any error the `.part` and its record stay; nothing appears at the final name.
+    /// On any error the `.part` stays, with its progress recorded (on drop at
+    /// the latest); nothing appears at the final name.
     /// Returns the file's whole-file hash (folded from its chunks).
     pub async fn finalize(
         mut self,
@@ -1006,7 +1015,11 @@ impl FileWriter {
         let _timed = meter.as_deref().map(|m| m.start(Activity::Place));
         let file = self.ensure_open().await?;
         self.activity.fetch_add(1, Ordering::Relaxed);
-        self.persist().await?;
+        // A record already there is brought up to date; a file without one
+        // (most arrive in one go) gets none just to drop it again below.
+        if self.recorded {
+            self.persist().await?;
+        }
         // Folded from the bytes verified in memory: no read of the `.part`.
         let actual = self
             .tree
@@ -1094,6 +1107,9 @@ impl FileWriter {
         .map_err(io::Error::other)??;
         self.activity.fetch_add(1, Ordering::Relaxed);
         self.done = true;
+        if !self.recorded {
+            return Ok(actual);
+        }
         let (index, rel) = (self.index.clone(), self.rel.clone());
         let removed = tokio::task::spawn_blocking(move || {
             index
