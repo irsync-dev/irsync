@@ -152,6 +152,45 @@ async fn stale_local_chunk_is_re_requested_from_the_sender() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vanished_local_source_is_dropped_not_tried() {
+    within30(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let content = data(4 * MIB, 6);
+        fs::write(h.src(flow).join("a.bin"), &content).unwrap();
+        let first_run = h.run(&opts, flow).await.unwrap();
+        assert!(first_run.errors.is_empty(), "{:?}", first_run.errors);
+
+        // The destination's a.bin goes away behind irsync's back; its index
+        // rows still offer every chunk of the new c.bin (a.bin's content and
+        // a tail, so it is no rename of a.bin).
+        fs::remove_file(h.dst(flow).join("a.bin")).unwrap();
+        let mut longer = content.clone();
+        longer.extend_from_slice(&data(KIB, 7));
+        fs::write(h.src(flow).join("c.bin"), &longer).unwrap();
+        for _ in 0..2 {
+            let before = h
+                .daemon
+                .rerequests
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let out = h.run(&opts, flow).await.unwrap();
+            assert!(out.errors.is_empty(), "{:?}", out.errors);
+            assert_eq!(fs::read(h.dst(flow).join("c.bin")).unwrap(), longer);
+            // The source is seen to be gone before any copy is planned from it.
+            assert_eq!(
+                h.daemon
+                    .rerequests
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                before
+            );
+            fs::remove_file(h.dst(flow).join("c.bin")).unwrap();
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delta_hashes_the_old_file_once_starting_at_plan_time() {
     within30(async {
         let opts = archive_opts();

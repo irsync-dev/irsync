@@ -420,6 +420,17 @@ impl Index {
         Ok(())
     }
 
+    /// Forgets the entry at `path` and its chunk rows (its file is gone or
+    /// was replaced).
+    pub fn remove_entry(&mut self, path: &RelPath) -> Result<()> {
+        let p = path.as_bytes();
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM chunks WHERE path = ?1", [p])?;
+        tx.execute("DELETE FROM entries WHERE path = ?1", [p])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn find_paths_by_whole_hash(&self, hash: &[u8; 32]) -> Result<Vec<RelPath>> {
         let mut st = self
             .conn

@@ -276,3 +276,25 @@ fn metered_handle_times_only_contended_locks() {
     let waited = meter.usage().busy(Activity::IndexWait);
     assert!(waited >= Duration::from_millis(25), "{waited:?}");
 }
+
+#[test]
+fn remove_entry_forgets_the_entry_and_its_chunks() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    let digest = digest_bytes(&[7u8; 4096]);
+    let mut e = entry("a", Some(digest.hash));
+    e.size = digest.size;
+    ix.put_entry(&rp("a"), &e, (1, 2), Some(&digest)).unwrap();
+    ix.put_entry(&rp("b"), &e, (1, 2), Some(&digest)).unwrap();
+    let h = digest.chunks[0].hash;
+    assert_eq!(ix.find_chunk(&h).unwrap().unwrap().0, rp("a"));
+    ix.remove_entry(&rp("a")).unwrap();
+    assert!(ix.get_entry(&rp("a")).unwrap().is_none());
+    assert_eq!(ix.find_chunk(&h).unwrap().unwrap().0, rp("b"));
+    ix.remove_entry(&rp("b")).unwrap();
+    assert!(ix.find_chunk(&h).unwrap().is_none());
+    // Nothing there: still fine.
+    ix.remove_entry(&rp("b")).unwrap();
+}

@@ -15,11 +15,11 @@
 //! write goes through a [`Gate`] that admits chunks in ascending order,
 //! and the old content is only ever read above the write cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -38,6 +38,7 @@ use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
+use crate::index::IndexHandle;
 use crate::net::frame::read_msg;
 use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
@@ -463,18 +464,8 @@ pub(super) async fn open_writer(
         warm_candidates(&ctx, digest.size).await;
     }
     if !wanted.is_empty() {
-        let index = ctx.index().clone();
-        let found = blocking(move || {
-            let ix = index
-                .lock()
-                .map_err(|_| io::Error::other("index poisoned"))?;
-            let mut v = Vec::with_capacity(wanted.len());
-            for (i, h) in wanted {
-                v.push((i, ix.find_chunk(&h).map_err(io::Error::other)?));
-            }
-            Ok(v)
-        })
-        .await;
+        let (index, base) = (ctx.index().clone(), ctx.base.clone());
+        let found = blocking(move || local_sources(&index, &base, &wanted)).await;
         match found {
             Ok(found) => {
                 for (idx, hit) in found {
@@ -705,6 +696,72 @@ pub(super) async fn copy_local_chunks(
     }
     ctx.hooks.event("copied", &route.path);
     finish_unit(&route, &events, file_id, 1).await;
+}
+
+/// A chunk index and the indexed file and offset holding it, if any.
+type ChunkHit = (u32, Option<(RelPath, u64)>);
+
+/// Where each of the `wanted` chunks (index, hash) can be copied from
+/// locally, per the index under `base`. A source file that is gone or was
+/// replaced (another inode or size than indexed) is dropped from the index
+/// and its chunks are looked up again, so no copy is planned from it; bytes
+/// changed in place are still caught when the copied chunk is verified.
+fn local_sources(
+    index: &IndexHandle,
+    base: &Path,
+    wanted: &[(u32, [u8; 32])],
+) -> io::Result<Vec<ChunkHit>> {
+    let poisoned = || io::Error::other("index poisoned");
+    let mut hits: Vec<_> = wanted.iter().map(|&(i, _)| (i, None)).collect();
+    let mut todo: Vec<usize> = (0..wanted.len()).collect();
+    let mut live = HashSet::new();
+    while !todo.is_empty() {
+        // Under the lock: the hits, and what the index says of each new source.
+        let mut sources = HashMap::new();
+        {
+            let ix = index.lock().map_err(|_| poisoned())?;
+            for &k in &todo {
+                let hit = ix.find_chunk(&wanted[k].1).map_err(io::Error::other)?;
+                if let Some((p, _)) = &hit {
+                    if !live.contains(p) && !sources.contains_key(p) {
+                        let e = ix.get_entry(p).map_err(io::Error::other)?;
+                        sources.insert(p.clone(), e.map(|e| (e.entry.inode, e.entry.size)));
+                    }
+                }
+                hits[k].1 = hit;
+            }
+        }
+        // Without it: whether each is still the file the index describes.
+        let mut gone = HashSet::new();
+        for (p, indexed) in sources {
+            let full = if p.as_bytes().is_empty() {
+                base.to_path_buf()
+            } else {
+                base.join(p.to_os())
+            };
+            let here = std::fs::symlink_metadata(&full)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| (m.ino(), m.len()));
+            if here.is_some() && here == indexed {
+                live.insert(p);
+            } else {
+                gone.insert(p);
+            }
+        }
+        if gone.is_empty() {
+            break;
+        }
+        let mut ix = index.lock().map_err(|_| poisoned())?;
+        for p in &gone {
+            tracing::debug!(path = ?p, "local source gone; dropped from the index");
+            ix.remove_entry(p).map_err(io::Error::other)?;
+        }
+        drop(ix);
+        // Every round drops a source, so this ends.
+        todo.retain(|&k| hits[k].1.as_ref().is_some_and(|(p, _)| gone.contains(p)));
+    }
+    Ok(hits)
 }
 
 /// Writes a chunk, from the sender (`remote`) or a local file, into the
