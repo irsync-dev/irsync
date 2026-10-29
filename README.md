@@ -22,6 +22,14 @@ cargo install --path crates/irsync
 
 Linux and macOS (x86_64 and aarch64) are supported, as client and as daemon.
 
+If you also want to use the included, but independent `fileset` utility that
+allows you to snapshot checksums and metadata of a large directory trees
+so you can verify correct transfer and check for bitrot on storage devices:
+
+```sh
+cargo install --path crates/fileset
+```
+
 ## Quick start
 
 The example pushes a photo library from a laptop to a home server, then pulls

@@ -171,6 +171,24 @@ deferred rather than fixed are listed in
     exists, which this rule cannot retroactively forbid. Cost if wrong:
     none; a stricter rule can be added to `update` later.
 
+## Follow-up: built-in excludes (2026-10-29)
+
+26. **Excludes match by name, before the stat.** A file named `.Trashes` at a
+    volume top is skipped as well as a directory; stat'ing the directory
+    is what macOS refuses on some volumes, and the type would not change the
+    answer.
+
+27. **A volume top is the root or a directory whose device differs from its
+    parent's.** Without `--cross-mount-points` the walk never enters such a
+    directory, so in practice only the root's names are checked.
+
+28. **`check` forgets stored entries at or below an exclude the walk
+    skipped.** A stored exclude that has since vanished from disk is still
+    reported deleted: the rule keys on what the walk saw, not on names.
+
+29. **The `INFO` channel lives on `Warnings`.** It is uncounted, goes to
+    stderr like `WARN`, and prints only with `-v`.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"

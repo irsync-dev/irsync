@@ -42,7 +42,11 @@ All verbs:
 - `--cross-mount-points`: descend into directories on other filesystems
 - `--no-dir-sort`: do not sort directory entries before iterating
 - `-j, --jobs <N>`: hashing threads (default: CPU count); `N` must be at least 1
+- `--no-builtin-excludes`: walk the built-in excludes (below) like any other
+  directory
 - `-q, --quiet`: suppress progress
+- `-v, --verbose`: also print an `INFO` line for each built-in exclude
+  skipped; conflicts with `--quiet`
 
 `init` only:
 
@@ -101,6 +105,19 @@ the end:
 added=1 deleted=1 changed=1 unchanged=40 warnings=0     (check)
 entries=43 hashed=3 reused=40 warnings=0                (init, update)
 ```
+
+## Built-in excludes
+
+macOS keeps `.DocumentRevisions-V100`, `.Spotlight-V100`, `.TemporaryItems`,
+`.Trashes` and `.fseventsd` at the top of every volume it touches, and
+ordinary users cannot read them. At the root of the tree, and at every mount
+point crossed with `--cross-mount-points`, entries with these names are
+neither recorded nor descended, on every OS: on a disk read elsewhere they are
+readable but still junk. Skipping one is not a warning, so it does not trip
+`--fail-on-warnings`. The same names deeper in the tree are ordinary entries.
+
+A manifest written before this (or with `--no-builtin-excludes`) may hold
+them: `check` does not report them, and the next `update` drops them.
 
 ## Exit codes
 

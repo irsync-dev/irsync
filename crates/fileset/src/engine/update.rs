@@ -45,7 +45,7 @@ pub fn update(
         Mode::Update { rehash } => (None, rehash),
     };
     let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
-    let mut warnings = Warnings::new(err);
+    let mut warnings = Warnings::new(err, common.verbose);
     let mode = match (opts.mode, loc.exists) {
         (Mode::Init { .. }, true) if unfinished_manifest(&loc) => {
             warnings.emit(&format!(
@@ -143,6 +143,8 @@ pub fn update(
             }
             // Already warned; the sweep drops what the walk did not see, as for any absence.
             WalkEvent::NotDescended(_) => return Ok(()),
+            // The sweep also drops what an older manifest recorded at or below it.
+            WalkEvent::Excluded(path) => return Ok(warnings.info(&walk::excluded_info(&path))?),
             WalkEvent::Entry(obs) => obs,
         };
         let sent = sent_to_hash

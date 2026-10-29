@@ -59,7 +59,7 @@ pub fn check(
             r => r.to_vec(),
         });
 
-    let mut warnings = Warnings::new(err);
+    let mut warnings = Warnings::new(err, common.verbose);
     let mut summary = CheckSummary::default();
     let mut lookup_error: Option<anyhow::Error> = None;
     // Prefixes (see `unobserved_prefix`) of what the walk could not observe; one per
@@ -68,6 +68,10 @@ pub fn check(
     // Prefixes of stored directories observed as something else (a symlink, a file): the
     // walk does not look through them, and nothing stored below them is there any more.
     let mut replaced: BTreeSet<Vec<u8>> = BTreeSet::new();
+    // Built-in excludes the walk skipped, and their prefixes. An older manifest may hold
+    // them; they are not differences.
+    let mut excluded: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut excluded_below: BTreeSet<Vec<u8>> = BTreeSet::new();
 
     let decide = |obs: &mut Observed| hash_or_skip(&**store.borrow(), obs, &sel, &mut lookup_error);
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
@@ -78,6 +82,12 @@ pub fn check(
             }
             WalkEvent::NotDescended(path) => {
                 not_descended.insert(unobserved_prefix(&path));
+                return Ok(());
+            }
+            WalkEvent::Excluded(path) => {
+                warnings.info(&walk::excluded_info(&path))?;
+                excluded_below.insert(unobserved_prefix(&path));
+                excluded.insert(path);
                 return Ok(());
             }
             WalkEvent::Entry(obs) => obs,
@@ -125,7 +135,7 @@ pub fn check(
     // Second pass: stored paths that are gone from the tree, or that the walk could not
     // observe. Stored content check cannot see is a difference, not just a warning.
     store.borrow().for_each(&mut |path, stored| {
-        if path == b"." {
+        if path == b"." || excluded.contains(path) || is_under(&excluded_below, path) {
             return Ok(());
         }
         let unverified = || line_chg(path, &[unverified_diff(stored.kind)]);

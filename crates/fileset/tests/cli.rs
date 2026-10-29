@@ -340,3 +340,39 @@ fn cli_relative_path_with_trailing_slash() {
     assert_eq!(run("update"), Some(0));
     assert_eq!(run("check"), Some(0));
 }
+
+#[test]
+fn cli_builtin_excludes_flags() {
+    let d = tree();
+    let t = d.path().join("tree");
+    std::fs::create_dir(t.join(".Trashes")).unwrap();
+    let out = bin()
+        .args(["init".as_ref(), "-v".as_ref(), t.as_os_str()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("INFO skipping built-in exclude .Trashes\n"),
+        "{e}"
+    );
+    let out = bin()
+        .args([
+            "check".as_ref(),
+            "--no-builtin-excludes".as_ref(),
+            t.as_os_str(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(".Trashes"));
+    assert_eq!(
+        code(&[
+            "check".as_ref(),
+            "-q".as_ref(),
+            "-v".as_ref(),
+            t.as_os_str()
+        ]),
+        2
+    );
+}

@@ -34,17 +34,32 @@ pub struct CommonOpts {
     pub sort: bool,
     pub jobs: usize,
     pub fail_on_warnings: bool,
+    pub builtin_excludes: bool,
+    pub verbose: bool,
 }
 
-/// Writes `WARN <text>` lines to `err` and counts them.
+/// Writes `WARN <text>` lines to `err` and counts them; with `verbose`, also uncounted
+/// `INFO <text>` lines.
 pub struct Warnings<'a> {
     err: &'a mut dyn Write,
     count: u64,
+    verbose: bool,
 }
 
 impl<'a> Warnings<'a> {
-    pub fn new(err: &'a mut dyn Write) -> Self {
-        Warnings { err, count: 0 }
+    pub fn new(err: &'a mut dyn Write, verbose: bool) -> Self {
+        Warnings {
+            err,
+            count: 0,
+            verbose,
+        }
+    }
+
+    pub fn info(&mut self, text: &str) -> io::Result<()> {
+        if self.verbose {
+            writeln!(self.err, "INFO {text}")?;
+        }
+        Ok(())
     }
 
     pub fn emit(&mut self, text: &str) -> io::Result<()> {
@@ -76,5 +91,6 @@ pub fn walk_config(common: &CommonOpts, root: &Path, loc: &Location) -> WalkConf
         sort: common.sort,
         store_path: store::store_path_inside(root, loc),
         sqlite_store: loc.backend == Backend::Sqlite,
+        builtin_excludes: common.builtin_excludes,
     }
 }
