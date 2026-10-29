@@ -12,14 +12,9 @@
 
 After the single-config work landed on main. Nothing below is tracked
 anywhere else: the code has no TODO markers, no ignored tests and no
-unfinished plan workspaces.
-
-## Known limitations (README "Known limitations in version one")
-
-Rough cost next to each. The last two are not things to fix.
-
-- Relays are a fallback and much slower than direct connections. By design.
-- Linux and macOS only. A port, not a fix.
+unfinished plan workspaces. Every fixable entry of the README's "Known
+limitations in version one" was fixed by 2026-10-29; what the README still
+lists there is by design (relay speed, Linux and macOS only).
 
 ## fileset: deferred findings
 
