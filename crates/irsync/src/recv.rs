@@ -1016,7 +1016,7 @@ impl FileWriter {
                     Counter::FsyncNanos,
                     u64::try_from(took.as_nanos()).unwrap_or(u64::MAX),
                 );
-                metrics::histogram!("irsync_fsync_seconds").record(took.as_secs_f64());
+                metrics::histogram!("irsync_fsync_seconds", m.labels()).record(took.as_secs_f64());
             }
             activity.fetch_add(1, Ordering::Relaxed);
             if let Some(expected) = expected.filter(|e| *e != actual) {

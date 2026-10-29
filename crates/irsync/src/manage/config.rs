@@ -30,6 +30,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client"]
         | ["daemon"]
         | ["daemon", "discovery"]
+        | ["telemetry"]
         | ["hosts"]
         | ["hosts", _]
         | ["exports"]
@@ -46,6 +47,9 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "portmap"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode"] => Str,
+        ["daemon", "debug_addr"] => Str,
+        ["telemetry", "otlp_endpoint"] => Url,
+        ["telemetry", "otlp_protocol"] => Str,
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
         ["hosts", _, "endpoint_id"] => Id,
         ["hosts", _, "relay"] => Url,

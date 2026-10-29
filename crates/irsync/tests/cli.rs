@@ -714,3 +714,31 @@ fn help_no_longer_names_the_old_files_as_the_ones_edited() {
         assert!(!help.contains(stale), "{stale:?} still in help");
     }
 }
+
+#[test]
+fn debug_addr_bare_port_is_loopback() {
+    let o = opts(&["--debug-addr", "9464", "a", "b"]);
+    assert_eq!(o.debug_addr, Some("127.0.0.1:9464".parse().unwrap()));
+    assert!(!o.debug_no_wait);
+    let o = opts(&[
+        "--debug-addr",
+        "0.0.0.0:1",
+        "--debug-port-no-wait",
+        "a",
+        "b",
+    ]);
+    assert_eq!(o.debug_addr, Some("0.0.0.0:1".parse().unwrap()));
+    assert!(o.debug_no_wait);
+    assert!(Args::try_parse_from(["irsync", "--debug-addr", "x", "a", "b"]).is_err());
+}
+
+#[test]
+fn no_wait_requires_debug_addr() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["--debug-port-no-wait", "a", "b"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--debug-addr"), "{err}");
+}

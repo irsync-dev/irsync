@@ -27,6 +27,7 @@ struct Acc {
 
 struct Inner {
     conn: Connection,
+    labels: Vec<metrics::Label>,
     base: ProcessSample,
     acc: Mutex<Acc>,
 }
@@ -73,10 +74,11 @@ impl Inner {
             a.rtt_sum += rtt;
             a.rtt_samples += 1;
             a.net.rtt_avg = a.rtt_sum / a.rtt_samples;
-            metrics::histogram!("irsync_quic_rtt_seconds").record(rtt.as_secs_f64());
+            metrics::histogram!("irsync_quic_rtt_seconds", self.labels.clone())
+                .record(rtt.as_secs_f64());
         }
         let lost = stats.lost_packets;
-        metrics::counter!("irsync_quic_lost_packets_total")
+        metrics::counter!("irsync_quic_lost_packets_total", self.labels.clone())
             .increment(lost.saturating_sub(a.last_lost));
         a.last_lost = lost;
         a.net.lost_packets = lost;
@@ -94,6 +96,7 @@ pub struct SamplerHandle {
 pub fn spawn(meter: Arc<Meter>, conn: Connection) -> SamplerHandle {
     let inner = Arc::new(Inner {
         conn,
+        labels: meter.labels(),
         base: process::sample(),
         acc: Mutex::default(),
     });

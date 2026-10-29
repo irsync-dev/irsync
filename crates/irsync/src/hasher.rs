@@ -176,11 +176,16 @@ impl Hasher {
                 "digest requires a regular file",
             ));
         }
+        let queued = self
+            .meter
+            .as_deref()
+            .map(|m| m.hold("irsync_hash_queue_depth"));
         let _permit = self
             .sem
             .acquire()
             .await
             .map_err(|_| io::Error::other("hasher closed"))?;
+        drop(queued);
         let index = self.index.clone();
         let stats = self.stats.clone();
         let full = self.root.join(item.path.to_os());

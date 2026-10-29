@@ -162,6 +162,8 @@ struct IdleClock {
 pub struct Meter {
     side: Side,
     role: Role,
+    /// The daemon export the session serves, for the `export` label.
+    export: Option<String>,
     enabled: bool,
     started: Instant,
     busy: [AtomicU64; 9],
@@ -177,11 +179,18 @@ pub struct Timed<'a> {
 }
 
 impl Meter {
-    fn build(side: Side, role: Role, enabled: bool, global: Option<&'static Meter>) -> Meter {
+    fn build(
+        side: Side,
+        role: Role,
+        export: Option<String>,
+        enabled: bool,
+        global: Option<&'static Meter>,
+    ) -> Meter {
         let now = Instant::now();
         Meter {
             side,
             role,
+            export,
             enabled,
             started: now,
             busy: Default::default(),
@@ -197,9 +206,16 @@ impl Meter {
         }
     }
 
-    /// A session meter; when `enabled` is false every method is a no-op.
-    pub fn new(side: Side, role: Role, enabled: bool) -> Arc<Meter> {
-        Arc::new(Meter::build(side, role, enabled, Some(global(side, role))))
+    /// A session meter, of daemon export `export` when there is one; when
+    /// `enabled` is false every method is a no-op.
+    pub fn new(side: Side, role: Role, export: Option<&str>, enabled: bool) -> Arc<Meter> {
+        Arc::new(Meter::build(
+            side,
+            role,
+            export.map(str::to_owned),
+            enabled,
+            Some(global(side, role)),
+        ))
     }
 
     /// Whether this meter records anything.
@@ -213,6 +229,30 @@ impl Meter {
 
     pub fn role(&self) -> Role {
         self.role
+    }
+
+    pub fn export(&self) -> Option<&str> {
+        self.export.as_deref()
+    }
+
+    /// This session's metric labels (see [`super::labels`]).
+    pub fn labels(&self) -> Vec<metrics::Label> {
+        super::labels(self.side, self.role, self.export())
+    }
+
+    /// [`Meter::labels`] plus `key=value`.
+    pub fn labels_with(&self, key: &'static str, value: &'static str) -> Vec<metrics::Label> {
+        let mut v = self.labels();
+        v.push(metrics::Label::from_static_parts(key, value));
+        v
+    }
+
+    /// Raises gauge `name` for this session until the guard drops.
+    pub fn hold(&self, name: &'static str) -> super::Held {
+        if !self.enabled {
+            return super::Held(None);
+        }
+        super::hold(name, || self.labels())
     }
 
     /// Starts timing `a` until the returned guard drops.
@@ -338,7 +378,7 @@ pub fn global(side: Side, role: Role) -> &'static Meter {
             } else {
                 Role::Receiver
             };
-            Meter::build(side, role, true, None)
+            Meter::build(side, role, None, true, None)
         })
     });
     &all[(side as usize) * 2 + role as usize]
@@ -354,7 +394,7 @@ mod tests {
 
     #[test]
     fn disabled_meter_records_nothing() {
-        let m = Meter::new(Side::Client, Role::Receiver, false);
+        let m = Meter::new(Side::Client, Role::Receiver, None, false);
         {
             let _g = m.start(Activity::Hash);
             sleep(MS(5));
@@ -369,7 +409,7 @@ mod tests {
 
     #[test]
     fn timed_guard_adds_busy_time() {
-        let m = Meter::new(Side::Client, Role::Receiver, true);
+        let m = Meter::new(Side::Client, Role::Receiver, None, true);
         {
             let _g = m.start(Activity::Hash);
             sleep(MS(20));
@@ -380,7 +420,7 @@ mod tests {
 
     #[test]
     fn idle_is_time_with_no_guard_active() {
-        let m = Meter::new(Side::Daemon, Role::Receiver, true);
+        let m = Meter::new(Side::Daemon, Role::Receiver, None, true);
         sleep(MS(30));
         {
             let _g = m.start(Activity::Recv);
@@ -398,7 +438,7 @@ mod tests {
 
     #[test]
     fn overlapping_guards_do_not_count_as_idle() {
-        let m = Meter::new(Side::Daemon, Role::Sender, true);
+        let m = Meter::new(Side::Daemon, Role::Sender, None, true);
         let barrier = Barrier::new(2);
         std::thread::scope(|s| {
             for _ in 0..2 {
@@ -452,7 +492,7 @@ mod tests {
     fn counters_reach_the_global_meter() {
         let g = global(Side::Client, Role::Sender);
         let before = g.usage().count(Counter::BytesLiteral);
-        let m = Meter::new(Side::Client, Role::Sender, true);
+        let m = Meter::new(Side::Client, Role::Sender, None, true);
         m.add(Counter::BytesLiteral, 7);
         assert_eq!(g.usage().count(Counter::BytesLiteral), before + 7);
     }
@@ -461,7 +501,7 @@ mod tests {
     fn global_peer_wait_is_the_sum_of_finished_sessions() {
         let g = global(Side::Client, Role::Receiver);
         let before = g.usage().peer_wait;
-        let m = Meter::new(Side::Client, Role::Receiver, true);
+        let m = Meter::new(Side::Client, Role::Receiver, None, true);
         sleep(MS(10));
         m.finish();
         m.finish();

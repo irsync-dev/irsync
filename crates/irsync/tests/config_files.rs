@@ -432,3 +432,40 @@ fn export_names_are_one_path_segment() {
     }
     assert!(Exports::parse("[exports.\"a:b\"]\npath = \"/x\"\n", p()).is_ok());
 }
+
+#[test]
+fn telemetry_table_parses() {
+    use irsync::config::settings::OtlpProtocol;
+    let s = Settings::parse(
+        "[telemetry]\notlp_endpoint = \"http://c:4318\"\notlp_protocol = \"http\"\n",
+        p(),
+    )
+    .unwrap();
+    assert_eq!(
+        s.telemetry.otlp_endpoint.as_ref().map(|u| u.as_str()),
+        Some("http://c:4318/")
+    );
+    assert_eq!(s.telemetry.otlp_protocol, Some(OtlpProtocol::Http));
+    assert_eq!(Settings::default().telemetry.otlp_endpoint, None);
+    let e = Settings::parse("[telemetry]\nbogus = 1\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("/x/f.toml") && e.contains("bogus"), "{e}");
+}
+
+#[test]
+fn daemon_debug_addr_bare_port() {
+    let s = Settings::parse("[daemon]\ndebug_addr = \"9464\"\n", p()).unwrap();
+    assert_eq!(s.daemon.debug_addr.as_deref(), Some("9464"));
+    assert_eq!(
+        s.daemon.debug_socket(),
+        Some("127.0.0.1:9464".parse().unwrap())
+    );
+    let s = Settings::parse("[daemon]\ndebug_addr = \"[::1]:9\"\n", p()).unwrap();
+    assert_eq!(s.daemon.debug_socket(), Some("[::1]:9".parse().unwrap()));
+    assert_eq!(Settings::default().daemon.debug_socket(), None);
+    let e = Settings::parse("[daemon]\ndebug_addr = \"nope\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("nope"), "{e}");
+}

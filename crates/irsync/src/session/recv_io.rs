@@ -856,6 +856,7 @@ async fn read_stream(
     bytes: Arc<AtomicU64>,
     mut s: RecvStream,
 ) {
+    let _open = ctx.meter.hold("irsync_streams_open");
     let header = {
         let _recv = ctx.meter.start(Activity::Recv);
         read_msg(&mut s).await

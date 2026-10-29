@@ -98,6 +98,23 @@ pub async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAdd
     Ok(out.into_iter().map(|(a, _)| a).collect())
 }
 
+/// A debug HTTP address: `IP:PORT`, or a bare port on `127.0.0.1`.
+pub fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
+    if let Ok(port) = s.parse::<u16>() {
+        return Ok(SocketAddr::from(([127, 0, 0, 1], port)));
+    }
+    s.parse()
+        .map_err(|_| format!("bad debug address {s:?}: expected PORT or IP:PORT"))
+}
+
+fn de_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let s = Option::<String>::deserialize(d)?;
+    if let Some(s) = &s {
+        parse_debug_addr(s).map_err(serde::de::Error::custom)?;
+    }
+    Ok(s)
+}
+
 pub(super) fn de_opt_duration<'de, D: Deserializer<'de>>(
     d: D,
 ) -> Result<Option<Duration>, D::Error> {
@@ -144,6 +161,34 @@ pub struct DaemonSettings {
     pub relay: Option<Url>,
     pub relay_mode: RelayMode,
     pub discovery: Discovery,
+    /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
+    #[serde(deserialize_with = "de_debug_addr")]
+    pub debug_addr: Option<String>,
+}
+
+impl DaemonSettings {
+    /// `debug_addr` as a socket address.
+    pub fn debug_socket(&self) -> Option<SocketAddr> {
+        self.debug_addr
+            .as_deref()
+            .and_then(|s| parse_debug_addr(s).ok())
+    }
+}
+
+/// How OTLP export talks to the collector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpProtocol {
+    Grpc,
+    Http,
+}
+
+/// `[telemetry]`: OTLP export, for either side.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetrySettings {
+    pub otlp_endpoint: Option<Url>,
+    pub otlp_protocol: Option<OtlpProtocol>,
 }
 
 impl Default for DaemonSettings {
@@ -157,6 +202,7 @@ impl Default for DaemonSettings {
             relay: None,
             relay_mode: RelayMode::Default,
             discovery: Discovery::default(),
+            debug_addr: None,
         }
     }
 }
@@ -175,6 +221,7 @@ pub struct Settings {
     pub state_dir: PathBuf,
     pub client: ClientSettings,
     pub daemon: DaemonSettings,
+    pub telemetry: TelemetrySettings,
 }
 
 impl Default for Settings {
@@ -185,6 +232,7 @@ impl Default for Settings {
             state_dir: paths::state_dir(),
             client: ClientSettings::default(),
             daemon: DaemonSettings::default(),
+            telemetry: TelemetrySettings::default(),
         }
     }
 }

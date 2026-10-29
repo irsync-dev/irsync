@@ -724,23 +724,17 @@ pub(crate) fn wait_start(m: &Meter) -> Option<std::time::Instant> {
 /// Records how long a role waited on its hasher.
 pub(crate) fn record_hash_wait(m: &Meter, since: Option<std::time::Instant>) {
     if let Some(t) = since {
-        metrics::histogram!(
-            "irsync_hash_wait_seconds",
-            "side" => m.side().label(),
-            "role" => m.role().label()
-        )
-        .record(t.elapsed().as_secs_f64());
+        metrics::histogram!("irsync_hash_wait_seconds", m.labels())
+            .record(t.elapsed().as_secs_f64());
     }
 }
 
 /// Records a transferred file: its size, and the time from its first request to its DONE.
 pub(crate) fn record_file(m: &Meter, since: Option<std::time::Instant>, size: u64) {
     let Some(t) = since else { return };
-    let (side, role) = (m.side().label(), m.role().label());
-    metrics::histogram!("irsync_file_transfer_seconds", "side" => side, "role" => role)
+    metrics::histogram!("irsync_file_transfer_seconds", m.labels())
         .record(t.elapsed().as_secs_f64());
-    metrics::histogram!("irsync_file_size_bytes", "side" => side, "role" => role)
-        .record(size as f64);
+    metrics::histogram!("irsync_file_size_bytes", m.labels()).record(size as f64);
 }
 
 /// What a session did, from one side's point of view.

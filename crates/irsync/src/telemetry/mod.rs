@@ -1,8 +1,13 @@
-//! Telemetry: a per-session meter of where time and bytes go.
+//! Telemetry: a per-session meter of where time and bytes go, and the
+//! subscriber and metrics recorder its sinks need.
 
+pub mod init;
 pub mod meter;
 pub mod process;
+pub mod publish;
 pub mod sampler;
+
+pub use init::{init, OtlpConfig, Telemetry, TelemetryConfig};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -50,6 +55,40 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// The labels every irsync metric carries: `side`, `role` and, on the
+/// daemon, `export`.
+pub fn labels(side: Side, role: Role, export: Option<&str>) -> Vec<metrics::Label> {
+    let mut v = vec![
+        metrics::Label::from_static_parts("side", side.label()),
+        metrics::Label::from_static_parts("role", role.label()),
+    ];
+    if let Some(e) = export {
+        v.push(metrics::Label::new("export", e.to_owned()));
+    }
+    v
+}
+
+/// Keeps a gauge one higher while alive; inert when telemetry is off.
+pub struct Held(Option<metrics::Gauge>);
+
+/// Raises gauge `name` with `labels` until the returned guard drops.
+pub fn hold(name: &'static str, labels: impl FnOnce() -> Vec<metrics::Label>) -> Held {
+    if !enabled() {
+        return Held(None);
+    }
+    let g = metrics::gauge!(name, labels());
+    g.increment(1.0);
+    Held(Some(g))
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(g) = &self.0 {
+            g.decrement(1.0);
+        }
+    }
+}
+
 /// The phases of a session, as named in the trace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhaseKind {
@@ -80,16 +119,15 @@ impl PhaseKind {
 pub struct Phase {
     span: tracing::Span,
     kind: PhaseKind,
-    side: Side,
-    role: Option<Role>,
-    started: std::time::Instant,
+    /// The metric labels and start, only while telemetry is on.
+    timed: Option<(Vec<metrics::Label>, std::time::Instant)>,
 }
 
 /// Opens the span for `kind` under the current span. `tracing` needs
 /// literal span names, hence one `info_span!` per kind. Fields a phase
 /// has (`attempt`, `path`, `mode`, ...) are declared empty for the caller
-/// to record.
-pub fn phase(kind: PhaseKind, side: Side, role: Option<Role>) -> Phase {
+/// to record. With telemetry off no clock is read and nothing recorded.
+pub fn phase(kind: PhaseKind, side: Side, role: Role, export: Option<&str>) -> Phase {
     use tracing::info_span as span;
     let span = match kind {
         PhaseKind::Connect => span!(
@@ -111,9 +149,7 @@ pub fn phase(kind: PhaseKind, side: Side, role: Option<Role>) -> Phase {
     Phase {
         span,
         kind,
-        side,
-        role,
-        started: std::time::Instant::now(),
+        timed: enabled().then(|| (labels(side, role, export), std::time::Instant::now())),
     }
 }
 
@@ -125,12 +161,14 @@ impl Phase {
 
 impl Drop for Phase {
     fn drop(&mut self) {
-        metrics::histogram!(
-            "irsync_phase_duration_seconds",
-            "phase" => self.kind.label(),
-            "side" => self.side.label(),
-            "role" => self.role.map_or("none", Role::label),
-        )
-        .record(self.started.elapsed().as_secs_f64());
+        let Some((mut labels, started)) = self.timed.take() else {
+            return;
+        };
+        labels.push(metrics::Label::from_static_parts(
+            "phase",
+            self.kind.label(),
+        ));
+        metrics::histogram!("irsync_phase_duration_seconds", labels)
+            .record(started.elapsed().as_secs_f64());
     }
 }

@@ -15,8 +15,8 @@ use rand_core::{OsRng, RngCore};
 use tracing::Instrument;
 
 use super::engine::{
-    client_session_key, record_outcome, run_client_inner, session_span, Attempt, PeerError,
-    SessionRefused, TransportError,
+    client_session_key, record_outcome, role_of, run_client_inner, session_span, Attempt,
+    PeerError, SessionRefused, TransportError,
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, CLOSE_SUPERSEDED};
 use crate::cli::SyncOptions;
@@ -380,6 +380,7 @@ async fn attempts(
         }
         None => None,
     };
+    let role = role_of(Side::Client, hello_for(None).direction);
     let mut outage = Outage::new(Instant::now());
     let mut attempt = 0u32;
     loop {
@@ -388,7 +389,7 @@ async fn attempts(
             n => ConnState::Reconnecting { attempt: n },
         });
         let mut tried = Attempt::default();
-        let connect = phase(PhaseKind::Connect, Side::Client, None);
+        let connect = phase(PhaseKind::Connect, Side::Client, role, None);
         connect.span().record("attempt", attempt);
         let dialled = endpoint
             .connect(target.clone(), irsync_proto::ALPN)
@@ -417,6 +418,8 @@ async fn attempts(
         };
         connecting.lock().unwrap().take();
         let next = res.as_ref().err().map(|e| classify(e, conn.as_ref()));
+        // Why a retry would dial again: the dial failed, or a connection dropped.
+        let reason = if conn.is_some() { "lost" } else { "dial" };
         if let Some(c) = &conn {
             c.close(0u32.into(), b"done");
         }
@@ -475,7 +478,12 @@ async fn attempts(
             wait_ms = wait.as_millis() as u64,
             "connection lost; reconnecting"
         );
-        let reconnect = phase(PhaseKind::Reconnect, Side::Client, None);
+        if crate::telemetry::enabled() {
+            let mut labels = crate::telemetry::labels(Side::Client, role, None);
+            labels.push(metrics::Label::from_static_parts("reason", reason));
+            metrics::counter!("irsync_reconnects_total", labels).increment(1);
+        }
+        let reconnect = phase(PhaseKind::Reconnect, Side::Client, role, None);
         reconnect.span().record("attempt", attempt);
         reconnect.span().record("reason", format!("{err:#}"));
         tokio::time::sleep(wait)

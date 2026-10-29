@@ -356,7 +356,12 @@ pub(super) struct Ctx {
 impl Ctx {
     /// A phase of this side's role, under the current span.
     pub fn phase(&self, kind: PhaseKind) -> Phase {
-        phase(kind, self.meter.side(), Some(self.meter.role()))
+        phase(
+            kind,
+            self.meter.side(),
+            self.meter.role(),
+            self.meter.export(),
+        )
     }
 
     /// Absolute path of `rel` under the session root.
@@ -607,7 +612,8 @@ pub(super) async fn run_client_inner(
     let handshake = phase(
         PhaseKind::Handshake,
         Side::Client,
-        Some(role_of(Side::Client, hello.direction)),
+        role_of(Side::Client, hello.direction),
+        None,
     );
     let (mut send, mut recv) = conn
         .open_bi()
@@ -656,6 +662,7 @@ pub(super) async fn run_client_inner(
     let meter = Meter::new(
         Side::Client,
         if sends { Role::Sender } else { Role::Receiver },
+        None,
         telemetry::enabled(),
     );
     // Every file this side actually reads is reported on the bus.
@@ -805,6 +812,13 @@ pub async fn serve_daemon(
         conn.remote_id().fmt_short().to_string(),
         0,
     );
+    let _active = telemetry::hold("irsync_sessions_active", || {
+        telemetry::labels(
+            Side::Daemon,
+            role_of(Side::Daemon, hello.direction),
+            Some(&place.export),
+        )
+    });
     let res = serve_daemon_inner(conn, send, recv, place, hello, index, shared)
         .instrument(span.clone())
         .await;
@@ -841,7 +855,7 @@ pub(super) fn session_span(
 }
 
 /// The role `side` plays for a `Hello.direction` value.
-fn role_of(side: Side, direction: i32) -> Role {
+pub(super) fn role_of(side: Side, direction: i32) -> Role {
     let client_sends = direction == Direction::ClientSends as i32;
     if client_sends == (side == Side::Client) {
         Role::Sender
@@ -868,16 +882,17 @@ async fn serve_daemon_inner(
     index: IndexHandle,
     shared: DaemonSessions,
 ) -> anyhow::Result<Outcome> {
-    let handshake = phase(
-        PhaseKind::Handshake,
-        Side::Daemon,
-        Some(role_of(Side::Daemon, hello.direction)),
-    );
     let Place {
         root: export_root,
         export: export_name,
         rel,
     } = place;
+    let handshake = phase(
+        PhaseKind::Handshake,
+        Side::Daemon,
+        role_of(Side::Daemon, hello.direction),
+        Some(&export_name),
+    );
     let direction = Direction::try_from(hello.direction).context("bad direction")?;
     // The daemon sends when the client receives.
     let sends = direction == Direction::DaemonSends;
@@ -989,6 +1004,7 @@ async fn serve_daemon_inner(
     let meter = Meter::new(
         Side::Daemon,
         if sends { Role::Sender } else { Role::Receiver },
+        Some(&export_name),
         telemetry::enabled(),
     );
     // `-c` applies to both sides: the daemon reads every file it lists
@@ -1137,6 +1153,7 @@ async fn run_role(
     };
     ctx.meter.finish();
     let sampled = sampler.map(|s| s.stop());
+    record_session(&ctx.meter, res.as_ref().ok());
     match res {
         Ok(mut o) => {
             o.usage = ctx.meter.usage();
@@ -1166,6 +1183,48 @@ async fn run_role(
             Err(e)
         }
     }
+}
+
+/// Counts a finished session (`None`: it failed) in the session-level metrics.
+fn record_session(m: &Meter, out: Option<&Outcome>) {
+    if !m.is_enabled() {
+        return;
+    }
+    let outcome = match out {
+        None => "failed",
+        Some(o) if o.max_delete_reached => "max_delete",
+        Some(o) if !o.errors.is_empty() => "partial",
+        Some(_) => "ok",
+    };
+    metrics::counter!("irsync_sessions_total", m.labels_with("outcome", outcome)).increment(1);
+    let Some(o) = out else { return };
+    let l = &o.listed;
+    let rows: [(&'static str, &'static str, &'static str, u64); 10] = [
+        (
+            "irsync_files_total",
+            "result",
+            "transferred",
+            o.files_transferred,
+        ),
+        ("irsync_files_total", "result", "skipped", o.files_skipped),
+        (
+            "irsync_files_total",
+            "result",
+            "failed",
+            o.errors.len() as u64,
+        ),
+        ("irsync_files_total", "result", "created", o.created),
+        ("irsync_entries_listed_total", "kind", "regular", l.reg),
+        ("irsync_entries_listed_total", "kind", "directory", l.dir),
+        ("irsync_entries_listed_total", "kind", "symlink", l.link),
+        ("irsync_entries_listed_total", "kind", "special", l.special),
+        ("irsync_wire_bytes_total", "dir", "tx", o.bytes_sent),
+        ("irsync_wire_bytes_total", "dir", "rx", o.bytes_received),
+    ];
+    for (name, key, value, n) in rows {
+        metrics::counter!(name, m.labels_with(key, value)).increment(n);
+    }
+    metrics::counter!("irsync_deleted_total", m.labels()).increment(o.deleted.len() as u64);
 }
 
 /// How long a daemon session may go without activity before the daemon

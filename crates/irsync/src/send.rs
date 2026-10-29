@@ -386,6 +386,7 @@ impl Inner {
         // "file changed" case then never touches the wire.
         let first = read_chunk(&file, &chunks[0], name, r.first, self.meter.get()).await?;
         let mut send = self.conn.open_uni().await.map_err(io::Error::other)?;
+        let _open = self.meter.get().map(|m| m.hold("irsync_streams_open"));
         let res = self
             .write_range(
                 &mut send, file_id, &file, name, rel, digest, &r, first, bases, sent,

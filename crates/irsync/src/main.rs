@@ -31,7 +31,9 @@ use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{explain, run_with_reconnect, ConnState, ReconnectOpts};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
+use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{export_entry, hello, Hello};
 use irsync_proto::PROTOCOL_VERSION;
@@ -64,37 +66,55 @@ fn main() {
     }
 }
 
-fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
-    let default = match (quiet, verbose) {
+/// The client's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
+fn client_log_default(verbose: u8, quiet: bool) -> &'static str {
+    match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn",
         (false, 1) => "warn,irsync=info",
         (false, 2) => "info,irsync=debug",
         _ => "debug,irsync=trace",
-    };
-    init_logging_at(default, writer);
+    }
 }
 
-/// `default` is the filter unless `RUST_LOG` is set.
-fn init_logging_at<W>(default: &str, writer: W)
+/// The daemon's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
+fn daemon_log_default(verbose: u8, quiet: bool) -> &'static str {
+    match (quiet, verbose) {
+        (true, _) => "error",
+        (false, 0) => "info",
+        (false, 1) => "debug",
+        _ => "trace",
+    }
+}
+
+/// Logging alone, for the commands without telemetry.
+fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
+    let cfg = TelemetryConfig::logs_only(Side::Client, client_log_default(verbose, quiet));
+    init_telemetry(cfg, writer);
+}
+
+/// Installs the subscriber and recorder for `cfg` (see [`telemetry::init`]).
+fn init_telemetry<W>(cfg: TelemetryConfig, writer: W) -> Telemetry
 where
     W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
 {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(writer)
-        .init();
+    let t = telemetry::init(cfg, writer);
     BuildInfo::current().log_startup();
+    t
+}
+
+/// The settings for telemetry, read before anything else: a broken config
+/// gives the defaults here and fails later where it is used.
+fn early_settings(config: Option<&std::path::Path>) -> Settings {
+    Config::load(&Paths::resolve(config))
+        .map(|c| c.settings)
+        .unwrap_or_default()
 }
 
 /// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial
 /// transfer, 25 deletions stopped at `--max-delete`.
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let log = LogWriter::new();
-    init_logging(opts.verbose, opts.quiet, log.clone());
-    irsync::telemetry::set_enabled(opts.verbose >= 1 && !opts.quiet);
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -102,7 +122,23 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
+    let settings = early_settings(opts.config.as_deref());
+    let mut telemetry = {
+        let _rt = rt.enter();
+        init_telemetry(
+            TelemetryConfig {
+                side: Side::Client,
+                log_default: client_log_default(opts.verbose, opts.quiet).to_string(),
+                summary: opts.verbose >= 1 && !opts.quiet,
+                debug_addr: opts.debug_addr,
+                otlp: OtlpConfig::from_settings(&settings.telemetry),
+                trace_files: trace_files_from_env(),
+            },
+            log.clone(),
+        )
+    };
     let (result, reporter, elapsed) = rt.block_on(async {
+        telemetry.start().await;
         let bus = EventBus::default();
         // `-q` silences everything but errors. On a terminal the live
         // progress block is always drawn; `TERM=dumb` is not a terminal.
@@ -140,7 +176,9 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             Some(t) => t.await.ok(),
             None => None,
         };
-        (result, reporter, start.elapsed())
+        let elapsed = start.elapsed();
+        telemetry.shutdown().await;
+        (result, reporter, elapsed)
     });
     // The block goes before anything is printed on stderr: indicatif leaves
     // the cursor at the end of its last line, so a line printed under a live
@@ -795,19 +833,34 @@ fn index_roots(
 }
 
 fn run_daemon(d: &DaemonArgs) -> i32 {
-    let default = match (d.log.quiet, d.log.verbose) {
-        (true, _) => "error",
-        (false, 0) => "info",
-        (false, 1) => "debug",
-        _ => "trace",
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("irsync daemon: {e:#}");
+            return 1;
+        }
     };
-    init_logging_at(default, std::io::stderr);
+    let settings = early_settings(d.config.as_deref());
+    let mut telemetry = {
+        let _rt = rt.enter();
+        init_telemetry(
+            TelemetryConfig {
+                side: Side::Daemon,
+                log_default: daemon_log_default(d.log.verbose, d.log.quiet).to_string(),
+                summary: false,
+                debug_addr: settings.daemon.debug_socket(),
+                otlp: OtlpConfig::from_settings(&settings.telemetry),
+                trace_files: trace_files_from_env(),
+            },
+            std::io::stderr,
+        )
+    };
 
-    let result = (|| -> anyhow::Result<()> {
+    let result = {
         let paths = Paths::resolve(d.config.as_deref());
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
-        let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
+            telemetry.start().await;
             let shutdown = tokio_util::sync::CancellationToken::new();
             let token = shutdown.clone();
             tokio::spawn(async move {
@@ -826,10 +879,18 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
                     hup.notify_one();
                 }
             });
-            irsync::daemon::run_from_settings(&paths, &pass, d.listen.clone(), shutdown, reload)
-                .await
+            let res = irsync::daemon::run_from_settings(
+                &paths,
+                &pass,
+                d.listen.clone(),
+                shutdown,
+                reload,
+            )
+            .await;
+            telemetry.shutdown().await;
+            res
         })
-    })();
+    };
     match result {
         Ok(()) => 0,
         Err(e) => {

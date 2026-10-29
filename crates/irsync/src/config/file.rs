@@ -4,7 +4,7 @@
 use super::exports::{exports_from_raw, AllGrants, Exports, RawExports};
 use super::hosts::{hosts_from_raw, Hosts, RawHosts};
 use super::paths::Paths;
-use super::settings::{ClientSettings, DaemonSettings, Settings};
+use super::settings::{ClientSettings, DaemonSettings, Settings, TelemetrySettings};
 use super::{expand_tilde, line_of, read_optional, toml_err, ConfigError};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -33,6 +33,7 @@ struct RawMerged {
     state_dir: Option<PathBuf>,
     client: ClientSettings,
     daemon: DaemonSettings,
+    telemetry: TelemetrySettings,
     hosts: RawHosts,
     exports: RawExports,
     all: AllGrants,
@@ -66,8 +67,12 @@ impl Config {
             let start = value.span().start;
             let value = value.get_ref();
             let message = match name.as_str() {
-                "hosts" | "exports" | "all" | "client" | "daemon" if value.is_table() => continue,
-                "hosts" | "exports" | "all" | "client" | "daemon" => {
+                "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry"
+                    if value.is_table() =>
+                {
+                    continue
+                }
+                "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry" => {
                     format!("{name}: expected a table, found {}", value.type_str())
                 }
                 "identity" | "state_dir" if value.is_str() => continue,
@@ -110,6 +115,7 @@ impl Config {
             state_dir: raw.state_dir.unwrap_or(defaults.state_dir),
             client: raw.client,
             daemon: raw.daemon,
+            telemetry: raw.telemetry,
         };
         for p in [
             &mut settings.identity,

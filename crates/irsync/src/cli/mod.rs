@@ -2,10 +2,12 @@ pub mod location;
 pub mod progress;
 
 use crate::config::duration;
+use crate::config::settings::parse_debug_addr;
 use crate::net::addr::HostPort;
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
 use location::Location;
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -689,6 +691,14 @@ pub struct SyncArgs {
     /// transfer with --append's skip rule).
     #[arg(long)]
     pub append_verify: bool,
+    /// Serve metrics and span timings over HTTP at `IP:PORT` (a bare port
+    /// means 127.0.0.1); the port stays open after the sync until SIGINT
+    /// or SIGHUP.
+    #[arg(long, value_name = "ADDR", value_parser = parse_debug_addr)]
+    pub debug_addr: Option<SocketAddr>,
+    /// Close the debug port when the sync ends instead of waiting.
+    #[arg(long, requires = "debug_addr")]
+    pub debug_port_no_wait: bool,
 
     /// Include/exclude rules in command-line order (filled after parsing).
     #[arg(skip)]
@@ -783,6 +793,8 @@ pub struct SyncOptions {
     pub no_rename_detection: bool,
     pub inplace: bool,
     pub append: Append,
+    pub debug_addr: Option<SocketAddr>,
+    pub debug_no_wait: bool,
     pub verbose: u8,
     pub quiet: bool,
 }
@@ -849,6 +861,8 @@ impl SyncOptions {
             } else {
                 Append::Off
             },
+            debug_addr: a.debug_addr,
+            debug_no_wait: a.debug_port_no_wait,
             verbose: a.verbose,
             quiet: a.quiet,
         }

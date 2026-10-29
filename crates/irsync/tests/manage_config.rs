@@ -249,3 +249,16 @@ fn unset_removes_tables_it_leaves_empty() {
     unset(&mut d, &p("daemon.discovery.mdns")).unwrap();
     assert_eq!(d.to_string(), "[client]\nrelay = \"https://r\"\n");
 }
+
+#[test]
+fn set_telemetry_endpoint() {
+    use irsync::manage::config::{parse_value, set};
+    let mut d = doc("");
+    let key = p("telemetry.otlp_endpoint");
+    assert_eq!(kind_of(&key), Some(Kind::Url));
+    assert_eq!(kind_of(&p("telemetry.otlp_protocol")), Some(Kind::Str));
+    assert_eq!(kind_of(&p("daemon.debug_addr")), Some(Kind::Str));
+    let v = parse_value(Kind::Url, &["http://c:4318".to_string()]).unwrap();
+    set(&mut d, &key, v).unwrap();
+    assert_eq!(get(&d, &key).unwrap(), lines(&["http://c:4318"]));
+}
