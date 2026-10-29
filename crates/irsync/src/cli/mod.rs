@@ -147,6 +147,8 @@ pub enum Command {
         dry_run: bool,
         #[command(flatten)]
         log: LogArgs,
+        #[command(flatten)]
+        files: FilesArgs,
     },
     /// Hash the files under local roots into their index, so a
     /// destination irsync did not create contributes chunks and rename
@@ -447,6 +449,8 @@ pub struct IndexArgs {
     pub dry_run: bool,
     #[command(flatten)]
     pub log: LogArgs,
+    #[command(flatten)]
+    pub files: FilesArgs,
     /// Local roots to index.
     #[arg(value_name = "ROOT", required = true)]
     pub targets: Vec<PathBuf>,
@@ -787,6 +791,9 @@ pub struct SyncOptions {
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
+    /// `state_dir` from the config file, once a sync has read it; `None`:
+    /// the default.
+    pub state_dir: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
     pub no_resume: bool,
@@ -849,6 +856,7 @@ impl SyncOptions {
             no_dht: a.no_dht,
             addresses: a.address.clone(),
             config: a.config.clone(),
+            state_dir: None,
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
             no_resume: a.no_resume,

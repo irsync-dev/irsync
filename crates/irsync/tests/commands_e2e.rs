@@ -1225,3 +1225,31 @@ fn set_refuses_an_export_name_with_a_slash() {
     assert!(err.contains("is not a valid export name"), "{err}");
     assert!(!home.join(".config/irsync/irsync.toml").exists());
 }
+
+#[test]
+fn index_and_gc_use_the_configured_state_dir() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let root = d.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(root.join("f"), b"data").unwrap();
+    let state = d.path().join("state");
+    let config = d.path().join("irsync.toml");
+    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    let c = config.to_str().unwrap();
+    let o = irsync(&home, &["index", "--config", c, root.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let files = |dir: &Path| -> Vec<_> {
+        std::fs::read_dir(dir.join("index"))
+            .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+            .unwrap_or_default()
+    };
+    assert_eq!(files(&state).len(), 1, "{:?}", files(&state));
+    assert!(files(&home.join("xdg/irsync")).is_empty());
+    // gc reads the same file for its state dir.
+    let o = irsync(&home, &["gc", "-n", "--config", c]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = irsync(&home, &["gc", "-n", c]);
+    assert!(!o.status.success(), "gc takes no operands");
+}

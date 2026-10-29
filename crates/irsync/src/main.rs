@@ -48,7 +48,11 @@ fn main() {
     }
     match &args.cmd {
         Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
-        Some(Command::Gc { dry_run, log }) => std::process::exit(run_gc(*dry_run, *log)),
+        Some(Command::Gc {
+            dry_run,
+            log,
+            files,
+        }) => std::process::exit(run_gc(*dry_run, *log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix)),
         Some(Command::Host(h)) => std::process::exit(run_host(h)),
         Some(Command::Export(e)) => std::process::exit(run_export(e)),
@@ -273,12 +277,12 @@ const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86
 /// A partial record untouched this long makes the next run's GC walk due.
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-fn run_gc(dry_run: bool, log: LogArgs) -> i32 {
+fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
     init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<()> {
+        let dir = Config::load(&file_paths(files))?.settings.state_dir;
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let dir = state_dir();
             let (mut parts, mut sessions) = (0usize, 0u32);
             let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
                 if !log.quiet {
@@ -417,6 +421,7 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
     // Precedence: command line, then the host entry, then the client
     // settings, then the built-in default.
     let mut opts = opts.clone();
+    opts.state_dir = Some(settings.state_dir.clone());
     if opts.parallel.is_none() {
         opts.parallel = host_entry
             .as_ref()
@@ -478,11 +483,17 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
     })
 }
 
-/// The client's state directory, unless a listing swapped in a throwaway one.
+/// A throwaway state directory a listing swaps in for the configured one.
 static CLIENT_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-fn client_state_dir() -> PathBuf {
-    CLIENT_STATE.get().cloned().unwrap_or_else(state_dir)
+/// The client's state directory: a listing's throwaway one, else the
+/// config's `state_dir`, else the default.
+fn client_state_dir(opts: &SyncOptions) -> PathBuf {
+    CLIENT_STATE
+        .get()
+        .or(opts.state_dir.as_ref())
+        .cloned()
+        .unwrap_or_else(state_dir)
 }
 
 /// `irsync HOST:` lists the exports this client may reach; `irsync
@@ -736,6 +747,7 @@ async fn session(
     bus: &EventBus,
 ) -> anyhow::Result<Outcome> {
     let dry_run = opts.dry_run;
+    let state = client_state_dir(opts);
     let index = tokio::task::spawn_blocking({
         let root = root.clone();
         move || -> anyhow::Result<_> {
@@ -744,7 +756,7 @@ async fn session(
                 std::fs::create_dir_all(&root)
                     .with_context(|| format!("creating {}", root.display()))?;
             }
-            Ok(Index::open(&client_state_dir(), &root)
+            Ok(Index::open(&state, &root)
                 .with_context(|| format!("opening index for {}", root.display()))?
                 .into_handle())
         }
@@ -790,7 +802,18 @@ async fn session(
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs) -> i32 {
     init_logging(a.log.verbose, a.log.quiet, LogWriter::new());
-    let targets = a.targets.iter().map(|t| (state_dir(), t.clone())).collect();
+    let state = match Config::load(&file_paths(&a.files)) {
+        Ok(c) => c.settings.state_dir,
+        Err(e) => {
+            eprintln!("irsync index: {e:#}");
+            return 1;
+        }
+    };
+    let targets = a
+        .targets
+        .iter()
+        .map(|t| (state.clone(), t.clone()))
+        .collect();
     match index_roots(targets, a.dry_run, a.log.quiet) {
         Ok(code) => code,
         Err(e) => {

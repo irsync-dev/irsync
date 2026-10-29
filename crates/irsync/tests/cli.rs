@@ -182,10 +182,15 @@ fn export_update_takes_the_noun_file_flags_in_either_position() {
             matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["photos"])
         );
     }
-    // The old spelling is gone: `index` has no --daemon and no file flags.
+    // The old spelling is gone: `index` has no --daemon and no --exports;
+    // its --config names the file to read `state_dir` from, as elsewhere.
     assert!(Args::try_parse_from(["irsync", "index", "--daemon", "photos"]).is_err());
     assert!(Args::try_parse_from(["irsync", "index", "--exports", "/e", "photos"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "index", "--config", "/c", "/srv/a"]).is_err());
+    let Some(Command::Index(ix)) = parse(&["index", "--config", "/c", "/srv/a"]).cmd else {
+        panic!("index --config")
+    };
+    assert_eq!(ix.files.config, Some(PathBuf::from("/c")));
+    assert_eq!(ix.targets, [PathBuf::from("/srv/a")]);
 }
 
 #[test]
@@ -643,7 +648,7 @@ fn subcommands_take_verbose_and_quiet() {
         c => panic!("{c:?}"),
     }
     match parse(&["gc", "-n", "-q"]).cmd {
-        Some(Command::Gc { dry_run, log }) => assert!(dry_run && log.quiet && log.verbose == 0),
+        Some(Command::Gc { dry_run, log, .. }) => assert!(dry_run && log.quiet && log.verbose == 0),
         c => panic!("{c:?}"),
     }
     match parse(&["index", "-v", "/srv/a"]).cmd {

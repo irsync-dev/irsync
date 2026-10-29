@@ -257,6 +257,65 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     );
 }
 
+/// The roots of the index files under `state`.
+fn index_roots(state: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(rd) = std::fs::read_dir(state.join("index")) else {
+        return Vec::new();
+    };
+    rd.filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "sqlite"))
+        .filter_map(|p| irsync::index::Index::root_of_file(&p).unwrap())
+        .collect()
+}
+
+#[test]
+fn client_index_lives_under_the_configured_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["src", "dst", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("src/a.txt"), b"hello").unwrap();
+    let Daemon {
+        guard: _daemon,
+        id,
+        listen,
+        config,
+        ..
+    } = start_daemon(tmp);
+    let address = format!("127.0.0.1:{}", listen.port());
+    let src = format!("{}/", tmp.join("src").display());
+    let dest = format!("{id}:m/");
+    let o = run_client(
+        &[
+            "-a",
+            "--reconnect",
+            "0",
+            "--address",
+            &address,
+            "--config",
+            config.to_str().unwrap(),
+            &src,
+            &dest,
+        ],
+        tmp,
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let src_root = tmp.join("src").canonicalize().unwrap();
+    let roots = index_roots(&tmp.join("state"));
+    assert!(
+        roots
+            .iter()
+            .any(|r| r.canonicalize().ok().as_ref() == Some(&src_root)),
+        "no index for {} under state_dir: {roots:?}",
+        src_root.display()
+    );
+    assert_eq!(
+        index_roots(&tmp.join("xdg/irsync")),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
 #[test]
 fn unresolvable_address_fails_before_the_identity_is_needed() {
     use ssh_key::{rand_core::OsRng, Algorithm, LineEnding, PrivateKey};
