@@ -7,14 +7,14 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{canonical_root, CommonOpts, Outcome, Warnings};
+use super::{canonical_root, walk_config, CommonOpts, Outcome, Warnings};
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
 use crate::report::UpdateSummary;
 use crate::store::{self, Backend, Meta, OpenMode, Store};
-use crate::walk::{self, Observed, WalkConfig, WalkEvent};
+use crate::walk::{self, Observed, WalkEvent};
 
 /// Entries buffered before each `put_batch`.
 const BATCH_SIZE: usize = 2000;
@@ -105,14 +105,7 @@ pub fn update(
         ..old_meta.clone()
     })?;
 
-    let store_path = store::store_path_inside(&root, &loc);
-    let cfg = WalkConfig {
-        root: root.clone(),
-        cross_mount_points: common.cross_mount_points,
-        sort: common.sort,
-        store_path,
-        sqlite_store: loc.backend == Backend::Sqlite,
-    };
+    let cfg = walk_config(common, &root, &loc);
 
     let mut summary = UpdateSummary {
         entries: 0,

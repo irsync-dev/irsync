@@ -88,6 +88,10 @@ fn is_sidecar(cfg: &WalkConfig, abs: &Path) -> bool {
     abs.parent() == store.parent() && [&b"-wal"[..], b"-shm", b"-journal"].contains(&suffix)
 }
 
+fn cannot_read_dir(dir_rel: &[u8], err: &std::io::Error) -> String {
+    format!("cannot read directory {}: {err}", escape(dir_rel))
+}
+
 // Recursion depth equals tree depth; the producer thread's stack is sized for it (pipeline).
 fn walk_dir(
     cfg: &WalkConfig,
@@ -105,11 +109,7 @@ fn walk_dir(
                     Ok(e) => names.push(e.file_name()),
                     Err(err) if !warned => {
                         warned = true;
-                        sink(WalkEvent::Warning(format!(
-                            "cannot read directory {}: {}",
-                            escape(dir_rel),
-                            err
-                        )))?;
+                        sink(WalkEvent::Warning(cannot_read_dir(dir_rel, &err)))?;
                     }
                     Err(_) => {}
                 }
@@ -117,11 +117,7 @@ fn walk_dir(
             names
         }
         Err(err) => {
-            sink(WalkEvent::Warning(format!(
-                "cannot read directory {}: {}",
-                escape(dir_rel),
-                err
-            )))?;
+            sink(WalkEvent::Warning(cannot_read_dir(dir_rel, &err)))?;
             return sink(WalkEvent::NotDescended(dir_rel.to_vec()));
         }
     };

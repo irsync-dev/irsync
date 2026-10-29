@@ -6,6 +6,9 @@ pub mod update;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::store::{self, Backend, Location};
+use crate::walk::WalkConfig;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Outcome {
     Clean,
@@ -62,4 +65,16 @@ pub fn canonical_root(path: &Path) -> anyhow::Result<PathBuf> {
         anyhow::bail!("{} is not a directory", path.display());
     }
     Ok(root)
+}
+
+/// The walk of `root` for a run that uses the manifest at `loc`: the store is flagged when
+/// it lies inside the tree, and a SQLite store's sidecars are skipped.
+pub fn walk_config(common: &CommonOpts, root: &Path, loc: &Location) -> WalkConfig {
+    WalkConfig {
+        root: root.to_path_buf(),
+        cross_mount_points: common.cross_mount_points,
+        sort: common.sort,
+        store_path: store::store_path_inside(root, loc),
+        sqlite_store: loc.backend == Backend::Sqlite,
+    }
 }

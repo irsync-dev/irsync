@@ -10,15 +10,15 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use super::{canonical_root, CommonOpts, Outcome, Warnings};
+use super::{canonical_root, walk_config, CommonOpts, Outcome, Warnings};
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
 use crate::report::{line_add, line_chg, line_del, CheckSummary, FieldDiff};
-use crate::store::{self, Backend, OpenMode, Store};
-use crate::walk::{self, Observed, WalkConfig, WalkEvent};
+use crate::store::{self, OpenMode, Store};
+use crate::walk::{self, Observed, WalkEvent};
 
 pub struct CheckOpts {
     pub common: CommonOpts,
@@ -46,17 +46,11 @@ pub fn check(
     let store = RefCell::new(store);
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
-    let store_path = store::store_path_inside(&root, &loc);
-    let cfg = WalkConfig {
-        root: root.clone(),
-        cross_mount_points: common.cross_mount_points,
-        sort: common.sort,
-        store_path: store_path.clone(),
-        sqlite_store: loc.backend == Backend::Sqlite,
-    };
+    let cfg = walk_config(common, &root, &loc);
     // The root's mtime is not compared, nor that of the directory holding an in-tree store:
     // writing the manifest (and its sidecars) changes both.
-    let store_parent: Option<Vec<u8>> = store_path
+    let store_parent: Option<Vec<u8>> = cfg
+        .store_path
         .as_deref()
         .and_then(Path::parent)
         .and_then(|p| p.strip_prefix(&root).ok())
