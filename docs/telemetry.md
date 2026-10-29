@@ -200,7 +200,14 @@ wins. The protocol is `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or
 `http/protobuf`), else `[telemetry] otlp_protocol` (`grpc` or `http`), else
 HTTP. The other standard `OTEL_*` variables (headers, service name,
 sampler, timeouts, `OTEL_METRIC_EXPORT_INTERVAL`) are honoured. Metrics are
-exported every 10 s and once more at exit; the exit flush takes at most 2 s.
+exported every 10 s (an empty `OTEL_METRIC_EXPORT_INTERVAL` counts as unset)
+and once more at exit; the exit flush takes at most 2 s.
+
+The daemon samples every session unless `OTEL_TRACES_SAMPLER` is set on its
+side: the sampled flag in the client's trace context does not suppress the
+daemon's spans, which then join the client's trace id even when the client
+dropped its own. The client keeps the SDK's default sampler (parent-based,
+always on).
 
 Export is behind the cargo feature `otel`, on by default.
 

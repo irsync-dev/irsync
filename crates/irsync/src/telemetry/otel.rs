@@ -14,7 +14,7 @@ use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig, WithTon
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::resource::{EnvResourceDetector, TelemetryResourceDetector};
-use opentelemetry_sdk::trace::{SdkTracerProvider, Tracer};
+use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider, Tracer};
 use opentelemetry_sdk::Resource;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -47,12 +47,15 @@ pub fn providers(
     let _ = rustls::crypto::ring::default_provider().install_default();
     let resource = resource(side, endpoint_id);
     let (spans, metrics) = exporters(cfg)?;
-    let tracer = SdkTracerProvider::builder()
+    let mut tracer = SdkTracerProvider::builder()
         .with_batch_exporter(spans)
-        .with_resource(resource.clone())
-        .build();
+        .with_resource(resource.clone());
+    if let Some(sampler) = sampler(side) {
+        tracer = tracer.with_sampler(sampler);
+    }
+    let tracer = tracer.build();
     let mut reader = PeriodicReader::builder(metrics);
-    if std::env::var_os("OTEL_METRIC_EXPORT_INTERVAL").is_none() {
+    if !env_set("OTEL_METRIC_EXPORT_INTERVAL") {
         reader = reader.with_interval(METRIC_INTERVAL);
     }
     let meter = SdkMeterProvider::builder()
@@ -60,6 +63,18 @@ pub fn providers(
         .with_resource(resource)
         .build();
     Ok(OtelProviders { tracer, meter })
+}
+
+/// Whether the environment variable `k` is set and not empty.
+fn env_set(k: &str) -> bool {
+    std::env::var_os(k).is_some_and(|v| !v.is_empty())
+}
+
+/// The daemon samples every session, whatever the client's trace context
+/// says, unless `OTEL_TRACES_SAMPLER` picks a sampler; the client keeps the
+/// SDK's (parent-based, always on).
+fn sampler(side: Side) -> Option<Sampler> {
+    (side == Side::Daemon && !env_set("OTEL_TRACES_SAMPLER")).then_some(Sampler::AlwaysOn)
 }
 
 /// `service.name` (`OTEL_SERVICE_NAME` wins), `service.version`, the
@@ -215,8 +230,11 @@ pub fn inject(span: &tracing::Span) -> (String, String) {
 }
 
 /// The remote parent context in `traceparent` and `tracestate`; an empty
-/// context when they hold none.
+/// context when they hold none, or `traceparent` is not well formed.
 pub fn extract(traceparent: &str, tracestate: &str) -> opentelemetry::Context {
+    if !well_formed(traceparent) {
+        return opentelemetry::Context::new();
+    }
     let carrier: HashMap<String, String> =
         [("traceparent", traceparent), ("tracestate", tracestate)]
             .into_iter()
@@ -224,6 +242,17 @@ pub fn extract(traceparent: &str, tracestate: &str) -> opentelemetry::Context {
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
     TraceContextPropagator::new().extract(&carrier)
+}
+
+/// Whether `traceparent` has the shape of a W3C version-00 header: four
+/// fields of 2, 32, 16 and 2 lowercase hex digits. The SDK's parser takes
+/// shorter ids too.
+fn well_formed(traceparent: &str) -> bool {
+    let lens: Vec<usize> = traceparent.split('-').map(str::len).collect();
+    lens == [2, 32, 16, 2]
+        && traceparent
+            .bytes()
+            .all(|b| b == b'-' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Makes the remote context in `traceparent` and `tracestate` the parent
@@ -288,5 +317,64 @@ mod tests {
                 .map(|v| v.to_string()),
             Some("irsync".into())
         );
+    }
+
+    #[test]
+    fn daemon_samples_what_the_client_did_not() {
+        if env_set("OTEL_TRACES_SAMPLER") {
+            return;
+        }
+        assert!(sampler(Side::Client).is_none());
+        let provider = SdkTracerProvider::builder()
+            .with_sampler(sampler(Side::Daemon).unwrap())
+            .build();
+        // The client's context, its sampled flag off.
+        let parent = extract(
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
+            "",
+        );
+        assert!(!parent.span().span_context().is_sampled());
+        use opentelemetry::trace::{Span as _, Tracer as _};
+        let span = provider.tracer("t").start_with_context("session", &parent);
+        assert!(span.span_context().is_sampled());
+    }
+
+    #[test]
+    fn malformed_context_is_ignored() {
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("t"));
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let valid = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let huge = format!("k={}", "v".repeat(1024 * 1024));
+        tracing::subscriber::with_default(subscriber, || {
+            for bad in [
+                "garbage",
+                "00-4bf92f3577b34da6a3ce929d0e0e47-00f067aa0ba902b7-01",
+                "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            ] {
+                let span = tracing::info_span!("session", bad);
+                set_parent(&span, bad, "");
+            }
+            let span = tracing::info_span!("session", bad = "tracestate");
+            set_parent(&span, valid, &huge);
+            let (traceparent, tracestate) = inject(&span);
+            assert_eq!(traceparent[..35], valid[..35]);
+            assert!(tracestate.len() < 1024, "{}", tracestate.len());
+        });
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 4);
+        for s in &spans[..3] {
+            assert_eq!(
+                s.parent_span_id,
+                opentelemetry::trace::SpanId::INVALID,
+                "{s:?}"
+            );
+            assert!(!s.parent_span_is_remote);
+        }
+        assert!(spans[3].parent_span_is_remote);
+        assert!(spans[3].span_context.trace_state().header().len() < 1024);
     }
 }
