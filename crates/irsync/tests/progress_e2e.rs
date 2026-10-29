@@ -221,7 +221,10 @@ async fn scanned_event_emitted_on_push() {
         for i in 0..1100 {
             fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
-        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        // A dry run: the walk is what is tested, and placing 1100 files
+        // fsyncs each one (a full flush on macOS), which under load takes
+        // longer than the test may.
+        let (_, events) = run(&h, &opts(&["--dry-run"]), Flow::Push).await;
         assert!(
             events.iter().any(|e| matches!(e, Event::Scanned { party: Party::Local, entries, .. } if *entries >= 1000)),
             "no local Scanned >= 1000: {events:?}"
@@ -571,7 +574,10 @@ async fn peer_listing_is_counted_on_push_and_local_walk_says_where_it_is() {
             fs::write(h.src(Flow::Push).join(format!("deep/dir/f{i}")), b"x").unwrap();
         }
         fs::write(h.dst(Flow::Push).join("extra"), b"x").unwrap();
-        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        // A dry run: the walk is what is tested, and placing 1100 files
+        // fsyncs each one (a full flush on macOS), which under load takes
+        // longer than the test may.
+        let (_, events) = run(&h, &opts(&["--dry-run"]), Flow::Push).await;
         assert!(
             events
                 .iter()
