@@ -284,7 +284,7 @@ impl Telemetry {
         let (Some(addr), Some(routes)) = (self.cfg.debug_addr, self.routes.clone()) else {
             return Ok(None);
         };
-        let (bound, task) = http::serve(addr, routes).await?;
+        let (bound, task) = http::serve(addr, routes, http::Limits::default()).await?;
         self.tasks.push(task);
         Ok(Some(bound))
     }

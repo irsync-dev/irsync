@@ -9,12 +9,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 /// The request head may be this long.
 const MAX_HEAD: usize = 8 * 1024;
-/// The request head must arrive within this long.
-const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the accept loop pauses after a failed accept (out of fds, say).
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 const PROMETHEUS: &str = "text/plain; version=0.0.4";
 const PLAIN: &str = "text/plain; charset=utf-8";
@@ -53,23 +54,68 @@ impl Routes {
     }
 }
 
-/// Binds `addr` and serves `routes` on it, a task per connection. Returns
-/// the bound address and the accept loop's handle.
-pub async fn serve(addr: SocketAddr, routes: Routes) -> io::Result<(SocketAddr, JoinHandle<()>)> {
+/// How long one connection may take and how many may be open at once.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Reading the request, answering it and draining the rest.
+    pub conn_timeout: Duration,
+    /// Connections beyond this many are closed unanswered.
+    pub max_conns: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits {
+            conn_timeout: Duration::from_secs(10),
+            max_conns: 16,
+        }
+    }
+}
+
+/// Binds `addr` and serves `routes` on it, a task per connection within
+/// `limits`. Returns the bound address and the accept loop's handle.
+pub async fn serve(
+    addr: SocketAddr,
+    routes: Routes,
+    limits: Limits,
+) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
+    let permits = Arc::new(Semaphore::new(limits.max_conns));
     let task = tokio::spawn(async move {
+        let mut failing = false;
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => {
+                    failing = false;
+                    stream
+                }
+                Err(e) => {
+                    accept_failed(&e, &mut failing).await;
+                    continue;
+                }
+            };
+            // All permits taken: dropping the stream closes it.
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
                 continue;
             };
             let routes = routes.clone();
             tokio::spawn(async move {
-                let _ = handle(stream, &routes).await;
+                let _ = tokio::time::timeout(limits.conn_timeout, handle(stream, &routes)).await;
+                drop(permit);
             });
         }
     });
     Ok((bound, task))
+}
+
+/// Pauses the accept loop after `e`, logging the first error of a run of them.
+async fn accept_failed(e: &io::Error, failing: &mut bool) {
+    if !*failing {
+        tracing::debug!("debug port: accept: {e}");
+        *failing = true;
+    }
+    tokio::time::sleep(ACCEPT_BACKOFF).await;
 }
 
 /// The request head (up to the blank line), or the status to refuse with.
@@ -91,12 +137,10 @@ async fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Option<u16>> {
 }
 
 async fn handle(mut stream: TcpStream, routes: &Routes) -> io::Result<()> {
-    let head = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut stream)).await {
-        Ok(Ok(h)) => h,
-        Ok(Err(Some(code))) => {
-            return respond(&mut stream, code, PLAIN, "header too large\n").await
-        }
-        Ok(Err(None)) | Err(_) => return Ok(()),
+    let head = match read_head(&mut stream).await {
+        Ok(h) => h,
+        Err(Some(code)) => return respond(&mut stream, code, PLAIN, "header too large\n").await,
+        Err(None) => return Ok(()),
     };
     let line = head.split(|b| *b == b'\r').next().unwrap_or_default();
     let line = String::from_utf8_lossy(line);
@@ -147,9 +191,8 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
-    #[tokio::test]
-    async fn routes_and_errors() {
-        let routes = Routes {
+    fn routes() -> Routes {
+        Routes {
             prometheus: Some(
                 metrics_exporter_prometheus::PrometheusBuilder::new()
                     .build_recorder()
@@ -157,8 +200,14 @@ mod tests {
             ),
             timing: Default::default(),
             flame: Default::default(),
-        };
-        let (addr, _task) = serve("127.0.0.1:0".parse().unwrap(), routes).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn routes_and_errors() {
+        let (addr, _task) = serve("127.0.0.1:0".parse().unwrap(), routes(), Limits::default())
+            .await
+            .unwrap();
 
         // A client that never finishes its head does not hold up the others.
         let mut slow = TcpStream::connect(addr).await.unwrap();
@@ -189,5 +238,56 @@ mod tests {
         let r = request(addr, big.as_bytes()).await;
         assert!(r.starts_with("HTTP/1.1 431"), "{r}");
         drop(slow);
+    }
+
+    #[tokio::test]
+    async fn busy_server_closes_new_connections_until_idle_ones_time_out() {
+        let limits = Limits {
+            conn_timeout: Duration::from_millis(500),
+            max_conns: 16,
+        };
+        let (addr, _task) = serve("127.0.0.1:0".parse().unwrap(), routes(), limits)
+            .await
+            .unwrap();
+        let mut idle = Vec::new();
+        for _ in 0..16 {
+            idle.push(TcpStream::connect(addr).await.unwrap());
+        }
+
+        // No permit left: closed unanswered (an EOF or a reset).
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        let _ = s.write_all(b"GET /metrics HTTP/1.1\r\n\r\n").await;
+        let mut out = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(1), s.read_to_end(&mut out))
+            .await
+            .expect("closed within 1 s");
+        assert!(out.is_empty(), "{read:?} {}", String::from_utf8_lossy(&out));
+
+        // The idle ones time out and are closed; their permits come back.
+        for mut s in idle {
+            let mut out = Vec::new();
+            let n = tokio::time::timeout(Duration::from_secs(2), s.read_to_end(&mut out))
+                .await
+                .expect("idle connection closed after the timeout");
+            assert!(out.is_empty(), "{n:?}");
+        }
+        let r = tokio::time::timeout(
+            Duration::from_secs(1),
+            request(addr, b"GET /metrics HTTP/1.1\r\n\r\n"),
+        )
+        .await
+        .expect("answered within 1 s");
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_accept_backs_off() {
+        let e = io::Error::other("too many open files");
+        let mut failing = false;
+        let t = tokio::time::Instant::now();
+        accept_failed(&e, &mut failing).await;
+        assert!(failing);
+        accept_failed(&e, &mut failing).await;
+        assert_eq!(t.elapsed(), 2 * ACCEPT_BACKOFF);
     }
 }
