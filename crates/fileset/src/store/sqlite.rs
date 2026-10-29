@@ -251,9 +251,11 @@ impl Store for SqliteStore {
 
     fn get(&self, path: &[u8]) -> Result<Option<Entry>> {
         let sql = format!("SELECT {ENTRY_COLS} FROM entries WHERE path = ?");
+        // Called once per walked entry: parsing the SQL each time cost as much as the lookup.
         let e = self
             .conn
-            .query_row(&sql, [path], |r| row_to_entry(r, 0))
+            .prepare_cached(&sql)?
+            .query_row([path], |r| row_to_entry(r, 0))
             .optional()?;
         match e {
             Some(mut e) => {
