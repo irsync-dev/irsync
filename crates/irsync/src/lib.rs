@@ -18,5 +18,6 @@ pub mod resolve;
 pub mod scan;
 pub mod send;
 pub mod session;
+pub mod telemetry;
 pub mod tree_hash;
 pub mod warm;
