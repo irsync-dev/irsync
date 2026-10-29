@@ -97,6 +97,9 @@ pub(super) enum Done {
     Finalized {
         file_id: u64,
         gen: u32,
+        /// Bytes the file's writer took from the sender (none when settled
+        /// in place).
+        received: u64,
         result: Result<(), FinalizeError>,
     },
     /// Writing a received chunk failed for a reason other than verification.
@@ -378,6 +381,7 @@ impl Receiver {
             file_id,
             status: status as i32,
             message,
+            matched: 0,
         }));
     }
 
@@ -483,12 +487,14 @@ impl Receiver {
             f.entry.clone(),
         );
         let place = tracing::debug_span!(parent: &f.span, "place");
+        let received = w.received();
         self.tasks.spawn(
             async move {
                 let result = finalize(ctx, w, path, entry, digest).await;
                 let _ = events.send(Ev::Recv(Done::Finalized {
                     file_id,
                     gen,
+                    received,
                     result,
                 }));
             }
@@ -570,8 +576,9 @@ impl Receiver {
             Done::Finalized {
                 file_id,
                 gen,
+                received,
                 result,
-            } => self.on_finalized(file_id, gen, result).await,
+            } => self.on_finalized(file_id, gen, received, result).await,
             Done::StreamFailed { file_id, gen, msg } => {
                 let current = self
                     .files
@@ -625,7 +632,6 @@ impl Receiver {
                     .busy
                     .skipped_bytes
                     .fetch_add(f.entry.size, Ordering::Relaxed);
-                self.ctx.meter.add(Counter::BytesMatched, f.entry.size);
                 self.ctx.hooks.event("identical", &f.path);
                 if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
                     emit_itemized(&self.ctx, &self.out, &f.path, code);
@@ -646,6 +652,7 @@ impl Receiver {
                     let _ = events.send(Ev::Recv(Done::Finalized {
                         file_id,
                         gen,
+                        received: 0,
                         result,
                     }));
                 });
@@ -675,15 +682,13 @@ impl Receiver {
             idx_base,
         } = fill;
         // Everything not requested from the sender (local copies, adopted
-        // chunks) needs no transfer.
+        // chunks) needs no transfer: shown as matched now, counted once the
+        // file is placed (a local copy may still fail and be requested).
         let needed: u64 = remote
             .iter()
             .filter_map(|&i| digest.chunks.get(i as usize))
             .map(|c| c.len as u64)
             .sum();
-        self.ctx
-            .meter
-            .add(Counter::BytesMatched, digest.size.saturating_sub(needed));
         self.ctx.hooks.bus.emit(super::Event::FileMatched(
             f.path.clone(),
             digest.size.saturating_sub(needed),
@@ -764,7 +769,13 @@ impl Receiver {
         }
     }
 
-    async fn on_finalized(&mut self, file_id: u64, gen: u32, result: Result<(), FinalizeError>) {
+    async fn on_finalized(
+        &mut self,
+        file_id: u64,
+        gen: u32,
+        received: u64,
+        result: Result<(), FinalizeError>,
+    ) {
         // (`identical` files arrive here from `settle_identical`.)
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
@@ -783,13 +794,22 @@ impl Receiver {
                     self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
                     self.files_done += 1;
                 }
+                // What this session did not take from the sender: local
+                // copies, earlier progress, or all of a file settled in place.
+                let matched = size.saturating_sub(received);
+                self.ctx.meter.add(Counter::BytesMatched, matched);
                 // Placed: acknowledged DONE even if the sender gave up meanwhile
                 // (it withdraws its error on this ack).
                 self.files.remove(&file_id);
                 self.active -= 1;
                 self.persist.done(file_id);
                 self.ctx.progress.store(true, Ordering::Relaxed);
-                self.ack(file_id, Status::Done, String::new());
+                self.out.send(Msg::Ack(FileAck {
+                    file_id,
+                    status: Status::Done as i32,
+                    message: String::new(),
+                    matched,
+                }));
             }
             Err(e) if abandoned.is_some() => {
                 f.st = St::Requested;
@@ -894,6 +914,7 @@ impl Receiver {
                 file_id,
                 gen,
                 result: Ok(()),
+                ..
             }) = ev
             {
                 let current = self

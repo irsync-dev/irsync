@@ -40,7 +40,7 @@ Counters:
 | `irsync_files_total` | count | `result` | `transferred`, `skipped`, `failed`, `created`. |
 | `irsync_entries_listed_total` | count | `kind` | Source entries listed: `regular`, `directory`, `symlink`, `special`. |
 | `irsync_bytes_literal_total` | bytes | | File data sent or received as literal chunk bytes. |
-| `irsync_bytes_matched_total` | bytes | | File data rebuilt from the destination's existing chunks. |
+| `irsync_bytes_matched_total` | bytes | | File data the receiver did not take from the sender (local copies, earlier progress, files already identical), counted when each file is placed; the sender counts what the receiver's acknowledgement reports. |
 | `irsync_bytes_hashed_total` | bytes | | Bytes the hashers read. |
 | `irsync_files_hashed_total` | count | | Files the hashers read. |
 | `irsync_disk_read_bytes_total` | bytes | | File data irsync read from disk. |

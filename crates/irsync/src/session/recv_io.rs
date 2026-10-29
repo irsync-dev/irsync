@@ -696,7 +696,7 @@ pub(super) async fn copy_local_chunks(
         let Some(w) = guard.as_mut() else {
             break; // The writer was retired (new chunk list, failure).
         };
-        if let Err(e) = write_into(&ctx, &route, w, idx, &data).await {
+        if let Err(e) = write_into(&ctx, &route, w, idx, &data, false).await {
             // Stale bytes never verify; any failure leaves the chunk
             // missing for the follow-up request.
             tracing::debug!(from = ?from, idx, error = %e, "local copy rejected");
@@ -707,17 +707,22 @@ pub(super) async fn copy_local_chunks(
     finish_unit(&route, &events, file_id, 1).await;
 }
 
-/// Writes a chunk into the file's current writer, noting the `.part` open
-/// a first write performs.
+/// Writes a chunk, from the sender (`remote`) or a local file, into the
+/// file's current writer, noting the `.part` open a first write performs.
 async fn write_into(
     ctx: &Ctx,
     route: &Route,
     w: &mut FileWriter,
     idx: u32,
     data: &[u8],
+    remote: bool,
 ) -> io::Result<()> {
     let was_open = w.is_open();
-    let res = w.write_chunk(idx, data).await;
+    let res = if remote {
+        w.write_chunk(idx, data).await
+    } else {
+        w.write_copied(idx, data).await
+    };
     if !was_open && w.is_open() {
         ctx.hooks.event("open", &route.path);
     }
@@ -982,7 +987,7 @@ async fn read_range(
             stop(s, 0);
             return n;
         };
-        match write_into(ctx, route, w, idx, &data).await {
+        match write_into(ctx, route, w, idx, &data, true).await {
             Ok(()) => {
                 ctx.hooks.event("chunk", &route.path);
                 if rebuilt {

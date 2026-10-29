@@ -144,6 +144,23 @@ async fn received_chunks_are_timed_and_counted_as_hashing() {
 }
 
 #[tokio::test]
+async fn received_counts_only_chunks_from_the_sender() {
+    let e = env();
+    let data = content(5);
+    let cl = chunk_list(&data);
+    assert!(cl.chunks.len() >= 2, "want several chunks");
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let first = cl.chunks[0].len as u64;
+    w.write_copied(0, piece(&data, &cl, 0)).await.unwrap();
+    assert_eq!(w.received(), 0);
+    let rest: Vec<u32> = (1..cl.chunks.len() as u32).collect();
+    write_all(&mut w, &data, &cl, &rest).await;
+    // A chunk written again (a re-sent stream) is not counted twice.
+    w.write_chunk(1, piece(&data, &cl, 1)).await.unwrap();
+    assert_eq!(w.received(), data.len() as u64 - first);
+}
+
+#[tokio::test]
 async fn finalize_rejects_hash_mismatch_and_leaves_no_final_file() {
     let e = env();
     let data = content(11);

@@ -129,6 +129,7 @@ fn control_oneof_roundtrips() {
             file_id: 3,
             status: Status::HashMismatch as i32,
             message: "bad".into(),
+            matched: 7,
         }),
         Msg::Done(SessionDone {
             files: 1,

@@ -20,7 +20,7 @@ const COUNTERS: [(Counter, &str, Unit, &str); 6] = [
         Counter::BytesMatched,
         "irsync_bytes_matched_total",
         Unit::Bytes,
-        "File data rebuilt from the destination's existing chunks",
+        "File data the receiver did not take from the sender, counted when each file is placed",
     ),
     (
         Counter::BytesHashed,

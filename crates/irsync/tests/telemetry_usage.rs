@@ -98,6 +98,56 @@ async fn delta_counts_matched_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn renamed_files_count_as_matched_on_the_sender() {
+    irsync::telemetry::set_enabled(true);
+    let opts = archive_opts();
+    let (first, h) = sync_trees(tree, |_| {}, &opts, Flow::Push).await;
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    let src = h.src(Flow::Push);
+    for i in 0..FILES {
+        fs::rename(
+            src.join(format!("f{i:02}.bin")),
+            src.join(format!("g{i:02}.bin")),
+        )
+        .unwrap();
+    }
+    // The receiver rebuilds each renamed file from its old copy; the sender
+    // learns that only from the acknowledgements.
+    let second = h.run(&opts, Flow::Push).await.unwrap();
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    let u = &second.usage;
+    assert_eq!(u.count(Counter::BytesLiteral), 0);
+    assert_eq!(u.count(Counter::BytesMatched), FILES * SIZE as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn matched_and_literal_add_up_when_indexed_copies_are_gone() {
+    irsync::telemetry::set_enabled(true);
+    let opts = archive_opts();
+    let (first, h) = sync_trees(tree, |_| {}, &opts, Flow::Pull).await;
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    // The index still lists the deleted files: their chunks look local,
+    // reading them fails, and the receiver asks the sender after all.
+    let dst = h.dst(Flow::Pull);
+    for i in 0..FILES {
+        fs::remove_file(dst.join(format!("f{i:02}.bin"))).unwrap();
+    }
+    let second = h.run(&opts, Flow::Pull).await.unwrap();
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+    assert_trees_equal(h.src(Flow::Pull), dst, &opts.preserve);
+    let u = &second.usage;
+    let (literal, matched) = (
+        u.count(Counter::BytesLiteral),
+        u.count(Counter::BytesMatched),
+    );
+    assert_eq!(
+        literal + matched,
+        FILES * SIZE as u64,
+        "literal {literal} matched {matched}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_pass_is_timed() {
     irsync::telemetry::set_enabled(true);
     let mut opts = archive_opts();

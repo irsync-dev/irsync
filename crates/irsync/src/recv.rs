@@ -97,6 +97,8 @@ pub struct FileWriter {
     last_persist: Instant,
     /// Set once the record must no longer be written back (after finalize).
     done: bool,
+    /// Bytes of the chunks written from the sender's data (not local copies).
+    received: u64,
     /// `-S` / sparse source: all-zero chunks are not written (left as holes).
     sparse: bool,
     /// Length of the `.part` when opened: everything from here on is a hole
@@ -634,6 +636,7 @@ impl FileWriter {
             chunks_since_persist: 0,
             last_persist: Instant::now(),
             done: false,
+            received: 0,
             sparse: false,
             hole_from: 0,
             activity,
@@ -847,8 +850,25 @@ impl FileWriter {
         *blake3::hash(data).as_bytes() == c.hash
     }
 
-    /// Verify `data` against chunk `idx` and write it at the chunk's offset.
+    /// Bytes of the chunks this writer took from the sender's data.
+    pub fn received(&self) -> u64 {
+        self.received
+    }
+
+    /// Verify `data`, received from the sender, against chunk `idx` and
+    /// write it at the chunk's offset.
     pub async fn write_chunk(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
+        self.put_chunk(idx, data, true).await
+    }
+
+    /// [`FileWriter::write_chunk`] for chunk data read from a local file.
+    pub async fn write_copied(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
+        self.put_chunk(idx, data, false).await
+    }
+
+    /// [`FileWriter::write_chunk`] for data from the sender (`remote`) or
+    /// from a local file.
+    async fn put_chunk(&mut self, idx: u32, data: &[u8], remote: bool) -> io::Result<()> {
         let c = *self.chunks.get(idx as usize).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
         })?;
@@ -899,6 +919,9 @@ impl FileWriter {
             self.verified[idx as usize] = true;
             self.tree.add(c.offset, data);
             self.chunks_since_persist += 1;
+            if remote {
+                self.received += data.len() as u64;
+            }
         }
         if self.chunks_since_persist >= PERSIST_EVERY_CHUNKS
             || self.last_persist.elapsed() >= PERSIST_EVERY
@@ -926,7 +949,7 @@ impl FileWriter {
         })
         .await
         .map_err(io::Error::other)??;
-        self.write_chunk(idx, &data).await
+        self.put_chunk(idx, &data, false).await
     }
 
     fn partial_record(&self) -> Partial {

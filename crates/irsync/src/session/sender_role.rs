@@ -80,8 +80,6 @@ struct SFile {
     /// Send tasks of this generation still running; `FileSent` when the
     /// last one finishes.
     streams: u32,
-    /// Bytes reported matched so far under this digest.
-    matched: u64,
     /// When the receiver first asked for data; for the transfer histogram.
     started: Option<std::time::Instant>,
     #[cfg(feature = "test-hooks")]
@@ -252,6 +250,7 @@ impl SenderRole {
             file_id,
             status: Status::SourceError as i32,
             message: msg,
+            matched: 0,
         }));
     }
 
@@ -271,7 +270,6 @@ impl SenderRole {
         f.digest = None;
         f.bases.clear();
         f.requested.clear();
-        f.matched = 0;
         f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
         self.spawn_digest(file_id, gen, path, true, false);
@@ -307,7 +305,6 @@ impl SenderRole {
                 bases: HashMap::new(),
                 requested: HashSet::new(),
                 streams: 0,
-                matched: 0,
                 started: None,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
@@ -444,11 +441,9 @@ impl SenderRole {
                 .iter()
                 .map(|&i| digest.chunks[i as usize].len as u64)
                 .sum();
+            // Shown as matched now; counted from the receiver's DONE, which
+            // knows what it really reused.
             let matched = digest.size.saturating_sub(needed);
-            self.ctx
-                .meter
-                .add(Counter::BytesMatched, matched.saturating_sub(f.matched));
-            f.matched = matched;
             if f.started.is_none() {
                 f.started = super::wait_start(&self.ctx.meter);
             }
@@ -569,6 +564,7 @@ impl SenderRole {
             // Withdraw our give-up if the receiver placed the file anyway.
             if status == Ok(Status::Done) {
                 if let Some(path) = self.abandoned.remove(&file_id) {
+                    self.ctx.meter.add(Counter::BytesMatched, a.matched);
                     tracing::info!(?path, "placed by the receiver after all");
                     if let Some(i) = self.errors.iter().rposition(|(p, _)| *p == path) {
                         self.errors.remove(i);
@@ -584,6 +580,7 @@ impl SenderRole {
                 self.ctx
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.ctx.meter.add(Counter::BytesMatched, a.matched);
                 if let Some(f) = self.files.remove(&file_id) {
                     let size = f.digest.as_ref().map_or(0, |d| d.size);
                     super::record_file(&self.ctx.meter, f.started, size);

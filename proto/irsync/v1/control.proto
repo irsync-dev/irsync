@@ -77,6 +77,10 @@ message FileAck {
   }
   Status status = 2;
   string message = 3;
+  // DONE: bytes of the file the receiver did not take from the sender
+  // (local copies, adopted progress, an identical file), for the sender's
+  // matched count.
+  uint64 matched = 4;
 }
 // A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
 message PathError {
