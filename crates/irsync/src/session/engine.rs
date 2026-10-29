@@ -1000,6 +1000,8 @@ async fn run_role(
         ctx.busy.clone(),
         out.clone(),
     ));
+    let sampler = crate::telemetry::enabled()
+        .then(|| crate::telemetry::sampler::spawn(ctx.meter.clone(), ctx.conn.clone()));
     let res = if sends {
         sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
     } else {
@@ -1021,9 +1023,14 @@ async fn run_role(
         r => r,
     };
     ctx.meter.finish();
+    let sampled = sampler.map(|s| s.stop());
     match res {
         Ok(mut o) => {
             o.usage = ctx.meter.usage();
+            if let Some((process, net)) = sampled {
+                o.usage.process = process;
+                o.usage.net = net;
+            }
             let _ = writer.await;
             reader.abort();
             tracing::info!(

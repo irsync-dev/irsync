@@ -1,6 +1,8 @@
 //! Telemetry: a per-session meter of where time and bytes go.
 
 pub mod meter;
+pub mod process;
+pub mod sampler;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

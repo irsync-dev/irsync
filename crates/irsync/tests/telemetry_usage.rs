@@ -117,3 +117,15 @@ async fn delete_pass_is_timed() {
     assert!(out.usage.busy(Activity::Delete) > Duration::ZERO);
     assert!(out.usage.busy(Activity::Plan) > Duration::ZERO);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_usage_samples_process_and_rtt() {
+    irsync::telemetry::set_enabled(true);
+    let opts = archive_opts();
+    let (out, _h) = sync_trees(tree, |_| {}, &opts, Flow::Push).await;
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let (p, n) = (&out.usage.process, &out.usage.net);
+    assert!(n.rtt_max > Duration::ZERO, "{n:?}");
+    assert!(n.rtt_min <= n.rtt_avg && n.rtt_avg <= n.rtt_max, "{n:?}");
+    assert!(p.peak_fds > 0 && p.peak_rss > 0, "{p:?}");
+}

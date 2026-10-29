@@ -71,13 +71,28 @@ impl Counter {
     ];
 }
 
-/// Process-level usage (filled in by a later task).
+/// Process-level usage over a session.
 #[derive(Clone, Debug, Default)]
-pub struct ProcessUsage {}
+pub struct ProcessUsage {
+    /// CPU time the whole process spent since the session started.
+    pub cpu_user: Duration,
+    pub cpu_sys: Duration,
+    /// Peak resident set size, in bytes.
+    pub peak_rss: u64,
+    pub peak_fds: u64,
+}
 
-/// Network usage (filled in by a later task).
+/// QUIC path usage over a session; a zero RTT means no sample was taken.
 #[derive(Clone, Debug, Default)]
-pub struct NetUsage {}
+pub struct NetUsage {
+    pub rtt_min: Duration,
+    pub rtt_max: Duration,
+    pub rtt_avg: Duration,
+    pub lost_packets: u64,
+    pub sent_packets: u64,
+    /// Congestion window of the best path at the last sample, in bytes.
+    pub cwnd: u64,
+}
 
 /// A snapshot of a meter.
 #[derive(Clone, Debug, Default)]
@@ -102,7 +117,7 @@ impl Usage {
         self.counters[c as usize]
     }
 
-    /// Sums `o` into `self`; peaks (none yet) take the max.
+    /// Sums `o` into `self`; peaks take the max, and the RTT minimum ignores unsampled (zero) sides.
     pub fn add(&mut self, o: &Usage) {
         self.wall += o.wall;
         for (a, b) in self.busy.iter_mut().zip(&o.busy) {
@@ -112,6 +127,26 @@ impl Usage {
         for (a, b) in self.counters.iter_mut().zip(&o.counters) {
             *a += *b;
         }
+        let (p, q) = (&mut self.process, &o.process);
+        p.cpu_user += q.cpu_user;
+        p.cpu_sys += q.cpu_sys;
+        p.peak_rss = p.peak_rss.max(q.peak_rss);
+        p.peak_fds = p.peak_fds.max(q.peak_fds);
+        let (n, m) = (&mut self.net, &o.net);
+        n.rtt_avg = match (n.rtt_avg.is_zero(), m.rtt_avg.is_zero()) {
+            (false, false) => (n.rtt_avg + m.rtt_avg) / 2,
+            (true, _) => m.rtt_avg,
+            _ => n.rtt_avg,
+        };
+        n.rtt_min = match (n.rtt_min.is_zero(), m.rtt_min.is_zero()) {
+            (false, false) => n.rtt_min.min(m.rtt_min),
+            (true, _) => m.rtt_min,
+            _ => n.rtt_min,
+        };
+        n.rtt_max = n.rtt_max.max(m.rtt_max);
+        n.lost_packets += m.lost_packets;
+        n.sent_packets += m.sent_packets;
+        n.cwnd = n.cwnd.max(m.cwnd);
     }
 }
 
@@ -382,6 +417,35 @@ mod tests {
             u.busy(Activity::Read)
         );
         assert!(u.peer_wait < MS(15), "{:?}", u.peer_wait);
+    }
+
+    #[test]
+    fn usage_add_merges_process_and_net() {
+        let mk = |rss, min, max, lost| Usage {
+            process: ProcessUsage {
+                cpu_user: MS(10),
+                peak_rss: rss,
+                peak_fds: rss / 10,
+                ..ProcessUsage::default()
+            },
+            net: NetUsage {
+                rtt_min: MS(min),
+                rtt_max: MS(max),
+                rtt_avg: MS((min + max) / 2),
+                lost_packets: lost,
+                cwnd: rss,
+                ..NetUsage::default()
+            },
+            ..Usage::default()
+        };
+        let mut a = mk(100, 4, 8, 1);
+        a.add(&mk(200, 2, 20, 2));
+        a.add(&Usage::default());
+        assert_eq!(a.process.cpu_user, MS(20));
+        assert_eq!((a.process.peak_rss, a.process.peak_fds), (200, 20));
+        assert_eq!((a.net.rtt_min, a.net.rtt_max), (MS(2), MS(20)));
+        assert_eq!(a.net.rtt_avg, Duration::from_micros(8500));
+        assert_eq!((a.net.lost_packets, a.net.cwnd), (3, 200));
     }
 
     #[test]
