@@ -887,3 +887,94 @@ fn update_refuses_the_manifest_an_interrupted_init_left(b: Backend) {
         "{text}"
     );
 }
+
+for_both_backends! {
+    update_skips_unreadable_builtin_exclude => update_skips_unreadable_builtin_exclude_sqlite, update_skips_unreadable_builtin_exclude_fjall;
+    update_without_builtin_excludes_warns => update_without_builtin_excludes_warns_sqlite, update_without_builtin_excludes_warns_fjall;
+    builtin_excludes_drop_quietly_from_an_old_manifest => builtin_excludes_drop_quietly_from_an_old_manifest_sqlite, builtin_excludes_drop_quietly_from_an_old_manifest_fjall;
+}
+
+/// A tree with an unreadable `.Spotlight-V100` at its root, as on a macOS volume. `None`
+/// when running with privileges that bypass directory permissions.
+fn unreadable_spotlight_tree() -> Option<tempfile::TempDir> {
+    let dir = tree(&[("f", "x"), (".Spotlight-V100/store.db", "y")]);
+    let spotlight = dir.path().join(".Spotlight-V100");
+    chmod(&spotlight, 0o000);
+    if std::fs::read_dir(&spotlight).is_ok() {
+        chmod(&spotlight, 0o755);
+        eprintln!("skipping: running with privileges that bypass directory permissions");
+        return None;
+    }
+    Some(dir)
+}
+
+fn update_skips_unreadable_builtin_exclude(b: Backend) {
+    let Some(dir) = unreadable_spotlight_tree() else {
+        return;
+    };
+    let (outcome, err) = run_update(dir.path(), b, false, true);
+    chmod(&dir.path().join(".Spotlight-V100"), 0o755);
+    assert_eq!(outcome, Outcome::Clean, "{err}");
+    assert!(!err.contains("WARN"), "{err}");
+    assert!(!err.contains("INFO"), "{err}");
+    assert!(err.ends_with(" warnings=0\n"), "{err}");
+    let keys = keys(&*open_ro(dir.path(), b));
+    assert!(
+        !keys.iter().any(|k| k.starts_with(".Spotlight-V100")),
+        "{keys:?}"
+    );
+
+    let mut opts = update_opts(dir.path(), b, false, true);
+    opts.common.verbose = true;
+    let (outcome, err) = run_update_opts(&opts).unwrap();
+    assert_eq!(outcome, Outcome::Clean, "{err}");
+    assert!(
+        err.starts_with("INFO skipping built-in exclude .Spotlight-V100\n"),
+        "{err}"
+    );
+    assert!(err.ends_with(" warnings=0\n"), "{err}");
+}
+
+fn update_without_builtin_excludes_warns(b: Backend) {
+    let Some(dir) = unreadable_spotlight_tree() else {
+        return;
+    };
+    let mut opts = update_opts(dir.path(), b, false, true);
+    opts.common.builtin_excludes = false;
+    let (outcome, err) = run_update_opts(&opts).unwrap();
+    chmod(&dir.path().join(".Spotlight-V100"), 0o755);
+    let err = without_macos_xattr_warnings(&err);
+    assert_eq!(outcome, Outcome::Differences, "{err}");
+    assert!(
+        err.starts_with("WARN cannot read directory .Spotlight-V100: "),
+        "{err}"
+    );
+}
+
+fn builtin_excludes_drop_quietly_from_an_old_manifest(b: Backend) {
+    // A manifest written before built-in excludes existed holds them, contents and all.
+    let dir = tree(&[("f", "x"), (".Trashes/501/old", "y")]);
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.common.builtin_excludes = false;
+    run_update_opts(&opts).unwrap();
+    assert!(keys(&*open_ro(dir.path(), b)).contains(&".Trashes/501/old".to_string()));
+
+    // Now unreadable, as on macOS: what is stored below it can no longer be verified.
+    let trashes = dir.path().join(".Trashes");
+    chmod(&trashes, 0o000);
+    if std::fs::read_dir(&trashes).is_ok() {
+        chmod(&trashes, 0o755);
+        eprintln!("skipping: running with privileges that bypass directory permissions");
+        return;
+    }
+    let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    assert_eq!(out, "");
+
+    run_update(dir.path(), b, false, true);
+    chmod(&trashes, 0o755);
+    let keys = keys(&*open_ro(dir.path(), b));
+    assert!(!keys.iter().any(|k| k.starts_with(".Trashes")), "{keys:?}");
+    let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+}

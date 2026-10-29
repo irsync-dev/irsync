@@ -19,7 +19,19 @@ pub struct WalkConfig {
     /// The store is a SQLite file: its `-wal`, `-shm` and `-journal` sidecars, whatever
     /// the store is named, are skipped silently.
     pub sqlite_store: bool,
+    /// Skip the `BUILTIN_EXCLUDES` at the top of every volume the walk visits.
+    pub builtin_excludes: bool,
 }
+
+/// Names macOS keeps at the top of a volume for its own use. They are unreadable there and
+/// junk anywhere else, so the walk neither records nor descends them.
+pub const BUILTIN_EXCLUDES: &[&str] = &[
+    ".DocumentRevisions-V100",
+    ".Spotlight-V100",
+    ".TemporaryItems",
+    ".Trashes",
+    ".fseventsd",
+];
 
 #[derive(Debug)]
 pub struct Observed {
@@ -44,6 +56,9 @@ pub enum WalkEvent {
     /// not stat; emitted right after the corresponding `Warning`. Nothing stored at or
     /// below it was observed.
     NotDescended(Vec<u8>),
+    /// Relative path of a built-in exclude: neither recorded nor descended, and not a
+    /// warning.
+    Excluded(Vec<u8>),
 }
 
 type Sink<'a> = dyn FnMut(WalkEvent) -> anyhow::Result<()> + 'a;
@@ -51,6 +66,11 @@ type Sink<'a> = dyn FnMut(WalkEvent) -> anyhow::Result<()> + 'a;
 /// The warning text for a `WalkEvent::NestedManifest`.
 pub fn nested_manifest_warning(rel: &[u8]) -> String {
     format!("nested manifest at {}", escape(rel))
+}
+
+/// The info text for a `WalkEvent::Excluded`.
+pub fn excluded_info(rel: &[u8]) -> String {
+    format!("skipping built-in exclude {}", escape(rel))
 }
 
 pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
@@ -67,7 +87,7 @@ pub fn walk(cfg: &WalkConfig, sink: &mut Sink<'_>) -> anyhow::Result<()> {
         hash_error: None,
     }))?;
     if is_dir {
-        walk_dir(cfg, root_dev, &cfg.root, b".", sink)?;
+        walk_dir(cfg, root_dev, root_dev, true, &cfg.root, b".", sink)?;
     }
     Ok(())
 }
@@ -93,9 +113,12 @@ fn cannot_read_dir(dir_rel: &[u8], err: &std::io::Error) -> String {
 }
 
 // Recursion depth equals tree depth; the producer thread's stack is sized for it (pipeline).
+// `volume_top`: the directory is the root or a mount point, where built-in excludes live.
 fn walk_dir(
     cfg: &WalkConfig,
     root_dev: u64,
+    dir_dev: u64,
+    volume_top: bool,
     dir_abs: &Path,
     dir_rel: &[u8],
     sink: &mut Sink<'_>,
@@ -130,6 +153,9 @@ fn walk_dir(
             continue;
         }
         let name_bytes = name.into_vec();
+        let excluded = cfg.builtin_excludes
+            && volume_top
+            && BUILTIN_EXCLUDES.iter().any(|n| n.as_bytes() == name_bytes);
         let rel = if dir_rel == b"." {
             name_bytes.clone()
         } else {
@@ -138,6 +164,10 @@ fn walk_dir(
             r.extend_from_slice(&name_bytes);
             r
         };
+        if excluded {
+            sink(WalkEvent::Excluded(rel))?;
+            continue;
+        }
         let mut entry = match Entry::from_path(&abs) {
             Ok((e, partial)) => {
                 for p in &partial {
@@ -166,7 +196,8 @@ fn walk_dir(
             sink(WalkEvent::NestedManifest(rel.clone()))?;
         }
         let is_dir = entry.kind == crate::model::Kind::Dir;
-        let other_mount = is_dir && entry.dev != root_dev && !cfg.cross_mount_points;
+        let dev = entry.dev;
+        let other_mount = is_dir && dev != root_dev && !cfg.cross_mount_points;
         sink(WalkEvent::Entry(Observed {
             path: rel.clone(),
             abs: abs.clone(),
@@ -184,7 +215,7 @@ fn walk_dir(
             sink(WalkEvent::NotDescended(rel))?;
             continue;
         }
-        walk_dir(cfg, root_dev, &abs, &rel, sink)?;
+        walk_dir(cfg, root_dev, dev, dev != dir_dev, &abs, &rel, sink)?;
     }
     Ok(())
 }
@@ -202,20 +233,32 @@ mod tests {
 
     /// Entries, warnings and not-descended paths.
     fn run_all(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>, Vec<Vec<u8>>) {
-        let mut entries = Vec::new();
-        let mut warnings = Vec::new();
-        let mut skipped = Vec::new();
-        walk(cfg, &mut |ev| {
+        let s = seen(|sink| walk(cfg, sink));
+        (s.entries, s.warnings, s.skipped)
+    }
+
+    #[derive(Default)]
+    struct Seen {
+        entries: Vec<Observed>,
+        warnings: Vec<String>,
+        skipped: Vec<Vec<u8>>,
+        excluded: Vec<Vec<u8>>,
+    }
+
+    fn seen(run: impl FnOnce(&mut Sink<'_>) -> anyhow::Result<()>) -> Seen {
+        let mut s = Seen::default();
+        run(&mut |ev| {
             match ev {
-                WalkEvent::Entry(o) => entries.push(o),
-                WalkEvent::Warning(w) => warnings.push(w),
-                WalkEvent::NestedManifest(p) => warnings.push(nested_manifest_warning(&p)),
-                WalkEvent::NotDescended(p) => skipped.push(p),
+                WalkEvent::Entry(o) => s.entries.push(o),
+                WalkEvent::Warning(w) => s.warnings.push(w),
+                WalkEvent::NestedManifest(p) => s.warnings.push(nested_manifest_warning(&p)),
+                WalkEvent::NotDescended(p) => s.skipped.push(p),
+                WalkEvent::Excluded(p) => s.excluded.push(p),
             }
             Ok(())
         })
         .unwrap();
-        (entries, warnings, skipped)
+        s
     }
 
     fn cfg(root: &Path, store: Option<PathBuf>) -> WalkConfig {
@@ -227,6 +270,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|p| !p.to_string_lossy().ends_with(".fjall")),
             store_path: store,
+            builtin_excludes: true,
         }
     }
 
@@ -365,21 +409,14 @@ mod tests {
     /// Every directory below the root looks like another filesystem when the walk is told a
     /// device number the tree is not on.
     fn walk_from_foreign_device(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>, Vec<Vec<u8>>) {
+        let s = seen_from_foreign_device(cfg);
+        (s.entries, s.warnings, s.skipped)
+    }
+
+    fn seen_from_foreign_device(cfg: &WalkConfig) -> Seen {
         let (root, _) = Entry::from_path(&cfg.root).unwrap();
-        let mut entries = Vec::new();
-        let mut warnings = Vec::new();
-        let mut skipped = Vec::new();
-        walk_dir(cfg, root.dev.wrapping_add(1), &cfg.root, b".", &mut |ev| {
-            match ev {
-                WalkEvent::Entry(o) => entries.push(o),
-                WalkEvent::Warning(w) => warnings.push(w),
-                WalkEvent::NestedManifest(p) => warnings.push(nested_manifest_warning(&p)),
-                WalkEvent::NotDescended(p) => skipped.push(p),
-            }
-            Ok(())
-        })
-        .unwrap();
-        (entries, warnings, skipped)
+        let dev = root.dev.wrapping_add(1);
+        seen(|sink| walk_dir(cfg, dev, dev, true, &cfg.root, b".", sink))
     }
 
     #[test]
@@ -443,6 +480,61 @@ mod tests {
         got.sort();
         assert_eq!(got, strs(&[".", "a", "b", "c"]));
         assert!(w.is_empty());
+    }
+
+    fn spotlight_tree() -> (tempfile::TempDir, PathBuf) {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join(".Spotlight-V100")).unwrap();
+        std::fs::write(r.join(".Spotlight-V100/store.db"), b"").unwrap();
+        std::fs::create_dir(r.join(".Trashes")).unwrap();
+        std::fs::create_dir_all(r.join("sub/.Trashes")).unwrap();
+        std::fs::write(r.join("f"), b"").unwrap();
+        (t, r)
+    }
+
+    #[test]
+    fn walk_skips_builtin_excludes_at_the_root_only() {
+        let (_t, r) = spotlight_tree();
+        let s = seen(|sink| walk(&cfg(&r, None), sink));
+        assert_eq!(paths(&s.entries), strs(&[".", "f", "sub", "sub/.Trashes"]));
+        assert_eq!(s.excluded, strs(&[".Spotlight-V100", ".Trashes"]));
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        assert!(s.skipped.is_empty());
+    }
+
+    #[test]
+    fn walk_without_builtin_excludes_records_them() {
+        let (_t, r) = spotlight_tree();
+        let mut all = cfg(&r, None);
+        all.builtin_excludes = false;
+        let s = seen(|sink| walk(&all, sink));
+        assert_eq!(
+            paths(&s.entries),
+            strs(&[
+                ".",
+                ".Spotlight-V100",
+                ".Spotlight-V100/store.db",
+                ".Trashes",
+                "f",
+                "sub",
+                "sub/.Trashes"
+            ])
+        );
+        assert!(s.excluded.is_empty());
+    }
+
+    #[test]
+    fn walk_skips_builtin_excludes_at_a_crossed_mount_point() {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir_all(r.join("d/.Trashes")).unwrap();
+        std::fs::create_dir_all(r.join("d/e/.Trashes")).unwrap();
+        let mut crossing = cfg(&r, None);
+        crossing.cross_mount_points = true;
+        let s = seen_from_foreign_device(&crossing);
+        assert_eq!(paths(&s.entries), strs(&["d", "d/e", "d/e/.Trashes"]));
+        assert_eq!(s.excluded, strs(&["d/.Trashes"]));
     }
 
     #[test]

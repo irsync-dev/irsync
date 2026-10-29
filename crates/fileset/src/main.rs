@@ -20,6 +20,8 @@ fn common_opts(a: CommonArgs) -> (CommonOpts, bool) {
         sort: !a.no_dir_sort,
         jobs,
         fail_on_warnings: a.fail_on_warnings,
+        builtin_excludes: !a.no_builtin_excludes,
+        verbose: a.verbose,
     };
     (opts, a.quiet)
 }

@@ -72,6 +72,8 @@ pub fn update_opts(
             sort: true,
             jobs: 2,
             fail_on_warnings,
+            builtin_excludes: true,
+            verbose: false,
         },
         mode,
     }
@@ -114,6 +116,8 @@ pub fn check_opts(
             sort: true,
             jobs: 2,
             fail_on_warnings,
+            builtin_excludes: true,
+            verbose: false,
         },
         tier,
         ignore: ignore.to_vec(),

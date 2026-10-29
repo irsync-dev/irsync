@@ -249,7 +249,9 @@ mod tests {
                     assert_eq!(i, 51);
                     assert_eq!(w, "after 50");
                 }
-                WalkEvent::NotDescended(p) | WalkEvent::NestedManifest(p) => {
+                WalkEvent::NotDescended(p)
+                | WalkEvent::NestedManifest(p)
+                | WalkEvent::Excluded(p) => {
                     panic!("unexpected event for {p:?}")
                 }
                 WalkEvent::Entry(obs) => {

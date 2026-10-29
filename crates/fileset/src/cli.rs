@@ -49,9 +49,15 @@ pub struct CommonArgs {
     /// Number of worker threads
     #[arg(short = 'j', long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..).map(|n| n as usize))]
     pub jobs: Option<usize>,
+    /// Index the macOS volume internals (.Spotlight-V100, .Trashes, ...) that are skipped by default
+    #[arg(long)]
+    pub no_builtin_excludes: bool,
     /// Suppress progress output
-    #[arg(short = 'q', long)]
+    #[arg(short = 'q', long, conflicts_with = "verbose")]
     pub quiet: bool,
+    /// Also report what is skipped on purpose
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 }
 
 #[derive(Args, Debug)]
