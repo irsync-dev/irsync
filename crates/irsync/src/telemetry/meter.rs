@@ -17,10 +17,16 @@ pub enum Activity {
     Write,
     Place,
     Delete,
+    /// Waiting for the index lock another task holds; also counted in the
+    /// activity that waits.
+    IndexWait,
 }
 
+/// The number of activities.
+pub const ACTIVITIES: usize = Activity::ALL.len();
+
 impl Activity {
-    pub const ALL: [Activity; 9] = [
+    pub const ALL: [Activity; 10] = [
         Activity::Walk,
         Activity::Plan,
         Activity::Hash,
@@ -30,6 +36,7 @@ impl Activity {
         Activity::Write,
         Activity::Place,
         Activity::Delete,
+        Activity::IndexWait,
     ];
 
     pub fn label(self) -> &'static str {
@@ -43,6 +50,7 @@ impl Activity {
             Activity::Write => "write",
             Activity::Place => "place",
             Activity::Delete => "delete",
+            Activity::IndexWait => "index_wait",
         }
     }
 }
@@ -98,8 +106,12 @@ pub struct NetUsage {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Usage {
     pub wall: Duration,
-    /// Busy time per activity, indexed by `Activity as usize`.
-    pub busy: [Duration; 9],
+    /// Busy time per activity, indexed by `Activity as usize`: summed over
+    /// the tasks doing it, so it can exceed the wall time.
+    pub busy: [Duration; ACTIVITIES],
+    /// Wall time with at least one task doing each activity, indexed by
+    /// `Activity as usize`.
+    pub active: [Duration; ACTIVITIES],
     /// Wall time with no activity in progress.
     pub peer_wait: Duration,
     /// Counter values, indexed by `Counter as usize`.
@@ -113,6 +125,10 @@ impl Usage {
         self.busy[a as usize]
     }
 
+    pub fn active(&self, a: Activity) -> Duration {
+        self.active[a as usize]
+    }
+
     pub fn count(&self, c: Counter) -> u64 {
         self.counters[c as usize]
     }
@@ -121,6 +137,9 @@ impl Usage {
     pub fn add(&mut self, o: &Usage) {
         self.wall += o.wall;
         for (a, b) in self.busy.iter_mut().zip(&o.busy) {
+            *a += *b;
+        }
+        for (a, b) in self.active.iter_mut().zip(&o.active) {
             *a += *b;
         }
         self.peer_wait += o.peer_wait;
@@ -150,11 +169,37 @@ impl Usage {
     }
 }
 
-struct IdleClock {
-    /// Set while no guard is active.
+/// A stopwatch that runs while its condition holds.
+#[derive(Clone, Copy, Default)]
+struct Clock {
     since: Option<Instant>,
     total: Duration,
-    /// Set by `finish`; the clock stays stopped afterwards.
+}
+
+impl Clock {
+    /// Starts or stops the clock to match `running`.
+    fn set(&mut self, running: bool, now: Instant) {
+        match (running, self.since) {
+            (true, None) => self.since = Some(now),
+            (false, Some(t)) => {
+                self.total += now.duration_since(t);
+                self.since = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn read(&self, end: Instant) -> Duration {
+        self.total + self.since.map_or(Duration::ZERO, |t| end.duration_since(t))
+    }
+}
+
+struct Clocks {
+    /// Runs while no guard is active.
+    idle: Clock,
+    /// Runs while a guard of that activity is active.
+    active: [Clock; ACTIVITIES],
+    /// Set by `finish`; the clocks stay stopped afterwards.
     ended: Option<Instant>,
 }
 
@@ -166,10 +211,14 @@ pub struct Meter {
     export: Option<String>,
     enabled: bool,
     started: Instant,
-    busy: [AtomicU64; 9],
+    busy: [AtomicU64; ACTIVITIES],
     counters: [AtomicU64; 7],
-    active: AtomicUsize,
-    idle: Mutex<IdleClock>,
+    /// Guards in progress, in all and per activity.
+    guards: AtomicUsize,
+    per_activity: [AtomicUsize; ACTIVITIES],
+    clocks: Mutex<Clocks>,
+    /// A global meter's wall time per activity, summed over finished sessions.
+    active_total: [AtomicU64; ACTIVITIES],
     global: Option<&'static Meter>,
 }
 
@@ -195,13 +244,18 @@ impl Meter {
             started: now,
             busy: Default::default(),
             counters: Default::default(),
-            active: AtomicUsize::new(0),
-            idle: Mutex::new(IdleClock {
-                // A global meter has no clock of its own: it only sums finished sessions.
-                since: global.map(|_| now),
-                total: Duration::ZERO,
+            guards: AtomicUsize::new(0),
+            per_activity: Default::default(),
+            clocks: Mutex::new(Clocks {
+                // A global meter has no clocks of its own: it only sums finished sessions.
+                idle: Clock {
+                    since: global.map(|_| now),
+                    total: Duration::ZERO,
+                },
+                active: [Clock::default(); ACTIVITIES],
                 ended: None,
             }),
+            active_total: Default::default(),
             global,
         }
     }
@@ -260,8 +314,9 @@ impl Meter {
         if !self.enabled {
             return Timed { live: None };
         }
-        if self.active.fetch_add(1, Relaxed) == 0 {
-            self.reconcile_idle();
+        let first = self.guards.fetch_add(1, Relaxed) == 0;
+        if self.per_activity[a as usize].fetch_add(1, Relaxed) == 0 || first {
+            self.reconcile(a);
         }
         Timed {
             live: Some((self, a, Instant::now())),
@@ -279,41 +334,45 @@ impl Meter {
         }
     }
 
-    /// Re-decides the idle clock from the current guard count, under the lock.
-    fn reconcile_idle(&self) {
+    /// Re-decides the idle clock and `a`'s clock from the current guard
+    /// counts, under the lock.
+    fn reconcile(&self, a: Activity) {
         if self.global.is_none() {
             return;
         }
-        let mut clock = self.idle.lock().unwrap();
-        if clock.ended.is_some() {
+        let mut clocks = self.clocks.lock().unwrap();
+        if clocks.ended.is_some() {
             return;
         }
-        let active = self.active.load(Relaxed);
-        match (active == 0, clock.since) {
-            (true, None) => clock.since = Some(Instant::now()),
-            (false, Some(t)) => {
-                clock.total += t.elapsed();
-                clock.since = None;
-            }
-            _ => {}
-        }
+        let now = Instant::now();
+        let idle = self.guards.load(Relaxed) == 0;
+        clocks.idle.set(idle, now);
+        let running = self.per_activity[a as usize].load(Relaxed) > 0;
+        clocks.active[a as usize].set(running, now);
     }
 
     pub fn usage(&self) -> Usage {
         if !self.enabled {
             return Usage::default();
         }
-        let clock = self.idle.lock().unwrap();
-        let end = clock.ended.unwrap_or_else(Instant::now);
-        let open = clock
-            .since
-            .map_or(Duration::ZERO, |t| end.duration_since(t));
+        let clocks = self.clocks.lock().unwrap();
+        let end = clocks.ended.unwrap_or_else(Instant::now);
         let mut u = Usage {
             wall: end.duration_since(self.started),
-            peer_wait: clock.total + open,
+            peer_wait: clocks.idle.read(end),
             ..Usage::default()
         };
-        drop(clock);
+        if self.global.is_some() {
+            for (d, c) in u.active.iter_mut().zip(&clocks.active) {
+                *d = c.read(end);
+            }
+        }
+        drop(clocks);
+        if self.global.is_none() {
+            for (d, t) in u.active.iter_mut().zip(&self.active_total) {
+                *d = Duration::from_nanos(t.load(Relaxed));
+            }
+        }
         for (d, b) in u.busy.iter_mut().zip(&self.busy) {
             *d = Duration::from_nanos(b.load(Relaxed));
         }
@@ -323,26 +382,30 @@ impl Meter {
         u
     }
 
-    /// Closes the idle clock and adds this session's idle time to the global meter once.
+    /// Closes the clocks and adds this session's idle and per-activity wall
+    /// time to the global meter once.
     pub fn finish(&self) {
         if !self.enabled {
             return;
         }
-        let idle = {
-            let mut clock = self.idle.lock().unwrap();
-            if clock.ended.is_some() {
+        let (idle, active) = {
+            let mut clocks = self.clocks.lock().unwrap();
+            if clocks.ended.is_some() {
                 return;
             }
             let now = Instant::now();
-            if let Some(t) = clock.since.take() {
-                clock.total += now.duration_since(t);
+            clocks.idle.set(false, now);
+            for c in &mut clocks.active {
+                c.set(false, now);
             }
-            clock.ended = Some(now);
-            clock.total
+            clocks.ended = Some(now);
+            (clocks.idle.total, clocks.active.map(|c| c.total))
         };
         if let Some(g) = self.global {
-            let mut gc = g.idle.lock().unwrap();
-            gc.total += idle;
+            g.clocks.lock().unwrap().idle.total += idle;
+            for (t, d) in g.active_total.iter().zip(active) {
+                t.fetch_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX), Relaxed);
+            }
         }
     }
 }
@@ -357,8 +420,9 @@ impl Drop for Timed<'_> {
         if let Some(g) = m.global {
             g.busy[a as usize].fetch_add(ns, Relaxed);
         }
-        if m.active.fetch_sub(1, Relaxed) == 1 {
-            m.reconcile_idle();
+        let last = m.guards.fetch_sub(1, Relaxed) == 1;
+        if m.per_activity[a as usize].fetch_sub(1, Relaxed) == 1 || last {
+            m.reconcile(a);
         }
     }
 }
@@ -457,6 +521,49 @@ mod tests {
             u.busy(Activity::Read)
         );
         assert!(u.peer_wait < MS(15), "{:?}", u.peer_wait);
+    }
+
+    #[test]
+    fn active_is_wall_time_with_the_activity_in_progress() {
+        let m = Meter::new(Side::Client, Role::Receiver, None, true);
+        let barrier = Barrier::new(2);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    let _g = m.start(Activity::Place);
+                    barrier.wait();
+                    sleep(MS(30));
+                });
+            }
+        });
+        {
+            let _g = m.start(Activity::Write);
+            sleep(MS(10));
+        }
+        m.finish();
+        let u = m.usage();
+        let (busy, active) = (u.busy(Activity::Place), u.active(Activity::Place));
+        assert!(busy >= MS(60), "{busy:?}");
+        assert!(active >= MS(30) && active < MS(55), "{active:?}");
+        let w = u.active(Activity::Write);
+        assert!(w >= MS(10) && w < MS(30), "{w:?}");
+        assert_eq!(u.active(Activity::Hash), Duration::ZERO);
+    }
+
+    #[test]
+    fn global_active_is_the_sum_of_finished_sessions() {
+        let g = global(Side::Daemon, Role::Receiver);
+        let before = g.usage().active(Activity::Delete);
+        let m = Meter::new(Side::Daemon, Role::Receiver, None, true);
+        {
+            let _g = m.start(Activity::Delete);
+            sleep(MS(10));
+        }
+        assert_eq!(g.usage().active(Activity::Delete), before);
+        m.finish();
+        m.finish();
+        let after = g.usage().active(Activity::Delete);
+        assert_eq!(after, before + m.usage().active(Activity::Delete));
     }
 
     #[test]

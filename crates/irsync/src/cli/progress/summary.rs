@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect
-//!   busy      walk 21.0s  hash 37.1s  read 1:02  send 1:48  delete 1.3s
-//!   waiting   peer 44.0s
+//!   busy      walk 21.0s  hash 9.3s ×4.0  read 1:02  send 1:48  delete 1.3s
+//!   waiting   peer 44.0s  index lock 0.7s ×3.0
 //!   transfer  1,882 files  3.41G literal  12.00G matched  17.77M/s
 //!   hashing   2,107 files  15.30G  412.00M/s
 //!   disk      read 15.40G  write 0  fsync 0.0s
@@ -68,6 +68,21 @@ pub(crate) fn ms(d: Duration) -> String {
         format!("{v:.1}ms")
     } else {
         format!("{v:.0}ms")
+    }
+}
+
+/// `label` and the wall time `a` was in progress, then `×N`, the average
+/// number of tasks doing it at once, when that is 1.5 or more.
+fn timed(label: &str, u: &Usage, a: Activity) -> String {
+    let (busy, active) = (u.busy(a), u.active(a));
+    if active.is_zero() {
+        return format!("{label} {}", short_dur(busy));
+    }
+    let tasks = busy.as_secs_f64() / active.as_secs_f64();
+    if tasks >= 1.5 {
+        format!("{label} {} ×{tasks:.1}", short_dur(active))
+    } else {
+        format!("{label} {}", short_dur(active))
     }
 }
 
@@ -142,19 +157,21 @@ pub fn render(s: &SessionSummary, width: usize) -> Vec<String> {
     rows("", &head, width, &mut out);
     let busy: Vec<String> = Activity::ALL
         .iter()
-        .filter(|a| !u.busy(**a).is_zero())
-        .map(|a| format!("{} {}", a.label(), short_dur(u.busy(*a))))
+        .filter(|a| **a != Activity::IndexWait && !u.busy(**a).is_zero())
+        .map(|a| timed(a.label(), u, *a))
         .collect();
     if !busy.is_empty() {
         rows("busy", &busy, width, &mut out);
     }
+    let mut waiting = Vec::new();
     if !u.peer_wait.is_zero() {
-        rows(
-            "waiting",
-            &[format!("peer {}", short_dur(u.peer_wait))],
-            width,
-            &mut out,
-        );
+        waiting.push(format!("peer {}", short_dur(u.peer_wait)));
+    }
+    if !u.busy(Activity::IndexWait).is_zero() {
+        waiting.push(timed("index lock", u, Activity::IndexWait));
+    }
+    if !waiting.is_empty() {
+        rows("waiting", &waiting, width, &mut out);
     }
 
     let (literal, matched) = (
@@ -178,7 +195,11 @@ pub fn render(s: &SessionSummary, width: usize) -> Vec<String> {
 
     let hashed = u.count(Counter::BytesHashed);
     if s.files_hashed > 0 || hashed > 0 {
-        let mut items = vec![format!("{} files", commas(s.files_hashed)), human(hashed)];
+        // A receiver checks chunks as they arrive, not whole files.
+        let mut items = vec![human(hashed)];
+        if s.files_hashed > 0 {
+            items.insert(0, format!("{} files", commas(s.files_hashed)));
+        }
         let busy = u.busy(Activity::Hash).as_secs_f64();
         if busy > 0.0 {
             items.push(format!("{}/s", human((hashed as f64 / busy) as u64)));
@@ -266,7 +287,12 @@ mod tests {
             (Activity::Delete, 1.3),
         ] {
             u.busy[a as usize] = secs(t);
+            u.active[a as usize] = secs(t);
         }
+        // Four hashers at once; three tasks queued on the index lock.
+        u.active[Activity::Hash as usize] = secs(37.1 / 4.0);
+        u.busy[Activity::IndexWait as usize] = secs(2.1);
+        u.active[Activity::IndexWait as usize] = secs(0.7);
         let gib = 1u64 << 30;
         let mib = 1u64 << 20;
         for (c, v) in [
@@ -313,8 +339,8 @@ mod tests {
         let want = vec![
             "session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect"
                 .to_string(),
-            "  busy      walk 21.0s  hash 37.1s  read 1:02  send 1:48  delete 1.3s".to_string(),
-            "  waiting   peer 44.0s".to_string(),
+            "  busy      walk 21.0s  hash 9.3s ×4.0  read 1:02  send 1:48  delete 1.3s".to_string(),
+            "  waiting   peer 44.0s  index lock 0.7s ×3.0".to_string(),
             format!("  transfer  1,882 files  {lit} literal  12.00G matched  {rate}/s"),
             format!("  hashing   2,107 files  15.30G  {hrate}/s"),
             "  disk      read 15.40G  write 0  fsync 0.0s".to_string(),
@@ -323,6 +349,32 @@ mod tests {
         ];
         assert_eq!(got, want);
         assert_eq!(lit, "3.41G");
+    }
+
+    #[test]
+    fn concurrency_shows_from_one_and_a_half_tasks() {
+        let mut u = Usage::default();
+        u.busy[Activity::Place as usize] = secs(269.0);
+        u.active[Activity::Place as usize] = secs(18.2);
+        u.busy[Activity::Write as usize] = secs(1.4);
+        u.active[Activity::Write as usize] = secs(1.0);
+        assert_eq!(timed("place", &u, Activity::Place), "place 18.2s ×14.8");
+        assert_eq!(timed("write", &u, Activity::Write), "write 1.0s");
+        // No wall time recorded (a meter that never ran its clocks): busy alone.
+        u.active[Activity::Write as usize] = Duration::ZERO;
+        assert_eq!(timed("write", &u, Activity::Write), "write 1.4s");
+    }
+
+    #[test]
+    fn receiver_hashing_has_no_file_count() {
+        let mut s = fixture();
+        s.files_hashed = 0;
+        let got = render(&s, 80);
+        let hrate = human((s.usage.count(Counter::BytesHashed) as f64 / 37.1) as u64);
+        assert!(
+            got.contains(&format!("  hashing   15.30G  {hrate}/s")),
+            "{got:#?}"
+        );
     }
 
     #[test]
@@ -335,6 +387,7 @@ mod tests {
         u.wall = Duration::from_secs(90_000);
         for a in Activity::ALL {
             u.busy[a as usize] = Duration::from_secs(80_000);
+            u.active[a as usize] = Duration::from_secs(20_000);
         }
         u.peer_wait = Duration::from_secs(80_000);
         for c in Counter::ALL {
@@ -354,7 +407,7 @@ mod tests {
             }
         }
         // Wrapping keeps every activity.
-        assert!(render(&s, 60).join("\n").contains("delete 22:13:20"));
+        assert!(render(&s, 60).join("\n").contains("delete 5:33:20 ×4.0"));
     }
 
     #[test]

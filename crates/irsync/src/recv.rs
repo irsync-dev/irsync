@@ -838,16 +838,25 @@ impl FileWriter {
         self.finalize_delay = delay;
     }
 
+    /// Whether `data` hashes to chunk `c`'s hash, timed as hashing.
+    fn verify(&self, c: &ChunkRecord, data: &[u8]) -> bool {
+        let _hashing = self.meter.as_deref().map(|m| m.start(Activity::Hash));
+        if let Some(m) = &self.meter {
+            m.add(Counter::BytesHashed, data.len() as u64);
+        }
+        *blake3::hash(data).as_bytes() == c.hash
+    }
+
     /// Verify `data` against chunk `idx` and write it at the chunk's offset.
     pub async fn write_chunk(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
         let c = *self.chunks.get(idx as usize).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
         })?;
         let meter = self.meter.clone();
-        let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
-        if data.len() != c.len as usize || *blake3::hash(data).as_bytes() != c.hash {
+        if data.len() != c.len as usize || !self.verify(&c, data) {
             return Err(invalid(format!("chunk {idx} does not match its hash")));
         }
+        let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
         #[cfg(feature = "test-hooks")]
         let inject = self.fail_at == Some(idx);
         #[cfg(not(feature = "test-hooks"))]

@@ -757,7 +757,7 @@ async fn finish_unit(
             let _ = events.send(Ev::Recv(Done::Ready {
                 file_id,
                 gen: route.gen,
-                writer,
+                writer: Box::new(writer),
             }));
         }
     } else if drained {

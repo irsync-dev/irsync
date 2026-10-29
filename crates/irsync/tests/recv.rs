@@ -119,6 +119,31 @@ async fn out_of_order_chunks_assemble_byte_exact() {
 }
 
 #[tokio::test]
+async fn received_chunks_are_timed_and_counted_as_hashing() {
+    use irsync::telemetry::meter::{Activity, Counter, Meter};
+    use irsync::telemetry::{Role, Side};
+    let e = env();
+    let data = content(3);
+    let cl = chunk_list(&data);
+    let meter = Meter::new(Side::Client, Role::Receiver, None, true);
+    let mut w = FileWriter::open_tracked(
+        &e.root,
+        &rel(),
+        &cl,
+        None,
+        e.index.clone(),
+        Default::default(),
+        Some(meter.clone()),
+    )
+    .unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    let u = meter.usage();
+    assert_eq!(u.count(Counter::BytesHashed), data.len() as u64);
+    assert!(!u.busy(Activity::Hash).is_zero());
+    assert!(!u.busy(Activity::Write).is_zero());
+}
+
+#[tokio::test]
 async fn finalize_rejects_hash_mismatch_and_leaves_no_final_file() {
     let e = env();
     let data = content(11);

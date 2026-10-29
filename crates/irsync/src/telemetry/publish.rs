@@ -54,7 +54,14 @@ pub fn describe() {
     describe_counter!(
         "irsync_busy_microseconds_total",
         Unit::Microseconds,
-        format!("Time spent per activity, peer_wait being time with none in progress{per_side}")
+        format!("Time spent per activity, summed over the tasks doing it, peer_wait being time with none in progress{per_side}")
+    );
+    describe_counter!(
+        "irsync_active_microseconds_total",
+        Unit::Microseconds,
+        format!(
+            "Wall time with at least one task doing each activity, of finished sessions{per_side}"
+        )
     );
     for (_, name, unit, help) in COUNTERS {
         describe_counter!(name, unit, format!("{help}{per_side}"));
@@ -169,6 +176,11 @@ pub fn once(side: Side) {
                 with("activity", a.label())
             )
             .absolute(micros(u.busy(a)));
+            metrics::counter!(
+                "irsync_active_microseconds_total",
+                with("activity", a.label())
+            )
+            .absolute(micros(u.active(a)));
         }
         metrics::counter!(
             "irsync_busy_microseconds_total",
@@ -235,6 +247,11 @@ mod tests {
                 MetricKind::Counter,
                 "irsync_busy_microseconds_total",
                 &[side_role[0], side_role[1], ("activity", "peer_wait")]
+            ));
+            assert!(has(
+                MetricKind::Counter,
+                "irsync_active_microseconds_total",
+                &[side_role[0], side_role[1], ("activity", "index_wait")]
             ));
             for (_, name, ..) in COUNTERS {
                 assert!(has(MetricKind::Counter, name, &side_role), "{name}");

@@ -34,7 +34,8 @@ Counters:
 
 | Name | Unit | Extra labels | Meaning |
 | --- | --- | --- | --- |
-| `irsync_busy_microseconds_total` | microseconds | `activity` | Time spent per activity: `walk`, `plan`, `hash`, `read`, `send`, `recv`, `write`, `place`, `delete`, and `peer_wait`. See [Busy time](#busy-time-and-peer-wait). |
+| `irsync_busy_microseconds_total` | microseconds | `activity` | Time spent per activity, summed over tasks: `walk`, `plan`, `hash`, `read`, `send`, `recv`, `write`, `place`, `delete`, `index_wait`, and `peer_wait`. See [Busy time](#busy-time-and-peer-wait). |
+| `irsync_active_microseconds_total` | microseconds | `activity` | Wall time with at least one task doing each activity (no `peer_wait`), added when a session ends. |
 | `irsync_sessions_total` | count | `outcome` | Sessions ended: `ok`, `partial`, `failed`, `max_delete`. Counts connection attempts: a client session that reconnects counts `failed` and then `ok`. |
 | `irsync_files_total` | count | `result` | `transferred`, `skipped`, `failed`, `created`. |
 | `irsync_entries_listed_total` | count | `kind` | Source entries listed: `regular`, `directory`, `symlink`, `special`. |
@@ -49,7 +50,7 @@ Counters:
 | `irsync_reconnects_total` | count | `reason` | Client reconnects: `dial` (no connection yet) or `lost`. |
 | `irsync_quic_lost_packets_total` | count | | QUIC packets lost, sampled once a second. |
 
-The busy-time and `irsync_bytes_*`/`irsync_files_hashed_total`/disk counters
+The busy-time, active-time and `irsync_bytes_*`/`irsync_files_hashed_total`/disk counters
 are process-wide meters, published once a second and at exit, so they
 aggregate across the exports a daemon serves and carry no `export` label.
 
@@ -91,11 +92,25 @@ every task.
   no local work and is waiting for the peer.
 - An activity that runs on the other side (for example `plan` on a push,
   where the daemon plans) shows up here as `peer_wait`, not as plan time.
+- `index_wait` is time spent waiting for the index lock while another task
+  holds it. The index is one SQLite database per root behind one lock, and
+  the waiting task's own activity (`plan` for a rename lookup, `write` or
+  `place` for saving progress) counts the same time too.
+- `hash` on a receiver is the check of each arriving chunk against its hash,
+  as well as hashing existing files.
 
 Busy times can add up to more than the wall time: files are hashed, sent and
 written in parallel, so ten workers busy for one second each count ten
 seconds. They say where the work is, not how long the run took. `peer_wait`
 is the only one that cannot overlap the others.
+
+`irsync_active_microseconds_total{activity}` is the other half: the wall time
+during which at least one task was doing the activity, so it never exceeds
+the wall time. Busy divided by active is how many tasks did it at once, on
+average. The `-v` summary shows the active time, followed by `×N` when that
+average is 1.5 or more: `place 18.2s ×14.8` is 18.2 s of the run during which
+about fifteen files were being placed at a time. `index_wait` appears there
+as `index lock` on the `waiting` line.
 
 ## Spans
 

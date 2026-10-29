@@ -667,6 +667,7 @@ pub(super) async fn run_client_inner(
         None,
         telemetry::enabled(),
     );
+    let index = local.index.metered(meter.clone());
     // Every file this side actually reads is reported on the bus.
     let on_hash: HashProgress = {
         let bus = local.hooks.bus.clone();
@@ -679,7 +680,7 @@ pub(super) async fn run_client_inner(
     // compares is read.
     let hasher = if opts.checksum {
         Arc::new(
-            Hasher::new(local.index.clone(), local.root.clone(), HASH_WORKERS)
+            Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
                 .with_force(true)
                 .with_activity(activity.clone())
                 .with_progress(on_hash.clone())
@@ -694,7 +695,7 @@ pub(super) async fn run_client_inner(
         )
     };
     let forced = Arc::new(
-        Hasher::new(local.index.clone(), local.root.clone(), 1)
+        Hasher::new(index.clone(), local.root.clone(), 1)
             .with_force(true)
             .with_activity(activity.clone())
             .with_progress(on_hash)
@@ -718,7 +719,7 @@ pub(super) async fn run_client_inner(
         rerequests: local.hooks.rerequests.clone(),
         base: local.root.clone(),
         root: local.root,
-        scope: IndexScope::new(local.index, RelPath::root()),
+        scope: IndexScope::new(index, RelPath::root()),
         hasher,
         forced,
         cold: Arc::default(),
@@ -1024,6 +1025,7 @@ async fn serve_daemon_inner(
         Some(&export_name),
         telemetry::enabled(),
     );
+    let index = index.metered(meter.clone());
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
     let hasher = Arc::new(

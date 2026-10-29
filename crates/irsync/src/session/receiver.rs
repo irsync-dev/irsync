@@ -92,7 +92,7 @@ pub(super) enum Done {
     Ready {
         file_id: u64,
         gen: u32,
-        writer: FileWriter,
+        writer: Box<FileWriter>,
     },
     Finalized {
         file_id: u64,
@@ -560,7 +560,7 @@ impl Receiver {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&file_id);
                 match digest {
-                    Some(d) => self.spawn_finalize(file_id, gen, writer, d),
+                    Some(d) => self.spawn_finalize(file_id, gen, *writer, d),
                     None => {
                         let msg = "internal: no digest for a ready file".to_string();
                         self.fail(file_id, Some(Status::WriteError), msg).await;

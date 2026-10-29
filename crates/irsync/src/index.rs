@@ -3,13 +3,14 @@
 //! transactions around every multi-statement write.
 
 use crate::fs::paths::RelPath;
+use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{FileEntry, Hash, RangeSet};
 use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -34,8 +35,45 @@ pub enum IndexError {
 
 pub type Result<T> = std::result::Result<T, IndexError>;
 
-/// Shared handle; async callers lock it inside `spawn_blocking`.
-pub type IndexHandle = Arc<Mutex<Index>>;
+/// Shared handle; async callers lock it inside `spawn_blocking`. A handle
+/// with a meter times the waits for a lock another task holds as
+/// [`Activity::IndexWait`].
+#[derive(Clone)]
+pub struct IndexHandle {
+    inner: Arc<Mutex<Index>>,
+    meter: Option<Arc<Meter>>,
+}
+
+impl IndexHandle {
+    pub fn new(index: Index) -> IndexHandle {
+        IndexHandle {
+            inner: Arc::new(Mutex::new(index)),
+            meter: None,
+        }
+    }
+
+    /// The same index, its lock waits timed on `meter`.
+    pub fn metered(&self, meter: Arc<Meter>) -> IndexHandle {
+        IndexHandle {
+            inner: self.inner.clone(),
+            meter: Some(meter),
+        }
+    }
+
+    pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, Index>> {
+        self.inner.try_lock()
+    }
+
+    pub fn lock(&self) -> LockResult<MutexGuard<'_, Index>> {
+        match self.inner.try_lock() {
+            Ok(g) => return Ok(g),
+            Err(TryLockError::Poisoned(e)) => return Err(e),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        let _waiting = self.meter.as_deref().map(|m| m.start(Activity::IndexWait));
+        self.inner.lock()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexEntry {
@@ -166,7 +204,7 @@ impl Index {
     }
 
     pub fn into_handle(self) -> IndexHandle {
-        Arc::new(Mutex::new(self))
+        IndexHandle::new(self)
     }
 
     fn init(&mut self) -> Result<()> {

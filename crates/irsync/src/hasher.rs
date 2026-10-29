@@ -131,7 +131,9 @@ impl Hasher {
     }
 
     /// Meter every file actually read (not a cache hit) into `m`.
+    /// Time this hasher's work, and its waits for the index lock, on `m`.
     pub fn with_meter(mut self, m: Arc<Meter>) -> Self {
+        self.index = self.index.metered(m.clone());
         self.meter = Some(m);
         self
     }
