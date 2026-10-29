@@ -1,6 +1,6 @@
 # Telemetry: one set of spans and metrics, three sinks
 
-Date: 2026-10-29. Status: implemented 2026-10-29; plan docs/superpowers/plans/2026-10-29-telemetry.md
+Date: 2026-10-29. Status: implemented 2026-10-29; plan docs/superpowers/plans/2026-10-29-telemetry.md.
 
 ## Intent
 

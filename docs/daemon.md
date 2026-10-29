@@ -80,7 +80,7 @@ An export's index is opened, and its hourly collection and `warm_index`
 warm-up started, when the export is first used: at startup for exports already
 in the file, on the first connection naming it for one added later. Exports
 with the same path share an index. A removed export cannot be connected to,
-but keeps its index and collection task until the daemon restarts. 
+but keeps its index and collection task until the daemon restarts. Changing
 `warm_index` on a running export takes effect at restart.
 
 ## A system-wide daemon
