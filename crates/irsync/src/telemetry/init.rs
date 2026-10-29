@@ -216,6 +216,7 @@ where
     if installed {
         publish::describe();
     }
+    super::set_exporting(cfg.otlp.is_some());
     super::set_enabled(cfg.summary || cfg.debug_addr.is_some() || cfg.otlp.is_some());
     let prometheus = handle.filter(|_| installed);
     let routes = state.map(|(timing, flame)| Routes {

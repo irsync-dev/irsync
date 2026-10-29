@@ -253,3 +253,12 @@ fn dead_collector_does_not_delay_much() {
         "{dead:?} against {normal:?} without export"
     );
 }
+
+#[test]
+fn no_trace_context_without_otel() {
+    // No exporting layer in this binary: nothing to put in `Hello`.
+    assert_eq!(
+        irsync::telemetry::inject(&tracing::info_span!("session")),
+        (String::new(), String::new())
+    );
+}

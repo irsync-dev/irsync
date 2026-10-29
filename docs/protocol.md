@@ -65,6 +65,9 @@ One QUIC connection carries:
   daemon refuses one that is absolute or leaves the destination. Each
   `FileEntry` names its owner and group as the sender knows them; the
   receiver maps the names to its own ids unless `Hello.numeric_ids`.
+  `Hello.traceparent` and `Hello.tracestate` carry the client's W3C trace
+  context (empty: no trace); a daemon exporting traces makes its `session`
+  span a child of it.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

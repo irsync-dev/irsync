@@ -78,6 +78,19 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+static EXPORTING: AtomicBool = AtomicBool::new(false);
+
+/// Records whether this process exports traces over OTLP.
+pub fn set_exporting(on: bool) {
+    EXPORTING.store(on, Ordering::Relaxed);
+}
+
+/// Whether this process exports traces over OTLP, and so honours the trace
+/// context a client sends.
+pub fn exporting() -> bool {
+    EXPORTING.load(Ordering::Relaxed)
+}
+
 /// The labels every irsync metric carries: `side`, `role` and, on the
 /// daemon, `export`.
 pub fn labels(side: Side, role: Role, export: Option<&str>) -> Vec<metrics::Label> {

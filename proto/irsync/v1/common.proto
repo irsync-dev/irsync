@@ -89,6 +89,10 @@ message Hello {
   // --numeric-ids: a receiving daemon applies the ids as sent instead of
   // mapping the owner and group names to its own ids.
   bool numeric_ids = 25;
+  // The client's W3C trace context (`traceparent`, `tracestate`) so the
+  // daemon's session joins the client's trace; empty means no trace.
+  string traceparent = 26;
+  string tracestate = 27;
 }
 // One export the asking key may use.
 message ExportEntry {

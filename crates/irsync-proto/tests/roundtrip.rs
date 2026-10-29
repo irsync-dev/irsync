@@ -52,6 +52,8 @@ fn hello_roundtrips() {
         ],
         partial_dir: b".p".to_vec(),
         numeric_ids: true,
+        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
+        tracestate: "k=v".into(),
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

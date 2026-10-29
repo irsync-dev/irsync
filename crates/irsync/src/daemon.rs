@@ -276,10 +276,11 @@ impl Daemon {
                 inc = self.endpoint.accept() => {
                     let Some(inc) = inc else { break };
                     let shared = self.shared.clone();
+                    let local_id = self.endpoint.id().to_string();
                     let live = Live::enter(&live);
                     tokio::spawn(async move {
                         let _live = live;
-                        if let Err(e) = handle(shared, inc).await {
+                        if let Err(e) = handle(shared, inc, local_id).await {
                             tracing::warn!("connection failed: {e:#}");
                         }
                     });
@@ -435,7 +436,7 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
     });
 }
 
-async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
+async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: String) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
     // Authorise on the verified key, against a fresh read of the grants,
     // before touching any stream. An unreadable config fails closed.
@@ -509,7 +510,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
                 export: name,
                 rel,
             };
-            let res = serve_daemon(conn, send, recv, place, hello, index, hosting).await;
+            let res = serve_daemon(conn, send, recv, place, hello, index, hosting, local_id).await;
             #[cfg(feature = "test-hooks")]
             {
                 use std::sync::atomic::Ordering::SeqCst;

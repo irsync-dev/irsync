@@ -606,6 +606,8 @@ pub(super) async fn run_client_inner(
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     check_options(direction, opts)?;
     set_hello_options(&mut hello, opts, &local.filters);
+    // The client `session` span is current: the daemon's joins its trace.
+    (hello.traceparent, hello.tracestate) = telemetry::inject(&tracing::Span::current());
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
 
     let sends = direction == Direction::ClientSends;
@@ -795,6 +797,7 @@ pub struct Place {
 }
 
 /// `HelloAck` and plays the role opposite to the client's.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_daemon(
     conn: Connection,
     send: SendStream,
@@ -803,15 +806,21 @@ pub async fn serve_daemon(
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
+    local_id: String,
 ) -> anyhow::Result<Outcome> {
     // A root span: the daemon's session never inherits an in-process parent
-    // (in tests the client runs in the same process).
+    // (in tests the client runs in the same process); it joins the client's
+    // trace only through the context in `Hello`, when export is on.
     let span = session_span(
         Side::Daemon,
         &hello,
         conn.remote_id().fmt_short().to_string(),
         0,
+        &local_id,
     );
+    if telemetry::exporting() {
+        telemetry::set_parent(&span, &hello.traceparent, &hello.tracestate);
+    }
     let _active = telemetry::hold("irsync_sessions_active", || {
         telemetry::labels(
             Side::Daemon,
@@ -835,6 +844,7 @@ pub(super) fn session_span(
     hello: &Hello,
     peer: String,
     source_index: usize,
+    endpoint_id: &str,
 ) -> tracing::Span {
     let direction = Direction::try_from(hello.direction).unwrap_or(Direction::ClientSends);
     tracing::info_span!(
@@ -844,6 +854,7 @@ pub(super) fn session_span(
         direction = ?direction,
         side = side.label(),
         role = role_of(side, hello.direction).label(),
+        endpoint_id,
         peer = %peer,
         resumed = tracing::field::Empty,
         source_index,
