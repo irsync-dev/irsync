@@ -219,21 +219,31 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     rt.block_on(async {
         telemetry.flush();
         if let (Some(addr), false) = (debug_port, opts.debug_no_wait) {
+            // Listen before saying so: a signal sent on seeing the line ends the wait.
+            let signals = exit_signals();
             eprintln!("irsync: debug port open at {addr}; Ctrl-C to exit");
-            wait_for_signal().await;
+            wait_for_signal(signals).await;
         }
         telemetry.shutdown().await;
     });
     code
 }
 
-/// Returns on SIGINT or SIGHUP.
-async fn wait_for_signal() {
+/// SIGINT's and SIGHUP's streams.
+type ExitSignals = (tokio::signal::unix::Signal, tokio::signal::unix::Signal);
+
+/// Listens for SIGINT and SIGHUP; `None` when that cannot be set up.
+fn exit_signals() -> Option<ExitSignals> {
     use tokio::signal::unix::{signal, SignalKind};
-    let (Ok(mut int), Ok(mut hup)) = (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::hangup()),
-    ) else {
+    Some((
+        signal(SignalKind::interrupt()).ok()?,
+        signal(SignalKind::hangup()).ok()?,
+    ))
+}
+
+/// Returns on SIGINT or SIGHUP from `signals`; at once when there are none.
+async fn wait_for_signal(signals: Option<ExitSignals>) {
+    let Some((mut int, mut hup)) = signals else {
         return;
     };
     tokio::select! {
@@ -872,6 +882,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         }
     };
     let settings = early_settings(d.config.as_deref());
+    let debug_addr = settings.daemon.debug_socket();
     let mut telemetry = {
         let _rt = rt.enter();
         init_telemetry(
@@ -879,7 +890,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
                 side: Side::Daemon,
                 log_default: daemon_log_default(d.log.verbose, d.log.quiet).to_string(),
                 summary: false,
-                debug_addr: settings.daemon.debug_socket(),
+                debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
                 trace_files: trace_files_from_env(),
             },
@@ -894,7 +905,9 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             let debug = match telemetry.start().await {
                 Ok(bound) => bound,
                 Err(e) => {
-                    tracing::warn!("debug port: {e}");
+                    if let Some(a) = debug_addr {
+                        tracing::warn!("debug port {a}: {e}");
+                    }
                     None
                 }
             };
