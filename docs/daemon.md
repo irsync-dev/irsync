@@ -80,7 +80,7 @@ An export's index is opened, and its hourly collection and `warm_index`
 warm-up started, when the export is first used: at startup for exports already
 in the file, on the first connection naming it for one added later. Exports
 with the same path share an index. A removed export cannot be connected to,
-but keeps its index and collection task until the daemon restarts. Changing
+but keeps its index and collection task until the daemon restarts. 
 `warm_index` on a running export takes effect at restart.
 
 ## A system-wide daemon
@@ -205,6 +205,24 @@ Logs go to stderr (journald and the launchd `StandardErrorPath` capture it).
 The default level is `info`; `-v` raises it to `debug`, `-vv` to `trace`, and
 `RUST_LOG` (standard `tracing` filter syntax, e.g. `RUST_LOG=irsync=debug`)
 overrides both.
+
+## Telemetry
+
+Two `[daemon]`/`[telemetry]` settings turn the daemon's telemetry on; both are
+off by default (see [telemetry.md](telemetry.md) for what they serve):
+
+```toml
+[daemon]
+debug_addr = "127.0.0.1:9464"   # PORT or IP:PORT; /metrics, /debug/timing, /debug/flame
+
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4318"   # OTLP export of spans and metrics
+otlp_protocol = "http"                    # or "grpc"
+```
+
+`debug_addr` is an unauthenticated plain-HTTP port: keep it on loopback or
+behind a firewall. `[telemetry]` applies to the client as well, and the
+standard `OTEL_EXPORTER_OTLP_*` environment variables win over it.
 
 ## Idle connections
 

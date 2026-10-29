@@ -1,6 +1,6 @@
 # Telemetry: one set of spans and metrics, three sinks
 
-Date: 2026-10-29. Status: design approved 2026-10-29; plan to follow.
+Date: 2026-10-29. Status: implemented 2026-10-29; plan docs/superpowers/plans/2026-10-29-telemetry.md
 
 ## Intent
 
@@ -75,7 +75,9 @@ requests files mid-walk, and `--delete-during` deletes as it goes. So:
 - An activity that runs on the other side (e.g. `plan` on a push, where
   the daemon plans) is shown on this side as waiting, not as plan time.
 
-The metric is `irsync_busy_seconds_total{activity}` (a counter), with
+The metric is `irsync_busy_seconds_total{activity}` (a counter; as built,
+`irsync_busy_microseconds_total`, in microseconds, because the `metrics`
+crate has only `u64` counters), with
 `activity` in walk/plan/hash/read/send/recv/write/place/delete/peer_wait.
 
 

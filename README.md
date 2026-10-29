@@ -304,6 +304,15 @@ daily, or sooner once a partial file has been left untouched for an hour), and
 the daemon checks hourly but walks an export at most daily unless collectable
 partial files are waiting.
 
+## Seeing where time goes
+
+`-v` ends each session with a summary of wall time, busy time per activity
+(walk, hash, send, write, waiting on the peer), CPU, memory and wire bytes.
+`--debug-addr 9464` serves Prometheus metrics, span timings and flamegraph
+input over HTTP, and setting `OTEL_EXPORTER_OTLP_ENDPOINT` exports traces and
+metrics over OpenTelemetry. All three are off by default and add no
+measurable cost when off. See [docs/telemetry.md](docs/telemetry.md).
+
 ## Known limitations in version one
 
 - The daemon drops an authenticated connection that has been idle (no traffic
