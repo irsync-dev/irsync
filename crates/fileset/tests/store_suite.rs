@@ -93,20 +93,33 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
     assert_eq!(s.meta().unwrap(), m2);
     s.close().unwrap();
 
+    // create refuses what exists
+    let err = store::open(&p, backend, OpenMode::Create).err().unwrap();
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(
+        store::open(&p, backend, OpenMode::ReadOnly)
+            .unwrap()
+            .meta()
+            .unwrap(),
+        m2
+    );
+
     // reopen read-only
     let s = open(&p, OpenMode::ReadOnly);
     assert!(s.get(b"a/c").unwrap().is_some());
     assert!(!s.meta().unwrap().unfinished);
     s.close().unwrap();
 
-    // newer schema is refused
+    // newer schema is refused, for reading and for writing
     let mut s = open(&p, OpenMode::ReadWrite);
     let mut m3 = m2.clone();
     m3.schema_version = SCHEMA_VERSION + 1;
     s.set_meta(&m3).unwrap();
     s.close().unwrap();
-    let err = store::open(&p, backend, OpenMode::ReadOnly).err().unwrap();
-    assert!(err.to_string().contains("newer"), "{err}");
+    for mode in [OpenMode::ReadOnly, OpenMode::ReadWrite] {
+        let err = store::open(&p, backend, mode).err().unwrap();
+        assert!(err.to_string().contains("newer"), "{mode:?}: {err}");
+    }
 }
 
 #[test]

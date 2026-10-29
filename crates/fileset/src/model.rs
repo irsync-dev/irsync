@@ -289,6 +289,56 @@ mod tests {
     }
 
     #[test]
+    fn from_path_keeps_setuid_setgid_and_sticky_bits() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("f");
+        std::fs::write(&f, b"").unwrap();
+        std::fs::set_permissions(&f, PermissionsExt::from_mode(0o4755)).unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::set_permissions(&sub, PermissionsExt::from_mode(0o3755)).unwrap();
+        for (p, want) in [(f, 0o4755), (sub, 0o3755)] {
+            let md = std::fs::symlink_metadata(&p).unwrap();
+            if md.mode() & 0o7777 != want {
+                eprintln!("skipping: this filesystem does not keep mode {want:o}");
+                return;
+            }
+            assert_eq!(Entry::from_path(&p).unwrap().0.mode, want);
+        }
+    }
+
+    #[test]
+    fn from_path_fifo_socket_and_char_device_kinds() {
+        let d = tempfile::tempdir().unwrap();
+        let fifo = d.path().join("p");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(Entry::from_path(&fifo).unwrap().0.kind, Kind::Fifo);
+        let sock = d.path().join("s");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert_eq!(Entry::from_path(&sock).unwrap().0.kind, Kind::Socket);
+        let (null, _) = Entry::from_path(Path::new("/dev/null")).unwrap();
+        assert_eq!(null.kind, Kind::CharDev);
+        assert_ne!(null.rdev, 0, "a device records its device number");
+        assert!(null.target.is_none() && null.blake3.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn from_path_non_utf8_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(OsStr::from_bytes(b"bad\xff"));
+        std::fs::write(&p, b"abc").unwrap();
+        let e = Entry::from_path(&p).unwrap().0;
+        assert_eq!(e.kind, Kind::File);
+        assert_eq!(e.size, 3);
+    }
+
+    #[test]
     fn from_path_symlink_records_target_not_dest() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("l");

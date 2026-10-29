@@ -362,6 +362,89 @@ mod tests {
         assert_eq!(skipped, strs(&["d"]));
     }
 
+    /// Every directory below the root looks like another filesystem when the walk is told a
+    /// device number the tree is not on.
+    fn walk_from_foreign_device(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>, Vec<Vec<u8>>) {
+        let (root, _) = Entry::from_path(&cfg.root).unwrap();
+        let mut entries = Vec::new();
+        let mut warnings = Vec::new();
+        let mut skipped = Vec::new();
+        walk_dir(cfg, root.dev.wrapping_add(1), &cfg.root, b".", &mut |ev| {
+            match ev {
+                WalkEvent::Entry(o) => entries.push(o),
+                WalkEvent::Warning(w) => warnings.push(w),
+                WalkEvent::NestedManifest(p) => warnings.push(nested_manifest_warning(&p)),
+                WalkEvent::NotDescended(p) => skipped.push(p),
+            }
+            Ok(())
+        })
+        .unwrap();
+        (entries, warnings, skipped)
+    }
+
+    #[test]
+    fn walk_does_not_cross_mount_points_unless_asked() {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join("d")).unwrap();
+        std::fs::write(r.join("d/f"), b"").unwrap();
+        std::fs::write(r.join("e"), b"").unwrap();
+        let (e, w, skipped) = walk_from_foreign_device(&cfg(&r, None));
+        // The mount point itself is recorded; nothing below it is.
+        assert_eq!(paths(&e), strs(&["d", "e"]));
+        assert_eq!(w, vec!["not crossing mount point at d".to_string()]);
+        assert_eq!(skipped, strs(&["d"]));
+
+        let mut crossing = cfg(&r, None);
+        crossing.cross_mount_points = true;
+        let (e, w, skipped) = walk_from_foreign_device(&crossing);
+        assert_eq!(paths(&e), strs(&["d", "d/f", "e"]));
+        assert!(w.is_empty(), "{w:?}");
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn walk_unstatable_entry_warns_and_reports_not_descended() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join("d")).unwrap();
+        std::fs::write(r.join("d/f"), b"").unwrap();
+        // Listable but not searchable: the names are readable, the entries cannot be stat'ed.
+        let mode = |m| std::fs::set_permissions(r.join("d"), std::fs::Permissions::from_mode(m));
+        mode(0o644).unwrap();
+        if std::fs::symlink_metadata(r.join("d/f")).is_ok() {
+            mode(0o755).unwrap();
+            eprintln!("skipping: running with privileges that bypass directory permissions");
+            return;
+        }
+        let (e, mut w, skipped) = run_all(&cfg(&r, None));
+        mode(0o755).unwrap();
+        if cfg!(target_os = "macos") {
+            w.retain(|m| !m.starts_with("cannot read xattrs of "));
+        }
+        assert_eq!(paths(&e), strs(&[".", "d"]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("cannot stat d/f: "), "{}", w[0]);
+        assert_eq!(skipped, strs(&["d/f"]));
+    }
+
+    #[test]
+    fn walk_unsorted_visits_the_same_entries() {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        for n in ["c", "a", "b"] {
+            std::fs::write(r.join(n), b"").unwrap();
+        }
+        let mut unsorted = cfg(&r, None);
+        unsorted.sort = false;
+        let (e, w) = run(&unsorted);
+        let mut got = paths(&e);
+        got.sort();
+        assert_eq!(got, strs(&[".", "a", "b", "c"]));
+        assert!(w.is_empty());
+    }
+
     #[test]
     fn walk_symlink_not_followed() {
         let t = tempfile::tempdir().unwrap();

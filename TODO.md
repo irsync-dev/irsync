@@ -42,10 +42,11 @@ Rough cost next to each. The last two are not things to fix.
 ## fileset: deferred findings
 
 `docs/superpowers/plans/2026-10-19-fileset-deferred.md` is the ledger of
-minors deferred from the fileset reviews. Everything user-visible in it has
-since been fixed (2026-10-29). What remains is internal:
+minors deferred from the fileset reviews. Everything in it has since been
+fixed or covered by a test (2026-10-29), except two that need what the code
+does not have yet:
 
-- [ ] Missing tests listed per task in that file (schema migration paths,
-      mount-point non-crossing, relative `--manifest`, and others).
-- [ ] Two duplicated blocks: the setup shared by `update` and `check`, and
-      the "cannot read directory" format string in the walk.
+- [ ] A test for the once-only "cannot read directory" warning on a `readdir`
+      that fails mid-listing: needs fault injection into the walk.
+- [ ] A test for a SQLite manifest migrating from an older schema: needs a
+      second schema version to exist.

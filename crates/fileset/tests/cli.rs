@@ -56,6 +56,89 @@ fn check_rejects_relaxed_with_paranoid() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
 }
 
+#[test]
+fn jobs_must_be_at_least_one() {
+    let out = bin().args(["check", "-j", "0", "."]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("0 is not in 1..") && e.contains("--jobs"), "{e}");
+}
+
+#[test]
+fn every_common_flag_parses() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let m = d.path().join("m.sqlite");
+    let flags: [&std::ffi::OsStr; 7] = [
+        "--fail-on-warnings".as_ref(),
+        "--cross-mount-points".as_ref(),
+        "--no-dir-sort".as_ref(),
+        "-j".as_ref(),
+        "2".as_ref(),
+        "--manifest".as_ref(),
+        m.as_os_str(),
+    ];
+    for verb in ["init", "update", "check"] {
+        let out = bin()
+            .arg(verb)
+            .args(flags)
+            .args(["--quiet".as_ref(), t.as_os_str()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{verb}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(m.is_file());
+}
+
+#[test]
+fn every_field_name_is_accepted_by_ignore_and_require() {
+    let d = tree();
+    let t = d.path().join("tree");
+    assert_eq!(code(&["init".as_ref(), t.as_os_str()]), 0);
+    let fields = [
+        "blake3", "target", "rdev", "mode", "mtime", "size", "uid", "gid", "nlink", "xattr",
+    ];
+    for (flag, tier) in [("--ignore", "--paranoid"), ("--require", "--relaxed")] {
+        let mut cmd = bin();
+        cmd.args(["check", tier]);
+        for f in fields {
+            cmd.args([flag, f]);
+        }
+        let out = cmd.arg(&t).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{flag}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn cli_relative_manifest_inside_the_tree_is_the_store_not_content() {
+    let d = tree();
+    let run = |verb: &str| {
+        let out = bin()
+            .current_dir(d.path())
+            .args([verb, "--manifest", "tree/m.sqlite", "tree"])
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    };
+    assert_eq!(run("init").0, Some(0));
+    // Were the manifest taken for content, its own writes would show as a change.
+    assert_eq!(run("update").0, Some(0));
+    assert_eq!(run("check"), (Some(0), String::new()));
+}
+
 fn tree() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir(d.path().join("tree")).unwrap();

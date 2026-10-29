@@ -375,6 +375,126 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_zero_jobs_still_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, b"data").unwrap();
+        let mut seen = Vec::new();
+        run(
+            0,
+            move |emit: &mut dyn FnMut(WalkEvent) -> anyhow::Result<()>| {
+                emit(WalkEvent::Entry(observed(&p, "f")))
+            },
+            |_obs: &mut Observed| Decision::Hash,
+            |ev| {
+                seen.push(ev);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let WalkEvent::Entry(obs) = &seen[0] else {
+            panic!("expected entry, got {:?}", seen[0]);
+        };
+        assert_eq!(obs.entry.blake3, Some(*blake3::hash(b"data").as_bytes()));
+    }
+
+    #[test]
+    fn pipeline_producer_error_with_hashes_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, vec![0u8; 1 << 20]).unwrap();
+        let mut delivered = 0;
+        let err = run(
+            2,
+            move |emit: &mut dyn FnMut(WalkEvent) -> anyhow::Result<()>| {
+                for i in 0..100 {
+                    emit(WalkEvent::Entry(observed(&p, &format!("f{i}"))))?;
+                }
+                anyhow::bail!("walk died")
+            },
+            |_obs: &mut Observed| Decision::Hash,
+            |_ev| {
+                delivered += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("walk died"), "{err:#}");
+        // Everything emitted before the failure is still delivered, in order, hashed.
+        assert_eq!(delivered, 100);
+    }
+
+    #[test]
+    fn pipeline_reorder_window_bounds_what_waits_behind_a_slow_hash() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, b"x").unwrap();
+        let total = 4 * (JOB_CAPACITY + WALK_CAPACITY);
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let counted = emitted.clone();
+        // How far the walk got while the hash held everything back (a panic inside the
+        // hash would only mark the entry unreadable, so the check happens outside).
+        let ahead = Arc::new(AtomicUsize::new(0));
+        let report = ahead.clone();
+        let jobs = 2;
+        let mut seen = 0;
+        run_with(
+            jobs,
+            move |emit: &mut dyn FnMut(WalkEvent) -> anyhow::Result<()>| {
+                for i in 0..total {
+                    emit(WalkEvent::Entry(observed(&p, &format!("f{i}"))))?;
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            // Only the first entry is hashed; the rest skip straight to the reorder buffer.
+            |obs: &mut Observed| {
+                if obs.path == b"f0" {
+                    Decision::Hash
+                } else {
+                    Decision::Skip
+                }
+            },
+            |_ev| {
+                seen += 1;
+                Ok(())
+            },
+            |path: &Path| {
+                // The one hash holds everything behind it: wait until the walk stops
+                // being fed, then check how much was taken in.
+                let mut last = emitted.load(Ordering::SeqCst);
+                let mut stable_since = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let now = emitted.load(Ordering::SeqCst);
+                    if now != last {
+                        last = now;
+                        stable_since = Instant::now();
+                    } else if stable_since.elapsed() > Duration::from_millis(400) {
+                        break;
+                    }
+                }
+                report.store(last, Ordering::SeqCst);
+                crate::hash::hash_file(path)
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, total);
+        // Taken by the consumer: at most the window. Buffered in the walk channel: at
+        // most its capacity, plus the one send that blocks.
+        let bound = (JOB_CAPACITY + jobs) + WALK_CAPACITY + 1;
+        let ahead = ahead.load(Ordering::SeqCst);
+        assert!(
+            ahead <= bound,
+            "walk ran {ahead} entries ahead, bound is {bound}"
+        );
+        assert!(ahead > 0, "the hash never saw the walk run");
+    }
+
+    #[test]
     fn pipeline_propagates_producer_error() {
         let err = run(
             2,

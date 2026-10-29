@@ -318,6 +318,100 @@ mod tests {
     }
 
     #[test]
+    fn locate_manifest_file_is_sqlite() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let m = root.join("m");
+        std::fs::write(&m, b"").unwrap();
+        let loc = locate(&root, Some(&m), None, false).unwrap();
+        assert_eq!(
+            loc,
+            Location {
+                backend: Backend::Sqlite,
+                path: m,
+                exists: true
+            }
+        );
+    }
+
+    #[test]
+    fn locate_manifest_through_a_symlink_reads_the_kind_behind_it() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        std::fs::write(root.join("file"), b"").unwrap();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("file"), root.join("to_file")).unwrap();
+        std::os::unix::fs::symlink(root.join("dir"), root.join("to_dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
+        let backend = |name: &str| locate(&root, Some(&root.join(name)), None, true);
+        assert_eq!(backend("to_file").unwrap().backend, Backend::Sqlite);
+        assert_eq!(backend("to_dir").unwrap().backend, Backend::Fjall);
+        // The link is there, so it is not "missing"; what it points at cannot be read.
+        let err = backend("dangling").unwrap_err().to_string();
+        assert!(err.starts_with("cannot stat manifest "), "{err}");
+    }
+
+    #[test]
+    fn locate_manifest_that_is_neither_file_nor_dir_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let m = root.join("p");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&m)
+            .status()
+            .unwrap()
+            .success());
+        let err = locate(&root, Some(&m), None, true).unwrap_err().to_string();
+        assert!(err.contains("neither a file nor a directory"), "{err}");
+    }
+
+    #[test]
+    fn locate_missing_manifest_for_update_takes_the_requested_backend() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let m = root.join("new");
+        let loc = locate(&root, Some(&m), None, true).unwrap();
+        assert_eq!((loc.backend, loc.exists), (Backend::Sqlite, false));
+        assert_eq!(loc.path, m);
+        let loc = locate(&root, Some(&m), Some(Backend::Fjall), true).unwrap();
+        assert_eq!((loc.backend, loc.exists), (Backend::Fjall, false));
+        assert!(!m.exists(), "locate must not create anything");
+    }
+
+    #[test]
+    fn store_path_inside_finds_a_manifest_below_the_root() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        std::fs::create_dir(root.join("sub")).unwrap();
+        let m = root.join("sub/m.sqlite");
+        let loc = locate(&root, Some(&m), None, true).unwrap();
+        assert_eq!(store_path_inside(&root, &loc), Some(m));
+    }
+
+    #[test]
+    fn store_path_inside_does_not_take_a_sibling_name_prefix_for_the_root() {
+        let d = tempfile::tempdir().unwrap();
+        let base = canon(&d);
+        let root = base.join("a");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(base.join("ab")).unwrap();
+        let m = base.join("ab/m.sqlite");
+        let loc = locate(&root, Some(&m), None, true).unwrap();
+        assert_eq!(store_path_inside(&root, &loc), None);
+    }
+
+    #[test]
+    fn store_path_inside_resolves_a_relative_manifest_against_the_cwd() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let m = Path::new("relative-manifest.sqlite");
+        let loc = locate(&cwd, Some(m), None, true).unwrap();
+        assert_eq!(store_path_inside(&cwd, &loc), Some(cwd.join(m)));
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = canon(&d);
+        assert_eq!(store_path_inside(&elsewhere, &loc), None);
+    }
+
+    #[test]
     fn store_path_inside_detects_outside() {
         let d = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();

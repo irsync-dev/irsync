@@ -51,6 +51,7 @@ impl Field {
         }
     }
 
+    /// Position in `ALL`, which lists the variants in declaration order.
     fn idx(self) -> usize {
         self as usize
     }
@@ -75,13 +76,14 @@ pub fn tier(t: Tier) -> &'static [Field] {
     }
 }
 
+/// One flag per `Field`, indexed by its position in `Field::ALL` (declaration order).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Selection([bool; 10]);
+pub struct Selection([bool; Field::ALL.len()]);
 
 impl Selection {
     /// Tier fields, minus `ignore`, plus `require`.
     pub fn new(t: Tier, ignore: &[Field], require: &[Field]) -> Selection {
-        let mut set = [false; 10];
+        let mut set = [false; Field::ALL.len()];
         for f in tier(t) {
             set[f.idx()] = true;
         }
@@ -148,6 +150,8 @@ pub fn diff(
                             out.push(d("blake3", fmt_blake3(&h), fmt_blake3(&o)));
                         }
                     }
+                    // An observed file without a hash was not sent to be hashed (the
+                    // pipeline skipped it); there is nothing to compare, not a difference.
                 }
             }
             Field::Target => {
@@ -197,6 +201,8 @@ pub fn diff(
 fn xattr_diffs(stored: &Entry, observed: &Entry, out: &mut Vec<FieldDiff>) {
     use std::cmp::Ordering::{Equal, Greater, Less};
     let (a, b) = (&stored.xattrs, &observed.xattrs);
+    let sorted = |v: &[(Vec<u8>, Vec<u8>)]| v.windows(2).all(|w| w[0].0 < w[1].0);
+    debug_assert!(sorted(a) && sorted(b), "xattr lists are sorted by name");
     let (mut i, mut j) = (0, 0);
     let mut emit = |name: &[u8], old: Option<&[u8]>, new: Option<&[u8]>| {
         let r = |v: Option<&[u8]>| v.map_or_else(|| "-".into(), fmt_bytes_value);
@@ -419,6 +425,104 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn diff_xattr_removed_in_paranoid() {
+        let mut a = ent(Kind::File);
+        a.xattrs = vec![
+            (b"user.a".to_vec(), b"1".to_vec()),
+            (b"user.b".to_vec(), b"2".to_vec()),
+        ];
+        let mut b = a.clone();
+        b.xattrs.remove(0);
+        let v = diff(false, &a, &b, &sel(Tier::Paranoid));
+        assert_eq!(
+            v,
+            vec![FieldDiff {
+                name: "xattr:user.a".into(),
+                old: fmt_bytes_value(b"1"),
+                new: "-".into()
+            }]
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "sorted by name")]
+    fn diff_xattr_requires_sorted_lists() {
+        let mut a = ent(Kind::File);
+        a.xattrs = vec![
+            (b"user.b".to_vec(), b"2".to_vec()),
+            (b"user.a".to_vec(), b"1".to_vec()),
+        ];
+        diff(false, &a, &a.clone(), &sel(Tier::Paranoid));
+    }
+
+    #[test]
+    fn diff_target_only_for_symlinks() {
+        let mut a = ent(Kind::Symlink);
+        a.target = Some(b"old".to_vec());
+        let mut b = a.clone();
+        b.target = Some(b"new".to_vec());
+        let v = diff(false, &a, &b, &sel(Tier::Relaxed));
+        assert_eq!(
+            v,
+            vec![FieldDiff {
+                name: "target".into(),
+                old: "old".into(),
+                new: "new".into()
+            }]
+        );
+        // A link whose target could not be read shows as "-".
+        b.target = None;
+        assert_eq!(diff(false, &a, &b, &sel(Tier::Relaxed))[0].new, "-");
+        // The field belongs to symlinks: a file's target is never looked at.
+        let mut c = ent(Kind::File);
+        c.target = Some(b"old".to_vec());
+        let mut e = c.clone();
+        e.target = None;
+        assert!(diff(false, &c, &e, &sel(Tier::Paranoid)).is_empty());
+    }
+
+    #[test]
+    fn diff_rdev_only_for_devices() {
+        for kind in [Kind::CharDev, Kind::BlockDev] {
+            let mut a = ent(kind);
+            a.rdev = 1;
+            let mut b = a.clone();
+            b.rdev = 2;
+            assert_eq!(names(&diff(false, &a, &b, &sel(Tier::Relaxed))), ["rdev"]);
+        }
+        let mut a = ent(Kind::Fifo);
+        a.rdev = 1;
+        let mut b = a.clone();
+        b.rdev = 2;
+        assert!(diff(false, &a, &b, &sel(Tier::Paranoid)).is_empty());
+    }
+
+    #[test]
+    fn diff_size_for_every_kind_but_dir() {
+        let a = ent(Kind::Symlink);
+        let mut b = a.clone();
+        b.size = 11;
+        let v = diff(false, &a, &b, &sel(Tier::Default));
+        assert_eq!(names(&v), ["size"]);
+        assert_eq!((v[0].old.as_str(), v[0].new.as_str()), ("10", "11"));
+        assert!(diff(false, &a, &b, &sel(Tier::Relaxed)).is_empty());
+    }
+
+    #[test]
+    fn diff_nlink_and_gid_only_in_paranoid() {
+        let a = ent(Kind::File);
+        let mut b = a.clone();
+        b.nlink = 2;
+        b.gid = 7;
+        assert!(diff(false, &a, &b, &sel(Tier::Default)).is_empty());
+        let v = diff(false, &a, &b, &sel(Tier::Paranoid));
+        assert_eq!(names(&v), ["gid", "nlink"]);
+        assert_eq!((v[0].old.as_str(), v[0].new.as_str()), ("1000", "7"));
+        assert_eq!((v[1].old.as_str(), v[1].new.as_str()), ("1", "2"));
     }
 
     #[test]

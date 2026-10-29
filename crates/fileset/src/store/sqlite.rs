@@ -489,8 +489,10 @@ mod tests {
         .unwrap();
         s.close().unwrap();
         assert!(p.exists());
-        assert!(!dir.path().join("m.sqlite-wal").exists());
-        assert!(!dir.path().join("m.sqlite-shm").exists());
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = dir.path().join(format!("m.sqlite{suffix}"));
+            assert!(!sidecar.exists(), "{} left behind", sidecar.display());
+        }
     }
 
     #[test]

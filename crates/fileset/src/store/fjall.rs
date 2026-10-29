@@ -339,6 +339,26 @@ mod tests {
     }
 
     #[test]
+    fn old_schema_is_refused_read_only_and_bumped_read_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m");
+        let mut s = open(&p, Backend::Fjall, OpenMode::Create).unwrap();
+        let mut m = s.meta().unwrap();
+        m.schema_version = SCHEMA_VERSION - 1;
+        m.unfinished = false;
+        s.set_meta(&m).unwrap();
+        s.close().unwrap();
+        let err = open(&p, Backend::Fjall, OpenMode::ReadOnly).err().unwrap();
+        assert!(err.to_string().contains("run 'fileset update'"), "{err}");
+        // No fjall migrations exist yet: opening for writing only records the version.
+        let s = open(&p, Backend::Fjall, OpenMode::ReadWrite).unwrap();
+        assert_eq!(s.meta().unwrap().schema_version, SCHEMA_VERSION);
+        s.close().unwrap();
+        let s = open(&p, Backend::Fjall, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn sweep_count_is_exact_across_chunks() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = open(&dir.path().join("m"), Backend::Fjall, OpenMode::Create).unwrap();

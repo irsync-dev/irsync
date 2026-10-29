@@ -2,6 +2,8 @@
 
 Triage by the final whole-branch reviewer: everything marked "FIX BEFORE MERGE" was fixed in the final fix wave; the rest is deferred. One line per finding, as recorded in the implementation ledger.
 
+Closed 2026-10-29: every finding below is fixed or covered by a test, except the two in `TODO.md` (a mid-listing `readdir` failure, and a SQLite migration from an older schema), which wait for fault injection and a second schema version.
+
 Ruling: WalkConfig derives Clone and is Send; engines clone it into the producer closure — needed by pipeline::run's 'static producer — cost if wrong: trivial refactor.
 Ruling: engines hold the store in a std::cell::RefCell<Box<dyn Store>> so decide (borrow) and sink (borrow_mut) can both use it; both closures run on the calling thread so no overlap — cost if wrong: a runtime BorrowMutError in tests, easy to see.
 Ruling: Task 10 creates progress.rs with the Progress trait and NoProgress only; Task 12 adds TermProgress — avoids a half-built type across two tasks — cost if wrong: none.

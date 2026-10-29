@@ -92,6 +92,8 @@ for_both_backends! {
     update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
     external_manifest_ignores_root_level_manifest_names => external_manifest_ignores_root_level_manifest_names_sqlite, external_manifest_ignores_root_level_manifest_names_fjall;
     in_tree_manifest_with_custom_name_is_clean => in_tree_manifest_with_custom_name_is_clean_sqlite, in_tree_manifest_with_custom_name_is_clean_fjall;
+    check_require_uid_reports_a_changed_owner => check_require_uid_reports_a_changed_owner_sqlite, check_require_uid_reports_a_changed_owner_fjall;
+    update_stores_a_tree_of_exactly_one_batch => update_stores_a_tree_of_exactly_one_batch_sqlite, update_stores_a_tree_of_exactly_one_batch_fjall;
 }
 
 fn other(b: Backend) -> Backend {
@@ -469,6 +471,40 @@ fn check_require_uid_stays_clean_same_user(b: Backend) {
     let (outcome, out, err) = run_check(dir.path(), Tier::Relaxed, &[], &[Field::Uid], false);
     assert_eq!(out, "");
     assert_eq!(err, "added=0 deleted=0 changed=0 unchanged=3 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+}
+
+fn check_require_uid_reports_a_changed_owner(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    // Ownership cannot be changed by an unprivileged test; the manifest side can.
+    let path = dir.path().join(store_name(b));
+    let mut st = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let mut f = st.get(b"f").unwrap().unwrap();
+    let real = f.uid;
+    f.uid = real.wrapping_add(1);
+    st.put_batch(&[(b"f".to_vec(), f)]).unwrap();
+    st.close().unwrap();
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
+    assert_eq!(outcome, Outcome::Clean);
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[Field::Uid], false);
+    assert_eq!(out, format!("CHG f uid={}→{real}\n", real.wrapping_add(1)));
+    assert_eq!(outcome, Outcome::Differences);
+}
+
+/// Root, manifest and 1998 files: exactly `BATCH_SIZE` entries, so the batch is flushed
+/// at the boundary and nothing is left for the final flush.
+fn update_stores_a_tree_of_exactly_one_batch(b: Backend) {
+    let names: Vec<String> = (0..1998).map(|i| format!("f{i:04}")).collect();
+    let spec: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "")).collect();
+    let dir = tree(&spec);
+    let (outcome, err) = run_update(dir.path(), b, false, false);
+    assert_eq!(err, "entries=2000 hashed=1998 reused=0 warnings=0\n");
+    assert_eq!(outcome, Outcome::Clean);
+    assert_eq!(keys(&*open_ro(dir.path(), b)).len(), 2000);
+    let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(out, "");
     assert_eq!(outcome, Outcome::Clean);
 }
 

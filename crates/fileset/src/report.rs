@@ -51,6 +51,8 @@ pub fn line_del(path: &[u8]) -> String {
     format!("DEL {}", escape(path))
 }
 
+/// The `CHG` line. The path is escaped here; diff values are written as given, so a
+/// caller puts escaped text into `FieldDiff` (as `compare::diff` does).
 pub fn line_chg(path: &[u8], diffs: &[FieldDiff]) -> String {
     let mut s = format!("CHG {}", escape(path));
     for d in diffs {
