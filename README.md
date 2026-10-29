@@ -309,8 +309,9 @@ partial files are waiting.
 - The daemon drops an authenticated connection that has been idle (no traffic
   and no local progress such as hashing or writing) for `idle_timeout`,
   30 minutes by default (the client reconnects and resumes).
-- Only the delete, dry-run, itemize, `-u` and `-c` options are sent to the
-  daemon. Filters (`--exclude`, `--include`, ...) apply only on the sending
+- The daemon receives the delete, dry-run, itemize, `-u`, `-c`, `--inplace`,
+  `--append` and preserve (`-l -p -t -g -o -D -H -S`) options, but not the
+  filters. Filters (`--exclude`, `--include`, ...) apply only on the sending
   side, so a push with `--delete` plus filters also needs `--delete-excluded`,
   otherwise the daemon would delete files your filters merely hid.
 - `--partial-dir` is not supported on a push (it would name a directory on the
