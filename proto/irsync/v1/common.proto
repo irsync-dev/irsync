@@ -84,6 +84,9 @@ message Hello {
   // path: no `..`); honoured by a receiving daemon, which keeps the `.part`
   // files of interrupted transfers under it. Empty: beside their files.
   bytes partial_dir = 24;
+  // --numeric-ids: a receiving daemon applies the ids as sent instead of
+  // mapping the owner and group names to its own ids.
+  bool numeric_ids = 25;
 }
 // One export the asking key may use.
 message ExportEntry {
@@ -160,6 +163,11 @@ message FileEntry {
   optional Hash whole_hash = 14; // lazy: absent until computed
   bool sparse = 15;
   reserved 16 to 31; // later metadata (xattrs)
+  // The owner's and group's names on the sending side, empty when the id has
+  // none there. A receiver maps them to its own ids when the names exist
+  // locally, else keeps the numbers (rsync's rule; --numeric-ids skips this).
+  string user = 32;
+  string group = 33;
 }
 
 message Range {

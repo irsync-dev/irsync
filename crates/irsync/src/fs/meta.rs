@@ -79,6 +79,9 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
         nlink: st.st_nlink as u32,
         whole_hash: None,
         sparse: kind == Kind::Regular && (st.st_blocks as i64) * 512 < st.st_size as i64,
+        // Attached by the listing (see `fs::ids`), not here.
+        user: String::new(),
+        group: String::new(),
     };
     Ok((entry, ctime))
 }
@@ -122,9 +125,11 @@ fn may_chgrp(gid: u32) -> bool {
 /// Apply the selected metadata of `e` to `path`, without following symlinks.
 /// Ownership is applied first (chown clears setuid bits), then mode, then times.
 ///
-/// Ids are numeric (`--numeric-ids` is always on in v1). Like rsync without
-/// privilege, the owner is set only when running as root and the group only
-/// as root or a member of it; otherwise they are silently left alone.
+/// The ids are the entry's as the receiver localized them (the sender's
+/// names mapped to this side's ids unless `--numeric-ids`). Like rsync
+/// without privilege, the owner is set only when running as root and the
+/// group only as root or a member of it; otherwise they are silently left
+/// alone.
 pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
     let owner = opts.owner && nix::unistd::geteuid().is_root();
     let group = opts.group && may_chgrp(e.gid);

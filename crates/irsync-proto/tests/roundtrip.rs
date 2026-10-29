@@ -49,6 +49,7 @@ fn hello_roundtrips() {
             },
         ],
         partial_dir: b".p".to_vec(),
+        numeric_ids: true,
     };
     let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, h);

@@ -592,8 +592,8 @@ pub struct SyncArgs {
     /// Bytes/s limit: KiB/s by default, or with k/m/g suffix; 0 = unlimited.
     #[arg(long, value_name = "RATE", value_parser = parse_bwlimit)]
     pub bwlimit: Option<u64>,
-    /// Accepted for rsync compatibility: owners and groups are always
-    /// transferred as numbers, never mapped by name.
+    /// Apply owner and group ids as sent, instead of mapping the sender's
+    /// user and group names to this side's ids (rsync's default).
     #[arg(long)]
     pub numeric_ids: bool,
     /// Keep the partial files of interrupted transfers under DIR (relative
@@ -813,8 +813,7 @@ impl SyncOptions {
             update_only: a.update,
             filters: a.filters.clone(),
             bwlimit: a.bwlimit.filter(|&b| b != 0),
-            // Ids are always numeric in v1; --numeric-ids is accepted as a no-op.
-            numeric_ids: true,
+            numeric_ids: a.numeric_ids,
             partial_dir: a.partial_dir.clone(),
             ignore_errors: a.ignore_errors,
             stats: a.stats,

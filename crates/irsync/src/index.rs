@@ -265,6 +265,9 @@ impl Index {
                             link_target: r.get(13)?,
                             sparse: r.get(14)?,
                             whole_hash: whole.clone().map(|bytes| Hash { bytes }),
+                            // A stored plan holds ids the receiver already localized.
+                            user: String::new(),
+                            group: String::new(),
                         },
                         (r.get::<_, i64>(4)?, r.get::<_, u32>(5)?),
                         whole,

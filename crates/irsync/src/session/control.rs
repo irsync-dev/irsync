@@ -104,6 +104,9 @@ pub(super) fn side_of(entry: irsync_proto::v1::FileEntry) -> Side {
 }
 
 /// One item of a listing as the receiver's planner consumes it.
+// A `Side` is large (a whole `FileEntry`); boxing it would cost an allocation
+// per listed entry for a channel that holds items briefly.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Listed {
     Side(Side),
     /// Entries at or below this path are missing from the listing (see
@@ -116,6 +119,7 @@ pub(super) enum Listed {
 pub(super) fn spawn_reader(
     mut recv: RecvStream,
     mut listing: Option<mpsc::UnboundedSender<Listed>>,
+    mut ids: Option<crate::fs::ids::IdMap>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
@@ -131,7 +135,11 @@ pub(super) fn spawn_reader(
             activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match frame {
                 Ok(Some(Control { msg: Some(msg) })) => match msg {
-                    Msg::Listing(ListingEntry { entry: Some(e) }) => {
+                    Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
+                        // The peer's owner and group names become this side's ids.
+                        if let Some(map) = ids.as_mut() {
+                            map.localize(&mut e);
+                        }
                         seen.count(&e);
                         if seen.files().is_multiple_of(1000) {
                             bus.emit(crate::session::Event::Scanned {
@@ -283,6 +291,7 @@ pub(super) fn spawn_listing(
         };
         let mut count = 0u64;
         let mut stats = crate::scan::ListStats::default();
+        let mut names = crate::fs::ids::IdNames::new();
         // `-H`: the first listed name of each (dev, inode) with nlink > 1.
         let mut first_names: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
         let mut last_emit = std::time::Instant::now();
@@ -315,6 +324,7 @@ pub(super) fn spawn_listing(
             let ScanItem {
                 path, mut entry, ..
             } = item.clone();
+            names.attach(&mut entry);
             if spec.hard_links && entry.kind() == Kind::Regular && entry.nlink > 1 {
                 match first_names.entry((entry.dev, entry.inode)) {
                     std::collections::hash_map::Entry::Occupied(first) => {

@@ -110,6 +110,9 @@ pub(super) struct RoleOpts {
     pub itemize: bool,
     /// Receiver only: `--inplace`, write changed files into the destination.
     pub inplace: bool,
+    /// Receiver only: `--numeric-ids`, apply the ids as sent instead of
+    /// mapping the sender's owner and group names to local ids.
+    pub numeric_ids: bool,
     /// Receiver only: `--append` / `--append-verify`.
     pub append: Append,
 }
@@ -131,6 +134,7 @@ impl RoleOpts {
             ignore_errors: o.ignore_errors,
             itemize: o.itemize,
             inplace: o.inplace,
+            numeric_ids: o.numeric_ids,
             append: o.append,
         }
     }
@@ -191,6 +195,7 @@ impl RoleOpts {
             ignore_errors: hello.ignore_errors,
             itemize: hello.itemize,
             inplace: receives && hello.inplace,
+            numeric_ids: hello.numeric_ids,
             append: match hello.append() {
                 _ if !receives => Append::Off,
                 WireAppend::AppendOff => Append::Off,
@@ -246,6 +251,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
     // `-n -v` lists what a push would transfer: only the daemon knows.
     hello.itemize = o.itemize || (o.dry_run && o.verbose > 0);
     hello.update_only = o.update_only;
+    hello.numeric_ids = o.numeric_ids;
     hello.checksum = o.checksum;
     hello.inplace = o.inplace;
     hello.append = match o.append {
@@ -952,6 +958,7 @@ async fn run_role(
     let reader = control::spawn_reader(
         recv,
         (!sends).then_some(listing_tx),
+        (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
         ev_tx.clone(),
         ctx.hooks.bus.clone(),
         ctx.activity.clone(),

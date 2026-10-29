@@ -18,7 +18,6 @@ unfinished plan workspaces.
 
 Rough cost next to each. The last two are not things to fix.
 
-- [ ] `--numeric-ids` is always on. Medium: owner and group name mapping.
 - [ ] irsync always recurses; `-r` is accepted and implied. Only worth doing
       if a non-recursive copy is ever wanted.
 - Relays are a fallback and much slower than direct connections. By design.

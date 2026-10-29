@@ -263,7 +263,7 @@ rsync-compatible, same spelling and semantics:
 | `--delete`, `--delete-before`, `--delete-during`, `--delete-after`, `--delete-excluded`, `--max-delete` | deletion modes and guards |
 | `--exclude`, `--include`, `--exclude-from`, `--include-from` | filter rules, in command-line order |
 | `--bwlimit` | rate limit (KiB/s, or `k`/`m`/`g` suffix) |
-| `--numeric-ids` | accepted; always on |
+| `--numeric-ids` | apply owner and group ids as sent; by default the sender's user and group names are mapped to the receiver's ids where they exist, as rsync does |
 | `--partial-dir DIR` | where partial files live, relative to the destination root; on a push the daemon keeps them there, and only a relative DIR inside the destination is allowed |
 | `--ignore-errors` | delete even after I/O errors |
 | `--stats`, `-i` / `--itemize-changes` | reporting |
@@ -312,8 +312,6 @@ partial files are waiting.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used, and of the keys under `~/.ssh` only `id_ed25519` is tried
   unless `identity` or `--identity` names another.
-- `--numeric-ids` is always on: owners and groups are transferred as numbers,
-  never mapped by name.
 - The throughput target (filling a 1 Gbit/s link) applies to direct
   connections. Relays are a fallback and are much slower; behind a symmetric NAT
   run a self-hosted relay (see [docs/daemon.md](docs/daemon.md)).

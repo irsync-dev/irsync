@@ -62,7 +62,9 @@ One QUIC connection carries:
   also carries the client's include/exclude rules, compiled and in order: a
   sending daemon walks with them, a receiving daemon protects what they
   exclude from deletion. A relative `--partial-dir` travels too; a receiving
-  daemon refuses one that is absolute or leaves the destination.
+  daemon refuses one that is absolute or leaves the destination. Each
+  `FileEntry` names its owner and group as the sender knows them; the
+  receiver maps the names to its own ids unless `Hello.numeric_ids`.
   Before it asks for a chunk of a `DELTA` file, the receiver may send a
   `ChunkBasis` for it: block signatures (a 32-bit rolling sum and 8 bytes
   of BLAKE3 per block, blocks of 512 B to 4 KiB, at most 8192 of them)

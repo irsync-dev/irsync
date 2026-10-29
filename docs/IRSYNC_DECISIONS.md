@@ -198,7 +198,15 @@ cross-referenced from commit messages and review notes.
 ### 1.7 Metadata and special files
 
 - **R5 — `--numeric-ids` is accepted and always on**; there is no name
-  mapping in v1.
+  mapping in v1. (Reversed 2026-10-29 by R40.)
+- **R40 — Owner and group names travel with each entry
+  (`FileEntry.user/group`, 32 and 33) and the receiver maps them to its
+  own ids** (2026-10-29), rsync's rule: a name that exists on the receiving
+  side gives its id, any other keeps the number as sent. `--numeric-ids`
+  skips the mapping; a receiving daemon learns it from `Hello.numeric_ids`
+  (25). Names are looked up once per id on the sender and once per name on
+  the receiver. Privilege rules are unchanged: the owner is applied only as
+  root, the group only as a member.
 - FIFOs, devices and sockets with the same `rdev` on both sides get the
   same metadata decision as directories: `MetaOnly` when mode, time or
   ownership differ under the preserve flags, `Skip` otherwise, and
@@ -439,5 +447,4 @@ cross-referenced from commit messages and review notes.
 - Transparent daemon spawn over SSH (mosh-style) — planned for a later
   version.
 - Filesystem-specific extended attributes and APFS/ext4/ZFS-aware copying.
-- uid/gid name mapping (`--numeric-ids` is always on).
 - rsync's full filter grammar beyond include/exclude and `*-from` files.
