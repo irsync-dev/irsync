@@ -315,6 +315,7 @@ async fn after_a_reconnect_files_placed_earlier_are_not_reported_skipped() {
         for i in 0..10 {
             fs::write(src.join(format!("f{i:02}.bin")), noise(2 << 20, i + 1)).unwrap();
         }
+        h.daemon.sender_parallel(4);
         h.daemon.fault.drop_after_bytes(9 << 20);
         let fast = ReconnectOpts {
             backoff_min: Duration::from_millis(100),
@@ -468,8 +469,9 @@ async fn sender_file_start_means_a_stream_opened_not_a_plan() {
             fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
         let (_, events) = run(&h, &opts(&["--parallel", "2"]), Flow::Push).await;
-        // Every FileStart is followed by FileBytes for the same path before
-        // more than `parallel` other files start: in-flight is bounded.
+        // A file is in flight from its FileStart until its stream has closed
+        // (FileSent), or until the ack when that is handled first: in-flight
+        // is bounded by the streams, not by the plan.
         let mut open = std::collections::BTreeSet::new();
         let mut max_open = 0;
         for e in &events {
@@ -478,15 +480,17 @@ async fn sender_file_start_means_a_stream_opened_not_a_plan() {
                     open.insert(p.clone());
                     max_open = max_open.max(open.len());
                 }
-                Event::FileDone(p, _) => {
+                Event::FileSent(p) | Event::FileDone(p, _) => {
                     open.remove(p);
                 }
                 _ => {}
             }
         }
-        // `--parallel 2` streams; acknowledgements lag a little behind the
-        // streams closing, so allow some slack. Before this change every
-        // planned file started at once and this peaked at 50.
+        // `--parallel 2` streams; FileSent trails the stream closing by a
+        // scheduling step, so allow some slack. (Closing on the ack alone
+        // measured the daemon's finalize latency instead, and reached 14
+        // under load.) Before this change every planned file started at
+        // once and this peaked at 50.
         assert!(max_open <= 10, "in flight peaked at {max_open}: {events:?}");
         // `FileSent` sits between a file's `FileStart` and its `FileDone`.
         // (Not every file gets one: when the ack is handled before the

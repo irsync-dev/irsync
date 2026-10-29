@@ -72,6 +72,7 @@ async fn connection_drop_mid_transfer_completes_byte_exact() {
         for flow in [Flow::Push, Flow::Pull] {
             let h = Harness::new().await;
             twenty_files(h.src(flow));
+            h.daemon.sender_parallel(4);
             h.daemon.fault.drop_after_bytes(10 * MIB as u64);
 
             let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
@@ -129,6 +130,7 @@ async fn resumed_pull_keeps_inflight_cap() {
         let flow = Flow::Pull;
         let h = Harness::new().await;
         twenty_files(h.src(flow));
+        h.daemon.sender_parallel(4);
         h.daemon.fault.drop_after_bytes(10 * MIB as u64);
         let (first, _) = h
             .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
@@ -157,6 +159,7 @@ async fn client_restart_resumes_same_session() {
         for flow in [Flow::Push, Flow::Pull] {
             let h = Harness::new().await;
             twenty_files(h.src(flow));
+            h.daemon.sender_parallel(4);
             h.daemon.fault.drop_after_bytes(10 * MIB as u64);
 
             // First "process": the connection drops and it gives up.
@@ -199,6 +202,7 @@ async fn no_resume_flag_starts_fresh() {
         for flow in [Flow::Push, Flow::Pull] {
             let h = Harness::new().await;
             twenty_files(h.src(flow));
+            h.daemon.sender_parallel(4);
             h.daemon.fault.drop_after_bytes(30 * MIB as u64);
 
             let (first, _) = h
@@ -232,6 +236,7 @@ async fn foreign_client_cannot_resume_session() {
         let flow = Flow::Push;
         let (h, guest) = Harness::with_guest().await;
         twenty_files(h.src(flow));
+        h.daemon.sender_parallel(4);
         h.daemon.fault.drop_after_bytes(10 * MIB as u64);
         let (first, _) = h
             .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
@@ -279,6 +284,7 @@ async fn incomplete_plan_resumes_with_fresh_listing() {
         let flow = Flow::Pull;
         let h = Harness::new().await;
         twenty_files(h.src(flow));
+        h.daemon.sender_parallel(4);
         h.daemon.fault.drop_after_bytes(30 * MIB as u64);
         let (first, _) = h
             .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
@@ -319,6 +325,7 @@ async fn unknown_session_falls_back_to_fresh() {
         let flow = Flow::Pull;
         let h = Harness::new().await;
         twenty_files(h.src(flow));
+        h.daemon.sender_parallel(4);
         h.daemon.fault.drop_after_bytes(10 * MIB as u64);
         let (first, _) = h
             .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
@@ -484,6 +491,26 @@ async fn peer_local_progress_resets_idle_watchdog() {
         assert_eq!(reconnects, 0, "the client's watchdog fired");
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+/// The daemon-as-sender fault counts bytes put on the wire, chunk by chunk,
+/// not whole sends as they finish: with every file streaming at once, the
+/// latter would fire only after all the data had left.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sender_fault_counts_bytes_on_the_wire_not_finished_sends() {
+    within60(async {
+        let opts = archive_opts();
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.fault.drop_after_bytes(TOTAL - MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&opts, flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(h.daemon.fault.fired());
+        assert!(first.is_err(), "{:?}", first.map(|o| o.bytes_transferred));
     })
     .await;
 }

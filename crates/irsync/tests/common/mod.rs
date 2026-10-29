@@ -123,10 +123,19 @@ pub struct DaemonHandle {
     pub events: irsync::session::EventLog,
     /// Set to make every daemon receiver's finalize take that much longer.
     pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
+    sender_parallel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub _state: tempfile::TempDir,
 }
 
 impl DaemonHandle {
+    /// Caps the streams a daemon sender runs at once. With every file in
+    /// flight together, a byte-count fault would land with no file complete;
+    /// bounded, files complete batch by batch before it fires.
+    pub fn sender_parallel(&self, n: usize) {
+        self.sender_parallel
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Ids of the sessions the daemon has hosted (fresh or resumed), in order, deduplicated.
     pub fn session_ids(&self) -> Vec<[u8; 16]> {
         let mut v: Vec<[u8; 16]> = Vec::new();
@@ -255,6 +264,7 @@ pub async fn spawn_daemon_full(
     let hosted = daemon.hosted_sessions();
     let events = daemon.receiver_events();
     let slow_finalize = daemon.slow_finalize();
+    let sender_parallel = daemon.sender_parallel();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -270,6 +280,7 @@ pub async fn spawn_daemon_full(
         hosted,
         events,
         slow_finalize,
+        sender_parallel,
         _state: state,
     }
 }

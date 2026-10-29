@@ -179,6 +179,12 @@ impl Daemon {
         self.shared.hosting.slow_finalize.clone()
     }
 
+    /// The streams a daemon sender runs at once; zero keeps the default.
+    #[cfg(feature = "test-hooks")]
+    pub fn sender_parallel(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.shared.hosting.sender_parallel.clone()
+    }
+
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let _tasks = self.shared.tasks.clone().drop_guard();
         for (name, export, index) in &self.startup {
