@@ -232,3 +232,15 @@ fn bare_seconds_set_a_duration_as_an_integer() {
     assert_eq!(v.as_str(), Some("10m"), "{v}");
     assert!(parse_value(Kind::Duration, &["-5".to_string()]).is_err());
 }
+
+#[test]
+fn unset_removes_tables_it_leaves_empty() {
+    use irsync::manage::config::unset;
+    let mut d = doc(
+        "[client]\nparallel = 4\nrelay = \"https://r\"\n\n[hosts.home]\nendpoint_id = \"x\"\n\n[daemon.discovery]\nmdns = false\n",
+    );
+    unset(&mut d, &p("client.parallel")).unwrap();
+    unset(&mut d, &p("hosts.home.endpoint_id")).unwrap();
+    unset(&mut d, &p("daemon.discovery.mdns")).unwrap();
+    assert_eq!(d.to_string(), "[client]\nrelay = \"https://r\"\n");
+}

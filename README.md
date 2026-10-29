@@ -96,7 +96,9 @@ to overwrite unless given `-f`/`--force`.
 One file holds everything: `~/.config/irsync/irsync.toml`, optional, a
 missing file being the same as an empty one. The commands below edit it for
 you, preserving comments; `irsync config` reads and writes any key in it;
-you can also edit it by hand. Every command takes `--config PATH` to use
+you can also edit it by hand. While a command edits it, `irsync.toml.lock`
+sits beside it and a second command is refused; delete the lock only if no
+irsync is running. Every command takes `--config PATH` to use
 another file (for a noun the flag goes anywhere after it: `irsync export
 --config C add ...` or `irsync export add ... --config C`); `index` and `gc`
 take none. Unknown keys are errors that name the file, table and key.
@@ -197,13 +199,15 @@ Three nouns, each with `add`, `remove` and `list` (and `export update`),
 | `irsync grant list [EXPORT\|all \| WHO]` | every grant; one export's (or `[all]`'s); or what one peer may reach, marking grants inherited from `[all]` and read-write grants capped by a `read_only` export |
 | `irsync id show [--daemon \| -a\|--all] [--passphrase-file PATH]` | print the public key line and `EndpointId` of the client (default), the daemon, or both, labelled `client:` and `daemon:` |
 | `irsync id generate [--daemon \| --out PATH] [-f\|--force]` | write a new Ed25519 key pair at the client's (default), the daemon's or the given path and print its public key line and `EndpointId`; overwrites only with `--force` |
-| `irsync config get KEY` | print a key by its dotted path (`daemon.listen`, `hosts.home.relay`, `exports."www.example.com".path`): a bare scalar, one array element per line, or a table's keys as `key = value` lines; an unset setting prints its default, a key with no value and no default exits 1 |
+| `irsync config get KEY` | print a key by its dotted path (`daemon.listen`, `hosts.home.relay`, `exports."www.example.com".path`): a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded); an unset setting prints its default, a key with no value and no default exits 1 |
 | `irsync config set KEY VALUE...` | set a key in its type (`true`/`false`, an integer, a duration like `30m`, a path, a URL, an id); an array key takes one `VALUE` per element, none for an empty array; tables are created as needed and the edited file is validated before it is written |
-| `irsync config unset KEY` | remove a key, or a whole table (`config unset hosts.home`) |
+| `irsync config unset KEY` | remove a key, or a whole table (`config unset hosts.home`); a table left empty goes with it |
 | `irsync config list` | every key the file sets, as `dotted.key = value`, in file order |
 | `irsync show [--passphrase-file PATH]` | print the file paths, identities, aliases, exports and grants; the aliases are `host list` and the exports `export list`, line for line |
 
-`config` writes what you say, the nouns know what you mean: `export add`
+`config` writes what you say, the nouns know what you mean (both refuse an
+export name that is empty or has a `/`, the one thing a name cannot be, since
+it is the first segment of a `HOST:PATH`): `export add`
 joins a relative path onto the working directory and checks the directory
 exists, `grant add` takes a pasted key line or a `.pub` file, while `config
 set exports.photos.path ./x` is refused (the file wants an absolute path)

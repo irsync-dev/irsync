@@ -357,5 +357,25 @@ pub fn unset(doc: &mut DocumentMut, path: &[String]) -> Result<(), ManageError> 
     if table.remove(leaf).is_none() {
         return Err(ManageError::NothingToRemove(path.join(".")));
     }
+    // A table left with nothing in it goes too, up to the root: an empty
+    // `[hosts.home]` would not load, and an empty `[client]` is only noise.
+    for depth in (1..=parents.len()).rev() {
+        let mut t: &mut dyn TableLike = doc.as_table_mut();
+        for seg in &parents[..depth - 1] {
+            t = match t.get_mut(seg).and_then(Item::as_table_like_mut) {
+                Some(t) => t,
+                None => return Ok(()),
+            };
+        }
+        let name = &parents[depth - 1];
+        let empty = t
+            .get(name)
+            .and_then(Item::as_table_like)
+            .is_some_and(TableLike::is_empty);
+        if !empty {
+            break;
+        }
+        t.remove(name);
+    }
     Ok(())
 }

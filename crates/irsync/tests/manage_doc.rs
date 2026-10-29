@@ -143,3 +143,46 @@ fn ensure_editable_refuses_a_table_a_split_file_owns() {
         "{e}"
     );
 }
+
+#[test]
+fn lock_config_excludes_a_second_editor_until_save_or_drop() {
+    use irsync::manage::lock_config;
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("sub/irsync.toml");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "# keep\n[client]\nparallel = 4\n").unwrap();
+    let lock_file = d.path().join("sub/irsync.toml.lock");
+
+    let lock = lock_config(&p).unwrap();
+    assert!(lock_file.exists());
+    let e = lock_config(&p).unwrap_err();
+    assert!(matches!(e, ManageError::Locked { .. }), "{e}");
+    assert!(
+        e.to_string().contains("irsync.toml.lock") && e.to_string().contains("another irsync"),
+        "{e}"
+    );
+    let mut doc = lock.load().unwrap();
+    doc["client"]["parallel"] = toml_edit::value(8);
+    lock.save(&doc).unwrap();
+    assert!(!lock_file.exists(), "save releases the lock");
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "# keep\n[client]\nparallel = 8\n"
+    );
+
+    // Dropped without saving: the lock goes and the file is untouched.
+    let lock = lock_config(&p).unwrap();
+    drop(lock);
+    assert!(!lock_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "# keep\n[client]\nparallel = 8\n"
+    );
+
+    // An invalid document is refused and the lock released.
+    let lock = lock_config(&p).unwrap();
+    let mut doc = lock.load().unwrap();
+    doc["client"]["bogus"] = toml_edit::value(1);
+    assert!(matches!(lock.save(&doc), Err(ManageError::Invalid { .. })));
+    assert!(!lock_file.exists());
+}

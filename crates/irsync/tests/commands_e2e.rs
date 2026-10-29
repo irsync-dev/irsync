@@ -1142,3 +1142,45 @@ fn unset_reports_an_unknown_key_before_a_split_file() {
         "{err}"
     );
 }
+
+#[test]
+fn a_lock_file_blocks_edits_and_names_itself() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("irsync.toml.lock"), "").unwrap();
+    let o = irsync(&home, &["config", "set", "client.parallel", "4"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("irsync.toml.lock"), "{err}");
+    assert!(!cfg.join("irsync.toml").exists());
+    std::fs::remove_file(cfg.join("irsync.toml.lock")).unwrap();
+    ok(&home, &["config", "set", "client.parallel", "4"]);
+    assert!(!cfg.join("irsync.toml.lock").exists());
+    assert_eq!(ok(&home, &["config", "get", "client.parallel"]), "4\n");
+}
+
+#[test]
+fn unset_of_the_last_key_leaves_no_empty_table() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(&home, &["config", "set", "hosts.laptop.endpoint_id", &id]);
+    ok(&home, &["config", "unset", "hosts.laptop.endpoint_id"]);
+    let text = std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap();
+    assert!(!text.contains("hosts"), "{text:?}");
+}
+
+#[test]
+fn set_refuses_an_export_name_with_a_slash() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let o = irsync(&home, &["config", "set", "exports.\"a/b\".path", "/x"]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("is not a valid export name"), "{err}");
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
+}

@@ -56,6 +56,8 @@ pub enum ManageError {
     BadComment(String),
     #[error("{}: refusing to save, the edited file would not load: {source}", path.display())]
     Invalid { path: PathBuf, source: ConfigError },
+    #[error("{} is being edited by another irsync ({} exists); retry, or delete that file if no irsync is running", path.display(), lock.display())]
+    Locked { path: PathBuf, lock: PathBuf },
     #[error("invalid key {0:?}")]
     BadKey(String),
     #[error("unknown key {0:?}")]
@@ -125,13 +127,94 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
     Ok(())
 }
 
-/// Save the config file, refusing a document that would not load.
+/// Save the config file, refusing a document that would not load; takes
+/// and releases the file's lock (see [`lock_config`]).
 pub fn save_config(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    Config::parse(&doc.to_string(), path).map_err(|source| ManageError::Invalid {
+    lock_config(path)?.save(doc)
+}
+
+/// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
+/// [`ConfigLock::save`] so that two edits cannot lose each other's change.
+/// The lock is `<file>.lock` beside it, created exclusively, like git's: a
+/// second editor is refused while it exists, and a crash leaves it behind
+/// for the user to remove. The new content is written into it and renamed
+/// over the file, so a save is atomic and releases the lock in one step.
+#[derive(Debug)]
+pub struct ConfigLock {
+    path: PathBuf,
+    lock: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+/// Takes the lock of `path`, creating its directory if needed.
+pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(parent).map_err(|source| ManageError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    save_doc(path, doc)
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    let lock = parent.join(name);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+    {
+        Ok(file) => Ok(ConfigLock {
+            path: path.to_path_buf(),
+            lock,
+            file: Some(file),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
+            path: path.to_path_buf(),
+            lock,
+        }),
+        Err(source) => Err(ManageError::Io { path: lock, source }),
+    }
+}
+
+impl ConfigLock {
+    /// The file as it is now (empty when missing).
+    pub fn load(&self) -> Result<toml_edit::DocumentMut, ManageError> {
+        load_doc(&self.path)
+    }
+
+    /// Writes `doc` over the file and releases the lock. A document that
+    /// would not load is refused and the file left as it was.
+    pub fn save(mut self, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
+        Config::parse(&doc.to_string(), &self.path).map_err(|source| ManageError::Invalid {
+            path: self.path.clone(),
+            source,
+        })?;
+        let io = |source| ManageError::Io {
+            path: self.lock.clone(),
+            source,
+        };
+        let file = self.file.as_mut().expect("held until saved");
+        file.write_all(doc.to_string().as_bytes()).map_err(io)?;
+        file.sync_all().map_err(io)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.lock, std::fs::Permissions::from_mode(0o644))
+                .map_err(io)?;
+        }
+        std::fs::rename(&self.lock, &self.path).map_err(io)?;
+        // Renamed away: nothing to remove on drop.
+        self.file = None;
+        Ok(())
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            let _ = std::fs::remove_file(&self.lock);
+        }
+    }
 }
 
 /// A table group an editing command touches.

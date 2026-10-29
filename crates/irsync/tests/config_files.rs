@@ -414,3 +414,19 @@ fn missing_everything_is_the_defaults() {
     assert_eq!(c.settings, Settings::default());
     assert!(c.hosts.entries.is_empty() && c.exports.exports.is_empty());
 }
+
+#[test]
+fn export_names_are_one_path_segment() {
+    // An export is reached as the first segment of HOST:PATH, so its name
+    // can hold neither a slash nor nothing at all.
+    for (name, bad) in [("a/b", "/"), ("", "empty")] {
+        let e = Exports::parse(&format!("[exports.{name:?}]\npath = \"/x\"\n"), p())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("is not a valid export name") && e.contains(bad),
+            "{name:?}: {e}"
+        );
+    }
+    assert!(Exports::parse("[exports.\"a:b\"]\npath = \"/x\"\n", p()).is_ok());
+}

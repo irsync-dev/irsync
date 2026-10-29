@@ -39,19 +39,6 @@ Rough cost next to each. The last two are not things to fix.
 - Relays are a fallback and much slower than direct connections. By design.
 - Linux and macOS only. A port, not a fix.
 
-## Config editing: behaviours ruled as standing in the single-config review
-
-User-visible, left as is on purpose; revisit if they bite.
-
-- [ ] Two concurrent edits of `irsync.toml` (`config set`, or any noun) can
-      lose an update: each reads, edits and replaces the whole file with no
-      lock.
-- [ ] `config set exports.NAME.path` accepts export names the nouns would
-      refuse.
-- [ ] `config unset` of a table's last key leaves an empty `[table]` header.
-- [ ] `config get` prints a set path verbatim (`~/...` stays `~/...`); only
-      the daemon and client expand it.
-
 ## fileset: deferred findings never triaged
 
 `docs/superpowers/plans/2026-10-19-fileset-deferred.md` lists the minors

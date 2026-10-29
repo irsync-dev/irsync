@@ -70,6 +70,13 @@ pub(crate) fn exports_from_raw(
         if RESERVED.contains(&name.as_str()) {
             return Err(at(start, reserved(&name)));
         }
+        // The name is the first segment of a HOST:PATH.
+        if name.is_empty() || name.contains('/') {
+            return Err(at(
+                start,
+                format!("{name:?} is not a valid export name: it must not be empty or contain '/'"),
+            ));
+        }
         let value = value.into_inner();
         if !value.is_table() {
             return Err(at(
