@@ -27,7 +27,7 @@ accepted connection, after the handshake has proved the peer's `EndpointId`,
 and takes the hosts, exports and grants from it. `irsync export add`/`remove`,
 `grant add`/`remove`, `host add`/`remove` and `config set`/`unset` therefore
 take effect on the next connection, with no restart; the `[daemon]` settings
-are read once at startup. A `grant remove` or `export remove` does not end a
+are applied on `SIGHUP` (see [Reloading the settings](#reloading-the-settings)). A `grant remove` or `export remove` does not end a
 session already in progress; it refuses only new connections. The commands
 write the file atomically. If the file cannot be read or parsed, in any
 table, the daemon logs the error at `warn` naming the file and line, rejects
@@ -57,8 +57,22 @@ what the key may reach, `irsync grant add EXPORT <id>`, or `irsync export add
 NAME:PATH`. The daemon's log shows `rejecting unauthorized key` (or
 `rejecting session`) with the first ten hex digits of the peer's id.
 
-Settings in `irsync.toml` (`listen`, relays, discovery, `idle_timeout`, ...)
-are read once and need a restart.
+## Reloading the settings
+
+`kill -HUP <pid>` (`systemctl reload irsync` with the unit below) makes the
+daemon re-read `irsync.toml` and apply the `[daemon]` table: `listen`,
+`relay`, `relay_mode`, `portmap`, `discovery`, `identity`, `idle_timeout` and
+`dormant_session_timeout`. It binds a new endpoint with the new network
+settings and prints `endpoint id:` and `listening on:` again; sessions in
+progress finish on the connection they started on, while a dialer that still
+uses a retired address is refused. `idle_timeout` applies to sessions
+accepted from then on. A `--listen` given on the command line stays in force
+over the file's value. A reload that cannot be applied (the file does not
+parse, a port cannot be bound, the identity cannot be read) is logged at
+`warn` and the daemon keeps running as it was. A changed `identity` is
+applied and logged at `warn`, since clients then need the new id.
+`state_dir` is the one setting that still needs a restart; a reload logs it
+when it changed.
 
 ### Indexes
 
@@ -121,6 +135,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 User=irsync
@@ -181,6 +196,8 @@ with the `/usr/local/etc/irsync/` paths):
 ```
 
 Load it with `launchctl load ~/Library/LaunchAgents/net.irsync.daemon.plist`.
+launchd has no reload verb; `kill -HUP $(pgrep -f 'irsync daemon')` applies
+changed `[daemon]` settings without a restart.
 
 ## Logging
 

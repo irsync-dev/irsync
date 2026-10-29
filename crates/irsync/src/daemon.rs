@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -15,16 +16,19 @@ use irsync_proto::v1::{
     error::Code, export_entry, hello::Direction, Error, ExportEntry, ExportList, Hello,
 };
 use irsync_proto::PROTOCOL_VERSION;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, FileAuthorizer, Grants, Snapshot};
 use crate::config::exports::Export;
+use crate::config::file::Config;
 use crate::config::paths::Paths;
-use crate::config::settings::{listen_sockets, Settings};
+use crate::config::settings::{listen_sockets, DaemonSettings, Settings};
 use crate::filter::FilterSet;
 use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
+use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{resolve, ResolveError, Resolved};
@@ -54,10 +58,13 @@ struct Shared {
     indexes: Mutex<HashMap<PathBuf, IndexHandle>>,
     /// Cancels the per-index background tasks; cancelled when `run` ends.
     tasks: CancellationToken,
-    /// Age after which dormant sessions and abandoned partial files are collected.
-    dormant: Duration,
-    /// Hosted sessions (one connection per session id) and test hooks.
-    hosting: DaemonSessions,
+    /// Age (seconds) after which dormant sessions and abandoned partial
+    /// files are collected; read at every collection, so a reload applies.
+    dormant_secs: AtomicU64,
+    /// Hosted sessions (one connection per session id) and test hooks;
+    /// cloned into each connection, so a reload's `idle_timeout` applies to
+    /// the connections accepted after it.
+    hosting: Mutex<DaemonSessions>,
     #[cfg(feature = "test-hooks")]
     hellos: Arc<std::sync::atomic::AtomicU64>,
     /// Finished sessions, and files their hashers read.
@@ -67,11 +74,65 @@ struct Shared {
     hashed: Arc<std::sync::atomic::AtomicU64>,
 }
 
+impl Shared {
+    fn hosting(&self) -> DaemonSessions {
+        self.hosting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn dormant(&self) -> Duration {
+        Duration::from_secs(self.dormant_secs.load(Ordering::Relaxed))
+    }
+
+    /// The `[daemon]` settings that apply without a new endpoint.
+    fn apply(&self, d: &DaemonSettings) {
+        self.hosting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .idle_timeout = Some(d.idle_timeout);
+        self.dormant_secs
+            .store(d.dormant_session_timeout.as_secs(), Ordering::Relaxed);
+    }
+}
+
+/// How a running daemon re-reads its settings (`SIGHUP`): where the config
+/// is, how to unlock the identity, what the command line fixed, and whom to
+/// tell about the endpoint after every bind.
+pub struct Reloader {
+    pub paths: Paths,
+    pub pass: PassphraseSource,
+    /// `--listen` from the command line: kept over whatever the file says.
+    pub listen: Vec<HostPort>,
+    /// Signalled to reload.
+    pub notify: Arc<Notify>,
+    /// Called with every endpoint the daemon starts accepting on.
+    pub announce: Arc<dyn Fn(&Endpoint) + Send + Sync>,
+}
+
 pub struct Daemon {
     endpoint: Endpoint,
     shared: Arc<Shared>,
     /// Indexes opened by `new` whose background tasks `run` starts.
     startup: Vec<(String, Export, IndexHandle)>,
+    reload: Option<Reloader>,
+}
+
+/// Counts the connection handlers an endpoint has running.
+struct Live(Arc<AtomicUsize>);
+
+impl Live {
+    fn enter(count: &Arc<AtomicUsize>) -> Live {
+        count.fetch_add(1, Ordering::SeqCst);
+        Live(count.clone())
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Daemon {
@@ -101,13 +162,13 @@ impl Daemon {
             home,
             indexes: Mutex::new(HashMap::new()),
             tasks: CancellationToken::new(),
-            dormant: settings.daemon.dormant_session_timeout,
-            hosting: DaemonSessions {
+            dormant_secs: AtomicU64::new(settings.daemon.dormant_session_timeout.as_secs()),
+            hosting: Mutex::new(DaemonSessions {
                 idle_timeout: Some(settings.daemon.idle_timeout),
                 #[cfg(feature = "test-hooks")]
                 fault: Some(Arc::default()),
                 ..DaemonSessions::default()
-            },
+            }),
             #[cfg(feature = "test-hooks")]
             hellos: Default::default(),
             #[cfg(feature = "test-hooks")]
@@ -128,7 +189,18 @@ impl Daemon {
             endpoint,
             shared,
             startup,
+            reload: None,
         })
+    }
+
+    /// Makes the daemon re-read its settings when `reload.notify` is signalled.
+    pub fn with_reload(mut self, reload: Reloader) -> Daemon {
+        self.reload = Some(reload);
+        self
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 
     /// Counter of successfully decoded Hello messages.
@@ -152,66 +224,137 @@ impl Daemon {
     /// The fault injector every session of this daemon consults.
     #[cfg(feature = "test-hooks")]
     pub fn fault_injector(&self) -> Arc<FaultInjector> {
-        self.shared.hosting.fault.clone().unwrap_or_default()
+        self.shared.hosting().fault.unwrap_or_default()
     }
 
     /// `NeedChunks` re-requests sent by this daemon's receivers.
     #[cfg(feature = "test-hooks")]
     pub fn rerequest_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
-        self.shared.hosting.rerequests.clone()
+        self.shared.hosting().rerequests
     }
 
     /// The event log every daemon receiver writes to.
     #[cfg(feature = "test-hooks")]
     pub fn receiver_events(&self) -> crate::session::EventLog {
-        self.shared.hosting.events.clone()
+        self.shared.hosting().events
     }
 
     /// Ids of every session hosted so far (fresh or resumed), in order.
     #[cfg(feature = "test-hooks")]
     pub fn hosted_sessions(&self) -> Arc<std::sync::Mutex<Vec<[u8; 16]>>> {
-        self.shared.hosting.registry.hosted.clone()
+        self.shared.hosting().registry.hosted.clone()
     }
 
     /// Set to make every daemon receiver's finalize take that much longer.
     #[cfg(feature = "test-hooks")]
     pub fn slow_finalize(&self) -> Arc<std::sync::Mutex<Option<Duration>>> {
-        self.shared.hosting.slow_finalize.clone()
+        self.shared.hosting().slow_finalize
     }
 
     /// The streams a daemon sender runs at once; zero keeps the default.
     #[cfg(feature = "test-hooks")]
     pub fn sender_parallel(&self) -> Arc<std::sync::atomic::AtomicUsize> {
-        self.shared.hosting.sender_parallel.clone()
+        self.shared.hosting().sender_parallel
     }
 
-    pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
+    pub async fn run(mut self, shutdown: CancellationToken) -> Result<()> {
         let _tasks = self.shared.tasks.clone().drop_guard();
         for (name, export, index) in &self.startup {
             start_tasks(&self.shared, name, export, index.clone());
         }
+        let mut live = Arc::new(AtomicUsize::new(0));
         loop {
+            let reload = async {
+                match &self.reload {
+                    Some(r) => r.notify.notified().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 inc = self.endpoint.accept() => {
                     let Some(inc) = inc else { break };
                     let shared = self.shared.clone();
+                    let live = Live::enter(&live);
                     tokio::spawn(async move {
+                        let _live = live;
                         if let Err(e) = handle(shared, inc).await {
                             tracing::warn!("connection failed: {e:#}");
                         }
                     });
                 }
+                _ = reload => match self.rebind().await {
+                    Ok(endpoint) => {
+                        let old = std::mem::replace(&mut self.endpoint, endpoint);
+                        let old_live = std::mem::replace(&mut live, Arc::new(AtomicUsize::new(0)));
+                        tokio::spawn(retire(old, old_live, self.shared.tasks.clone()));
+                    }
+                    Err(e) => tracing::warn!("reload failed, keeping the current settings: {e:#}"),
+                },
             }
         }
         self.endpoint.close().await;
         Ok(())
     }
+
+    /// Re-reads the config and binds a new endpoint from its `[daemon]`
+    /// table, applying the settings that need no endpoint on the way.
+    async fn rebind(&self) -> Result<Endpoint> {
+        let r = self.reload.as_ref().context("no reload source")?;
+        tracing::info!(config = %r.paths.config.display(), "reloading settings");
+        let mut settings = Config::load(&r.paths)?.settings;
+        if !r.listen.is_empty() {
+            settings.daemon.listen = r.listen.clone();
+        }
+        let endpoint = endpoint_from_settings(&settings, &r.pass).await?;
+        if endpoint.id() != self.endpoint.id() {
+            tracing::warn!(
+                old = %self.endpoint.id(),
+                new = %endpoint.id(),
+                "the daemon identity changed: clients must use the new id"
+            );
+        }
+        if settings.state_dir != self.shared.state_dir {
+            tracing::warn!(
+                "state_dir changed to {}; it takes effect at the next start",
+                settings.state_dir.display()
+            );
+        }
+        self.shared.apply(&settings.daemon);
+        (r.announce)(&endpoint);
+        tracing::info!("settings reloaded");
+        Ok(endpoint)
+    }
+}
+
+/// An endpoint a reload replaced: refuses what still arrives on it and
+/// closes once the connections it accepted have ended, or at shutdown.
+async fn retire(endpoint: Endpoint, live: Arc<AtomicUsize>, stop: CancellationToken) {
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = stop.cancelled() => break,
+            inc = endpoint.accept() => match inc {
+                Some(inc) => {
+                    tracing::info!("refusing a connection to a retired endpoint");
+                    inc.refuse();
+                }
+                None => break,
+            },
+            _ = tick.tick() => {
+                if live.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    tracing::info!("closing the retired endpoint");
+    endpoint.close().await;
 }
 
 /// The index for `export`, opened on first use, which also starts its
 /// background tasks.
-fn index_for(shared: &Shared, name: &str, export: &Export) -> Result<IndexHandle> {
+fn index_for(shared: &Arc<Shared>, name: &str, export: &Export) -> Result<IndexHandle> {
     let (index, fresh) = open_index(shared, name, export)?;
     if fresh {
         start_tasks(shared, name, export, index.clone());
@@ -237,7 +380,7 @@ fn open_index(shared: &Shared, name: &str, export: &Export) -> Result<(IndexHand
 
 /// Starts the GC loop of `index` and, with `warm_index`, its warm-up, both
 /// stopped by `shared.tasks`.
-fn start_tasks(shared: &Shared, name: &str, export: &Export, index: IndexHandle) {
+fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHandle) {
     let (name, root) = (name.to_string(), export.path.clone());
     if export.warm_index {
         let (index, name, root, stop) = (
@@ -264,7 +407,7 @@ fn start_tasks(shared: &Shared, name: &str, export: &Export, index: IndexHandle)
             }
         });
     }
-    let (dormant, stop, gc_index) = (shared.dormant, shared.tasks.clone(), index);
+    let (shared, stop, gc_index) = (shared.clone(), shared.tasks.clone(), index);
     tokio::spawn(async move {
         let first = tokio::time::Instant::now() + GC_FIRST_RUN;
         let mut tick = tokio::time::interval_at(first, GC_INTERVAL);
@@ -275,6 +418,7 @@ fn start_tasks(shared: &Shared, name: &str, export: &Export, index: IndexHandle)
             }
             // Walks the export only when a day has passed or
             // collectable (dormant) partial records exist.
+            let dormant = shared.dormant();
             match gc_if_due(gc_index.clone(), &root, dormant, dormant).await {
                 Ok(Some(r)) => tracing::info!(
                     export = %name,
@@ -358,7 +502,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming) -> Result<()> {
                     return res;
                 }
             };
-            let hosting = shared.hosting.clone();
+            let hosting = shared.hosting();
             let place = Place {
                 root,
                 export: name,
@@ -506,15 +650,35 @@ fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<Sec
     Ok(secret)
 }
 
+/// The daemon's endpoint for `settings`: its identity (generated when
+/// missing), listen sockets, relay, discovery and port mapping.
+async fn endpoint_from_settings(settings: &Settings, pass: &PassphraseSource) -> Result<Endpoint> {
+    let secret = load_or_generate_identity(&settings.daemon.identity, pass)?;
+    let bind_addrs = listen_sockets(&settings.daemon.listen).await?;
+    let opts = daemon_endpoint_opts(&settings.daemon, secret, bind_addrs);
+    if settings.daemon.discovery.dht && opts.relay == RelayChoice::Disabled {
+        tracing::warn!(
+            "dht is enabled but relays are disabled: DHT records will carry no addresses"
+        );
+    }
+    Ok(build_endpoint(opts).await?)
+}
+
 /// Runs the daemon: hosts, exports and grants are re-read from the config
-/// file (and any split file beside it) on every connection.
+/// file (and any split file beside it) on every connection; the `[daemon]`
+/// settings are re-read and applied when `reload` is signalled (`SIGHUP`).
+/// `listen` is the command line's override of the file's `listen`.
 pub async fn run_from_settings(
-    settings: Settings,
     paths: &Paths,
     pass: &PassphraseSource,
+    listen: Vec<HostPort>,
     shutdown: CancellationToken,
+    reload: Arc<Notify>,
 ) -> Result<()> {
-    let secret = load_or_generate_identity(&settings.daemon.identity, pass)?;
+    let mut settings = Config::load(paths)?.settings;
+    if !listen.is_empty() {
+        settings.daemon.listen = listen.clone();
+    }
     let authz = Arc::new(FileAuthorizer::new(paths.clone()));
     let snap = authz.snapshot()?;
     if snap.exports.is_empty() {
@@ -523,21 +687,23 @@ pub async fn run_from_settings(
             snap.exports_file.display()
         );
     }
-    let bind_addrs = listen_sockets(&settings.daemon.listen).await?;
-    let opts = daemon_endpoint_opts(&settings.daemon, secret, bind_addrs);
-    if settings.daemon.discovery.dht && opts.relay == RelayChoice::Disabled {
-        tracing::warn!(
-            "dht is enabled but relays are disabled: DHT records will carry no addresses"
-        );
-    }
-    let endpoint = build_endpoint(opts).await?;
-    let daemon = Daemon::new(&settings, authz, endpoint)?;
-    // Printed only once startup can no longer fail: a parent process that
-    // reads these lines may dial at once.
-    println!("endpoint id: {}", daemon.endpoint.id());
-    for addr in daemon.endpoint.bound_sockets() {
-        println!("listening on: {addr}");
-    }
+    let endpoint = endpoint_from_settings(&settings, pass).await?;
+    // Printed only once startup can no longer fail (and again after every
+    // reload): a parent process that reads these lines may dial at once.
+    let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(|ep: &Endpoint| {
+        println!("endpoint id: {}", ep.id());
+        for addr in ep.bound_sockets() {
+            println!("listening on: {addr}");
+        }
+    });
+    let daemon = Daemon::new(&settings, authz, endpoint)?.with_reload(Reloader {
+        paths: paths.clone(),
+        pass: pass.clone(),
+        listen,
+        notify: reload,
+        announce: announce.clone(),
+    });
+    announce(daemon.endpoint());
     daemon.run(shutdown).await
 }
 

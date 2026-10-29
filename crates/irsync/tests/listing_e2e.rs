@@ -19,7 +19,7 @@ fn ok(home: &Path, args: &[&str]) -> String {
 /// two granted to the client; returns (server, client, photos, docs, id, address).
 struct Setup {
     _dir: tempfile::TempDir,
-    _daemon: common::DaemonGuard,
+    _daemon: common::BinaryDaemon,
     server: std::path::PathBuf,
     client: std::path::PathBuf,
     photos: std::path::PathBuf,
@@ -41,7 +41,8 @@ fn setup() -> Setup {
     }
     std::fs::write(photos.join("a/x.jpg"), b"x").unwrap();
     std::fs::write(photos.join("b.jpg"), b"b").unwrap();
-    let (daemon, daemon_id, listen, _log) = spawn_daemon_binary(&server);
+    let daemon = spawn_daemon_binary(&server);
+    let (daemon_id, listen) = (daemon.id, daemon.listen);
     let client_id = ok(&client, &["id", "show"])
         .lines()
         .nth(1)

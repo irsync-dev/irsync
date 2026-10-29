@@ -18,9 +18,6 @@ unfinished plan workspaces.
 
 Rough cost next to each. The last two are not things to fix.
 
-- [ ] `[daemon]` settings need a restart; exports, grants and aliases take
-      effect on the next connection. Medium: a reload path for listen, relay
-      and discovery.
 - [ ] On a push the daemon applies full archive metadata whatever the
       client's `-p -t -o -g -l -D` say. Medium: a protocol change so the
       daemon receives the flags.

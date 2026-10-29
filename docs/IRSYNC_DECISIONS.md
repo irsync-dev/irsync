@@ -67,6 +67,12 @@ cross-referenced from commit messages and review notes.
   whole answer. The daemon keeps its own key. Cost if wrong: a user with an
   encrypted ssh key and no irsync key is asked for a passphrase on first
   use instead of getting a silent new key; `irsync id generate` opts out.
+- **R34 — `SIGHUP` reloads the `[daemon]` settings** (2026-10-29): a new
+  endpoint is bound from the re-read file (a command-line `--listen` kept),
+  the old one refuses newcomers and closes once its sessions end;
+  `idle_timeout` and `dormant_session_timeout` apply from then on; a reload
+  that cannot be applied changes nothing. `state_dir` still needs a
+  restart. Design: `superpowers/specs/2026-10-29-daemon-reload-design.md`.
 
 ### 1.3 Index (SQLite, WAL)
 

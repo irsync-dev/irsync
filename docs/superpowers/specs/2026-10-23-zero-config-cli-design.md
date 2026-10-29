@@ -63,6 +63,8 @@ typed into a file.
 
 - Picking up changes to the daemon's own settings (`listen`, relay, discovery,
   `idle_timeout`) without a restart. Only exports and grants are live.
+  (Superseded 2026-10-29: `SIGHUP` applies them, see
+  `2026-10-29-daemon-reload-design.md`.)
 - Anonymous or open exports. A connection from a key not listed in the
   exports file is still rejected before any protocol message is read.
 - Deriving an identity from an ssh-agent key, or using agent-held or

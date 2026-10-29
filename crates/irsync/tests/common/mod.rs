@@ -641,17 +641,53 @@ pub fn irsync_bin(home: &std::path::Path, args: &[&str]) -> std::process::Output
     child.wait_with_output().unwrap()
 }
 
+/// A running `irsync daemon` process (see [`spawn_daemon_binary`]).
+pub struct BinaryDaemon {
+    pub guard: DaemonGuard,
+    pub id: iroh::EndpointId,
+    /// Where it listened at startup.
+    pub listen: std::net::SocketAddr,
+    /// Its stderr.
+    pub log: std::path::PathBuf,
+    stdout: std::sync::mpsc::Receiver<String>,
+}
+
+impl BinaryDaemon {
+    pub fn pid(&self) -> u32 {
+        self.guard.0.id()
+    }
+
+    /// Sends `SIGHUP`: the daemon re-reads its settings.
+    pub fn reload(&self) {
+        let status = std::process::Command::new("kill")
+            .args(["-HUP", &self.pid().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "kill -HUP failed");
+    }
+
+    /// The next `listening on:` line the daemon prints (after a reload).
+    pub fn next_listen(&self) -> std::net::SocketAddr {
+        loop {
+            let line = self
+                .stdout
+                .recv_timeout(Duration::from_secs(15))
+                .expect("daemon printed no 'listening on:' line within 15 s");
+            if let Some(rest) = line.strip_prefix("listening on: ") {
+                return rest.trim().parse().unwrap();
+            }
+            assert!(
+                line.starts_with("endpoint id: "),
+                "unexpected stdout line {line:?}"
+            );
+        }
+    }
+}
+
 /// Starts the built `irsync daemon` with `server_home` as HOME, isolated
-/// (no relay, no lookup, no port mapper) on a loopback port. Returns the
-/// guard, the daemon's id, its listening address and its stderr log file.
-pub fn spawn_daemon_binary(
-    server_home: &std::path::Path,
-) -> (
-    DaemonGuard,
-    iroh::EndpointId,
-    std::net::SocketAddr,
-    std::path::PathBuf,
-) {
+/// (no relay, no lookup, no port mapper) on a loopback port, and waits for
+/// it to say where it listens.
+pub fn spawn_daemon_binary(server_home: &std::path::Path) -> BinaryDaemon {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     let cfg = server_home.join(".config/irsync");
@@ -698,5 +734,11 @@ pub fn spawn_daemon_binary(
             panic!("unexpected stdout line {line:?}");
         }
     }
-    (daemon, id.unwrap(), listen.unwrap(), log)
+    BinaryDaemon {
+        guard: daemon,
+        id: id.unwrap(),
+        listen: listen.unwrap(),
+        log,
+        stdout: rx,
+    }
 }

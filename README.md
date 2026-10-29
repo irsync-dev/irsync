@@ -318,8 +318,6 @@ partial files are waiting.
 - Only file-based Ed25519 keys are supported. Hardware keys and ssh-agent keys
   cannot be used, and of the keys under `~/.ssh` only `id_ed25519` is tried
   unless `identity` or `--identity` names another.
-- The `[daemon]` settings need a restart; exports, grants and host aliases
-  take effect on the next connection.
 - `--numeric-ids` is always on: owners and groups are transferred as numbers,
   never mapped by name.
 - The throughput target (filling a 1 Gbit/s link) applies to direct

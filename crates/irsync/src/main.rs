@@ -765,10 +765,6 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
 
     let result = (|| -> anyhow::Result<()> {
         let paths = Paths::resolve(d.config.as_deref());
-        let mut settings = Config::load(&paths)?.settings;
-        if !d.listen.is_empty() {
-            settings.daemon.listen = d.listen.clone();
-        }
         let pass = PassphraseSource::from_env(d.passphrase_file.clone());
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -778,7 +774,20 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
                 let _ = tokio::signal::ctrl_c().await;
                 token.cancel();
             });
-            irsync::daemon::run_from_settings(settings, &paths, &pass, shutdown).await
+            // SIGHUP: re-read irsync.toml and apply the [daemon] settings.
+            let reload = std::sync::Arc::new(tokio::sync::Notify::new());
+            let hup = reload.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                let Ok(mut hangup) = signal(SignalKind::hangup()) else {
+                    return;
+                };
+                while hangup.recv().await.is_some() {
+                    hup.notify_one();
+                }
+            });
+            irsync::daemon::run_from_settings(&paths, &pass, d.listen.clone(), shutdown, reload)
+                .await
         })
     })();
     match result {

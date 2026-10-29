@@ -25,7 +25,8 @@ fn add_and_allow_take_effect_without_restart() {
     std::fs::write(src.join("a.txt"), b"hello").unwrap();
 
     // 1-2. An isolated daemon with no exports; its stderr goes to a file.
-    let (mut daemon, daemon_id, listen, log) = spawn_daemon_binary(&server);
+    let mut daemon = spawn_daemon_binary(&server);
+    let (daemon_id, listen, log) = (daemon.id, daemon.listen, daemon.log.clone());
     let warning = std::fs::read_to_string(&log).unwrap();
     assert!(warning.contains("no exports defined"), "{warning}");
 
@@ -120,7 +121,10 @@ fn add_and_allow_take_effect_without_restart() {
     );
     let log_now = std::fs::read_to_string(&log).unwrap();
     assert!(log_now.matches("unauthorized").count() >= 2, "{log_now}");
-    assert!(daemon.0.try_wait().unwrap().is_none(), "daemon exited");
+    assert!(
+        daemon.guard.0.try_wait().unwrap().is_none(),
+        "daemon exited"
+    );
 
     // 8. The guard stops the daemon.
 }
