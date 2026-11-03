@@ -174,6 +174,10 @@ pub async fn index_root(
         incomplete: true,
         ..ScanSummary::default()
     });
+    // The digests are in the index once this returns.
+    tokio::task::spawn_blocking(move || hasher.flush())
+        .await
+        .map_err(io::Error::other)?;
     let mut r = report.into_inner().unwrap_or_else(|e| e.into_inner());
     r.incomplete = summary.incomplete;
     r.errors.extend(summary.errors);

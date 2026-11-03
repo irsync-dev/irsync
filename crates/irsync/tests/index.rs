@@ -354,7 +354,7 @@ fn reads_see_committed_writes() {
 }
 
 #[test]
-fn grouped_entries_from_many_threads_all_land() {
+fn queued_entries_from_many_threads_land_by_flush() {
     let (_d, h, _) = handle_with(&[]);
     let digest = digest_bytes(&[5u8; 4096]);
     std::thread::scope(|s| {
@@ -364,14 +364,14 @@ fn grouped_entries_from_many_threads_all_land() {
                 let path = format!("f{i:02}");
                 let mut e = entry(&path, Some(digest.hash));
                 e.size = digest.size;
-                h.put_entry_grouped(irsync::index::NewEntry {
+                h.queue_entry(irsync::index::NewEntry {
                     path: rp(&path),
                     entry: e,
                     ctime: (1, 2),
                     digest: Some(digest),
-                })
-                .unwrap();
-                // Written by the time the call returns, by whichever task.
+                });
+                h.flush();
+                // Written by the time the flush returns.
                 assert!(h.read(|r| r.get_entry(&rp(&path))).unwrap().is_some());
             });
         }
@@ -380,4 +380,52 @@ fn grouped_entries_from_many_threads_all_land() {
         .read(|r| r.find_paths_by_whole_hash(&digest.hash))
         .unwrap();
     assert_eq!(paths.len(), 16);
+}
+
+#[test]
+fn queueing_never_waits_for_the_index_lock() {
+    let (_d, h, _) = handle_with(&[]);
+    let digest = digest_bytes(&[6u8; 4096]);
+    let mut e = entry("q", Some(digest.hash));
+    e.size = digest.size;
+    let held = h.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let queuer = h.clone();
+    std::thread::spawn(move || {
+        queuer.queue_entry(irsync::index::NewEntry {
+            path: rp("q"),
+            entry: e,
+            ctime: (1, 2),
+            digest: Some(digest),
+        });
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("queueing waited for the index lock");
+    drop(held);
+    h.flush();
+    assert!(h.read(|r| r.get_entry(&rp("q"))).unwrap().is_some());
+}
+
+#[test]
+fn a_bad_entry_does_not_cost_its_batch() {
+    let (_d, h, _) = handle_with(&[]);
+    let digest = digest_bytes(&[8u8; 4096]);
+    let held = h.lock().unwrap();
+    // Queued while the writer waits for the lock: one batch.
+    for (p, whole) in [("a", digest.hash), ("bad", [0u8; 32]), ("c", digest.hash)] {
+        let mut e = entry(p, Some(whole));
+        e.size = digest.size;
+        h.queue_entry(irsync::index::NewEntry {
+            path: rp(p),
+            entry: e,
+            ctime: (1, 2),
+            digest: Some(digest.clone()),
+        });
+    }
+    drop(held);
+    h.flush();
+    let has = |p| h.read(|r| r.get_entry(&rp(p))).unwrap().is_some();
+    assert!(has("a") && has("c"));
+    assert!(!has("bad"));
 }

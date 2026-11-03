@@ -1170,6 +1170,13 @@ async fn run_role(
         }
         r => r,
     };
+    // What the session queued for the index is written before it ends.
+    let index = ctx.index().clone();
+    let _ = blocking(move || {
+        index.flush();
+        Ok(())
+    })
+    .await;
     ctx.meter.finish();
     let sampled = sampler.map(|s| s.stop());
     record_session(&ctx.meter, res.as_ref().ok());

@@ -44,6 +44,7 @@ async fn first_digest_reads_second_uses_cache() {
     set_mtime(&root.path().join("f"), 1_700_000_000, 5);
     let it = item(root.path(), b"f");
     let d1 = h.digest(&it).await.unwrap();
+    h.flush();
     assert_eq!(h.stats().files_hashed.load(Relaxed), 1);
     assert_eq!(h.stats().bytes_hashed.load(Relaxed), 11);
     let d2 = h.digest(&it).await.unwrap();
@@ -83,6 +84,7 @@ async fn cached_returns_none_before_first_digest() {
     let it = item(root.path(), b"f");
     assert!(h.cached(&it).unwrap().is_none());
     let d = h.digest(&it).await.unwrap();
+    h.flush();
     assert_eq!(h.cached(&it).unwrap(), Some(d));
     assert_eq!(h.stats().files_hashed.load(Relaxed), 1);
 }
@@ -108,6 +110,7 @@ async fn a_forced_hasher_reports_no_cached_digest() {
     fs::write(root.path().join("f"), b"data").unwrap();
     let it = item(root.path(), b"f");
     let d = h.digest(&it).await.unwrap();
+    h.flush();
     assert_eq!(h.cached(&it).unwrap(), Some(d));
     // `-c`: a fresh row is not evidence; the file has to be read.
     let forced = h.with_force(true);

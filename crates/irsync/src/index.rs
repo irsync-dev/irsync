@@ -10,7 +10,7 @@ use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
+use std::sync::{mpsc, Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -140,10 +140,35 @@ impl Reader<'_> {
             .optional()?;
         row.map(|(p, o)| Ok((relpath(&p)?, o))).transpose()
     }
+
+    pub fn partial(&self, path: &RelPath) -> Result<Option<Partial>> {
+        let row = self
+            .conn
+            .prepare_cached(
+                "SELECT expected_hash, size, ranges, updated_at FROM partials WHERE path = ?1",
+            )?
+            .query_row([path.as_bytes()], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .optional()?;
+        row.map(|(h, size, ranges, updated_at)| {
+            Ok(Partial {
+                expected_hash: arr(h, "partial hash")?,
+                size,
+                ranges: RangeSet::decode(&ranges[..])?,
+                updated_at,
+            })
+        })
+        .transpose()
+    }
 }
 
-/// An entry to write with [`Index::put_entries`] or
-/// [`IndexHandle::put_entry_grouped`].
+/// An entry to write with [`Index::put_entries`] or [`IndexHandle::queue_entry`].
 #[derive(Debug, Clone)]
 pub struct NewEntry {
     pub path: RelPath,
@@ -216,15 +241,62 @@ fn write_entry(
 }
 
 /// Shared handle; async callers lock it inside `spawn_blocking`. A handle
-/// with a meter times the waits for a lock another task holds as
-/// [`Activity::IndexWait`].
+/// with a meter times the waits for a lock another task holds, and for
+/// [`IndexHandle::flush`], as [`Activity::IndexWait`].
 #[derive(Clone)]
 pub struct IndexHandle {
     inner: Arc<Mutex<Index>>,
     meter: Option<Arc<Meter>>,
-    /// Entries waiting for [`IndexHandle::put_entry_grouped`] to write them.
-    pending: Arc<Mutex<Vec<NewEntry>>>,
+    /// To the thread that writes queued entries.
+    writer: mpsc::Sender<Job>,
     readers: Arc<Readers>,
+}
+
+/// Work for the writer thread, in the order it was queued.
+enum Job {
+    Put(Box<NewEntry>),
+    /// Answered once every entry queued before it is written.
+    Flush(mpsc::Sender<()>),
+}
+
+/// At most this many jobs per transaction, so the writer thread never holds
+/// the index lock for long.
+const BATCH: usize = 1024;
+
+/// The writer thread: writes the queued entries, each batch of whatever
+/// queued up meanwhile in one transaction. Ends once every handle is gone
+/// and the queue is empty.
+fn write_queued(index: Arc<Mutex<Index>>, jobs: mpsc::Receiver<Job>) {
+    while let Ok(first) = jobs.recv() {
+        let (mut batch, mut flushed) = (Vec::new(), Vec::new());
+        for job in std::iter::once(first).chain(jobs.try_iter().take(BATCH - 1)) {
+            match job {
+                Job::Put(e) => batch.push(*e),
+                Job::Flush(done) => flushed.push(done),
+            }
+        }
+        if !batch.is_empty() {
+            write_batch(&index, &batch);
+        }
+        for done in flushed {
+            let _ = done.send(());
+        }
+    }
+}
+
+/// Writes `batch` in one transaction; if that fails, entry by entry, so one
+/// bad entry costs only itself. The index is a cache: failures are logged.
+fn write_batch(index: &Mutex<Index>, batch: &[NewEntry]) {
+    let mut ix = index.lock().unwrap_or_else(|e| e.into_inner());
+    if ix.put_entries(batch).is_ok() {
+        return;
+    }
+    for e in batch {
+        let res = ix.put_entry(&e.path, &e.entry, e.ctime, e.digest.as_ref());
+        if let Err(err) = res {
+            tracing::warn!(path = ?e.path, error = %err, "indexing a file failed");
+        }
+    }
 }
 
 /// At most this many read connections per index.
@@ -298,10 +370,17 @@ impl IndexHandle {
             idle: Mutex::default(),
             freed: Condvar::new(),
         });
+        let inner = Arc::new(Mutex::new(index));
+        let (writer, jobs) = mpsc::channel();
+        let queued = inner.clone();
+        std::thread::Builder::new()
+            .name("irsync-index".into())
+            .spawn(move || write_queued(queued, jobs))
+            .expect("spawn the index writer thread");
         IndexHandle {
-            inner: Arc::new(Mutex::new(index)),
+            inner,
             meter: None,
-            pending: Arc::default(),
+            writer,
             readers,
         }
     }
@@ -311,7 +390,7 @@ impl IndexHandle {
         IndexHandle {
             inner: self.inner.clone(),
             meter: Some(meter),
-            pending: self.pending.clone(),
+            writer: self.writer.clone(),
             readers: self.readers.clone(),
         }
     }
@@ -328,23 +407,27 @@ impl IndexHandle {
         f(&Reader { conn })
     }
 
-    /// Writes `e` like [`Index::put_entry`], together with the entries other
-    /// tasks queued meanwhile: whoever gets the lock next writes them all in
-    /// one transaction (a group commit), and a task that then finds its
-    /// entry taken only waits for that lock holder to finish. Blocking;
-    /// returns once `e` is written, or its batch failed (the error goes to
-    /// the task that wrote the batch).
-    pub fn put_entry_grouped(&self, e: NewEntry) -> std::io::Result<()> {
-        let poisoned = || std::io::Error::other("index poisoned");
-        let queue = || self.pending.lock().map_err(|_| poisoned());
-        queue()?.push(e);
-        let mut ix = self.lock().map_err(|_| poisoned())?;
-        let batch = std::mem::take(&mut *queue()?);
-        if batch.is_empty() {
-            // Written by the task that held the lock before us.
-            return Ok(());
+    /// Queues `e` for the writer thread to write like [`Index::put_entry`],
+    /// without waiting for it: lookups see it once it is written, and
+    /// [`IndexHandle::flush`] waits for that.
+    pub fn queue_entry(&self, e: NewEntry) {
+        if let Err(mpsc::SendError(Job::Put(e))) = self.writer.send(Job::Put(Box::new(e))) {
+            // The writer thread is gone (it panicked): write it here.
+            let mut ix = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(err) = ix.put_entry(&e.path, &e.entry, e.ctime, e.digest.as_ref()) {
+                tracing::warn!(path = ?e.path, error = %err, "indexing a file failed");
+            }
         }
-        ix.put_entries(&batch).map_err(std::io::Error::other)
+    }
+
+    /// Waits until every entry queued before the call is written (or its
+    /// write failed and was logged). Blocking.
+    pub fn flush(&self) {
+        let (done, written) = mpsc::channel();
+        if self.writer.send(Job::Flush(done)).is_ok() {
+            let _waiting = self.meter.as_deref().map(|m| m.start(Activity::IndexWait));
+            let _ = written.recv();
+        }
     }
 
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, Index>> {
@@ -633,29 +716,7 @@ impl Index {
     }
 
     pub fn partial(&self, path: &RelPath) -> Result<Option<Partial>> {
-        let row = self
-            .conn
-            .prepare_cached(
-                "SELECT expected_hash, size, ranges, updated_at FROM partials WHERE path = ?1",
-            )?
-            .query_row([path.as_bytes()], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, i64>(1)? as u64,
-                    r.get::<_, Vec<u8>>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })
-            .optional()?;
-        row.map(|(h, size, ranges, updated_at)| {
-            Ok(Partial {
-                expected_hash: arr(h, "partial hash")?,
-                size,
-                ranges: RangeSet::decode(&ranges[..])?,
-                updated_at,
-            })
-        })
-        .transpose()
+        self.reader().partial(path)
     }
 
     pub fn put_partial(&mut self, path: &RelPath, p: &Partial) -> Result<()> {

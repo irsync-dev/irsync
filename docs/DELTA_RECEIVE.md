@@ -119,8 +119,8 @@ calls `index_old_file` itself; by then that is a cache hit.
    A file waiting for the sender's stream thus costs no open file, however
    many are in flight; the lock still covers every byte written to the
    `.part` up to its rename.
-5. **Partition** the missing chunks. One blocking pass holds the index lock
-   and asks `find_chunk` for each missing chunk's hash. A hit yields a path
+5. **Partition** the missing chunks. One blocking pass on a read connection
+   of the index asks `find_chunk` for each missing chunk's hash. A hit yields a path
    (an index key, turned absolute with `ctx.full_key`) and an offset inside
    that file; the chunk goes into the `local` set as a
    `(index, path, offset)` triple. A miss goes into the `remote` set. If the
@@ -131,8 +131,9 @@ calls `index_old_file` itself; by then that is a cache hit.
    by `warm_candidates`: the receiver's walk noted every regular file of
    at least one minimum chunk length without a fresh index row, by size
    (`warm::Cold`), and up to four of exactly this file's size are hashed
-   now through the session's hasher, so a renamed or copied file the
-   index did not know is found by the lookup. Each candidate is tried
+   now through the session's hasher and flushed into the index, so a
+   renamed or copied file the index did not know is found by the lookup.
+   Each candidate is tried
    once per session; `warm.rs` has the whole story, including
    `irsync index` for warming a tree ahead of time.
 

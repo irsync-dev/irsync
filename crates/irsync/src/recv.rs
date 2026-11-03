@@ -746,19 +746,20 @@ impl FileWriter {
 
     /// Adopt chunks covered by the index record. Returns whether a usable record existed.
     fn adopt_recorded(&mut self) -> io::Result<bool> {
-        let mut ix = self
-            .index
-            .lock()
-            .map_err(|_| io::Error::other("index poisoned"))?;
-        let Some(p) = ix.partial(&self.rel).map_err(index_err)? else {
+        // Looked up on a read connection: every file's writer asks.
+        let found = self.index.read(|r| r.partial(&self.rel));
+        let Some(p) = found.map_err(index_err)? else {
             return Ok(false);
         };
         if p.expected_hash != self.whole_hash || p.size != self.size {
             // A record for a different expected file: it can never be adopted.
-            ix.remove_partial(&self.rel).map_err(index_err)?;
+            self.index
+                .lock()
+                .map_err(|_| io::Error::other("index poisoned"))?
+                .remove_partial(&self.rel)
+                .map_err(index_err)?;
             return Ok(false);
         }
-        drop(ix);
         self.recorded = true;
         let ranges = coalesce(
             p.ranges

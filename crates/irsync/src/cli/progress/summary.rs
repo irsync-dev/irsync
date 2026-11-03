@@ -3,7 +3,7 @@
 //! ```text
 //! session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect
 //!   busy      walk 21.0s  hash 9.3s ×4.0  read 1:02  send 1:48  delete 1.3s
-//!   waiting   peer 44.0s  index lock 0.7s ×3.0
+//!   waiting   peer 44.0s  index 0.7s ×3.0
 //!   transfer  1,882 files  3.41G literal  12.00G matched  17.77M/s
 //!   hashing   2,107 files  15.30G  412.00M/s
 //!   disk      read 15.40G  write 0  fsync 0.0s
@@ -168,7 +168,7 @@ pub fn render(s: &SessionSummary, width: usize) -> Vec<String> {
         waiting.push(format!("peer {}", short_dur(u.peer_wait)));
     }
     if !u.busy(Activity::IndexWait).is_zero() {
-        waiting.push(timed("index lock", u, Activity::IndexWait));
+        waiting.push(timed("index", u, Activity::IndexWait));
     }
     if !waiting.is_empty() {
         rows("waiting", &waiting, width, &mut out);
@@ -289,7 +289,7 @@ mod tests {
             u.busy[a as usize] = secs(t);
             u.active[a as usize] = secs(t);
         }
-        // Four hashers at once; three tasks queued on the index lock.
+        // Four hashers at once; three tasks waiting on the index.
         u.active[Activity::Hash as usize] = secs(37.1 / 4.0);
         u.busy[Activity::IndexWait as usize] = secs(2.1);
         u.active[Activity::IndexWait as usize] = secs(0.7);
@@ -340,7 +340,7 @@ mod tests {
             "session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect"
                 .to_string(),
             "  busy      walk 21.0s  hash 9.3s ×4.0  read 1:02  send 1:48  delete 1.3s".to_string(),
-            "  waiting   peer 44.0s  index lock 0.7s ×3.0".to_string(),
+            "  waiting   peer 44.0s  index 0.7s ×3.0".to_string(),
             format!("  transfer  1,882 files  {lit} literal  12.00G matched  {rate}/s"),
             format!("  hashing   2,107 files  15.30G  {hrate}/s"),
             "  disk      read 15.40G  write 0  fsync 0.0s".to_string(),

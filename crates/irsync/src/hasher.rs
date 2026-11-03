@@ -7,7 +7,7 @@
 //! run is quick again.
 
 use crate::fs::paths::RelPath;
-use crate::index::IndexHandle;
+use crate::index::{IndexHandle, NewEntry};
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use irsync_proto::chunk::{digest_reader, FileDigest};
@@ -94,11 +94,7 @@ fn io_err(e: crate::index::IndexError) -> io::Error {
 }
 
 fn lookup(index: &IndexHandle, item: &ScanItem) -> io::Result<Option<FileDigest>> {
-    let found = index
-        .lock()
-        .map_err(|_| io::Error::other("index mutex poisoned"))?
-        .get_entry(&item.path)
-        .map_err(io_err)?;
+    let found = index.read(|r| r.get_entry(&item.path)).map_err(io_err)?;
     let Some(ie) = found else { return Ok(None) };
     let (a, b) = (&ie.entry, &item.entry);
     let fresh = a.size == b.size
@@ -131,7 +127,7 @@ impl Hasher {
     }
 
     /// Meter every file actually read (not a cache hit) into `m`.
-    /// Time this hasher's work, and its waits for the index lock, on `m`.
+    /// Time this hasher's work, and its waits on the index, on `m`.
     pub fn with_meter(mut self, m: Arc<Meter>) -> Self {
         self.index = self.index.metered(m.clone());
         self.meter = Some(m);
@@ -167,6 +163,12 @@ impl Hasher {
             return Ok(None);
         }
         lookup(&self.index, item)
+    }
+
+    /// Waits until the digests stored so far are in the index (they are
+    /// written by its writer thread). Blocking.
+    pub fn flush(&self) {
+        self.index.flush();
     }
 
     /// Digest of a regular file: from the index when the quick check passes,
@@ -229,11 +231,12 @@ impl Hasher {
             entry.whole_hash = Some(Hash {
                 bytes: d.hash.to_vec(),
             });
-            index
-                .lock()
-                .map_err(|_| io::Error::other("index mutex poisoned"))?
-                .put_entry(&item.path, &entry, item.ctime, Some(&d))
-                .map_err(io_err)?;
+            index.queue_entry(NewEntry {
+                path: item.path,
+                entry,
+                ctime: item.ctime,
+                digest: Some(d.clone()),
+            });
             Ok(d)
         })
         .await

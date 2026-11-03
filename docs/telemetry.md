@@ -92,12 +92,15 @@ every task.
   no local work and is waiting for the peer.
 - An activity that runs on the other side (for example `plan` on a push,
   where the daemon plans) shows up here as `peer_wait`, not as plan time.
-- `index_wait` is time spent waiting for the index lock while another task
-  holds it. The index is one SQLite database per root; its writes (saving
-  progress, recording a placed file, batched with the others waiting) take
-  turns behind one lock, while lookups run on read connections of their
-  own. The waiting task's own activity (`write` or `place`) counts the same
-  time too.
+- `index_wait` is time spent waiting on the index: for its lock while
+  another task holds it, or for the entries this side queued to be written.
+  The index is one SQLite database per root. Placed and hashed files are
+  queued for a writer thread that records them in batches, so nobody waits
+  for that, except once at the end of a session (and before a lookup that
+  needs freshly hashed files). The rarer writes (saving progress, dropping
+  a stale entry) take turns behind one lock, and lookups run on read
+  connections of their own. The waiting task's own activity (`write` or
+  `place`) counts the same time too.
 - `hash` on a receiver is the check of each arriving chunk against its hash,
   as well as hashing existing files.
 
@@ -112,7 +115,7 @@ the wall time. Busy divided by active is how many tasks did it at once, on
 average. The `-v` summary shows the active time, followed by `×N` when that
 average is 1.5 or more: `place 18.2s ×14.8` is 18.2 s of the run during which
 about fifteen files were being placed at a time. `index_wait` appears there
-as `index lock` on the `waiting` line.
+as `index` on the `waiting` line.
 
 ## Spans
 

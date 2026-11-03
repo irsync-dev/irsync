@@ -271,6 +271,16 @@ async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
     let since = super::wait_start(&ctx.meter);
     let hashed = ctx.hasher.digest(&item).await;
     super::record_hash_wait(&ctx.meter, since);
+    if hashed.is_ok() {
+        // The chunk lookup that follows reads the index: wait for the
+        // digest to be written there.
+        let index = ctx.index().clone();
+        let _ = blocking(move || {
+            index.flush();
+            Ok(())
+        })
+        .await;
+    }
     match hashed {
         Ok(digest) => Some(OldFile {
             digest,
@@ -879,12 +889,13 @@ async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest, hash: [u8; 32]) 
         e.whole_hash = Some(Hash {
             bytes: digest.hash.to_vec(),
         });
-        index.put_entry_grouped(NewEntry {
+        index.queue_entry(NewEntry {
             path: key,
             entry: e,
             ctime,
             digest: Some(digest),
-        })
+        });
+        Ok(())
     })
     .await;
     if let Err(e) = rec {

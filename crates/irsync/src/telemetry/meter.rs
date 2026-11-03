@@ -17,8 +17,8 @@ pub enum Activity {
     Write,
     Place,
     Delete,
-    /// Waiting for the index lock another task holds; also counted in the
-    /// activity that waits.
+    /// Waiting for the index lock another task holds, or for queued entries
+    /// to be written; also counted in the activity that waits.
     IndexWait,
 }
 
