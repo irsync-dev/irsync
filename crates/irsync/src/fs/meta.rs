@@ -4,7 +4,7 @@ use crate::fs::paths::RelPath;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::fcntl::{AtFlags, AT_FDCWD};
 use nix::sys::stat::{
-    fchmodat, lstat, mknod, utimensat, FchmodatFlags, Mode, SFlag, UtimensatFlags,
+    fchmodat, fstat, lstat, mknod, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
 };
 use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, Gid, Uid};
@@ -54,13 +54,28 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
         root.join(rel.to_os())
     };
     let st = lstat(&full)?;
-    let mode = st.st_mode as u32;
-    let kind = kind_of(mode);
-    let link_target = if kind == Kind::Symlink {
+    let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
         std::fs::read_link(&full)?.as_os_str().as_bytes().to_vec()
     } else {
         Vec::new()
     };
+    Ok(entry_of(st, rel, link_target))
+}
+
+/// [`lstat_entry_with_ctime`] of the file open as `file` (never a
+/// symlink), for the entry at `rel`.
+pub fn fstat_entry_with_ctime(
+    file: &std::fs::File,
+    rel: &RelPath,
+) -> io::Result<(FileEntry, (i64, u32))> {
+    Ok(entry_of(fstat(file)?, rel, Vec::new()))
+}
+
+// The `stat` field types differ by platform; some casts are no-ops here.
+#[allow(clippy::unnecessary_cast)]
+fn entry_of(st: FileStat, rel: &RelPath, link_target: Vec<u8>) -> (FileEntry, (i64, u32)) {
+    let mode = st.st_mode as u32;
+    let kind = kind_of(mode);
     // Linux and macOS both expose st_mtime / st_mtime_nsec through nix's libc FileStat.
     let ctime = (st.st_ctime as i64, st.st_ctime_nsec as u32);
     let entry = FileEntry {
@@ -83,7 +98,7 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
         user: String::new(),
         group: String::new(),
     };
-    Ok((entry, ctime))
+    (entry, ctime)
 }
 
 fn errno(e: nix::Error) -> io::Error {

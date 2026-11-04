@@ -433,27 +433,52 @@ pub(super) async fn open_writer(
     let expected = digest.clone();
     let (clone_file, clone_digest) = (old_file.clone(), old_digest);
     let inplace = ctx.opts.inplace && matches!(action, Action::Delta | Action::Append);
-    let mut w = blocking(move || {
+    // Same-size files not hashed yet may hold the chunks: hashed first, so
+    // the lookup below finds them.
+    if action == Action::Whole && !digest.chunks.is_empty() {
+        warm_candidates(&ctx, digest.size).await;
+    }
+    let lookup_base = ctx.base.clone();
+    // The writer, and where its missing chunks can be copied from, in one
+    // blocking call.
+    let (mut w, found) = blocking(move || {
         let clone = match (&clone_file, &clone_digest) {
             (Some(file), Some(digest)) => Some(CloneSource { file, digest }),
             _ => None,
         };
-        match clone {
+        let w = match clone {
             // In place needs the old file as hashed; otherwise a `.part`.
-            Some(old) if inplace => {
-                FileWriter::open_inplace(&base, &rel, &expected, index, activity, meter, old)
-            }
+            Some(old) if inplace => FileWriter::open_inplace(
+                &base,
+                &rel,
+                &expected,
+                index.clone(),
+                activity,
+                meter,
+                old,
+            ),
             clone => FileWriter::open_from(
                 &base,
                 &rel,
                 &expected,
                 pd.as_ref(),
-                index,
+                index.clone(),
                 activity,
                 meter,
                 clone,
             ),
-        }
+        }?;
+        let wanted: Vec<(u32, [u8; 32])> = w
+            .missing_chunks()
+            .into_iter()
+            .map(|i| (i, expected.chunks[i as usize].hash))
+            .collect();
+        let found = if wanted.is_empty() {
+            Ok(Vec::new())
+        } else {
+            local_sources(&index, &lookup_base, &wanted)
+        };
+        Ok((w, found))
     })
     .await?;
     if w.cloned() {
@@ -464,40 +489,26 @@ pub(super) async fn open_writer(
     }
     w.set_sparse(sparse);
     w.set_verify_whole(verify_whole);
-    let wanted: Vec<(u32, [u8; 32])> = w
-        .missing_chunks()
-        .into_iter()
-        .map(|i| (i, digest.chunks[i as usize].hash))
-        .collect();
     let (mut remote, mut local) = (Vec::new(), Vec::new());
-    if action == Action::Whole && !wanted.is_empty() {
-        warm_candidates(&ctx, digest.size).await;
-    }
-    if !wanted.is_empty() {
-        let (index, base) = (ctx.index().clone(), ctx.base.clone());
-        let found = blocking(move || local_sources(&index, &base, &wanted)).await;
-        match found {
-            Ok(found) => {
-                for (idx, hit) in found {
-                    match hit {
-                        // In place, the file's own bytes below the chunk
-                        // are gone by the time it is written.
-                        Some((p, off))
-                            if w.inplace()
-                                && p == key
-                                && off < digest.chunks[idx as usize].offset =>
-                        {
-                            remote.push(idx)
-                        }
-                        Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
-                        None => remote.push(idx),
+    match found {
+        Ok(found) => {
+            for (idx, hit) in found {
+                match hit {
+                    // In place, the file's own bytes below the chunk
+                    // are gone by the time it is written.
+                    Some((p, off))
+                        if w.inplace() && p == key && off < digest.chunks[idx as usize].offset =>
+                    {
+                        remote.push(idx)
                     }
+                    Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
+                    None => remote.push(idx),
                 }
             }
-            Err(e) => {
-                tracing::warn!(?path, error = %e, "chunk lookup failed");
-                remote = w.missing_chunks();
-            }
+        }
+        Err(e) => {
+            tracing::warn!(?path, error = %e, "chunk lookup failed");
+            remote = w.missing_chunks();
         }
     }
     let mut bases = match old_size {
@@ -639,7 +650,7 @@ pub(super) async fn settle_identical(
         apply_metadata_fd(&file, &entry, &apply)
     })
     .await?;
-    record(&ctx, &path, &digest, digest.hash).await;
+    record(&ctx, &path, &digest, digest.hash, None).await;
     Ok(())
 }
 
@@ -664,10 +675,13 @@ async fn read_local(
 /// delivers the rest. Each copy is verified like a network chunk; one that
 /// no longer matches stays missing and is re-requested once every unit of
 /// the request has ended. Counts as one unit of the file's request.
+/// `alone`: the sender delivers none of the file's chunks, so nothing else
+/// waits for the writer lock.
 pub(super) async fn copy_local_chunks(
     ctx: Arc<Ctx>,
     route: Route,
     local: Vec<LocalChunk>,
+    alone: bool,
     events: mpsc::UnboundedSender<Ev>,
     file_id: u64,
 ) {
@@ -679,13 +693,18 @@ pub(super) async fn copy_local_chunks(
         let Some(len) = route.digest.chunks.get(idx as usize).map(|c| c.len) else {
             continue;
         };
-        // Read outside the writer lock: network streams keep writing meanwhile.
-        let data = match read_local(from.clone(), offset, len, ctx.meter.clone()).await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
-                settle(&route, idx);
-                continue;
+        // Read outside the writer lock while network streams write into
+        // the file; alone, read and write in one blocking call under it.
+        let data = if alone {
+            None
+        } else {
+            match read_local(from.clone(), offset, len, ctx.meter.clone()).await {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
+                    settle(&route, idx);
+                    continue;
+                }
             }
         };
         if let Some(g) = &route.gate {
@@ -697,7 +716,18 @@ pub(super) async fn copy_local_chunks(
         let Some(w) = guard.as_mut() else {
             break; // The writer was retired (new chunk list, failure).
         };
-        if let Err(e) = write_into(&ctx, &route, w, idx, &data, false).await {
+        let res = match &data {
+            Some(data) => write_into(&ctx, &route, w, idx, data, false).await,
+            None => {
+                let was_open = w.is_open();
+                let res = w.copy_local(idx, &from, offset).await;
+                if !was_open && w.is_open() {
+                    ctx.hooks.event("open", &route.path);
+                }
+                res
+            }
+        };
+        if let Err(e) = res {
             // Stale bytes never verify; any failure leaves the chunk
             // missing for the follow-up request.
             tracing::debug!(from = ?from, idx, error = %e, "local copy rejected");
@@ -873,16 +903,23 @@ pub(super) async fn finalize(
         // Nothing was ever written (an empty file): finalize opens it.
         ctx.hooks.event("open", &path);
     }
-    let hash = w.finalize(&entry, &apply).await?;
+    let placed = w.place(&entry, &apply).await?;
     ctx.hooks.event("placed", &path);
-    record(&ctx, &path, &digest, hash).await;
+    record(&ctx, &path, &digest, placed.hash, placed.stat).await;
     Ok(())
 }
 
 /// Records the placed file in the index with its chunk list and whole-file
 /// hash (the sender's, or for an `APPEND` the one folded from the bytes),
-/// so later sessions can quick-check and reuse it.
-async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest, hash: [u8; 32]) {
+/// so later sessions can quick-check and reuse it. `stat` is the file's
+/// entry as read when it was placed; without it the path is looked at.
+async fn record(
+    ctx: &Ctx,
+    path: &RelPath,
+    digest: &FileDigest,
+    hash: [u8; 32],
+    stat: Option<(FileEntry, (i64, u32))>,
+) {
     let (base, key, index, mut digest) = (
         ctx.base.clone(),
         ctx.key(path),
@@ -890,26 +927,42 @@ async fn record(ctx: &Ctx, path: &RelPath, digest: &FileDigest, hash: [u8; 32]) 
         digest.clone(),
     );
     digest.hash = hash;
+    if let Some(stat) = stat {
+        queue_record(&index, key, digest, stat);
+        return;
+    }
     let rec = blocking(move || {
-        let (mut e, ctime) = lstat_entry_with_ctime(&base, &key)?;
-        if e.size != digest.size {
-            return Ok(());
-        }
-        e.whole_hash = Some(Hash {
-            bytes: digest.hash.to_vec(),
-        });
-        index.queue_entry(NewEntry {
-            path: key,
-            entry: e,
-            ctime,
-            digest: Some(digest),
-        });
+        let stat = lstat_entry_with_ctime(&base, &key)?;
+        queue_record(&index, key, digest, stat);
         Ok(())
     })
     .await;
     if let Err(e) = rec {
         tracing::warn!(error = %e, "recording received file in the index failed");
     }
+}
+
+/// Queues the index entry of a placed file: `stat` with the whole-file
+/// hash and chunk list of `digest`, unless the sizes disagree (the file
+/// changed since).
+fn queue_record(
+    index: &IndexHandle,
+    key: RelPath,
+    digest: FileDigest,
+    (mut e, ctime): (FileEntry, (i64, u32)),
+) {
+    if e.size != digest.size {
+        return;
+    }
+    e.whole_hash = Some(Hash {
+        bytes: digest.hash.to_vec(),
+    });
+    index.queue_entry(NewEntry {
+        path: key,
+        entry: e,
+        ctime,
+        digest: Some(digest),
+    });
 }
 
 /// Chunk count of a data stream's range, if it lines up with the chunk list.

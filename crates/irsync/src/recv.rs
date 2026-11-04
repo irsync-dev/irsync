@@ -6,7 +6,7 @@
 //! chunks the old file already holds at the same offset are verified in
 //! place and never copied.
 
-use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
+use crate::fs::meta::{apply_metadata_fd, fstat_entry_with_ctime, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
@@ -678,23 +678,19 @@ impl FileWriter {
             return Ok(f.clone());
         }
         let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
-        let (file, len) = tokio::task::spawn_blocking(move || {
-            if let Some(dir) = part.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            let file = open_locked_part(&part, &activity)?;
-            // Another writer may have left bytes here meanwhile: below
-            // this length nothing is known to be a hole.
-            let len = file.metadata()?.len();
-            file.set_len(size)?;
-            Ok::<_, io::Error>((file, len))
-        })
-        .await
-        .map_err(io::Error::other)??;
+        let (file, len) =
+            tokio::task::spawn_blocking(move || open_sized_part(&part, size, &activity))
+                .await
+                .map_err(io::Error::other)??;
+        Ok(self.opened(file, len))
+    }
+
+    /// Holds the `.part` [`open_sized_part`] opened at `len` bytes.
+    fn opened(&mut self, file: File, len: u64) -> Arc<File> {
         self.hole_from = len;
         let file = Arc::new(file);
         self.file = Some(file.clone());
-        Ok(file)
+        file
     }
 
     /// The `.part` started as a clone of the old file.
@@ -849,14 +845,6 @@ impl FileWriter {
     }
 
     /// Whether `data` hashes to chunk `c`'s hash, timed as hashing.
-    fn verify(&self, c: &ChunkRecord, data: &[u8]) -> bool {
-        let _hashing = self.meter.as_deref().map(|m| m.start(Activity::Hash));
-        if let Some(m) = &self.meter {
-            m.add(Counter::BytesHashed, data.len() as u64);
-        }
-        *blake3::hash(data).as_bytes() == c.hash
-    }
-
     /// Bytes of the chunks this writer took from the sender's data.
     pub fn received(&self) -> u64 {
         self.received
@@ -865,58 +853,93 @@ impl FileWriter {
     /// Verify `data`, received from the sender, against chunk `idx` and
     /// write it at the chunk's offset.
     pub async fn write_chunk(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
-        self.put_chunk(idx, data, true).await
+        self.put_chunk(idx, Source::Bytes(data.to_vec()), true)
+            .await
     }
 
     /// [`FileWriter::write_chunk`] for chunk data read from a local file.
     pub async fn write_copied(&mut self, idx: u32, data: &[u8]) -> io::Result<()> {
-        self.put_chunk(idx, data, false).await
+        self.put_chunk(idx, Source::Bytes(data.to_vec()), false)
+            .await
     }
 
-    /// [`FileWriter::write_chunk`] for data from the sender (`remote`) or
-    /// from a local file.
-    async fn put_chunk(&mut self, idx: u32, data: &[u8], remote: bool) -> io::Result<()> {
+    /// Read chunk `idx`'s bytes from `from` at `offset`, then write them
+    /// like `write_copied`, all in one blocking call.
+    pub async fn copy_local(&mut self, idx: u32, from: &Path, offset: u64) -> io::Result<()> {
+        let from = from.to_path_buf();
+        self.put_chunk(idx, Source::Local { from, offset }, false)
+            .await
+    }
+
+    /// Verifies chunk `idx` from `src` (the sender, `remote`, or a local
+    /// file) and writes it at the chunk's offset: read, check, the `.part`'s
+    /// open on the first write, and the write in one blocking call.
+    async fn put_chunk(&mut self, idx: u32, src: Source, remote: bool) -> io::Result<()> {
         let c = *self.chunks.get(idx as usize).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
         })?;
         let meter = self.meter.clone();
-        if data.len() != c.len as usize || !self.verify(&c, data) {
-            return Err(invalid(format!("chunk {idx} does not match its hash")));
-        }
-        let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
         #[cfg(feature = "test-hooks")]
         let inject = self.fail_at == Some(idx);
         #[cfg(not(feature = "test-hooks"))]
         let inject = false;
-        let file = self.ensure_open().await?;
-        // A hole (`set_len` past the opened length) already reads as zeros;
-        // below `hole_from` an earlier writer's bytes may be there.
-        let hole = self.sparse && c.offset >= self.hole_from && data.iter().all(|&b| b == 0);
-        let res = if hole && !inject {
-            Ok(())
-        } else {
-            let buf = data.to_vec();
-            #[cfg(feature = "test-hooks")]
-            {
-                self.written += data.len() as u64;
-            }
-            tokio::task::spawn_blocking(move || {
-                if inject {
-                    return Err(io::Error::from_raw_os_error(nix::libc::ENOSPC));
+        let (held, hole_from, sparse) = (self.file.clone(), self.hole_from, self.sparse);
+        let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
+        let (opened, data, hole, res) = tokio::task::spawn_blocking(move || {
+            let data = match src {
+                Source::Bytes(data) => data,
+                Source::Local { from, offset } => {
+                    let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
+                    let mut buf = vec![0u8; c.len as usize];
+                    crate::fs::safe::open_regular_nofollow(&from)?
+                        .read_exact_at(&mut buf, offset)?;
+                    if let Some(m) = &meter {
+                        m.add(Counter::DiskRead, buf.len() as u64);
+                    }
+                    buf
                 }
-                file.write_all_at(&buf, c.offset)
-            })
-            .await
-            .map_err(io::Error::other)
-            .and_then(|r| r)
-        };
+            };
+            if data.len() != c.len as usize || !verify(meter.as_deref(), &c, &data) {
+                return Err(invalid(format!("chunk {idx} does not match its hash")));
+            }
+            let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
+            let opened = match held {
+                Some(_) => None,
+                None => Some(open_sized_part(&part, size, &activity)?),
+            };
+            let (file, hole_from) = match (&held, &opened) {
+                (Some(f), _) => (&**f, hole_from),
+                (None, Some((f, len))) => (f, *len),
+                (None, None) => unreachable!("opened above"),
+            };
+            // A hole (`set_len` past the opened length) already reads as
+            // zeros; below `hole_from` an earlier writer's bytes may be there.
+            let hole = sparse && c.offset >= hole_from && data.iter().all(|&b| b == 0);
+            let res = if hole && !inject {
+                Ok(())
+            } else if inject {
+                Err(io::Error::from_raw_os_error(nix::libc::ENOSPC))
+            } else {
+                file.write_all_at(&data, c.offset)
+            };
+            Ok((opened, data, hole, res))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        if let Some((file, len)) = opened {
+            self.opened(file, len);
+        }
+        #[cfg(feature = "test-hooks")]
+        if !hole || inject {
+            self.written += data.len() as u64;
+        }
         if let Err(e) = res {
             if let Err(pe) = self.persist().await {
                 tracing::warn!(path = ?self.part, error = %pe, "persisting partial after write error failed");
             }
             return Err(e);
         }
-        if let Some(m) = &meter {
+        if let Some(m) = &self.meter {
             if !hole || inject {
                 m.add(Counter::DiskWrite, data.len() as u64);
             }
@@ -924,7 +947,7 @@ impl FileWriter {
         self.activity.fetch_add(1, Ordering::Relaxed);
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
-            self.tree.add(c.offset, data);
+            self.tree.add(c.offset, &data);
             self.chunks_since_persist += 1;
             if remote {
                 self.received += data.len() as u64;
@@ -936,27 +959,6 @@ impl FileWriter {
             self.persist().await?;
         }
         Ok(())
-    }
-
-    /// Read chunk `idx`'s bytes from `from` at `offset`, then write them like `write_chunk`.
-    pub async fn copy_local(&mut self, idx: u32, from: &Path, offset: u64) -> io::Result<()> {
-        let c = *self.chunks.get(idx as usize).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
-        })?;
-        let from = from.to_path_buf();
-        let meter = self.meter.clone();
-        let data = tokio::task::spawn_blocking(move || {
-            let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
-            let mut buf = vec![0u8; c.len as usize];
-            crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
-            if let Some(m) = &meter {
-                m.add(Counter::DiskRead, buf.len() as u64);
-            }
-            Ok::<_, io::Error>(buf)
-        })
-        .await
-        .map_err(io::Error::other)??;
-        self.put_chunk(idx, &data, false).await
     }
 
     fn partial_record(&self) -> Partial {
@@ -1005,10 +1007,20 @@ impl FileWriter {
     /// the latest); nothing appears at the final name.
     /// Returns the file's whole-file hash (folded from its chunks).
     pub async fn finalize(
-        mut self,
+        self,
         entry: &FileEntry,
         opts: &ApplyOpts,
     ) -> Result<[u8; 32], FinalizeError> {
+        self.place(entry, opts).await.map(|p| p.hash)
+    }
+
+    /// [`FileWriter::finalize`], also returning what the placed file's
+    /// entry now is, as the same blocking step read it.
+    pub async fn place(
+        mut self,
+        entry: &FileEntry,
+        opts: &ApplyOpts,
+    ) -> Result<Placed, FinalizeError> {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
@@ -1026,19 +1038,20 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (part, dest, size, expected, inplace) = (
+        let (part, dest, size, expected, inplace, rel) = (
             self.part.clone(),
             self.dest.clone(),
             self.size,
             self.verify_whole.then_some(self.whole_hash),
             self.inplace,
+            self.rel.clone(),
         );
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
         let sync_meter = meter.clone();
         #[cfg(feature = "test-hooks")]
         let delay = self.finalize_delay;
-        tokio::task::spawn_blocking(move || {
+        let placed = tokio::task::spawn_blocking(move || {
             // Simulated slow storage: local work that reports progress.
             #[cfg(feature = "test-hooks")]
             {
@@ -1102,14 +1115,19 @@ impl FileWriter {
                 }
                 return Err(e.into());
             }
-            Ok(())
+            // Read after the rename, which changes the ctime.
+            Ok(fstat_entry_with_ctime(&file, &rel).ok())
         })
         .await
         .map_err(io::Error::other)??;
+        let placed = Placed {
+            hash: actual,
+            stat: placed,
+        };
         self.activity.fetch_add(1, Ordering::Relaxed);
         self.done = true;
         if !self.recorded {
-            return Ok(actual);
+            return Ok(placed);
         }
         let (index, rel) = (self.index.clone(), self.rel.clone());
         let removed = tokio::task::spawn_blocking(move || {
@@ -1126,8 +1144,50 @@ impl FileWriter {
             // The verified file is already in place; a stale record is harmless.
             tracing::warn!(path = ?self.dest, error = %e, "removing partial record failed");
         }
-        Ok(actual)
+        Ok(placed)
     }
+}
+
+/// Where [`FileWriter::put_chunk`] takes a chunk's bytes from.
+enum Source {
+    Bytes(Vec<u8>),
+    /// Read at `offset` of the regular file `from`.
+    Local {
+        from: PathBuf,
+        offset: u64,
+    },
+}
+
+/// Whether `data` is chunk `c`, the hashing timed on `meter`.
+fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
+    let _hashing = meter.map(|m| m.start(Activity::Hash));
+    if let Some(m) = meter {
+        m.add(Counter::BytesHashed, data.len() as u64);
+    }
+    *blake3::hash(data).as_bytes() == c.hash
+}
+
+/// Opens and locks the `.part` at `part` (creating its directory) and
+/// sizes it to `size`; also returns its length before that: another writer
+/// may have left bytes there meanwhile, and below that length nothing is
+/// known to be a hole.
+fn open_sized_part(part: &Path, size: u64, activity: &AtomicU64) -> io::Result<(File, u64)> {
+    if let Some(dir) = part.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = open_locked_part(part, activity)?;
+    let len = file.metadata()?.len();
+    file.set_len(size)?;
+    Ok((file, len))
+}
+
+/// A file [`FileWriter::place`] put at its name.
+pub struct Placed {
+    /// Its whole-file hash, folded from its chunks.
+    pub hash: [u8; 32],
+    /// Its entry and ctime, read through the descriptor once it was in
+    /// place (`None` if that read failed).
+    pub stat: Option<(FileEntry, (i64, u32))>,
 }
 
 impl Drop for FileWriter {

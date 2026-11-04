@@ -731,6 +731,7 @@ impl Receiver {
         // In place, writes are ordered, so the file gets one ascending
         // request (after its bases): its streams then open in order and
         // the one the cursor needs is never behind the others.
+        let alone = remote.is_empty();
         let (raw, request) = match (&route.gate, &route.old) {
             (Some(_), Some(_)) => (None, remote),
             _ => {
@@ -765,7 +766,7 @@ impl Receiver {
         if !local.is_empty() {
             let (ctx, events) = (self.ctx.clone(), self.events.clone());
             self.tasks
-                .spawn(copy_local_chunks(ctx, route, local, events, file_id));
+                .spawn(copy_local_chunks(ctx, route, local, alone, events, file_id));
         }
     }
 
