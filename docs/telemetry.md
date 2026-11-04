@@ -94,12 +94,12 @@ every task.
   where the daemon plans) shows up here as `peer_wait`, not as plan time.
 - `index_wait` is time spent waiting on the index: for its lock while
   another task holds it, or for the entries this side queued to be written.
-  The index is one SQLite database per root. Placed and hashed files are
-  queued for a writer thread that records them in batches, so nobody waits
-  for that, except once at the end of a session (and before a lookup that
-  needs freshly hashed files). The rarer writes (saving progress, dropping
-  a stale entry) take turns behind one lock, and lookups run on read
-  connections of their own. The waiting task's own activity (`write` or
+  The index is one SQLite database per root. Placed and hashed files, and
+  entries of copy sources found gone, are queued for a writer thread that
+  writes them in batches, so nobody waits for that, except once at the end
+  of a session (and before a lookup that needs freshly hashed files). The
+  rarer writes (saving progress) take turns behind one lock, and lookups
+  run on read connections of their own. The waiting task's own activity (`write` or
   `place`) counts the same time too.
 - `hash` on a receiver is the check of each arriving chunk against its hash,
   as well as hashing existing files.

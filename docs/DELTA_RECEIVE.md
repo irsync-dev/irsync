@@ -119,11 +119,16 @@ calls `index_old_file` itself; by then that is a cache hit.
    A file waiting for the sender's stream thus costs no open file, however
    many are in flight; the lock still covers every byte written to the
    `.part` up to its rename.
-5. **Partition** the missing chunks. One blocking pass on a read connection
-   of the index asks `find_chunk` for each missing chunk's hash. A hit yields a path
-   (an index key, turned absolute with `ctx.full_key`) and an offset inside
+5. **Partition** the missing chunks (`local_sources`). On a read connection
+   of the index, `find_chunks` lists the files holding each missing chunk's
+   hash, a page of 16 at a time by path. The first that is still the file
+   the index describes (same inode and size on disk) yields a path (an
+   index key, turned absolute with `ctx.full_key`) and an offset inside
    that file; the chunk goes into the `local` set as a
-   `(index, path, offset)` triple. A miss goes into the `remote` set. If the
+   `(index, path, offset)` triple. Files that are gone or were replaced are
+   passed over, and their entries queued for the writer thread to drop, so
+   a deleted tree's leftovers cost one `lstat` each, once. A chunk with no
+   such file goes into the `remote` set. If the
    lookup itself fails (index error, poisoned lock), the whole missing set
    goes remote, which is always correct, and a warning is logged.
 

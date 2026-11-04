@@ -15,7 +15,7 @@
 //! write goes through a [`Gate`] that admits chunks in ascending order,
 //! and the old content is only ever read above the write cursor.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
@@ -711,42 +711,52 @@ pub(super) async fn copy_local_chunks(
 /// A chunk index and the indexed file and offset holding it, if any.
 type ChunkHit = (u32, Option<(RelPath, u64)>);
 
+/// Indexed files holding a chunk looked at in one go: the first still the
+/// indexed file is copied from.
+const SOURCES_PER_PAGE: usize = 16;
+
 /// Where each of the `wanted` chunks (index, hash) can be copied from
 /// locally, per the index under `base`. A source file that is gone or was
-/// replaced (another inode or size than indexed) is dropped from the index
-/// and its chunks are looked up again, so no copy is planned from it; bytes
-/// changed in place are still caught when the copied chunk is verified.
+/// replaced (another inode or size than indexed) is passed over for the
+/// next file holding the chunk, and queued to be dropped from the index,
+/// so no copy is planned from it; bytes changed in place are still caught
+/// when the copied chunk is verified.
 fn local_sources(
     index: &IndexHandle,
     base: &Path,
     wanted: &[(u32, [u8; 32])],
 ) -> io::Result<Vec<ChunkHit>> {
-    let poisoned = || io::Error::other("index poisoned");
     let mut hits: Vec<_> = wanted.iter().map(|&(i, _)| (i, None)).collect();
-    let mut todo: Vec<usize> = (0..wanted.len()).collect();
-    let mut live = HashSet::new();
+    // The chunks still without a source, each with the last path looked at.
+    let mut todo: Vec<(usize, Option<RelPath>)> = (0..wanted.len()).map(|k| (k, None)).collect();
+    // Whether each source looked at is still the file the index describes,
+    // by the inode and size it described (a file this session records at a
+    // path judged gone is looked at afresh).
+    let mut live: HashMap<(RelPath, Option<(u64, u64)>), bool> = HashMap::new();
     while !todo.is_empty() {
-        // On a read connection: the hits, and what the index says of each
-        // new source.
-        let mut sources = HashMap::new();
+        // On a read connection: the next page of candidates, and what the
+        // index says of each.
+        let mut pages = Vec::with_capacity(todo.len());
+        let mut indexed = HashMap::new();
         index
             .read(|r| {
-                for &k in &todo {
-                    let hit = r.find_chunk(&wanted[k].1)?;
-                    if let Some((p, _)) = &hit {
-                        if !live.contains(p) && !sources.contains_key(p) {
-                            let e = r.get_entry(p)?;
-                            sources.insert(p.clone(), e.map(|e| (e.entry.inode, e.entry.size)));
+                for (k, after) in &todo {
+                    let page = r.find_chunks(&wanted[*k].1, after.as_ref(), SOURCES_PER_PAGE)?;
+                    for (p, _) in &page {
+                        if !indexed.contains_key(p) {
+                            indexed.insert(p.clone(), r.entry_identity(p)?);
                         }
                     }
-                    hits[k].1 = hit;
+                    pages.push((*k, page));
                 }
                 Ok(())
             })
             .map_err(io::Error::other)?;
-        // Whether each is still the file the index describes.
-        let mut gone = HashSet::new();
-        for (p, indexed) in sources {
+        for (p, &ident) in &indexed {
+            let key = (p.clone(), ident);
+            if live.contains_key(&key) {
+                continue;
+            }
             let full = if p.as_bytes().is_empty() {
                 base.to_path_buf()
             } else {
@@ -756,24 +766,27 @@ fn local_sources(
                 .ok()
                 .filter(|m| m.is_file())
                 .map(|m| (m.ino(), m.len()));
-            if here.is_some() && here == indexed {
-                live.insert(p);
-            } else {
-                gone.insert(p);
+            // No entry (removed since the page was read): gone as well.
+            let ok = here.is_some() && here == ident;
+            if let (false, Some((inode, size))) = (ok, ident) {
+                tracing::debug!(path = ?p, "local source gone; dropped from the index");
+                index.queue_removal(p.clone(), inode, size);
+            }
+            live.insert(key, ok);
+        }
+        todo.clear();
+        for (k, page) in pages {
+            let more = page.len() == SOURCES_PER_PAGE;
+            let last = page.last().map(|(p, _)| p.clone());
+            hits[k].1 = page
+                .into_iter()
+                .find(|(p, _)| live[&(p.clone(), indexed[p])]);
+            // Every candidate on the page is gone: the next page. The
+            // cursor only moves forward, so this ends.
+            if hits[k].1.is_none() && more {
+                todo.push((k, last));
             }
         }
-        if gone.is_empty() {
-            break;
-        }
-        let mut ix = index.lock().map_err(|_| poisoned())?;
-        for p in &gone {
-            tracing::debug!(path = ?p, "local source gone; dropped from the index");
-            ix.remove_entry(p).map_err(io::Error::other)?;
-        }
-        drop(ix);
-        // Every round drops a source, so this ends (a reader sees the
-        // removal: it is committed before the next round reads).
-        todo.retain(|&k| hits[k].1.as_ref().is_some_and(|(p, _)| gone.contains(p)));
     }
     Ok(hits)
 }

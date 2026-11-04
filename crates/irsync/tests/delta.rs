@@ -191,6 +191,44 @@ async fn vanished_local_source_is_dropped_not_tried() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gone_source_gives_way_to_the_next_file_holding_the_chunk() {
+    within30(async {
+        let opts = archive_opts();
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let content = data(4 * MIB, 8);
+        fs::write(h.src(flow).join("a.bin"), &content).unwrap();
+        fs::write(h.src(flow).join("b.bin"), &content).unwrap();
+        let first_run = h.run(&opts, flow).await.unwrap();
+        assert!(first_run.errors.is_empty(), "{:?}", first_run.errors);
+
+        // a.bin, the first file the index offers each chunk from, goes
+        // away behind irsync's back; b.bin still holds them all.
+        fs::remove_file(h.dst(flow).join("a.bin")).unwrap();
+        fs::remove_file(h.src(flow).join("a.bin")).unwrap();
+        let mut longer = content.clone();
+        longer.extend_from_slice(&data(KIB, 9));
+        fs::write(h.src(flow).join("c.bin"), &longer).unwrap();
+        let before = h
+            .daemon
+            .rerequests
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let out = h.run(&opts, flow).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(fs::read(h.dst(flow).join("c.bin")).unwrap(), longer);
+        // Copied from b.bin: only the tail's chunk is sent, nothing twice.
+        assert!(out.bytes_transferred < 512 * KIB as u64, "{out:?}");
+        assert_eq!(
+            h.daemon
+                .rerequests
+                .load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delta_hashes_the_old_file_once_starting_at_plan_time() {
     within30(async {
         let opts = archive_opts();

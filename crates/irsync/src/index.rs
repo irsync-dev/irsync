@@ -127,18 +127,44 @@ impl Reader<'_> {
         let rows = st.query_map([&hash[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.map(|r| relpath(&r?)).collect()
     }
+    /// The inode and size the entry at `path` records, if there is one.
+    pub fn entry_identity(&self, path: &RelPath) -> Result<Option<(u64, u64)>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT inode, size FROM entries WHERE path = ?1")?
+            .query_row([path.as_bytes()], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
+            })
+            .optional()?)
+    }
+
     /// Any file holding a chunk with this hash, and the chunk's offset in it.
     pub fn find_chunk(&self, hash: &[u8; 32]) -> Result<Option<(RelPath, u64)>> {
-        let row = self
-            .conn
-            .prepare_cached(
-                "SELECT path, offset FROM chunks WHERE hash = ?1 ORDER BY path, idx LIMIT 1",
-            )?
-            .query_row([&hash[..]], |r| {
-                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)? as u64))
-            })
-            .optional()?;
-        row.map(|(p, o)| Ok((relpath(&p)?, o))).transpose()
+        Ok(self.find_chunks(hash, None, 1)?.pop())
+    }
+
+    /// Up to `limit` files holding a chunk with this hash, each with the
+    /// chunk's first offset in it, by path; with `after`, only paths
+    /// sorting after it (the next page).
+    pub fn find_chunks(
+        &self,
+        hash: &[u8; 32],
+        after: Option<&RelPath>,
+        limit: usize,
+    ) -> Result<Vec<(RelPath, u64)>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT path, MIN(offset) FROM chunks WHERE hash = ?1 AND (?2 IS NULL OR path > ?2)
+             GROUP BY path ORDER BY path LIMIT ?3",
+        )?;
+        let after = after.map(|p| p.as_bytes());
+        let rows = st.query_map(params![&hash[..], after, limit as i64], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        rows.map(|r| {
+            let (p, o) = r?;
+            Ok((relpath(&p)?, o))
+        })
+        .collect()
     }
 
     pub fn partial(&self, path: &RelPath) -> Result<Option<Partial>> {
@@ -168,7 +194,7 @@ impl Reader<'_> {
     }
 }
 
-/// An entry to write with [`Index::put_entries`] or [`IndexHandle::queue_entry`].
+/// An entry to write with [`IndexHandle::queue_entry`].
 #[derive(Debug, Clone)]
 pub struct NewEntry {
     pub path: RelPath,
@@ -252,9 +278,20 @@ pub struct IndexHandle {
     readers: Arc<Readers>,
 }
 
+/// A write the writer thread makes.
+enum Write {
+    Put(Box<NewEntry>),
+    /// [`Index::remove_entry_if`].
+    Remove {
+        path: RelPath,
+        inode: u64,
+        size: u64,
+    },
+}
+
 /// Work for the writer thread, in the order it was queued.
 enum Job {
-    Put(Box<NewEntry>),
+    Write(Write),
     /// Answered once every entry queued before it is written.
     Flush(mpsc::Sender<()>),
 }
@@ -271,7 +308,7 @@ fn write_queued(index: Arc<Mutex<Index>>, jobs: mpsc::Receiver<Job>) {
         let (mut batch, mut flushed) = (Vec::new(), Vec::new());
         for job in std::iter::once(first).chain(jobs.try_iter().take(BATCH - 1)) {
             match job {
-                Job::Put(e) => batch.push(*e),
+                Job::Write(w) => batch.push(w),
                 Job::Flush(done) => flushed.push(done),
             }
         }
@@ -284,19 +321,53 @@ fn write_queued(index: Arc<Mutex<Index>>, jobs: mpsc::Receiver<Job>) {
     }
 }
 
-/// Writes `batch` in one transaction; if that fails, entry by entry, so one
+/// Makes `batch` in one transaction; if that fails, write by write, so one
 /// bad entry costs only itself. The index is a cache: failures are logged.
-fn write_batch(index: &Mutex<Index>, batch: &[NewEntry]) {
+fn write_batch(index: &Mutex<Index>, batch: &[Write]) {
     let mut ix = index.lock().unwrap_or_else(|e| e.into_inner());
-    if ix.put_entries(batch).is_ok() {
+    if apply_all(&mut ix.conn, batch).is_ok() {
         return;
     }
-    for e in batch {
-        let res = ix.put_entry(&e.path, &e.entry, e.ctime, e.digest.as_ref());
-        if let Err(err) = res {
-            tracing::warn!(path = ?e.path, error = %err, "indexing a file failed");
+    for w in batch {
+        if let Err(err) = apply_all(&mut ix.conn, std::slice::from_ref(w)) {
+            let path = match w {
+                Write::Put(e) => &e.path,
+                Write::Remove { path, .. } => path,
+            };
+            tracing::warn!(?path, error = %err, "updating the index failed");
         }
     }
+}
+
+/// `writes`, in one transaction.
+fn apply_all(conn: &mut Connection, writes: &[Write]) -> Result<()> {
+    let tx = conn.transaction()?;
+    for w in writes {
+        apply(&tx, w)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// One queued write, inside the caller's transaction.
+fn apply(conn: &Connection, w: &Write) -> Result<()> {
+    match w {
+        Write::Put(e) => write_entry(conn, &e.path, &e.entry, e.ctime, e.digest.as_ref()),
+        Write::Remove { path, inode, size } => remove_entry_if(conn, path, *inode, *size),
+    }
+}
+
+/// The statements of [`Index::remove_entry_if`].
+fn remove_entry_if(conn: &Connection, path: &RelPath, inode: u64, size: u64) -> Result<()> {
+    let args = params![path.as_bytes(), inode as i64, size as i64];
+    conn.prepare_cached(
+        "DELETE FROM chunks WHERE path = ?1 AND EXISTS
+           (SELECT 1 FROM entries WHERE path = ?1 AND inode = ?2 AND size = ?3)",
+    )?
+    .execute(args)?;
+    conn.prepare_cached("DELETE FROM entries WHERE path = ?1 AND inode = ?2 AND size = ?3")?
+        .execute(args)?;
+    Ok(())
 }
 
 /// At most this many read connections per index.
@@ -411,12 +482,19 @@ impl IndexHandle {
     /// without waiting for it: lookups see it once it is written, and
     /// [`IndexHandle::flush`] waits for that.
     pub fn queue_entry(&self, e: NewEntry) {
-        if let Err(mpsc::SendError(Job::Put(e))) = self.writer.send(Job::Put(Box::new(e))) {
+        self.queue(Write::Put(Box::new(e)));
+    }
+
+    /// Queues [`Index::remove_entry_if`] for the writer thread, without
+    /// waiting for it, like [`IndexHandle::queue_entry`].
+    pub fn queue_removal(&self, path: RelPath, inode: u64, size: u64) {
+        self.queue(Write::Remove { path, inode, size });
+    }
+
+    fn queue(&self, w: Write) {
+        if let Err(mpsc::SendError(Job::Write(w))) = self.writer.send(Job::Write(w)) {
             // The writer thread is gone (it panicked): write it here.
-            let mut ix = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Err(err) = ix.put_entry(&e.path, &e.entry, e.ctime, e.digest.as_ref()) {
-                tracing::warn!(path = ?e.path, error = %err, "indexing a file failed");
-            }
+            write_batch(&self.inner, &[w]);
         }
     }
 
@@ -672,12 +750,12 @@ impl Index {
         Ok(())
     }
 
-    /// [`Index::put_entry`] for each of `entries`, in one transaction.
-    pub fn put_entries(&mut self, entries: &[NewEntry]) -> Result<()> {
+    /// Forgets the entry at `path` and its chunk rows if it still describes
+    /// the file with this inode and size (one recorded since, for a new file
+    /// at the path, stays).
+    pub fn remove_entry_if(&mut self, path: &RelPath, inode: u64, size: u64) -> Result<()> {
         let tx = self.conn.transaction()?;
-        for e in entries {
-            write_entry(&tx, &e.path, &e.entry, e.ctime, e.digest.as_ref())?;
-        }
+        remove_entry_if(&tx, path, inode, size)?;
         tx.commit()?;
         Ok(())
     }

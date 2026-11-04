@@ -429,3 +429,72 @@ fn a_bad_entry_does_not_cost_its_batch() {
     assert!(has("a") && has("c"));
     assert!(!has("bad"));
 }
+
+#[test]
+fn find_chunks_lists_each_file_once_by_path() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    // The same chunk twice in each file.
+    let digest = digest_bytes(&[4u8; 3 * 1024 * 1024]);
+    assert!(digest.chunks.len() >= 2 && digest.chunks[0].hash == digest.chunks[1].hash);
+    let mut e = entry("x", Some(digest.hash));
+    e.size = digest.size;
+    for p in ["c", "a", "b"] {
+        ix.put_entry(&rp(p), &e, (1, 2), Some(&digest)).unwrap();
+    }
+    let h = digest.chunks[0].hash;
+    let r = ix.reader();
+    assert_eq!(
+        r.find_chunks(&h, None, 2).unwrap(),
+        vec![(rp("a"), 0), (rp("b"), 0)]
+    );
+    assert_eq!(
+        r.find_chunks(&h, Some(&rp("b")), 2).unwrap(),
+        vec![(rp("c"), 0)]
+    );
+    assert_eq!(r.find_chunks(&h, None, 9).unwrap().len(), 3);
+    assert_eq!(ix.find_chunk(&h).unwrap(), Some((rp("a"), 0)));
+}
+
+#[test]
+fn remove_entry_if_keeps_an_entry_recorded_since() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    let digest = digest_bytes(&[7u8; 4096]);
+    let mut e = entry("a", Some(digest.hash));
+    e.size = digest.size;
+    ix.put_entry(&rp("a"), &e, (1, 2), Some(&digest)).unwrap();
+    // Judged stale as inode 8: the entry says 9, so it stays.
+    ix.remove_entry_if(&rp("a"), 8, digest.size).unwrap();
+    ix.remove_entry_if(&rp("a"), 9, digest.size + 1).unwrap();
+    assert!(ix.get_entry(&rp("a")).unwrap().is_some());
+    assert!(ix.find_chunk(&digest.chunks[0].hash).unwrap().is_some());
+    ix.remove_entry_if(&rp("a"), 9, digest.size).unwrap();
+    assert!(ix.get_entry(&rp("a")).unwrap().is_none());
+    assert!(ix.find_chunk(&digest.chunks[0].hash).unwrap().is_none());
+}
+
+#[test]
+fn queued_removals_and_entries_land_in_order() {
+    let (_d, h, chunk) = handle_with(&["a", "b"]);
+    let digest = digest_bytes(&[3u8; 4096]);
+    let mut e = entry("a", Some(digest.hash));
+    e.size = digest.size;
+    e.inode = 10;
+    h.queue_removal(rp("a"), 9, digest.size);
+    h.queue_removal(rp("b"), 9, digest.size);
+    // A new file at `b`, recorded after it was judged stale: it stays.
+    h.queue_entry(irsync::index::NewEntry {
+        path: rp("b"),
+        entry: e,
+        ctime: (1, 2),
+        digest: Some(digest.clone()),
+    });
+    h.flush();
+    let found = h.read(|r| r.find_chunks(&chunk, None, 9)).unwrap();
+    assert_eq!(found, vec![(rp("b"), 0)]);
+}
