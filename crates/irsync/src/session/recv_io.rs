@@ -38,7 +38,7 @@ use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
-use crate::index::{IndexHandle, NewEntry};
+use crate::index::{ChunkHolder, IndexHandle, NewEntry};
 use crate::net::frame::read_msg;
 use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
 use crate::scan::ScanItem;
@@ -711,8 +711,9 @@ pub(super) async fn copy_local_chunks(
 /// A chunk index and the indexed file and offset holding it, if any.
 type ChunkHit = (u32, Option<(RelPath, u64)>);
 
-/// Indexed files holding a chunk looked at in one go: the first still the
-/// indexed file is copied from.
+/// Indexed files holding a chunk read from the index in one go after the
+/// first; they are checked in order up to the first still the indexed file.
+/// The first is read alone: it nearly always is.
 const SOURCES_PER_PAGE: usize = 16;
 
 /// Where each of the `wanted` chunks (index, hash) can be copied from
@@ -732,63 +733,58 @@ fn local_sources(
     // Whether each source looked at is still the file the index describes,
     // by the inode and size it described (a file this session records at a
     // path judged gone is looked at afresh).
-    let mut live: HashMap<(RelPath, Option<(u64, u64)>), bool> = HashMap::new();
+    let mut live: HashMap<(RelPath, u64, u64), bool> = HashMap::new();
     while !todo.is_empty() {
-        // On a read connection: the next page of candidates, and what the
-        // index says of each.
-        let mut pages = Vec::with_capacity(todo.len());
-        let mut indexed = HashMap::new();
-        index
+        // On a read connection: the next page of candidates.
+        let pages = index
             .read(|r| {
-                for (k, after) in &todo {
-                    let page = r.find_chunks(&wanted[*k].1, after.as_ref(), SOURCES_PER_PAGE)?;
-                    for (p, _) in &page {
-                        if !indexed.contains_key(p) {
-                            indexed.insert(p.clone(), r.entry_identity(p)?);
-                        }
-                    }
-                    pages.push((*k, page));
-                }
-                Ok(())
+                todo.iter()
+                    .map(|(k, after)| {
+                        let len = if after.is_some() { SOURCES_PER_PAGE } else { 1 };
+                        let page = r.find_chunks(&wanted[*k].1, after.as_ref(), len)?;
+                        Ok((*k, len, page))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
             })
             .map_err(io::Error::other)?;
-        for (p, &ident) in &indexed {
-            let key = (p.clone(), ident);
-            if live.contains_key(&key) {
-                continue;
-            }
-            let full = if p.as_bytes().is_empty() {
-                base.to_path_buf()
-            } else {
-                base.join(p.to_os())
-            };
-            let here = std::fs::symlink_metadata(&full)
-                .ok()
-                .filter(|m| m.is_file())
-                .map(|m| (m.ino(), m.len()));
-            // No entry (removed since the page was read): gone as well.
-            let ok = here.is_some() && here == ident;
-            if let (false, Some((inode, size))) = (ok, ident) {
-                tracing::debug!(path = ?p, "local source gone; dropped from the index");
-                index.queue_removal(p.clone(), inode, size);
-            }
-            live.insert(key, ok);
-        }
         todo.clear();
-        for (k, page) in pages {
-            let more = page.len() == SOURCES_PER_PAGE;
-            let last = page.last().map(|(p, _)| p.clone());
-            hits[k].1 = page
-                .into_iter()
-                .find(|(p, _)| live[&(p.clone(), indexed[p])]);
+        for (k, len, page) in pages {
+            // The candidates in order, up to the first still on disk.
+            for h in &page {
+                let key = (h.path.clone(), h.inode, h.size);
+                let ok = *live.entry(key).or_insert_with(|| {
+                    let ok = still_indexed(base, h);
+                    if !ok {
+                        tracing::debug!(path = ?h.path, "local source gone; dropped from the index");
+                        index.queue_removal(h.path.clone(), h.inode, h.size);
+                    }
+                    ok
+                });
+                if ok {
+                    hits[k].1 = Some((h.path.clone(), h.offset));
+                    break;
+                }
+            }
             // Every candidate on the page is gone: the next page. The
             // cursor only moves forward, so this ends.
-            if hits[k].1.is_none() && more {
-                todo.push((k, last));
+            if hits[k].1.is_none() && page.len() == len {
+                todo.push((k, page.last().map(|h| h.path.clone())));
             }
         }
     }
     Ok(hits)
+}
+
+/// Whether the file at `h.path` under `base` is still the regular file the
+/// index describes, by inode and size.
+fn still_indexed(base: &Path, h: &ChunkHolder) -> bool {
+    let full = if h.path.as_bytes().is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(h.path.to_os())
+    };
+    std::fs::symlink_metadata(&full)
+        .is_ok_and(|m| m.is_file() && m.ino() == h.inode && m.len() == h.size)
 }
 
 /// Writes a chunk, from the sender (`remote`) or a local file, into the

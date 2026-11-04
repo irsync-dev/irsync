@@ -446,14 +446,19 @@ fn find_chunks_lists_each_file_once_by_path() {
     }
     let h = digest.chunks[0].hash;
     let r = ix.reader();
+    let paths = |after: Option<&str>, limit| {
+        r.find_chunks(&h, after.map(rp).as_ref(), limit)
+            .unwrap()
+            .into_iter()
+            .map(|h| (h.path, h.offset, h.inode, h.size))
+            .collect::<Vec<_>>()
+    };
+    let (ino, size) = (e.inode, e.size);
     assert_eq!(
-        r.find_chunks(&h, None, 2).unwrap(),
-        vec![(rp("a"), 0), (rp("b"), 0)]
+        paths(None, 2),
+        vec![(rp("a"), 0, ino, size), (rp("b"), 0, ino, size)]
     );
-    assert_eq!(
-        r.find_chunks(&h, Some(&rp("b")), 2).unwrap(),
-        vec![(rp("c"), 0)]
-    );
+    assert_eq!(paths(Some("b"), 2), vec![(rp("c"), 0, ino, size)]);
     assert_eq!(r.find_chunks(&h, None, 9).unwrap().len(), 3);
     assert_eq!(ix.find_chunk(&h).unwrap(), Some((rp("a"), 0)));
 }
@@ -496,5 +501,6 @@ fn queued_removals_and_entries_land_in_order() {
     });
     h.flush();
     let found = h.read(|r| r.find_chunks(&chunk, None, 9)).unwrap();
-    assert_eq!(found, vec![(rp("b"), 0)]);
+    let found: Vec<_> = found.into_iter().map(|h| (h.path, h.inode)).collect();
+    assert_eq!(found, vec![(rp("b"), 10)]);
 }

@@ -121,14 +121,20 @@ calls `index_old_file` itself; by then that is a cache hit.
    `.part` up to its rename.
 5. **Partition** the missing chunks (`local_sources`). On a read connection
    of the index, `find_chunks` lists the files holding each missing chunk's
-   hash, a page of 16 at a time by path. The first that is still the file
+   hash by path, with the inode and size each entry records: the first
+   alone, since it nearly always is still there, then pages of 16. The
+   candidates are checked in order, and the first that is still the file
    the index describes (same inode and size on disk) yields a path (an
    index key, turned absolute with `ctx.full_key`) and an offset inside
    that file; the chunk goes into the `local` set as a
    `(index, path, offset)` triple. Files that are gone or were replaced are
    passed over, and their entries queued for the writer thread to drop, so
    a deleted tree's leftovers cost one `lstat` each, once. A chunk with no
-   such file goes into the `remote` set. If the
+   such file goes into the `remote` set. The chunk rows are indexed by
+   `(hash, path)`, so a page reads only its own rows, however many files
+   share the chunk; the page length and cursor are written into the SQL,
+   because a statement whose plan depends on a bound value is re-prepared
+   on every binding. If the
    lookup itself fails (index error, poisoned lock), the whole missing set
    goes remote, which is always correct, and a warning is logged.
 

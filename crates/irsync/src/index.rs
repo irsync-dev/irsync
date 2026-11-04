@@ -127,44 +127,61 @@ impl Reader<'_> {
         let rows = st.query_map([&hash[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.map(|r| relpath(&r?)).collect()
     }
-    /// The inode and size the entry at `path` records, if there is one.
-    pub fn entry_identity(&self, path: &RelPath) -> Result<Option<(u64, u64)>> {
-        Ok(self
-            .conn
-            .prepare_cached("SELECT inode, size FROM entries WHERE path = ?1")?
-            .query_row([path.as_bytes()], |r| {
-                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
-            })
-            .optional()?)
-    }
 
     /// Any file holding a chunk with this hash, and the chunk's offset in it.
     pub fn find_chunk(&self, hash: &[u8; 32]) -> Result<Option<(RelPath, u64)>> {
-        Ok(self.find_chunks(hash, None, 1)?.pop())
+        Ok(self
+            .find_chunks(hash, None, 1)?
+            .pop()
+            .map(|h| (h.path, h.offset)))
     }
 
-    /// Up to `limit` files holding a chunk with this hash, each with the
-    /// chunk's first offset in it, by path; with `after`, only paths
-    /// sorting after it (the next page).
+    /// Up to `limit` files holding a chunk with this hash, by path; with
+    /// `after`, only paths sorting after it (the next page).
     pub fn find_chunks(
         &self,
         hash: &[u8; 32],
         after: Option<&RelPath>,
         limit: usize,
-    ) -> Result<Vec<(RelPath, u64)>> {
-        let mut st = self.conn.prepare_cached(
-            "SELECT path, MIN(offset) FROM chunks WHERE hash = ?1 AND (?2 IS NULL OR path > ?2)
-             GROUP BY path ORDER BY path LIMIT ?3",
-        )?;
-        let after = after.map(|p| p.as_bytes());
-        let rows = st.query_map(params![&hash[..], after, limit as i64], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)? as u64))
-        })?;
-        rows.map(|r| {
-            let (p, o) = r?;
-            Ok((relpath(&p)?, o))
-        })
-        .collect()
+    ) -> Result<Vec<ChunkHolder>> {
+        // The cursor and limit are spelled into the statement (one cached
+        // statement each): SQLite re-prepares a statement whose plan depends
+        // on a bound parameter (`?2 IS NULL OR ...`, `LIMIT ?3`) on every
+        // new binding, which costs more than the lookup.
+        let cursor = if after.is_some() {
+            "AND c.path > ?2"
+        } else {
+            ""
+        };
+        let mut st = self.conn.prepare_cached(&format!(
+            "SELECT c.path, MIN(c.offset), e.inode, e.size FROM chunks c
+             JOIN entries e ON e.path = c.path
+             WHERE c.hash = ?1 {cursor}
+             GROUP BY c.path ORDER BY c.path LIMIT {limit}"
+        ))?;
+        let row = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, i64>(1)? as u64,
+                r.get::<_, i64>(2)? as u64,
+                r.get::<_, i64>(3)? as u64,
+            ))
+        };
+        let rows: Vec<_> = match after {
+            Some(p) => st.query_map(params![&hash[..], p.as_bytes()], row)?,
+            None => st.query_map(params![&hash[..]], row)?,
+        }
+        .collect::<rusqlite::Result<_>>()?;
+        rows.into_iter()
+            .map(|(p, offset, inode, size)| {
+                Ok(ChunkHolder {
+                    path: relpath(&p)?,
+                    offset,
+                    inode,
+                    size,
+                })
+            })
+            .collect()
     }
 
     pub fn partial(&self, path: &RelPath) -> Result<Option<Partial>> {
@@ -530,6 +547,16 @@ pub struct IndexEntry {
     pub digest: Option<FileDigest>,
 }
 
+/// A file holding a chunk: the chunk's first offset in it, and the inode
+/// and size its entry records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkHolder {
+    pub path: RelPath,
+    pub offset: u64,
+    pub inode: u64,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Partial {
     pub expected_hash: [u8; 32],
@@ -691,7 +718,8 @@ impl Index {
                path BLOB NOT NULL REFERENCES entries(path) ON DELETE CASCADE,
                idx INTEGER NOT NULL, offset INTEGER NOT NULL, len INTEGER NOT NULL,
                hash BLOB NOT NULL, PRIMARY KEY (path, idx));
-             CREATE INDEX IF NOT EXISTS chunks_hash ON chunks(hash);
+             DROP INDEX IF EXISTS chunks_hash;
+             CREATE INDEX IF NOT EXISTS chunks_hash_path ON chunks(hash, path);
              CREATE TABLE IF NOT EXISTS partials (
                path BLOB PRIMARY KEY, expected_hash BLOB NOT NULL, size INTEGER NOT NULL,
                ranges BLOB NOT NULL, updated_at INTEGER NOT NULL);
