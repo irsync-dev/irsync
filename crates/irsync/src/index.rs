@@ -290,9 +290,25 @@ fn write_entry(
 pub struct IndexHandle {
     inner: Arc<Mutex<Index>>,
     meter: Option<Arc<Meter>>,
+    // The fields drop in this order. The read connections close first:
+    // SQLite removes the WAL only when the last connection to close is the
+    // writer's, which the thread closes once the last sender is gone.
+    readers: Arc<Readers>,
     /// To the thread that writes queued entries.
     writer: mpsc::Sender<Job>,
-    readers: Arc<Readers>,
+    writer_thread: Arc<WriterThread>,
+}
+
+/// The writer thread, waited for once every handle is dropped, so its
+/// connection is closed (and the WAL removed) before the process can exit.
+struct WriterThread(Option<std::thread::JoinHandle<()>>);
+
+impl Drop for WriterThread {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 /// A write the writer thread makes.
@@ -461,7 +477,7 @@ impl IndexHandle {
         let inner = Arc::new(Mutex::new(index));
         let (writer, jobs) = mpsc::channel();
         let queued = inner.clone();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("irsync-index".into())
             .spawn(move || write_queued(queued, jobs))
             .expect("spawn the index writer thread");
@@ -470,6 +486,7 @@ impl IndexHandle {
             meter: None,
             writer,
             readers,
+            writer_thread: Arc::new(WriterThread(Some(thread))),
         }
     }
 
@@ -480,6 +497,7 @@ impl IndexHandle {
             meter: Some(meter),
             writer: self.writer.clone(),
             readers: self.readers.clone(),
+            writer_thread: self.writer_thread.clone(),
         }
     }
 
