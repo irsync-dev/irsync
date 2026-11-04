@@ -419,10 +419,9 @@ impl Planner {
         // Lookups and results are index keys (relative to the index root).
         let (index, hash, key) = (self.ctx.index().clone(), d.hash, self.ctx.key(path));
         let found = blocking(move || {
-            let paths = index
-                .read(|r| r.find_paths_by_whole_hash(&hash))
-                .map_err(io::Error::other)?;
-            Ok(paths.into_iter().find(|p| *p != key))
+            index
+                .read(|r| r.other_path_by_whole_hash(&hash, &key))
+                .map_err(io::Error::other)
         })
         .await;
         Found(found.unwrap_or_else(|e| {

@@ -96,7 +96,9 @@ every task.
   another task holds it, or for the entries this side queued to be written.
   The index is one SQLite database per root. Placed and hashed files, and
   entries of copy sources found gone, are queued for a writer thread that
-  writes them in batches, so nobody waits for that, except once at the end
+  writes them in batches (what queues up within 10 ms of the first, as
+  every commit empties the read connections' page caches), so nobody waits
+  for that, except once at the end
   of a session (and before a lookup that needs freshly hashed files). The
   rarer writes (saving progress) take turns behind one lock, and lookups
   run on read connections of their own. The waiting task's own activity (`write` or

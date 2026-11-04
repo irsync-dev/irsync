@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -126,6 +126,25 @@ impl Reader<'_> {
             .prepare_cached("SELECT path FROM entries WHERE whole_hash = ?1 ORDER BY path")?;
         let rows = st.query_map([&hash[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.map(|r| relpath(&r?)).collect()
+    }
+    /// The first path by name holding this content, other than `except`:
+    /// it reads only that row, however many files hold the content.
+    pub fn other_path_by_whole_hash(
+        &self,
+        hash: &[u8; 32],
+        except: &RelPath,
+    ) -> Result<Option<RelPath>> {
+        let p = self
+            .conn
+            .prepare_cached(
+                "SELECT path FROM entries WHERE whole_hash = ?1 AND path != ?2
+                 ORDER BY path LIMIT 1",
+            )?
+            .query_row(params![&hash[..], except.as_bytes()], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .optional()?;
+        p.map(|p| relpath(&p)).transpose()
     }
 
     /// Any file holding a chunk with this hash, and the chunk's offset in it.
@@ -333,17 +352,36 @@ enum Job {
 /// the index lock for long.
 const BATCH: usize = 1024;
 
-/// The writer thread: writes the queued entries, each batch of whatever
-/// queued up meanwhile in one transaction. Ends once every handle is gone
-/// and the queue is empty.
+/// How long the writer thread waits for more writes before committing a
+/// batch that nothing waits for: each commit empties every read
+/// connection's page cache, so a commit per write or two keeps the readers
+/// refilling.
+const LINGER: Duration = Duration::from_millis(10);
+
+/// The writer thread: writes the queued entries in batches of what queued
+/// up within [`LINGER`] of the first, one transaction each, at once when a
+/// flush waits for them. Ends once every handle is gone and the queue is
+/// empty.
 fn write_queued(index: Arc<Mutex<Index>>, jobs: mpsc::Receiver<Job>) {
     while let Ok(first) = jobs.recv() {
+        let deadline = Instant::now() + LINGER;
         let (mut batch, mut flushed) = (Vec::new(), Vec::new());
-        for job in std::iter::once(first).chain(jobs.try_iter().take(BATCH - 1)) {
+        let mut next = Some(first);
+        while let Some(job) = next.take() {
             match job {
                 Job::Write(w) => batch.push(w),
                 Job::Flush(done) => flushed.push(done),
             }
+            if batch.len() >= BATCH {
+                break;
+            }
+            next = match jobs.try_recv() {
+                Ok(job) => Some(job),
+                Err(_) if !flushed.is_empty() => None,
+                Err(_) => jobs
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .ok(),
+            };
         }
         if !batch.is_empty() {
             write_batch(&index, &batch);
@@ -403,6 +441,12 @@ fn remove_entry_if(conn: &Connection, path: &RelPath, inode: u64, size: u64) -> 
     Ok(())
 }
 
+/// Bytes of the database file each connection reads through a shared
+/// memory map rather than its own page cache: every commit empties the
+/// cache of every other connection, and refilling it from the map is cheap.
+/// (Nothing shrinks an index file, which a map would not survive.)
+const MMAP_SIZE: i64 = 256 << 20;
+
 /// At most this many read connections per index.
 const READERS: usize = 8;
 
@@ -431,6 +475,7 @@ impl Readers {
                 )
                 .and_then(|c| {
                     c.busy_timeout(Duration::from_secs(5))?;
+                    c.pragma_update(None, "mmap_size", MMAP_SIZE)?;
                     Ok(c)
                 });
                 if opened.is_err() {
@@ -656,6 +701,7 @@ impl Index {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "mmap_size", MMAP_SIZE)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         // Every statement is cached; this many are in use.
         conn.set_prepared_statement_cache_capacity(64);
@@ -731,7 +777,8 @@ impl Index {
                uid INTEGER NOT NULL, gid INTEGER NOT NULL, nlink INTEGER NOT NULL,
                rdev INTEGER NOT NULL, link_target BLOB NOT NULL, sparse INTEGER NOT NULL,
                whole_hash BLOB, has_digest INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS entries_whole_hash ON entries(whole_hash);
+             DROP INDEX IF EXISTS entries_whole_hash;
+             CREATE INDEX IF NOT EXISTS entries_whole_hash_path ON entries(whole_hash, path);
              CREATE TABLE IF NOT EXISTS chunks (
                path BLOB NOT NULL REFERENCES entries(path) ON DELETE CASCADE,
                idx INTEGER NOT NULL, offset INTEGER NOT NULL, len INTEGER NOT NULL,
