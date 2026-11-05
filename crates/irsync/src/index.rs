@@ -138,6 +138,34 @@ impl Reader<'_> {
             .map(|h| (h.path, h.offset)))
     }
 
+    /// The statements prepared on this connection that SQLite has
+    /// re-prepared since, with how often. A statement whose plan depends on
+    /// a bound value (`?2 IS NULL OR ...`, `LIMIT ?3`) is re-prepared on
+    /// every new binding, which costs more than the lookup it serves; tests
+    /// check that none is.
+    #[cfg(feature = "test-hooks")]
+    pub fn reprepared(&self) -> Vec<(String, i32)> {
+        use rusqlite::ffi;
+        let mut out = Vec::new();
+        // SAFETY: the handle is this connection's, borrowed for the whole
+        // walk; the statements it lists stay prepared (in its cache) while
+        // the connection is borrowed, and only their SQL and counters are
+        // read.
+        unsafe {
+            let db = self.conn.handle();
+            let mut st = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
+            while !st.is_null() {
+                let n = ffi::sqlite3_stmt_status(st, ffi::SQLITE_STMTSTATUS_REPREPARE, 0);
+                if n > 0 {
+                    let sql = std::ffi::CStr::from_ptr(ffi::sqlite3_sql(st));
+                    out.push((sql.to_string_lossy().into_owned(), n));
+                }
+                st = ffi::sqlite3_next_stmt(db, st);
+            }
+        }
+        out
+    }
+
     /// Up to `limit` files holding a chunk with this hash, by path; with
     /// `after`, only paths sorting after it (the next page).
     pub fn find_chunks(

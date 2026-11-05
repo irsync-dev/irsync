@@ -464,6 +464,53 @@ fn find_chunks_lists_each_file_once_by_path() {
 }
 
 #[test]
+fn lookups_are_never_re_prepared() {
+    // A statement whose plan depends on a bound value is re-prepared by
+    // SQLite on every new binding; that once cost a push more than the
+    // lookups themselves. Every statement the per-file paths run, with
+    // varied bindings, must stay prepared.
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    let digest = digest_bytes(&[4u8; 3 * 1024 * 1024]);
+    let mut e = entry("x", Some(digest.hash));
+    e.size = digest.size;
+    let paths: Vec<_> = (0..40).map(|i| rp(&format!("d/f{i:02}"))).collect();
+    for p in &paths {
+        ix.put_entry(p, &e, (1, 2), Some(&digest)).unwrap();
+    }
+    let h = digest.chunks[0].hash;
+    let partial = Partial {
+        expected_hash: digest.hash,
+        size: digest.size,
+        ranges: RangeSet {
+            ranges: vec![Range {
+                offset: 0,
+                length: 1,
+            }],
+        },
+        updated_at: 0,
+    };
+    for (i, p) in paths.iter().enumerate() {
+        let r = ix.reader();
+        for limit in [1, 16] {
+            r.find_chunks(&h, None, limit).unwrap();
+            r.find_chunks(&h, Some(p), limit).unwrap();
+        }
+        r.find_chunk(&digest.chunks[i % digest.chunks.len()].hash)
+            .unwrap();
+        r.get_entry(p).unwrap();
+        r.partial(p).unwrap();
+        ix.put_partial(p, &partial).unwrap();
+        ix.put_entry(p, &e, (1, i as u32), Some(&digest)).unwrap();
+        ix.remove_partial(p).unwrap();
+        ix.remove_entry_if(p, e.inode + 1, e.size).unwrap();
+    }
+    assert_eq!(ix.reader().reprepared(), Vec::<(String, i32)>::new());
+}
+
+#[test]
 fn remove_entry_if_keeps_an_entry_recorded_since() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
