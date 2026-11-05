@@ -154,13 +154,20 @@ async fn handle(mut stream: TcpStream, routes: &Routes) -> io::Result<()> {
     respond(&mut stream, code, ctype, &body).await
 }
 
-async fn respond(stream: &mut TcpStream, code: u16, ctype: &str, body: &str) -> io::Result<()> {
-    let reason = match code {
+/// The reason phrase for a status this server sends (empty, which HTTP
+/// allows, for any other).
+fn reason(code: u16) -> &'static str {
+    match code {
         200 => "OK",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        _ => "Request Header Fields Too Large",
-    };
+        431 => "Request Header Fields Too Large",
+        _ => "",
+    }
+}
+
+async fn respond(stream: &mut TcpStream, code: u16, ctype: &str, body: &str) -> io::Result<()> {
+    let reason = reason(code);
     let allow = if code == 405 { "Allow: GET\r\n" } else { "" };
     let head = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\n{allow}Content-Length: {}\r\nConnection: close\r\n\r\n",
@@ -201,6 +208,14 @@ mod tests {
             timing: Default::default(),
             flame: Default::default(),
         }
+    }
+
+    #[test]
+    fn every_status_gets_its_own_reason() {
+        assert_eq!(reason(431), "Request Header Fields Too Large");
+        assert_eq!(reason(404), "Not Found");
+        // Never another status's phrase.
+        assert_eq!(reason(500), "");
     }
 
     #[tokio::test]

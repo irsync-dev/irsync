@@ -49,7 +49,11 @@ impl FlameState {
 #[derive(Default)]
 struct Interval {
     entered: Option<Instant>,
-    /// Time children were entered within the current interval.
+    /// The thread the current interval runs on.
+    thread: Option<std::thread::ThreadId>,
+    /// Time children spent nested in the current interval (entered on its
+    /// thread while it was): a child running on another thread meanwhile
+    /// takes none of this span's time.
     children: Duration,
 }
 
@@ -76,6 +80,7 @@ where
         }
         let iv = ext.get_mut::<Interval>().unwrap();
         iv.entered = Some(Instant::now());
+        iv.thread = Some(std::thread::current().id());
         iv.children = Duration::ZERO;
     }
 
@@ -100,7 +105,10 @@ where
         self.state.add(&key, own.as_micros() as u64);
         if let Some(parent) = span.parent() {
             if let Some(iv) = parent.extensions_mut().get_mut::<Interval>() {
-                iv.children += total;
+                let nested = iv.entered.is_some() && iv.thread == Some(std::thread::current().id());
+                if nested {
+                    iv.children += total;
+                }
             }
         }
     }
@@ -117,6 +125,34 @@ mod tests {
             .unwrap_or_else(|| panic!("no {key} in {out}"))
             .parse()
             .unwrap()
+    }
+
+    #[test]
+    fn a_child_on_another_thread_takes_no_self_time() {
+        let state = Arc::new(FlameState::default());
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(FlameLayer::new(state.clone())),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let outer = tracing::info_span!("outer");
+            let _o = outer.enter();
+            let (d, parent) = (dispatch.clone(), outer.clone());
+            let child = std::thread::spawn(move || {
+                tracing::dispatcher::with_default(&d, || {
+                    let inner = tracing::info_span!(parent: &parent, "inner");
+                    let _i = inner.enter();
+                    std::thread::sleep(Duration::from_millis(8));
+                })
+            });
+            std::thread::sleep(Duration::from_millis(10));
+            child.join().unwrap();
+        });
+        let out = state.render();
+        // The outer span ran its whole 10 ms itself, alongside the child.
+        let outer = value(&out, "outer");
+        assert!(outer >= 9_000, "{out}");
+        let inner = value(&out, "outer;inner");
+        assert!((7_000..=12_000).contains(&inner), "{out}");
     }
 
     #[test]

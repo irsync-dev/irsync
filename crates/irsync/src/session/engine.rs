@@ -888,11 +888,16 @@ pub(super) fn role_of(side: Side, direction: i32) -> Role {
 
 /// Records the fields a session knows only at its end.
 pub(super) fn record_outcome(span: &tracing::Span, out: &Outcome) {
-    let net = &out.usage.net;
+    record_net(span, &out.usage.net);
+    span.record("reconnects", u64::from(out.reconnects));
+}
+
+/// Records a connection's network figures on the `session` span; a failed
+/// session gets them from its last connection.
+fn record_net(span: &tracing::Span, net: &crate::telemetry::meter::NetUsage) {
     span.record("rtt_max_ms", net.rtt_max.as_millis() as u64);
     span.record("cwnd", net.cwnd);
     span.record("lost_packets", net.lost_packets);
-    span.record("reconnects", u64::from(out.reconnects));
 }
 
 async fn serve_daemon_inner(
@@ -1150,7 +1155,7 @@ async fn run_role(
         tokio::spawn(watch_idle(ctx.clone(), t, idle.clone()).instrument(session.clone()))
     });
     let heartbeat = tokio::spawn(
-        heartbeat(ctx.activity.clone(), ctx.busy.clone(), out.clone()).instrument(session),
+        heartbeat(ctx.activity.clone(), ctx.busy.clone(), out.clone()).instrument(session.clone()),
     );
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
@@ -1202,6 +1207,9 @@ async fn run_role(
             Ok(o)
         }
         Err(e) => {
+            if let Some((_, net)) = &sampled {
+                record_net(&session, net);
+            }
             tracing::warn!(error = %format!("{e:#}"), "session failed");
             out.send(irsync_proto::v1::control::Msg::Error(Error {
                 code: Code::Internal as i32,
@@ -1213,6 +1221,19 @@ async fn run_role(
             Err(e)
         }
     }
+}
+
+/// The entries a session's `errors` name, each once. Errors about the
+/// session as a whole (an incomplete listing, a refused delete pass) are
+/// reported at the root and name no entry.
+fn failed_entries(errors: &[(RelPath, String)]) -> u64 {
+    let root = RelPath::root();
+    let failed: HashSet<&RelPath> = errors
+        .iter()
+        .map(|(p, _)| p)
+        .filter(|p| **p != root)
+        .collect();
+    failed.len() as u64
 }
 
 /// Counts a finished session (`None`: it failed) in the session-level metrics.
@@ -1241,7 +1262,7 @@ fn record_session(m: &Meter, out: Option<&Outcome>) {
             "irsync_files_total",
             "result",
             "failed",
-            o.errors.len() as u64,
+            failed_entries(&o.errors),
         ),
         ("irsync_files_total", "result", "created", o.created),
         ("irsync_entries_listed_total", "kind", "regular", l.reg),
@@ -1328,6 +1349,22 @@ pub(super) type Events = mpsc::UnboundedReceiver<Ev>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_entries_skip_session_errors_and_count_each_path_once() {
+        let rel = |s: &[u8]| RelPath::new(s).unwrap();
+        let errors = vec![
+            (
+                RelPath::root(),
+                "the sender's listing is incomplete".to_string(),
+            ),
+            (rel(b"a"), "write: no space".to_string()),
+            (rel(b"a"), "persisting partial failed".to_string()),
+            (rel(b"d"), "chmod: denied".to_string()),
+        ];
+        assert_eq!(failed_entries(&errors), 2);
+        assert_eq!(failed_entries(&errors[..1]), 0);
+    }
 
     #[test]
     fn session_root_never_passes_through_a_symlink() {

@@ -139,6 +139,10 @@ struct RFile {
     /// and data streams carry an older value and are ignored.
     gen: u32,
     mismatches: u32,
+    /// Bytes the sender delivered to this file's earlier writers in this
+    /// session (retired, or failing the whole-file hash): not matched,
+    /// though the writer that places the file did not receive them.
+    received_before: u64,
     /// `NeedChunks` re-sent for chunks the data streams did not deliver.
     rerequests: u32,
     st: St,
@@ -316,6 +320,7 @@ impl Receiver {
                 identical: false,
                 gen: 0,
                 mismatches: 0,
+                received_before: 0,
                 rerequests: 0,
                 st: St::Requested,
                 started: super::wait_start(&self.ctx.meter),
@@ -386,15 +391,19 @@ impl Receiver {
     }
 
     /// Takes the file's writer out of the routing table (it is dropped, which
-    /// persists its progress for a later writer to adopt).
-    async fn retire_writer(&self, file_id: u64) {
+    /// persists its progress for a later writer to adopt), keeping count of
+    /// what the sender delivered to it.
+    async fn retire_writer(&mut self, file_id: u64) {
         let route = self
             .routes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&file_id);
         if let Some(r) = route {
-            drop(r.slot.lock().await.take());
+            let received = r.slot.lock().await.take().map_or(0, |w| w.received());
+            if let Some(f) = self.files.get_mut(&file_id) {
+                f.received_before += received;
+            }
             if let Some(g) = &r.gate {
                 g.close();
             }
@@ -796,8 +805,10 @@ impl Receiver {
                     self.files_done += 1;
                 }
                 // What this session did not take from the sender: local
-                // copies, earlier progress, or all of a file settled in place.
-                let matched = size.saturating_sub(received);
+                // copies, earlier sessions' progress, or all of a file
+                // settled in place. Bytes an earlier writer of this session
+                // received were taken from the sender all the same.
+                let matched = size.saturating_sub(f.received_before + received);
                 self.ctx.meter.add(Counter::BytesMatched, matched);
                 // Placed: acknowledged DONE even if the sender gave up meanwhile
                 // (it withdraws its error on this ack).
@@ -819,6 +830,7 @@ impl Receiver {
             }
             Err(FinalizeError::HashMismatch { .. }) => {
                 f.mismatches += 1;
+                f.received_before += received;
                 f.st = St::Requested;
                 let (mismatches, path, pending) = (f.mismatches, f.path.clone(), f.pending.take());
                 tracing::info!(?path, mismatches, "whole-file hash mismatch");

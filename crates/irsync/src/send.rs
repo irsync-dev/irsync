@@ -442,7 +442,9 @@ impl Inner {
             };
             let idx = (r.first + k) as u32;
             let (frame, n) = if bases.contains_key(&idx) {
-                let _send = timed();
+                // Matching blocks against the receiver's bases is hashing
+                // work, not sending.
+                let _encoding = meter.map(|m| m.start(Activity::Hash));
                 payload(data, idx, bases.clone()).await?
             } else {
                 let n = data.len() as u64;
@@ -454,9 +456,11 @@ impl Inner {
                     n,
                 )
             };
-            self.throttle(n).await;
             {
+                // A `--bwlimit` pause holds the stream back like the peer's
+                // window does: sending, not waiting for the peer.
                 let _send = timed();
+                self.throttle(n).await;
                 write_msg(send, &frame).await?;
             }
             if let Some(m) = meter {

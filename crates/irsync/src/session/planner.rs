@@ -555,7 +555,11 @@ impl Planner {
                 return;
             }
             Decision::Mkdir => {
+                // Making an entry is placing it, not planning.
+                drop(planning);
+                let placing = meter.start(Activity::Place);
                 let res = blocking(move || mkdir_replacing(&full)).await;
+                drop(placing);
                 match res {
                     Ok(()) => {
                         self.touch_parent(&path);
@@ -583,9 +587,15 @@ impl Planner {
                 });
                 return;
             }
-            Decision::MetaOnly => blocking(move || apply_metadata(&full, &entry, &apply)).await,
+            Decision::MetaOnly => {
+                drop(planning);
+                let _placing = meter.start(Activity::Place);
+                blocking(move || apply_metadata(&full, &entry, &apply)).await
+            }
             Decision::Symlink => {
                 self.touch_parent(&path);
+                drop(planning);
+                let _placing = meter.start(Activity::Place);
                 blocking(move || {
                     let target = std::ffi::OsStr::from_bytes(&entry.link_target).to_owned();
                     place_via_temp(
@@ -599,6 +609,8 @@ impl Planner {
             }
             Decision::Special => {
                 self.touch_parent(&path);
+                drop(planning);
+                let _placing = meter.start(Activity::Place);
                 blocking(move || {
                     place_via_temp(&full, |tmp| create_special(tmp, &entry), &entry, &apply)
                 })

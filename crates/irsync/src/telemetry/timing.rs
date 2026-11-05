@@ -40,7 +40,8 @@ impl Hist {
         self.max_ns = self.max_ns.max(ns);
     }
 
-    /// The upper bound of the bucket holding the `q`th quantile.
+    /// The upper bound of the bucket holding the `q`th quantile, but never
+    /// more than the largest duration recorded.
     fn quantile(&self, q: f64) -> Duration {
         let want = ((self.count as f64 * q).ceil() as u64).max(1);
         let mut seen = 0;
@@ -48,7 +49,7 @@ impl Hist {
             seen += n;
             if seen >= want {
                 let upper = if i == 63 { u64::MAX } else { 1u64 << (i + 1) };
-                return Duration::from_nanos(upper);
+                return Duration::from_nanos(upper.min(self.max_ns));
             }
         }
         Duration::ZERO
@@ -170,6 +171,18 @@ where
 mod tests {
     use super::*;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn quantiles_never_exceed_the_max() {
+        let mut h = Hist::default();
+        // All in the bucket [1024, 2048) ns, whose upper bound is 2048.
+        for ns in [1000, 1100, 1200] {
+            h.record(Duration::from_nanos(ns));
+        }
+        for q in [0.5, 0.9, 0.99] {
+            assert_eq!(h.quantile(q), Duration::from_nanos(1200), "q={q}");
+        }
+    }
 
     #[test]
     fn records_count_and_max() {

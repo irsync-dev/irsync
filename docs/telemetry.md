@@ -37,7 +37,7 @@ Counters:
 | `irsync_busy_microseconds_total` | microseconds | `activity` | Time spent per activity, summed over tasks: `walk`, `plan`, `hash`, `read`, `send`, `recv`, `write`, `place`, `delete`, `index_wait`, and `peer_wait`. See [Busy time](#busy-time-and-peer-wait). |
 | `irsync_active_microseconds_total` | microseconds | `activity` | Wall time with at least one task doing each activity (no `peer_wait`), added when a session ends. |
 | `irsync_sessions_total` | count | `outcome` | Sessions ended: `ok`, `partial`, `failed`, `max_delete`. Counts connection attempts: a client session that reconnects counts `failed` and then `ok`. |
-| `irsync_files_total` | count | `result` | `transferred`, `skipped`, `failed`, `created`. |
+| `irsync_files_total` | count | `result` | `transferred`, `skipped`, `failed`, `created`. `failed` counts the entries with at least one error, each once; errors about the session as a whole (an incomplete listing, a refused delete pass) are not counted. |
 | `irsync_entries_listed_total` | count | `kind` | Source entries listed: `regular`, `directory`, `symlink`, `special`. |
 | `irsync_bytes_literal_total` | bytes | | File data sent or received as literal chunk bytes. |
 | `irsync_bytes_matched_total` | bytes | | File data the receiver did not take from the sender (local copies, earlier progress, files already identical), counted when each file is placed; the sender counts what the receiver's acknowledgement reports. |
@@ -87,7 +87,8 @@ fraction). Each activity counts the time tasks spent doing it, summed over
 every task.
 
 - `send` and `recv` include network and flow-control waits on the data
-  streams: a stream blocked on the peer's window is still busy sending.
+  streams: a stream blocked on the peer's window, or paused by
+  `--bwlimit`, is still busy sending.
 - `peer_wait` is wall time with no activity in progress at all: this side has
   no local work and is waiting for the peer.
 - An activity that runs on the other side (for example `plan` on a push,
@@ -104,7 +105,12 @@ every task.
   run on read connections of their own. The waiting task's own activity (`write` or
   `place`) counts the same time too.
 - `hash` on a receiver is the check of each arriving chunk against its hash,
-  as well as hashing existing files.
+  as well as hashing existing files. On a sender it includes encoding a
+  chunk against the receiver's bases (matching its blocks).
+- `place` covers every entry made or updated at the destination: placing
+  received files, and creating directories, symlinks and special files, or
+  updating an entry's metadata alone. Deciding what to do with an entry is
+  `plan`.
 
 Busy times can add up to more than the wall time: files are hashed, sent and
 written in parallel, so ten workers busy for one second each count ten

@@ -260,3 +260,36 @@ async fn reconnect_stays_in_one_session_span() {
     assert!(daemon.len() >= 2);
     assert!(daemon.iter().all(|d| d.parent.is_none()));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_connection_still_records_its_network_figures() {
+    let _serial = capture().await;
+    // The figures come from the connection sampler, which runs only with
+    // telemetry on.
+    irsync::telemetry::set_enabled(true);
+    let opts = archive_opts();
+    let h = Harness::new().await;
+    let root = h.src(Flow::Push);
+    for i in 0..20u32 {
+        let bytes: Vec<u8> = (0..2 * MIB as u32)
+            .map(|j| (j.wrapping_mul(2654435761).wrapping_add(i * 7919) >> 13) as u8)
+            .collect();
+        fs::write(root.join(format!("f{i:02}.bin")), bytes).unwrap();
+    }
+    h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+    let (out, _) = h
+        .run_reconnect(&opts, Flow::Push, fast(), h.local_side())
+        .await;
+    out.unwrap();
+    assert!(h.daemon.fault.fired());
+    // The daemon's session on the dropped connection failed; its span
+    // still carries what that connection measured.
+    let all = recs();
+    let daemon = side(&all, "session", "daemon");
+    assert!(daemon.len() >= 2, "{daemon:#?}");
+    for d in &daemon {
+        for f in ["rtt_max_ms", "cwnd", "lost_packets"] {
+            assert!(d.fields.contains_key(f), "{f} missing: {d:#?}");
+        }
+    }
+}

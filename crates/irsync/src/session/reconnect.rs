@@ -469,6 +469,9 @@ async fn attempts(
             return Err(err);
         }
         attempt += 1;
+        // Kept current on the `session` span, so a session that fails in the
+        // end still says how often it reconnected.
+        tracing::Span::current().record("reconnects", u64::from(attempt));
         // Never sleep past the end of the outage budget: one last try then.
         let wait = opts
             .delay(outage.failures)

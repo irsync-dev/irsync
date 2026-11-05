@@ -6,8 +6,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{archive_opts, assert_trees_equal, sync_trees, Flow};
+use common::{archive_opts, assert_trees_equal, sync_trees, Flow, Harness};
+use irsync::fs::paths::RelPath;
+use irsync::session::SideHooks;
 use irsync::telemetry::meter::{Activity, Counter};
+use std::sync::Arc;
 
 const FILES: u64 = 20;
 const SIZE: usize = 64 * 1024;
@@ -178,4 +181,78 @@ async fn push_usage_samples_process_and_rtt() {
     assert!(n.rtt_max > Duration::ZERO, "{n:?}");
     assert!(n.rtt_min <= n.rtt_avg && n.rtt_avg <= n.rtt_max, "{n:?}");
     assert!(p.peak_fds > 0 && p.peak_rss > 0, "{p:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_resent_in_the_same_session_is_not_counted_as_matched() {
+    irsync::telemetry::set_enabled(true);
+    const MIB: usize = 1024 * 1024;
+    let opts = archive_opts();
+    let flow = Flow::Push;
+    let h = Harness::new().await;
+    let src = h.src(flow).to_path_buf();
+    let old = data(4 * MIB, 21);
+    fs::write(src.join("x.bin"), &old).unwrap();
+    // Changed after its first chunk went out: the start stays, so the
+    // file's second writer adopts what the first one already received.
+    let mut new = old[..3 * MIB].to_vec();
+    new.extend(data(MIB, 22));
+    let x = RelPath::new(b"x.bin").unwrap();
+    let mut local = h.local_side();
+    local.hooks = SideHooks {
+        on_first_chunk_sent: Some({
+            let (src, new) = (src.clone(), new.clone());
+            Arc::new(move |p: &RelPath| {
+                let hit = *p == x;
+                let (src, new) = (src.clone(), new.clone());
+                Box::pin(async move {
+                    if hit {
+                        fs::write(src.join("x.bin"), &new).unwrap();
+                    }
+                })
+            })
+        }),
+        ..SideHooks::default()
+    };
+    let out = h.run_side(&opts, flow, local).await.unwrap();
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), new);
+    // Nothing was at the destination and nothing local to copy from:
+    // every byte of the file came from the sender in this session.
+    assert_eq!(out.usage.count(Counter::BytesMatched), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn links_and_specials_are_timed_as_place() {
+    irsync::telemetry::set_enabled(true);
+    let opts = archive_opts();
+    let (out, _h) = sync_trees(
+        |r| {
+            for i in 0..50 {
+                std::os::unix::fs::symlink(format!("target{i}"), r.join(format!("l{i:02}")))
+                    .unwrap();
+                nix::unistd::mkfifo(&r.join(format!("p{i:02}")), nix::sys::stat::Mode::S_IRWXU)
+                    .unwrap();
+            }
+        },
+        |_| {},
+        &opts,
+        Flow::Pull,
+    )
+    .await;
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    // No regular file: all the placing is making the links and FIFOs.
+    assert!(out.usage.busy(Activity::Place) > Duration::ZERO);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bwlimit_pause_is_timed_as_send() {
+    irsync::telemetry::set_enabled(true);
+    let mut opts = archive_opts();
+    // 20 files of 64 KiB at 2 MiB/s: about 0.6 s of pauses.
+    opts.bwlimit = Some(2 << 20);
+    let (out, _h) = sync_trees(tree, |_| {}, &opts, Flow::Push).await;
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let send = out.usage.busy(Activity::Send);
+    assert!(send >= Duration::from_millis(400), "send {send:?}");
 }
