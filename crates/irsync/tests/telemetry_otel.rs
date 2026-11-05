@@ -58,6 +58,44 @@ fn bridge_forwards_counters_and_histograms() {
     assert_eq!(points[0].sum(), 0.5);
 }
 
+#[test]
+fn bridge_mixes_increments_with_absolute_values_and_forwards_gauges() {
+    let exporter = InMemoryMetricExporter::default();
+    let provider = SdkMeterProvider::builder()
+        .with_reader(PeriodicReader::builder(exporter.clone()).build())
+        .build();
+    let recorder = OtelRecorder::new(provider.meter("test"));
+    metrics::with_local_recorder(&recorder, || {
+        let c = metrics::counter!("m_total");
+        c.increment(3);
+        // An absolute value adds only its rise over what was counted so far.
+        c.absolute(10);
+        c.increment(2);
+        // Below the count so far (12): adds nothing.
+        c.absolute(11);
+        let g = metrics::gauge!("m_level");
+        g.set(5.0);
+        g.increment(2.0);
+        g.decrement(1.0);
+    });
+    provider.force_flush().unwrap();
+    let rm = exporter.get_finished_metrics().unwrap();
+
+    let AggregatedMetrics::U64(MetricData::Sum(sum)) = find(&rm, "m_total") else {
+        panic!("m_total is not a u64 sum");
+    };
+    let points: Vec<_> = sum.data_points().collect();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].value(), 12);
+
+    let AggregatedMetrics::F64(MetricData::Gauge(g)) = find(&rm, "m_level") else {
+        panic!("m_level is not an f64 gauge");
+    };
+    let points: Vec<_> = g.data_points().collect();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].value(), 6.0);
+}
+
 /// A collector that answers every request `200` and records `METHOD PATH`.
 fn fake_collector() -> (u16, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

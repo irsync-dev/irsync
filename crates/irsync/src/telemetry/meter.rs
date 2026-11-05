@@ -456,6 +456,21 @@ mod tests {
 
     const MS: fn(u64) -> Duration = Duration::from_millis;
 
+    /// A session meter summing into a parent of its own (`parent`), so a
+    /// test never shares the process-wide meters other tests also add to.
+    fn under_own_parent(side: Side, role: Role) -> (Meter, &'static Meter) {
+        let parent: &'static Meter =
+            Box::leak(Box::new(Meter::build(side, role, None, true, None)));
+        (Meter::build(side, role, None, true, Some(parent)), parent)
+    }
+
+    #[test]
+    fn session_meters_sum_into_the_process_wide_ones() {
+        let m = Meter::new(Side::Client, Role::Sender, None, true);
+        let g = global(Side::Client, Role::Sender);
+        assert!(m.global.is_some_and(|p| std::ptr::eq(p, g)));
+    }
+
     #[test]
     fn disabled_meter_records_nothing() {
         let m = Meter::new(Side::Client, Role::Receiver, None, false);
@@ -552,18 +567,17 @@ mod tests {
 
     #[test]
     fn global_active_is_the_sum_of_finished_sessions() {
-        let g = global(Side::Daemon, Role::Receiver);
-        let before = g.usage().active(Activity::Delete);
-        let m = Meter::new(Side::Daemon, Role::Receiver, None, true);
+        let (m, g) = under_own_parent(Side::Daemon, Role::Receiver);
         {
             let _g = m.start(Activity::Delete);
             sleep(MS(10));
         }
-        assert_eq!(g.usage().active(Activity::Delete), before);
+        assert_eq!(g.usage().active(Activity::Delete), Duration::ZERO);
         m.finish();
         m.finish();
         let after = g.usage().active(Activity::Delete);
-        assert_eq!(after, before + m.usage().active(Activity::Delete));
+        assert!(after > Duration::ZERO);
+        assert_eq!(after, m.usage().active(Activity::Delete));
     }
 
     #[test]
@@ -597,21 +611,18 @@ mod tests {
 
     #[test]
     fn counters_reach_the_global_meter() {
-        let g = global(Side::Client, Role::Sender);
-        let before = g.usage().count(Counter::BytesLiteral);
-        let m = Meter::new(Side::Client, Role::Sender, None, true);
+        let (m, g) = under_own_parent(Side::Client, Role::Sender);
         m.add(Counter::BytesLiteral, 7);
-        assert_eq!(g.usage().count(Counter::BytesLiteral), before + 7);
+        assert_eq!(g.usage().count(Counter::BytesLiteral), 7);
     }
 
     #[test]
     fn global_peer_wait_is_the_sum_of_finished_sessions() {
-        let g = global(Side::Client, Role::Receiver);
-        let before = g.usage().peer_wait;
-        let m = Meter::new(Side::Client, Role::Receiver, None, true);
+        let (m, g) = under_own_parent(Side::Client, Role::Receiver);
         sleep(MS(10));
         m.finish();
         m.finish();
-        assert_eq!(g.usage().peer_wait, before + m.usage().peer_wait);
+        assert!(g.usage().peer_wait >= MS(10));
+        assert_eq!(g.usage().peer_wait, m.usage().peer_wait);
     }
 }

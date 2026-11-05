@@ -141,6 +141,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_reports_the_process_and_the_connection() {
+        let (a, b) = (loopback().await, loopback().await);
+        let accept = async { b.accept().await.unwrap().await.unwrap() };
+        let (conn, server) = tokio::join!(
+            async { a.connect(b.addr(), irsync_proto::ALPN).await.unwrap() },
+            accept
+        );
+        let meter = Meter::new(Side::Client, Role::Sender, None, true);
+        let handle = spawn(&meter, conn.clone());
+        // Some traffic for the path to measure.
+        let echo = tokio::spawn(async move {
+            let (mut send, mut recv) = server.accept_bi().await.unwrap();
+            let data = recv.read_to_end(1 << 20).await.unwrap();
+            send.write_all(&data).await.unwrap();
+            send.finish().unwrap();
+            server
+        });
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&vec![7u8; 256 * 1024]).await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(recv.read_to_end(1 << 20).await.unwrap().len(), 256 * 1024);
+        let _server = echo.await.unwrap();
+
+        let (process, net) = handle.stop();
+        assert!(net.sent_packets > 0, "{net:?}");
+        assert!(!net.rtt_max.is_zero(), "{net:?}");
+        assert!(
+            net.rtt_min <= net.rtt_avg && net.rtt_avg <= net.rtt_max,
+            "{net:?}"
+        );
+        assert!(process.peak_rss > 0, "{process:?}");
+        if cfg!(target_os = "linux") {
+            assert!(process.peak_fds > 0, "{process:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn dropping_the_handle_ends_the_task() {
         let (a, b) = (loopback().await, loopback().await);
         let accept = async { b.accept().await.unwrap().await.unwrap() };

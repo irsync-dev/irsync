@@ -80,6 +80,18 @@ fn sampler(side: Side) -> Option<Sampler> {
 /// `service.name` (`OTEL_SERVICE_NAME` wins), `service.version`, the
 /// endpoint id when known, and `OTEL_RESOURCE_ATTRIBUTES`.
 fn resource(side: Side, endpoint_id: Option<String>) -> Resource {
+    let name = std::env::var("OTEL_SERVICE_NAME")
+        .ok()
+        .filter(|n| !n.is_empty());
+    resource_with(side, endpoint_id, name)
+}
+
+/// [`resource`] with `service_name` (`OTEL_SERVICE_NAME`, if set) given.
+fn resource_with(
+    side: Side,
+    endpoint_id: Option<String>,
+    service_name: Option<String>,
+) -> Resource {
     let default_name = match side {
         Side::Client => "irsync",
         Side::Daemon => "irsync-daemon",
@@ -94,9 +106,9 @@ fn resource(side: Side, endpoint_id: Option<String>) -> Resource {
     if let Some(id) = endpoint_id {
         b = b.with_attribute(KeyValue::new("irsync.endpoint_id", id));
     }
-    match std::env::var("OTEL_SERVICE_NAME") {
-        Ok(name) if !name.is_empty() => b.with_service_name(name),
-        _ => b,
+    match service_name {
+        Some(name) => b.with_service_name(name),
+        None => b,
     }
     .build()
 }
@@ -300,23 +312,28 @@ mod tests {
 
     #[test]
     fn resource_names_the_side_and_version() {
-        if std::env::var_os("OTEL_SERVICE_NAME").is_some() {
-            return;
-        }
-        let r = resource(Side::Daemon, Some("abc".into()));
+        let name = |r: &Resource| {
+            r.get(&opentelemetry::Key::new("service.name"))
+                .map(|v| v.to_string())
+        };
+        // `OTEL_SERVICE_NAME` wins over everything, whatever else is set.
+        let r = resource_with(Side::Daemon, Some("abc".into()), Some("custom".into()));
         let get = |k: &'static str| r.get(&opentelemetry::Key::new(k)).map(|v| v.to_string());
-        assert_eq!(get("service.name").as_deref(), Some("irsync-daemon"));
+        assert_eq!(name(&r).as_deref(), Some("custom"));
         assert_eq!(
             get("service.version").as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(get("irsync.endpoint_id").as_deref(), Some("abc"));
-        let r = resource(Side::Client, None);
-        assert_eq!(
-            r.get(&opentelemetry::Key::new("service.name"))
-                .map(|v| v.to_string()),
-            Some("irsync".into())
-        );
+        // Without it, the side's name, unless `OTEL_RESOURCE_ATTRIBUTES`
+        // in this environment names the service.
+        if env_set("OTEL_RESOURCE_ATTRIBUTES") {
+            return;
+        }
+        let daemon = resource_with(Side::Daemon, None, None);
+        assert_eq!(name(&daemon).as_deref(), Some("irsync-daemon"));
+        let client = resource_with(Side::Client, None, None);
+        assert_eq!(name(&client).as_deref(), Some("irsync"));
     }
 
     #[test]

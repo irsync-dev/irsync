@@ -293,3 +293,69 @@ async fn a_failed_connection_still_records_its_network_figures() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_pass_has_its_span_under_the_receiving_session() {
+    let _serial = capture().await;
+    let args =
+        irsync::cli::Args::try_parse_from(["irsync", "-a", "--delete", "src/", "host:m/"]).unwrap();
+    let opts = irsync::cli::SyncOptions::from_args(&args);
+    let h = Harness::new().await;
+    five_files(h.src(Flow::Pull));
+    let extra = h.dst(Flow::Pull).join("extra.txt");
+    fs::write(&extra, b"only here").unwrap();
+    let (out, _) = h
+        .run_reconnect(&opts, Flow::Pull, fast(), h.local_side())
+        .await;
+    out.unwrap();
+    assert!(!extra.exists());
+
+    let all = recs();
+    // A pull: the client receives, so the client deletes.
+    let client = side(&all, "session", "client");
+    assert_eq!(client.len(), 1, "{all:#?}");
+    let deletes = named(&all, "delete");
+    assert_eq!(deletes.len(), 1, "{deletes:#?}");
+    assert!(
+        ancestors(&all, deletes[0])
+            .iter()
+            .any(|a| a.id == client[0].id),
+        "delete outside the client's session: {deletes:#?}"
+    );
+    assert!(deletes[0].fields.contains_key("mode"), "{:?}", deletes[0]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_that_gives_up_still_counts_its_reconnects() {
+    let _serial = capture().await;
+    let opts = archive_opts();
+    let h = Harness::new().await;
+    five_files(h.src(Flow::Push));
+    // Every connection drops right after the handshake; within a short
+    // outage budget the client reconnects a few times, then gives up.
+    h.daemon.fault.drop_after_ack();
+    let ropts = ReconnectOpts {
+        max: Duration::from_millis(800),
+        backoff_min: Duration::from_millis(50),
+        backoff_max: Duration::from_millis(100),
+        ..ReconnectOpts::default()
+    };
+    let (out, reconnects) = h
+        .run_reconnect(&opts, Flow::Push, ropts, h.local_side())
+        .await;
+    assert!(out.is_err());
+    assert!(reconnects >= 1);
+
+    let all = recs();
+    let client = side(&all, "session", "client");
+    assert_eq!(client.len(), 1, "{client:#?}");
+    // Counted like `Outcome::reconnects`: attempts after the first. A
+    // fresh start the daemon asks for is no new attempt, though the
+    // callback reports `Reconnecting` for it too.
+    let recorded: u32 = client[0].fields["reconnects"].parse().unwrap();
+    assert!(
+        (1..=reconnects).contains(&recorded),
+        "{recorded} of {reconnects}: {:?}",
+        client[0]
+    );
+}

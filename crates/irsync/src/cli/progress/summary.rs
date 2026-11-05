@@ -333,22 +333,20 @@ mod tests {
         // The documented rates: literal over wall, hashed over hash busy.
         s.usage.wall = secs(192.0);
         let got = render(&s, 80);
-        let lit = human(s.usage.count(Counter::BytesLiteral));
-        let rate = human((s.usage.count(Counter::BytesLiteral) as f64 / 192.0) as u64);
-        let hrate = human((s.usage.count(Counter::BytesHashed) as f64 / 37.1) as u64);
+        // Worked out by hand, not with the code's formula: 3.41 GiB over
+        // 192 s, and 15.30 GiB hashed over 37.1 s of hash busy time.
         let want = vec![
             "session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect"
                 .to_string(),
             "  busy      walk 21.0s  hash 9.3s ×4.0  read 1:02  send 1:48  delete 1.3s".to_string(),
             "  waiting   peer 44.0s  index 0.7s ×3.0".to_string(),
-            format!("  transfer  1,882 files  {lit} literal  12.00G matched  {rate}/s"),
-            format!("  hashing   2,107 files  15.30G  {hrate}/s"),
+            "  transfer  1,882 files  3.41G literal  12.00G matched  18.19M/s".to_string(),
+            "  hashing   2,107 files  15.30G  422.30M/s".to_string(),
             "  disk      read 15.40G  write 0  fsync 0.0s".to_string(),
             "  network   sent 3.52G  recv 41.00M  rtt 12ms (max 40ms)  lost 0.02%".to_string(),
             "  process   cpu 1:12 user, 0:31 sys  peak rss 312.00M  peak fds 214".to_string(),
         ];
         assert_eq!(got, want);
-        assert_eq!(lit, "3.41G");
     }
 
     #[test]

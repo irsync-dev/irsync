@@ -1253,3 +1253,32 @@ fn index_and_gc_use_the_configured_state_dir() {
     let o = irsync(&home, &["gc", "-n", c]);
     assert!(!o.status.success(), "gc takes no operands");
 }
+
+#[test]
+fn config_sets_and_checks_the_telemetry_keys() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    ok(
+        &home,
+        &["config", "set", "telemetry.otlp_endpoint", "http://c:4318"],
+    );
+    ok(&home, &["config", "set", "daemon.debug_addr", "9464"]);
+    assert_eq!(
+        ok(&home, &["config", "get", "telemetry.otlp_endpoint"]),
+        "http://c:4318\n"
+    );
+    assert_eq!(ok(&home, &["config", "get", "daemon.debug_addr"]), "9464\n");
+    let file = home.join(".config/irsync/irsync.toml");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    // Values that would not load are refused, and the file is left as it was.
+    for (key, bad) in [
+        ("telemetry.otlp_endpoint", "notaurl"),
+        ("daemon.debug_addr", "nope"),
+    ] {
+        let o = irsync(&home, &["config", "set", key, bad]);
+        assert_eq!(o.status.code(), Some(1), "{key}: {o:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains(key), "{o:?}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "{key}");
+    }
+}

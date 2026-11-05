@@ -519,3 +519,45 @@ fn verbose_prints_one_summary_per_session() {
         "{out}"
     );
 }
+
+#[test]
+fn verbose_prints_a_summary_for_a_failed_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["dst", "home", "xdg", "src"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("src/f.bin"), bytes(4096)).unwrap();
+    let d = start_daemon(tmp);
+    let address = format!("localhost:{}", d.listen.port());
+    // An export the daemon does not have: the session is refused.
+    let dest = format!("{}:nope/", d.id);
+    let src = tmp.join("src").display().to_string();
+    let o = run_client(
+        &[
+            "-v",
+            "--reconnect",
+            "0",
+            "--address",
+            &address,
+            "--config",
+            d.config.to_str().unwrap(),
+            &src,
+            &dest,
+        ],
+        tmp,
+    );
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(!o.status.success(), "{out}\n{err}");
+    assert!(err.contains("nope"), "{err}");
+    // The failed session still gets its summary block, with its wall time.
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains(&format!("session 1/1 push {src} -> {dest}")),
+        "{out}"
+    );
+    assert!(flat.contains(" wall "), "{out}");
+}

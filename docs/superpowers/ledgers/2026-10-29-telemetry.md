@@ -145,16 +145,18 @@ Still open, accuracy or docs:
 - Daemon session span records source_index=0 instead of leaving it Empty (engine.rs serve_daemon).
 - The "did not finish" shutdown warning can be lost when publish::once uses up the 2 s budget (init.rs shutdown, otel.rs).
 
-Still open, test gaps:
-- -v summary layout test computes its rates with the code's formula (hardcode 18.19M/s, 422.30M/s).
-- No test of the failed-session summary (main.rs failure arm).
-- No test of the delete span.
-- OTel bridge gauge path and mixed increment+absolute counters untested.
-- OTel resource test returns early when OTEL_SERVICE_NAME is set instead of setting it.
-- sampler.rs unit test covers only shutdown, not sampling; process.rs fd test retries to absorb churn.
-- manage_config tests call the library set/unset, not the binary.
-- counters_reach_the_global_meter asserts an exact delta on a shared global (latent race, none seen).
-- No test of `reconnects` on a client session that fails after reconnecting (6678359).
+Test gaps, closed the same day (all but one):
+- -v summary layout test expects the hand-worked 18.19M/s and 422.30M/s.
+- verbose_prints_a_summary_for_a_failed_session (isolated_e2e) covers the failure arm.
+- delete_pass_has_its_span_under_the_receiving_session (telemetry_spans).
+- bridge_mixes_increments_with_absolute_values_and_forwards_gauges (telemetry_otel).
+- resource_with takes the service name, so the resource test checks the override whatever the environment; only the default name skips under OTEL_RESOURCE_ATTRIBUTES.
+- stop_reports_the_process_and_the_connection (sampler.rs) checks real samples.
+- config_sets_and_checks_the_telemetry_keys (commands_e2e) runs the binary.
+- The meter's parent-summing tests use a parent of their own; session_meters_sum_into_the_process_wide_ones checks the link by pointer.
+- a_session_that_gives_up_still_counts_its_reconnects (telemetry_spans).
+- Left: process.rs sample_sees_cpu_and_fds retries, as other tests in the binary open and close descriptors (inherent to a process-wide count).
+- Found meanwhile: `config set daemon.debug_addr nope` names the file and the reason twice in its refusal.
 
 Still open, code quality:
 - serve_daemon: 8 args behind allow(too_many_arguments) (one of eight such functions).
