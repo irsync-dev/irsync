@@ -129,3 +129,43 @@ Ruling 21: the daemon's tracer provider uses an AlwaysOn sampler unless OTEL_TRA
 Final fix wave: dispatched (base 886bb58)
 Final fix wave: commits 886bb58..3f7276e; re-review dispatched
 Final fix wave: re-review all 10 addressed; minor: well_formed rejects higher-version traceparents with extra fields (harmless). Final review clean.
+
+## Status check 2026-11-05
+
+Every deferred minor above checked against the code at 3d94c43.
+
+Closed:
+- Final fix wave (886bb58..3f7276e): http accept spin, response write deadline, SIGINT race, daemon bind warning address, port_in_use hang, empty OTEL_METRIC_EXPORT_INTERVAL; log-line span prefix (Ruling 20).
+- Since: Usage::add merges process/net (with a test); irsync_fsync_seconds carries side/role/export; dead `|| inject` removed (ac43e54).
+- 6678359 fixed the eight that reported wrong values: timing percentiles above max; http catch-all reason phrase; files_total{failed} counting non-file errors; BytesMatched over-count on an in-session resend; --bwlimit sleep as peer wait; delta encoding as Send and symlink/special/MetaOnly (and mkdir) as Plan; flame self time with children on other threads; failed sessions lacking rtt/cwnd/lost_packets/reconnects.
+
+Still open, accuracy or docs:
+- rtt_avg merge is a pairwise mean, not sample-weighted (meter.rs Usage::add; the unit test pins it).
+- Process CPU/RSS summed across concurrent daemon sessions; not said on ProcessUsage.
+- Daemon session span records source_index=0 instead of leaving it Empty (engine.rs serve_daemon).
+- The "did not finish" shutdown warning can be lost when publish::once uses up the 2 s budget (init.rs shutdown, otel.rs).
+
+Still open, test gaps:
+- -v summary layout test computes its rates with the code's formula (hardcode 18.19M/s, 422.30M/s).
+- No test of the failed-session summary (main.rs failure arm).
+- No test of the delete span.
+- OTel bridge gauge path and mixed increment+absolute counters untested.
+- OTel resource test returns early when OTEL_SERVICE_NAME is set instead of setting it.
+- sampler.rs unit test covers only shutdown, not sampling; process.rs fd test retries to absorb churn.
+- manage_config tests call the library set/unset, not the binary.
+- counters_reach_the_global_meter asserts an exact delta on a shared global (latent race, none seen).
+- No test of `reconnects` on a client session that fails after reconnecting (6678359).
+
+Still open, code quality:
+- serve_daemon: 8 args behind allow(too_many_arguments) (one of eight such functions).
+- control.rs spawn_reader body not re-indented / not an async fn.
+- session_id recorded via Span::current() in run_client_inner and the daemon; pass the span.
+- Telemetry init ignores a failed subscriber install (try_init).
+- debug_addr validated and then parsed again (settings.rs debug_socket).
+- No-otel `extract` stub is pub.
+- No comment that the rustls provider install (OTLP only) is process-wide.
+- Endpoint id string allocated per accepted connection (daemon.rs accept loop).
+- Meter arrays indexed by enum discriminant rather than an explicit table.
+- summary rows() mixes sep.len() bytes with char widths (correct while separators are ASCII).
+
+Open by design: the connect span includes the handshake; well_formed() accepts only version-00 traceparents.
