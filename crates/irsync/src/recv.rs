@@ -85,6 +85,8 @@ pub struct FileWriter {
     /// The `.part`, locked. Absent until the first write when nothing was
     /// there to adopt: a file waiting for its data holds no descriptor.
     file: Option<Arc<File>>,
+    /// Which file `file` is, as read when it was opened.
+    held_id: FileId,
     size: u64,
     whole_hash: [u8; 32],
     /// The whole-file hash, folded from the verified chunks as they come
@@ -328,8 +330,8 @@ fn restore_owner_rw(part: &Path) -> io::Result<()> {
     make_owner_writable(&f)
 }
 
-/// Open the `.part` read/write without following a symlink at its name, and
-/// require a regular file. The file is ours (`.irsync.<name>.part`): if a
+/// Open the `.part` read/write without following a symlink at its name
+/// ([`open_locked_part`] checks that it is a regular file). The file is ours (`.irsync.<name>.part`): if a
 /// read-only mode left by a failed finalize is in the way, restore owner
 /// read/write through a descriptor and retry once.
 fn open_part(part: &Path) -> io::Result<File> {
@@ -342,7 +344,6 @@ fn open_part(part: &Path) -> io::Result<File> {
         }
         r => r?,
     };
-    require_regular(&file, part)?;
     Ok(file)
 }
 
@@ -356,12 +357,27 @@ fn part_exists(part: &Path) -> io::Result<bool> {
     }
 }
 
-/// Fails unless the `.part` path still names the file we hold open, so a
-/// rename by path can only move the file that was verified.
-fn still_same_file(file: &File, part: &Path) -> io::Result<()> {
-    let held = file.metadata()?;
+/// Which file a descriptor holds: what its path must still name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FileId {
+    dev: u64,
+    ino: u64,
+}
+
+impl FileId {
+    fn of(m: &std::fs::Metadata) -> FileId {
+        FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+        }
+    }
+}
+
+/// Fails unless the `.part` path still names the file we hold open (`held`),
+/// so a rename by path can only move the file that was verified.
+fn still_same_file(held: FileId, part: &Path) -> io::Result<()> {
     let now = std::fs::symlink_metadata(part)?;
-    if !now.file_type().is_file() || now.dev() != held.dev() || now.ino() != held.ino() {
+    if !now.file_type().is_file() || FileId::of(&now) != held {
         return Err(io::Error::other(format!(
             "{} was replaced while it was written; not placing it",
             part.display()
@@ -393,11 +409,10 @@ fn digest_held(file: &File, activity: &AtomicU64) -> io::Result<FileDigest> {
     ))
 }
 
-/// Whether `part` still names the file held open.
-fn names_file(file: &File, part: &Path) -> io::Result<bool> {
-    let held = file.metadata()?;
+/// Whether `part` still names the file held open (`held`).
+fn names_file(held: FileId, part: &Path) -> io::Result<bool> {
     Ok(match std::fs::symlink_metadata(part) {
-        Ok(now) => now.file_type().is_file() && now.dev() == held.dev() && now.ino() == held.ino(),
+        Ok(now) => now.file_type().is_file() && FileId::of(&now) == held,
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(e),
     })
@@ -405,17 +420,29 @@ fn names_file(file: &File, part: &Path) -> io::Result<bool> {
 
 /// Opens and locks the `.part`, waiting up to [`BUSY_WAIT`] for another
 /// holder: a finalize that outlived its connection releases the lock when it
-/// finishes. The lock is only kept on a file the path still names (a
-/// finalize renames its `.part` away; then a fresh one is opened).
-fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
+/// finishes. The lock is only kept on a regular file the path still names
+/// (a finalize renames its `.part` away; then a fresh one is opened).
+/// Returns the file's metadata too, read once the lock is held: until then
+/// another writer may still have been growing it.
+fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
     let start = Instant::now();
     loop {
         // A momentary descriptor shortage is waited out rather than failing
         // the file (see `fs::transient`).
         let file = crate::fs::transient::retry(|| open_part(part))?;
         match file.try_lock() {
-            Ok(()) if names_file(&file, part)? => return Ok(file),
-            Ok(()) => continue,
+            Ok(()) => {
+                let meta = file.metadata()?;
+                if !meta.file_type().is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{} is not a regular file", part.display()),
+                    ));
+                }
+                if names_file(FileId::of(&meta), part)? {
+                    return Ok((file, meta));
+                }
+            }
             Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < BUSY_WAIT => {
                 drop(file);
                 activity.fetch_add(1, Ordering::Relaxed);
@@ -433,7 +460,7 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
 /// open finds it missing: the planner has nearly always made it, and
 /// `create_dir_all` on an existing directory costs a failing mkdir and a
 /// stat per file.
-fn open_part_in_dir(part: &Path, activity: &AtomicU64) -> io::Result<File> {
+fn open_part_in_dir(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
     match open_locked_part(part, activity) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             if let Some(dir) = part.parent() {
@@ -540,8 +567,8 @@ impl FileWriter {
         // One writer per `.part`: a second (another session on the same
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
-        let file = open_part_in_dir(&part, &activity)?;
-        let mut hole_from = file.metadata()?.len();
+        let (file, meta) = open_part_in_dir(&part, &activity)?;
+        let mut hole_from = meta.len();
         let mut cloned = false;
         if let Some(c) = &clone {
             if hole_from == 0 && reflink(c.file, &file).is_ok() {
@@ -561,6 +588,7 @@ impl FileWriter {
             meter,
         );
         w.hole_from = hole_from;
+        w.held_id = FileId::of(&meta);
         w.cloned = cloned;
         let adopted_from_record = w.adopt_recorded()?;
         if cloned {
@@ -593,8 +621,8 @@ impl FileWriter {
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
         let (dest, _) = paths(root, rel, None)?;
-        let file = open_locked_part(&dest, &activity)?;
-        let (now, hashed) = (file.metadata()?, old.file.metadata()?);
+        let (file, now) = open_locked_part(&dest, &activity)?;
+        let hashed = old.file.metadata()?;
         if now.ino() != hashed.ino() || now.dev() != hashed.dev() {
             return Err(invalid("destination is no longer the file that was hashed"));
         }
@@ -611,6 +639,7 @@ impl FileWriter {
             meter,
         );
         w.hole_from = hole_from;
+        w.held_id = FileId::of(&now);
         w.inplace = true;
         let adopted_from_record = w.adopt_recorded()?;
         w.adopt_from(old.digest)?;
@@ -626,7 +655,7 @@ impl FileWriter {
     }
 
     /// A writer over `chunks` with nothing verified yet; `hole_from`,
-    /// `cloned` and `inplace` are set by the caller.
+    /// `held_id`, `cloned` and `inplace` are set by the caller.
     #[allow(clippy::too_many_arguments)]
     fn new(
         rel: &RelPath,
@@ -644,6 +673,7 @@ impl FileWriter {
             dest,
             part,
             file,
+            held_id: FileId::default(),
             size: expected.size,
             whole_hash: expected.hash,
             tree: Box::new(TreeHash::new(expected.size)),
@@ -691,16 +721,17 @@ impl FileWriter {
             return Ok(f.clone());
         }
         let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
-        let (file, len) =
+        let (file, len, id) =
             tokio::task::spawn_blocking(move || open_sized_part(&part, size, &activity))
                 .await
                 .map_err(io::Error::other)??;
-        Ok(self.opened(file, len))
+        Ok(self.opened(file, len, id))
     }
 
     /// Holds the `.part` [`open_sized_part`] opened at `len` bytes.
-    fn opened(&mut self, file: File, len: u64) -> Arc<File> {
+    fn opened(&mut self, file: File, len: u64, id: FileId) -> Arc<File> {
         self.hole_from = len;
+        self.held_id = id;
         let file = Arc::new(file);
         self.file = Some(file.clone());
         file
@@ -922,7 +953,7 @@ impl FileWriter {
             };
             let (file, hole_from) = match (&held, &opened) {
                 (Some(f), _) => (&**f, hole_from),
-                (None, Some((f, len))) => (f, *len),
+                (None, Some((f, len, _))) => (f, *len),
                 (None, None) => unreachable!("opened above"),
             };
             // A hole (`set_len` past the opened length) already reads as
@@ -939,8 +970,8 @@ impl FileWriter {
         })
         .await
         .map_err(io::Error::other)??;
-        if let Some((file, len)) = opened {
-            self.opened(file, len);
+        if let Some((file, len, id)) = opened {
+            self.opened(file, len, id);
         }
         #[cfg(feature = "test-hooks")]
         if !hole || inject {
@@ -1051,13 +1082,14 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (part, dest, size, expected, inplace, rel) = (
+        let (part, dest, size, expected, inplace, rel, held_id) = (
             self.part.clone(),
             self.dest.clone(),
             self.size,
             self.verify_whole.then_some(self.whole_hash),
             self.inplace,
             self.rel.clone(),
+            self.held_id,
         );
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
@@ -1094,27 +1126,23 @@ impl FileWriter {
             if let Some(expected) = expected.filter(|e| *e != actual) {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
-            match std::fs::symlink_metadata(&dest) {
-                Ok(m) if m.is_dir() => {
-                    return Err(FinalizeError::Io(io::Error::other(format!(
-                        "refusing to replace directory {} with a file",
-                        dest.display()
-                    ))));
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
             // Metadata goes through the held descriptor; the rename (by
             // path) only once the path still names that very file. In
-            // place, the file is already at its name.
+            // place, the file is already at its name. A directory at the
+            // destination fails the rename (`EISDIR`), never replaced.
             let placed = apply_metadata_fd(&*file, &entry, &opts)
-                .and_then(|()| still_same_file(&file, &part))
+                .and_then(|()| still_same_file(held_id, &part))
                 .and_then(|()| {
                     if inplace {
                         return Ok(());
                     }
                     std::fs::rename(&part, &dest).map_err(|e| {
+                        if e.raw_os_error() == Some(nix::libc::EISDIR) {
+                            return io::Error::other(format!(
+                                "refusing to replace directory {} with a file",
+                                dest.display()
+                            ));
+                        }
                         io::Error::new(
                             e.kind(),
                             format!("rename {} -> {}: {e}", part.display(), dest.display()),
@@ -1181,14 +1209,17 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
 }
 
 /// Opens and locks the `.part` at `part` (creating its directory) and
-/// sizes it to `size`; also returns its length before that: another writer
+/// sizes it to `size`; also returns its length before that (another writer
 /// may have left bytes there meanwhile, and below that length nothing is
-/// known to be a hole.
-fn open_sized_part(part: &Path, size: u64, activity: &AtomicU64) -> io::Result<(File, u64)> {
-    let file = open_part_in_dir(part, activity)?;
-    let len = file.metadata()?.len();
+/// known to be a hole) and which file it is.
+fn open_sized_part(
+    part: &Path,
+    size: u64,
+    activity: &AtomicU64,
+) -> io::Result<(File, u64, FileId)> {
+    let (file, meta) = open_part_in_dir(part, activity)?;
     file.set_len(size)?;
-    Ok((file, len))
+    Ok((file, meta.len(), FileId::of(&meta)))
 }
 
 /// A file [`FileWriter::place`] put at its name.
