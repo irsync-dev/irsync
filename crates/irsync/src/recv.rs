@@ -991,7 +991,7 @@ impl FileWriter {
             return Err(e);
         }
         if let Some(m) = &self.meter {
-            if !hole || inject {
+            if !hole {
                 m.add(Counter::DiskWrite, data.len() as u64);
             }
         }
