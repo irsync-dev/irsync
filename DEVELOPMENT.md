@@ -241,6 +241,48 @@ calls (a `mkdir` getting `EEXIST`, a `statx` getting `ENOENT`) are work that
 can usually be skipped. strace slows the traced process by an order of
 magnitude, so use its counts, not its times.
 
+**Syscalls per call site.** When `strace -c` shows a count worth cutting,
+find which code makes the calls. `strace -k` prints a stack for every
+syscall, and `tools/syscall-sites.py` groups the calls by syscall, result
+and the innermost irsync frames. Use a small workload (a few hundred
+files), since every call writes a full stack:
+
+```sh
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_TARGET_DIR=target/dbg \
+  cargo build --release -p irsync
+strace -f -k -e trace=statx,fstat,newfstatat -o trace.txt \
+  target/dbg/release/irsync daemon --config irsync.toml
+# ... run the client against it, then stop the daemon ...
+tools/syscall-sites.py trace.txt target/dbg/release/irsync
+```
+
+Each output line is a count, the syscall and where it was called from:
+
+```
+     142  statx ENOENT             part_exists (recv.rs:353) < open_from (recv.rs:560) < poll (session/recv_io.rs:461)
+     142  statx (fd)               open_locked_part (recv.rs:435) < open_part_in_dir (recv.rs:464) < open_sized_part (recv.rs:1220)
+```
+
+Divide by the number of files to get calls per file, then look for one
+file paying for the same answer twice: two fstats of the same descriptor,
+an lstat whose result the next call would report anyway, a call whose
+outcome is already known. Count again after a change; the same command
+shows whether each site went away.
+
+Two details the script handles:
+
+- strace prints a frame's offset in the file, while `addr2line` wants a
+  virtual address. The script adds the executable segment's address minus
+  its offset (`readelf -lW`), and steps each return address back by one
+  so it lands in the call.
+- With `-f`, a call interrupted by another thread is printed as
+  `<unfinished ...>` and later `<... resumed>`, with its stack after the
+  resumed line. The script attaches it to the right call.
+
+The line tables do not change the code, so counts from this build match
+the normal release build. `-k` needs an strace built with stack-trace
+support (`strace -k -e trace=openat true` prints stacks if it has it).
+
 ### Things this project has run into
 
 - **SQLite re-preparing a statement.** A statement whose plan depends on a
