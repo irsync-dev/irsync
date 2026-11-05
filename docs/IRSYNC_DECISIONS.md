@@ -161,9 +161,24 @@ cross-referenced from commit messages and review notes.
   last emitted key** (duplicates and out-of-order alike) with an error log,
   because emitting them can manufacture a spurious delete. Cost: a missed
   file only if a listing is already corrupt.
-- **R8 — `finalize` checks the destination kind before applying metadata**,
+- **R8 — A directory at the destination is never replaced by a file**,
   and `FileWriter::open` restores `u+w` on irsync's own `.part` on
-  `EACCES`, so a read-only temp file can never be stranded.
+  `EACCES`, so a read-only temp file can never be stranded. Since
+  2026-11-05 the check is the rename itself (`EISDIR`, reported as
+  "refusing to replace directory") rather than an lstat before it, so the
+  `.part`'s metadata is applied first and `u+w` is restored when the
+  rename fails.
+- **R42 — `place` stays its own blocking call** (2026-11-05). Folding it
+  into the write that completes the file (that call also adding the last
+  chunk to the hash tree, then syncing, applying metadata and renaming)
+  was built and measured on a push of 33k small files after gc: futex
+  calls 823k -> 683k and context switches ~304k -> ~278k, but wall time
+  ~1041 -> ~1098 ms (six interleaved runs, timed to the millisecond) and
+  daemon CPU unchanged. Not merged. The likely cause, unconfirmed: the
+  place work then runs behind the file's last write instead of
+  overlapping other files' writes; the files-in-flight window (up to
+  4096) is not the limit. An off-CPU profile of both would settle it
+  before trying again.
 - Temp files are `.irsync.<name>.part` in the destination directory (or
   `--partial-dir`), and `.irsync.<name>.tmp` for symlinks, specials and
   hard links; both come from `recv::temp_name`, which cuts the name and
