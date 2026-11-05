@@ -320,6 +320,48 @@ cross-referenced from commit messages and review notes.
 4. **Transmitting remaining client options.** Done: the preserve flags
    (R36), the filters (R38) and a relative `--partial-dir` (R39); an
    absolute one stays client-side and a push with it is refused.
+5. **Durability of received files: one fsync per file** (raised
+   2026-11-05, left open). `FileWriter::place` (`recv.rs`) writes the
+   `.part`, calls `sync_all`, applies mode, owner and times, then renames.
+   The parent directory is not synced after the rename (see 2.3), and the
+   index runs with `synchronous=NORMAL`.
+   - *What the fsync protects.* Only a power loss or kernel crash loses
+     data; a killed process does not (the page cache survives it).
+     Without the fsync, such a crash within the seconds before writeback
+     can leave a file at its name with the right size and mtime (journaled
+     metadata) but zeros or stale blocks inside (delayed allocation on
+     ext4 and XFS). The quick check compares only size and mtime, so the
+     next run passes it: silent corruption until a `-c` run. A lost rename
+     is harmless (the file is old or absent and is sent again), and local
+     chunk reuse verifies every chunk's hash, so a corrupt file never
+     spreads into other files.
+   - *What it costs.* Unmeasured. The push benchmarks ran on tmpfs, where
+     fsync does nothing, and the development machine has no real disk.
+     Expected: roughly 0.1-1 ms per file on NVMe, 5-20 ms on a spinning
+     disk (minutes for a 33k-file push), softened because files are synced
+     from many blocking threads at once and ext4 and XFS can merge the
+     syncs into fewer journal commits.
+   - *Options.*
+     (A) Keep the per-file fsync: every file at its name has its content.
+     (B) Drop it, as rsync does by default (rsync 3.2.4+ has an opt-in
+     `--fsync`): no guarantee for the last seconds of writes.
+     (C1) One `syncfs` per session before reporting success: a successful
+     session is durable, a crash mid-session can leave silently corrupt
+     files as in (B); `syncfs` also flushes other processes' dirty data on
+     that filesystem, and it is Linux-only.
+     (C2) Write a batch of `.part` files, sync them, then rename the batch:
+     the guarantee of (A) at one flush per batch, but `place` splits into
+     a write and a rename step and files appear in batches.
+     (D) A flag choosing among these.
+   - *Independent of the choice.* `sync_data` (`fdatasync`) would do
+     instead of `sync_all`: mode and times are applied after the sync, so
+     the extra metadata flush of `fsync` protects nothing; the new size is
+     flushed either way. On macOS `fsync` does not flush the drive's write
+     cache (only `F_FULLFSYNC` does), so (A) is weaker there than on Linux.
+   - *Next step.* Measure a many-small-files push to ext4 or XFS on a real
+     disk with the fsync on and off. If it matters, the likely choice is
+     (D) with (C1) as the default and per-file syncing as the flag; (C2)
+     only if (C1) proves insufficient.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
