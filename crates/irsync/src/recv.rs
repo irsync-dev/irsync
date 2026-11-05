@@ -429,6 +429,22 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<File> {
     }
 }
 
+/// [`open_locked_part`], creating the `.part`'s directory only when the
+/// open finds it missing: the planner has nearly always made it, and
+/// `create_dir_all` on an existing directory costs a failing mkdir and a
+/// stat per file.
+fn open_part_in_dir(part: &Path, activity: &AtomicU64) -> io::Result<File> {
+    match open_locked_part(part, activity) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if let Some(dir) = part.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            open_locked_part(part, activity)
+        }
+        r => r,
+    }
+}
+
 fn read_chunk(file: &File, c: &ChunkRecord) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; c.len as usize];
     file.read_exact_at(&mut buf, c.offset)?;
@@ -511,9 +527,6 @@ impl FileWriter {
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
         let (dest, part) = paths(root, rel, partial_dir)?;
-        if let Some(dir) = part.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         // Nothing to adopt and nothing to clone: the `.part` is opened by
         // the first write (or by `finalize`), so a file waiting for the
         // sender's stream holds no descriptor.
@@ -527,7 +540,7 @@ impl FileWriter {
         // One writer per `.part`: a second (another session on the same
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
-        let file = open_locked_part(&part, &activity)?;
+        let file = open_part_in_dir(&part, &activity)?;
         let mut hole_from = file.metadata()?.len();
         let mut cloned = false;
         if let Some(c) = &clone {
@@ -1172,10 +1185,7 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
 /// may have left bytes there meanwhile, and below that length nothing is
 /// known to be a hole.
 fn open_sized_part(part: &Path, size: u64, activity: &AtomicU64) -> io::Result<(File, u64)> {
-    if let Some(dir) = part.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let file = open_locked_part(part, activity)?;
+    let file = open_part_in_dir(part, activity)?;
     let len = file.metadata()?.len();
     file.set_len(size)?;
     Ok((file, len))

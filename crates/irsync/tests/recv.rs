@@ -337,6 +337,21 @@ async fn partial_dir_and_copy_local() {
 }
 
 #[tokio::test]
+async fn missing_directory_is_created_at_the_first_write() {
+    let e = env();
+    let data = content(43);
+    let cl = chunk_list(&data);
+    let rel = RelPath::new(b"new/sub/f.bin").unwrap();
+    let mut w = FileWriter::open(&e.root, &rel, &cl, None, e.index.clone()).unwrap();
+    // Nothing is created until the `.part` is opened.
+    assert!(!e.root.join("new").exists());
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    assert!(e.root.join("new/sub/.irsync.f.bin.part").exists());
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(e.root.join("new/sub/f.bin")).unwrap(), data);
+}
+
+#[tokio::test]
 async fn read_only_mode_with_dir_dest_stays_resumable() {
     let e = env();
     let data = content(43);
