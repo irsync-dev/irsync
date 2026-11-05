@@ -233,13 +233,5 @@ always on).
 
 Export is behind the cargo feature `otel`, on by default.
 
-### Manual check: a build without `otel`
-
-```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-  cargo run -p irsync --no-default-features -- -a src/ HOST:export/
-```
-
-stderr starts with `irsync: built without OpenTelemetry support; ignoring
-[telemetry]`, and the sync runs as usual. CI checks that this build stays
-clippy-clean (`cargo clippy -p irsync --no-default-features --all-targets`).
+A build without it ignores the telemetry settings with a warning; see
+[DEVELOPMENT.md](../DEVELOPMENT.md#cargo-features) for checking that by hand.
