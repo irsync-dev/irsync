@@ -2,8 +2,7 @@ use futures::executor::block_on;
 use futures::stream::{self, StreamExt};
 use irsync::cli::Append;
 use irsync::cli::Preserve;
-use irsync::fs::paths::RelPath;
-use irsync::plan::{decide, merge_join, Decision, HashLookup, NoLookup, PlanOpts, Side};
+use irsync::plan::{decide, merge_join, Decision, PlanOpts, Side};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
@@ -46,7 +45,6 @@ fn opts() -> PlanOpts {
         checksum: false,
         update_only: false,
         delete: false,
-        rename_detection: false,
         preserve: Preserve::default(),
         append: Append::Off,
     }
@@ -61,26 +59,25 @@ fn append_transfers_only_the_tail_of_a_grown_file() {
     let o = append_opts(Append::Append);
     let src = reg("a", 200, 2);
     assert_eq!(
-        decide(Some(&src), Some(&reg("a", 100, 1)), &o, &NoLookup),
+        decide(Some(&src), Some(&reg("a", 100, 1)), &o),
         Decision::Append { from: 100 }
     );
     // Not grown: skipped (attributes still applied), as rsync does.
     assert!(matches!(
-        decide(Some(&src), Some(&reg("a", 200, 1)), &o, &NoLookup),
+        decide(Some(&src), Some(&reg("a", 200, 1)), &o),
         Decision::Skip | Decision::MetaOnly
     ));
     assert!(matches!(
-        decide(Some(&src), Some(&reg("a", 300, 1)), &o, &NoLookup),
+        decide(Some(&src), Some(&reg("a", 300, 1)), &o),
         Decision::Skip | Decision::MetaOnly
     ));
     // A missing destination, or content known equal, is unaffected.
-    assert_eq!(decide(Some(&src), None, &o, &NoLookup), Decision::Whole);
+    assert_eq!(decide(Some(&src), None, &o), Decision::Whole);
     assert_eq!(
         decide(
             Some(&with_hash(reg("a", 200, 2), 1)),
             Some(&with_hash(reg("a", 200, 1), 1)),
-            &o,
-            &NoLookup
+            &o
         ),
         Decision::MetaOnly
     );
@@ -91,26 +88,19 @@ fn append_verify_keeps_the_delta_for_a_grown_file() {
     let o = append_opts(Append::Verify);
     let src = reg("a", 200, 2);
     assert_eq!(
-        decide(Some(&src), Some(&reg("a", 100, 1)), &o, &NoLookup),
+        decide(Some(&src), Some(&reg("a", 100, 1)), &o),
         Decision::Delta
     );
     assert!(matches!(
-        decide(Some(&src), Some(&reg("a", 200, 1)), &o, &NoLookup),
+        decide(Some(&src), Some(&reg("a", 200, 1)), &o),
         Decision::Skip | Decision::MetaOnly
     ));
-}
-
-struct OneHit;
-impl HashLookup for OneHit {
-    fn path_with_whole_hash(&self, h: &[u8; 32]) -> Option<RelPath> {
-        (h == &[7u8; 32]).then(|| RelPath::new(b"old/name").unwrap())
-    }
 }
 
 #[test]
 fn missing_dst_is_whole() {
     let s = reg("a", 3, 1);
-    assert_eq!(decide(Some(&s), None, &opts(), &NoLookup), Decision::Whole);
+    assert_eq!(decide(Some(&s), None, &opts()), Decision::Whole);
 }
 
 #[test]
@@ -118,51 +108,27 @@ fn missing_dst_by_kind() {
     let d = side("d", Kind::Directory, 0o755);
     let l = side("l", Kind::Symlink, 0o777);
     let f = side("f", Kind::Fifo, 0o644);
-    assert_eq!(decide(Some(&d), None, &opts(), &NoLookup), Decision::Mkdir);
-    assert_eq!(
-        decide(Some(&l), None, &opts(), &NoLookup),
-        Decision::Symlink
-    );
+    assert_eq!(decide(Some(&d), None, &opts()), Decision::Mkdir);
+    assert_eq!(decide(Some(&l), None, &opts()), Decision::Symlink);
     let mut o = opts();
-    assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&f), None, &o), Decision::Skip);
     // A FIFO is a special, not a device: --devices alone leaves it out.
     o.preserve.devices = true;
-    assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&f), None, &o), Decision::Skip);
     o.preserve.specials = true;
-    assert_eq!(decide(Some(&f), None, &o, &NoLookup), Decision::Special);
+    assert_eq!(decide(Some(&f), None, &o), Decision::Special);
     // And --specials alone leaves a device node out.
     let c = side("c", Kind::CharDev, 0o600);
     o.preserve.devices = false;
-    assert_eq!(decide(Some(&c), None, &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&c), None, &o), Decision::Skip);
     o.preserve.devices = true;
-    assert_eq!(decide(Some(&c), None, &o, &NoLookup), Decision::Special);
-}
-
-#[test]
-fn missing_dst_with_known_hash_is_local_copy() {
-    let s = with_hash(reg("a", 3, 1), 7);
-    let mut o = opts();
-    o.rename_detection = true;
-    assert_eq!(
-        decide(Some(&s), None, &o, &OneHit),
-        Decision::LocalCopy {
-            from: RelPath::new(b"old/name").unwrap()
-        }
-    );
-    // Unknown hash or detection off falls back to Whole.
-    let miss = with_hash(reg("a", 3, 1), 8);
-    assert_eq!(decide(Some(&miss), None, &o, &OneHit), Decision::Whole);
-    o.rename_detection = false;
-    assert_eq!(decide(Some(&s), None, &o, &OneHit), Decision::Whole);
+    assert_eq!(decide(Some(&c), None, &o), Decision::Special);
 }
 
 #[test]
 fn equal_quick_check_skips() {
     let (s, d) = (reg("a", 3, 1), reg("a", 3, 1));
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Skip
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Skip);
 }
 
 #[test]
@@ -171,31 +137,22 @@ fn equal_quick_check_but_mode_differs_is_meta_only() {
     let mut d = reg("a", 3, 1);
     d.entry.mode = 0o600;
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     o.preserve.perms = true;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
 }
 
 #[test]
 fn differing_regular_is_delta() {
     let (s, d) = (reg("a", 4, 2), reg("a", 3, 1));
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Delta
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Delta);
 }
 
 #[test]
 fn differing_mtime_but_same_hash_is_meta_only() {
     let s = with_hash(reg("a", 3, 2), 1);
     let d = with_hash(reg("a", 3, 1), 1);
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::MetaOnly);
 }
 
 #[test]
@@ -203,25 +160,19 @@ fn checksum_requires_hashes() {
     let mut o = opts();
     o.checksum = true;
     let (s, d) = (reg("a", 3, 1), reg("a", 3, 1));
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Delta);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Delta);
     let (s, d) = (with_hash(reg("a", 3, 1), 1), with_hash(reg("a", 3, 1), 2));
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Delta);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Delta);
     let (s, d) = (with_hash(reg("a", 3, 1), 1), with_hash(reg("a", 3, 1), 1));
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
 fn kind_change_is_whole() {
     let s = reg("a", 3, 1);
     let d = side("a", Kind::Directory, 0o755);
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Whole
-    );
-    assert_eq!(
-        decide(Some(&d), Some(&s), &opts(), &NoLookup),
-        Decision::Mkdir
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Whole);
+    assert_eq!(decide(Some(&d), Some(&s), &opts()), Decision::Mkdir);
 }
 
 #[test]
@@ -229,14 +180,11 @@ fn directory_same_kind() {
     let s = side("d", Kind::Directory, 0o755);
     let mut d = s.clone();
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     d.entry.mode = 0o700;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     o.preserve.perms = true;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
 }
 
 #[test]
@@ -244,15 +192,9 @@ fn symlink_same_kind() {
     let mut s = side("l", Kind::Symlink, 0o777);
     s.entry.link_target = b"x".to_vec();
     let mut d = s.clone();
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Skip
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Skip);
     d.entry.link_target = b"y".to_vec();
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Symlink
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Symlink);
 }
 
 #[test]
@@ -262,9 +204,9 @@ fn special_same_kind() {
     let mut d = s.clone();
     let mut o = opts();
     o.preserve.devices = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     d.entry.rdev = 6;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Special);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Special);
 }
 
 #[test]
@@ -272,22 +214,22 @@ fn src_missing_with_delete_is_delete() {
     let d = reg("a", 3, 1);
     let mut o = opts();
     o.delete = true;
-    assert_eq!(decide(None, Some(&d), &o, &NoLookup), Decision::Delete);
+    assert_eq!(decide(None, Some(&d), &o), Decision::Delete);
 }
 
 #[test]
 fn src_missing_without_delete_is_skip() {
     let d = reg("a", 3, 1);
-    assert_eq!(decide(None, Some(&d), &opts(), &NoLookup), Decision::Skip);
+    assert_eq!(decide(None, Some(&d), &opts()), Decision::Skip);
 }
 
 #[test]
 fn update_only_keeps_newer_dst() {
     let (s, d) = (reg("a", 4, 1), reg("a", 3, 9));
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Delta);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Delta);
     o.update_only = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
@@ -328,15 +270,9 @@ fn with_nsec(mut s: Side, nsec: u32) -> Side {
 fn nsec_only_difference_is_not_quick_check_equal() {
     let s = with_nsec(reg("a", 3, 1), 5);
     let d = with_nsec(reg("a", 3, 1), 6);
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::Delta
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Delta);
     let (s, d) = (with_hash(s, 1), with_hash(d, 1));
-    assert_eq!(
-        decide(Some(&s), Some(&d), &opts(), &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::MetaOnly);
 }
 
 #[test]
@@ -345,7 +281,7 @@ fn update_only_nsec_newer_dst_skips() {
     let d = with_nsec(reg("a", 3, 1), 6);
     let mut o = opts();
     o.update_only = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
@@ -353,7 +289,7 @@ fn update_only_equal_mtime_proceeds() {
     let (s, d) = (reg("a", 4, 1), reg("a", 3, 1));
     let mut o = opts();
     o.update_only = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Delta);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Delta);
 }
 
 #[test]
@@ -363,7 +299,7 @@ fn mode_mask_ignores_type_bits() {
     let d = reg("a", 3, 1);
     let mut o = opts();
     o.preserve.perms = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
@@ -373,41 +309,30 @@ fn times_owner_group_each_trigger_meta_only() {
     let mut d = s.clone();
     d.entry.mtime_sec = 99;
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     o.preserve.times = true;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
 
     let (s, mut d) = (reg("a", 3, 1), reg("a", 3, 1));
     d.entry.uid = 5;
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     o.preserve.owner = true;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
 
     let (s, mut d) = (reg("a", 3, 1), reg("a", 3, 1));
     d.entry.gid = 5;
     let mut o = opts();
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     o.preserve.group = true;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
 }
 
 #[test]
-fn kind_change_suppresses_local_copy() {
+fn a_file_over_a_directory_is_whole() {
     let s = with_hash(reg("a", 3, 1), 7);
     let d = side("a", Kind::Directory, 0o755);
-    let mut o = opts();
-    o.rename_detection = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &OneHit), Decision::Whole);
+    assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Whole);
 }
 
 fn collect_keys(src: Vec<Side>, dst: Vec<Side>) -> Vec<(Vec<u8>, bool, bool)> {
@@ -464,26 +389,20 @@ fn special_metadata_only_difference_is_meta_only() {
     o.preserve.specials = true;
     o.preserve.times = true;
     o.preserve.perms = true;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     // Only the mtime differs: fix it in place, do not recreate.
     d.entry.mtime_sec = 200;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
     // Only the mode differs: the same.
     d.entry.mtime_sec = 100;
     d.entry.mode = 0o600;
-    assert_eq!(
-        decide(Some(&s), Some(&d), &o, &NoLookup),
-        Decision::MetaOnly
-    );
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
     // Without -t a differing mtime is not a difference.
     d.entry.mode = 0o640;
     d.entry.mtime_sec = 200;
     o.preserve.times = false;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Skip);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
     // A different device number needs a new node.
     d.entry.rdev = 9;
-    assert_eq!(decide(Some(&s), Some(&d), &o, &NoLookup), Decision::Special);
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Special);
 }

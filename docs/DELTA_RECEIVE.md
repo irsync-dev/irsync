@@ -66,11 +66,11 @@ received the `PlanItem` and begun its own digest of the new file. The two
 full-file reads that used to be back to back now run on two machines at the
 same time.
 
-A `WHOLE` file has no old content to hash, so no task is spawned. The
-rename-detection source found by the planner (`Decision::LocalCopy`) needs
-no special handling any more: it is an indexed file like any other, and its
-chunks surface through the ordinary lookup in 2.3. The `local_copy` field
-that used to carry its path is gone.
+A `WHOLE` file has no old content to hash, so no task is spawned. A moved
+or copied file needs no step of its own in the planner: its chunks are
+indexed like any other file's and surface through the ordinary lookup in
+2.3, which `--no-rename-detection` turns off (`RoleOpts::reuse_local`,
+sent to a receiving daemon as `Hello.no_local_reuse`).
 
 ### 2.2 Chunk list arrival
 

@@ -229,6 +229,35 @@ async fn a_gone_source_gives_way_to_the_next_file_holding_the_chunk() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_rename_detection_sends_a_copied_file_again() {
+    within30(async {
+        for flow in [Flow::Push, Flow::Pull] {
+            for reuse in [true, false] {
+                let mut opts = archive_opts();
+                opts.no_rename_detection = !reuse;
+                let h = Harness::new().await;
+                let content = data(2 * MIB, 11);
+                fs::write(h.src(flow).join("a.bin"), &content).unwrap();
+                let first_run = h.run(&opts, flow).await.unwrap();
+                assert!(first_run.errors.is_empty(), "{:?}", first_run.errors);
+                // The same content under a new name: the receiver holds it.
+                fs::write(h.src(flow).join("b.bin"), &content).unwrap();
+                let out = h.run(&opts, flow).await.unwrap();
+                assert!(out.errors.is_empty(), "{:?}", out.errors);
+                assert_eq!(fs::read(h.dst(flow).join("b.bin")).unwrap(), content);
+                let sent = out.bytes_transferred;
+                if reuse {
+                    assert!(sent < 64 * KIB as u64, "{flow:?}: {out:?}");
+                } else {
+                    assert!(sent >= content.len() as u64, "{flow:?}: {out:?}");
+                }
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delta_hashes_the_old_file_once_starting_at_plan_time() {
     within30(async {
         let opts = archive_opts();

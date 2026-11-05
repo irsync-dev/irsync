@@ -43,9 +43,7 @@ use crate::delete::DeletePass;
 use crate::filter::Verdict;
 use crate::fs::meta::{apply_metadata, create_special};
 use crate::fs::paths::RelPath;
-use crate::plan::{
-    decide, itemize, merge_join, meta_differs, Decision, HashLookup, NoLookup, PlanOpts, Side,
-};
+use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
 use crate::telemetry::meter::Activity;
 use crate::telemetry::PhaseKind;
 
@@ -297,15 +295,6 @@ pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
     }
 }
 
-/// A precomputed answer for `decide`'s rename detection.
-struct Found(Option<RelPath>);
-
-impl HashLookup for Found {
-    fn path_with_whole_hash(&self, _h: &[u8; 32]) -> Option<RelPath> {
-        self.0.clone()
-    }
-}
-
 /// Passes a listing through, setting `flag` if it is not strictly sorted
 /// (`merge_join` then drops entries, which could make a source path look
 /// absent and its destination copy extraneous).
@@ -408,28 +397,6 @@ impl Planner {
         }
     }
 
-    /// Rename detection: a local file already holding this content.
-    async fn lookup(&self, path: &RelPath, src: &Side, dst: Option<&Side>) -> Found {
-        let wanted = self.popts.rename_detection
-            && src.entry.kind() == Kind::Regular
-            && dst.is_none_or(|d| d.entry.kind() != Kind::Regular);
-        let Some(d) = src.digest.as_ref().filter(|_| wanted) else {
-            return Found(None);
-        };
-        // Lookups and results are index keys (relative to the index root).
-        let (index, hash, key) = (self.ctx.index().clone(), d.hash, self.ctx.key(path));
-        let found = blocking(move || {
-            index
-                .read(|r| r.other_path_by_whole_hash(&hash, &key))
-                .map_err(io::Error::other)
-        })
-        .await;
-        Found(found.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "rename lookup failed");
-            None
-        }))
-    }
-
     async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
         let meter = self.ctx.meter.clone();
         let planning = meter.start(Activity::Plan);
@@ -479,8 +446,7 @@ impl Planner {
             tracing::warn!(?path, "skipping socket");
             return;
         }
-        let found = self.lookup(&path, &src, dst.as_ref()).await;
-        let mut decision = decide(Some(&src), dst.as_ref(), &self.popts, &found);
+        let mut decision = decide(Some(&src), dst.as_ref(), &self.popts);
         if let Decision::Hardlink { target } = &decision {
             decision = self.link_decision(target, &src, dst.as_ref());
         }
@@ -541,10 +507,7 @@ impl Planner {
                 if self.ctx.opts.dry_run
                     && matches!(
                         decision,
-                        Decision::Whole
-                            | Decision::Delta
-                            | Decision::Append { .. }
-                            | Decision::LocalCopy { .. }
+                        Decision::Whole | Decision::Delta | Decision::Append { .. }
                     )
                 {
                     bus.emit(crate::session::Event::FileDone(path.clone(), 0));
@@ -641,17 +604,12 @@ impl Planner {
                 })
                 .await
             }
-            Decision::Whole
-            | Decision::Delta
-            | Decision::Append { .. }
-            | Decision::LocalCopy { .. } => {
+            Decision::Whole | Decision::Delta | Decision::Append { .. } => {
                 // Placing it (now or on an earlier connection) moved the parent's mtime.
                 self.touch_parent(&path);
                 let Some(file_id) = self.file_id(&path, entry.size) else {
                     return;
                 };
-                // A rename-detection source needs no special handling: its
-                // chunks are indexed, so the writer finds them like any other.
                 let (action, append_from) = match decision {
                     Decision::Delta => (Action::Delta, 0),
                     Decision::Append { from } => (Action::Append, from),
@@ -736,7 +694,7 @@ impl Planner {
             },
             digest: None,
         };
-        match decide(Some(&as_file), Some(d), &self.popts, &NoLookup) {
+        match decide(Some(&as_file), Some(d), &self.popts) {
             d @ (Decision::Skip | Decision::MetaOnly) => d,
             _ => linked,
         }
@@ -775,7 +733,7 @@ impl Planner {
         let Some(pass) = self.deletes.as_mut() else {
             return;
         };
-        if decide(None, Some(dst), &self.popts, &NoLookup) != Decision::Delete {
+        if decide(None, Some(dst), &self.popts) != Decision::Delete {
             return;
         }
         // Without -r a directory's contents were never compared: it stays.
@@ -883,7 +841,6 @@ async fn plan_listings(
         checksum: ctx.opts.checksum,
         update_only: ctx.opts.update_only,
         delete: deletes.is_some(),
-        rename_detection: ctx.opts.rename_detection,
         preserve: ctx.opts.preserve,
         append: ctx.opts.append,
     };

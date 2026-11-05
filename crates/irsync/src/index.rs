@@ -120,31 +120,14 @@ impl Reader<'_> {
             digest,
         }))
     }
+    /// Every path holding this content. Not indexed (nothing on a
+    /// transfer's path asks): a scan of the entries.
     pub fn find_paths_by_whole_hash(&self, hash: &[u8; 32]) -> Result<Vec<RelPath>> {
         let mut st = self
             .conn
             .prepare_cached("SELECT path FROM entries WHERE whole_hash = ?1 ORDER BY path")?;
         let rows = st.query_map([&hash[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.map(|r| relpath(&r?)).collect()
-    }
-    /// The first path by name holding this content, other than `except`:
-    /// it reads only that row, however many files hold the content.
-    pub fn other_path_by_whole_hash(
-        &self,
-        hash: &[u8; 32],
-        except: &RelPath,
-    ) -> Result<Option<RelPath>> {
-        let p = self
-            .conn
-            .prepare_cached(
-                "SELECT path FROM entries WHERE whole_hash = ?1 AND path != ?2
-                 ORDER BY path LIMIT 1",
-            )?
-            .query_row(params![&hash[..], except.as_bytes()], |r| {
-                r.get::<_, Vec<u8>>(0)
-            })
-            .optional()?;
-        p.map(|p| relpath(&p)).transpose()
     }
 
     /// Any file holding a chunk with this hash, and the chunk's offset in it.
@@ -778,7 +761,7 @@ impl Index {
                rdev INTEGER NOT NULL, link_target BLOB NOT NULL, sparse INTEGER NOT NULL,
                whole_hash BLOB, has_digest INTEGER NOT NULL);
              DROP INDEX IF EXISTS entries_whole_hash;
-             CREATE INDEX IF NOT EXISTS entries_whole_hash_path ON entries(whole_hash, path);
+             DROP INDEX IF EXISTS entries_whole_hash_path;
              CREATE TABLE IF NOT EXISTS chunks (
                path BLOB NOT NULL REFERENCES entries(path) ON DELETE CASCADE,
                idx INTEGER NOT NULL, offset INTEGER NOT NULL, len INTEGER NOT NULL,

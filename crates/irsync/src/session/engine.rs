@@ -97,7 +97,9 @@ pub(super) struct RoleOpts {
     pub preserve: Preserve,
     pub checksum: bool,
     pub update_only: bool,
-    pub rename_detection: bool,
+    /// Fill files from chunks other local files hold (off with
+    /// `--no-rename-detection`).
+    pub reuse_local: bool,
     pub partial_dir: Option<PathBuf>,
     pub parallel: usize,
     pub bwlimit: Option<u64>,
@@ -126,7 +128,7 @@ impl RoleOpts {
             preserve: o.preserve,
             checksum: o.checksum,
             update_only: o.update_only,
-            rename_detection: !o.no_rename_detection,
+            reuse_local: !o.no_rename_detection,
             partial_dir: o.partial_dir.clone(),
             parallel: o.parallel.map_or(DEFAULT_PARALLEL, |p| p.max(1) as usize),
             bwlimit: o.bwlimit,
@@ -146,7 +148,8 @@ impl RoleOpts {
     /// (`-l -p -t -g -o -D -H -S`; everything, from a client that sent none)
     /// and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
-    /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, append).
+    /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, append,
+    /// local reuse).
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
             _ if !receives => DeleteMode::Off,
@@ -187,7 +190,7 @@ impl RoleOpts {
             preserve,
             checksum: receives && hello.checksum,
             update_only: receives && hello.update_only,
-            rename_detection: true,
+            reuse_local: !(receives && hello.no_local_reuse),
             // Validated by `serve_daemon` before this is used.
             partial_dir: (receives && !hello.partial_dir.is_empty())
                 .then(|| PathBuf::from(OsStr::from_bytes(&hello.partial_dir))),
@@ -258,6 +261,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
     // `-n -v` lists what a push would transfer: only the daemon knows.
     hello.itemize = o.itemize || (o.dry_run && o.verbose > 0);
     hello.update_only = o.update_only;
+    hello.no_local_reuse = o.no_rename_detection;
     hello.numeric_ids = o.numeric_ids;
     hello.checksum = o.checksum;
     hello.inplace = o.inplace;

@@ -462,8 +462,7 @@ daemon's exports, under its state directory) walks a
 tree and hashes every regular file whose row is not fresh, with the
 session's worker count; `-n` only counts. An export with `warm_index =
 true` does the same in the background when the daemon starts. After a
-warm-up a session hashes nothing on the receiving side and the planner's
-rename lookup sees the files too. Measured: a 2 MiB file present under
+warm-up a session hashes nothing on the receiving side. Measured: a 2 MiB file present under
 another name on a cold destination crosses the wire with zero file
 bytes, after one read of the one same-sized candidate; after `irsync
 index`, with no read at all during the session.

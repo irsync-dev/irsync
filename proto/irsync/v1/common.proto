@@ -93,6 +93,10 @@ message Hello {
   // daemon's session joins the client's trace; empty means no trace.
   string traceparent = 26;
   string tracestate = 27;
+  // --no-rename-detection: a receiving daemon fills no file from chunks
+  // other files on its side hold; everything not in a file's own old
+  // version comes from the sender.
+  bool no_local_reuse = 28;
 }
 // One export the asking key may use.
 message ExportEntry {

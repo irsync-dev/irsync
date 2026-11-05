@@ -135,35 +135,6 @@ fn find_by_whole_hash_returns_all_paths() {
 }
 
 #[test]
-fn other_path_by_whole_hash_skips_the_asking_path() {
-    let d = tempfile::tempdir().unwrap();
-    let mut ix = Index::open(d.path(), d.path()).unwrap();
-    let h = [3u8; 32];
-    for p in ["y/z", "x", "c"] {
-        ix.put_entry(&rp(p), &entry(p, Some(h)), (0, 0), None)
-            .unwrap();
-    }
-    let r = ix.reader();
-    assert_eq!(
-        r.other_path_by_whole_hash(&h, &rp("x")).unwrap(),
-        Some(rp("c"))
-    );
-    assert_eq!(
-        r.other_path_by_whole_hash(&h, &rp("c")).unwrap(),
-        Some(rp("x"))
-    );
-    assert_eq!(
-        r.other_path_by_whole_hash(&[4; 32], &rp("c")).unwrap(),
-        None
-    );
-    for p in ["y/z", "x"] {
-        ix.remove_entry(&rp(p)).unwrap();
-    }
-    let r = ix.reader();
-    assert_eq!(r.other_path_by_whole_hash(&h, &rp("c")).unwrap(), None);
-}
-
-#[test]
 fn partial_roundtrip() {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

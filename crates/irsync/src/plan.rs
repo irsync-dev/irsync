@@ -29,9 +29,6 @@ pub enum Decision {
     Append {
         from: u64,
     },
-    LocalCopy {
-        from: RelPath,
-    },
     /// Link to the earlier listed regular file `target` (`-H`), once every
     /// regular file is placed.
     Hardlink {
@@ -45,23 +42,8 @@ pub struct PlanOpts {
     pub checksum: bool,
     pub update_only: bool,
     pub delete: bool,
-    pub rename_detection: bool,
     pub preserve: Preserve,
     pub append: Append,
-}
-
-/// Finds a destination file already holding content with the given whole-file hash.
-pub trait HashLookup {
-    fn path_with_whole_hash(&self, h: &[u8; 32]) -> Option<RelPath>;
-}
-
-/// A lookup that never hits.
-pub struct NoLookup;
-
-impl HashLookup for NoLookup {
-    fn path_with_whole_hash(&self, _h: &[u8; 32]) -> Option<RelPath> {
-        None
-    }
 }
 
 fn kind_of(e: &FileEntry) -> Option<Kind> {
@@ -104,7 +86,7 @@ fn wants_special(kind: Kind, p: &Preserve) -> bool {
 }
 
 /// Decision for a source entry that has to be created (no usable destination entry).
-fn create(src: &Side, opts: &PlanOpts, lookup: Option<&dyn HashLookup>) -> Decision {
+fn create(src: &Side, opts: &PlanOpts) -> Decision {
     match kind_of(&src.entry) {
         Some(Kind::Directory) => Decision::Mkdir,
         Some(Kind::Symlink) => Decision::Symlink,
@@ -125,26 +107,13 @@ fn create(src: &Side, opts: &PlanOpts, lookup: Option<&dyn HashLookup>) -> Decis
                 Decision::Skip
             }
         },
-        Some(Kind::Regular) => {
-            if opts.rename_detection {
-                if let (Some(d), Some(lookup)) = (&src.digest, lookup) {
-                    if let Some(from) = lookup.path_with_whole_hash(&d.hash) {
-                        return Decision::LocalCopy { from };
-                    }
-                }
-            }
-            Decision::Whole
-        }
+        // Chunks other local files hold are found by the writer.
+        Some(Kind::Regular) => Decision::Whole,
         None => Decision::Skip,
     }
 }
 
-pub fn decide(
-    src: Option<&Side>,
-    dst: Option<&Side>,
-    opts: &PlanOpts,
-    lookup: &dyn HashLookup,
-) -> Decision {
+pub fn decide(src: Option<&Side>, dst: Option<&Side>, opts: &PlanOpts) -> Decision {
     let (src, dst) = match (src, dst) {
         (None, None) => return Decision::Skip,
         (None, Some(_)) => {
@@ -154,13 +123,13 @@ pub fn decide(
                 Decision::Skip
             }
         }
-        (Some(s), None) => return create(s, opts, Some(lookup)),
+        (Some(s), None) => return create(s, opts),
         (Some(s), Some(d)) => (s, d),
     };
     let (se, de) = (&src.entry, &dst.entry);
     let (sk, dk) = (kind_of(se), kind_of(de));
     if sk != dk {
-        return create(src, opts, None);
+        return create(src, opts);
     }
     let p = &opts.preserve;
     match sk {
@@ -209,7 +178,7 @@ pub fn decide(
         }
         // Only ever in the sender's listing; whether the destination already
         // shares the target's inode is for the receiver's planner to see.
-        Some(Kind::Hardlink) => create(src, opts, None),
+        Some(Kind::Hardlink) => create(src, opts),
         None => Decision::Skip,
     }
 }
@@ -338,10 +307,7 @@ pub fn itemize(
         _ => 'f',
     };
     let update = match decision {
-        Decision::Whole
-        | Decision::Delta
-        | Decision::Append { .. }
-        | Decision::LocalCopy { .. } => dir,
+        Decision::Whole | Decision::Delta | Decision::Append { .. } => dir,
         Decision::Hardlink { .. } => 'h',
         Decision::Mkdir | Decision::Symlink | Decision::Special => 'c',
         Decision::MetaOnly | Decision::Skip | Decision::Delete => '.',

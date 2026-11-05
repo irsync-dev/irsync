@@ -677,8 +677,9 @@ pub struct SyncArgs {
     /// files are still picked up).
     #[arg(long)]
     pub no_resume: bool,
-    /// Do not fill a new file from a destination file with the same
-    /// content; a moved or copied file is transferred again.
+    /// Do not fill files from other files on the receiving side that hold
+    /// the same content or parts of it: a moved or copied file is
+    /// transferred again (a changed file still reuses its own old version).
     #[arg(long)]
     pub no_rename_detection: bool,
     /// Write a changed file into the destination itself instead of a

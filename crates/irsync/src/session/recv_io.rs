@@ -435,7 +435,8 @@ pub(super) async fn open_writer(
     let inplace = ctx.opts.inplace && matches!(action, Action::Delta | Action::Append);
     // Same-size files not hashed yet may hold the chunks: hashed first, so
     // the lookup below finds them.
-    if action == Action::Whole && !digest.chunks.is_empty() {
+    let reuse = ctx.opts.reuse_local;
+    if reuse && action == Action::Whole && !digest.chunks.is_empty() {
         warm_candidates(&ctx, digest.size).await;
     }
     let lookup_base = ctx.base.clone();
@@ -475,8 +476,11 @@ pub(super) async fn open_writer(
             .collect();
         let found = if wanted.is_empty() {
             Ok(Vec::new())
-        } else {
+        } else if reuse {
             local_sources(&index, &lookup_base, &wanted)
+        } else {
+            // `--no-rename-detection`: no other local file is a source.
+            Ok(wanted.iter().map(|&(i, _)| (i, None)).collect())
         };
         Ok((w, found))
     })

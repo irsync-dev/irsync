@@ -295,7 +295,7 @@ irsync-specific:
 | `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, else `~/.ssh/id_ed25519`, else generated at the former) |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`, `irsync id show` and `irsync show`) |
 | `--no-resume` | start a fresh plan instead of resuming |
-| `--no-rename-detection` | do not reuse content of moved files |
+| `--no-rename-detection` | do not reuse content of other files on the receiving side (moved or copied files are transferred again) |
 
 Subcommands: `irsync daemon [--config PATH] [--listen ADDR]... [-v|-q]`,
 the management commands above, `irsync index [-n] [-v|-q] [--config PATH] ROOT...`, which

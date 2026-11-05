@@ -247,9 +247,8 @@ session records. It is safe to delete; the next sync rebuilds it, at the cost
 of re-hashing and of losing resumable sessions.
 
 An export filled by something other than irsync (a prior rsync, a restore)
-contributes nothing to rename detection and chunk reuse until its files are
-hashed. `warm_index = true` on an export hashes them in the background when
-the daemon starts (only files whose index row is not fresh are read, so a
+contributes nothing to chunk reuse until its files are hashed. `warm_index =
+true` on an export hashes them in the background when the daemon starts (only files whose index row is not fresh are read, so a
 restart is cheap); `irsync export update NAME...|all` does the same on
 demand, and a session hashes destination files of the size of a
 file it is about to fetch on its own.
