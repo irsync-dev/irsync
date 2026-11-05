@@ -6,7 +6,7 @@
 //! chunks the old file already holds at the same offset are verified in
 //! place and never copied.
 
-use crate::fs::meta::{apply_metadata_fd, fstat_entry_with_ctime, ApplyOpts};
+use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
 use crate::index::{IndexHandle, Partial};
@@ -87,6 +87,9 @@ pub struct FileWriter {
     file: Option<Arc<File>>,
     /// Which file `file` is, as read when it was opened.
     held_id: FileId,
+    /// Its owner and group then (`(uid, gid)`), which only this writer,
+    /// holding the lock, changes.
+    held_owner: (u32, u32),
     size: u64,
     whole_hash: [u8; 32],
     /// The whole-file hash, folded from the verified chunks as they come
@@ -589,6 +592,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&meta);
+        w.held_owner = (meta.uid(), meta.gid());
         w.cloned = cloned;
         let adopted_from_record = w.adopt_recorded()?;
         if cloned {
@@ -640,6 +644,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&now);
+        w.held_owner = (now.uid(), now.gid());
         w.inplace = true;
         let adopted_from_record = w.adopt_recorded()?;
         w.adopt_from(old.digest)?;
@@ -655,7 +660,7 @@ impl FileWriter {
     }
 
     /// A writer over `chunks` with nothing verified yet; `hole_from`,
-    /// `held_id`, `cloned` and `inplace` are set by the caller.
+    /// `held_id`, `held_owner`, `cloned` and `inplace` are set by the caller.
     #[allow(clippy::too_many_arguments)]
     fn new(
         rel: &RelPath,
@@ -674,6 +679,7 @@ impl FileWriter {
             part,
             file,
             held_id: FileId::default(),
+            held_owner: (0, 0),
             size: expected.size,
             whole_hash: expected.hash,
             tree: Box::new(TreeHash::new(expected.size)),
@@ -721,17 +727,18 @@ impl FileWriter {
             return Ok(f.clone());
         }
         let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
-        let (file, len, id) =
+        let (file, meta) =
             tokio::task::spawn_blocking(move || open_sized_part(&part, size, &activity))
                 .await
                 .map_err(io::Error::other)??;
-        Ok(self.opened(file, len, id))
+        Ok(self.opened(file, &meta))
     }
 
-    /// Holds the `.part` [`open_sized_part`] opened at `len` bytes.
-    fn opened(&mut self, file: File, len: u64, id: FileId) -> Arc<File> {
-        self.hole_from = len;
-        self.held_id = id;
+    /// Holds the `.part` [`open_sized_part`] opened, `meta` as it was then.
+    fn opened(&mut self, file: File, meta: &std::fs::Metadata) -> Arc<File> {
+        self.hole_from = meta.len();
+        self.held_id = FileId::of(meta);
+        self.held_owner = (meta.uid(), meta.gid());
         let file = Arc::new(file);
         self.file = Some(file.clone());
         file
@@ -953,7 +960,7 @@ impl FileWriter {
             };
             let (file, hole_from) = match (&held, &opened) {
                 (Some(f), _) => (&**f, hole_from),
-                (None, Some((f, len, _))) => (f, *len),
+                (None, Some((f, meta))) => (f, meta.len()),
                 (None, None) => unreachable!("opened above"),
             };
             // A hole (`set_len` past the opened length) already reads as
@@ -970,8 +977,8 @@ impl FileWriter {
         })
         .await
         .map_err(io::Error::other)??;
-        if let Some((file, len, id)) = opened {
-            self.opened(file, len, id);
+        if let Some((file, meta)) = opened {
+            self.opened(file, &meta);
         }
         #[cfg(feature = "test-hooks")]
         if !hole || inject {
@@ -1082,7 +1089,7 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (part, dest, size, expected, inplace, rel, held_id) = (
+        let (part, dest, size, expected, inplace, rel, held_id, held_owner) = (
             self.part.clone(),
             self.dest.clone(),
             self.size,
@@ -1090,6 +1097,7 @@ impl FileWriter {
             self.inplace,
             self.rel.clone(),
             self.held_id,
+            self.held_owner,
         );
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
@@ -1108,7 +1116,11 @@ impl FileWriter {
                     activity.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            file.set_len(size)?;
+            // A `.part` was sized when opened; only a file written in place
+            // may still need shrinking.
+            if inplace {
+                file.set_len(size)?;
+            }
             let synced = sync_meter
                 .as_deref()
                 .filter(|m| m.is_enabled())
@@ -1130,7 +1142,7 @@ impl FileWriter {
             // path) only once the path still names that very file. In
             // place, the file is already at its name. A directory at the
             // destination fails the rename (`EISDIR`), never replaced.
-            let placed = apply_metadata_fd(&*file, &entry, &opts)
+            let placed = apply_metadata_fd_owned(&*file, &entry, &opts, held_owner)
                 .and_then(|()| still_same_file(held_id, &part))
                 .and_then(|()| {
                     if inplace {
@@ -1209,17 +1221,18 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
 }
 
 /// Opens and locks the `.part` at `part` (creating its directory) and
-/// sizes it to `size`; also returns its length before that (another writer
-/// may have left bytes there meanwhile, and below that length nothing is
-/// known to be a hole) and which file it is.
+/// sizes it to `size`; also returns its metadata from before that: its
+/// length then (another writer may have left bytes there meanwhile, and
+/// below that length nothing is known to be a hole), which file it is and
+/// its owner.
 fn open_sized_part(
     part: &Path,
     size: u64,
     activity: &AtomicU64,
-) -> io::Result<(File, u64, FileId)> {
+) -> io::Result<(File, std::fs::Metadata)> {
     let (file, meta) = open_part_in_dir(part, activity)?;
     file.set_len(size)?;
-    Ok((file, meta.len(), FileId::of(&meta)))
+    Ok((file, meta))
 }
 
 /// A file [`FileWriter::place`] put at its name.

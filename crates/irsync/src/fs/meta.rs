@@ -131,10 +131,31 @@ pub fn supplementary_groups() -> Vec<u32> {
     buf
 }
 
+/// Whether this process runs as root, and the groups it is a member of
+/// (effective and supplementary).
+struct ProcessIds {
+    root: bool,
+    groups: Vec<u32>,
+}
+
+/// [`ProcessIds`], read once: irsync never changes its ids, and asking
+/// the kernel for every file placed costs two syscalls each time.
+fn process_ids() -> &'static ProcessIds {
+    static IDS: std::sync::OnceLock<ProcessIds> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        let mut groups = supplementary_groups();
+        groups.push(nix::unistd::getegid().as_raw());
+        ProcessIds {
+            root: nix::unistd::geteuid().is_root(),
+            groups,
+        }
+    })
+}
+
 /// Whether this process may chown to `gid`: as root, or as a member of it.
 fn may_chgrp(gid: u32) -> bool {
-    use nix::unistd::{getegid, geteuid};
-    geteuid().is_root() || getegid().as_raw() == gid || supplementary_groups().contains(&gid)
+    let ids = process_ids();
+    ids.root || ids.groups.contains(&gid)
 }
 
 /// Apply the selected metadata of `e` to `path`, without following symlinks.
@@ -146,7 +167,7 @@ fn may_chgrp(gid: u32) -> bool {
 /// group only as root or a member of it; otherwise they are silently left
 /// alone.
 pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
-    let owner = opts.owner && nix::unistd::geteuid().is_root();
+    let owner = opts.owner && process_ids().root;
     let group = opts.group && may_chgrp(e.gid);
     if owner || group {
         let uid = owner.then(|| Uid::from_raw(e.uid));
@@ -171,11 +192,31 @@ pub fn apply_metadata_fd(
     e: &FileEntry,
     opts: &ApplyOpts,
 ) -> io::Result<()> {
+    apply_fd(fd.as_fd(), e, opts, None)
+}
+
+/// [`apply_metadata_fd`] on a file whose owner and group are known to be
+/// `now` (`(uid, gid)`): an owner or group it already has is not set again,
+/// so a file that already has both needs no `fchown`.
+pub fn apply_metadata_fd_owned(
+    fd: impl std::os::fd::AsFd,
+    e: &FileEntry,
+    opts: &ApplyOpts,
+    now: (u32, u32),
+) -> io::Result<()> {
+    apply_fd(fd.as_fd(), e, opts, Some(now))
+}
+
+fn apply_fd(
+    fd: std::os::fd::BorrowedFd<'_>,
+    e: &FileEntry,
+    opts: &ApplyOpts,
+    now: Option<(u32, u32)>,
+) -> io::Result<()> {
     use nix::sys::stat::{fchmod, futimens};
     use nix::unistd::fchown;
-    let fd = fd.as_fd();
-    let owner = opts.owner && nix::unistd::geteuid().is_root();
-    let group = opts.group && may_chgrp(e.gid);
+    let owner = opts.owner && process_ids().root && now.is_none_or(|(uid, _)| uid != e.uid);
+    let group = opts.group && now.is_none_or(|(_, gid)| gid != e.gid) && may_chgrp(e.gid);
     if owner || group {
         let uid = owner.then(|| Uid::from_raw(e.uid));
         let gid = group.then(|| Gid::from_raw(e.gid));
