@@ -980,18 +980,18 @@ impl FileWriter {
         if let Some((file, meta)) = opened {
             self.opened(file, &meta);
         }
-        #[cfg(feature = "test-hooks")]
-        if !hole || inject {
-            self.written += data.len() as u64;
-        }
         if let Err(e) = res {
             if let Err(pe) = self.persist().await {
                 tracing::warn!(path = ?self.part, error = %pe, "persisting partial after write error failed");
             }
             return Err(e);
         }
-        if let Some(m) = &self.meter {
-            if !hole {
+        if !hole {
+            #[cfg(feature = "test-hooks")]
+            {
+                self.written += data.len() as u64;
+            }
+            if let Some(m) = &self.meter {
                 m.add(Counter::DiskWrite, data.len() as u64);
             }
         }

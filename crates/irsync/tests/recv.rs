@@ -248,8 +248,11 @@ async fn write_error_keeps_partial_and_no_final_file() {
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     w.fail_write_at(2);
     write_all(&mut w, &data, &cl, &[0, 1]).await;
+    let written = w.bytes_written();
     let err = w.write_chunk(2, piece(&data, &cl, 2)).await.unwrap_err();
     assert_eq!(err.raw_os_error(), Some(nix::libc::ENOSPC));
+    // The failed write put nothing into the `.part`.
+    assert_eq!(w.bytes_written(), written);
     assert!(part_path(&e.root).exists());
     assert!(!final_path(&e.root).exists());
     let p = e.index.lock().unwrap().partial(&rel()).unwrap().unwrap();
