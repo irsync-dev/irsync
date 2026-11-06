@@ -447,6 +447,8 @@ pub struct DaemonHooks {
     pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub basis_budget: Option<usize>,
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub tamper_frames: Option<FrameHook>,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -648,6 +650,10 @@ pub struct SideHooks {
     /// Sender: the most bytes of chunk bases it has held at once.
     #[cfg(feature = "test-hooks")]
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Sender: the most send tasks it has had running at once for the
+    /// files in flight.
+    #[cfg(feature = "test-hooks")]
+    pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Both roles: chunk records of room for lists (see
     /// `limits::LIST_BUDGET`) each connection starts with, instead of the
     /// default.

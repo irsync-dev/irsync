@@ -7,7 +7,7 @@
 //! Per-file state lives only while a file is in flight: it is dropped at its
 //! final ack or when the sender gives up on it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -32,6 +32,7 @@ use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase,
 use super::limits::{basis_budget, basis_wire_len, list_budget};
 use super::listing_stream::ListingOut;
 use super::parts::{split, ListCredit, PART_RECORDS};
+use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict};
@@ -64,6 +65,14 @@ pub(super) enum Done {
     },
 }
 
+/// A file's chunks requested while its send task runs (see `SFile::pending`).
+#[derive(Default)]
+struct Pending {
+    idxs: BTreeSet<u32>,
+    /// Bases for some of `idxs`, already out of the basis budget.
+    bases: HashMap<u32, Basis>,
+}
+
 struct SFile {
     path: RelPath,
     /// Bumped on every re-offer; older task results are ignored.
@@ -83,9 +92,14 @@ struct SFile {
     /// rest of the file is matched (`FileMatched`). A request may come in
     /// several parts (chunks without a basis first, then those with one).
     requested: HashSet<u32>,
-    /// Send tasks of this generation still running; `FileSent` when the
-    /// last one finishes.
+    /// Send tasks of this generation started and not yet finished, or
+    /// pending; `FileSent` when the last one finishes.
     streams: u32,
+    /// A send task runs for this file (of this generation or an older one).
+    /// There is at most one: see `pending`.
+    running: bool,
+    /// Chunks requested while the send task runs, sent once it is done.
+    pending: Option<Pending>,
     /// When the receiver first asked for data; for the transfer histogram.
     started: Option<std::time::Instant>,
     #[cfg(feature = "test-hooks")]
@@ -142,6 +156,8 @@ struct SenderRole {
     bytes: u64,
     /// `send_chunks` calls not yet reported back.
     sending: usize,
+    /// Those of them for files in flight (one per file at most).
+    send_tasks: usize,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
     transfer: TransferPhase,
@@ -303,6 +319,9 @@ impl SenderRole {
     fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
         let mut f = self.files.remove(&file_id)?;
         drop_bases(&mut self.basis_held, &mut f);
+        if f.running {
+            self.send_tasks -= 1;
+        }
         self.lists.cancel(file_id);
         Some(f)
     }
@@ -344,6 +363,9 @@ impl SenderRole {
         drop_bases(&mut self.basis_held, f);
         f.requested.clear();
         f.streams = 0;
+        // Requested under the old digest. (A task still running for it
+        // stays the file's one task until it ends.)
+        f.pending = None;
         let (gen, path) = (f.gen, f.path.clone());
         if listed && !self.lists.cancel(file_id) {
             // The old list went out, and the receiver holds it until a new
@@ -367,6 +389,12 @@ impl SenderRole {
         let file_id = p.file_id;
         if !self.seen.insert(file_id) {
             bail!("protocol error: duplicate file id {file_id}");
+        }
+        // The receiver's planner holds a slot per file until it has queued
+        // the file's final ack (see `on_finalized`), so an honest receiver
+        // never has more in flight than the window.
+        if self.files.len() >= MAX_INFLIGHT {
+            bail!("protocol error: more than {MAX_INFLIGHT} files in flight");
         }
         let path = RelPath::new(&p.path).unwrap_or_default();
         let append_from = (p.action == Action::Append as i32).then_some(p.append_from);
@@ -394,6 +422,8 @@ impl SenderRole {
                 bases_held: 0,
                 requested: HashSet::new(),
                 streams: 0,
+                running: false,
+                pending: None,
                 started: None,
                 #[cfg(feature = "test-hooks")]
                 hooked: false,
@@ -547,7 +577,9 @@ impl SenderRole {
         // chunks are used, the rest dropped. A basis serves only the
         // request that follows it; one left over is stale (its writer was
         // retired before requesting, and the receiver sent an empty
-        // request so that we drop it before it reuses the bytes).
+        // request so that we drop it before it reuses the bytes). They
+        // leave the basis budget here, even if the request waits below:
+        // the receiver counts them free once it has sent the request.
         let mut held = std::mem::take(&mut f.bases);
         self.basis_held -= std::mem::take(&mut f.bases_held);
         // The receiver may ask again for chunks its streams did not deliver.
@@ -586,13 +618,39 @@ impl SenderRole {
         if idxs.is_empty() {
             return; // The receiver has everything; wait for its ack.
         }
-        #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
-        let mut bases: HashMap<u32, Basis> = idxs
+        let bases: HashMap<u32, Basis> = idxs
             .iter()
             .filter_map(|i| held.remove_entry(i))
             .map(|(i, (b, _))| (i, b))
             .collect();
         drop(held);
+        if f.running {
+            // At most one send task per file: a request that arrives while
+            // one runs (a batch, a re-request, a repeat) joins the file's
+            // pending request, sent when the running task is done. A chunk
+            // is in it once (with the basis of its latest request), so it
+            // never holds more than the file's chunks.
+            let p = f.pending.get_or_insert_with(Pending::default);
+            for i in &idxs {
+                p.bases.remove(i);
+            }
+            p.idxs.extend(idxs);
+            p.bases.extend(bases);
+            return;
+        }
+        self.spawn_send(file_id, idxs, bases);
+    }
+
+    /// Starts the file's send task for `idxs` (the file is in flight, with
+    /// a digest, and has no send task running).
+    #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
+    fn spawn_send(&mut self, file_id: u64, idxs: Vec<u32>, mut bases: HashMap<u32, Basis>) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
+        let Some(digest) = f.digest.clone() else {
+            return;
+        };
         #[cfg(feature = "test-hooks")]
         let hook = if f.hooked {
             None
@@ -610,6 +668,12 @@ impl SenderRole {
         let path = f.path.clone();
         self.sending += 1;
         f.streams += 1;
+        f.running = true;
+        self.send_tasks += 1;
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.ctx.hooks.send_tasks_peak {
+            p.fetch_max(self.send_tasks, std::sync::atomic::Ordering::SeqCst);
+        }
         let send_span = tracing::debug_span!(parent: &f.span, "send");
         tokio::spawn(
             async move {
@@ -654,15 +718,21 @@ impl SenderRole {
 
     fn on_sent(&mut self, file_id: u64, gen: u32, result: io::Result<u64>) {
         self.sending -= 1;
-        // The last send of the current generation: only the ack is left.
-        // (A superseded send must not mark the re-offered file sent.)
-        if let Some(f) = self.files.get_mut(&file_id).filter(|f| f.gen == gen) {
-            f.streams = f.streams.saturating_sub(1);
-            if f.streams == 0 && result.is_ok() {
-                self.ctx
-                    .hooks
-                    .bus
-                    .emit(super::Event::FileSent(f.path.clone()));
+        if let Some(f) = self.files.get_mut(&file_id) {
+            // The file's only send task (of this generation or an older one).
+            if std::mem::take(&mut f.running) {
+                self.send_tasks -= 1;
+            }
+            // The last send of the current generation: only the ack is left.
+            // (A superseded send must not mark the re-offered file sent.)
+            if f.gen == gen {
+                f.streams = f.streams.saturating_sub(1);
+                if f.streams == 0 && f.pending.is_none() && result.is_ok() {
+                    self.ctx
+                        .hooks
+                        .bus
+                        .emit(super::Event::FileSent(f.path.clone()));
+                }
             }
         }
         match result {
@@ -673,13 +743,7 @@ impl SenderRole {
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            Err(e) => {
-                let Some(f) = self.files.get(&file_id) else {
-                    return;
-                };
-                if f.gen != gen {
-                    return;
-                }
+            Err(e) if self.files.get(&file_id).is_some_and(|f| f.gen == gen) => {
                 if e.kind() == io::ErrorKind::InvalidData {
                     // The file changed under us; never send stale data.
                     self.retry(file_id, e.to_string());
@@ -687,6 +751,11 @@ impl SenderRole {
                     self.source_error(file_id, e.to_string());
                 }
             }
+            Err(_) => {}
+        }
+        // What was requested while the task ran (a retry dropped it).
+        if let Some(p) = self.files.get_mut(&file_id).and_then(|f| f.pending.take()) {
+            self.spawn_send(file_id, p.idxs.into_iter().collect(), p.bases);
         }
     }
 
@@ -930,6 +999,7 @@ pub(super) async fn run(
         transferred_size: 0,
         created: 0,
         sending: 0,
+        send_tasks: 0,
         errors: Vec::new(),
         persist,
         transfer: TransferPhase::default(),

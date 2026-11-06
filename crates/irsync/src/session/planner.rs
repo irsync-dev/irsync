@@ -23,7 +23,6 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -299,24 +298,6 @@ pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::create_dir(full),
         Err(e) => Err(e),
     }
-}
-
-/// Passes a listing through, setting `flag` if it is not strictly sorted
-/// (`merge_join` then drops entries, which could make a source path look
-/// absent and its destination copy extraneous).
-fn checked_order(
-    s: impl futures::Stream<Item = Side> + Send,
-    flag: Arc<AtomicBool>,
-) -> impl futures::Stream<Item = Side> + Send {
-    let mut last: Option<RelPath> = None;
-    s.inspect(move |side| {
-        if let Ok(p) = RelPath::new(&side.entry.path) {
-            if last.as_ref().is_some_and(|l| p <= *l) {
-                flag.store(true, Ordering::Relaxed);
-            }
-            last = Some(p);
-        }
-    })
 }
 
 /// The entries of a listing; a gap records its path in `gap` (the earliest
@@ -794,16 +775,6 @@ impl Planner {
         }
     }
 
-    /// A listing out of order makes the candidates unreliable: no deletions.
-    fn check_order(&mut self, disordered: &AtomicBool) {
-        if disordered.load(Ordering::Relaxed) {
-            if let Some(pass) = self.deletes.as_mut() {
-                tracing::error!("a listing was out of order: no deletions");
-                pass.mark_unreliable();
-            }
-        }
-    }
-
     /// `--delete-during`, at a directory boundary: hands the candidates the
     /// merge has left behind to the receiver's main loop and waits for them
     /// to be deleted. The pass is incomplete when a listing reported a gap
@@ -911,14 +882,12 @@ async fn plan_listings(
         delayed: Vec::new(),
     };
     let mode = p.deletes.as_ref().map(|d| d.mode());
-    let disordered = Arc::new(AtomicBool::new(false));
     // The first gap either listing reported, known before the merge yields
     // any path after it (it may be known one path early).
     let gap = Arc::new(Mutex::new(None));
-    let joined = merge_join(
-        checked_order(sides(peer, gap.clone()), disordered.clone()),
-        checked_order(sides(local, gap.clone()), disordered.clone()),
-    );
+    // Both listings are in order: the peer's listing reader refuses one
+    // that is not (a protocol error), and this side's comes from its walk.
+    let joined = merge_join(sides(peer, gap.clone()), sides(local, gap.clone()));
     futures::pin_mut!(joined);
     if mode == Some(DeleteMode::Before) {
         // Every candidate is known only once both listings have ended.
@@ -932,7 +901,6 @@ async fn plan_listings(
                 sources.push((path, src, dst));
             }
         }
-        p.check_order(&disordered);
         p.delete_before().await;
         for (path, src, dst) in sources {
             p.one(path, src, dst).await;
@@ -957,7 +925,6 @@ async fn plan_listings(
             }
         }
     }
-    p.check_order(&disordered);
     p.report.deletes = p.deletes.take();
     #[cfg(feature = "test-hooks")]
     for t in std::mem::take(&mut p.delayed) {

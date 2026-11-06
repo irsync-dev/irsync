@@ -442,10 +442,12 @@ impl Receiver {
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.failed.insert(f.path.clone());
-        self.errors.push((f.path, msg.clone()));
+        self.errors.push((f.path.clone(), msg.clone()));
         if let Some(status) = ack {
             self.ack(file_id, status, msg);
         }
+        // The planner's slot goes only after the ack (see `on_finalized`).
+        drop(f);
     }
 
     /// Grants the sender room for `records` chunk records of lists. Sent
@@ -890,8 +892,12 @@ impl Receiver {
                 let matched = size.saturating_sub(f.received_before + received);
                 self.ctx.meter.add(Counter::BytesMatched, matched);
                 // Placed: acknowledged DONE even if the sender gave up meanwhile
-                // (it withdraws its error on this ack).
-                self.files.remove(&file_id);
+                // (it withdraws its error on this ack). The ack is queued
+                // before the file (and with it the planner's slot) is
+                // dropped: the planner's next `Plan` then follows the ack,
+                // and the sender never sees more files in flight than the
+                // window.
+                let placed = self.files.remove(&file_id);
                 self.active -= 1;
                 self.release_list(file_id);
                 self.persist.done(file_id);
@@ -902,6 +908,7 @@ impl Receiver {
                     message: String::new(),
                     matched,
                 }));
+                drop(placed);
             }
             Err(e) if abandoned.is_some() => {
                 f.st = St::Requested;

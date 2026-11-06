@@ -16,7 +16,7 @@ use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{PartsFault, StreamKind};
 use irsync_proto::v1::control::Msg;
 use irsync_proto::v1::file_entry::Kind;
-use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry};
+use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry, PlanItem};
 
 const MIB: usize = 1024 * 1024;
 
@@ -751,6 +751,141 @@ async fn a_list_sent_again_first_frees_the_old_one() {
         // (Its mtime is the one listed before the change, as in
         // `file_changed_during_transfer_is_resent`.)
         assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), new);
+    })
+    .await;
+}
+
+/// A receiver that plans far more files than the window of files in flight
+/// (fresh ids for a path it listed): the sender refuses to track them.
+///
+/// A push with the daemon (the receiver) tampering: the sender's own error
+/// is what the client reports, and it is deterministic, as the sender takes
+/// the plans in order before anything the receiver sends after them. (In a
+/// pull, the receiving client may first fail on a chunk list the sender
+/// sent for one of the fresh ids, "never planned", a race.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn more_plans_than_the_window_fail_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("a"), data(4096, 1)).unwrap();
+        let first = AtomicBool::new(true);
+        let local = h.local_side();
+        h.daemon.hooks.lock().unwrap().tamper_frames =
+            Some(Arc::new(move |kind, msg| match (kind, msg) {
+                (StreamKind::Control, Msg::Plan(p)) if first.swap(false, SeqCst) => (0..=5000u64)
+                    .map(|k| {
+                        Msg::Plan(PlanItem {
+                            file_id: p.file_id + 1_000_000 * k,
+                            ..p.clone()
+                        })
+                    })
+                    .collect(),
+                (_, m) => vec![m],
+            }));
+        let err = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .expect_err("more plans than the window were accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("files in flight"), "{err}");
+    })
+    .await;
+}
+
+/// A receiver that asks for every chunk 500 times: the sender runs at most
+/// one send task per file, merging the repeats, and the transfer succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeated_needs_do_not_multiply_sends() {
+    within120(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        for i in 0..40 {
+            fs::write(
+                h.src(flow).join(format!("f{i:02}.bin")),
+                data(4096, 200 + i),
+            )
+            .unwrap();
+        }
+        let peak = Arc::new(AtomicUsize::new(0));
+        h.daemon.hooks.lock().unwrap().send_tasks_peak = Some(peak.clone());
+        let mut local = h.local_side();
+        local.hooks.max_inflight = Some(8);
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::Need(n)) if !n.chunk_idx.is_empty() => {
+                vec![Msg::Need(n); 500]
+            }
+            (_, m) => vec![m],
+        }));
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(peak >= 1, "no send task was counted");
+        assert!(
+            peak <= 8,
+            "{peak} send tasks ran at once for 8 files in flight"
+        );
+    })
+    .await;
+}
+
+/// A listing whose paths go backwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_out_of_order_listing_fails_the_session() {
+    within60(async {
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("b"), b"b").unwrap();
+        let mut local = h.local_side();
+        local.hooks.inject_listing = Some(Arc::new(|e: &FileEntry| {
+            if e.path == b"b" {
+                vec![FileEntry {
+                    path: b"a".to_vec(),
+                    kind: Kind::Regular as i32,
+                    size: 1,
+                    ..FileEntry::default()
+                }]
+            } else {
+                Vec::new()
+            }
+        }));
+        let err = h
+            .run_side(&archive_opts(), Flow::Push, local)
+            .await
+            .expect_err("an out-of-order listing was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("listing out of order"), "{err}");
+    })
+    .await;
+}
+
+/// A `ListingEnd` that counts one entry more than the listing carried.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listing_count_mismatch_fails_the_session() {
+    within60(async {
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("a"), b"a").unwrap();
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Listing, Msg::ListingEnd(mut e)) => {
+                e.count += 1;
+                vec![Msg::ListingEnd(e)]
+            }
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), Flow::Push, local)
+            .await
+            .expect_err("a listing count mismatch was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("listing count mismatch"), "{err}");
     })
     .await;
 }

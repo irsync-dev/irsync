@@ -190,6 +190,28 @@ pub(super) fn spawn_listing_reader(
     )
 }
 
+/// A listing path at or before the last one.
+///
+/// Where a walk puts its gaps (`scan::run_walk`, `ScanEvent::Gap`):
+/// - a directory that could not be read: right after its own entry, under
+///   the same path;
+/// - an entry that could not be stat'ed: in its place, so after the last
+///   path; a directory's may be followed by a second gap under the same
+///   path (its children could not be read either);
+/// - a walk error with no path inside the root: at the root (empty path),
+///   anywhere.
+///
+/// So an entry must come after the last path listed or named by a gap, and
+/// a gap at or after it, or at the root. A gap at the root says entries may
+/// be missing anywhere, which only ever withholds deletions.
+fn out_of_order(path: &RelPath, last: &RelPath) -> Ev {
+    Ev::ProtocolError(format!(
+        "listing out of order: {:?} after {:?}",
+        String::from_utf8_lossy(path.as_bytes()),
+        String::from_utf8_lossy(last.as_bytes())
+    ))
+}
+
 /// The reader's loop; see [`spawn_listing_reader`].
 async fn read_listing(
     mut recv: RecvStream,
@@ -207,6 +229,10 @@ async fn read_listing(
     };
     let mut started = false;
     let mut ended = false;
+    // The order check: the last path listed, or named by a gap.
+    let mut last: Option<RelPath> = None;
+    // `ListingEntry` frames received, against `ListingEnd.count`.
+    let mut entries = 0u64;
     // Why the listing stopped short, if it did.
     let failure = loop {
         let frame = read_msg::<Control, _>(&mut recv).await;
@@ -244,6 +270,17 @@ async fn read_listing(
         }
         match msg {
             Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
+                entries += 1;
+                // Strictly increasing: the planner's merge would otherwise
+                // drop entries, and a source path that looks absent makes
+                // its destination copy extraneous. (A path that is not a
+                // `RelPath` is refused per entry by the planner.)
+                if let Ok(p) = RelPath::new(&e.path) {
+                    if let Some(l) = last.as_ref().filter(|l| p <= **l) {
+                        break Some(out_of_order(&p, l));
+                    }
+                    last = Some(p);
+                }
                 // The peer's owner and group names become this side's ids.
                 if let Some(map) = ids.as_mut() {
                     map.localize(&mut e);
@@ -267,15 +304,29 @@ async fn read_listing(
                 }
             }
             Msg::Listing(ListingEntry { entry: None }) => {
+                entries += 1;
                 tracing::warn!("listing frame without entry; ignored");
             }
             // The receiver's planner wants the gap in order with the entries.
             Msg::ListingError(e) => {
                 tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
+                let path = RelPath::new(&e.path).unwrap_or_default();
+                // At or after the last path, or at the root (see `out_of_order`).
+                if !path.as_bytes().is_empty() {
+                    if let Some(l) = last.as_ref().filter(|l| path < **l) {
+                        break Some(out_of_order(&path, l));
+                    }
+                    last = Some(path.clone());
+                }
                 if let Some(tx) = &planner {
-                    let path = RelPath::new(&e.path).unwrap_or_default();
                     let _ = tx.send(Listed::Gap(path)).await;
                 }
+            }
+            Msg::ListingEnd(e) if e.count != entries => {
+                break Some(Ev::ProtocolError(format!(
+                    "listing count mismatch: ListingEnd says {}, {entries} received",
+                    e.count
+                )));
             }
             m @ Msg::ListingEnd(_) => {
                 let seen = scan.seen();

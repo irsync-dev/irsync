@@ -1143,6 +1143,8 @@ async fn serve_daemon_inner(
                 h.out_peak = p.out_peak;
                 h.basis_budget = p.basis_budget;
                 h.basis_peak = p.basis_peak;
+                h.send_tasks_peak = p.send_tasks_peak;
+                h.tamper_frames = p.tamper_frames;
                 h.list_budget = p.list_budget;
                 h.list_peak = p.list_peak;
                 h.slow_peer_events = p.slow_peer_events;
