@@ -399,12 +399,18 @@ const OUT_BUDGET: usize = 4 * MIB;
 /// directories with 240-byte names, so each path is about 3600 bytes long.
 /// Returns the directory that holds the 2 000.
 fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
+    deep_tree(root, 2000)
+}
+
+/// `dirs` directories of ten one-byte files each, below fifteen nested
+/// directories with 240-byte names (see [`wide_deep_tree`]).
+fn deep_tree(root: &Path, dirs: u32) -> std::path::PathBuf {
     let mut base = root.to_path_buf();
     for c in b'a'..b'p' {
         base.push(String::from_utf8(vec![c; 240]).unwrap());
     }
     fs::create_dir_all(&base).unwrap();
-    for d in 0..2000 {
+    for d in 0..dirs {
         let dir = base.join(format!("d{d:04}"));
         fs::create_dir(&dir).unwrap();
         for f in 0..10 {
@@ -929,6 +935,75 @@ async fn an_empty_source_tree_syncs() {
             assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
             assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
         }
+    })
+    .await;
+}
+
+/// A daemon done with a push while the client still has a large backlog
+/// of `Itemized` frames to read (a slow client: 4 ms per peer event, about
+/// 0.9 MB/s of 3.6 KB frames). The daemon is done once the backlog fits
+/// in what the client queues, the stream window and its own budget
+/// (~15 MB, ~17 s of reading): it must wait for the client to close, not
+/// close the connection after a fixed 10 to 15 s and fail the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let base = deep_tree(h.src(flow), 500);
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        chmod_all(&base, 0o750, 0o600);
+        let mut local = h.local_side();
+        local.hooks.slow_peer_events = Some(Duration::from_millis(4));
+        let mut opts = archive_opts();
+        opts.itemize = true;
+        let (out, reconnects) = h.run_reconnect(&opts, flow, no_reconnect(), local).await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(reconnects, 0);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+/// A client that all but stops reading at the end (one peer event a
+/// second, about 2 200 to go, all of which fit in the buffers between the
+/// two, so the daemon is done at once): the daemon's wait for it to close
+/// ends once nothing has moved for its quiet time (2 s here), and its
+/// session ends although the client is still connected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Arc::new(Harness::new().await);
+        let base = deep_tree(h.src(flow), 200);
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        chmod_all(&base, 0o750, 0o600);
+        let before = h.daemon.sessions.load(SeqCst);
+        h.daemon.hooks.lock().unwrap().close_quiet = Some(Duration::from_secs(2));
+        let mut local = h.local_side();
+        local.hooks.slow_peer_events = Some(Duration::from_secs(1));
+        let mut opts = archive_opts();
+        opts.itemize = true;
+        let started = std::time::Instant::now();
+        let client = tokio::spawn({
+            let h = h.clone();
+            async move { h.run_reconnect(&opts, flow, no_reconnect(), local).await }
+        });
+        while h.daemon.sessions.load(SeqCst) == before {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the daemon still waits for the client after {:?}",
+                started.elapsed()
+            );
+            assert!(!client.is_finished(), "the client finished");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        client.abort();
     })
     .await;
 }

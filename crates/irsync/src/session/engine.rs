@@ -741,7 +741,7 @@ pub(super) async fn run_client_inner(
         privs: Privs::current(),
         hooks: local.hooks,
     };
-    run_role(Arc::new(ctx), send, recv, listing, sends).await
+    run_role(Arc::new(ctx), send, recv, listing, sends, Side::Client).await
 }
 
 /// What [`prepare_root`] does with missing components of the session root.
@@ -1145,6 +1145,7 @@ async fn serve_daemon_inner(
                 h.basis_peak = p.basis_peak;
                 h.send_tasks_peak = p.send_tasks_peak;
                 h.tamper_frames = p.tamper_frames;
+                h.close_quiet = p.close_quiet;
                 h.list_budget = p.list_budget;
                 h.list_peak = p.list_peak;
                 h.slow_peer_events = p.slow_peer_events;
@@ -1152,7 +1153,7 @@ async fn serve_daemon_inner(
             h
         },
     };
-    run_role(Arc::new(ctx), send, recv, listing, sends).await
+    run_role(Arc::new(ctx), send, recv, listing, sends, Side::Daemon).await
 }
 
 /// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
@@ -1186,6 +1187,7 @@ async fn run_role(
     recv: RecvStream,
     listing: (SendStream, RecvStream),
     sends: bool,
+    side: Side,
 ) -> anyhow::Result<Outcome> {
     // Deadlock invariant: a task that drains a bounded queue fed from the
     // network never waits on anything that needs the peer to make progress
@@ -1315,6 +1317,11 @@ async fn run_role(
                 o.usage.net = net;
             }
             let _ = writer.await;
+            if side == Side::Daemon {
+                // Closing now could cut the client off from what it has not
+                // read yet; the readers stay, so it can still end its side.
+                await_client_close(&ctx).await;
+            }
             reader.abort();
             // The sender's listing ended before the receiver could finish;
             // the receiver's last listing frames may still be on their way
@@ -1353,6 +1360,59 @@ async fn run_role(
                 listing_writer.abort();
             });
             Err(e)
+        }
+    }
+}
+
+/// How long the daemon waits at a session's end for the client to close,
+/// while nothing moves on the connection (see [`await_client_close`]).
+const CLOSE_QUIET: Duration = Duration::from_secs(30);
+
+/// Daemon, at a session's end: waits for the client to close the
+/// connection. Until then it may still be reading what we sent: up to a
+/// stream window, besides the frames its own queue holds, which on a slow
+/// link or with a slow client takes a while, and a connection we close is
+/// lost to it with all it has not read. So the wait is bounded by
+/// progress, not by a fixed time: it ends after [`CLOSE_QUIET`] in which
+/// we sent no stream data and the client granted no flow-control credit
+/// (it reads nothing, or has everything and is done with it), and at the
+/// latest after the session's idle timeout. Credit grants stop once our
+/// streams have ended (the client knows their size), so the quiet time
+/// also covers a client reading the rest of what it holds.
+async fn await_client_close(ctx: &Ctx) {
+    #[cfg(feature = "test-hooks")]
+    let quiet = ctx.hooks.close_quiet.unwrap_or(CLOSE_QUIET);
+    #[cfg(not(feature = "test-hooks"))]
+    let quiet = CLOSE_QUIET;
+    let moved = |c: &Connection| {
+        let s = c.stats();
+        (
+            s.frame_tx.stream,
+            s.frame_rx.max_data,
+            s.frame_rx.max_stream_data,
+        )
+    };
+    let started = tokio::time::Instant::now();
+    let mut last = moved(&ctx.conn);
+    let mut since = started;
+    let closed = ctx.conn.closed();
+    tokio::pin!(closed);
+    let mut tick = tokio::time::interval((quiet / 10).max(Duration::from_millis(100)));
+    loop {
+        tokio::select! {
+            _ = &mut closed => return,
+            _ = tick.tick() => {}
+        }
+        let now = moved(&ctx.conn);
+        if now != last {
+            (last, since) = (now, tokio::time::Instant::now());
+        } else if since.elapsed() >= quiet {
+            tracing::info!(quiet = ?quiet, "the client did not close; closing the connection");
+            return;
+        }
+        if ctx.idle_timeout.is_some_and(|t| started.elapsed() >= t) {
+            tracing::info!("the client did not close within the idle timeout");
+            return;
         }
     }
 }

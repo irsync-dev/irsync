@@ -449,6 +449,7 @@ pub struct DaemonHooks {
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub tamper_frames: Option<FrameHook>,
+    pub close_quiet: Option<Duration>,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -654,6 +655,10 @@ pub struct SideHooks {
     /// files in flight.
     #[cfg(feature = "test-hooks")]
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Daemon: how long, at a session's end, it waits for the client to
+    /// close while nothing moves, instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub close_quiet: Option<std::time::Duration>,
     /// Both roles: chunk records of room for lists (see
     /// `limits::LIST_BUDGET`) each connection starts with, instead of the
     /// default.
