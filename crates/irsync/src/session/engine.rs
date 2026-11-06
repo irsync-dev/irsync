@@ -1,9 +1,10 @@
 //! Session entry points for both ends of a connection.
 //!
 //! The client opens the control stream and sends `Hello`; the daemon answers
-//! `HelloAck`. From then on both ends speak `Control` frames on that one
-//! bidirectional stream: each streams its listing while reading the peer's,
-//! then the **receiver role** (the planner, rsync-generator style) drives the
+//! `HelloAck`; the client then opens the listing stream. From then on both
+//! ends speak `Control` frames: each streams its listing on the listing
+//! stream while reading the peer's there, and on the control stream the
+//! **receiver role** (the planner, rsync-generator style) drives the
 //! transfer with `PlanItem`/`NeedChunks`/`FileAck` and the **sender role**
 //! answers with `ChunkList`s and data on unidirectional streams. Which end
 //! plays which role follows `Hello.direction`.
@@ -31,6 +32,8 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use super::control::{self, Ev};
+use super::limits::LISTING_QUEUE;
+use super::listing_stream::{self, ListingSink};
 use super::{
     receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
     SessionRecord, SideHooks, HASH_WORKERS,
@@ -640,6 +643,9 @@ pub(super) async fn run_client_inner(
     };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
+    let listing = listing_stream::open(&conn, &session_id)
+        .await
+        .map_err(|e| TransportError(format!("opening listing stream: {e}")))?;
     drop(handshake);
     session.record("session_id", control::hex(&session_id));
     session.record("resumed", ack.resumed);
@@ -735,7 +741,7 @@ pub(super) async fn run_client_inner(
         privs: Privs::current(),
         hooks: local.hooks,
     };
-    run_role(Arc::new(ctx), send, recv, sends).await
+    run_role(Arc::new(ctx), send, recv, listing, sends).await
 }
 
 /// What [`prepare_root`] does with missing components of the session root.
@@ -1020,6 +1026,22 @@ async fn serve_daemon_inner(
         conn.closed().await;
         bail!("fault injection: stalled");
     }
+    let listing = match tokio::time::timeout(
+        crate::daemon::HELLO_TIMEOUT,
+        listing_stream::accept(&conn, &session_id),
+    )
+    .await
+    {
+        Ok(Ok(l)) => l,
+        Ok(Err(e)) => {
+            conn.close(2u32.into(), b"rejected");
+            return Err(e);
+        }
+        Err(_) => {
+            conn.close(2u32.into(), b"hello timeout");
+            bail!("timed out waiting for the listing stream");
+        }
+    };
     let peer_build = BuildInfo::from_wire(hello.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
@@ -1113,7 +1135,7 @@ async fn serve_daemon_inner(
             ..SideHooks::default()
         },
     };
-    run_role(Arc::new(ctx), send, recv, sends).await
+    run_role(Arc::new(ctx), send, recv, listing, sends).await
 }
 
 /// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
@@ -1139,24 +1161,50 @@ async fn refuse(
     bail!(msg);
 }
 
-/// Wires the control stream to the chosen role and reports a fatal error to
-/// the peer before giving up.
+/// Wires the control and listing streams to the chosen role and reports a
+/// fatal error to the peer before giving up.
 async fn run_role(
     ctx: Arc<Ctx>,
     send: SendStream,
     recv: RecvStream,
+    listing: (SendStream, RecvStream),
     sends: bool,
 ) -> anyhow::Result<Outcome> {
+    // Deadlock invariant: a task that drains a bounded queue fed from the
+    // network never waits on anything that needs the peer to make progress
+    // on the same stream, and no main loop awaits a bounded send toward the
+    // network or into a queue it drains. The planner drains the peer's
+    // listing (bounded, fed from the listing stream) and waits only on
+    // in-flight slots and the `--delete-before` reply, which the main loop
+    // releases from control-stream frames; the sender drains the
+    // receiver's listing in full, so the receiver's walk never waits on the
+    // sender's main loop.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
-    let (out, writer) = control::spawn_writer(send, ev_tx.clone());
-    let (listing_tx, listing_rx) = mpsc::unbounded_channel();
-    let reader = control::spawn_reader(
-        recv,
-        (!sends).then_some(listing_tx),
+    let (out, writer) = control::spawn_writer(send, ev_tx.clone(), ctx.hooks.tamper());
+    let (listing_send, listing_recv) = listing;
+    let (listing_out, listing_writer) =
+        listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), ctx.hooks.tamper());
+    let scan = Arc::new(listing_stream::PeerScan::default());
+    let (peer_tx, peer_rx) = mpsc::channel(LISTING_QUEUE);
+    let listing_reader = listing_stream::spawn_listing_reader(
+        listing_recv,
+        if sends {
+            ListingSink::Drain
+        } else {
+            ListingSink::Planner(peer_tx)
+        },
         (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
         ev_tx.clone(),
         ctx.hooks.bus.clone(),
         ctx.activity.clone(),
+        scan.clone(),
+    );
+    let reader = control::spawn_reader(
+        recv,
+        ev_tx.clone(),
+        ctx.hooks.bus.clone(),
+        ctx.activity.clone(),
+        scan,
     );
     let idle = Arc::new(AtomicBool::new(false));
     // Spawned tasks do not inherit the span: their events belong to the session.
@@ -1170,9 +1218,9 @@ async fn run_role(
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
     let res = if sends {
-        sender_role::run(ctx.clone(), out.clone(), ev_tx, ev_rx).await
+        sender_role::run(ctx.clone(), out.clone(), listing_out, ev_tx, ev_rx).await
     } else {
-        receiver::run(ctx.clone(), out.clone(), ev_tx, ev_rx, listing_rx).await
+        receiver::run(ctx.clone(), out.clone(), listing_out, ev_tx, ev_rx, peer_rx).await
     };
     heartbeat.abort();
     if let Some(w) = watchdog {
@@ -1208,6 +1256,11 @@ async fn run_role(
             }
             let _ = writer.await;
             reader.abort();
+            // The sender's listing ended before the receiver could finish;
+            // the receiver's last listing frames may still be on their way
+            // (the sender, done, drops them).
+            listing_reader.abort();
+            listing_writer.abort();
             tracing::info!(
                 files = o.files_transferred,
                 bytes = o.bytes_transferred,
@@ -1228,6 +1281,10 @@ async fn run_role(
             out.finish();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
             reader.abort();
+            // Only now: ending the listing stream short makes the peer fail
+            // too, and it should learn why from our `Error` first.
+            listing_reader.abort();
+            listing_writer.abort();
             Err(e)
         }
     }

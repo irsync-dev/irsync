@@ -31,6 +31,8 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
+use super::limits::LISTING_QUEUE;
+use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly};
 use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
@@ -893,9 +895,8 @@ impl Receiver {
                 )
                 .into())
             }
-            Ev::PeerFailed(e) | Ev::WriterFailed(e) => {
-                return Err(TransportError(format!("control stream: {e}")).into())
-            }
+            Ev::PeerFailed(e) | Ev::WriterFailed(e) => return Err(TransportError(e).into()),
+            Ev::ProtocolError(e) => anyhow::bail!("protocol error: {e}"),
             Ev::PeerListing | Ev::Send(_) => {}
         }
         Ok(())
@@ -981,9 +982,10 @@ fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
 pub(super) async fn run(
     ctx: Arc<Ctx>,
     out: Out,
+    listing_out: ListingOut,
     events_tx: mpsc::UnboundedSender<Ev>,
     mut events: Events,
-    peer_listing: mpsc::UnboundedReceiver<Listed>,
+    peer_listing: mpsc::Receiver<Listed>,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
     let persist = Persister::start(&ctx).await;
@@ -1031,10 +1033,12 @@ pub(super) async fn run(
     // nothing worth resuming: both list afresh.
     let reuse_plan = ctx.opts.delete == DeleteMode::Off && !ctx.opts.dry_run;
     if ctx.resumed && stored.plan_complete && reuse_plan {
+        // No listing: this side's half of the listing stream ends empty.
+        listing_out.finish();
         r.resume_plan(stored).await;
     } else {
         let prior = Prior::new(&stored, |id| r.persist.is_done(id));
-        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let (local_tx, local_rx) = mpsc::channel(LISTING_QUEUE);
         let root = ctx.root.clone();
         let root_missing = blocking(move || Ok(std::fs::symlink_metadata(&root).is_err()))
             .await
@@ -1042,10 +1046,11 @@ pub(super) async fn run(
         if ctx.opts.dry_run && root_missing {
             // A dry run does not create the root: there is nothing to list.
             drop(local_tx);
-            out.send(Msg::ListingEnd(ListingEnd {
+            listing_out.send_first(Msg::ListingEnd(ListingEnd {
                 incomplete: false,
                 count: 0,
             }));
+            listing_out.finish();
         } else {
             r.listing = Some(spawn_listing(
                 ListingSpec {
@@ -1067,8 +1072,11 @@ pub(super) async fn run(
                     meter: Some(ctx.meter.clone()),
                     #[cfg(feature = "test-hooks")]
                     inject: None,
+                    #[cfg(feature = "test-hooks")]
+                    drop_after: None,
                 },
                 out.clone(),
+                listing_out,
                 Some(local_tx),
                 None,
             ));

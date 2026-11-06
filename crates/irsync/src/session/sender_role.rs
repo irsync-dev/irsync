@@ -29,6 +29,7 @@ use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
+use super::listing_stream::ListingOut;
 use super::parts::{split, PART_RECORDS};
 use super::Outcome;
 use crate::delta::Basis;
@@ -94,8 +95,11 @@ enum Listing {
     Running(JoinHandle<ScanSummary>),
     /// Resumed: the receiver's first frame decides. A listing from it means
     /// it plans afresh (we list too); a `PlanItem` means it resumes its
-    /// stored plan.
-    Undecided,
+    /// stored plan. The two travel on different streams, but in a fresh
+    /// listing `PeerListing` still comes first: the receiver's first
+    /// `PlanItem` needs our entries, and we start walking only at
+    /// `PeerListing`. Holds the listing stream until then.
+    Undecided(ListingOut),
     /// Resumed from the receiver's stored plan: no walk; every requested
     /// path is checked the way the walk would have admitted it.
     FromPlan,
@@ -144,7 +148,23 @@ fn part_records(ctx: &Ctx) -> usize {
 }
 
 impl SenderRole {
-    fn start_listing(&mut self) {
+    /// Leaves `Listing::Undecided`: walk and list (`fresh`), or resume from
+    /// the receiver's stored plan with no walk.
+    fn decide(&mut self, fresh: bool) {
+        let Listing::Undecided(listing) = std::mem::replace(&mut self.listing, Listing::FromPlan)
+        else {
+            return;
+        };
+        if fresh {
+            self.start_listing(listing);
+        } else {
+            tracing::info!("the receiver resumes its stored plan");
+            // No listing: our half of the listing stream ends empty.
+            listing.finish();
+        }
+    }
+
+    fn start_listing(&mut self, listing: ListingOut) {
         tracing::debug!("listing the source");
         self.listing = Listing::Running(spawn_listing(
             ListingSpec {
@@ -164,8 +184,16 @@ impl SenderRole {
                 meter: Some(self.ctx.meter.clone()),
                 #[cfg(feature = "test-hooks")]
                 inject: self.ctx.hooks.inject_listing.clone(),
+                #[cfg(feature = "test-hooks")]
+                drop_after: self
+                    .ctx
+                    .hooks
+                    .drop_after_listing
+                    .clone()
+                    .map(|f| (f, self.ctx.conn.clone())),
             },
             self.out.clone(),
+            listing,
             None,
             Some(self.listed.clone()),
         ));
@@ -739,6 +767,7 @@ fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
 pub(super) async fn run(
     ctx: Arc<Ctx>,
     out: Out,
+    listing_out: ListingOut,
     events_tx: mpsc::UnboundedSender<Ev>,
     mut events: Events,
 ) -> anyhow::Result<Outcome> {
@@ -800,7 +829,7 @@ pub(super) async fn run(
         events: events_tx,
         sender,
         listed: Arc::default(),
-        listing: Listing::Undecided,
+        listing: Listing::Undecided(listing_out),
         files: HashMap::new(),
         seen: HashSet::new(),
         abandoned: HashMap::new(),
@@ -817,7 +846,7 @@ pub(super) async fn run(
         max_delete_reached: false,
     };
     if !ctx.resumed {
-        s.start_listing();
+        s.decide(true);
     }
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let res: anyhow::Result<()> = loop {
@@ -832,13 +861,10 @@ pub(super) async fn run(
         let Some(ev) = ev else {
             break Err(anyhow::anyhow!("event channel closed"));
         };
-        if let Listing::Undecided = s.listing {
+        if let Listing::Undecided(_) = s.listing {
             match &ev {
-                Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.start_listing(),
-                Ev::Ctrl(Msg::Plan(_)) => {
-                    tracing::info!("the receiver resumes its stored plan");
-                    s.listing = Listing::FromPlan;
-                }
+                Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.decide(true),
+                Ev::Ctrl(Msg::Plan(_)) => s.decide(false),
                 _ => {}
             }
         }
@@ -897,9 +923,8 @@ pub(super) async fn run(
                 "the receiver closed the control stream before the session ended".into(),
             )
             .into()),
-            Ev::PeerFailed(e) | Ev::WriterFailed(e) => {
-                Err(TransportError(format!("control stream: {e}")).into())
-            }
+            Ev::PeerFailed(e) | Ev::WriterFailed(e) => Err(TransportError(e).into()),
+            Ev::ProtocolError(e) => Err(anyhow::anyhow!("protocol error: {e}")),
             Ev::PeerListing | Ev::Recv(_) => Ok(()),
         };
         if let Err(e) = step {
@@ -948,7 +973,7 @@ pub(super) async fn run(
             }
             Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
         },
-        Listing::Undecided | Listing::FromPlan => Vec::new(),
+        Listing::Undecided(_) | Listing::FromPlan => Vec::new(),
     };
     errors.append(&mut s.errors);
     Ok(Outcome {

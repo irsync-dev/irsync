@@ -1,6 +1,7 @@
 //! Control-stream plumbing shared by both roles: a writer task that owns the
 //! `SendStream`, a reader task that owns the `RecvStream` and dispatches
-//! frames, the listing producer, and session persistence.
+//! frames, the listing producer (whose frames go out on the listing stream,
+//! see [`super::listing_stream`]), and session persistence.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -19,7 +20,8 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use super::engine::Ctx;
-use super::{IndexScope, SessionRecord};
+use super::listing_stream::{ListingOut, PeerScan};
+use super::{IndexScope, SessionRecord, StreamKind, Tamper};
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
@@ -30,7 +32,7 @@ use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
 use crate::telemetry::Phase;
 
 /// How long to wait for the peer to take our last bytes before giving up.
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Session rows are written at most this often (plus a final write).
 const PERSIST_EVERY: Duration = Duration::from_secs(2);
 const WALK_THREADS: usize = 4;
@@ -38,15 +40,18 @@ const WALK_THREADS: usize = 4;
 /// What a role's main loop reacts to: inbound control frames, transport
 /// trouble, and completions of the tasks the role spawned.
 pub(super) enum Ev {
-    /// A control frame other than a listing entry.
+    /// A control frame, or the peer's `ListingEnd` (from the listing stream).
     Ctrl(Msg),
-    /// The peer started streaming a listing this side does not consume
-    /// (sent once, at its first entry).
+    /// The peer started its listing (sent once, at its first listing frame).
     PeerListing,
     /// The peer finished its control stream.
     PeerEof,
+    /// A stream from the peer failed (the message names the stream).
     PeerFailed(String),
+    /// A stream to the peer failed (the message names the stream).
     WriterFailed(String),
+    /// The peer broke a rule of the protocol.
+    ProtocolError(String),
     /// Role-specific task completion.
     Recv(super::receiver::Done),
     Send(super::sender_role::Done),
@@ -75,14 +80,22 @@ impl Out {
 pub(super) fn spawn_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
+    tamper: Tamper,
 ) -> (Out, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Option<Control>>();
     let task = tokio::spawn(
         async move {
             while let Some(Some(c)) = rx.recv().await {
-                if let Err(e) = write_msg(&mut send, &c).await {
-                    let _ = events.send(Ev::WriterFailed(e.to_string()));
-                    return;
+                for msg in c
+                    .msg
+                    .into_iter()
+                    .flat_map(|m| tamper.frames(StreamKind::Control, m))
+                {
+                    let c = Control { msg: Some(msg) };
+                    if let Err(e) = write_msg(&mut send, &c).await {
+                        let _ = events.send(Ev::WriterFailed(format!("control stream: {e}")));
+                        return;
+                    }
                 }
             }
             if send.finish().is_ok() {
@@ -119,86 +132,49 @@ pub(super) enum Listed {
     Gap(RelPath),
 }
 
-/// Spawns the reader: listing entries and gaps go to `listing` (dropped when
-/// `None`), which is closed at `ListingEnd`; every other frame goes to `events`.
+/// Spawns the reader: every control frame goes to `events`. The peer's
+/// listing has a stream of its own; `scan` is what its reader has seen.
 pub(super) fn spawn_reader(
     recv: RecvStream,
-    listing: Option<mpsc::UnboundedSender<Listed>>,
-    ids: Option<crate::fs::ids::IdMap>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
+    scan: Arc<PeerScan>,
 ) -> JoinHandle<()> {
     tokio::spawn(
-        read_control(recv, listing, ids, events, bus, activity)
-            .instrument(tracing::Span::current()),
+        read_control(recv, events, bus, activity, scan).instrument(tracing::Span::current()),
     )
 }
 
 /// The reader's loop; see [`spawn_reader`].
 async fn read_control(
     mut recv: RecvStream,
-    mut listing: Option<mpsc::UnboundedSender<Listed>>,
-    mut ids: Option<crate::fs::ids::IdMap>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
+    scan: Arc<PeerScan>,
 ) {
-    let mut announced = false;
-    // Receiver role: what the peer lists, reported at its `ListingEnd`.
-    let mut seen = crate::scan::ListStats::default();
-    // Set at the peer's `ListingEnd`: a later heartbeat's walk position is stale.
-    let mut listing_ended = false;
     loop {
         let frame = read_msg::<Control, _>(&mut recv).await;
         activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match frame {
             Ok(Some(Control { msg: Some(msg) })) => match msg {
-                Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
-                    // The peer's owner and group names become this side's ids.
-                    if let Some(map) = ids.as_mut() {
-                        map.localize(&mut e);
-                    }
-                    seen.count(&e);
-                    if seen.files().is_multiple_of(1000) {
-                        bus.emit(crate::session::Event::Scanned {
-                            party: crate::session::Party::Peer,
-                            entries: seen.files(),
-                            bytes: seen.total_size,
-                            at: None,
-                        });
-                    }
-                    match &listing {
-                        Some(tx) => {
-                            let _ = tx.send(Listed::Side(side_of(e)));
-                        }
-                        None if !announced => {
-                            announced = true;
-                            let _ = events.send(Ev::PeerListing);
-                        }
-                        None => {}
-                    }
-                }
-                Msg::Listing(ListingEntry { entry: None }) => {
-                    tracing::warn!("listing frame without entry; ignored");
-                }
-                // The sender needs only the peer's `ListingEnd`; the
-                // receiver's planner wants the gap in order with the entries.
-                Msg::ListingError(e) => {
-                    tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
-                    if let Some(tx) = &listing {
-                        let path = RelPath::new(&e.path).unwrap_or_default();
-                        let _ = tx.send(Listed::Gap(path));
-                    }
+                Msg::Listing(_) | Msg::ListingError(_) | Msg::ListingEnd(_) => {
+                    let _ = events.send(Ev::ProtocolError(
+                        "listing frame on the control stream".into(),
+                    ));
+                    return;
                 }
                 // Counted as activity above; it also carries the peer's
                 // progress this side cannot otherwise see.
                 Msg::Heartbeat(h) => {
                     use crate::session::{Event, Party};
-                    let walking = h.walking.filter(|_| !listing_ended);
+                    // After the peer's `ListingEnd` its walk position is stale.
+                    let walking = h.walking.filter(|_| !scan.ended());
                     if let Some(walking) = walking {
                         // Empty bytes are the root.
                         if let Ok(at) = RelPath::new(&walking) {
+                            let seen = scan.seen();
                             bus.emit(Event::Scanned {
                                 party: Party::Peer,
                                 entries: seen.files(),
@@ -218,16 +194,6 @@ async fn read_control(
                         });
                     }
                 }
-                m @ Msg::ListingEnd(_) => {
-                    bus.emit(crate::session::Event::Total {
-                        party: crate::session::Party::Peer,
-                        files: seen.reg,
-                        bytes: seen.total_size,
-                    });
-                    listing = None;
-                    listing_ended = true;
-                    let _ = events.send(Ev::Ctrl(m));
-                }
                 m => {
                     let _ = events.send(Ev::Ctrl(m));
                 }
@@ -240,7 +206,7 @@ async fn read_control(
                 return;
             }
             Err(e) => {
-                let _ = events.send(Ev::PeerFailed(e.to_string()));
+                let _ = events.send(Ev::PeerFailed(format!("control stream: {e}")));
                 return;
             }
         }
@@ -290,15 +256,22 @@ pub(super) struct ListingSpec {
     /// Test hook: extra entries to list right after an entry.
     #[cfg(feature = "test-hooks")]
     pub inject: Option<super::ListingHook>,
+    /// Test hook: close this connection once the fault's count of listing
+    /// frames is reached.
+    #[cfg(feature = "test-hooks")]
+    pub drop_after: Option<(Arc<super::PartsFault>, iroh::endpoint::Connection)>,
 }
 
-/// Walks `spec.root` and streams the listing to the peer (with cached hashes
-/// only; nothing is read), then `ListingEnd`. Each entry also goes to `local`
-/// (the receiver's planner) and regular files are recorded in `listed`.
+/// Walks `spec.root` and streams the listing to the peer on `listing` (with
+/// cached hashes only; nothing is read), then `ListingEnd`, and ends the
+/// stream; heartbeats go to `out`. Each entry also goes to `local` (the
+/// receiver's planner) and regular files are recorded in `listed`. A full
+/// `listing` or `local` queue stalls the walk.
 pub(super) fn spawn_listing(
     spec: ListingSpec,
     out: Out,
-    local: Option<mpsc::UnboundedSender<Listed>>,
+    listing: ListingOut,
+    local: Option<mpsc::Sender<Listed>>,
     listed: Option<ListedFiles>,
 ) -> JoinHandle<ScanSummary> {
     let (mut rx, summary) = walk(
@@ -320,6 +293,8 @@ pub(super) fn spawn_listing(
             })
         };
         let mut count = 0u64;
+        // `ListingEntry` frames sent, injected ones included.
+        let mut sent = 0u64;
         let mut stats = crate::scan::ListStats::default();
         let mut names = crate::fs::ids::IdNames::new();
         // `-H`: the first listed name of each (dev, inode) with nlink > 1.
@@ -327,6 +302,16 @@ pub(super) fn spawn_listing(
         let mut last_emit = std::time::Instant::now();
         // The directory last published to `spec.busy.walking`.
         let mut walking = RelPath::root();
+        let send = |msg: Msg| {
+            listing.send_blocking(msg);
+            #[cfg(feature = "test-hooks")]
+            if let Some((fault, conn)) = &spec.drop_after {
+                if fault.queued() {
+                    tracing::warn!("fault injection: dropping the connection mid-listing");
+                    conn.close(99u32.into(), b"fault");
+                }
+            }
+        };
         if let Some(busy) = &spec.busy {
             *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = Some(walking.clone());
             out.send(Msg::Heartbeat(busy.heartbeat()));
@@ -335,12 +320,12 @@ pub(super) fn spawn_listing(
             let item = match ev {
                 ScanEvent::Entry(item) => item,
                 ScanEvent::Gap { path, message } => {
-                    out.send(Msg::ListingError(PathError {
+                    send(Msg::ListingError(PathError {
                         path: path.as_bytes().to_vec(),
                         message,
                     }));
                     if let Some(tx) = &local {
-                        let _ = tx.send(Listed::Gap(path));
+                        let _ = tx.blocking_send(Listed::Gap(path));
                     }
                     if let Some(a) = &spec.activity {
                         a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -419,18 +404,20 @@ pub(super) fn spawn_listing(
                         .insert(path, crate::hasher::Freshness::of(&item));
                 }
             }
-            out.send(Msg::Listing(ListingEntry {
+            send(Msg::Listing(ListingEntry {
                 entry: Some(entry.clone()),
             }));
+            sent += 1;
             #[cfg(feature = "test-hooks")]
             if let Some(inject) = &spec.inject {
                 for e in inject(&entry) {
-                    out.send(Msg::Listing(ListingEntry { entry: Some(e) }));
+                    send(Msg::Listing(ListingEntry { entry: Some(e) }));
+                    sent += 1;
                 }
             }
             stats.count(&entry);
             if let Some(tx) = &local {
-                let _ = tx.send(Listed::Side(Side { entry, digest }));
+                let _ = tx.blocking_send(Listed::Side(Side { entry, digest }));
             }
             count += 1;
             if let Some(a) = &spec.activity {
@@ -469,10 +456,11 @@ pub(super) fn spawn_listing(
         if let Some(busy) = &spec.busy {
             *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
-        out.send(Msg::ListingEnd(ListingEnd {
+        send(Msg::ListingEnd(ListingEnd {
             incomplete: summary.incomplete,
-            count,
+            count: sent,
         }));
+        listing.finish();
         summary
     })
 }

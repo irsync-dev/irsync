@@ -46,7 +46,9 @@ use prost::Message;
 const GC_INTERVAL: Duration = Duration::from_secs(3600);
 const GC_FIRST_RUN: Duration = Duration::from_secs(60);
 
-const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a client may take to open the control stream and send `Hello`,
+/// and to open the listing stream after `HelloAck`.
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Shared {
     /// Consulted afresh on every connection.

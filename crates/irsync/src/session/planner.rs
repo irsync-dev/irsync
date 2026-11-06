@@ -322,7 +322,7 @@ fn checked_order(
 /// The entries of a listing; a gap records its path in `gap` (the earliest
 /// of either listing) and is otherwise skipped.
 fn sides(
-    rx: mpsc::UnboundedReceiver<Listed>,
+    rx: mpsc::Receiver<Listed>,
     gap: Arc<Mutex<Option<RelPath>>>,
 ) -> impl futures::Stream<Item = Side> + Send {
     futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
@@ -834,8 +834,8 @@ pub(super) async fn plan(
     ctx: Arc<Ctx>,
     out: Out,
     events: mpsc::UnboundedSender<Ev>,
-    peer: mpsc::UnboundedReceiver<Listed>,
-    local: mpsc::UnboundedReceiver<Listed>,
+    peer: mpsc::Receiver<Listed>,
+    local: mpsc::Receiver<Listed>,
     prior: Prior,
 ) {
     let phase = ctx.phase(PhaseKind::Plan);
@@ -848,8 +848,8 @@ async fn plan_listings(
     ctx: Arc<Ctx>,
     out: Out,
     events: mpsc::UnboundedSender<Ev>,
-    peer: mpsc::UnboundedReceiver<Listed>,
-    local: mpsc::UnboundedReceiver<Listed>,
+    peer: mpsc::Receiver<Listed>,
+    local: mpsc::Receiver<Listed>,
     prior: Prior,
 ) {
     let inflight = Arc::new(Semaphore::new(inflight_cap(&ctx)));

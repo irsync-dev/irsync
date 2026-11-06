@@ -105,7 +105,15 @@ async fn exchange_against(
         .await
         .map_err(|e| e.to_string())?;
     send.finish().map_err(|e| e.to_string())?;
-    let raw = within(recv.read_to_end(1 << 20))
+    // Only the reply: after a HelloAck the daemon waits for the listing
+    // stream, which this client never opens.
+    let mut raw = vec![0u8; 4];
+    within(recv.read_exact(&mut raw))
+        .await
+        .map_err(|e| e.to_string())?;
+    let len = u32::from_be_bytes(raw[..4].try_into().unwrap()) as usize;
+    raw.resize(4 + len, 0);
+    within(recv.read_exact(&mut raw[4..]))
         .await
         .map_err(|e| e.to_string())?;
     // HelloAck and Error differ in the wire type of field 1, so at most one decodes.

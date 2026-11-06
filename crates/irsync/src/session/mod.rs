@@ -3,6 +3,8 @@
 
 mod control;
 pub mod engine;
+mod limits;
+mod listing_stream;
 mod parts;
 mod planner;
 mod receiver;
@@ -614,6 +616,15 @@ pub struct SideHooks {
     /// (once per hook instance, across reconnects).
     #[cfg(feature = "test-hooks")]
     pub drop_after_parts: Option<Arc<PartsFault>>,
+    /// Sender: close the connection once this many listing frames have been
+    /// queued (once per hook instance, across reconnects).
+    #[cfg(feature = "test-hooks")]
+    pub drop_after_listing: Option<Arc<PartsFault>>,
+    /// Both roles: every outgoing frame of the control and listing streams
+    /// passes through this; the frames it returns go out instead (a test
+    /// drops, duplicates, alters or injects frames).
+    #[cfg(feature = "test-hooks")]
+    pub tamper_frames: Option<FrameHook>,
     /// Receiver: counts the `NeedChunks` re-requests it sends.
     #[cfg(feature = "test-hooks")]
     pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -628,7 +639,8 @@ pub struct SideHooks {
     pub before_open: Option<PathHook>,
 }
 
-/// Test hook: a connection drop after a number of chunk-list parts.
+/// Test hook: a connection drop after a number of frames of one kind
+/// (chunk-list parts, listing frames).
 #[cfg(feature = "test-hooks")]
 #[derive(Debug, Default)]
 pub struct PartsFault {
@@ -650,10 +662,59 @@ impl PartsFault {
         self.fired.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Counts one queued part; true when the connection is to be dropped now.
+    /// Counts one queued frame; true when the connection is to be dropped now.
     pub(crate) fn queued(&self) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
         self.sent.fetch_add(1, SeqCst) + 1 >= self.after && !self.fired.swap(true, SeqCst)
+    }
+}
+
+/// The stream a frame goes out on (see [`SideHooks::tamper_frames`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamKind {
+    Control,
+    Listing,
+}
+
+/// Test hook: the frames to send in place of one outgoing frame (see
+/// [`SideHooks`]).
+#[cfg(feature = "test-hooks")]
+pub type FrameHook = Arc<
+    dyn Fn(StreamKind, irsync_proto::v1::control::Msg) -> Vec<irsync_proto::v1::control::Msg>
+        + Send
+        + Sync,
+>;
+
+/// [`SideHooks::tamper_frames`] as the stream writers carry it; empty (and
+/// a no-op) without test hooks.
+#[derive(Clone, Default)]
+pub(crate) struct Tamper {
+    #[cfg(feature = "test-hooks")]
+    hook: Option<FrameHook>,
+}
+
+impl Tamper {
+    /// The frames to send in place of `msg` on a `kind` stream.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn frames(
+        &self,
+        kind: StreamKind,
+        msg: irsync_proto::v1::control::Msg,
+    ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
+        match &self.hook {
+            Some(h) => h(kind, msg),
+            None => vec![msg],
+        }
+        .into_iter()
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    pub(crate) fn frames(
+        &self,
+        _kind: StreamKind,
+        msg: irsync_proto::v1::control::Msg,
+    ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
+        std::iter::once(msg)
     }
 }
 
@@ -663,6 +724,14 @@ pub type ListingHook =
     Arc<dyn Fn(&irsync_proto::v1::FileEntry) -> Vec<irsync_proto::v1::FileEntry> + Send + Sync>;
 
 impl SideHooks {
+    /// The `tamper_frames` hook for the stream writers.
+    pub(crate) fn tamper(&self) -> Tamper {
+        Tamper {
+            #[cfg(feature = "test-hooks")]
+            hook: self.tamper_frames.clone(),
+        }
+    }
+
     /// Records one receiver event (test hook; a no-op otherwise).
     #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
     pub(crate) fn event(&self, what: &str, path: &RelPath) {

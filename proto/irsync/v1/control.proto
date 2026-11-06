@@ -4,18 +4,31 @@ package irsync.v1;
 
 import "irsync/v1/common.proto";
 
-// On the single bidirectional control stream, both directions.
+// A session uses two bidirectional streams, both opened by the client right
+// after HelloAck. The control stream (the one that carried Hello) carries
+// every Control frame except the listing's. The listing stream carries each
+// side's listing, both directions: ListingEntry and ListingError (`listing`,
+// `listing_error`) frames in path order, then one ListingEnd, then the end
+// of that half. A side that does not list (a receiver resuming a complete
+// plan) ends its half without a frame.
+
+// The first frame of the client's half of the listing stream, before any
+// Control frame: the session (from HelloAck) the stream belongs to.
+message ListingStreamHeader {
+  bytes session_id = 1;
+}
 message ListingEntry {
   FileEntry entry = 1;
 } // path order ascending
+// `count`: the ListingEntry frames sent before it.
 message ListingEnd {
   bool incomplete = 1;
   uint64 count = 2;
 }
-// A gap in the listing, sent in path order where the missing entries would
-// have been: a directory that could not be read (right after its own entry)
-// or an entry that could not be stat'ed. The listing goes on; ListingEnd
-// then says incomplete.
+// A gap in the listing (`listing_error`, a PathError), sent in path order
+// where the missing entries would have been: a directory that could not be
+// read (right after its own entry) or an entry that could not be stat'ed.
+// The listing goes on; ListingEnd then says incomplete.
 message PlanItem { // receiver -> sender
   uint64 file_id = 1;
   bytes path = 2;
