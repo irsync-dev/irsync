@@ -249,6 +249,10 @@ async fn slow_planner(flow: Flow) {
         let peak = peak.load(SeqCst);
         assert!(peak <= LISTING_QUEUE, "planner queue peaked at {peak}");
         assert!(
+            peak >= LISTING_QUEUE / 2,
+            "planner queue peaked at {peak}: the planner never held the listing back"
+        );
+        assert!(
             waits.load(SeqCst) > 0,
             "the walk never waited on the slow planner"
         );
