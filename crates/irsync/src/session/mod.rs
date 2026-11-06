@@ -427,6 +427,21 @@ pub struct DaemonSessions {
     /// some files complete and others still to come.
     #[cfg(feature = "test-hooks")]
     pub sender_parallel: Arc<std::sync::atomic::AtomicUsize>,
+    /// Hooks for every daemon session (test hook, settable after the daemon
+    /// is built).
+    #[cfg(feature = "test-hooks")]
+    pub daemon_hooks: Arc<std::sync::Mutex<DaemonHooks>>,
+}
+
+/// The hooks a test sets on a daemon's side of a session (see [`SideHooks`]
+/// for each).
+#[cfg(feature = "test-hooks")]
+#[derive(Clone, Default)]
+pub struct DaemonHooks {
+    pub slow_plan: Option<Duration>,
+    pub max_inflight: Option<usize>,
+    pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -595,6 +610,18 @@ pub struct SideHooks {
     /// Receiver: cap on files in flight instead of the default 4096.
     #[cfg(feature = "test-hooks")]
     pub max_inflight: Option<usize>,
+    /// Receiver: each file's planning takes this much longer (a slow
+    /// planner, so the peer's listing backs up).
+    #[cfg(feature = "test-hooks")]
+    pub slow_plan: Option<std::time::Duration>,
+    /// Receiver: the most peer-listing entries it has had queued for the
+    /// planner at once.
+    #[cfg(feature = "test-hooks")]
+    pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Lister: counts the times the listing queue was full when the walk
+    /// had a frame to queue (the walk waited for the link or the peer).
+    #[cfg(feature = "test-hooks")]
+    pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Receiver: the most files it has had in flight at once.
     #[cfg(feature = "test-hooks")]
     pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,

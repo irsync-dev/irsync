@@ -1127,12 +1127,20 @@ async fn serve_daemon_inner(
             o
         },
         privs: Privs::current(),
-        hooks: SideHooks {
+        hooks: {
+            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
+            let mut h = SideHooks::default();
             #[cfg(feature = "test-hooks")]
-            events: Some(shared.events.clone()),
-            #[cfg(feature = "test-hooks")]
-            slow_finalize: *shared.slow_finalize.lock().unwrap(),
-            ..SideHooks::default()
+            {
+                let p = shared.daemon_hooks.lock().unwrap().clone();
+                h.events = Some(shared.events.clone());
+                h.slow_finalize = *shared.slow_finalize.lock().unwrap();
+                h.slow_plan = p.slow_plan;
+                h.max_inflight = p.max_inflight;
+                h.listing_peak = p.listing_peak;
+                h.listing_waits = p.listing_waits;
+            }
+            h
         },
     };
     run_role(Arc::new(ctx), send, recv, listing, sends).await
@@ -1183,7 +1191,7 @@ async fn run_role(
     let (out, writer) = control::spawn_writer(send, ev_tx.clone(), ctx.hooks.tamper());
     let (listing_send, listing_recv) = listing;
     let (listing_out, listing_writer) =
-        listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), ctx.hooks.tamper());
+        listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), &ctx.hooks);
     let scan = Arc::new(listing_stream::PeerScan::default());
     let (peer_tx, peer_rx) = mpsc::channel(LISTING_QUEUE);
     let listing_reader = listing_stream::spawn_listing_reader(
@@ -1195,7 +1203,7 @@ async fn run_role(
         },
         (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
         ev_tx.clone(),
-        ctx.hooks.bus.clone(),
+        &ctx.hooks,
         ctx.activity.clone(),
         scan.clone(),
     );

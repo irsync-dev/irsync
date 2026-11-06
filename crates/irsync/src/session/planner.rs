@@ -404,6 +404,10 @@ impl Planner {
     }
 
     async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
+        #[cfg(feature = "test-hooks")]
+        if let Some(d) = self.ctx.hooks.slow_plan {
+            tokio::time::sleep(d).await;
+        }
         let meter = self.ctx.meter.clone();
         let planning = meter.start(Activity::Plan);
         self.report.listed.count(&src.entry);

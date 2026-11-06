@@ -6,7 +6,7 @@ mod common;
 
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +24,12 @@ async fn within60<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(60), f)
         .await
         .expect("test timed out after 60 s")
+}
+
+async fn within120<F: std::future::Future>(f: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(120), f)
+        .await
+        .expect("test timed out after 120 s")
 }
 
 /// Deterministic pseudo-random bytes.
@@ -175,6 +181,112 @@ async fn a_connection_lost_mid_listing_resumes() {
         assert!(out.resumed, "the second connection did not resume");
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+/// The queue between the listing reader and the planner (`LISTING_QUEUE`).
+const LISTING_QUEUE: usize = 1024;
+
+/// `n` files of 1-4 KiB spread over 50 directories.
+fn many_files(root: &Path, n: u32) {
+    for d in 0..50 {
+        fs::create_dir(root.join(format!("d{d:02}"))).unwrap();
+    }
+    for i in 0..n {
+        let size = 1024 + (i as usize * 7919) % (3 * 1024 + 1);
+        fs::write(
+            root.join(format!("d{:02}/f{i:05}", i % 50)),
+            data(size, i + 1),
+        )
+        .unwrap();
+    }
+}
+
+/// A receiver that plans 1 ms per file against a lister that walks at full
+/// speed: the walk must wait on the listing stream's flow control, and the
+/// planner's queue must never hold more than its capacity.
+async fn slow_planner(flow: Flow) {
+    within120(async {
+        let h = Harness::new().await;
+        many_files(h.src(flow), 5000);
+        // The transport buffers a stream's first 8 MiB, so the walk only
+        // waits once the listing outgrows that: 4000 symlinks with long
+        // targets (14 MB of listing) alongside the files.
+        for i in 0..4000 {
+            let target = format!("{}/t{i:05}", "x".repeat(3500));
+            let link = h.src(flow).join(format!("d{:02}/l{i:05}", i % 50));
+            std::os::unix::fs::symlink(target, link).unwrap();
+        }
+        let peak = Arc::new(AtomicUsize::new(0));
+        let waits = Arc::new(AtomicU64::new(0));
+        let mut local = h.local_side();
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            match flow {
+                Flow::Push => {
+                    d.slow_plan = Some(Duration::from_millis(1));
+                    d.max_inflight = Some(4);
+                    d.listing_peak = Some(peak.clone());
+                    local.hooks.listing_waits = Some(waits.clone());
+                }
+                Flow::Pull => {
+                    local.hooks.slow_plan = Some(Duration::from_millis(1));
+                    local.hooks.max_inflight = Some(4);
+                    local.hooks.listing_peak = Some(peak.clone());
+                    d.listing_waits = Some(waits.clone());
+                }
+            }
+        }
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 5000);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(peak <= LISTING_QUEUE, "planner queue peaked at {peak}");
+        assert!(
+            waits.load(SeqCst) > 0,
+            "the walk never waited on the slow planner"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_planner_slows_the_sender_walk_instead_of_queueing_push() {
+    slow_planner(Flow::Push).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_planner_slows_the_sender_walk_instead_of_queueing_pull() {
+    slow_planner(Flow::Pull).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_before_with_a_listing_larger_than_the_queues_completes() {
+    within120(async {
+        let h = Harness::new().await;
+        many_files(h.local.path(), 3000);
+        // Destination-only files; `--delete-before` waits for its reply
+        // only after the whole listing is in.
+        fs::create_dir(h.export.path().join("old")).unwrap();
+        for i in 0..200 {
+            fs::write(h.export.path().join(format!("old/x{i:03}")), b"old").unwrap();
+        }
+        let mut opts = archive_opts();
+        opts.delete = DeleteMode::Before;
+        h.daemon.hooks.lock().unwrap().slow_plan = Some(Duration::ZERO);
+        let out = h
+            .run_side(&opts, Flow::Push, h.local_side())
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(!h.export.path().join("old").exists());
+        assert_trees_equal(h.local.path(), h.export.path(), &opts.preserve);
     })
     .await;
 }

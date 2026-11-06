@@ -19,7 +19,7 @@ use tracing::Instrument;
 
 use super::control::{msg_name, side_of, Ev, Listed, DRAIN_TIMEOUT};
 use super::limits::LISTING_QUEUE;
-use super::{EventBus, StreamKind, Tamper};
+use super::{SideHooks, StreamKind};
 use crate::fs::ids::IdMap;
 use crate::fs::paths::RelPath;
 use crate::net::frame::{read_msg, write_msg};
@@ -57,6 +57,8 @@ pub(super) async fn accept(
 /// Handle for queueing listing frames to the listing writer.
 pub(super) struct ListingOut {
     tx: mpsc::Sender<Control>,
+    #[cfg(feature = "test-hooks")]
+    waits: Option<Arc<AtomicU64>>,
 }
 
 impl ListingOut {
@@ -64,7 +66,19 @@ impl ListingOut {
     /// queue is full (the link, or the peer's planner, is slower than the
     /// walk). A closed writer surfaces as `Ev::WriterFailed`.
     pub fn send_blocking(&self, msg: Msg) {
-        let _ = self.tx.blocking_send(Control { msg: Some(msg) });
+        let c = Control { msg: Some(msg) };
+        #[cfg(feature = "test-hooks")]
+        let c = match self.tx.try_send(c) {
+            Ok(()) => return,
+            Err(mpsc::error::TrySendError::Full(c)) => {
+                if let Some(w) = &self.waits {
+                    w.fetch_add(1, Ordering::Relaxed);
+                }
+                c
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => return,
+        };
+        let _ = self.tx.blocking_send(c);
     }
 
     /// Queues the first frame from async code: the queue is empty, so this
@@ -84,8 +98,9 @@ impl ListingOut {
 pub(super) fn spawn_listing_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
-    tamper: Tamper,
+    hooks: &SideHooks,
 ) -> (ListingOut, JoinHandle<()>) {
+    let tamper = hooks.tamper();
     let (tx, mut rx) = mpsc::channel::<Control>(LISTING_QUEUE);
     let task = tokio::spawn(
         async move {
@@ -108,7 +123,14 @@ pub(super) fn spawn_listing_writer(
         }
         .instrument(tracing::Span::current()),
     );
-    (ListingOut { tx }, task)
+    (
+        ListingOut {
+            tx,
+            #[cfg(feature = "test-hooks")]
+            waits: hooks.listing_waits.clone(),
+        },
+        task,
+    )
 }
 
 /// Where the peer's listing goes.
@@ -156,12 +178,13 @@ pub(super) fn spawn_listing_reader(
     sink: ListingSink,
     ids: Option<IdMap>,
     events: mpsc::UnboundedSender<Ev>,
-    bus: EventBus,
+    hooks: &SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
 ) -> JoinHandle<()> {
+    let hooks = hooks.clone();
     tokio::spawn(
-        read_listing(recv, sink, ids, events, bus, activity, scan)
+        read_listing(recv, sink, ids, events, hooks, activity, scan)
             .instrument(tracing::Span::current()),
     )
 }
@@ -172,7 +195,7 @@ async fn read_listing(
     sink: ListingSink,
     mut ids: Option<IdMap>,
     events: mpsc::UnboundedSender<Ev>,
-    bus: EventBus,
+    hooks: SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
 ) {
@@ -226,7 +249,7 @@ async fn read_listing(
                 }
                 let seen = scan.count(&e);
                 if seen.files().is_multiple_of(1000) {
-                    bus.emit(Event::Scanned {
+                    hooks.bus.emit(Event::Scanned {
                         party: Party::Peer,
                         entries: seen.files(),
                         bytes: seen.total_size,
@@ -236,6 +259,10 @@ async fn read_listing(
                 if let Some(tx) = &planner {
                     // A planner gone means the session is ending.
                     let _ = tx.send(Listed::Side(side_of(e))).await;
+                    #[cfg(feature = "test-hooks")]
+                    if let Some(p) = &hooks.listing_peak {
+                        p.fetch_max(tx.max_capacity() - tx.capacity(), Ordering::SeqCst);
+                    }
                 }
             }
             Msg::Listing(ListingEntry { entry: None }) => {
@@ -251,7 +278,7 @@ async fn read_listing(
             }
             m @ Msg::ListingEnd(_) => {
                 let seen = scan.seen();
-                bus.emit(Event::Total {
+                hooks.bus.emit(Event::Total {
                     party: Party::Peer,
                     files: seen.reg,
                     bytes: seen.total_size,

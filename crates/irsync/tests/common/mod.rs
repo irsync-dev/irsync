@@ -123,6 +123,9 @@ pub struct DaemonHandle {
     pub events: irsync::session::EventLog,
     /// Set to make every daemon receiver's finalize take that much longer.
     pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
+    /// Hooks for the daemon's side of every session (slow planner, in-flight
+    /// cap, listing counters).
+    pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::DaemonHooks>>,
     sender_parallel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub _state: tempfile::TempDir,
 }
@@ -265,6 +268,7 @@ pub async fn spawn_daemon_full(
     let events = daemon.receiver_events();
     let slow_finalize = daemon.slow_finalize();
     let sender_parallel = daemon.sender_parallel();
+    let hooks = daemon.daemon_hooks();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -280,6 +284,7 @@ pub async fn spawn_daemon_full(
         hosted,
         events,
         slow_finalize,
+        hooks,
         sender_parallel,
         _state: state,
     }

@@ -254,6 +254,12 @@ impl Daemon {
         self.shared.hosting().slow_finalize
     }
 
+    /// Hooks for the daemon's side of every session.
+    #[cfg(feature = "test-hooks")]
+    pub fn daemon_hooks(&self) -> Arc<std::sync::Mutex<crate::session::DaemonHooks>> {
+        self.shared.hosting().daemon_hooks
+    }
+
     /// The streams a daemon sender runs at once; zero keeps the default.
     #[cfg(feature = "test-hooks")]
     pub fn sender_parallel(&self) -> Arc<std::sync::atomic::AtomicUsize> {
