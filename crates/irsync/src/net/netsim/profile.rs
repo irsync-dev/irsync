@@ -125,3 +125,34 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
         },
     }
 }
+
+/// Handovers and the dead zone of a profile.
+#[derive(Clone, Debug)]
+pub struct OutageParams {
+    /// Time from one handover's start to the next one's; `(0, 0)`: none.
+    pub handover_every_ms: (u64, u64),
+    pub handover_ms: (u64, u64),
+    /// How long the dead zone lasts; `(0, 0)`: none.
+    pub dead_zone_ms: (u64, u64),
+    /// Traffic seen before the dead zone opens.
+    pub dead_zone_after_bytes: (u64, u64),
+}
+
+/// The outages of profile `p`; `None` when it has none.
+pub fn outages(p: ProfileName) -> Option<OutageParams> {
+    match p {
+        ProfileName::FourGVehicle => Some(OutageParams {
+            handover_every_ms: (30_000, 90_000),
+            handover_ms: (200, 2000),
+            dead_zone_ms: (20_000, 60_000),
+            dead_zone_after_bytes: (256 * KIB, 4 * KIB * KIB),
+        }),
+        ProfileName::DslVideo => None,
+        ProfileName::TestBlackout => Some(OutageParams {
+            handover_every_ms: (0, 0),
+            handover_ms: (0, 0),
+            dead_zone_ms: (6000, 6000),
+            dead_zone_after_bytes: (256 * KIB, 256 * KIB),
+        }),
+    }
+}
