@@ -684,8 +684,9 @@ impl SenderRole {
 /// from that offset, records at absolute offsets, no whole-file hash.
 fn tail_digest(full: &std::path::Path, from: u64) -> io::Result<FileDigest> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = crate::fs::safe::open_regular_nofollow(full)?;
-    let size = file.metadata()?.len();
+    // The open's type check already took the file's stat.
+    let (mut file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+    let size = st.st_size as u64;
     if size < from {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
