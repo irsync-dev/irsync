@@ -164,6 +164,13 @@ async fn push_span_tree() {
     for s in [client[0], daemon[0]] {
         assert!(!s.fields.contains_key("endpoint_id"), "{s:?}");
     }
+    // Only the client knows which of its sources a session is.
+    assert_eq!(client[0].fields["source_index"], "0", "{:?}", client[0]);
+    assert!(
+        !daemon[0].fields.contains_key("source_index"),
+        "{:?}",
+        daemon[0]
+    );
     for phase in ["handshake", "list", "plan", "transfer"] {
         let spans = named(&all, phase);
         assert!(!spans.is_empty(), "no {phase} span");

@@ -820,7 +820,7 @@ pub async fn serve_daemon(
         Side::Daemon,
         &hello,
         conn.remote_id().fmt_short().to_string(),
-        0,
+        None,
         &local_id,
     );
     if telemetry::exporting() {
@@ -850,7 +850,7 @@ pub(super) fn session_span(
     side: Side,
     hello: &Hello,
     peer: String,
-    source_index: usize,
+    source_index: Option<usize>,
     endpoint_id: &str,
 ) -> tracing::Span {
     let direction = Direction::try_from(hello.direction).unwrap_or(Direction::ClientSends);
@@ -864,12 +864,17 @@ pub(super) fn session_span(
         endpoint_id = tracing::field::Empty,
         peer = %peer,
         resumed = tracing::field::Empty,
-        source_index,
+        source_index = tracing::field::Empty,
         rtt_max_ms = tracing::field::Empty,
         cwnd = tracing::field::Empty,
         lost_packets = tracing::field::Empty,
         reconnects = tracing::field::Empty,
     );
+    // Which source of its command line a client's session is; a daemon
+    // cannot know.
+    if let Some(i) = source_index {
+        span.record("source_index", i);
+    }
     if crate::telemetry::exporting() {
         span.record("endpoint_id", endpoint_id);
     }

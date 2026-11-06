@@ -1281,4 +1281,9 @@ fn config_sets_and_checks_the_telemetry_keys() {
         assert!(String::from_utf8_lossy(&o.stderr).contains(key), "{o:?}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "{key}");
     }
+    // A refusal says where and why once each.
+    let o = irsync(&home, &["config", "set", "daemon.debug_addr", "nope"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.matches("bad debug address").count(), 1, "{err}");
+    assert_eq!(err.matches("irsync.toml").count(), 1, "{err}");
 }

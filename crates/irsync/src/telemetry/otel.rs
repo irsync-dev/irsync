@@ -193,14 +193,15 @@ impl OtelProviders {
     }
 
     /// Flushes and shuts down both providers on threads of their own;
-    /// returns after `deadline` at the latest, leaving them behind. Warns
-    /// once when export failed or did not finish in time.
-    pub async fn shutdown(self, deadline: Duration) {
+    /// returns at `deadline` at the latest, leaving them behind. Warns once
+    /// when export failed or did not finish within `budget` (the time the
+    /// deadline allowed for shutting down in all).
+    pub async fn shutdown(self, deadline: tokio::time::Instant, budget: Duration) {
         let OtelProviders { tracer, meter } = self;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         on_thread("spans", tx.clone(), move || tracer.shutdown());
         on_thread("metrics", tx, move || meter.shutdown());
-        let waited = tokio::time::timeout(deadline, async {
+        let waited = tokio::time::timeout_at(deadline, async {
             let mut errors = Vec::new();
             while let Some(r) = rx.recv().await {
                 errors.extend(r.err());
@@ -213,7 +214,7 @@ impl OtelProviders {
             Ok(errors) => eprintln!("irsync: OpenTelemetry export: {}", errors.join("; ")),
             Err(_) => eprintln!(
                 "irsync: OpenTelemetry export did not finish within {:.1} s",
-                deadline.as_secs_f32()
+                budget.as_secs_f32()
             ),
         }
     }

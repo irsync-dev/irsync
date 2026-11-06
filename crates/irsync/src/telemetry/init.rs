@@ -299,8 +299,10 @@ impl Telemetry {
     /// Stops the background work, publishes the meters a last time and
     /// flushes OTLP export; takes at most two seconds in all.
     pub async fn shutdown(self) {
-        #[cfg(feature = "otel")]
-        let started = std::time::Instant::now();
+        // One deadline for everything: the export flush ends at the same
+        // instant as the whole, and is polled first then, so its warning is
+        // never cut off however long publishing took.
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_BUDGET;
         let flush = async move {
             for t in &self.tasks {
                 t.abort();
@@ -310,17 +312,35 @@ impl Telemetry {
             }
             #[cfg(feature = "otel")]
             if let Some(p) = self.otel {
-                p.shutdown(SHUTDOWN_BUDGET.saturating_sub(started.elapsed()))
-                    .await;
+                p.shutdown(deadline, SHUTDOWN_BUDGET).await;
             }
         };
-        let _ = tokio::time::timeout(SHUTDOWN_BUDGET, flush).await;
+        let _ = tokio::time::timeout_at(deadline, flush).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `shutdown` relies on: an export flush timing out at the very
+    /// deadline of the whole still finishes (and warns) first, whether the
+    /// deadline is reached while it waits or was passed before it started.
+    #[tokio::test]
+    async fn a_flush_on_the_shared_deadline_reports_first() {
+        for publishing in [Duration::ZERO, Duration::from_millis(80)] {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+            let reported = tokio::time::timeout_at(deadline, async {
+                // Publishing is synchronous and may use up the budget.
+                std::thread::sleep(publishing);
+                tokio::time::timeout_at(deadline, std::future::pending::<()>())
+                    .await
+                    .is_err()
+            })
+            .await;
+            assert!(matches!(reported, Ok(true)), "{publishing:?}");
+        }
+    }
 
     #[test]
     fn recorder_choice() {

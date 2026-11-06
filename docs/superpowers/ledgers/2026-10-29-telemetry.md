@@ -139,11 +139,11 @@ Closed:
 - Since: Usage::add merges process/net (with a test); irsync_fsync_seconds carries side/role/export; dead `|| inject` removed (ac43e54).
 - 6678359 fixed the eight that reported wrong values: timing percentiles above max; http catch-all reason phrase; files_total{failed} counting non-file errors; BytesMatched over-count on an in-session resend; --bwlimit sleep as peer wait; delta encoding as Send and symlink/special/MetaOnly (and mkdir) as Plan; flame self time with children on other threads; failed sessions lacking rtt/cwnd/lost_packets/reconnects.
 
-Still open, accuracy or docs:
-- rtt_avg merge is a pairwise mean, not sample-weighted (meter.rs Usage::add; the unit test pins it).
-- Process CPU/RSS summed across concurrent daemon sessions; not said on ProcessUsage.
-- Daemon session span records source_index=0 instead of leaving it Empty (engine.rs serve_daemon).
-- The "did not finish" shutdown warning can be lost when publish::once uses up the 2 s budget (init.rs shutdown, otel.rs).
+Accuracy or docs, fixed the same day:
+- rtt_avg merges weighted by rtt_samples (new NetUsage field) instead of a pairwise mean.
+- ProcessUsage documents that its figures are process-wide, so concurrent daemon sessions' must not be summed.
+- The daemon's session span leaves source_index empty; only the client records it.
+- Shutdown uses one deadline for the whole and the OTLP flush, so the flush's warning is never cut off; it names the budget, not the time left.
 
 Test gaps, closed the same day (all but one):
 - -v summary layout test expects the hand-worked 18.19M/s and 422.30M/s.
@@ -156,7 +156,7 @@ Test gaps, closed the same day (all but one):
 - The meter's parent-summing tests use a parent of their own; session_meters_sum_into_the_process_wide_ones checks the link by pointer.
 - a_session_that_gives_up_still_counts_its_reconnects (telemetry_spans).
 - Left: process.rs sample_sees_cpu_and_fds retries, as other tests in the binary open and close descriptors (inherent to a process-wide count).
-- Found meanwhile: `config set daemon.debug_addr nope` names the file and the reason twice in its refusal.
+- Found meanwhile, fixed the same day: `config set` refusing a file that would not load named the file and the reason twice (ManageError::Invalid's reason is no longer an error source).
 
 Still open, code quality:
 - serve_daemon: 8 args behind allow(too_many_arguments) (one of eight such functions).

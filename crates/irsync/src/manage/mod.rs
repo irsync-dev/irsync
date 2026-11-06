@@ -54,8 +54,10 @@ pub enum ManageError {
     NothingToRemove(String),
     #[error("comment {0:?} contains control characters (such as a line break); retype the key line on one line")]
     BadComment(String),
-    #[error("{}: refusing to save, the edited file would not load: {source}", path.display())]
-    Invalid { path: PathBuf, source: ConfigError },
+    /// `reason` names the file and line itself; it is no error `source`, so
+    /// a printed chain (`{:#}`) does not repeat it.
+    #[error("refusing to save, the edited file would not load: {reason}")]
+    Invalid { path: PathBuf, reason: ConfigError },
     #[error("{} is being edited by another irsync ({} exists); retry, or delete that file if no irsync is running", path.display(), lock.display())]
     Locked { path: PathBuf, lock: PathBuf },
     #[error("invalid key {0:?}")]
@@ -186,9 +188,9 @@ impl ConfigLock {
     /// Writes `doc` over the file and releases the lock. A document that
     /// would not load is refused and the file left as it was.
     pub fn save(mut self, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-        Config::parse(&doc.to_string(), &self.path).map_err(|source| ManageError::Invalid {
+        Config::parse(&doc.to_string(), &self.path).map_err(|reason| ManageError::Invalid {
             path: self.path.clone(),
-            source,
+            reason,
         })?;
         let io = |source| ManageError::Io {
             path: self.lock.clone(),

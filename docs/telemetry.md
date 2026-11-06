@@ -131,7 +131,7 @@ Names are stable. Per-file spans need `IRSYNC_TRACE_FILES=1`.
 
 ```
 session            session_id, direction, side, role, endpoint_id, peer,
- |                 resumed, source_index; at the end rtt_max_ms, cwnd,
+ |                 resumed, source_index (client); at the end rtt_max_ms, cwnd,
  |                 lost_packets, reconnects
  +- connect        attempt, path          (client only, one per attempt)
  +- handshake

@@ -79,7 +79,11 @@ impl Counter {
     ];
 }
 
-/// Process-level usage over a session.
+/// Process-level usage over a session. These are figures of the whole
+/// process, not of the session: in a daemon serving several sessions at
+/// once, each session's figures include the others' work, so they must not
+/// be summed across concurrent sessions. (A client runs its sources one
+/// after another, so its totals over them hold.)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessUsage {
     /// CPU time the whole process spent since the session started.
@@ -96,6 +100,9 @@ pub struct NetUsage {
     pub rtt_min: Duration,
     pub rtt_max: Duration,
     pub rtt_avg: Duration,
+    /// How many RTT samples `rtt_avg` is the mean of, so averages merge
+    /// weighted by them.
+    pub rtt_samples: u32,
     pub lost_packets: u64,
     pub sent_packets: u64,
     /// Congestion window of the best path at the last sample, in bytes.
@@ -133,7 +140,9 @@ impl Usage {
         self.counters[c as usize]
     }
 
-    /// Sums `o` into `self`; peaks take the max, and the RTT minimum ignores unsampled (zero) sides.
+    /// Sums `o` into `self`; peaks take the max, the RTT average is
+    /// weighted by each side's samples, and the RTT minimum ignores
+    /// unsampled (zero) sides.
     pub fn add(&mut self, o: &Usage) {
         self.wall += o.wall;
         for (a, b) in self.busy.iter_mut().zip(&o.busy) {
@@ -152,11 +161,16 @@ impl Usage {
         p.peak_rss = p.peak_rss.max(q.peak_rss);
         p.peak_fds = p.peak_fds.max(q.peak_fds);
         let (n, m) = (&mut self.net, &o.net);
-        n.rtt_avg = match (n.rtt_avg.is_zero(), m.rtt_avg.is_zero()) {
-            (false, false) => (n.rtt_avg + m.rtt_avg) / 2,
-            (true, _) => m.rtt_avg,
-            _ => n.rtt_avg,
+        // An average without a sample count (built by hand) weighs one.
+        let weight = |u: &NetUsage| match u.rtt_avg.is_zero() {
+            true => 0,
+            false => u.rtt_samples.max(1),
         };
+        let (wn, wm) = (weight(n), weight(m));
+        if wn + wm > 0 {
+            n.rtt_avg = (n.rtt_avg * wn + m.rtt_avg * wm) / (wn + wm);
+        }
+        n.rtt_samples = wn + wm;
         n.rtt_min = match (n.rtt_min.is_zero(), m.rtt_min.is_zero()) {
             (false, false) => n.rtt_min.min(m.rtt_min),
             (true, _) => m.rtt_min,
@@ -582,7 +596,7 @@ mod tests {
 
     #[test]
     fn usage_add_merges_process_and_net() {
-        let mk = |rss, min, max, lost| Usage {
+        let mk = |rss, min, max, lost, samples| Usage {
             process: ProcessUsage {
                 cpu_user: MS(10),
                 peak_rss: rss,
@@ -593,19 +607,23 @@ mod tests {
                 rtt_min: MS(min),
                 rtt_max: MS(max),
                 rtt_avg: MS((min + max) / 2),
+                rtt_samples: samples,
                 lost_packets: lost,
                 cwnd: rss,
                 ..NetUsage::default()
             },
             ..Usage::default()
         };
-        let mut a = mk(100, 4, 8, 1);
-        a.add(&mk(200, 2, 20, 2));
+        let mut a = mk(100, 4, 8, 1, 3);
+        a.add(&mk(200, 2, 20, 2, 1));
         a.add(&Usage::default());
         assert_eq!(a.process.cpu_user, MS(20));
         assert_eq!((a.process.peak_rss, a.process.peak_fds), (200, 20));
         assert_eq!((a.net.rtt_min, a.net.rtt_max), (MS(2), MS(20)));
-        assert_eq!(a.net.rtt_avg, Duration::from_micros(8500));
+        // Weighted by samples: (6 ms * 3 + 11 ms * 1) / 4, not their
+        // pairwise mean of 8.5 ms.
+        assert_eq!(a.net.rtt_avg, Duration::from_micros(7250));
+        assert_eq!(a.net.rtt_samples, 4);
         assert_eq!((a.net.lost_packets, a.net.cwnd), (3, 200));
     }
 

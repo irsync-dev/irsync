@@ -74,6 +74,7 @@ impl Inner {
             a.rtt_sum += rtt;
             a.rtt_samples += 1;
             a.net.rtt_avg = a.rtt_sum / a.rtt_samples;
+            a.net.rtt_samples = a.rtt_samples;
             metrics::histogram!("irsync_quic_rtt_seconds", self.labels.clone())
                 .record(rtt.as_secs_f64());
         }

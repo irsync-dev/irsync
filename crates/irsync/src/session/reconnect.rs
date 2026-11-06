@@ -312,7 +312,7 @@ pub async fn run_with_reconnect(
         Side::Client,
         &hello_for(None),
         target.id.fmt_short().to_string(),
-        opts.source_index,
+        Some(opts.source_index),
         &endpoint.id().to_string(),
     );
     let res = attempts(
