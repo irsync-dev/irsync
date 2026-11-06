@@ -554,7 +554,9 @@ pub(super) async fn open_writer(
 /// or in place every remote chunk, so that one request is ascending). The
 /// request always goes out: a basis that could not be computed just means
 /// a raw chunk. The sender uses each basis for this one request and drops
-/// it.
+/// it. Every frame is paced (`Out::send_paced`): a mostly rewritten large
+/// file signs bases at disk speed, so a slow link stalls this task instead
+/// of the queue growing. It holds no lock while it waits (see [`Slot`]).
 pub(super) async fn offer_bases(
     ctx: Arc<Ctx>,
     out: Out,
@@ -577,9 +579,10 @@ pub(super) async fn offer_bases(
         ctx.activity.fetch_add(1, Ordering::Relaxed);
         match basis {
             Ok(b) if b.blocks() > 0 => {
-                out.send(Msg::ChunkBasis(
+                out.send_paced(Msg::ChunkBasis(
                     b.to_wire(file_id, sender_idx(route.idx_base, idx)),
-                ));
+                ))
+                .await;
                 ctx.hooks.event("basis", &route.path);
             }
             Ok(_) => {}
@@ -593,17 +596,21 @@ pub(super) async fn offer_bases(
     if let Some(h) = &ctx.hooks.after_bases {
         h(&route.path).await;
     }
+    let need = out
+        .reserve(Msg::Need(NeedChunks {
+            file_id,
+            chunk_idx: request
+                .into_iter()
+                .map(|i| sender_idx(route.idx_base, i))
+                .collect(),
+        }))
+        .await;
     // A retired writer (new chunk list, failure) has nothing to request.
+    // Checked after the wait for room, and the lock let go before queueing.
     if route.slot.lock().await.is_none() {
         return;
     }
-    out.send(Msg::Need(NeedChunks {
-        file_id,
-        chunk_idx: request
-            .into_iter()
-            .map(|i| sender_idx(route.idx_base, i))
-            .collect(),
-    }));
+    need.send();
 }
 
 /// Rebuilds chunk `idx` from the sender's operations against the old file.

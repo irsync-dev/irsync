@@ -541,7 +541,9 @@ impl Receiver {
                 // never find the file unknown. Completions and peer frames
                 // travel on separate channels, and a completion sent first
                 // is not always received first (an mpsc slot still being
-                // written hides the ones behind it). `Out::send` never waits.
+                // written hides the ones behind it). `Out::send` never waits:
+                // a main loop must not wait on the peer, so this frame is not
+                // paced; the planner's in-flight slots bound how many queue.
                 self.ctx.hooks.event("plan", &p.path);
                 self.out.send(Msg::Plan(PlanItem {
                     file_id: p.file_id,

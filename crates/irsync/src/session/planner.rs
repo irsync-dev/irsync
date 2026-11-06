@@ -531,11 +531,16 @@ impl Planner {
                 });
             } else {
                 // A receiving daemon tells the (sending) client what it plans.
+                // Paced: nothing else bounds these (directories, links and
+                // metadata-only changes take no in-flight slot), so a slow
+                // link stalls the planner instead of the queue growing.
                 if self.ctx.opts.itemize && self.ctx.remote_id.is_some() {
-                    self.out.send(Msg::Itemized(Itemized {
-                        path: path.as_bytes().to_vec(),
-                        code: code.clone(),
-                    }));
+                    self.out
+                        .send_paced(Msg::Itemized(Itemized {
+                            path: path.as_bytes().to_vec(),
+                            code: code.clone(),
+                        }))
+                        .await;
                 }
                 let bus = &self.ctx.hooks.bus;
                 bus.emit(crate::session::Event::Itemized(path.clone(), code));

@@ -391,3 +391,82 @@ async fn a_late_planned_completion_never_loses_the_answer() {
     })
     .await;
 }
+
+/// The writer's budget for paced control frames (`OUT_BUDGET`).
+const OUT_BUDGET: usize = 4 * MIB;
+
+/// 20 000 one-byte files in 2 000 directories, all below fifteen nested
+/// directories with 240-byte names, so each path is about 3600 bytes long.
+/// Returns the directory that holds the 2 000.
+fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
+    let mut base = root.to_path_buf();
+    for c in b'a'..b'p' {
+        base.push(String::from_utf8(vec![c; 240]).unwrap());
+    }
+    fs::create_dir_all(&base).unwrap();
+    for d in 0..2000 {
+        let dir = base.join(format!("d{d:04}"));
+        fs::create_dir(&dir).unwrap();
+        for f in 0..10 {
+            fs::write(dir.join(format!("f{f}")), b"x").unwrap();
+        }
+    }
+    base
+}
+
+/// Sets the mode of every directory and file below `base`.
+fn chmod_all(base: &Path, dirs: u32, files: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    for d in fs::read_dir(base).unwrap() {
+        let dir = d.unwrap().path();
+        for f in fs::read_dir(&dir).unwrap() {
+            fs::set_permissions(f.unwrap().path(), fs::Permissions::from_mode(files)).unwrap();
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(dirs)).unwrap();
+    }
+}
+
+/// A metadata-only change to every one of 20 000 entries, pushed with `-i`:
+/// the receiving daemon's planner sends one `Itemized` per entry, none of
+/// which takes an in-flight slot. `--bwlimit` paces data streams only, and
+/// a metadata-only push has none, so the slow link is the client's main
+/// loop taking 0.5 ms per peer event: once the client's queue and the
+/// stream's 8 MiB window are full, the daemon's writer stalls. The ~80 MB
+/// of `Itemized` frames must then wait in the planner, not in the queue.
+/// (Long paths keep the backlog the client still has to read at the end,
+/// which the daemon waits for only so long, to a few thousand frames.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let base = wide_deep_tree(h.src(flow));
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        chmod_all(&base, 0o750, 0o600);
+        let peak = Arc::new(AtomicUsize::new(0));
+        h.daemon.hooks.lock().unwrap().out_peak = Some(peak.clone());
+        let mut local = h.local_side();
+        local.hooks.slow_peer_events = Some(Duration::from_micros(500));
+        let mut opts = archive_opts();
+        opts.itemize = true;
+        opts.bwlimit = Some(200 * 1024);
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(
+            peak <= OUT_BUDGET + 64 * 1024,
+            "paced control frames peaked at {peak} bytes"
+        );
+        assert!(
+            peak >= OUT_BUDGET / 2,
+            "paced control frames peaked at {peak} bytes: the budget never filled"
+        );
+    })
+    .await;
+}

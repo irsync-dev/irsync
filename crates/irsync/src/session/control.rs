@@ -15,14 +15,15 @@ use irsync_proto::v1::{
     control::Msg, file_entry::Kind, Control, FileEntry, Hash, ListingEnd, ListingEntry, PathError,
     PlanEntry, SessionPlan, SessionProgress,
 };
+use prost::Message as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use super::engine::{Ctx, PeerEvents};
-use super::limits::PEER_EVENTS;
+use super::limits::{ByteBudget, OUT_BUDGET, PEER_EVENTS};
 use super::listing_stream::{ListingOut, PeerScan};
-use super::{IndexScope, SessionRecord, StreamKind, Tamper};
+use super::{IndexScope, SessionRecord, StreamKind};
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
@@ -94,16 +95,89 @@ impl PeerTx {
     }
 }
 
+/// A frame on its way to the writer; `paced` is the bytes it holds of the
+/// writer's [`ByteBudget`] (zero for `Out::send`), given back once written.
+struct Queued {
+    frame: Control,
+    paced: usize,
+}
+
 /// Handle for queueing control frames to the writer task.
 #[derive(Clone)]
 pub(super) struct Out {
-    tx: mpsc::UnboundedSender<Option<Control>>,
+    tx: mpsc::UnboundedSender<Option<Queued>>,
+    budget: Arc<ByteBudget>,
+    #[cfg(feature = "test-hooks")]
+    peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+/// A frame that holds its bytes of the writer's budget and is not queued
+/// yet (see [`Out::reserve`]); dropped unsent, it gives them back.
+pub(super) struct Paced {
+    tx: mpsc::UnboundedSender<Option<Queued>>,
+    budget: Arc<ByteBudget>,
+    frame: Option<Queued>,
+}
+
+impl Paced {
+    /// Queues the frame behind everything queued so far.
+    pub fn send(mut self) {
+        if let Some(q) = self.frame.take() {
+            let n = q.paced;
+            if self.tx.send(Some(q)).is_err() {
+                self.budget.release(n);
+            }
+        }
+    }
+}
+
+impl Drop for Paced {
+    fn drop(&mut self) {
+        if let Some(q) = self.frame.take() {
+            self.budget.release(q.paced);
+        }
+    }
 }
 
 impl Out {
+    /// Queues `msg` without waiting: for main loops, which must never wait
+    /// on the network (see the invariant in `run_role`).
     pub fn send(&self, msg: Msg) {
         // A closed writer surfaces as `Ev::WriterFailed`; nothing to do here.
-        let _ = self.tx.send(Some(Control { msg: Some(msg) }));
+        let _ = self.tx.send(Some(Queued {
+            frame: Control { msg: Some(msg) },
+            paced: 0,
+        }));
+    }
+
+    /// Queues `msg` once the writer has room for it under [`OUT_BUDGET`]
+    /// bytes of paced frames not yet written, so a slow link stalls the
+    /// caller instead of growing the queue. Only for spawned tasks that may
+    /// wait on the peer, never a main loop. Frames from `send` and
+    /// `send_paced` share one queue, so their order is kept.
+    pub async fn send_paced(&self, msg: Msg) {
+        self.reserve(msg).await.send();
+    }
+
+    /// Waits for room for `msg` as [`Out::send_paced`] does, without
+    /// queueing it yet, so a caller can check after the wait that the frame
+    /// is still wanted. Once the writer is gone it returns at once.
+    pub async fn reserve(&self, msg: Msg) -> Paced {
+        let frame = Control { msg: Some(msg) };
+        let n = frame.encoded_len();
+        let gone = tokio::select! {
+            () = self.budget.acquire(n) => false,
+            () = self.tx.closed() => true,
+        };
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.peak {
+            p.fetch_max(self.budget.held(), std::sync::atomic::Ordering::SeqCst);
+        }
+        Paced {
+            tx: self.tx.clone(),
+            budget: self.budget.clone(),
+            frame: (!gone).then_some(Queued { frame, paced: n }),
+        }
     }
 
     /// Ask the writer to finish the stream after everything queued so far.
@@ -112,18 +186,23 @@ impl Out {
     }
 }
 
-/// Spawns the writer: frames go out in queue order; `finish` ends the stream
-/// and waits (bounded) until the peer has the bytes.
+/// Spawns the writer: frames go out in queue order, and a paced frame's
+/// bytes return to the budget once written; `finish` ends the stream and
+/// waits (bounded) until the peer has the bytes.
 pub(super) fn spawn_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
-    tamper: Tamper,
+    hooks: &super::SideHooks,
 ) -> (Out, JoinHandle<()>) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Option<Control>>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Option<Queued>>();
+    let budget = Arc::new(ByteBudget::new(OUT_BUDGET));
+    let tamper = hooks.tamper();
+    let written = budget.clone();
     let task = tokio::spawn(
         async move {
-            while let Some(Some(c)) = rx.recv().await {
-                for msg in c
+            while let Some(Some(q)) = rx.recv().await {
+                for msg in q
+                    .frame
                     .msg
                     .into_iter()
                     .flat_map(|m| tamper.frames(StreamKind::Control, m))
@@ -134,6 +213,7 @@ pub(super) fn spawn_writer(
                         return;
                     }
                 }
+                written.release(q.paced);
             }
             if send.finish().is_ok() {
                 let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
@@ -141,7 +221,13 @@ pub(super) fn spawn_writer(
         }
         .instrument(tracing::Span::current()),
     );
-    (Out { tx }, task)
+    let out = Out {
+        tx,
+        budget,
+        #[cfg(feature = "test-hooks")]
+        peak: hooks.out_peak.clone(),
+    };
+    (out, task)
 }
 
 /// A listing entry's hash as a hash-only digest (no chunk list), which is all

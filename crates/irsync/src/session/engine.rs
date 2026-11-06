@@ -1140,6 +1140,7 @@ async fn serve_daemon_inner(
                 h.listing_peak = p.listing_peak;
                 h.listing_waits = p.listing_waits;
                 h.peer_events_peak = p.peer_events_peak;
+                h.out_peak = p.out_peak;
                 h.slow_peer_events = p.slow_peer_events;
             }
             h
@@ -1202,10 +1203,15 @@ async fn run_role(
     // from a task whose registration travels as a completion. Once the role
     // has ended the queue is gone, and a reader
     // still holding its stream (see the failure path below) drops what it
-    // reads instead of waiting.
+    // reads instead of waiting. The control writer's queue is bounded by
+    // bytes only for paced frames (`Out::send_paced`), which only spawned
+    // tasks send (the planner's `Itemized`, `offer_bases`), never while
+    // holding a lock a main loop awaits; the writer always makes progress,
+    // since the peer's control reader drains into a main loop that never
+    // waits on us.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
-    let (out, writer) = control::spawn_writer(send, ev_tx.clone(), ctx.hooks.tamper());
+    let (out, writer) = control::spawn_writer(send, ev_tx.clone(), &ctx.hooks);
     let (listing_send, listing_recv) = listing;
     let (listing_out, listing_writer) =
         listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), &ctx.hooks);
