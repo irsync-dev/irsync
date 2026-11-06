@@ -391,6 +391,40 @@ cross-referenced from commit messages and review notes.
      disk with the fsync on and off. If it matters, the likely choice is
      (D) with (C1) as the default and per-file syncing as the flag; (C2)
      only if (C1) proves insufficient.
+6. **Daemon blocking pool: thread count and futex handoffs** (measured
+   2026-11-06, left open). On the 33k-file push to tmpfs (32 cores), the
+   daemon uses about 12.2 s of CPU for a push of about 1 s wall, 62% of
+   it in the kernel. Futex is 21% of daemon CPU, and 80% of that is
+   tokio's blocking-pool threads sleeping and being woken between tasks:
+   with up to 4,096 files in flight and several blocking calls per file,
+   the pool fills to tokio's default ceiling of 512 threads (544 runtime
+   threads with the 32 async workers).
+   - *Where the daemon blocks* (288k context switches, recorded with
+     `perf record -e context-switches -c 1 -g` on a build with
+     `-C force-frame-pointers=yes`; DWARF unwinding stops at
+     `parking_lot`): idle blocking-pool threads 43%, async workers
+     parking 29%, the index writer waiting for rows 4%, lock waits about
+     20% (the pool's own mutex 3.7%, QUIC stream locks about 3%, the
+     index reader pool 1.5%, malloc 1.2%), sleeps inside syscalls about 3%
+     (directory locks in `rename` and `statx`).
+   - *Capping the pool* (`max_blocking_threads` in a throwaway build,
+     three interleaved runs per cap; wall ms / daemon CPU s / context
+     switches): default 977-1033 / 11.7-12.5 / ~303k; 64: 957-1006 /
+     11.6-11.7 / ~285k; 16: 943-974 / 10.9-11.1 / ~242k; 8: 948-990 /
+     9.0-9.1 / ~190k; 4: 1215-1631 / 7.4-7.8 / ~182k. The handoffs cost
+     CPU, not wall time: a cap of 8 saves about 25% of daemon CPU and
+     37% of context switches at the same wall time, and 4 is too few.
+   - *Why no cap yet.* On tmpfs a blocking call takes microseconds; on a
+     real disk `fsync` (5) and metadata writes take milliseconds, and the
+     threads in flight then buy I/O parallelism, so a cap of 8 could slow
+     real-disk pushes. All concurrent sessions share the one pool, and
+     long-lived blocking tasks (the walk's `blocking_send`, the planner)
+     hold a thread for a whole session and need headroom under any cap.
+   - *Next step.* Measure with (5), on a real disk: if a cap costs no wall
+     time there, set `max_blocking_threads` in `run_daemon`, sized from
+     the core count plus the long-lived tasks per session. The wall time
+     of the tmpfs push is set elsewhere; the next profile is of the
+     client and the pipeline between the two sides.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
