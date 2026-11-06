@@ -111,6 +111,35 @@ pub fn walk(
     (rx, srx)
 }
 
+/// Puts a directory's children in file-name order, errors included: the
+/// walk's sort puts every error after all the entries, but an error for a
+/// child that could not be read (its file name known) becomes a gap that
+/// must stand where the child would have, or the listing goes out of
+/// order. Errors without a file name keep their place after the entries.
+/// The sort is stable, so the entries keep the walk's order among equals.
+fn sort_children<T, E>(
+    children: &mut [Result<T, E>],
+    name: impl Fn(&T) -> &[u8],
+    err_name: impl Fn(&E) -> Option<&[u8]>,
+) {
+    // `false` sorts before `true`: nameless errors go last.
+    let key = |c: &Result<T, E>| -> (bool, Vec<u8>) {
+        match c {
+            Ok(t) => (false, name(t).to_vec()),
+            Err(e) => match err_name(e) {
+                Some(n) => (false, n.to_vec()),
+                None => (true, Vec::new()),
+            },
+        }
+    };
+    if children
+        .iter()
+        .any(|c| c.as_ref().err().is_some_and(|e| err_name(e).is_some()))
+    {
+        children.sort_by_cached_key(key);
+    }
+}
+
 fn run_walk(
     mut root: PathBuf,
     filters: Arc<FilterSet>,
@@ -167,6 +196,11 @@ fn run_walk(
         .max_depth(opts.max_depth.unwrap_or(usize::MAX))
         .parallelism(Parallelism::RayonNewPool(opts.threads.max(1)))
         .process_read_dir(move |_, dir, _, children| {
+            sort_children(
+                children,
+                |e| e.file_name().as_bytes(),
+                |err| err.path().and_then(Path::file_name).map(|n| n.as_bytes()),
+            );
             let Some(dir_rel) = rel_of(&cb_root, dir) else {
                 return;
             };
@@ -247,6 +281,31 @@ mod tests {
             });
         }
         (v, summary.await.unwrap())
+    }
+
+    #[test]
+    fn an_error_for_a_named_child_sorts_into_its_place() {
+        // As the walk hands them over: entries by name, then the errors.
+        let mut children: Vec<Result<&str, Option<&str>>> = vec![
+            Ok("a"),
+            Ok("c"),
+            Ok("z"),
+            Err(Some("b")),
+            Err(None),
+            Err(Some("d")),
+        ];
+        sort_children(&mut children, |n| n.as_bytes(), |e| e.map(str::as_bytes));
+        assert_eq!(
+            children,
+            vec![
+                Ok("a"),
+                Err(Some("b")),
+                Ok("c"),
+                Err(Some("d")),
+                Ok("z"),
+                Err(None),
+            ]
+        );
     }
 
     #[tokio::test]

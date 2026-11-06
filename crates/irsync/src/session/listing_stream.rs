@@ -198,6 +198,8 @@ pub(super) fn spawn_listing_reader(
 /// - an entry that could not be stat'ed: in its place, so after the last
 ///   path; a directory's may be followed by a second gap under the same
 ///   path (its children could not be read either);
+/// - a child the walk could not read (a walk error naming it): in its
+///   place among its siblings (`scan::sort_children`);
 /// - a walk error with no path inside the root: at the root (empty path),
 ///   anywhere.
 ///
