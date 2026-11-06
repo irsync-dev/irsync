@@ -150,6 +150,16 @@ the plan for finding the next ones.
 short runs, both directions, several at a time, keeping only the roots of
 failing runs. See the header of the script for its environment variables.
 
+`tools/matrix.sh` runs the campaign matrix of section 4 of that document,
+one breadth sweep per row (hard links, renames with and without rename
+detection, sparse files, modes, timestamps, symlinks, `--delete-before`,
+large listings, long names, `--parallel 1` and `512`, `-c`, single-step
+iterations, 8 GB files). `matrix.sh hardlink rename` runs only those rows;
+`DRY=1` only checks that filegen accepts every row's settings. Each passing
+run is checked with `tools/clean-check.sh`: `tools/paranoid-check.sh`, then
+no `.irsync.*.part` left in either tree. All rows take about three hours on
+a 16-core Mac.
+
 ## Testing
 
 `cargo test -p stress` runs unit tests and an end-to-end test that starts a
