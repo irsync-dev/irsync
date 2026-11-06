@@ -3,7 +3,7 @@
 
 use std::process::{Command, Stdio};
 
-use irsync::build::BuildInfo;
+use irsync::build::{BuildInfo, LONG_VERSION};
 
 fn irsync(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_irsync"))
@@ -65,7 +65,7 @@ fn version_flag_prints_the_build_info() {
     assert!(o.status.success());
     assert_eq!(
         String::from_utf8(o.stdout).unwrap(),
-        format!("irsync {}\n", BuildInfo::current())
+        format!("irsync {}\n", *LONG_VERSION)
     );
 }
 
@@ -76,14 +76,14 @@ fn help_opens_with_the_build_info() {
     let out = String::from_utf8(o.stdout).unwrap();
     assert_eq!(
         out.lines().next().unwrap(),
-        format!("irsync {}", BuildInfo::current())
+        format!("irsync {}", *LONG_VERSION)
     );
     assert!(out.contains("rsync-like directory sync over iroh"), "{out}");
     // Subcommand help carries it as well.
     let o = irsync(&["daemon", "--help"]);
     assert!(o.status.success());
     let out = String::from_utf8(o.stdout).unwrap();
-    assert!(out.contains(&BuildInfo::current().to_string()), "{out}");
+    assert!(out.contains(LONG_VERSION.as_str()), "{out}");
 }
 
 #[test]

@@ -93,12 +93,15 @@ impl fmt::Display for BuildInfo {
         if self.dirty == Some(true) {
             f.write_str(", dirty")?;
         }
-        f.write_str(")")?;
-        #[cfg(feature = "netsim")]
-        f.write_str(" [netsim]")?;
-        Ok(())
+        f.write_str(")")
     }
 }
 
 /// `BuildInfo::current()` rendered once, for clap's `--version` and help.
-pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| BuildInfo::current().to_string());
+pub static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let version = BuildInfo::current().to_string();
+    // A fault build says so in `--version`.
+    #[cfg(feature = "netsim")]
+    let version = version + " [netsim]";
+    version
+});
