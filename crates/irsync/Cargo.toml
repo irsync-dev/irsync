@@ -7,7 +7,14 @@ edition.workspace = true
 default = ["otel"]
 test-hooks = []
 # Network-fault test rig: a fault-injecting iroh custom transport. Never in a release build.
-netsim = ["iroh/unstable-custom-transports", "dep:iroh-base", "dep:rand", "dep:rand_chacha"]
+netsim = [
+    "iroh/unstable-custom-transports",
+    "dep:iroh-base",
+    "dep:n0-watcher",
+    "dep:noq-udp",
+    "dep:rand",
+    "dep:rand_chacha",
+]
 # OTLP export of spans and metrics.
 otel = [
     "dep:opentelemetry",
@@ -24,6 +31,9 @@ nix = { workspace = true, features = ["fs", "resource", "user", "time"] }
 iroh = { workspace = true }
 # Only for CustomAddr, which iroh does not re-export. Used by netsim.
 iroh-base = { workspace = true, optional = true }
+# Only for the custom transport trait's address watcher and receive metadata. Used by netsim.
+n0-watcher = { workspace = true, optional = true }
+noq-udp = { workspace = true, optional = true }
 ssh-key = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

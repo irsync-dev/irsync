@@ -77,6 +77,9 @@ pub enum NetError {
     BindAddr(#[from] InvalidSocketAddr),
     #[error("binding endpoint: {0}")]
     Bind(#[from] BindError),
+    #[cfg(feature = "netsim")]
+    #[error("{0:#}")]
+    NetSim(anyhow::Error),
 }
 
 /// QUIC transport tuned for bulk transfer: 60 s idle, 5 s keep-alive, large
@@ -215,6 +218,28 @@ pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
     }
     if opts.mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder().advertise(opts.publish));
+    }
+    #[cfg(feature = "netsim")]
+    if let Some(spec) = crate::net::netsim::active().map_err(NetError::NetSim)? {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        crate::net::netsim::log_active(spec);
+        let bind = opts
+            .bind_addrs
+            .iter()
+            .find_map(|a| match a {
+                SocketAddr::V4(a) => Some(*a),
+                SocketAddr::V6(_) => None,
+            })
+            .unwrap_or(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+        // Every packet goes through the fault layer: no IP socket, no relay.
+        builder = builder
+            .clear_ip_transports()
+            .clear_relay_transports()
+            .add_custom_transport(crate::net::netsim::transport(spec, bind));
+        if !opts.portmap {
+            builder = builder.portmapper_config(PortmapperConfig::Disabled);
+        }
+        return Ok(builder.bind().await?);
     }
     if !opts.bind_addrs.is_empty() {
         builder = builder.clear_ip_transports();

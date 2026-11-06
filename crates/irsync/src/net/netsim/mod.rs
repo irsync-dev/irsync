@@ -3,14 +3,16 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, bail, Context};
+use iroh::endpoint::transports::CustomTransport;
 use iroh_base::CustomAddr;
 
 pub mod link;
 pub mod outage;
 pub mod profile;
+pub mod transport;
 
 /// The environment variable that switches the rig on.
 pub const ENV: &str = "IRSYNC_NETSIM";
@@ -114,6 +116,30 @@ pub fn active() -> anyhow::Result<Option<&'static Spec>> {
         Ok(spec) => Ok(spec.as_ref()),
         Err(msg) => Err(anyhow!("bad {ENV}: {msg}")),
     }
+}
+
+/// The fault-injecting transport for `spec`, its socket bound on `bind`.
+pub fn transport(spec: &Spec, bind: SocketAddrV4) -> Arc<dyn CustomTransport> {
+    Arc::new(transport::NetsimTransport {
+        spec: spec.clone(),
+        bind,
+    })
+}
+
+/// Where the transport's socket listens, once one is bound in this process.
+pub fn bound_addr() -> Option<SocketAddrV4> {
+    *transport::BOUND.lock().expect("bound poisoned")
+}
+
+/// Says, at `warn` so any log level shows it, that the rig is on.
+pub fn log_active(spec: &Spec) {
+    tracing::warn!(
+        profile = %spec.profile,
+        side = ?spec.side,
+        seed = spec.seed,
+        stream = spec.stream,
+        "netsim active"
+    );
 }
 
 /// The custom address for an IPv4 socket address: its 4 bytes, then the port's

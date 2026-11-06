@@ -688,6 +688,14 @@ impl BinaryDaemon {
 /// (no relay, no lookup, no port mapper) on a loopback port, and waits for
 /// it to say where it listens.
 pub fn spawn_daemon_binary(server_home: &std::path::Path) -> BinaryDaemon {
+    spawn_daemon_binary_env(server_home, &[])
+}
+
+/// [`spawn_daemon_binary`] with extra environment variables for the daemon.
+pub fn spawn_daemon_binary_env(
+    server_home: &std::path::Path,
+    env: &[(&str, &str)],
+) -> BinaryDaemon {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     let cfg = server_home.join(".config/irsync");
@@ -705,6 +713,7 @@ pub fn spawn_daemon_binary(server_home: &std::path::Path) -> BinaryDaemon {
         .env("XDG_STATE_HOME", server_home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(std::fs::File::create(&log).unwrap())

@@ -478,7 +478,7 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
         &addresses,
     )?;
     let endpoint = build_endpoint(endpoint_opts).await?;
-    let target = EndpointAddr::from_parts(target, resolved.into_iter().map(TransportAddr::Ip));
+    let target = EndpointAddr::from_parts(target, dial_addrs(resolved)?);
     Ok(Connected {
         endpoint,
         target,
@@ -486,6 +486,23 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
         host_entry,
         opts,
     })
+}
+
+/// The transport addresses to dial: the fault layer's custom ones when it is on.
+fn dial_addrs(resolved: Vec<std::net::SocketAddr>) -> anyhow::Result<Vec<TransportAddr>> {
+    #[cfg(feature = "netsim")]
+    if irsync::net::netsim::active()?.is_some() {
+        return resolved
+            .into_iter()
+            .map(|a| match a {
+                std::net::SocketAddr::V4(v4) => {
+                    Ok(TransportAddr::Custom(irsync::net::netsim::custom_addr(v4)))
+                }
+                std::net::SocketAddr::V6(_) => bail!("netsim dials IPv4 addresses only, got {a}"),
+            })
+            .collect();
+    }
+    Ok(resolved.into_iter().map(TransportAddr::Ip).collect())
 }
 
 /// A throwaway state directory a listing swaps in for the configured one.

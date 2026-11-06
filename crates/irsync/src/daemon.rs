@@ -700,7 +700,7 @@ pub async fn run_from_settings(
     // reload): a parent process that reads these lines may dial at once.
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
         println!("endpoint id: {}", ep.id());
-        for addr in ep.bound_sockets() {
+        for addr in listen_addrs(ep) {
             println!("listening on: {addr}");
         }
         if let Some(addr) = debug {
@@ -716,6 +716,15 @@ pub async fn run_from_settings(
     });
     announce(daemon.endpoint());
     daemon.run(shutdown).await
+}
+
+/// The sockets the daemon announces: the fault layer's when it is on.
+fn listen_addrs(ep: &Endpoint) -> Vec<SocketAddr> {
+    #[cfg(feature = "netsim")]
+    if let Some(a) = crate::net::netsim::bound_addr() {
+        return vec![a.into()];
+    }
+    ep.bound_sockets()
 }
 
 /// What a [`gc`] run removed (or, on a dry run, would remove).
