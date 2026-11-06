@@ -383,7 +383,9 @@ pub(super) async fn open_writer(
         // the content is already there.
         if let Some(o) = &old {
             if let Some(file) = unchanged_file(&ctx, &key, o).await {
-                if same.is_some() {
+                // Settled in place, the metadata would reach every other name
+                // of a linked old file: it is rebuilt from itself instead.
+                if same.is_some() && o.entry.nlink <= 1 {
                     return Ok(Opened::Identical { file, digest });
                 }
                 old_file = Some(Arc::new(file));

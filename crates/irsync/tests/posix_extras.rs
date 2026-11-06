@@ -5,7 +5,7 @@ mod common;
 
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
@@ -83,6 +83,111 @@ async fn hard_links_recreated_as_links() {
         assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
         assert_eq!(again.bytes_transferred, 0, "{flow:?}");
         assert_eq!(a, ino(&dst.join("z.bin")));
+    }
+}
+
+#[tokio::test]
+async fn link_broken_at_source_with_equal_content_is_broken_at_destination() {
+    // Found by irsync-stress (hardlink row, seed 109): an empty file renamed over
+    // one member of a link group leaves the source path on its own inode with new
+    // metadata but the same (empty) content. The destination must break the link
+    // too; applying the new metadata in place would change the other member.
+    for flow in [Flow::Push, Flow::Pull] {
+        let opts = opts_with(|p| p.hard_links = true);
+        let (out, h) = within60(sync_trees(
+            |src| {
+                fs::write(src.join("a"), b"").unwrap();
+                fs::hard_link(src.join("a"), src.join("b")).unwrap();
+                set_mtime(&src.join("a"), 1_700_000_000, 0);
+            },
+            |_| {},
+            &opts,
+            flow,
+        ))
+        .await;
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        let dst = h.dst(flow);
+        assert_eq!(ino(&dst.join("a")), ino(&dst.join("b")), "{flow:?}");
+
+        let src = h.src(flow);
+        fs::write(src.join("c"), b"").unwrap();
+        fs::set_permissions(src.join("c"), fs::Permissions::from_mode(0o600)).unwrap();
+        set_mtime(&src.join("c"), 1_800_000_000, 0);
+        fs::rename(src.join("c"), src.join("a")).unwrap();
+
+        let again = within60(h.run(&opts, flow)).await.expect("second run");
+        assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
+        assert_trees_equal(src, dst, &opts.preserve);
+        assert_ne!(
+            ino(&dst.join("a")),
+            ino(&dst.join("b")),
+            "{flow:?}: still linked"
+        );
+    }
+}
+
+/// `content` at `p` with mode `mode` and a fixed mtime.
+fn file_at(p: &Path, content: &[u8], mode: u32) {
+    fs::write(p, content).unwrap();
+    fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    set_mtime(p, 1_700_000_000, 0);
+}
+
+#[tokio::test]
+async fn mode_change_does_not_reach_a_destination_link_outside_the_tree() {
+    // Same size and mtime, only the mode differs: decided without a transfer.
+    // The destination file is also linked from outside the tree (a snapshot
+    // made with `cp -al`), which must keep its mode.
+    for flow in [Flow::Push, Flow::Pull] {
+        let outside = tempfile::tempdir().unwrap();
+        let keep = outside.path().join("keep");
+        let opts = archive_opts();
+        let (out, h) = within60(sync_trees(
+            |src| file_at(&src.join("f"), b"same", 0o600),
+            |dst| {
+                file_at(&keep, b"same", 0o644);
+                fs::hard_link(&keep, dst.join("f")).unwrap();
+            },
+            &opts,
+            flow,
+        ))
+        .await;
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let m = fs::metadata(&keep).unwrap();
+        assert_eq!(m.mode() & 0o7777, 0o644, "{flow:?}: outside link changed");
+    }
+}
+
+#[tokio::test]
+async fn mode_change_on_a_link_group_keeps_it_linked() {
+    // The shared file is re-placed rather than changed in place; the other
+    // members must follow it.
+    for flow in [Flow::Push, Flow::Pull] {
+        let opts = opts_with(|p| p.hard_links = true);
+        let (out, h) = within60(sync_trees(
+            |src| {
+                file_at(&src.join("a"), b"same", 0o644);
+                fs::hard_link(src.join("a"), src.join("b")).unwrap();
+            },
+            |_| {},
+            &opts,
+            flow,
+        ))
+        .await;
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        fs::set_permissions(h.src(flow).join("a"), fs::Permissions::from_mode(0o600)).unwrap();
+
+        let again = within60(h.run(&opts, flow)).await.expect("second run");
+        assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
+        let dst = h.dst(flow);
+        assert_trees_equal(h.src(flow), dst, &opts.preserve);
+        assert_eq!(
+            ino(&dst.join("a")),
+            ino(&dst.join("b")),
+            "{flow:?}: not linked"
+        );
+        assert_eq!(again.bytes_transferred, 0, "{flow:?}");
     }
 }
 

@@ -183,6 +183,12 @@ pub(super) fn parent_of(p: &RelPath) -> RelPath {
     }
 }
 
+/// Whether a destination entry is a regular file with other names, which a
+/// change in place would reach too.
+fn shares_inode(d: &Side) -> bool {
+    d.entry.kind() == Kind::Regular && d.entry.nlink > 1
+}
+
 /// `.irsync.<name>.tmp` next to `full` (shortened to fit `NAME_MAX` when
 /// needed), for atomic replacement of links and specials.
 fn temp_sibling(full: &Path) -> PathBuf {
@@ -449,6 +455,14 @@ impl Planner {
         let mut decision = decide(Some(&src), dst.as_ref(), &self.popts);
         if let Decision::Hardlink { target } = &decision {
             decision = self.link_decision(target, &src, dst.as_ref());
+        }
+        if decision == Decision::MetaOnly
+            && src.entry.kind() == Kind::Regular
+            && dst.as_ref().is_some_and(shares_inode)
+        {
+            // Applied in place, the metadata would reach every other name of
+            // the destination's inode: rebuild it from its own chunks instead.
+            decision = Decision::Delta;
         }
         if let Decision::Hardlink { target } = &decision {
             // Only to a file this session handles as a regular file under a

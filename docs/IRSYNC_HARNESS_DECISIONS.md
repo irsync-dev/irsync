@@ -237,6 +237,55 @@ among them, with single syncs of up to 86 s under the 10 s client timeout.
 Roots kept for inspection: `~/work/irsync-breadth-largefile/push-2` and
 `push-4`, with `run.toml`, both logs and both manifests.
 
+### Hard links: metadata applied through a link the source had broken
+
+Found by the hard-link matrix row of `docs/STRESS_BUG_HUNTING.md` on
+2026-11-06 (`hardlink` 10, `rename` and `rename_over` 8 in every row; seeds
+101 to 120, both directions, binaries of f9621a2). Seeds 109 and 112 failed
+in both directions, from iterations 9 and 13 on; the check reported only
+`CHG ... mtime=` lines, and once (seed 115, push) `mode=` as well.
+
+What filegen did (seed 109): four names shared one empty file. At step 1589
+it was rewritten to size 0; at step 1653 another empty file was truncated
+(its mtime 15:57:12.409023507) and at step 1665 renamed over one of the four
+names, `oma.bin`. On the source `oma.bin` now had its own inode; the other
+names kept theirs. On the destination two of them,
+`kwjt_7mhl.jpg` and `xpyky8qx`, came out with mtime 15:57:12.409023507, the
+renamed file's time to the nanosecond, instead of their own.
+
+Cause, confirmed by the regression tests: when a destination file's content
+already matches, irsync changed its metadata on the existing inode, which
+also changes every other name that inode has. Two places did it: the
+planner's `MetaOnly` (same size and mtime, other attributes differ) and the
+receiver's `Identical` shortcut (a `DELTA` whose old file already hashes to
+the new content). The same reaches a link outside the tree, such as a
+snapshot made with `cp -al`, without `-H`.
+
+**Fixed 2026-11-06.** A destination regular file with more than one link is
+never settled in place: the planner turns `MetaOnly` into `DELTA`, and the
+receiver skips the `Identical` shortcut for it, so the file is rebuilt in a
+`.part` from its own chunks (nothing crosses the wire) and renamed into
+place on a new inode. With `-H`, a link group whose shared file needs new
+metadata is therefore re-placed and its other members re-linked to it, which
+costs one local copy of the file. `--inplace` still writes through the
+inode, as rsync's does. Tests: `tests/posix_extras.rs`
+(`link_broken_at_source_with_equal_content_is_broken_at_destination`, the
+`Identical` path; `mode_change_does_not_reach_a_destination_link_outside_the_tree`,
+the `MetaOnly` path; both fail on the unfixed code, and each fails with its
+half of the fix removed; `mode_change_on_a_link_group_keeps_it_linked`, the
+re-linking). Verified by re-running the row with the same seeds against a
+release build of the fix: 40 of 40 runs passed, seeds 109, 112 and 115 in
+both directions among them, each with a clean `--paranoid` check and no
+`.irsync.*.part` left in either tree.
+
+The other fourteen rows of that day's matrix (504 runs, binaries of
+f9621a2) passed: rename detection on and off, sparse with `-S`, modes,
+timestamps, symlinks, `--delete-before`, 5000-step listings, long names,
+`--parallel 1` and `512`, `-c`, single-step iterations and 8 GB files with
+`-c --timeout 10`. Not run: `--max-delete` (exit 25 is still a harness
+error), xattrs (no `-X`), paths beyond macOS's 1024-byte `PATH_MAX`, and
+the `du` comparison for sparse files, meaningless on the FileVault volume.
+
 ## Acceptance run
 
 Binaries: a release build of the tree at commit 8cb3102 for all four tools.
