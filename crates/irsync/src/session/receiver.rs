@@ -30,7 +30,7 @@ use tracing::Instrument;
 use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
-use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
+use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::limits::LISTING_QUEUE;
 use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly};
@@ -985,6 +985,7 @@ pub(super) async fn run(
     listing_out: ListingOut,
     events_tx: mpsc::UnboundedSender<Ev>,
     mut events: Events,
+    mut peer: PeerEvents,
     peer_listing: mpsc::Receiver<Listed>,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
@@ -1109,19 +1110,22 @@ pub(super) async fn run(
         if r.complete() {
             break Ok(());
         }
-        tokio::select! {
-            ev = events.recv() => match ev {
-                Some(ev) => {
-                    if let Err(e) = r.handle(ev).await { break Err(e) }
-                    r.pump();
-                }
-                None => break Err(anyhow::anyhow!("event channel closed")),
-            },
+        // Own completions before peer events (see `run_role`).
+        let ev = tokio::select! {
+            biased;
             _ = tick.tick() => {
                 r.persist.bytes(bytes.load(Ordering::Relaxed));
                 r.persist.maybe_flush().await;
+                continue;
             }
+            Some(ev) = events.recv() => ev,
+            Some(ev) = peer.recv() => ev,
+            else => break Err(anyhow::anyhow!("event channel closed")),
+        };
+        if let Err(e) = r.handle(ev).await {
+            break Err(e);
         }
+        r.pump();
     };
     r.transfer.end();
     if let Err(e) = res {
@@ -1132,6 +1136,9 @@ pub(super) async fn run(
         if let Some(l) = r.listing.take() {
             l.abort();
         }
+        // Nothing the peer sends matters now: a reader waiting on a full
+        // queue reads on (and drops) instead of stalling its stream.
+        drop(peer);
         r.shut_down(&mut events).await;
         r.persist.bytes(bytes.load(Ordering::Relaxed));
         r.persist.flush().await;
@@ -1184,7 +1191,7 @@ pub(super) async fn run(
     out.finish();
     // Let the sender read SessionDone and close its side.
     let _ = tokio::time::timeout(CLOSE_TIMEOUT, async {
-        while let Some(ev) = events.recv().await {
+        while let Some(ev) = peer.recv().await {
             if matches!(ev, Ev::PeerEof | Ev::PeerFailed(_)) {
                 break;
             }

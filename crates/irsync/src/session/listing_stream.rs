@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use super::control::{msg_name, side_of, Ev, Listed, DRAIN_TIMEOUT};
+use super::control::{msg_name, side_of, Ev, Listed, PeerTx, DRAIN_TIMEOUT};
 use super::limits::LISTING_QUEUE;
 use super::{SideHooks, StreamKind};
 use crate::fs::ids::IdMap;
@@ -171,13 +171,14 @@ impl PeerScan {
 }
 
 /// Spawns the listing reader: entries and gaps go to `sink`; the first frame
-/// posts `Ev::PeerListing`, the `ListingEnd` `Ev::Ctrl`. A listing that ends
-/// any other way keeps `sink` open until the task is aborted.
+/// posts `Ev::PeerListing`, the `ListingEnd` `Ev::Ctrl` (a full queue of
+/// either kind stops the reading). A listing that ends any other way keeps
+/// `sink` open until the task is aborted.
 pub(super) fn spawn_listing_reader(
     recv: RecvStream,
     sink: ListingSink,
     ids: Option<IdMap>,
-    events: mpsc::UnboundedSender<Ev>,
+    events: PeerTx,
     hooks: &SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
@@ -194,7 +195,7 @@ async fn read_listing(
     mut recv: RecvStream,
     sink: ListingSink,
     mut ids: Option<IdMap>,
-    events: mpsc::UnboundedSender<Ev>,
+    events: PeerTx,
     hooks: SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
@@ -239,7 +240,7 @@ async fn read_listing(
         }
         if !started {
             started = true;
-            let _ = events.send(Ev::PeerListing);
+            events.send(Ev::PeerListing).await;
         }
         match msg {
             Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
@@ -286,7 +287,7 @@ async fn read_listing(
                 planner = None;
                 ended = true;
                 scan.ended.store(true, Ordering::Relaxed);
-                let _ = events.send(Ev::Ctrl(m));
+                events.send(Ev::Ctrl(m)).await;
             }
             m => {
                 break Some(Ev::ProtocolError(format!(
@@ -297,7 +298,7 @@ async fn read_listing(
         }
     };
     if let Some(ev) = failure {
-        let _ = events.send(ev);
+        events.send(ev).await;
         // Keep the stream (and the planner) until the session ends and
         // aborts this task: dropping it would stop the peer's writer, and
         // that transport error could reach the peer before our `Error`.

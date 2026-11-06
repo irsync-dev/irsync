@@ -19,7 +19,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use super::engine::Ctx;
+use super::engine::{Ctx, PeerEvents};
+use super::limits::PEER_EVENTS;
 use super::listing_stream::{ListingOut, PeerScan};
 use super::{IndexScope, SessionRecord, StreamKind, Tamper};
 use crate::filter::FilterSet;
@@ -55,6 +56,42 @@ pub(super) enum Ev {
     /// Role-specific task completion.
     Recv(super::receiver::Done),
     Send(super::sender_role::Done),
+}
+
+/// Handle the stream readers post peer events with: a frame waits while the
+/// main loop has [`PEER_EVENTS`] queued, and so does the reader's stream.
+#[derive(Clone)]
+pub(super) struct PeerTx {
+    tx: mpsc::Sender<Ev>,
+    #[cfg(feature = "test-hooks")]
+    peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+impl PeerTx {
+    /// A queue of peer events and its handle (see [`PEER_EVENTS`]).
+    #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+    pub fn channel(hooks: &super::SideHooks) -> (PeerTx, PeerEvents) {
+        let (tx, rx) = mpsc::channel(PEER_EVENTS);
+        let tx = PeerTx {
+            tx,
+            #[cfg(feature = "test-hooks")]
+            peak: hooks.peer_events_peak.clone(),
+        };
+        (tx, rx)
+    }
+
+    /// Queues `ev`, waiting while the queue is full. Once the main loop is
+    /// gone the event is dropped, so a reader reads on until it is aborted.
+    pub async fn send(&self, ev: Ev) {
+        let _ = self.tx.send(ev).await;
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.peak {
+            p.fetch_max(
+                self.tx.max_capacity() - self.tx.capacity(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+    }
 }
 
 /// Handle for queueing control frames to the writer task.
@@ -132,11 +169,12 @@ pub(super) enum Listed {
     Gap(RelPath),
 }
 
-/// Spawns the reader: every control frame goes to `events`. The peer's
-/// listing has a stream of its own; `scan` is what its reader has seen.
+/// Spawns the reader: every control frame but heartbeats goes to `events`,
+/// and a full queue stops the reading. The peer's listing has a stream of
+/// its own; `scan` is what its reader has seen.
 pub(super) fn spawn_reader(
     recv: RecvStream,
-    events: mpsc::UnboundedSender<Ev>,
+    events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
     scan: Arc<PeerScan>,
@@ -149,7 +187,7 @@ pub(super) fn spawn_reader(
 /// The reader's loop; see [`spawn_reader`].
 async fn read_control(
     mut recv: RecvStream,
-    events: mpsc::UnboundedSender<Ev>,
+    events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
     scan: Arc<PeerScan>,
@@ -163,9 +201,11 @@ async fn read_control(
                     // Read on: dropping the stream would stop the peer's
                     // writer, and that transport error could reach the peer
                     // before our `Error` saying why.
-                    let _ = events.send(Ev::ProtocolError(
-                        "listing frame on the control stream".into(),
-                    ));
+                    events
+                        .send(Ev::ProtocolError(
+                            "listing frame on the control stream".into(),
+                        ))
+                        .await;
                 }
                 // Counted as activity above; it also carries the peer's
                 // progress this side cannot otherwise see.
@@ -197,18 +237,20 @@ async fn read_control(
                     }
                 }
                 m => {
-                    let _ = events.send(Ev::Ctrl(m));
+                    events.send(Ev::Ctrl(m)).await;
                 }
             },
             Ok(Some(Control { msg: None })) => {
                 tracing::warn!("empty control frame; ignored");
             }
             Ok(None) => {
-                let _ = events.send(Ev::PeerEof);
+                events.send(Ev::PeerEof).await;
                 return;
             }
             Err(e) => {
-                let _ = events.send(Ev::PeerFailed(format!("control stream: {e}")));
+                events
+                    .send(Ev::PeerFailed(format!("control stream: {e}")))
+                    .await;
                 return;
             }
         }

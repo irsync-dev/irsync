@@ -28,7 +28,7 @@ use super::control::msg_name;
 use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
-use super::engine::{blocking, Ctx, Events, PeerError, TransferPhase, TransportError};
+use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::listing_stream::ListingOut;
 use super::parts::{split, PART_RECORDS};
 use super::Outcome;
@@ -770,6 +770,7 @@ pub(super) async fn run(
     listing_out: ListingOut,
     events_tx: mpsc::UnboundedSender<Ev>,
     mut events: Events,
+    mut peer: PeerEvents,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
     let root = ctx.root.clone();
@@ -850,16 +851,17 @@ pub(super) async fn run(
     }
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let res: anyhow::Result<()> = loop {
+        // Own completions before peer events (see `run_role`).
         let ev = tokio::select! {
-            ev = events.recv() => ev,
+            biased;
             _ = tick.tick() => {
                 s.persist.bytes(s.bytes);
                 s.persist.maybe_flush().await;
                 continue;
             }
-        };
-        let Some(ev) = ev else {
-            break Err(anyhow::anyhow!("event channel closed"));
+            Some(ev) = events.recv() => ev,
+            Some(ev) = peer.recv() => ev,
+            else => break Err(anyhow::anyhow!("event channel closed")),
         };
         if let Listing::Undecided(_) = s.listing {
             match &ev {

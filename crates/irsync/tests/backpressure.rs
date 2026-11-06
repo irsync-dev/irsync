@@ -294,3 +294,33 @@ async fn delete_before_with_a_listing_larger_than_the_queues_completes() {
     })
     .await;
 }
+
+/// The queue between the stream readers and a role's main loop (`PEER_EVENTS`).
+const PEER_EVENTS: usize = 1024;
+
+/// A peer repeating every heartbeat 2000 times neither fails the session
+/// nor grows the queue of peer events past its bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_flooding_heartbeats_is_throttled_not_fatal() {
+    within120(async {
+        let h = Harness::new().await;
+        many_files(h.local.path(), 200);
+        let peak = Arc::new(AtomicUsize::new(0));
+        h.daemon.hooks.lock().unwrap().peer_events_peak = Some(peak.clone());
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|_, msg| match msg {
+            m @ Msg::Heartbeat(_) => vec![m; 2000],
+            m => vec![m],
+        }));
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, Flow::Push, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.local.path(), h.export.path(), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(peak <= PEER_EVENTS, "peer events peaked at {peak}");
+    })
+    .await;
+}

@@ -442,6 +442,7 @@ pub struct DaemonHooks {
     pub max_inflight: Option<usize>,
     pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -622,6 +623,10 @@ pub struct SideHooks {
     /// had a frame to queue (the walk waited for the link or the peer).
     #[cfg(feature = "test-hooks")]
     pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Both roles: the most peer events (control frames, listing signals)
+    /// the stream readers have had queued for the main loop at once.
+    #[cfg(feature = "test-hooks")]
+    pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Receiver: the most files it has had in flight at once.
     #[cfg(feature = "test-hooks")]
     pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,

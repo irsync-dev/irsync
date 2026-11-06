@@ -1139,6 +1139,7 @@ async fn serve_daemon_inner(
                 h.max_inflight = p.max_inflight;
                 h.listing_peak = p.listing_peak;
                 h.listing_waits = p.listing_waits;
+                h.peer_events_peak = p.peer_events_peak;
             }
             h
         },
@@ -1186,8 +1187,18 @@ async fn run_role(
     // in-flight slots and the `--delete-before` reply, which the main loop
     // releases from control-stream frames; the sender drains the
     // receiver's listing in full, so the receiver's walk never waits on the
-    // sender's main loop.
+    // sender's main loop beyond the two signals its listing reader posts.
+    // Both readers post peer events into a queue (bounded, fed from the
+    // control and listing streams) that only the main loop drains, and the
+    // main loop never awaits anything that needs a reader to move: a full
+    // queue stalls only the readers' streams. Completions of this side's own
+    // tasks stay unbounded, and the main loop takes them first, so a
+    // completion posted before the peer could answer is always seen before
+    // the answer. Once the role has ended the queue is gone, and a reader
+    // still holding its stream (see the failure path below) drops what it
+    // reads instead of waiting.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
+    let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
     let (out, writer) = control::spawn_writer(send, ev_tx.clone(), ctx.hooks.tamper());
     let (listing_send, listing_recv) = listing;
     let (listing_out, listing_writer) =
@@ -1202,14 +1213,14 @@ async fn run_role(
             ListingSink::Planner(peer_tx)
         },
         (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
-        ev_tx.clone(),
+        peer_ev_tx.clone(),
         &ctx.hooks,
         ctx.activity.clone(),
         scan.clone(),
     );
     let reader = control::spawn_reader(
         recv,
-        ev_tx.clone(),
+        peer_ev_tx,
         ctx.hooks.bus.clone(),
         ctx.activity.clone(),
         scan,
@@ -1226,9 +1237,26 @@ async fn run_role(
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
     let res = if sends {
-        sender_role::run(ctx.clone(), out.clone(), listing_out, ev_tx, ev_rx).await
+        sender_role::run(
+            ctx.clone(),
+            out.clone(),
+            listing_out,
+            ev_tx,
+            ev_rx,
+            peer_ev_rx,
+        )
+        .await
     } else {
-        receiver::run(ctx.clone(), out.clone(), listing_out, ev_tx, ev_rx, peer_rx).await
+        receiver::run(
+            ctx.clone(),
+            out.clone(),
+            listing_out,
+            ev_tx,
+            ev_rx,
+            peer_ev_rx,
+            peer_rx,
+        )
+        .await
     };
     heartbeat.abort();
     if let Some(w) = watchdog {
@@ -1425,8 +1453,14 @@ pub(super) async fn blocking<T: Send + 'static>(
         .map_err(io::Error::other)?
 }
 
-/// The `Ev` channel type both roles receive on.
+/// The channel both roles receive their own tasks' completions on
+/// (`Ev::Recv`, `Ev::Send`, `Ev::WriterFailed`). Unbounded: each is bounded
+/// by the work in flight, and some are sent from contexts that must not wait.
 pub(super) type Events = mpsc::UnboundedReceiver<Ev>;
+
+/// The channel both roles receive peer events on, fed only by the control
+/// and listing readers (see [`super::limits::PEER_EVENTS`]).
+pub(super) type PeerEvents = mpsc::Receiver<Ev>;
 
 #[cfg(test)]
 mod tests {
