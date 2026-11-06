@@ -107,12 +107,10 @@ pub fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("bad debug address {s:?}: expected PORT or IP:PORT"))
 }
 
-fn de_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    let s = Option::<String>::deserialize(d)?;
-    if let Some(s) = &s {
-        parse_debug_addr(s).map_err(serde::de::Error::custom)?;
-    }
-    Ok(s)
+fn de_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SocketAddr>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|s| parse_debug_addr(&s).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 pub(super) fn de_opt_duration<'de, D: Deserializer<'de>>(
@@ -163,16 +161,7 @@ pub struct DaemonSettings {
     pub discovery: Discovery,
     /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
     #[serde(deserialize_with = "de_debug_addr")]
-    pub debug_addr: Option<String>,
-}
-
-impl DaemonSettings {
-    /// `debug_addr` as a socket address.
-    pub fn debug_socket(&self) -> Option<SocketAddr> {
-        self.debug_addr
-            .as_deref()
-            .and_then(|s| parse_debug_addr(s).ok())
-    }
+    pub debug_addr: Option<SocketAddr>,
 }
 
 /// How OTLP export talks to the collector.

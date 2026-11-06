@@ -122,119 +122,129 @@ pub(super) enum Listed {
 /// Spawns the reader: listing entries and gaps go to `listing` (dropped when
 /// `None`), which is closed at `ListingEnd`; every other frame goes to `events`.
 pub(super) fn spawn_reader(
+    recv: RecvStream,
+    listing: Option<mpsc::UnboundedSender<Listed>>,
+    ids: Option<crate::fs::ids::IdMap>,
+    events: mpsc::UnboundedSender<Ev>,
+    bus: super::EventBus,
+    activity: Arc<std::sync::atomic::AtomicU64>,
+) -> JoinHandle<()> {
+    tokio::spawn(
+        read_control(recv, listing, ids, events, bus, activity)
+            .instrument(tracing::Span::current()),
+    )
+}
+
+/// The reader's loop; see [`spawn_reader`].
+async fn read_control(
     mut recv: RecvStream,
     mut listing: Option<mpsc::UnboundedSender<Listed>>,
     mut ids: Option<crate::fs::ids::IdMap>,
     events: mpsc::UnboundedSender<Ev>,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
-) -> JoinHandle<()> {
-    tokio::spawn(
-        async move {
-        let mut announced = false;
-        // Receiver role: what the peer lists, reported at its `ListingEnd`.
-        let mut seen = crate::scan::ListStats::default();
-        // Set at the peer's `ListingEnd`: a later heartbeat's walk position is stale.
-        let mut listing_ended = false;
-        loop {
-            let frame = read_msg::<Control, _>(&mut recv).await;
-            activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            match frame {
-                Ok(Some(Control { msg: Some(msg) })) => match msg {
-                    Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
-                        // The peer's owner and group names become this side's ids.
-                        if let Some(map) = ids.as_mut() {
-                            map.localize(&mut e);
+) {
+    let mut announced = false;
+    // Receiver role: what the peer lists, reported at its `ListingEnd`.
+    let mut seen = crate::scan::ListStats::default();
+    // Set at the peer's `ListingEnd`: a later heartbeat's walk position is stale.
+    let mut listing_ended = false;
+    loop {
+        let frame = read_msg::<Control, _>(&mut recv).await;
+        activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match frame {
+            Ok(Some(Control { msg: Some(msg) })) => match msg {
+                Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
+                    // The peer's owner and group names become this side's ids.
+                    if let Some(map) = ids.as_mut() {
+                        map.localize(&mut e);
+                    }
+                    seen.count(&e);
+                    if seen.files().is_multiple_of(1000) {
+                        bus.emit(crate::session::Event::Scanned {
+                            party: crate::session::Party::Peer,
+                            entries: seen.files(),
+                            bytes: seen.total_size,
+                            at: None,
+                        });
+                    }
+                    match &listing {
+                        Some(tx) => {
+                            let _ = tx.send(Listed::Side(side_of(e)));
                         }
-                        seen.count(&e);
-                        if seen.files().is_multiple_of(1000) {
-                            bus.emit(crate::session::Event::Scanned {
-                                party: crate::session::Party::Peer,
+                        None if !announced => {
+                            announced = true;
+                            let _ = events.send(Ev::PeerListing);
+                        }
+                        None => {}
+                    }
+                }
+                Msg::Listing(ListingEntry { entry: None }) => {
+                    tracing::warn!("listing frame without entry; ignored");
+                }
+                // The sender needs only the peer's `ListingEnd`; the
+                // receiver's planner wants the gap in order with the entries.
+                Msg::ListingError(e) => {
+                    tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
+                    if let Some(tx) = &listing {
+                        let path = RelPath::new(&e.path).unwrap_or_default();
+                        let _ = tx.send(Listed::Gap(path));
+                    }
+                }
+                // Counted as activity above; it also carries the peer's
+                // progress this side cannot otherwise see.
+                Msg::Heartbeat(h) => {
+                    use crate::session::{Event, Party};
+                    let walking = h.walking.filter(|_| !listing_ended);
+                    if let Some(walking) = walking {
+                        // Empty bytes are the root.
+                        if let Ok(at) = RelPath::new(&walking) {
+                            bus.emit(Event::Scanned {
+                                party: Party::Peer,
                                 entries: seen.files(),
                                 bytes: seen.total_size,
-                                at: None,
-                            });
-                        }
-                        match &listing {
-                            Some(tx) => {
-                                let _ = tx.send(Listed::Side(side_of(e)));
-                            }
-                            None if !announced => {
-                                announced = true;
-                                let _ = events.send(Ev::PeerListing);
-                            }
-                            None => {}
-                        }
-                    }
-                    Msg::Listing(ListingEntry { entry: None }) => {
-                        tracing::warn!("listing frame without entry; ignored");
-                    }
-                    // The sender needs only the peer's `ListingEnd`; the
-                    // receiver's planner wants the gap in order with the entries.
-                    Msg::ListingError(e) => {
-                        tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
-                        if let Some(tx) = &listing {
-                            let path = RelPath::new(&e.path).unwrap_or_default();
-                            let _ = tx.send(Listed::Gap(path));
-                        }
-                    }
-                    // Counted as activity above; it also carries the peer's
-                    // progress this side cannot otherwise see.
-                    Msg::Heartbeat(h) => {
-                        use crate::session::{Event, Party};
-                        let walking = h.walking.filter(|_| !listing_ended);
-                        if let Some(walking) = walking {
-                            // Empty bytes are the root.
-                            if let Ok(at) = RelPath::new(&walking) {
-                                bus.emit(Event::Scanned {
-                                    party: Party::Peer,
-                                    entries: seen.files(),
-                                    bytes: seen.total_size,
-                                    at: Some(at),
-                                });
-                            }
-                        }
-                        if h.skipped_bytes > 0 {
-                            bus.emit(Event::PeerSkipped(h.skipped_bytes));
-                        }
-                        if h.deleted > 0 || h.delete_total > 0 {
-                            bus.emit(Event::Delete {
-                                party: Party::Peer,
-                                done: h.deleted,
-                                total: (h.delete_total > 0).then_some(h.delete_total),
+                                at: Some(at),
                             });
                         }
                     }
-                    m @ Msg::ListingEnd(_) => {
-                        bus.emit(crate::session::Event::Total {
-                            party: crate::session::Party::Peer,
-                            files: seen.reg,
-                            bytes: seen.total_size,
+                    if h.skipped_bytes > 0 {
+                        bus.emit(Event::PeerSkipped(h.skipped_bytes));
+                    }
+                    if h.deleted > 0 || h.delete_total > 0 {
+                        bus.emit(Event::Delete {
+                            party: Party::Peer,
+                            done: h.deleted,
+                            total: (h.delete_total > 0).then_some(h.delete_total),
                         });
-                        listing = None;
-                        listing_ended = true;
-                        let _ = events.send(Ev::Ctrl(m));
                     }
-                    m => {
-                        let _ = events.send(Ev::Ctrl(m));
-                    }
-                },
-                Ok(Some(Control { msg: None })) => {
-                    tracing::warn!("empty control frame; ignored");
                 }
-                Ok(None) => {
-                    let _ = events.send(Ev::PeerEof);
-                    return;
+                m @ Msg::ListingEnd(_) => {
+                    bus.emit(crate::session::Event::Total {
+                        party: crate::session::Party::Peer,
+                        files: seen.reg,
+                        bytes: seen.total_size,
+                    });
+                    listing = None;
+                    listing_ended = true;
+                    let _ = events.send(Ev::Ctrl(m));
                 }
-                Err(e) => {
-                    let _ = events.send(Ev::PeerFailed(e.to_string()));
-                    return;
+                m => {
+                    let _ = events.send(Ev::Ctrl(m));
                 }
+            },
+            Ok(Some(Control { msg: None })) => {
+                tracing::warn!("empty control frame; ignored");
+            }
+            Ok(None) => {
+                let _ = events.send(Ev::PeerEof);
+                return;
+            }
+            Err(e) => {
+                let _ = events.send(Ev::PeerFailed(e.to_string()));
+                return;
             }
         }
     }
-        .instrument(tracing::Span::current()),
-    )
 }
 
 /// irsync's own temporary files (`.irsync.<name>.part` / `.tmp`) never appear

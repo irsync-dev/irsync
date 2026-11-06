@@ -316,7 +316,7 @@ pub async fn run_with_reconnect(
         &endpoint.id().to_string(),
     );
     let res = attempts(
-        endpoint, target, remote, hello_for, local, sync_opts, opts, on_state,
+        endpoint, target, remote, hello_for, local, sync_opts, opts, &span, on_state,
     )
     .instrument(span.clone())
     .await;
@@ -335,6 +335,7 @@ async fn attempts(
     local: LocalSide,
     sync_opts: &SyncOptions,
     opts: ReconnectOpts,
+    span: &tracing::Span,
     mut on_state: impl FnMut(ConnState),
 ) -> anyhow::Result<Outcome> {
     let bus = local.hooks.bus.clone();
@@ -404,6 +405,7 @@ async fn attempts(
                     hello_for(session),
                     local.clone(),
                     sync_opts,
+                    span,
                     &mut tried,
                 );
                 let res = watch_paths(&conn, run, &mut on_state).await;
@@ -471,7 +473,7 @@ async fn attempts(
         attempt += 1;
         // Kept current on the `session` span, so a session that fails in the
         // end still says how often it reconnected.
-        tracing::Span::current().record("reconnects", u64::from(attempt));
+        span.record("reconnects", u64::from(attempt));
         // Never sleep past the end of the outage budget: one last try then.
         let wait = opts
             .delay(outage.failures)

@@ -264,6 +264,8 @@ impl Daemon {
             start_tasks(&self.shared, name, export, index.clone());
         }
         let mut live = Arc::new(AtomicUsize::new(0));
+        // Each session's span carries it; a reload may change it.
+        let mut local_id: Arc<str> = self.endpoint.id().to_string().into();
         loop {
             let reload = async {
                 match &self.reload {
@@ -276,7 +278,7 @@ impl Daemon {
                 inc = self.endpoint.accept() => {
                     let Some(inc) = inc else { break };
                     let shared = self.shared.clone();
-                    let local_id = self.endpoint.id().to_string();
+                    let local_id = local_id.clone();
                     let live = Live::enter(&live);
                     tokio::spawn(async move {
                         let _live = live;
@@ -288,6 +290,7 @@ impl Daemon {
                 _ = reload => match self.rebind().await {
                     Ok(endpoint) => {
                         let old = std::mem::replace(&mut self.endpoint, endpoint);
+                        local_id = self.endpoint.id().to_string().into();
                         let old_live = std::mem::replace(&mut live, Arc::new(AtomicUsize::new(0)));
                         tokio::spawn(retire(old, old_live, self.shared.tasks.clone()));
                     }
@@ -437,7 +440,7 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
     });
 }
 
-async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: String) -> Result<()> {
+async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
     // Authorise on the verified key, against a fresh read of the grants,
     // before touching any stream. An unreadable config fails closed.
@@ -511,7 +514,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: String) -> Re
                 export: name,
                 rel,
             };
-            let res = serve_daemon(conn, send, recv, place, hello, index, hosting, local_id).await;
+            let res = serve_daemon(conn, send, recv, place, hello, index, hosting, &local_id).await;
             #[cfg(feature = "test-hooks")]
             {
                 use std::sync::atomic::Ordering::SeqCst;

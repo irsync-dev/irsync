@@ -911,7 +911,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         }
     };
     let settings = early_settings(d.config.as_deref());
-    let debug_addr = settings.daemon.debug_socket();
+    let debug_addr = settings.daemon.debug_addr;
     let mut telemetry = {
         let _rt = rt.enter();
         init_telemetry(

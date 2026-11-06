@@ -25,6 +25,24 @@ pub enum Activity {
 /// The number of activities.
 pub const ACTIVITIES: usize = Activity::ALL.len();
 
+/// The number of counters.
+pub const COUNTERS: usize = Counter::ALL.len();
+
+// The meters index their arrays by discriminant and iterate `ALL`: each
+// `ALL` must list every variant at its own discriminant.
+const _: () = {
+    let mut i = 0;
+    while i < ACTIVITIES {
+        assert!(Activity::ALL[i] as usize == i);
+        i += 1;
+    }
+    let mut i = 0;
+    while i < COUNTERS {
+        assert!(Counter::ALL[i] as usize == i);
+        i += 1;
+    }
+};
+
 impl Activity {
     pub const ALL: [Activity; 10] = [
         Activity::Walk,
@@ -122,7 +140,7 @@ pub struct Usage {
     /// Wall time with no activity in progress.
     pub peer_wait: Duration,
     /// Counter values, indexed by `Counter as usize`.
-    pub counters: [u64; 7],
+    pub counters: [u64; COUNTERS],
     pub process: ProcessUsage,
     pub net: NetUsage,
 }
@@ -226,7 +244,7 @@ pub struct Meter {
     enabled: bool,
     started: Instant,
     busy: [AtomicU64; ACTIVITIES],
-    counters: [AtomicU64; 7],
+    counters: [AtomicU64; COUNTERS],
     /// Guards in progress, in all and per activity.
     guards: AtomicUsize,
     per_activity: [AtomicUsize; ACTIVITIES],
@@ -443,23 +461,16 @@ impl Drop for Timed<'_> {
 
 /// The process-wide meter for one side and role; never finished.
 pub fn global(side: Side, role: Role) -> &'static Meter {
+    const SLOTS: [(Side, Role); 4] = [
+        (Side::Client, Role::Sender),
+        (Side::Client, Role::Receiver),
+        (Side::Daemon, Role::Sender),
+        (Side::Daemon, Role::Receiver),
+    ];
     static METERS: OnceLock<[Meter; 4]> = OnceLock::new();
-    let all = METERS.get_or_init(|| {
-        std::array::from_fn(|i| {
-            let side = if i / 2 == Side::Client as usize {
-                Side::Client
-            } else {
-                Side::Daemon
-            };
-            let role = if i % 2 == Role::Sender as usize {
-                Role::Sender
-            } else {
-                Role::Receiver
-            };
-            Meter::build(side, role, None, true, None)
-        })
-    });
-    &all[(side as usize) * 2 + role as usize]
+    let all = METERS.get_or_init(|| SLOTS.map(|(s, r)| Meter::build(s, r, None, true, None)));
+    let slot = SLOTS.iter().position(|&k| k == (side, role));
+    &all[slot.expect("every side and role has a slot")]
 }
 
 #[cfg(test)]

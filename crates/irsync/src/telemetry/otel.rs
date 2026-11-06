@@ -43,7 +43,9 @@ pub fn providers(
     endpoint_id: Option<String>,
 ) -> anyhow::Result<OtelProviders> {
     // The OTLP HTTP client's reqwest is built without a crypto provider
-    // (iroh's choice); install one unless something else has.
+    // (iroh's choice); install one unless something else has. The default
+    // provider is process-wide, so with export on, ring also serves any
+    // other rustls user here that relies on the default.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let resource = resource(side, endpoint_id);
     let (spans, metrics) = exporters(cfg)?;
@@ -244,7 +246,7 @@ pub fn inject(span: &tracing::Span) -> (String, String) {
 
 /// The remote parent context in `traceparent` and `tracestate`; an empty
 /// context when they hold none, or `traceparent` is not well formed.
-pub fn extract(traceparent: &str, tracestate: &str) -> opentelemetry::Context {
+fn extract(traceparent: &str, tracestate: &str) -> opentelemetry::Context {
     if !well_formed(traceparent) {
         return opentelemetry::Context::new();
     }

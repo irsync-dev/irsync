@@ -158,16 +158,18 @@ Test gaps, closed the same day (all but one):
 - Left: process.rs sample_sees_cpu_and_fds retries, as other tests in the binary open and close descriptors (inherent to a process-wide count).
 - Found meanwhile, fixed the same day: `config set` refusing a file that would not load named the file and the reason twice (ManageError::Invalid's reason is no longer an error source).
 
+Code quality, fixed 2026-11-06:
+- A failed subscriber install now warns on stderr ("logging and tracing off") instead of passing silently.
+- run_client_inner, the reconnect loop and serve_daemon_inner take the `session` span and record on it, not on Span::current(); only the public run_client still takes the current span, as documented.
+- debug_addr deserializes straight into a SocketAddr; debug_socket() is gone.
+- control.rs: the reader's loop is an async fn (read_control), at normal indentation.
+- The no-otel `extract` stub is gone, and otel::extract is private (only set_parent uses it).
+- otel.rs notes that the rustls default-provider install is process-wide.
+- The daemon builds the endpoint id string once, and again after a reload, not per accepted connection.
+- Meter arrays: a const assertion pins Activity::ALL and Counter::ALL to their discriminants; counters are sized by COUNTERS; global() uses an explicit (side, role) table.
+- summary rows() counts the separator in chars like the items.
+
 Still open, code quality:
-- serve_daemon: 8 args behind allow(too_many_arguments) (one of eight such functions).
-- control.rs spawn_reader body not re-indented / not an async fn.
-- session_id recorded via Span::current() in run_client_inner and the daemon; pass the span.
-- Telemetry init ignores a failed subscriber install (try_init).
-- debug_addr validated and then parsed again (settings.rs debug_socket).
-- No-otel `extract` stub is pub.
-- No comment that the rustls provider install (OTLP only) is process-wide.
-- Endpoint id string allocated per accepted connection (daemon.rs accept loop).
-- Meter arrays indexed by enum discriminant rather than an explicit table.
-- summary rows() mixes sep.len() bytes with char widths (correct while separators are ASCII).
+- serve_daemon: 8 args behind allow(too_many_arguments) (one of eight such functions; serve_daemon_inner joined them when it took the span).
 
 Open by design: the connect span includes the handshake; well_formed() accepts only version-00 traceparents.

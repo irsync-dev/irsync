@@ -109,14 +109,15 @@ fn rows(label: &str, items: &[String], width: usize, out: &mut Vec<String>) {
         let n = item.chars().count();
         // `-> to` sits one space after its `from`.
         let sep = if item.starts_with("-> ") { " " } else { "  " };
-        if used > 0 && base + used + sep.len() + n > width {
+        let gap = sep.chars().count();
+        if used > 0 && base + used + gap + n > width {
             out.push(std::mem::replace(&mut line, " ".repeat(indent)));
             base = indent;
             used = 0;
         }
         if used > 0 {
             line.push_str(sep);
-            used += sep.len();
+            used += gap;
         }
         line.push_str(&item);
         used += n;

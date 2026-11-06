@@ -187,10 +187,15 @@ where
         .collect();
     // `None`, not an empty list, so the fmt filter alone decides interest.
     let sinks = (!sinks.is_empty()).then_some(sinks);
-    let _ = tracing_subscriber::registry()
+    // Fails only when something installed a subscriber first; irsync's log
+    // lines and span sinks would then go nowhere, so say so.
+    if let Err(e) = tracing_subscriber::registry()
         .with(sinks)
         .with(fmt)
-        .try_init();
+        .try_init()
+    {
+        eprintln!("irsync: logging and tracing off: {e}");
+    }
 
     let kind = recorder_kind(&cfg);
     let prometheus = matches!(kind, Some(RecorderKind::Prometheus | RecorderKind::Fanout))

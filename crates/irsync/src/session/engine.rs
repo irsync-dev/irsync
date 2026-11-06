@@ -579,14 +579,16 @@ async fn load_record(index: &IndexHandle, id: [u8; 16], key: &[u8]) -> Option<Se
 /// the sender role (`CLIENT_SENDS`) or the receiver role (`DAEMON_SENDS`) on
 /// `local`. The root and remote path must already follow rsync's
 /// trailing-slash rule (see [`super::resolve_roots`]). A non-empty
-/// `hello.session_id` asks the daemon to resume that session.
+/// `hello.session_id` asks the daemon to resume that session. The current
+/// span stands for the session: it gets `session_id` and `resumed`.
 pub async fn run_client(
     conn: Connection,
     hello: Hello,
     local: LocalSide,
     opts: &SyncOptions,
 ) -> anyhow::Result<Outcome> {
-    run_client_inner(conn, hello, local, opts, &mut Attempt::default()).await
+    let session = tracing::Span::current();
+    run_client_inner(conn, hello, local, opts, &session, &mut Attempt::default()).await
 }
 
 /// What one connection of a client session achieved, known even when it failed.
@@ -598,20 +600,22 @@ pub(super) struct Attempt {
     pub progress: Arc<AtomicBool>,
 }
 
-/// [`run_client`], also reporting what the connection achieved in `attempt`.
+/// [`run_client`] in `session`, also reporting what the connection achieved
+/// in `attempt`.
 pub(super) async fn run_client_inner(
     conn: Connection,
     hello: Hello,
     local: LocalSide,
     opts: &SyncOptions,
+    session: &tracing::Span,
     attempt: &mut Attempt,
 ) -> anyhow::Result<Outcome> {
     let mut hello = hello;
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     check_options(direction, opts)?;
     set_hello_options(&mut hello, opts, &local.filters);
-    // The client `session` span is current: the daemon's joins its trace.
-    (hello.traceparent, hello.tracestate) = telemetry::inject(&tracing::Span::current());
+    // The daemon's `session` span joins this one's trace.
+    (hello.traceparent, hello.tracestate) = telemetry::inject(session);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
 
     let sends = direction == Direction::ClientSends;
@@ -637,9 +641,8 @@ pub(super) async fn run_client_inner(
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
     drop(handshake);
-    let span = tracing::Span::current();
-    span.record("session_id", control::hex(&session_id));
-    span.record("resumed", ack.resumed);
+    session.record("session_id", control::hex(&session_id));
+    session.record("resumed", ack.resumed);
     let peer_build = BuildInfo::from_wire(ack.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
@@ -811,7 +814,7 @@ pub async fn serve_daemon(
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
-    local_id: String,
+    local_id: &str,
 ) -> anyhow::Result<Outcome> {
     // A root span: the daemon's session never inherits an in-process parent
     // (in tests the client runs in the same process); it joins the client's
@@ -821,7 +824,7 @@ pub async fn serve_daemon(
         &hello,
         conn.remote_id().fmt_short().to_string(),
         None,
-        &local_id,
+        local_id,
     );
     if telemetry::exporting() {
         telemetry::set_parent(&span, &hello.traceparent, &hello.tracestate);
@@ -833,7 +836,7 @@ pub async fn serve_daemon(
             Some(&place.export),
         )
     });
-    let res = serve_daemon_inner(conn, send, recv, place, hello, index, shared)
+    let res = serve_daemon_inner(conn, send, recv, place, hello, index, shared, &span)
         .instrument(span.clone())
         .await;
     if let Ok(out) = &res {
@@ -905,6 +908,8 @@ fn record_net(span: &tracing::Span, net: &crate::telemetry::meter::NetUsage) {
     span.record("lost_packets", net.lost_packets);
 }
 
+/// The body of [`serve_daemon`]; `session` is its `session` span.
+#[allow(clippy::too_many_arguments)]
 async fn serve_daemon_inner(
     conn: Connection,
     mut send: SendStream,
@@ -913,6 +918,7 @@ async fn serve_daemon_inner(
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
+    session: &tracing::Span,
 ) -> anyhow::Result<Outcome> {
     let Place {
         root: export_root,
@@ -993,9 +999,8 @@ async fn serve_daemon_inner(
     )
     .await?;
     drop(handshake);
-    let span = tracing::Span::current();
-    span.record("session_id", control::hex(&session_id));
-    span.record("resumed", resumed);
+    session.record("session_id", control::hex(&session_id));
+    session.record("resumed", resumed);
     #[cfg(feature = "test-hooks")]
     if shared.fault.as_ref().is_some_and(|f| f.drops_after_ack()) {
         let mut recv = recv;

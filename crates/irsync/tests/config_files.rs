@@ -456,14 +456,10 @@ fn telemetry_table_parses() {
 #[test]
 fn daemon_debug_addr_bare_port() {
     let s = Settings::parse("[daemon]\ndebug_addr = \"9464\"\n", p()).unwrap();
-    assert_eq!(s.daemon.debug_addr.as_deref(), Some("9464"));
-    assert_eq!(
-        s.daemon.debug_socket(),
-        Some("127.0.0.1:9464".parse().unwrap())
-    );
+    assert_eq!(s.daemon.debug_addr, Some("127.0.0.1:9464".parse().unwrap()));
     let s = Settings::parse("[daemon]\ndebug_addr = \"[::1]:9\"\n", p()).unwrap();
-    assert_eq!(s.daemon.debug_socket(), Some("[::1]:9".parse().unwrap()));
-    assert_eq!(Settings::default().daemon.debug_socket(), None);
+    assert_eq!(s.daemon.debug_addr, Some("[::1]:9".parse().unwrap()));
+    assert_eq!(Settings::default().daemon.debug_addr, None);
     let e = Settings::parse("[daemon]\ndebug_addr = \"nope\"\n", p())
         .unwrap_err()
         .to_string();
