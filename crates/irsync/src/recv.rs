@@ -454,7 +454,12 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std:
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(io::Error::new(io::ErrorKind::WouldBlock, PART_BUSY))
             }
-            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+            Err(std::fs::TryLockError::Error(e)) => {
+                // macOS refuses to lock a FIFO (ENOTSUP): report what is
+                // there, as the check above does where the lock succeeds.
+                require_regular(&file, part)?;
+                return Err(e);
+            }
         }
     }
 }
