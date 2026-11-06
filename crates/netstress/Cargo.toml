@@ -1,0 +1,17 @@
+[package]
+name = "netstress"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "irsync-netstress"
+path = "src/main.rs"
+
+[dependencies]
+stress = { path = "../stress" }
+clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+rand = { workspace = true }
+jiff = { workspace = true }
+anyhow = { workspace = true }
