@@ -1,6 +1,7 @@
 //! The isolated `irsync daemon`: its config, the client key, spawning it,
 //! parsing its startup lines, logging its stderr and stopping it.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
@@ -301,6 +302,18 @@ impl Daemon {
         log_level: &str,
         timeout: Duration,
     ) -> Result<Daemon> {
+        Self::start_with_env(irsync, files, log, log_level, timeout, &[])
+    }
+
+    /// `start` with extra environment variables for the daemon.
+    pub fn start_with_env(
+        irsync: &Path,
+        files: &DaemonFiles,
+        log: DaemonLog,
+        log_level: &str,
+        timeout: Duration,
+        env: &[(OsString, OsString)],
+    ) -> Result<Daemon> {
         let mut child = process::spawn(
             Command::new(irsync)
                 .arg("daemon")
@@ -309,6 +322,7 @@ impl Daemon {
                 .args(["--listen", "127.0.0.1:0"])
                 .env("RUST_LOG", log_level)
                 .env_remove("IRSYNC_PASSPHRASE")
+                .envs(env.iter().map(|(k, v)| (k, v)))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -616,6 +630,32 @@ mod tests {
         d.stop(Duration::from_millis(500));
         assert!(nix::sys::signal::kill(Pid::from_raw(pid as i32), None).is_err());
         // gone
+    }
+
+    #[test]
+    fn start_with_env_passes_the_variables_to_the_daemon() {
+        let t = tempfile::tempdir().unwrap();
+        let fake = t.path().join("irsync");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho 'endpoint id: x'\necho 'listening on: 127.0.0.1:1'\necho \"$NETSIM_PROBE\" >&2\nexec sleep 5\n",
+        )
+        .unwrap();
+        chmod_755(&fake);
+        let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
+        let env = [("NETSIM_PROBE".into(), "seen".into())];
+        let mut d = Daemon::start_with_env(
+            &fake,
+            &dev_null(),
+            log,
+            "debug",
+            Duration::from_secs(15),
+            &env,
+        )
+        .unwrap();
+        d.stop(Duration::from_millis(500));
+        let logged = std::fs::read_to_string(t.path().join("d.log")).unwrap();
+        assert!(logged.contains("seen"), "{logged}");
     }
 
     #[test]

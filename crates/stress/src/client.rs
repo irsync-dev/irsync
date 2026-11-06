@@ -57,10 +57,30 @@ pub fn sync_args(
     setup: &ClientSetup,
     extra: &[OsString],
 ) -> Vec<OsString> {
-    let mut a: Vec<OsString> = ["-a", "-H", "--delete", "--reconnect", "0", "--address"]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
+    sync_args_with(d, layout, endpoint_id, port, setup, "0", extra)
+}
+
+/// `sync_args` with `reconnect` in place of "0".
+pub fn sync_args_with(
+    d: Direction,
+    layout: &Layout,
+    endpoint_id: &str,
+    port: u16,
+    setup: &ClientSetup,
+    reconnect: &str,
+    extra: &[OsString],
+) -> Vec<OsString> {
+    let mut a: Vec<OsString> = [
+        "-a",
+        "-H",
+        "--delete",
+        "--reconnect",
+        reconnect,
+        "--address",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
     a.push(format!("127.0.0.1:{port}").into());
     a.push("--identity".into());
     a.push(setup.identity.clone().into());
@@ -116,6 +136,18 @@ pub fn run_sync(
     log_level: &str,
     log: &Path,
 ) -> Result<SyncResult> {
+    run_sync_with_env(irsync, args, setup, log_level, log, &[])
+}
+
+/// `run_sync` with extra environment variables for the client.
+pub fn run_sync_with_env(
+    irsync: &Path,
+    args: &[OsString],
+    setup: &ClientSetup,
+    log_level: &str,
+    log: &Path,
+    env: &[(OsString, OsString)],
+) -> Result<SyncResult> {
     let out = OpenOptions::new()
         .create(true)
         .append(true)
@@ -130,6 +162,7 @@ pub fn run_sync(
             .env("XDG_STATE_HOME", &setup.xdg_state)
             .env_remove("IRSYNC_PASSPHRASE")
             .env("RUST_LOG", log_level)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err)),
@@ -191,6 +224,44 @@ mod tests {
         );
         assert!(s.config.is_file() && s.home.is_dir() && s.xdg_state.is_dir());
         assert_eq!(std::fs::metadata(&s.config).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn sync_args_with_puts_the_reconnect_window_in_place_of_zero() {
+        let t = tempfile::tempdir().unwrap();
+        let l = Layout::create(&t.path().join("r")).unwrap();
+        let s = setup(&l.src_config, l.src_config.join("id_ed25519")).unwrap();
+        let a = strings(&sync_args_with(
+            Direction::Push,
+            &l,
+            "ID",
+            4321,
+            &s,
+            "5m",
+            &[],
+        ));
+        assert_eq!(&a[..5], ["-a", "-H", "--delete", "--reconnect", "5m"]);
+        assert_eq!(
+            sync_args(Direction::Push, &l, "ID", 4321, &s, &[]),
+            sync_args_with(Direction::Push, &l, "ID", 4321, &s, "0", &[])
+        );
+    }
+
+    #[test]
+    fn run_sync_with_env_passes_the_variables_to_the_client() {
+        let t = tempfile::tempdir().unwrap();
+        let l = Layout::create(&t.path().join("r")).unwrap();
+        let s = setup(&l.src_config, l.src_config.join("id_ed25519")).unwrap();
+        let script = t.path().join("fake.sh");
+        std::fs::write(&script, "#!/bin/sh\necho \"probe=$NETSIM_PROBE\" >&2\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = t.path().join("log");
+        let env = [("NETSIM_PROBE".into(), "seen".into())];
+        let r = run_sync_with_env(&script, &[], &s, "info", &log, &env).unwrap();
+        assert_eq!(r.exit, SyncExit::Ok);
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("probe=seen"));
     }
 
     #[test]
