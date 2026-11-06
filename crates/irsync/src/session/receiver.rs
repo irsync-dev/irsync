@@ -355,6 +355,7 @@ impl Receiver {
         let Some(route) = route.filter(|r| r.gen == gen) else {
             return;
         };
+        // Held by others only for local disk work (see `Slot`).
         let missing = match route.slot.lock().await.as_ref() {
             Some(w) => w.missing_chunks(),
             None => return,
@@ -402,6 +403,7 @@ impl Receiver {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&file_id);
         if let Some(r) = route {
+            // Held by others only for local disk work (see `Slot`).
             let received = r.slot.lock().await.take().map_or(0, |w| w.received());
             if let Some(f) = self.files.get_mut(&file_id) {
                 f.received_before += received;

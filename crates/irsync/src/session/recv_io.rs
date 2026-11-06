@@ -48,6 +48,8 @@ fn invalid(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.to_owned())
 }
 
+/// The file's writer. Never held across a network read or anything else
+/// that needs the peer (only local disk work), so the main loop may await it.
 pub(super) type Slot = Arc<tokio::sync::Mutex<Option<FileWriter>>>;
 
 /// Where a data stream for a file id goes: the current writer generation.
