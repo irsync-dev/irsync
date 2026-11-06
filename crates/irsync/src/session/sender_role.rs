@@ -860,7 +860,13 @@ pub(super) async fn run(
                 continue;
             }
             Some(ev) = events.recv() => ev,
-            Some(ev) = peer.recv() => ev,
+            Some(ev) = peer.recv() => {
+                #[cfg(feature = "test-hooks")]
+                if let Some(d) = ctx.hooks.slow_peer_events {
+                    tokio::time::sleep(d).await;
+                }
+                ev
+            }
             else => break Err(anyhow::anyhow!("event channel closed")),
         };
         if let Listing::Undecided(_) = s.listing {

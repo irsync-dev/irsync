@@ -443,6 +443,7 @@ pub struct DaemonHooks {
     pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub slow_peer_events: Option<Duration>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -627,6 +628,10 @@ pub struct SideHooks {
     /// the stream readers have had queued for the main loop at once.
     #[cfg(feature = "test-hooks")]
     pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Both roles: the main loop takes this much longer per peer event (a
+    /// slow main loop, so the peer's frames back up).
+    #[cfg(feature = "test-hooks")]
+    pub slow_peer_events: Option<std::time::Duration>,
     /// Receiver: the most files it has had in flight at once.
     #[cfg(feature = "test-hooks")]
     pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,

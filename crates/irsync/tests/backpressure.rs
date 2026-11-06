@@ -324,3 +324,45 @@ async fn a_peer_flooding_heartbeats_is_throttled_not_fatal() {
     })
     .await;
 }
+
+/// A receiver repeating its first two `FileAck`s 1500 times each (a
+/// repeated ack is a no-op) against a sender whose main loop takes 1 ms per
+/// peer event: the sender's queue of peer events fills, its control reader
+/// waits instead of queueing without limit, and the session still succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_flooding_acks_fills_the_queue_and_is_throttled() {
+    within120(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        many_files(h.src(flow), 200);
+        let peak = Arc::new(AtomicUsize::new(0));
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.peer_events_peak = Some(peak.clone());
+            d.slow_peer_events = Some(Duration::from_millis(1));
+        }
+        let flooded = Arc::new(AtomicUsize::new(0));
+        let mut local = h.local_side();
+        let f = flooded.clone();
+        local.hooks.tamper_frames = Some(Arc::new(move |_, msg| match msg {
+            m @ Msg::Ack(_) if f.fetch_add(1, SeqCst) < 2 => vec![m; 1500],
+            m => vec![m],
+        }));
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 200);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        assert!(flooded.load(SeqCst) >= 2, "fewer than two acks were sent");
+        let peak = peak.load(SeqCst);
+        assert!(peak <= PEER_EVENTS, "peer events peaked at {peak}");
+        assert!(
+            peak >= PEER_EVENTS / 2,
+            "peer events peaked at {peak}: the flood never filled the queue"
+        );
+    })
+    .await;
+}
