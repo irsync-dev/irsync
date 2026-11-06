@@ -8,6 +8,9 @@ use std::sync::OnceLock;
 use anyhow::{anyhow, bail, Context};
 use iroh_base::CustomAddr;
 
+pub mod link;
+pub mod profile;
+
 /// The environment variable that switches the rig on.
 pub const ENV: &str = "IRSYNC_NETSIM";
 
