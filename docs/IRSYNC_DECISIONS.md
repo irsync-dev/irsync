@@ -179,6 +179,20 @@ cross-referenced from commit messages and review notes.
   overlapping other files' writes; the files-in-flight window (up to
   4096) is not the limit. An off-CPU profile of both would settle it
   before trying again.
+- **R43 — The sender's digest trusts its walk's stat** (2026-11-06). A
+  digest request for a file this connection listed uses the walk's stat
+  (size, mtime, ctime, inode) for the index quick check; it no longer
+  lstats the file again. On a miss the row is the open file's `fstat`.
+  That is one stat per file fewer on the sender. A file changed between
+  its listing and the request can get the cached digest of what the walk
+  saw. The send then reads chunks that do not match that digest, or the
+  receiver's whole-file hash fails. Either way the file is retried with a
+  fresh stat and a forced re-read, so stale data never lands. A changed
+  file costs a failed attempt instead of every file costing a stat. If
+  the receiver already holds every chunk, it gets the walk-time content,
+  which matches the listed metadata. Retries and resumed plans still
+  re-stat. The walk stats are kept in the listed-files map (48
+  bytes per regular file).
 - Temp files are `.irsync.<name>.part` in the destination directory (or
   `--partial-dir`), and `.irsync.<name>.tmp` for symlinks, specials and
   hard links; both come from `recv::temp_name`, which cuts the name and

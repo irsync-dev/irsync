@@ -68,7 +68,12 @@ pub fn fstat_entry_with_ctime(
     file: &std::fs::File,
     rel: &RelPath,
 ) -> io::Result<(FileEntry, (i64, u32))> {
-    Ok(entry_of(fstat(file)?, rel, Vec::new()))
+    Ok(stat_entry_with_ctime(fstat(file)?, rel))
+}
+
+/// [`fstat_entry_with_ctime`] from an `fstat` already taken.
+pub fn stat_entry_with_ctime(st: FileStat, rel: &RelPath) -> (FileEntry, (i64, u32)) {
+    entry_of(st, rel, Vec::new())
 }
 
 // The `stat` field types differ by platform; some casts are no-ops here.

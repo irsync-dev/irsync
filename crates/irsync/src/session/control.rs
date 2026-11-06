@@ -255,8 +255,9 @@ pub(super) fn is_own_temp(path: &RelPath) -> bool {
         .is_some_and(crate::recv::is_temp_name)
 }
 
-/// Paths of regular files this side has listed: the only paths it will send.
-pub(super) type ListedFiles = Arc<Mutex<HashSet<RelPath>>>;
+/// Paths of regular files this side has listed, the only paths it will
+/// send, with the walk's stat of each for the digest's quick check.
+pub(super) type ListedFiles = Arc<Mutex<HashMap<RelPath, crate::hasher::Freshness>>>;
 
 pub(super) struct ListingSpec {
     /// The `list` phase; it ends with the walk.
@@ -413,7 +414,9 @@ pub(super) fn spawn_listing(
             }
             if entry.kind() == Kind::Regular {
                 if let Some(l) = &listed {
-                    l.lock().unwrap_or_else(|e| e.into_inner()).insert(path);
+                    l.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path, crate::hasher::Freshness::of(&item));
                 }
             }
             out.send(Msg::Listing(ListingEntry {

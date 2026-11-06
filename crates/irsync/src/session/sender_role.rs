@@ -35,6 +35,7 @@ use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
+use crate::hasher::Freshness;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
@@ -172,7 +173,17 @@ impl SenderRole {
 
     /// `check`: admit the path only if the walk would have listed it as a
     /// regular file (a resumed plan has no listing of this connection).
-    fn spawn_digest(&self, file_id: u64, gen: u32, path: RelPath, force: bool, check: bool) {
+    /// `walked`: this connection's walk stat of the file, which spares the
+    /// re-stat; a retry passes none, so it describes the file as it is now.
+    fn spawn_digest(
+        &self,
+        file_id: u64,
+        gen: u32,
+        path: RelPath,
+        force: bool,
+        check: bool,
+        walked: Option<Freshness>,
+    ) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
         let append_from = self.files.get(&file_id).and_then(|f| f.append_from);
         let hash = self.files.get(&file_id).map_or_else(
@@ -192,9 +203,21 @@ impl SenderRole {
                             ));
                         }
                     }
-                    // Re-stat: the digest must describe the file as it is now.
                     // Hashing works on index keys under the index root.
                     let key = ctx.key(&path);
+                    if let Some(walked) = walked {
+                        // The walk saw a regular file; the opens below refuse
+                        // anything else now.
+                        if let Some(from) = append_from {
+                            let full = ctx.full_key(&key);
+                            return blocking(move || tail_digest(&full, from)).await;
+                        }
+                        let since = super::wait_start(&ctx.meter);
+                        let digest = sender.lookahead_digest_walked(key, walked).await;
+                        super::record_hash_wait(&ctx.meter, since);
+                        return digest;
+                    }
+                    // Re-stat: the digest must describe the file as it is now.
                     let (base, rel) = (ctx.base.clone(), key.clone());
                     let (entry, ctime) =
                         blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
@@ -272,7 +295,7 @@ impl SenderRole {
         f.requested.clear();
         f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
-        self.spawn_digest(file_id, gen, path, true, false);
+        self.spawn_digest(file_id, gen, path, true, false, None);
     }
 
     fn on_plan(&mut self, p: PlanItem) -> anyhow::Result<()> {
@@ -324,19 +347,20 @@ impl SenderRole {
             return Ok(());
         }
         if let Listing::FromPlan = self.listing {
-            self.spawn_digest(file_id, 0, path, false, true);
+            self.spawn_digest(file_id, 0, path, false, true, None);
             return Ok(());
         }
-        let listed = self
+        let walked = self
             .listed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(&path);
-        if !listed {
+            .get(&path)
+            .copied();
+        let Some(walked) = walked else {
             self.source_error(file_id, "not a listed regular file".into());
             return Ok(());
-        }
-        self.spawn_digest(file_id, 0, path, false, false);
+        };
+        self.spawn_digest(file_id, 0, path, false, false, Some(walked));
         Ok(())
     }
 

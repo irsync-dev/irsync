@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use nix::fcntl::{openat, OFlag, AT_FDCWD};
-use nix::sys::stat::{fstat, Mode, SFlag};
+use nix::sys::stat::{fstat, FileStat, Mode, SFlag};
 
 use crate::fs::paths::RelPath;
 
@@ -36,6 +36,11 @@ pub fn is_regular_mode(mode: u32) -> bool {
 
 /// Fails unless the open file is a regular file.
 pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
+    require_regular_stat(f, what).map(drop)
+}
+
+/// [`require_regular`], returning the file's `fstat`.
+fn require_regular_stat(f: &File, what: &Path) -> io::Result<FileStat> {
     let st = fstat(f).map_err(errno)?;
     if !is_regular_mode(st.st_mode as u32) {
         return Err(io::Error::new(
@@ -43,7 +48,7 @@ pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
             format!("{} is not a regular file", what.display()),
         ));
     }
-    Ok(())
+    Ok(st)
 }
 
 /// Opens `path` read-only, refusing a symlink as the final component and
@@ -51,6 +56,11 @@ pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
 /// there cannot block the open; it has no effect on regular files). A
 /// momentary descriptor shortage is waited out (see [`super::transient`]).
 pub fn open_regular_nofollow(path: &Path) -> io::Result<File> {
+    open_regular_nofollow_stat(path).map(|(f, _)| f)
+}
+
+/// [`open_regular_nofollow`], also returning the open file's `fstat`.
+pub fn open_regular_nofollow_stat(path: &Path) -> io::Result<(File, FileStat)> {
     use std::os::unix::fs::OpenOptionsExt;
     let f = super::transient::retry(|| {
         std::fs::OpenOptions::new()
@@ -59,8 +69,8 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<File> {
             .open(path)
     })
     .map_err(|e| nofollow_error(e, path))?;
-    require_regular(&f, path)?;
-    Ok(f)
+    let st = require_regular_stat(&f, path)?;
+    Ok((f, st))
 }
 
 /// Splits a non-root relative path into its parent and final name.

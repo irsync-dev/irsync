@@ -585,3 +585,34 @@ async fn inflight_plan_items_are_capped() {
     })
     .await;
 }
+
+/// The sender answers a digest request from the walk's stat. A file
+/// rewritten after it was listed gets the cached digest of what the walk
+/// saw; reading it no longer matches, and the retry sends it as it is now.
+#[tokio::test]
+async fn a_source_rewritten_after_its_listing_arrives_as_it_is_now() {
+    let h = Harness::new().await;
+    let src = h.local.path().join("f");
+    let old = vec![1u8; 300 * KIB];
+    fs::write(&src, &old).unwrap();
+    h.run(&archive_opts(), Flow::Push).await.expect("warm push");
+    // The sender's index now has a fresh digest of `old`.
+    fs::remove_file(h.export.path().join("f")).unwrap();
+
+    let new = vec![2u8; 200 * KIB];
+    let mut local = h.local_side();
+    let (path, content) = (src.clone(), new.clone());
+    local.hooks.inject_listing = Some(Arc::new(move |e: &irsync_proto::v1::FileEntry| {
+        if e.path == b"f" {
+            fs::write(&path, &content).unwrap();
+        }
+        Vec::new()
+    }));
+    let out = h
+        .run_side(&archive_opts(), Flow::Push, local)
+        .await
+        .expect("push");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(fs::read(h.export.path().join("f")).unwrap(), new);
+    assert_eq!(out.files_hashed, 1, "the retry re-read the file");
+}

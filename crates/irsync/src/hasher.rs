@@ -12,7 +12,7 @@ use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use irsync_proto::chunk::{digest_reader, FileDigest};
 use irsync_proto::v1::file_entry::Kind;
-use irsync_proto::v1::Hash;
+use irsync_proto::v1::{FileEntry, Hash};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,16 +93,38 @@ fn io_err(e: crate::index::IndexError) -> io::Error {
     io::Error::other(e)
 }
 
-fn lookup(index: &IndexHandle, item: &ScanItem) -> io::Result<Option<FileDigest>> {
-    let found = index.read(|r| r.get_entry(&item.path)).map_err(io_err)?;
+/// The stat fields a cached digest must match to be reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Freshness {
+    pub size: u64,
+    pub mtime: (i64, u32),
+    pub ctime: (i64, u32),
+    pub inode: u64,
+}
+
+impl Freshness {
+    pub fn of(item: &ScanItem) -> Freshness {
+        let e = &item.entry;
+        Freshness {
+            size: e.size,
+            mtime: (e.mtime_sec, e.mtime_nsec),
+            ctime: item.ctime,
+            inode: e.inode,
+        }
+    }
+}
+
+fn lookup(index: &IndexHandle, path: &RelPath, want: Freshness) -> io::Result<Option<FileDigest>> {
+    let found = index.read(|r| r.get_entry(path)).map_err(io_err)?;
     let Some(ie) = found else { return Ok(None) };
-    let (a, b) = (&ie.entry, &item.entry);
-    let fresh = a.size == b.size
-        && a.mtime_sec == b.mtime_sec
-        && a.mtime_nsec == b.mtime_nsec
-        && ie.ctime == item.ctime
-        && a.inode == b.inode;
-    Ok(if fresh { ie.digest } else { None })
+    let a = &ie.entry;
+    let have = Freshness {
+        size: a.size,
+        mtime: (a.mtime_sec, a.mtime_nsec),
+        ctime: ie.ctime,
+        inode: a.inode,
+    };
+    Ok(if have == want { ie.digest } else { None })
 }
 
 impl Hasher {
@@ -162,7 +184,7 @@ impl Hasher {
         if self.force {
             return Ok(None);
         }
-        lookup(&self.index, item)
+        lookup(&self.index, &item.path, Freshness::of(item))
     }
 
     /// Waits until the digests stored so far are in the index (they are
@@ -180,6 +202,29 @@ impl Hasher {
                 "digest requires a regular file",
             ));
         }
+        let stat = (item.entry.clone(), item.ctime);
+        self.digest_as(item.path.clone(), Freshness::of(item), Some(stat))
+            .await
+    }
+
+    /// [`Hasher::digest`] of the regular file at index key `path`, whose
+    /// stat the walk took: `walked` serves the quick check, so a cache hit
+    /// costs no stat. On a miss the file is read and its row describes the
+    /// open file as it is now. A file changed since the walk may get a
+    /// digest of what the walk saw; the send checks what it reads against
+    /// the digest, and the receiver the whole file, so that never lands.
+    pub async fn digest_walked(&self, path: RelPath, walked: Freshness) -> io::Result<FileDigest> {
+        self.digest_as(path, walked, None).await
+    }
+
+    /// The digest of `path` if the index has one matching `want`, else read.
+    /// The stored row is `stat`, or the open file's when `None`.
+    async fn digest_as(
+        &self,
+        path: RelPath,
+        want: Freshness,
+        stat: Option<(FileEntry, (i64, u32))>,
+    ) -> io::Result<FileDigest> {
         let queued = self
             .meter
             .as_deref()
@@ -192,33 +237,29 @@ impl Hasher {
         drop(queued);
         let index = self.index.clone();
         let stats = self.stats.clone();
-        let full = self.root.join(item.path.to_os());
-        let item = item.clone();
+        let full = self.root.join(path.to_os());
         let force = self.force;
         let activity = self.activity.clone();
         let progress = self.progress.clone();
         let meter = self.meter.clone();
         let res = tokio::task::spawn_blocking(move || {
             if !force {
-                if let Some(d) = lookup(&index, &item)? {
+                if let Some(d) = lookup(&index, &path, want)? {
                     return Ok(d);
                 }
             }
             // Never follow a symlink swapped in since the walk lstat'ed it.
+            let (file, st) = crate::fs::safe::open_regular_nofollow_stat(&full)?;
+            let (mut entry, ctime) =
+                stat.unwrap_or_else(|| crate::fs::meta::stat_entry_with_ctime(st, &path));
             if let Some(p) = &progress {
-                p(
-                    &item.path,
-                    HashEvent::Start {
-                        size: item.entry.size,
-                    },
-                );
+                p(&path, HashEvent::Start { size: entry.size });
             }
             let guard = meter.as_deref().map(|m| m.start(Activity::Hash));
-            let d = crate::fs::safe::open_regular_nofollow(&full)
-                .and_then(|file| digest_reader(Ticking::new(file, &activity)));
+            let d = digest_reader(Ticking::new(file, &activity));
             drop(guard);
             if let Some(p) = &progress {
-                p(&item.path, HashEvent::Done);
+                p(&path, HashEvent::Done);
             }
             let d = d?;
             stats.files_hashed.fetch_add(1, Ordering::Relaxed);
@@ -227,14 +268,13 @@ impl Hasher {
                 m.add(Counter::FilesHashed, 1);
                 m.add(Counter::BytesHashed, d.size);
             }
-            let mut entry = item.entry;
             entry.whole_hash = Some(Hash {
                 bytes: d.hash.to_vec(),
             });
             index.queue_entry(NewEntry {
-                path: item.path,
+                path,
                 entry,
-                ctime: item.ctime,
+                ctime,
                 digest: Some(d.clone()),
             });
             Ok(d)
