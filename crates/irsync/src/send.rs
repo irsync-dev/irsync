@@ -257,6 +257,24 @@ impl Sender {
         idxs: &[u32],
         bases: HashMap<u32, Basis>,
     ) -> io::Result<u64> {
+        let sent = Arc::new(AtomicU64::new(0));
+        self.send_chunks_counted(file_id, path, digest, idxs, bases, &sent)
+            .await
+    }
+
+    /// [`Sender::send_chunks_against`], adding the bytes to `sent` as they
+    /// go on the wire, so a caller that cancels the send still knows what
+    /// went. Returns the bytes this call sent.
+    pub async fn send_chunks_counted(
+        &self,
+        file_id: u64,
+        path: &RelPath,
+        digest: &FileDigest,
+        idxs: &[u32],
+        bases: HashMap<u32, Basis>,
+        sent: &Arc<AtomicU64>,
+    ) -> io::Result<u64> {
+        let before = sent.load(Ordering::SeqCst);
         let mut sorted: Vec<usize> = idxs.iter().map(|&i| i as usize).collect();
         sorted.sort_unstable();
         sorted.dedup();
@@ -273,7 +291,6 @@ impl Sender {
         let name = Arc::new(name);
         let rel = Arc::new(path.clone());
         let bases = Arc::new(bases);
-        let sent = Arc::new(AtomicU64::new(0));
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut tasks = JoinSet::new();
@@ -338,7 +355,7 @@ impl Sender {
         }
         match first_err {
             Some(e) => Err(e),
-            None => Ok(sent.load(Ordering::SeqCst)),
+            None => Ok(sent.load(Ordering::SeqCst) - before),
         }
     }
 }

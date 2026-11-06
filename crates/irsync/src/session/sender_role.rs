@@ -60,9 +60,56 @@ pub(super) enum Done {
     Sent {
         file_id: u64,
         gen: u32,
+        /// The task's id in [`SendTasks`].
+        task: u64,
         /// Bytes sent on success.
         result: io::Result<u64>,
     },
+}
+
+/// The send tasks running. A file has at most one (see `SFile::pending`),
+/// and it is aborted when the file leaves `files` (`remove_file`): a
+/// receiver that acknowledges a file early cannot leave its task behind,
+/// so there are never more than files in flight.
+#[derive(Default)]
+struct SendTasks {
+    next: u64,
+    /// By task id: how to abort it, and the bytes it has put on the wire.
+    live: HashMap<u64, (tokio::task::AbortHandle, Arc<std::sync::atomic::AtomicU64>)>,
+}
+
+impl SendTasks {
+    /// Spawns the task `make` builds from its id and its byte counter.
+    fn start<F>(&mut self, make: impl FnOnce(u64, Arc<std::sync::atomic::AtomicU64>) -> F) -> u64
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let id = self.next;
+        self.next += 1;
+        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let task = tokio::spawn(make(id, sent.clone()));
+        self.live.insert(id, (task.abort_handle(), sent));
+        id
+    }
+
+    /// The task reported back. False if it no longer counts: it was
+    /// aborted (with its file) after it reported, and its bytes were
+    /// counted then.
+    fn finished(&mut self, id: u64) -> bool {
+        self.live.remove(&id).is_some()
+    }
+
+    /// Aborts the task; returns the bytes it had put on the wire.
+    fn abort(&mut self, id: u64) -> u64 {
+        self.live.remove(&id).map_or(0, |(task, sent)| {
+            task.abort();
+            sent.load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.live.len()
+    }
 }
 
 /// A file's chunks requested while its send task runs (see `SFile::pending`).
@@ -95,9 +142,9 @@ struct SFile {
     /// Send tasks of this generation started and not yet finished, or
     /// pending; `FileSent` when the last one finishes.
     streams: u32,
-    /// A send task runs for this file (of this generation or an older one).
-    /// There is at most one: see `pending`.
-    running: bool,
+    /// The file's send task, while it runs (of this generation or an older
+    /// one): there is at most one, see `pending`.
+    task: Option<u64>,
     /// Chunks requested while the send task runs, sent once it is done.
     pending: Option<Pending>,
     /// When the receiver first asked for data; for the transfer histogram.
@@ -154,10 +201,8 @@ struct SenderRole {
     abandoned: HashMap<u64, RelPath>,
     files_done: u64,
     bytes: u64,
-    /// `send_chunks` calls not yet reported back.
-    sending: usize,
-    /// Those of them for files in flight (one per file at most).
-    send_tasks: usize,
+    /// Send tasks not yet reported back, one per file in flight at most.
+    tasks: SendTasks,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
     transfer: TransferPhase,
@@ -319,8 +364,9 @@ impl SenderRole {
     fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
         let mut f = self.files.remove(&file_id)?;
         drop_bases(&mut self.basis_held, &mut f);
-        if f.running {
-            self.send_tasks -= 1;
+        // Done with or given up: its task goes too. What it sent counts.
+        if let Some(task) = f.task.take() {
+            self.bytes += self.tasks.abort(task);
         }
         self.lists.cancel(file_id);
         Some(f)
@@ -422,7 +468,7 @@ impl SenderRole {
                 bases_held: 0,
                 requested: HashSet::new(),
                 streams: 0,
-                running: false,
+                task: None,
                 pending: None,
                 started: None,
                 #[cfg(feature = "test-hooks")]
@@ -624,7 +670,7 @@ impl SenderRole {
             .map(|(i, (b, _))| (i, b))
             .collect();
         drop(held);
-        if f.running {
+        if f.task.is_some() {
             // At most one send task per file: a request that arrives while
             // one runs (a batch, a re-request, a repeat) joins the file's
             // pending request, sent when the running task is done. A chunk
@@ -666,16 +712,9 @@ impl SenderRole {
         );
         #[cfg(feature = "test-hooks")]
         let path = f.path.clone();
-        self.sending += 1;
         f.streams += 1;
-        f.running = true;
-        self.send_tasks += 1;
-        #[cfg(feature = "test-hooks")]
-        if let Some(p) = &self.ctx.hooks.send_tasks_peak {
-            p.fetch_max(self.send_tasks, std::sync::atomic::Ordering::SeqCst);
-        }
         let send_span = tracing::debug_span!(parent: &f.span, "send");
-        tokio::spawn(
+        let task = self.tasks.start(|task, sent| {
             async move {
                 #[cfg(feature = "test-hooks")]
                 let result = match hook {
@@ -683,13 +722,20 @@ impl SenderRole {
                         let first: HashMap<u32, Basis> =
                             bases.remove_entry(&idxs[0]).into_iter().collect();
                         match sender
-                            .send_chunks_against(file_id, &key, &digest, &idxs[..1], first)
+                            .send_chunks_counted(file_id, &key, &digest, &idxs[..1], first, &sent)
                             .await
                         {
                             Ok(n) => {
                                 h(&path).await;
                                 sender
-                                    .send_chunks_against(file_id, &key, &digest, &idxs[1..], bases)
+                                    .send_chunks_counted(
+                                        file_id,
+                                        &key,
+                                        &digest,
+                                        &idxs[1..],
+                                        bases,
+                                        &sent,
+                                    )
                                     .await
                                     .map(|m| n + m)
                             }
@@ -698,30 +744,38 @@ impl SenderRole {
                     }
                     _ => {
                         sender
-                            .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                            .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent)
                             .await
                     }
                 };
                 #[cfg(not(feature = "test-hooks"))]
                 let result = sender
-                    .send_chunks_against(file_id, &key, &digest, &idxs, bases)
+                    .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent)
                     .await;
                 let _ = events.send(Ev::Send(Done::Sent {
                     file_id,
                     gen,
+                    task,
                     result,
                 }));
             }
-            .instrument(send_span),
-        );
+            .instrument(send_span)
+        });
+        f.task = Some(task);
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.ctx.hooks.send_tasks_peak {
+            p.fetch_max(self.tasks.len(), std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
-    fn on_sent(&mut self, file_id: u64, gen: u32, result: io::Result<u64>) {
-        self.sending -= 1;
+    fn on_sent(&mut self, file_id: u64, gen: u32, task: u64, result: io::Result<u64>) {
+        if !self.tasks.finished(task) {
+            return; // Aborted with its file, its bytes counted then.
+        }
         if let Some(f) = self.files.get_mut(&file_id) {
             // The file's only send task (of this generation or an older one).
-            if std::mem::take(&mut f.running) {
-                self.send_tasks -= 1;
+            if f.task == Some(task) {
+                f.task = None;
             }
             // The last send of the current generation: only the ack is left.
             // (A superseded send must not mark the re-offered file sent.)
@@ -998,8 +1052,7 @@ pub(super) async fn run(
         bytes: 0,
         transferred_size: 0,
         created: 0,
-        sending: 0,
-        send_tasks: 0,
+        tasks: SendTasks::default(),
         errors: Vec::new(),
         persist,
         transfer: TransferPhase::default(),
@@ -1049,9 +1102,10 @@ pub(super) async fn run(
             Ev::Send(Done::Sent {
                 file_id,
                 gen,
+                task,
                 result,
             }) => {
-                s.on_sent(file_id, gen, result);
+                s.on_sent(file_id, gen, task, result);
                 Ok(())
             }
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
@@ -1109,13 +1163,14 @@ pub(super) async fn run(
         // has the data; we wait for the transport's acknowledgement): collect
         // those results so the byte count is complete.
         let _ = tokio::time::timeout(DRAIN_SENDS, async {
-            while s.sending > 0 {
+            while s.tasks.len() > 0 {
                 match events.recv().await {
                     Some(Ev::Send(Done::Sent {
                         file_id,
                         gen,
+                        task,
                         result,
-                    })) => s.on_sent(file_id, gen, result),
+                    })) => s.on_sent(file_id, gen, task, result),
                     Some(_) => {}
                     None => break,
                 }
@@ -1170,4 +1225,96 @@ pub(super) async fn run(
         #[cfg(feature = "test-hooks")]
         retained_files: s.files.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+
+    /// Sets its flag when dropped: the task holding it has ended.
+    struct Ended(Arc<AtomicBool>);
+
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            self.0.store(true, SeqCst);
+        }
+    }
+
+    /// A task that has sent `bytes` and then waits forever, like a send
+    /// waiting for the peer.
+    fn stuck(
+        tasks: &mut SendTasks,
+        bytes: u64,
+    ) -> (u64, Arc<AtomicBool>, Arc<tokio::sync::Notify>) {
+        let (ended, started) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (e, s) = (ended.clone(), started.clone());
+        let id = tasks.start(move |_, sent: Arc<AtomicU64>| async move {
+            let _ended = Ended(e);
+            sent.fetch_add(bytes, SeqCst);
+            s.notify_one();
+            std::future::pending::<()>().await;
+        });
+        (id, ended, started)
+    }
+
+    /// A file's task ends with the file: aborting it stops it, gives its
+    /// bytes, and a report it sent before is no longer counted.
+    #[tokio::test]
+    async fn an_aborted_send_task_ends_and_no_longer_counts() {
+        let mut tasks = SendTasks::default();
+        let (a, a_ended, a_started) = stuck(&mut tasks, 100);
+        let (b, b_ended, b_started) = stuck(&mut tasks, 7);
+        a_started.notified().await;
+        b_started.notified().await;
+        assert_eq!(tasks.len(), 2);
+
+        assert_eq!(tasks.abort(a), 100, "the bytes it had sent");
+        assert_eq!(tasks.len(), 1);
+        for _ in 0..100 {
+            if a_ended.load(SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(a_ended.load(SeqCst), "the aborted task still runs");
+        assert!(!b_ended.load(SeqCst));
+        // A report from before the abort, read after it: not counted again.
+        assert!(!tasks.finished(a));
+        assert_eq!(tasks.abort(a), 0);
+
+        assert!(tasks.finished(b));
+        assert_eq!(tasks.len(), 0);
+    }
+
+    /// Files that come and go, each leaving a task that would never end on
+    /// its own: none of them stays behind.
+    #[tokio::test]
+    async fn tasks_of_removed_files_do_not_accumulate() {
+        let mut tasks = SendTasks::default();
+        let mut ended = Vec::new();
+        for _ in 0..1000 {
+            let (id, e, started) = stuck(&mut tasks, 1);
+            started.notified().await;
+            // The file is acknowledged early, before its send is done.
+            tasks.abort(id);
+            ended.push(e);
+            assert!(tasks.len() <= 1);
+        }
+        tokio::task::yield_now().await;
+        for _ in 0..100 {
+            if ended.iter().all(|e| e.load(SeqCst)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            ended.iter().all(|e| e.load(SeqCst)),
+            "aborted tasks still run"
+        );
+        assert_eq!(tasks.len(), 0);
+    }
 }
