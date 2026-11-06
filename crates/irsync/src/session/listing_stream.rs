@@ -243,9 +243,20 @@ async fn read_listing(
                 tracing::warn!("empty listing frame; ignored");
                 continue;
             }
+            Ok(None) if ended => break None,
+            // Nothing at all, to a planner still waiting for it: a sender
+            // always lists (its root at least, and `ListingEnd`) once the
+            // receiver plans afresh, and the planner would wait forever.
+            Ok(None) if !started && planner.as_ref().is_some_and(|tx| !tx.is_closed()) => {
+                break Some(Ev::ProtocolError(
+                    "the peer's listing ended without a frame".into(),
+                ))
+            }
             // Nothing at all: the peer did not list (a receiver resuming
-            // its stored plan).
-            Ok(None) if !started || ended => break None,
+            // its stored plan; or the sender, when the receiver resumes,
+            // which has let go of its planner's queue before asking for
+            // anything, see `receiver::run`).
+            Ok(None) if !started => break None,
             Ok(None) => {
                 break Some(Ev::PeerFailed(
                     "listing stream: the peer's listing is incomplete (the stream ended before ListingEnd)"

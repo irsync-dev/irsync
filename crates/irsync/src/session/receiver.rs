@@ -1124,6 +1124,11 @@ pub(super) async fn run(
     if ctx.resumed && stored.plan_complete && reuse_plan {
         // No listing: this side's half of the listing stream ends empty.
         listing_out.finish();
+        // Nor one from the sender: it ends its half empty once our first
+        // `PlanItem` arrives. Let go of the planner's queue first, so the
+        // listing reader takes that empty half as expected rather than as
+        // a listing that never came (see `listing_stream::read_listing`).
+        drop(peer_listing);
         r.resume_plan(stored).await;
     } else {
         let prior = Prior::new(&stored, |id| r.persist.is_done(id));

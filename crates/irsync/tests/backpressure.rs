@@ -889,3 +889,46 @@ async fn a_listing_count_mismatch_fails_the_session() {
     })
     .await;
 }
+
+/// A sender whose listing stream ends without a single frame, to a
+/// receiver that lists afresh: the receiver's planner would wait forever
+/// for it. (A receiver resuming its stored plan expects exactly that, see
+/// `a_resumed_plan_needs_no_receiver_listing`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listing_that_ends_without_a_frame_fails_the_session() {
+    within60(async {
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("a"), b"a").unwrap();
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Listing, _) => vec![],
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), Flow::Push, local)
+            .await
+            .expect_err("a listing without a frame was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("ended without a frame"), "{err}");
+    })
+    .await;
+}
+
+/// An empty source tree still lists its root and a `ListingEnd`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_source_tree_syncs() {
+    within60(async {
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let opts = archive_opts();
+            let out = h
+                .run(&opts, flow)
+                .await
+                .unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        }
+    })
+    .await;
+}
