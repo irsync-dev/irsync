@@ -203,6 +203,9 @@ async fn read_listing(
                 ))
             }
             Err(_) if ended => break None,
+            // The connection is gone: the control reader reports that, after
+            // any `Error` the peer sent first on its stream.
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => break None,
             Err(e) => break Some(Ev::PeerFailed(format!("listing stream: {e}"))),
         };
         if ended {
@@ -268,6 +271,10 @@ async fn read_listing(
     };
     if let Some(ev) = failure {
         let _ = events.send(ev);
+        // Keep the stream (and the planner) until the session ends and
+        // aborts this task: dropping it would stop the peer's writer, and
+        // that transport error could reach the peer before our `Error`.
+        std::future::pending::<()>().await;
     }
     if planner.is_some() {
         // No `ListingEnd`: the rest of the peer's listing would look absent

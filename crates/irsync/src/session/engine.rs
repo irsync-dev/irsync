@@ -1280,11 +1280,18 @@ async fn run_role(
             }));
             out.finish();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
-            reader.abort();
-            // Only now: ending the listing stream short makes the peer fail
-            // too, and it should learn why from our `Error` first.
-            listing_reader.abort();
-            listing_writer.abort();
+            // Ending our listing half short, or stopping one of the peer's
+            // halves, fails the peer with a transport error, which could
+            // overtake our `Error` and make it retry a session that cannot
+            // succeed. Leave the streams open until the connection closes
+            // (the peer acted on the `Error`), within a bound.
+            let conn = ctx.conn.clone();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(control::DRAIN_TIMEOUT, conn.closed()).await;
+                reader.abort();
+                listing_reader.abort();
+                listing_writer.abort();
+            });
             Err(e)
         }
     }

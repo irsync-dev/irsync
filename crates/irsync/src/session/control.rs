@@ -160,10 +160,12 @@ async fn read_control(
         match frame {
             Ok(Some(Control { msg: Some(msg) })) => match msg {
                 Msg::Listing(_) | Msg::ListingError(_) | Msg::ListingEnd(_) => {
+                    // Read on: dropping the stream would stop the peer's
+                    // writer, and that transport error could reach the peer
+                    // before our `Error` saying why.
                     let _ = events.send(Ev::ProtocolError(
                         "listing frame on the control stream".into(),
                     ));
-                    return;
                 }
                 // Counted as activity above; it also carries the peer's
                 // progress this side cannot otherwise see.
