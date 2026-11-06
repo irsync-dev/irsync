@@ -93,7 +93,10 @@ impl fmt::Display for BuildInfo {
         if self.dirty == Some(true) {
             f.write_str(", dirty")?;
         }
-        f.write_str(")")
+        f.write_str(")")?;
+        #[cfg(feature = "netsim")]
+        f.write_str(" [netsim]")?;
+        Ok(())
     }
 }
 
