@@ -1193,9 +1193,14 @@ async fn run_role(
     // control and listing streams) that only the main loop drains, and the
     // main loop never awaits anything that needs a reader to move: a full
     // queue stalls only the readers' streams. Completions of this side's own
-    // tasks stay unbounded, and the main loop takes them first, so a
-    // completion posted before the peer could answer is always seen before
-    // the answer. Once the role has ended the queue is gone, and a reader
+    // tasks stay unbounded, and the main loop takes them first (freed
+    // capacity is seen before new peer work). That orders nothing across
+    // the two channels: a completion whose send has returned can still be
+    // hidden behind another producer's slot that is being written. So a
+    // request the peer answers on the control stream goes out only after
+    // the main loop has registered it (it sends the request itself), never
+    // from a task whose registration travels as a completion. Once the role
+    // has ended the queue is gone, and a reader
     // still holding its stream (see the failure path below) drops what it
     // reads instead of waiting.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();

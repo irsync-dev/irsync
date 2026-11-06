@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use irsync_proto::v1::{
-    control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, PlanItem, SessionPlan,
+    control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, SessionPlan,
 };
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -365,9 +365,27 @@ struct Planner {
     regular_ok: HashSet<RelPath>,
     /// Slots for files in flight (see [`MAX_INFLIGHT`]).
     inflight: Arc<Semaphore>,
+    /// `Done::Planned` events still on their way (test hook, see
+    /// `SideHooks::delay_planned`); all arrive before `PlannerFinished`.
+    #[cfg(feature = "test-hooks")]
+    delayed: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Planner {
+    /// Posts a `Done::Planned` to the main loop.
+    fn post_planned(&mut self, ev: Ev) {
+        #[cfg(feature = "test-hooks")]
+        if let Some(d) = self.ctx.hooks.delay_planned {
+            let events = self.events.clone();
+            self.delayed.push(tokio::spawn(async move {
+                tokio::time::sleep(d).await;
+                let _ = events.send(ev);
+            }));
+            return;
+        }
+        let _ = self.events.send(ev);
+    }
+
     fn error(&mut self, path: &RelPath, msg: impl Into<String>) {
         let msg = msg.into();
         tracing::info!(?path, error = %msg, "receiver");
@@ -657,8 +675,9 @@ impl Planner {
                     return;
                 };
                 let _planning = meter.start(Activity::Plan);
-                // Registered with the main loop before the request can be answered.
-                let _ = self.events.send(Ev::Recv(Done::Planned(Box::new(Planned {
+                // The main loop registers the file, then requests it: the
+                // peer cannot answer a request for a file not yet known.
+                self.post_planned(Ev::Recv(Done::Planned(Box::new(Planned {
                     file_id,
                     path: path.clone(),
                     entry,
@@ -670,13 +689,6 @@ impl Planner {
                     },
                     slot,
                 }))));
-                self.ctx.hooks.event("plan", &path);
-                self.out.send(Msg::Plan(PlanItem {
-                    file_id,
-                    path: path.as_bytes().to_vec(),
-                    action: action as i32,
-                    append_from,
-                }));
                 return;
             }
         };
@@ -890,6 +902,8 @@ async fn plan_listings(
         kept_inodes: HashMap::new(),
         regular_ok: HashSet::new(),
         inflight,
+        #[cfg(feature = "test-hooks")]
+        delayed: Vec::new(),
     };
     let mode = p.deletes.as_ref().map(|d| d.mode());
     let disordered = Arc::new(AtomicBool::new(false));
@@ -940,6 +954,10 @@ async fn plan_listings(
     }
     p.check_order(&disordered);
     p.report.deletes = p.deletes.take();
+    #[cfg(feature = "test-hooks")]
+    for t in std::mem::take(&mut p.delayed) {
+        let _ = t.await;
+    }
     let _ = events.send(Ev::Recv(Done::PlannerFinished(Box::new(p.report))));
 }
 

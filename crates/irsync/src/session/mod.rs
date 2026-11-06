@@ -632,6 +632,11 @@ pub struct SideHooks {
     /// slow main loop, so the peer's frames back up).
     #[cfg(feature = "test-hooks")]
     pub slow_peer_events: Option<std::time::Duration>,
+    /// Receiver: each `Done::Planned` reaches the main loop this much later
+    /// than the planner posts it (a completion hidden behind another
+    /// producer's half-written slot), still before the planner finishes.
+    #[cfg(feature = "test-hooks")]
+    pub delay_planned: Option<std::time::Duration>,
     /// Receiver: the most files it has had in flight at once.
     #[cfg(feature = "test-hooks")]
     pub inflight_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,

@@ -20,7 +20,7 @@ use std::time::Duration;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, FileAck, FileEntry, Itemized,
-    ListingEnd, NeedChunks, PathError, PlanEntry, SessionDone,
+    ListingEnd, NeedChunks, PathError, PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -529,12 +529,24 @@ impl Receiver {
                 let p = *p;
                 self.register(
                     p.file_id,
-                    p.path,
+                    p.path.clone(),
                     p.entry,
                     p.action,
                     p.deferred,
                     Some(p.slot),
                 );
+                // Requested only now that it is registered: an answer can
+                // never find the file unknown. Completions and peer frames
+                // travel on separate channels, and a completion sent first
+                // is not always received first (an mpsc slot still being
+                // written hides the ones behind it). `Out::send` never waits.
+                self.ctx.hooks.event("plan", &p.path);
+                self.out.send(Msg::Plan(PlanItem {
+                    file_id: p.file_id,
+                    path: p.path.as_bytes().to_vec(),
+                    action: p.action as i32,
+                    append_from: p.append_from,
+                }));
             }
             Done::PlannerFinished(r) => {
                 self.report = Some(*r);

@@ -366,3 +366,28 @@ async fn a_peer_flooding_acks_fills_the_queue_and_is_throttled() {
     })
     .await;
 }
+
+/// Completions and peer frames travel on separate channels, and a
+/// completion sent first is not always received first. The receiver's
+/// `Planned` for each file reaching its main loop 200 ms late must not let
+/// the sender's answer arrive before the file is registered (it would be
+/// dropped as "not in flight" and the file would wait forever).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_late_planned_completion_never_loses_the_answer() {
+    within60(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        many_files(h.src(flow), 50);
+        let mut local = h.local_side();
+        local.hooks.delay_planned = Some(Duration::from_millis(200));
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 50);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
