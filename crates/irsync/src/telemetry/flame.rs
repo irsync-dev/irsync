@@ -127,12 +127,27 @@ mod tests {
             .unwrap()
     }
 
+    fn micros(d: Duration) -> u64 {
+        d.as_micros() as u64
+    }
+
+    /// How long `sleep` really took: macOS oversleeps short sleeps by
+    /// milliseconds, so the tests compare with this, not with the request.
+    fn timed_sleep(ms: u64) -> Duration {
+        let t = Instant::now();
+        std::thread::sleep(Duration::from_millis(ms));
+        t.elapsed()
+    }
+
     #[test]
     fn a_child_on_another_thread_takes_no_self_time() {
         let state = Arc::new(FlameState::default());
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::registry().with(FlameLayer::new(state.clone())),
         );
+        let mut alongside = Duration::ZERO;
+        let mut slept = Duration::ZERO;
+        let start = Instant::now();
         tracing::dispatcher::with_default(&dispatch, || {
             let outer = tracing::info_span!("outer");
             let _o = outer.enter();
@@ -141,37 +156,47 @@ mod tests {
                 tracing::dispatcher::with_default(&d, || {
                     let inner = tracing::info_span!(parent: &parent, "inner");
                     let _i = inner.enter();
-                    std::thread::sleep(Duration::from_millis(8));
+                    timed_sleep(8)
                 })
             });
-            std::thread::sleep(Duration::from_millis(10));
-            child.join().unwrap();
+            alongside = timed_sleep(10);
+            slept = child.join().unwrap();
         });
+        let wall = micros(start.elapsed());
         let out = state.render();
-        // The outer span ran its whole 10 ms itself, alongside the child.
+        // The outer span ran its whole sleep itself, alongside the child.
         let outer = value(&out, "outer");
-        assert!(outer >= 9_000, "{out}");
+        assert!(outer >= micros(alongside), "{out}slept {alongside:?}");
         let inner = value(&out, "outer;inner");
-        assert!((7_000..=12_000).contains(&inner), "{out}");
+        assert!(
+            (micros(slept)..=wall).contains(&inner),
+            "{out}slept {slept:?}, wall {wall} us"
+        );
     }
 
     #[test]
     fn self_time_excludes_children() {
         let state = Arc::new(FlameState::default());
         let sub = tracing_subscriber::registry().with(FlameLayer::new(state.clone()));
+        let (mut first, mut nested) = (Duration::ZERO, Duration::ZERO);
+        let start = Instant::now();
         tracing::subscriber::with_default(sub, || {
             let outer = tracing::info_span!("outer");
             let _o = outer.enter();
-            std::thread::sleep(Duration::from_millis(4));
+            first = timed_sleep(4);
             let inner = tracing::info_span!("inner");
             let _i = inner.enter();
-            std::thread::sleep(Duration::from_millis(6));
+            nested = timed_sleep(6);
         });
+        let wall = micros(start.elapsed());
         let out = state.render();
         let outer = value(&out, "outer");
-        assert!((2_000..=6_000).contains(&outer), "{out}");
+        assert!(outer >= micros(first), "{out}slept {first:?}");
         let inner = value(&out, "outer;inner");
-        assert!((5_000..=8_000).contains(&inner), "{out}");
+        assert!(inner >= micros(nested), "{out}slept {nested:?}");
+        // Self time plus the child's time is the outer span's whole time,
+        // which fits in the wall time; counted twice, the child's would not.
+        assert!(outer + inner <= wall, "{out}wall {wall} us");
     }
 
     #[test]
