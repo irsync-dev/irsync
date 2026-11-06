@@ -445,6 +445,8 @@ pub struct DaemonHooks {
     pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub slow_peer_events: Option<Duration>,
     pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub basis_budget: Option<usize>,
+    pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -637,6 +639,13 @@ pub struct SideHooks {
     /// `Out::send_paced`) queued for the control stream's writer at once.
     #[cfg(feature = "test-hooks")]
     pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Both roles: bytes of chunk bases (see `limits::BASIS_BUDGET`) the
+    /// session holds at once, instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub basis_budget: Option<usize>,
+    /// Sender: the most bytes of chunk bases it has held at once.
+    #[cfg(feature = "test-hooks")]
+    pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Receiver: each `Done::Planned` reaches the main loop this much later
     /// than the planner posts it (a completion hidden behind another
     /// producer's half-written slot), still before the planner finishes.

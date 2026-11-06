@@ -15,7 +15,7 @@
 //! write goes through a [`Gate`] that admits chunks in ascending order,
 //! and the old content is only ever read above the write cursor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
@@ -34,6 +34,7 @@ use tokio::task::JoinHandle;
 
 use super::control::{Ev, Out};
 use super::engine::{blocking, Ctx};
+use super::limits::{basis_wire_len, ByteBudget, Held, BASIS_BATCH};
 use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
@@ -553,10 +554,25 @@ pub(super) async fn open_writer(
 /// `ChunkBasis`, then requests the chunks `request` (those of the specs,
 /// or in place every remote chunk, so that one request is ascending). The
 /// request always goes out: a basis that could not be computed just means
-/// a raw chunk. The sender uses each basis for this one request and drops
-/// it. Every frame is paced (`Out::send_paced`): a mostly rewritten large
+/// a raw chunk. The sender uses each basis for the request that follows
+/// it and drops it.
+///
+/// Bases are held under the session's basis budget (`budget`, see
+/// [`BASIS_BUDGET`](super::limits::BASIS_BUDGET)) from being sent until
+/// their request is queued. They go out in batches of at most
+/// [`BASIS_BATCH`], each followed by the request for its chunks; a basis
+/// that does not fit first requests the batch so far, which frees its
+/// bytes without anything from the peer, and only then waits for room. In
+/// place, the one ascending request comes last, so nothing could be freed
+/// before it: a basis that does not fit now is not offered (its chunk goes
+/// raw), and nothing waits for the budget.
+///
+/// Every frame is paced (`Out::send_paced`): a mostly rewritten large
 /// file signs bases at disk speed, so a slow link stalls this task instead
-/// of the queue growing. It holds no lock while it waits (see [`Slot`]).
+/// of the queue growing. It holds no lock while it waits (see [`Slot`]),
+/// and what it holds of the budget goes back however it ends, dropped
+/// included (see [`Held`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn offer_bases(
     ctx: Arc<Ctx>,
     out: Out,
@@ -565,7 +581,14 @@ pub(super) async fn offer_bases(
     specs: Vec<BasisSpec>,
     request: Vec<u32>,
     file_id: u64,
+    budget: Arc<ByteBudget>,
 ) {
+    let inplace = route.gate.is_some();
+    // The bytes of the bases sent and not yet requested.
+    let mut held = Held::new(budget);
+    let mut batch: Vec<u32> = Vec::new();
+    // Chunks a batch requested; the last request has the rest.
+    let mut batched: HashSet<u32> = HashSet::new();
     for (idx, offset, len) in specs {
         let (f, meter) = (old.clone(), ctx.meter.clone());
         let basis = blocking(move || {
@@ -579,11 +602,28 @@ pub(super) async fn offer_bases(
         ctx.activity.fetch_add(1, Ordering::Relaxed);
         match basis {
             Ok(b) if b.blocks() > 0 => {
-                out.send_paced(Msg::ChunkBasis(
-                    b.to_wire(file_id, sender_idx(route.idx_base, idx)),
-                ))
-                .await;
+                let wire = b.to_wire(file_id, sender_idx(route.idx_base, idx));
+                let n = basis_wire_len(&wire);
+                if inplace {
+                    if !held.try_take(n) {
+                        continue; // No room: the chunk goes raw.
+                    }
+                } else if batch.len() == BASIS_BATCH || !held.try_take(n) {
+                    if !batch.is_empty() {
+                        if !request_chunks(&out, &route, file_id, &batch, &mut held).await {
+                            return;
+                        }
+                        batch.clear();
+                    }
+                    // Holding nothing: others free what this waits for.
+                    held.take(n).await;
+                }
+                out.send_paced(Msg::ChunkBasis(wire)).await;
                 ctx.hooks.event("basis", &route.path);
+                if !inplace {
+                    batch.push(idx);
+                    batched.insert(idx);
+                }
             }
             Ok(_) => {}
             Err(e) => {
@@ -596,21 +636,54 @@ pub(super) async fn offer_bases(
     if let Some(h) = &ctx.hooks.after_bases {
         h(&route.path).await;
     }
+    if !batch.is_empty() && !request_chunks(&out, &route, file_id, &batch, &mut held).await {
+        return;
+    }
+    // The rest, raw (always sent, even empty); in place, every chunk, and
+    // only now do its bases go back to the budget.
+    let rest: Vec<u32> = request
+        .into_iter()
+        .filter(|i| !batched.contains(i))
+        .collect();
+    request_chunks(&out, &route, file_id, &rest, &mut held).await;
+}
+
+/// Queues the request for `chunks` once the writer has room for it, then
+/// gives back `held`, the bases it uses: the sender drops them on reading
+/// it. A writer retired meanwhile (new chunk list, failure) has nothing to
+/// request, so it returns false; if bases are out, an empty request still
+/// makes the sender drop them (see `SenderRole::on_need`) before their
+/// bytes go back, so the sender never holds more than this side counts.
+async fn request_chunks(
+    out: &Out,
+    route: &Route,
+    file_id: u64,
+    chunks: &[u32],
+    held: &mut Held,
+) -> bool {
     let need = out
         .reserve(Msg::Need(NeedChunks {
             file_id,
-            chunk_idx: request
-                .into_iter()
-                .map(|i| sender_idx(route.idx_base, i))
+            chunk_idx: chunks
+                .iter()
+                .map(|&i| sender_idx(route.idx_base, i))
                 .collect(),
         }))
         .await;
-    // A retired writer (new chunk list, failure) has nothing to request.
     // Checked after the wait for room, and the lock let go before queueing.
-    if route.slot.lock().await.is_none() {
-        return;
+    let current = route.slot.lock().await.is_some();
+    if current {
+        need.send();
+    } else if held.bytes() > 0 {
+        drop(need);
+        out.send_paced(Msg::Need(NeedChunks {
+            file_id,
+            chunk_idx: Vec::new(),
+        }))
+        .await;
     }
-    need.send();
+    held.release();
+    current
 }
 
 /// Rebuilds chunk `idx` from the sender's operations against the old file.

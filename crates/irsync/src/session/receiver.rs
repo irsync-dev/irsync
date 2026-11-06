@@ -31,7 +31,7 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::LISTING_QUEUE;
+use super::limits::{basis_budget, ByteBudget, LISTING_QUEUE};
 use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly};
 use super::planner::{
@@ -224,6 +224,9 @@ struct Receiver {
     queued: VecDeque<(u64, RelPath, FileEntry, Action, u64)>,
     /// At most this many files in flight.
     inflight_cap: usize,
+    /// Bytes of chunk bases sent and not yet requested, across files (see
+    /// `offer_bases`). Only the basis tasks wait on it, never the main loop.
+    basis_budget: Arc<ByteBudget>,
 }
 
 impl Receiver {
@@ -778,8 +781,10 @@ impl Receiver {
             match route.old.clone() {
                 Some(old) => {
                     let (ctx, out, r) = (self.ctx.clone(), self.out.clone(), route.clone());
-                    self.tasks
-                        .spawn(offer_bases(ctx, out, r, old, bases, request, file_id));
+                    let budget = self.basis_budget.clone();
+                    self.tasks.spawn(offer_bases(
+                        ctx, out, r, old, bases, request, file_id, budget,
+                    ));
                 }
                 None => self.out.send(Msg::Need(NeedChunks {
                     file_id,
@@ -1044,6 +1049,7 @@ pub(super) async fn run(
         failed: HashSet::new(),
         queued: VecDeque::new(),
         inflight_cap: inflight_cap(&ctx),
+        basis_budget: Arc::new(ByteBudget::new(basis_budget(&ctx.hooks))),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores

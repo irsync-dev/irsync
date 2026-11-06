@@ -29,6 +29,7 @@ use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
+use super::limits::{basis_budget, basis_wire_len};
 use super::listing_stream::ListingOut;
 use super::parts::{split, PART_RECORDS};
 use super::Outcome;
@@ -73,8 +74,11 @@ struct SFile {
     /// The digest behind the chunk list last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
     /// Bases the receiver offered for chunks it is about to request, by
-    /// chunk index; each is used for one request and dropped.
-    bases: HashMap<u32, Basis>,
+    /// chunk index, with their size against the basis budget; each is used
+    /// for one request and dropped.
+    bases: HashMap<u32, (Basis, usize)>,
+    /// The summed size of `bases`.
+    bases_held: usize,
     /// Chunk indices the receiver asked for so far under this digest: the
     /// rest of the file is matched (`FileMatched`). A request may come in
     /// several parts (chunks without a basis first, then those with one).
@@ -116,8 +120,13 @@ struct SenderRole {
     transferred_size: u64,
     /// Items the receiver reported creating.
     created: u64,
-    /// Files in flight (no final ack yet, not given up).
+    /// Files in flight (no final ack yet, not given up). Leave through
+    /// [`SenderRole::remove_file`].
     files: HashMap<u64, SFile>,
+    /// Bytes of chunk bases held for all files (see `limits::BASIS_BUDGET`).
+    basis_held: usize,
+    /// More than this fails the session.
+    basis_budget: usize,
     /// Every file id ever planned (duplicate detection).
     seen: HashSet<u64>,
     /// Files given up with `SOURCE_ERROR`, by id, with their path. If
@@ -285,9 +294,16 @@ impl SenderRole {
         );
     }
 
+    /// Takes a file out of `files`, with what it held of the basis budget.
+    fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
+        let mut f = self.files.remove(&file_id)?;
+        drop_bases(&mut self.basis_held, &mut f);
+        Some(f)
+    }
+
     /// Gives up on the file and tells the receiver to stop waiting for it.
     fn source_error(&mut self, file_id: u64, msg: String) {
-        let Some(f) = self.files.remove(&file_id) else {
+        let Some(f) = self.remove_file(file_id) else {
             return;
         };
         tracing::info!(path = ?f.path, error = %msg, "cannot send file");
@@ -319,7 +335,7 @@ impl SenderRole {
         f.retries += 1;
         f.gen += 1;
         f.digest = None;
-        f.bases.clear();
+        drop_bases(&mut self.basis_held, f);
         f.requested.clear();
         f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
@@ -354,6 +370,7 @@ impl SenderRole {
                 append_from,
                 digest: None,
                 bases: HashMap::new(),
+                bases_held: 0,
                 requested: HashSet::new(),
                 streams: 0,
                 started: None,
@@ -443,26 +460,44 @@ impl SenderRole {
 
     /// A basis for one chunk of a file in flight: kept for the request
     /// that follows. A malformed or misplaced basis is dropped (the chunk
-    /// then goes raw); it is never a protocol error.
-    fn on_basis(&mut self, b: ChunkBasis) {
+    /// then goes raw); it is never a protocol error. Holding more than the
+    /// basis budget is: an honest receiver requests its bases in batches
+    /// under the same budget (see `offer_bases`).
+    fn on_basis(&mut self, b: ChunkBasis) -> anyhow::Result<()> {
         let Some(f) = self.files.get_mut(&b.file_id) else {
-            return;
+            return Ok(());
         };
         let Some(d) = &f.digest else {
-            return;
+            return Ok(());
         };
         let idx = b.chunk_idx;
         if (idx as usize) >= d.chunks.len()
             || (f.bases.len() >= d.chunks.len() && !f.bases.contains_key(&idx))
         {
-            return;
+            return Ok(());
         }
+        let n = basis_wire_len(&b);
         match Basis::from_wire(b) {
             Ok(basis) => {
-                f.bases.insert(idx, basis);
+                let replaced = f.bases.insert(idx, (basis, n)).map_or(0, |(_, m)| m);
+                f.bases_held = f.bases_held + n - replaced;
+                self.basis_held = self.basis_held + n - replaced;
             }
-            Err(e) => tracing::debug!(path = ?f.path, idx, error = %e, "ignoring a chunk basis"),
+            Err(e) => {
+                tracing::debug!(path = ?f.path, idx, error = %e, "ignoring a chunk basis");
+                return Ok(());
+            }
         }
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.ctx.hooks.basis_peak {
+            p.fetch_max(self.basis_held, std::sync::atomic::Ordering::SeqCst);
+        }
+        // As the receiver's budget, a single basis larger than the budget
+        // passes alone.
+        if self.basis_held > self.basis_budget && self.basis_held > n {
+            bail!("protocol error: chunk bases above the budget");
+        }
+        Ok(())
     }
 
     fn on_need(&mut self, n: NeedChunks) {
@@ -471,6 +506,13 @@ impl SenderRole {
             tracing::debug!(file_id, "NeedChunks for a file no longer in flight");
             return;
         };
+        // Any request, empty or not, takes the file's bases: those of its
+        // chunks are used, the rest dropped. A basis serves only the
+        // request that follows it; one left over is stale (its writer was
+        // retired before requesting, and the receiver sent an empty
+        // request so that we drop it before it reuses the bytes).
+        let mut held = std::mem::take(&mut f.bases);
+        self.basis_held -= std::mem::take(&mut f.bases_held);
         // The receiver may ask again for chunks its streams did not deliver.
         // Without a digest a fresh chunk list is on its way and will be
         // answered with a new request.
@@ -510,8 +552,10 @@ impl SenderRole {
         #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
         let mut bases: HashMap<u32, Basis> = idxs
             .iter()
-            .filter_map(|i| f.bases.remove_entry(i))
+            .filter_map(|i| held.remove_entry(i))
+            .map(|(i, (b, _))| (i, b))
             .collect();
+        drop(held);
         #[cfg(feature = "test-hooks")]
         let hook = if f.hooked {
             None
@@ -633,7 +677,7 @@ impl SenderRole {
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 self.ctx.meter.add(Counter::BytesMatched, a.matched);
-                if let Some(f) = self.files.remove(&file_id) {
+                if let Some(f) = self.remove_file(file_id) {
                     let size = f.digest.as_ref().map_or(0, |d| d.size);
                     super::record_file(&self.ctx.meter, f.started, size);
                     self.transferred_size += size;
@@ -647,7 +691,7 @@ impl SenderRole {
             }
             Ok(Status::HashMismatch) => self.retry(file_id, "whole-file hash mismatch".into()),
             Ok(Status::WriteError) => {
-                if let Some(f) = self.files.remove(&file_id) {
+                if let Some(f) = self.remove_file(file_id) {
                     let msg = format!("receiver: {}", a.message);
                     tracing::info!(path = ?f.path, error = %msg, "file failed");
                     self.ctx
@@ -706,6 +750,12 @@ impl SenderRole {
             );
         }
     }
+}
+
+/// Drops the file's bases, and their bytes from the session's count.
+fn drop_bases(basis_held: &mut usize, f: &mut SFile) {
+    f.bases.clear();
+    *basis_held -= std::mem::take(&mut f.bases_held);
 }
 
 /// The chunk list of `full` from `from` on (an `APPEND` tail): chunked
@@ -832,6 +882,8 @@ pub(super) async fn run(
         listed: Arc::default(),
         listing: Listing::Undecided(listing_out),
         files: HashMap::new(),
+        basis_held: 0,
+        basis_budget: basis_budget(&ctx.hooks),
         seen: HashSet::new(),
         abandoned: HashMap::new(),
         files_done: 0,
@@ -898,10 +950,7 @@ pub(super) async fn run(
                 s.on_itemized(i);
                 Ok(())
             }
-            Ev::Ctrl(Msg::ChunkBasis(b)) => {
-                s.on_basis(b);
-                Ok(())
-            }
+            Ev::Ctrl(Msg::ChunkBasis(b)) => s.on_basis(b),
             Ev::Ctrl(Msg::Need(n)) => {
                 s.on_need(n);
                 Ok(())

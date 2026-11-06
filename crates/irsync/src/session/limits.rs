@@ -1,5 +1,9 @@
 //! Bounds on the session's queues.
 
+use std::sync::Arc;
+
+use irsync_proto::v1::ChunkBasis;
+
 /// Listing items a queue holds: the peer's listing on its way to the
 /// planner, the receiver's own listing on its way to the planner, and a
 /// listing on its way to the listing stream's writer. A full queue stalls
@@ -18,6 +22,32 @@ pub(super) const PEER_EVENTS: usize = 1024;
 /// per-chunk frame to send waits while the queue holds this much, so a slow
 /// link stalls the task instead of growing the queue.
 pub(super) const OUT_BUDGET: usize = 4 * 1024 * 1024;
+
+/// Bytes of chunk bases (see [`basis_wire_len`]) a session holds: the
+/// receiver's bases sent but not yet requested, and the sender's bases
+/// received and not yet taken by a request. The receiver waits for room
+/// (it requests what it sent, which frees it); a sender holding more fails
+/// the session.
+pub(super) const BASIS_BUDGET: usize = 32 * 1024 * 1024;
+
+/// Bases the receiver sends before the request that uses them.
+pub(super) const BASIS_BATCH: usize = 64;
+
+/// A basis's size as counted against [`BASIS_BUDGET`]: its block hashes
+/// as they travel.
+pub(super) fn basis_wire_len(b: &ChunkBasis) -> usize {
+    4 * b.weak.len() + b.strong.len()
+}
+
+/// This side's basis budget: [`BASIS_BUDGET`], unless a test sets another.
+pub(super) fn basis_budget(hooks: &super::SideHooks) -> usize {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = hooks.basis_budget {
+        return n;
+    }
+    let _ = hooks;
+    BASIS_BUDGET
+}
 
 /// A count of bytes held against a limit. A request waits while others hold
 /// bytes and it would take the total past the limit; a request larger than
@@ -78,6 +108,52 @@ impl ByteBudget {
     }
 }
 
+/// Bytes taken from a [`ByteBudget`] and given back together, at the
+/// latest when dropped: a task that ends early, fails or is dropped never
+/// strands them.
+pub(super) struct Held {
+    budget: Arc<ByteBudget>,
+    n: usize,
+}
+
+impl Held {
+    pub fn new(budget: Arc<ByteBudget>) -> Self {
+        Held { budget, n: 0 }
+    }
+
+    /// Takes `n` more bytes if they fit now.
+    pub fn try_take(&mut self, n: usize) -> bool {
+        let ok = self.budget.try_acquire(n);
+        if ok {
+            self.n += n;
+        }
+        ok
+    }
+
+    /// Takes `n` more bytes, waiting until they fit. Never call it while
+    /// holding bytes others may wait for and only this caller can free.
+    pub async fn take(&mut self, n: usize) {
+        self.budget.acquire(n).await;
+        self.n += n;
+    }
+
+    /// Bytes held now.
+    pub fn bytes(&self) -> usize {
+        self.n
+    }
+
+    /// Gives back everything held.
+    pub fn release(&mut self) {
+        self.budget.release(std::mem::take(&mut self.n));
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +179,20 @@ mod tests {
         assert_eq!(b.held(), 50);
         // ...but only alone.
         assert!(b.acquire(1).now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn held_bytes_return_when_dropped() {
+        let b = Arc::new(ByteBudget::new(10));
+        let mut h = Held::new(b.clone());
+        assert!(h.try_take(4));
+        h.take(4).await;
+        assert_eq!(b.held(), 8);
+        h.release();
+        assert_eq!(b.held(), 0);
+        assert!(h.try_take(6));
+        drop(h);
+        assert_eq!(b.held(), 0);
     }
 
     #[test]

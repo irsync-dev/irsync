@@ -16,7 +16,7 @@ use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{PartsFault, StreamKind};
 use irsync_proto::v1::control::Msg;
 use irsync_proto::v1::file_entry::Kind;
-use irsync_proto::v1::{FileEntry, ListingEntry};
+use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry};
 
 const MIB: usize = 1024 * 1024;
 
@@ -467,6 +467,109 @@ async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
             peak >= OUT_BUDGET / 2,
             "paced control frames peaked at {peak} bytes: the budget never filled"
         );
+    })
+    .await;
+}
+
+/// The basis budget both sides use in the large-delta tests.
+const BASIS_BUDGET: usize = 256 * 1024;
+
+/// A 48 MiB file pushed once, then edited every 64 KiB over its first 40%
+/// (one byte per 64 KiB, so every chunk there changes but the old file
+/// still holds most of it): ~75 changed chunks, most offered a basis of
+/// ~10 KiB, several hundred KiB of bases in all. Pushed again over a slow
+/// link with a 256 KiB basis budget on both sides, the sender must never
+/// hold more than the budget of bases. (Fewer than half the chunks
+/// change: above that the receiver offers no bases at all.)
+async fn a_large_delta_within_the_basis_budget(inplace: bool) {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let path = h.src(flow).join("big.bin");
+        let mut bytes = data(48 * MIB, 11);
+        fs::write(&path, &bytes).unwrap();
+        let mut opts = archive_opts();
+        opts.inplace = inplace;
+        h.run(&opts, flow).await.unwrap_or_else(|e| panic!("{e:#}"));
+        for off in (0..bytes.len() * 2 / 5).step_by(64 * 1024) {
+            bytes[off + 1000] ^= 0x5a;
+        }
+        fs::write(&path, &bytes).unwrap();
+        let peak = Arc::new(AtomicUsize::new(0));
+        h.daemon.hooks.lock().unwrap().basis_budget = Some(BASIS_BUDGET);
+        let mut local = h.local_side();
+        local.hooks.basis_budget = Some(BASIS_BUDGET);
+        local.hooks.basis_peak = Some(peak.clone());
+        opts.bwlimit = Some(20 * MIB as u64);
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(
+            peak <= BASIS_BUDGET,
+            "the sender held {peak} bytes of bases"
+        );
+        assert!(
+            peak >= BASIS_BUDGET / 2,
+            "the sender held at most {peak} bytes of bases: the budget never filled"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_delta_keeps_bases_within_the_budget() {
+    a_large_delta_within_the_basis_budget(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_inplace_delta_keeps_bases_within_the_budget() {
+    a_large_delta_within_the_basis_budget(true).await;
+}
+
+/// A receiver (the client, pulling) that sends far more bases than the
+/// budget before requesting them: every `ChunkBasis` goes out 10 000
+/// times, for successive chunk indices (a basis replaces an earlier one
+/// for the same chunk, so plain repeats would not add up).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bases_above_the_budget_fail_the_session() {
+    within60(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        let path = h.src(flow).join("f.bin");
+        let mut bytes = data(8 * MIB, 5);
+        fs::write(&path, &bytes).unwrap();
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        for off in (0..bytes.len() / 4).step_by(64 * 1024) {
+            bytes[off + 1000] ^= 0x5a;
+        }
+        fs::write(&path, &bytes).unwrap();
+        h.daemon.hooks.lock().unwrap().basis_budget = Some(64 * 1024);
+        let mut local = h.local_side();
+        local.hooks.basis_budget = Some(64 * 1024);
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::ChunkBasis(b)) => (0..10_000u32)
+                .map(|k| {
+                    Msg::ChunkBasis(ChunkBasis {
+                        chunk_idx: b.chunk_idx.wrapping_add(k),
+                        ..b.clone()
+                    })
+                })
+                .collect(),
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .expect_err("bases above the budget were accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("chunk bases above the budget"), "{err}");
     })
     .await;
 }
