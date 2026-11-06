@@ -1383,6 +1383,11 @@ const CLOSE_QUIET: Duration = Duration::from_secs(30);
 /// latest after the session's idle timeout. Credit grants stop once our
 /// streams have ended (the client knows their size), so the quiet time
 /// also covers a client reading the rest of what it holds.
+///
+/// With the daemon's idle timeout off (`idle_timeout = 0`) there is no
+/// latest: a client that keeps something moving holds the session open as
+/// long as it likes (the quiet time still ends a wait in which nothing
+/// moves).
 async fn await_client_close(ctx: &Ctx) {
     #[cfg(feature = "test-hooks")]
     let quiet = ctx.hooks.close_quiet.unwrap_or(CLOSE_QUIET);

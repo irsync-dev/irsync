@@ -116,7 +116,10 @@ impl SendTasks {
 #[derive(Default)]
 struct Pending {
     idxs: BTreeSet<u32>,
-    /// Bases for some of `idxs`, already out of the basis budget.
+    /// Bases for some of `idxs`. They left the basis budget when the
+    /// request that brought them arrived (the receiver counts them free
+    /// once it has sent it), so pending bases sit outside the budget,
+    /// bounded by the file's chunk count.
     bases: HashMap<u32, Basis>,
 }
 
@@ -139,8 +142,8 @@ struct SFile {
     /// rest of the file is matched (`FileMatched`). A request may come in
     /// several parts (chunks without a basis first, then those with one).
     requested: HashSet<u32>,
-    /// Send tasks of this generation started and not yet finished, or
-    /// pending; `FileSent` when the last one finishes.
+    /// Send tasks of this generation started and not yet finished;
+    /// `FileSent` when the last one finishes with nothing pending.
     streams: u32,
     /// The file's send task, while it runs (of this generation or an older
     /// one): there is at most one, see `pending`.
