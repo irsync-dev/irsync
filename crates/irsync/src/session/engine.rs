@@ -1143,6 +1143,8 @@ async fn serve_daemon_inner(
                 h.out_peak = p.out_peak;
                 h.basis_budget = p.basis_budget;
                 h.basis_peak = p.basis_peak;
+                h.list_budget = p.list_budget;
+                h.list_peak = p.list_peak;
                 h.slow_peer_events = p.slow_peer_events;
             }
             h
@@ -1210,7 +1212,13 @@ async fn run_role(
     // tasks send (the planner's `Itemized`, `offer_bases`), never while
     // holding a lock a main loop awaits; the writer always makes progress,
     // since the peer's control reader drains into a main loop that never
-    // waits on us.
+    // waits on us. Chunk lists wait for room the receiver grants
+    // (`ListRoom`) in the sender's `ListCredit`, never in a task or the
+    // writer: the main loop queues them, and sends those that fit with
+    // `Out::send` (the room bounds them). The receiver grants room from its
+    // main loop, also without waiting, as files leave it, and a retried
+    // file's old list is dropped at once (an empty first part), so the room
+    // a waiting list needs is always freed by files that can progress.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
     let (out, writer) = control::spawn_writer(send, ev_tx.clone(), &ctx.hooks);

@@ -822,6 +822,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Error(_) => "Error",
         Msg::Itemized(_) => "Itemized",
         Msg::Heartbeat(_) => "Heartbeat",
+        Msg::ListRoom(_) => "ListRoom",
     }
 }
 

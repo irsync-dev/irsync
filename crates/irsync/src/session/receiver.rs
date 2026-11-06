@@ -20,7 +20,7 @@ use std::time::Duration;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, FileAck, FileEntry, Itemized,
-    ListingEnd, NeedChunks, PathError, PlanEntry, PlanItem, SessionDone,
+    ListRoom, ListingEnd, NeedChunks, PathError, PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -31,9 +31,9 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, ByteBudget, LISTING_QUEUE};
+use super::limits::{basis_budget, list_budget, ByteBudget, LISTING_QUEUE};
 use super::listing_stream::ListingOut;
-use super::parts::{assemble, Assembly};
+use super::parts::{assemble, Assembly, ListBudget};
 use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
 };
@@ -227,6 +227,14 @@ struct Receiver {
     /// Bytes of chunk bases sent and not yet requested, across files (see
     /// `offer_bases`). Only the basis tasks wait on it, never the main loop.
     basis_budget: Arc<ByteBudget>,
+    /// Chunk records of the files' lists held, against the room granted to
+    /// the sender (see `parts::ListBudget`). Fresh for every connection, as
+    /// the sender's room is.
+    lists: ListBudget,
+    /// Every file id requested on this connection: a chunk list part for
+    /// any other is a protocol error, one for a file that has left `files`
+    /// is late and ignored.
+    planned: HashSet<u64>,
 }
 
 impl Receiver {
@@ -304,6 +312,7 @@ impl Receiver {
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
         self.active += 1;
+        self.planned.insert(file_id);
         #[cfg(feature = "test-hooks")]
         if let Some(peak) = &self.ctx.hooks.inflight_peak {
             peak.fetch_max(self.active, Ordering::SeqCst);
@@ -426,6 +435,7 @@ impl Receiver {
             return;
         };
         self.active -= 1;
+        self.release_list(file_id);
         tracing::info!(path = ?f.path, error = %msg, "file failed");
         self.ctx
             .hooks
@@ -438,13 +448,58 @@ impl Receiver {
         }
     }
 
+    /// Grants the sender room for `records` chunk records of lists. Sent
+    /// with `Out::send`, which never waits: the main loop must not wait on
+    /// the peer (see the deadlock invariant at `run_role`).
+    fn grant_lists(&self, records: u64) {
+        if records > 0 {
+            self.out.send(Msg::ListRoom(ListRoom { records }));
+        }
+    }
+
+    /// The file has left `files`: its list's room goes back to the sender.
+    fn release_list(&mut self, file_id: u64) {
+        let n = self.lists.release(file_id);
+        self.grant_lists(n);
+    }
+
     /// One part of a chunk list; the complete list goes to `on_chunk_list`.
-    /// A malformed sequence fails the file, like a list that does not tile it.
-    async fn on_chunk_list_part(&mut self, p: ChunkListPart) {
+    /// A malformed sequence fails the file, like a list that does not tile
+    /// it. A list beyond the room granted fails the session, and is checked
+    /// first: before the part is looked at, and before any of it is held.
+    async fn on_chunk_list_part(&mut self, p: ChunkListPart) -> anyhow::Result<()> {
         let file_id = p.file_id;
+        if !self.planned.contains(&file_id) {
+            anyhow::bail!(
+                "protocol error: chunk list part for file id {file_id}, which was never planned"
+            );
+        }
+        let known = self.files.contains_key(&file_id);
+        if p.first == 0 {
+            // The first part takes the list's whole announced total; the
+            // later parts are covered by it (assembly refuses more). A new
+            // list for the file replaces the old one, whose room is freed.
+            let freed = self
+                .lists
+                .charge(file_id, u64::from(p.total), true)
+                .map_err(|e| {
+                    anyhow::anyhow!("protocol error: chunk list beyond the granted room: {e}")
+                })?;
+            #[cfg(feature = "test-hooks")]
+            if let Some(peak) = &self.ctx.hooks.list_peak {
+                peak.fetch_max(self.lists.total(), Ordering::SeqCst);
+            }
+            // Late (the file failed or was placed): nothing is kept.
+            let late = if known {
+                0
+            } else {
+                self.lists.release(file_id)
+            };
+            self.grant_lists(freed + late);
+        }
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "chunk list part for a file not in flight");
-            return;
+            return Ok(());
         };
         self.ctx.hooks.event("part", &f.path);
         match assemble(&mut f.assembly, p) {
@@ -455,6 +510,7 @@ impl Receiver {
                 self.fail(file_id, Some(Status::WriteError), msg).await;
             }
         }
+        Ok(())
     }
 
     async fn on_chunk_list(&mut self, file_id: u64, digest: Arc<FileDigest>) {
@@ -837,6 +893,7 @@ impl Receiver {
                 // (it withdraws its error on this ack).
                 self.files.remove(&file_id);
                 self.active -= 1;
+                self.release_list(file_id);
                 self.persist.done(file_id);
                 self.ctx.progress.store(true, Ordering::Relaxed);
                 self.out.send(Msg::Ack(FileAck {
@@ -892,7 +949,7 @@ impl Receiver {
     async fn handle(&mut self, ev: Ev) -> anyhow::Result<()> {
         match ev {
             Ev::Recv(d) => self.on_done(d).await,
-            Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await,
+            Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await?,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
@@ -1050,6 +1107,8 @@ pub(super) async fn run(
         queued: VecDeque::new(),
         inflight_cap: inflight_cap(&ctx),
         basis_budget: Arc::new(ByteBudget::new(basis_budget(&ctx.hooks))),
+        lists: ListBudget::new(list_budget(&ctx.hooks)),
+        planned: HashSet::new(),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores

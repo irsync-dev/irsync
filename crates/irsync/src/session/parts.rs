@@ -1,6 +1,14 @@
 //! Chunk lists in parts: a list travels as a sequence of `ChunkListPart`
 //! messages (sender), reassembled into one `FileDigest` on the receiver.
 //! Pure functions; the roles drive them.
+//!
+//! Chunk lists travel in room the receiver grants (`limits::LIST_BUDGET`
+//! records per connection): the sender sends a file's list only once its
+//! announced `total` fits in the room it has left ([`ListCredit`]); the
+//! receiver reserves that total at the list's first part and grants it back
+//! with `ListRoom` once it drops the list ([`ListBudget`]).
+
+use std::collections::{HashMap, VecDeque};
 
 use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{ChunkListPart, Hash};
@@ -136,6 +144,128 @@ fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<FileD
         ));
     }
     Ok(slot.take().map(|a| a.digest))
+}
+
+/// Receiver: the chunk records held for all files' lists, against the
+/// room granted to the sender. A list's first part reserves its announced
+/// `total` whole, before anything is assembled or allocated; the later
+/// parts are covered by it (assembly refuses more than the total).
+pub(super) struct ListBudget {
+    limit: u64,
+    held: HashMap<u64, u64>,
+    total: u64,
+}
+
+impl ListBudget {
+    pub fn new(limit: u64) -> Self {
+        ListBudget {
+            limit,
+            held: HashMap::new(),
+            total: 0,
+        }
+    }
+
+    /// Takes `part_records` for `file_id` (for a first part: the list's
+    /// announced total). A first part replaces the file's earlier list: what
+    /// that held is released first and returned, for the caller to grant
+    /// back. `Err` when the total would exceed the limit; nothing is taken
+    /// then (an earlier list stays held).
+    pub fn charge(
+        &mut self,
+        file_id: u64,
+        part_records: u64,
+        first_part: bool,
+    ) -> Result<u64, String> {
+        let old = if first_part {
+            self.held.get(&file_id).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        let total = self.total - old + part_records;
+        if total > self.limit {
+            return Err(format!(
+                "{part_records} records with {} held, beyond the {} granted",
+                self.total - old,
+                self.limit
+            ));
+        }
+        self.total = total;
+        let held = self.held.entry(file_id).or_insert(0);
+        if first_part {
+            *held = 0;
+        }
+        *held += part_records;
+        Ok(old)
+    }
+
+    /// Drops what the file holds; returns it, for the caller to grant back.
+    pub fn release(&mut self, file_id: u64) -> u64 {
+        let n = self.held.remove(&file_id).unwrap_or(0);
+        self.total -= n;
+        n
+    }
+
+    /// Records held now, across files.
+    #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+}
+
+/// Sender: chunk lists waiting for room the receiver has granted. A file's
+/// list goes out whole once its total fits, never in part: two half-sent
+/// lists could otherwise each wait for room only the other frees. First
+/// in, first out, so a large list is not overtaken forever.
+pub(super) struct ListCredit {
+    room: u64,
+    queue: VecDeque<(u64, Vec<ChunkListPart>)>,
+}
+
+impl ListCredit {
+    pub fn new(room: u64) -> Self {
+        ListCredit {
+            room,
+            queue: VecDeque::new(),
+        }
+    }
+
+    /// Queues a file's whole list.
+    pub fn push(&mut self, file_id: u64, parts: Vec<ChunkListPart>) {
+        self.queue.push_back((file_id, parts));
+    }
+
+    /// Room the receiver freed.
+    pub fn grant(&mut self, records: u64) {
+        self.room = self.room.saturating_add(records);
+    }
+
+    /// Drops the file's queued list (it was superseded or given up);
+    /// false if none was queued.
+    pub fn cancel(&mut self, file_id: u64) -> bool {
+        let before = self.queue.len();
+        self.queue.retain(|(id, _)| *id != file_id);
+        self.queue.len() != before
+    }
+
+    /// The parts of every file, from the front, whose list fits in the room
+    /// left; their room is taken.
+    pub fn ready(&mut self) -> Vec<ChunkListPart> {
+        let mut out = Vec::new();
+        while let Some((_, parts)) = self.queue.front() {
+            let total = list_total(parts);
+            if total > self.room {
+                break;
+            }
+            self.room -= total;
+            out.extend(self.queue.pop_front().map(|(_, p)| p).unwrap_or_default());
+        }
+        out
+    }
+}
+
+/// The records a list announces (every part carries the total).
+pub(super) fn list_total(parts: &[ChunkListPart]) -> u64 {
+    parts.first().map_or(0, |p| u64::from(p.total))
 }
 
 #[cfg(test)]
@@ -295,6 +425,110 @@ mod tests {
         // 2 chunks of at least 64 KiB cannot describe a 10-byte file.
         parts[0].size = 10;
         assert!(run(parts).unwrap_err().contains("size"));
+    }
+
+    #[test]
+    fn an_empty_unfinished_first_part_withdraws_the_list() {
+        let d = digest(10);
+        let mut parts = split(42, &d, 4, true);
+        parts.insert(
+            1,
+            ChunkListPart {
+                file_id: 42,
+                ..ChunkListPart::default()
+            },
+        );
+        // Withdrawn mid-list: what follows without a new start is refused.
+        assert!(run(parts.clone()).unwrap_err().contains("continues at"));
+        // A new list after the withdrawal assembles.
+        let mut slot = None;
+        assert_eq!(assemble(&mut slot, parts[1].clone()), Ok(None));
+        let mut got = None;
+        for p in split(42, &d, 4, true) {
+            got = assemble(&mut slot, p).unwrap();
+        }
+        assert_eq!(got.expect("complete").chunks, d.chunks);
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn charge_beyond_the_limit_is_refused() {
+        let mut b = ListBudget::new(10);
+        assert_eq!(b.charge(1, 6, true), Ok(0));
+        assert!(b.charge(2, 5, true).is_err());
+        // Refused: nothing was taken.
+        assert_eq!(b.total(), 6);
+        assert_eq!(b.charge(2, 4, true), Ok(0));
+        assert_eq!(b.total(), 10);
+        assert_eq!(b.release(1), 6);
+        assert_eq!(b.release(1), 0);
+        assert_eq!(b.total(), 4);
+    }
+
+    #[test]
+    fn a_new_first_part_releases_the_old_list() {
+        let mut b = ListBudget::new(10);
+        assert_eq!(b.charge(1, 10, true), Ok(0));
+        assert_eq!(b.charge(1, 4, true), Ok(10));
+        assert_eq!(b.total(), 4);
+        assert_eq!(b.release(1), 4);
+        assert_eq!(b.total(), 0);
+    }
+
+    /// Parts of a list of `n` records, one record per part.
+    fn list(file_id: u64, n: usize) -> Vec<ChunkListPart> {
+        split(file_id, &digest(n), 1, true)
+    }
+
+    fn ids(parts: &[ChunkListPart]) -> Vec<(u64, u32)> {
+        parts.iter().map(|p| (p.file_id, p.first)).collect()
+    }
+
+    #[test]
+    fn credit_sends_whole_files_in_order() {
+        let mut c = ListCredit::new(10);
+        c.push(1, list(1, 8));
+        c.push(2, list(2, 5));
+        let out = c.ready();
+        assert_eq!(out.len(), 8);
+        assert!(out.iter().all(|p| p.file_id == 1));
+        assert!(c.ready().is_empty());
+        c.grant(8);
+        let out = c.ready();
+        assert_eq!(ids(&out), (0..5).map(|k| (2, k)).collect::<Vec<_>>());
+        assert!(c.ready().is_empty());
+    }
+
+    #[test]
+    fn credit_never_splits_a_file() {
+        let mut c = ListCredit::new(10);
+        c.push(1, list(1, 12));
+        // 12 records never fit in 10, not even in part.
+        assert!(c.ready().is_empty());
+        c.push(2, list(2, 1));
+        // ...and nothing overtakes the file at the front.
+        assert!(c.ready().is_empty());
+        c.grant(2);
+        assert_eq!(c.ready().len(), 12);
+        c.grant(1);
+        assert_eq!(ids(&c.ready()), vec![(2, 0)]);
+    }
+
+    #[test]
+    fn an_empty_list_needs_no_room() {
+        let mut c = ListCredit::new(0);
+        c.push(1, list(1, 0));
+        assert_eq!(c.ready().len(), 1);
+    }
+
+    #[test]
+    fn a_cancelled_file_leaves_the_queue() {
+        let mut c = ListCredit::new(4);
+        c.push(1, list(1, 8));
+        c.push(2, list(2, 3));
+        assert!(c.cancel(1));
+        assert!(!c.cancel(1));
+        assert_eq!(ids(&c.ready()), vec![(2, 0), (2, 1), (2, 2)]);
     }
 
     #[test]

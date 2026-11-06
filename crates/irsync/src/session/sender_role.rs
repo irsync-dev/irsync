@@ -17,8 +17,8 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, FileAck, NeedChunks, PlanEntry,
-    PlanItem, SessionDone,
+    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck,
+    NeedChunks, PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -29,9 +29,9 @@ use super::control::{
     is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, basis_wire_len};
+use super::limits::{basis_budget, basis_wire_len, list_budget};
 use super::listing_stream::ListingOut;
-use super::parts::{split, PART_RECORDS};
+use super::parts::{split, ListCredit, PART_RECORDS};
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict};
@@ -127,6 +127,11 @@ struct SenderRole {
     basis_held: usize,
     /// More than this fails the session.
     basis_budget: usize,
+    /// Chunk lists waiting for room the receiver grants, and that room.
+    /// Fresh for every connection, as the receiver's budget is.
+    lists: ListCredit,
+    /// The room a connection starts with: a longer list can never be sent.
+    list_budget: u64,
     /// Every file id ever planned (duplicate detection).
     seen: HashSet<u64>,
     /// Files given up with `SOURCE_ERROR`, by id, with their path. If
@@ -298,6 +303,7 @@ impl SenderRole {
     fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
         let mut f = self.files.remove(&file_id)?;
         drop_bases(&mut self.basis_held, &mut f);
+        self.lists.cancel(file_id);
         Some(f)
     }
 
@@ -334,11 +340,26 @@ impl SenderRole {
         tracing::info!(path = ?f.path, reason = %why, "re-sending file");
         f.retries += 1;
         f.gen += 1;
-        f.digest = None;
+        let listed = f.digest.take().is_some();
         drop_bases(&mut self.basis_held, f);
         f.requested.clear();
         f.streams = 0;
         let (gen, path) = (f.gen, f.path.clone());
+        if listed && !self.lists.cancel(file_id) {
+            // The old list went out, and the receiver holds it until a new
+            // one replaces it. The new one may have to wait for room, which
+            // the old one may be taking: restart the list now with an empty,
+            // unfinished first part, so the receiver drops the old one and
+            // frees its room. No room needed (it announces no records), so
+            // it goes out at once.
+            self.out.send(Msg::ChunkListPart(ChunkListPart {
+                file_id,
+                total: 0,
+                first: 0,
+                last: false,
+                ..ChunkListPart::default()
+            }));
+        }
         self.spawn_digest(file_id, gen, path, true, false, None);
     }
 
@@ -437,24 +458,40 @@ impl SenderRole {
             return;
         }
         match result {
+            Ok(d) if d.chunks.len() as u64 > self.list_budget => {
+                let msg = format!(
+                    "chunk list of {} chunks, beyond the session's room of {}",
+                    d.chunks.len(),
+                    self.list_budget
+                );
+                self.source_error(file_id, msg);
+            }
             Ok(d) => {
                 let with_hash = f.append_from.is_none();
-                for p in split(file_id, &d, part_records(&self.ctx), with_hash) {
-                    self.out.send(Msg::ChunkListPart(p));
-                    #[cfg(feature = "test-hooks")]
-                    if let Some(h) = &self.ctx.hooks.drop_after_parts {
-                        if h.queued() {
-                            tracing::warn!(
-                                "fault injection: dropping the connection between parts"
-                            );
-                            self.ctx.conn.close(99u32.into(), b"fault");
-                        }
-                    }
-                }
+                // Sent once the receiver has room for it (`pump_lists`).
+                let parts = split(file_id, &d, part_records(&self.ctx), with_hash);
+                self.lists.push(file_id, parts);
                 f.span.record("size", d.size);
                 f.digest = Some(Arc::new(d));
             }
             Err(e) => self.source_error(file_id, e.to_string()),
+        }
+    }
+
+    /// Sends the chunk lists that fit in the room the receiver has granted.
+    /// Runs on the main loop, so it never waits (see the deadlock invariant
+    /// at `run_role`): the parts are queued with `Out::send`, not paced.
+    /// They are bounded already, by the room granted.
+    fn pump_lists(&mut self) {
+        for p in self.lists.ready() {
+            self.out.send(Msg::ChunkListPart(p));
+            #[cfg(feature = "test-hooks")]
+            if let Some(h) = &self.ctx.hooks.drop_after_parts {
+                if h.queued() {
+                    tracing::warn!("fault injection: dropping the connection between parts");
+                    self.ctx.conn.close(99u32.into(), b"fault");
+                }
+            }
         }
     }
 
@@ -884,6 +921,8 @@ pub(super) async fn run(
         files: HashMap::new(),
         basis_held: 0,
         basis_budget: basis_budget(&ctx.hooks),
+        lists: ListCredit::new(list_budget(&ctx.hooks)),
+        list_budget: list_budget(&ctx.hooks),
         seen: HashSet::new(),
         abandoned: HashMap::new(),
         files_done: 0,
@@ -959,6 +998,10 @@ pub(super) async fn run(
                 s.on_ack(a);
                 Ok(())
             }
+            Ev::Ctrl(Msg::ListRoom(r)) => {
+                s.lists.grant(r.records);
+                Ok(())
+            }
             Ev::Ctrl(Msg::ListingEnd(e)) => {
                 if e.incomplete {
                     let msg = "the receiver's listing is incomplete".to_string();
@@ -987,6 +1030,8 @@ pub(super) async fn run(
         if let Err(e) = step {
             break Err(e);
         }
+        // Lists digested or room granted (or a file at the front given up).
+        s.pump_lists();
     };
     s.transfer.end();
     if res.is_ok() {

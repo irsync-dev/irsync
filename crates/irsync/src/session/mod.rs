@@ -447,6 +447,8 @@ pub struct DaemonHooks {
     pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub basis_budget: Option<usize>,
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    pub list_budget: Option<u64>,
+    pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -646,6 +648,14 @@ pub struct SideHooks {
     /// Sender: the most bytes of chunk bases it has held at once.
     #[cfg(feature = "test-hooks")]
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Both roles: chunk records of room for lists (see
+    /// `limits::LIST_BUDGET`) each connection starts with, instead of the
+    /// default.
+    #[cfg(feature = "test-hooks")]
+    pub list_budget: Option<u64>,
+    /// Receiver: the most chunk records of lists it has held at once.
+    #[cfg(feature = "test-hooks")]
+    pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Receiver: each `Done::Planned` reaches the main loop this much later
     /// than the planner posts it (a completion hidden behind another
     /// producer's half-written slot), still before the planner finishes.

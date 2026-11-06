@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use irsync_proto::v1::ChunkBasis;
 
+use super::parts::MAX_LIST_CHUNKS;
+
 /// Listing items a queue holds: the peer's listing on its way to the
 /// planner, the receiver's own listing on its way to the planner, and a
 /// listing on its way to the listing stream's writer. A full queue stalls
@@ -32,6 +34,22 @@ pub(super) const BASIS_BUDGET: usize = 32 * 1024 * 1024;
 
 /// Bases the receiver sends before the request that uses them.
 pub(super) const BASIS_BATCH: usize = 64;
+
+/// Chunk records of lists a receiver holds at once, across files: the room
+/// each connection starts with on both sides (see `parts::ListBudget` and
+/// `parts::ListCredit`). At least one maximal list, so any legal list can
+/// eventually be sent; a sender fails a file whose list is longer.
+pub(super) const LIST_BUDGET: u64 = MAX_LIST_CHUNKS as u64;
+
+/// This side's list budget: [`LIST_BUDGET`], unless a test sets another.
+pub(super) fn list_budget(hooks: &super::SideHooks) -> u64 {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = hooks.list_budget {
+        return n;
+    }
+    let _ = hooks;
+    LIST_BUDGET
+}
 
 /// A basis's size as counted against [`BASIS_BUDGET`]: its block hashes
 /// as they travel.

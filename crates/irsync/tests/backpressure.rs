@@ -573,3 +573,184 @@ async fn bases_above_the_budget_fail_the_session() {
     })
     .await;
 }
+
+/// The room for chunk lists in these tests, in records.
+const LIST_ROOM: u64 = 100;
+
+/// 30 files of 13 MiB: 30 to 60 chunks each (about 350 KiB a chunk on
+/// random data), so two or three lists fill the room.
+fn thirty_listed_files(root: &Path) {
+    for i in 0..30 {
+        let bytes = data(13 * MIB, 100 + i);
+        let chunks = irsync_proto::chunk::digest_bytes(&bytes).chunks.len();
+        assert!((30..=60).contains(&chunks), "file {i}: {chunks} chunks");
+        fs::write(root.join(format!("f{i:02}.bin")), bytes).unwrap();
+    }
+}
+
+/// Lists far larger in sum than the room: the sender holds them back until
+/// the receiver frees room, and the receiver never holds more than it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunk_lists_wait_for_room() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        thirty_listed_files(h.src(flow));
+        let peak = Arc::new(AtomicU64::new(0));
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.list_budget = Some(LIST_ROOM);
+            d.list_peak = Some(peak.clone());
+        }
+        let mut local = h.local_side();
+        local.hooks.list_budget = Some(LIST_ROOM);
+        local.hooks.chunk_list_part_records = Some(3);
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 30);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(peak <= LIST_ROOM, "the receiver held {peak} records");
+        assert!(
+            peak >= 30,
+            "the receiver held at most {peak} records: no list was ever held"
+        );
+    })
+    .await;
+}
+
+/// A sender that announces a list longer than the room it was granted.
+/// The receiver must refuse it before it checks the list against the file
+/// (which would only fail that file).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chunk_list_beyond_the_room_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("f.bin"), data(9 * MIB, 7)).unwrap();
+        h.daemon.hooks.lock().unwrap().list_budget = Some(LIST_ROOM);
+        let mut local = h.local_side();
+        local.hooks.list_budget = Some(LIST_ROOM);
+        local.hooks.chunk_list_part_records = Some(3);
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::ChunkListPart(mut p)) => {
+                // Every part: they must agree for the list to look sound.
+                p.total = LIST_ROOM as u32 + 1;
+                vec![Msg::ChunkListPart(p)]
+            }
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .expect_err("a list beyond the room was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("chunk list beyond the granted room"), "{err}");
+    })
+    .await;
+}
+
+/// A list for a file id the receiver never asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chunk_list_for_an_unplanned_file_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("f.bin"), data(MIB, 8)).unwrap();
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::ChunkListPart(mut p)) => {
+                p.file_id += 1000;
+                vec![Msg::ChunkListPart(p)]
+            }
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .expect_err("a list for an unplanned file was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("never planned"), "{err}");
+    })
+    .await;
+}
+
+/// The connection drops after the first list took most of the room: the
+/// next connection starts with the whole room again on both sides (a sender
+/// still counting the old list would never send it again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_room_starts_afresh_on_every_connection() {
+    within60(async {
+        const ROOM: u64 = 60;
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let bytes = data(13 * MIB, 100);
+        let chunks = irsync_proto::chunk::digest_bytes(&bytes).chunks.len() as u64;
+        assert!(chunks > ROOM / 2 && chunks <= ROOM, "{chunks} chunks");
+        fs::write(h.src(flow).join("x.bin"), &bytes).unwrap();
+        h.daemon.hooks.lock().unwrap().list_budget = Some(ROOM);
+        let fault = PartsFault::after(2);
+        let mut local = h.local_side();
+        local.hooks.list_budget = Some(ROOM);
+        local.hooks.chunk_list_part_records = Some(3);
+        local.hooks.drop_after_parts = Some(fault.clone());
+        let (out, reconnects) = h.run_reconnect(&archive_opts(), flow, fast(), local).await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(fault.fired(), "the fault never fired");
+        assert_eq!(reconnects, 1);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), bytes);
+    })
+    .await;
+}
+
+/// A file that changes while it is sent is listed again. Its old list
+/// takes more than half the room and so does the new one: the receiver
+/// must drop the old list before the new one can fit, or both wait forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_list_sent_again_first_frees_the_old_one() {
+    within60(async {
+        const ROOM: u64 = 60;
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (old, new) = (data(13 * MIB, 100), data(13 * MIB, 101));
+        for bytes in [&old, &new] {
+            let chunks = irsync_proto::chunk::digest_bytes(bytes).chunks.len() as u64;
+            assert!(chunks > ROOM / 2 && chunks <= ROOM, "{chunks} chunks");
+        }
+        let src = h.src(flow).to_path_buf();
+        fs::write(src.join("x.bin"), &old).unwrap();
+        h.daemon.hooks.lock().unwrap().list_budget = Some(ROOM);
+        let mut local = h.local_side();
+        local.hooks.list_budget = Some(ROOM);
+        let fired = Arc::new(AtomicUsize::new(0));
+        local.hooks.on_first_chunk_sent = Some({
+            let (src, new, fired) = (src.clone(), new.clone(), fired.clone());
+            Arc::new(move |_| {
+                let (src, new, fired) = (src.clone(), new.clone(), fired.clone());
+                Box::pin(async move {
+                    if fired.fetch_add(1, SeqCst) == 0 {
+                        fs::write(src.join("x.bin"), &new).unwrap();
+                    }
+                })
+            })
+        });
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(fired.load(SeqCst) >= 1, "the file never changed mid-send");
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        // (Its mtime is the one listed before the change, as in
+        // `file_changed_during_transfer_is_resent`.)
+        assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), new);
+    })
+    .await;
+}
