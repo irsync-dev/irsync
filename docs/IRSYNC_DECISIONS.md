@@ -316,7 +316,10 @@ cross-referenced from commit messages and review notes.
   `.part` open and `safe::open_regular_nofollow` (sources, old files,
   local copies, both roles). Errors that will not fix themselves fail the
   file at once, as before; a failed file is otherwise retried only by a
-  reconnect's resume or by the next run.
+  reconnect's resume or by the next run. Amended 2026-11-07: the follow-up
+  landed (see 2.1(1)); the listing has its own stream, the queues between
+  the network and a consumer are bounded, and each side enforces the
+  protocol's limits on the other.
 - **R34 (process) — One narrowly scoped follow-up fix was dispatched after
   the single final fix wave**, deviating from the "one fix wave" rule, because
   the fix wave itself introduced the idle-timeout regression and it hit the
@@ -328,10 +331,68 @@ cross-referenced from commit messages and review notes.
 
 ### 2.1 Tracked follow-ups (should land before relying on irsync at scale)
 
-1. **Bounded channels / backpressure (R31).** Control and listing channels
-   are unbounded; `--delete-before` buffers the whole listing. An authorised
-   peer with a huge tree can grow memory until the follow-up lands. Needs a
-   design that avoids the reader/writer deadlock cycle.
+1. **Bounded channels / backpressure (R31).** **Done 2026-11-07.** No
+   queue in a session grows because one side is faster than the other, and
+   each side bounds what the other can make it remember or spawn. Design:
+   `docs/superpowers/specs/2026-11-06-listing-backpressure-design.md`.
+   - *Own listing stream.* Each side that lists sends listing entries,
+     gaps and `ListingEnd` on a dedicated QUIC stream, off the control
+     stream. A listing reader feeds the planner through a bounded queue
+     (`LISTING_QUEUE`, 1024); when the planner stalls on its in-flight
+     slots the reader stops, QUIC flow control backs up the peer's walk,
+     and the control stream keeps being read, so the reader/writer
+     deadlock R31 avoided cannot form.
+   - *Bounded peer queues.* The events queue is bounded
+     (`PEER_EVENTS`, 1024); a full queue stops the control reader, so a
+     flooding peer waits in its own writer.
+   - *Byte-paced frames.* Per-path and per-chunk frames (`Itemized`,
+     `ChunkBasis`) go through `Out::send_paced`, which waits while
+     `OUT_BUDGET` (4 MiB) is queued for the writer; the main loop never
+     waits on the peer.
+   - *Batched bases.* The receiver sends `NeedChunks` with each batch of
+     bases (`BASIS_BATCH`, 64), so the sender uses and drops them; the
+     sender fails a session that holds more than `BASIS_BUDGET` (32 MiB).
+   - *Granted list room.* The receiver holds chunk lists under a
+     session-wide budget (`LIST_BUDGET` chunk records) and grants room per
+     file; a file whose list does not fit waits. A list part sent without
+     room is a protocol error.
+   - *Enforced rules.* Each side fails the session, with an `Error` frame,
+     for a peer that breaks a limit: more than `MAX_INFLIGHT` files in
+     flight, unknown or unlisted paths, bases for files not in flight,
+     list parts beyond the per-file cap or the budget, listing paths out
+     of order, a `ListingEnd` whose count differs from the entries
+     received, or a missing or repeated `ListingEnd`.
+   - *Settled along the way.*
+     (a) A receiver may briefly hold an obsolete chunk list beyond its
+     counted room, so the bound is about 2x `LIST_BUDGET`, not 1x.
+     (b) Bases parked in a file's pending request sit outside the
+     sender's basis budget; they are bounded by the receiver's batches and
+     the files in flight.
+     (c) At session end the daemon waits for the client to close while the
+     connection makes progress, so a slow client can finish reading. It
+     gives up after 30 s of no progress or at the idle timeout, and the
+     wait is unbounded when the idle timeout is 0.
+     (d) `LIST_BUDGET` (= `MAX_LIST_CHUNKS`) is an implicit protocol
+     constant shared by both sides: the sender starts with that much room
+     and the receiver grants against the same number, so the two must
+     agree.
+   - *What it costs.* Push of a generated tree of 31,531 files (316 MiB,
+     `filegen run --seed 1 --steps 400000 --max-total-size 600M
+     --max-file-size 16K`) to a local daemon on tmpfs, `-a --no-resume`,
+     release builds, six interleaved runs per build, 32 cores, busy
+     machine (load 5-8). Wall time `main` 2544-3877 ms, median 2973 ms;
+     branch 3899-5334 ms, median 4536 ms (+53%; the ranges barely
+     separate). Daemon CPU is nearly the same: `main` 14.0-14.8 s, median
+     14.4 s; branch 14.8-15.7 s, median 15.1 s (+5%). So the branch does
+     the same work with less parallelism: the daemon's mean per-file time
+     (first request to DONE) goes from 0.40 s to 0.66 s, and its `recv`
+     activity (waiting for the sender's data streams) from 1.9 s to 4.2 s
+     of wall time, while `write` and `place` are unchanged. The sender
+     (`send` busy 1.3 s) is not busier. Where the extra latency comes
+     from is not yet found.
+   - *Next step.* Find the stall (an off-CPU profile of both ends, or a
+     counter on each bounded queue and budget wait) before changing
+     `LISTING_QUEUE`, `PEER_EVENTS` or `OUT_BUDGET`.
 2. **Application heartbeat (R35).** One peer's long local work (e.g. hashing
    a multi-GB file on a slow disk) is invisible to the other peer's idle
    watchdog. Mitigated by the 30-min daemon default and `idle_timeout = 0`.
@@ -428,6 +489,11 @@ cross-referenced from commit messages and review notes.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
+- A hostile receiver can still make a sender digest up to `MAX_INFLIGHT`
+  of the export's largest files at once (the sender checks that a `Plan`
+  names a listed path and that no more than `MAX_INFLIGHT` are in flight,
+  not which ones). Memory is bounded by the real file sizes, not by
+  anything the peer sends.
 - A `PermissionDenied`/`restore_owner_rw` window can leave a placed,
   verified file with extra `u+rw` bits; fixed by the next `-p` run.
 - Activity bumps in `digest_held`, the hasher, the delete pass and the
@@ -521,8 +587,7 @@ cross-referenced from commit messages and review notes.
 **Deletions**
 - Path-based removal has a TOCTOU window (parents checked, then remove);
   harden with `openat(O_NOFOLLOW|O_DIRECTORY)` + `unlinkat`. Skipped
-  deletions under a swapped parent only warn. `ListingEnd.count` is not
-  checked against entries received.
+  deletions under a swapped parent only warn.
 
 **GC**
 - No test for a stale row with a fresh file (mtime re-check path);
