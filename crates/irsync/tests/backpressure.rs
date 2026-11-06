@@ -1007,3 +1007,48 @@ async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
     })
     .await;
 }
+
+/// A sender that fails before it lists: a resumed daemon sender waits for
+/// the receiver's first frame to decide whether to list, and the client's
+/// first control frame breaks the protocol. The client (listing afresh,
+/// as `--delete` never reuses a stored plan) must report the daemon's
+/// error, never that the daemon's listing ended without a frame, whichever
+/// stream it reads first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sender_failing_before_its_listing_reports_its_own_error() {
+    within120(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.sender_parallel(4);
+        h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+        let (first, _) = h
+            .run_reconnect(&archive_opts(), flow, no_reconnect(), h.local_side())
+            .await;
+        assert!(first.is_err(), "the first run should fail");
+        let mut opts = archive_opts();
+        opts.delete = DeleteMode::After;
+        for i in 0..50 {
+            let mut local = h.local_side();
+            let first = AtomicBool::new(true);
+            local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
+                (StreamKind::Control, m) if first.swap(false, SeqCst) => {
+                    let entry = FileEntry {
+                        path: b"zz".to_vec(),
+                        kind: Kind::Regular as i32,
+                        ..FileEntry::default()
+                    };
+                    vec![Msg::Listing(ListingEntry { entry: Some(entry) }), m]
+                }
+                (_, m) => vec![m],
+            }));
+            let (out, _) = h.run_reconnect(&opts, flow, no_reconnect(), local).await;
+            let err = format!("{:#}", out.expect_err("a broken protocol was accepted"));
+            assert!(
+                err.contains("listing frame on the control stream"),
+                "run {i}: {err}"
+            );
+        }
+    })
+    .await;
+}

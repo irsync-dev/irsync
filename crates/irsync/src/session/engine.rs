@@ -1227,7 +1227,9 @@ async fn run_role(
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
     let (out, writer) = control::spawn_writer(send, ev_tx.clone(), &ctx.hooks);
     let (listing_send, listing_recv) = listing;
-    let (listing_out, listing_writer) =
+    // The gate holds back an empty listing half until the role has ended
+    // (see `spawn_listing_writer`).
+    let (listing_out, listing_gate, listing_writer) =
         listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), &ctx.hooks);
     let scan = Arc::new(listing_stream::PeerScan::default());
     let (peer_tx, peer_rx) = mpsc::channel(LISTING_QUEUE);
@@ -1311,6 +1313,7 @@ async fn run_role(
     record_session(&ctx.meter, res.as_ref().ok());
     match res {
         Ok(mut o) => {
+            drop(listing_gate);
             o.usage = ctx.meter.usage();
             if let Some((process, net)) = sampled {
                 o.usage.process = process;
@@ -1358,6 +1361,7 @@ async fn run_role(
                 reader.abort();
                 listing_reader.abort();
                 listing_writer.abort();
+                drop(listing_gate);
             });
             Err(e)
         }

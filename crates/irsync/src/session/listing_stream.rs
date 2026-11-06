@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use irsync_proto::v1::{control::Msg, Control, ListingEntry, ListingStreamHeader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -95,16 +95,28 @@ impl ListingOut {
 /// Spawns the listing writer: frames go out in queue order; once every
 /// [`ListingOut`] is gone it ends the stream and waits (bounded) until the
 /// peer has the bytes.
+///
+/// A half that ends with nothing queued at all waits for the returned gate
+/// to be dropped first, which the caller does once the role has ended (on
+/// failure, after its `Error` had its chance to arrive). A role that fails
+/// before it lists drops its handle, and that empty half would otherwise
+/// reach the peer ahead of the `Error`: a receiver listing afresh takes an
+/// empty half as a protocol error of ours, which would hide the real one.
+/// An honest empty half (no listing, as a resumed session decides) is
+/// never waited for, so nothing waits on the gate.
 pub(super) fn spawn_listing_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
     hooks: &SideHooks,
-) -> (ListingOut, JoinHandle<()>) {
+) -> (ListingOut, oneshot::Sender<()>, JoinHandle<()>) {
     let tamper = hooks.tamper();
     let (tx, mut rx) = mpsc::channel::<Control>(LISTING_QUEUE);
+    let (gate, gated) = oneshot::channel::<()>();
     let task = tokio::spawn(
         async move {
+            let mut queued = false;
             while let Some(c) = rx.recv().await {
+                queued = true;
                 for msg in c
                     .msg
                     .into_iter()
@@ -116,6 +128,9 @@ pub(super) fn spawn_listing_writer(
                         return;
                     }
                 }
+            }
+            if !queued {
+                let _ = gated.await;
             }
             if send.finish().is_ok() {
                 let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
@@ -129,6 +144,7 @@ pub(super) fn spawn_listing_writer(
             #[cfg(feature = "test-hooks")]
             waits: hooks.listing_waits.clone(),
         },
+        gate,
         task,
     )
 }
