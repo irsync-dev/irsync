@@ -5,10 +5,11 @@
 //! - it runs only when a delete mode was asked for (the planner collects no
 //!   candidates otherwise);
 //! - it refuses when either listing was incomplete, unless `ignore_errors`;
-//! - it never follows symlinks: a symlink is removed with `remove_file`, and a
-//!   candidate is skipped when any of its parent components is no longer a
-//!   real directory;
-//! - directories are removed with `remove_dir` only, after their contents
+//! - it never follows symlinks: each path is removed with `unlinkat`
+//!   relative to its parent directory, opened from the root without
+//!   following any symlink and held across the check and the removal; a
+//!   candidate whose parent is no longer a real directory is an error;
+//! - directories are removed with `AT_REMOVEDIR` only, after their contents
 //!   (deepest first); a directory that still holds something is an error for
 //!   that path, never a recursive removal;
 //! - it stops at `max_delete` (rsync exit code 25);
@@ -16,14 +17,20 @@
 
 use std::collections::HashSet;
 use std::io;
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
+use nix::fcntl::AtFlags;
+use nix::sys::stat::{fstatat, SFlag};
+use nix::unistd::{unlinkat, UnlinkatFlags};
 
 use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
+use crate::fs::safe::{errno, open_dir_beneath, split_last};
 use crate::telemetry::meter::{Activity, Meter};
 
 /// The deletion pass was not run because a listing was incomplete: a path
@@ -251,7 +258,7 @@ impl DeletePass {
         let _timed = meter.as_deref().map(|m| m.start(Activity::Delete));
         let mut rep = DeleteReport::default();
         let mut count = self.spent;
-        let mut real_dirs: HashSet<PathBuf> = HashSet::new();
+        let mut parent: ParentCache = None;
         let candidates = std::mem::take(&mut self.candidates);
         let total = candidates.len() as u64;
         let report = |handled: u64| {
@@ -277,7 +284,7 @@ impl DeletePass {
                     count += 1;
                     break 'one;
                 }
-                match remove_one(root, &path, &mut real_dirs) {
+                match remove_one(root, &path, &mut parent) {
                     Ok(true) => {
                         tracing::info!(?path, "deleted");
                         rep.deleted.push(path);
@@ -303,49 +310,47 @@ impl DeletePass {
     }
 }
 
-/// Whether every component of `path` below `root` up to its parent is a real
-/// directory (not a symlink), so removing `root/path` stays inside the tree.
-fn parents_are_dirs(root: &Path, path: &RelPath, real_dirs: &mut HashSet<PathBuf>) -> bool {
-    let comps: Vec<&[u8]> = path.components().collect();
-    let mut p = root.to_path_buf();
-    for c in &comps[..comps.len().saturating_sub(1)] {
-        p.push(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(c));
-        if real_dirs.contains(&p) {
-            continue;
-        }
-        match std::fs::symlink_metadata(&p) {
-            Ok(m) if m.file_type().is_dir() => {
-                real_dirs.insert(p.clone());
-            }
-            _ => return false,
-        }
-    }
-    true
-}
+/// The parent directory last opened by [`remove_one`]: candidates come
+/// deepest first in reverse path order, so siblings share it.
+type ParentCache = Option<(RelPath, OwnedFd)>;
 
-/// Removes one path: `remove_dir` for a directory (fails unless empty),
-/// `remove_file` for anything else, symlinks included (never followed).
-/// `Ok(false)` when it is already gone or no longer inside the tree.
-fn remove_one(root: &Path, path: &RelPath, real_dirs: &mut HashSet<PathBuf>) -> io::Result<bool> {
-    if !parents_are_dirs(root, path, real_dirs) {
-        tracing::warn!(?path, "not deleted: a parent is no longer a directory");
-        return Ok(false);
+/// Removes one path relative to its parent directory, which is opened from
+/// `root` component by component with `O_NOFOLLOW` (see
+/// [`open_dir_beneath`]) and held while the path is checked and removed: a
+/// parent swapped for a symlink cannot redirect the removal outside the
+/// tree. `unlinkat(AT_REMOVEDIR)` for a directory (fails unless empty),
+/// plain `unlinkat` for anything else, symlinks included (never followed).
+/// `Ok(false)` when it is already gone; a parent that is no longer a real
+/// directory is an error.
+fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Result<bool> {
+    let (dir, name) = split_last(path)?;
+    if parent.as_ref().is_none_or(|(p, _)| *p != dir) {
+        *parent = None;
+        match open_dir_beneath(root, &dir) {
+            Ok(fd) => *parent = Some((dir, fd)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        }
     }
-    let full = root.join(path.to_os());
-    let md = match std::fs::symlink_metadata(&full) {
-        Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e),
+    let Some((_, fd)) = parent.as_ref() else {
+        unreachable!("the parent was just opened")
     };
-    let res = if md.file_type().is_dir() {
-        std::fs::remove_dir(&full)
+    let name = std::ffi::OsStr::from_bytes(&name);
+    let st = match fstatat(fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(st) => st,
+        Err(nix::Error::ENOENT) => return Ok(false),
+        Err(e) => return Err(errno(e)),
+    };
+    let is_dir = SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR;
+    let flag = if is_dir {
+        UnlinkatFlags::RemoveDir
     } else {
-        std::fs::remove_file(&full)
+        UnlinkatFlags::NoRemoveDir
     };
-    match res {
+    match unlinkat(fd, name, flag) {
         Ok(()) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
+        Err(nix::Error::ENOENT) => Ok(false),
+        Err(e) => Err(errno(e)),
     }
 }
 
@@ -452,6 +457,10 @@ mod tests {
         let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
         assert_eq!(rep.deleted, [rel("link")]);
         assert!(outside.path().join("precious").exists());
+        // The path under a parent that is no longer a directory is an
+        // error, not a silent skip.
+        assert_eq!(rep.errors.len(), 1, "{:?}", rep.errors);
+        assert_eq!(rep.errors[0].0, rel("link/precious"));
     }
 
     #[tokio::test]
