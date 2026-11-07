@@ -111,8 +111,10 @@ cargo build --release --workspace --features netsim --target-dir target/netsim
 The binaries land in `target/netsim/release/`; that `irsync --version` ends
 with ` [netsim]`. Write it exactly so: `--features irsync/netsim` looks
 similar but builds irsync without the feature, because irsync lists itself
-as a dev-dependency. See
-[crates/netstress/README.md](crates/netstress/README.md) and
+as a dev-dependency. How to use it:
+[crates/netstress/README.md](crates/netstress/README.md). How it works
+inside: [docs/NETSTRESS_HOW_IT_WORKS.md](docs/NETSTRESS_HOW_IT_WORKS.md).
+Decisions and first results:
 [docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md).
 
 ## Design documents
@@ -125,6 +127,7 @@ as a dev-dependency. See
 | [docs/IRSYNC_DECISIONS.md](docs/IRSYNC_DECISIONS.md) | Design and implementation decisions of v1 that the code does not show, and the points knowingly left open. |
 | [docs/FILESET_DECISIONS.md](docs/FILESET_DECISIONS.md), [docs/FILEGEN_DECISIONS.md](docs/FILEGEN_DECISIONS.md), [docs/IRSYNC_HARNESS_DECISIONS.md](docs/IRSYNC_HARNESS_DECISIONS.md) | The same for fileset, filegen and irsync-stress; the last also lists the irsync bugs the harness found. |
 | [docs/STRESS_BUG_HUNTING.md](docs/STRESS_BUG_HUNTING.md) | A strategy for finding bugs with irsync-stress. |
+| [docs/NETSTRESS_HOW_IT_WORKS.md](docs/NETSTRESS_HOW_IT_WORKS.md) | How irsync-netstress and its fault layer work inside: the transport, the link and outage models, seeds, and how a run is judged. |
 | [docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md) | The calls made building irsync-netstress and its fault layer, and the first real runs. |
 | [docs/telemetry.md](docs/telemetry.md) | Spans, metrics and their sinks. |
 | [docs/daemon.md](docs/daemon.md) | Running the daemon. |
