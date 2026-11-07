@@ -66,6 +66,8 @@ pub(super) struct PeerTx {
     tx: mpsc::Sender<Ev>,
     #[cfg(feature = "test-hooks")]
     peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(feature = "test-hooks")]
+    stop_after_done: bool,
 }
 
 impl PeerTx {
@@ -77,6 +79,8 @@ impl PeerTx {
             tx,
             #[cfg(feature = "test-hooks")]
             peak: hooks.peer_events_peak.clone(),
+            #[cfg(feature = "test-hooks")]
+            stop_after_done: hooks.stop_reading_after_done,
         };
         (tx, rx)
     }
@@ -84,7 +88,13 @@ impl PeerTx {
     /// Queues `ev`, waiting while the queue is full. Once the main loop is
     /// gone the event is dropped, so a reader reads on until it is aborted.
     pub async fn send(&self, ev: Ev) {
+        #[cfg(feature = "test-hooks")]
+        let done = self.stop_after_done && matches!(ev, Ev::Ctrl(Msg::Done(_)));
         let _ = self.tx.send(ev).await;
+        #[cfg(feature = "test-hooks")]
+        if done {
+            std::future::pending::<()>().await;
+        }
         #[cfg(feature = "test-hooks")]
         if let Some(p) = &self.peak {
             p.fetch_max(

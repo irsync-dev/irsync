@@ -1307,6 +1307,53 @@ async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
     .await;
 }
 
+/// The client's side of the above: a pull whose client queues 29 MB of
+/// frames behind its `SessionDone`, which the daemon never reads (it stops
+/// reading at `SessionDone`, as a peer that does not read would), while it
+/// stays connected for 60 s. The client's wait for its writer ends once
+/// nothing has moved for its quiet time (2 s here), and the session
+/// succeeds: the daemon has what it needs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_client_stops_waiting_for_a_writer_the_daemon_does_not_read() {
+    within120(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("f.bin"), data(MIB, 3)).unwrap();
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.close_quiet = Some(Duration::from_secs(60));
+            d.stop_reading_after_done = true;
+        }
+        let mut local = h.local_side();
+        local.hooks.close_quiet = Some(Duration::from_secs(2));
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, m @ Msg::Done(_)) => {
+                let tail = Msg::Itemized(irsync_proto::v1::Itemized {
+                    path: vec![b'x'; 3600],
+                    code: ".d..p......".into(),
+                });
+                let mut v = vec![m];
+                v.extend(std::iter::repeat_n(tail, 8000));
+                v
+            }
+            (_, m) => vec![m],
+        }));
+        let started = std::time::Instant::now();
+        let out = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the client waited {:?} for its writer",
+            started.elapsed()
+        );
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.src(flow), h.dst(flow), &archive_opts().preserve);
+    })
+    .await;
+}
+
 /// A sender whose lister stops short (five frames, no `ListingEnd`), as
 /// one that fails mid-listing, and which then fails for good (the client's
 /// first `PlanItem` comes behind a listing frame on the control stream):

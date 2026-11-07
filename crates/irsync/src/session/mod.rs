@@ -450,6 +450,7 @@ pub struct DaemonHooks {
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub tamper_frames: Option<FrameHook>,
     pub close_quiet: Option<Duration>,
+    pub stop_reading_after_done: bool,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub cut_listing_after: Option<usize>,
@@ -665,10 +666,16 @@ pub struct SideHooks {
     /// files in flight.
     #[cfg(feature = "test-hooks")]
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    /// Daemon: how long, at a session's end, it waits for the client to
-    /// close while nothing moves, instead of the default.
+    /// Both roles: how long, at a session's end, the side waits for its
+    /// control writer (the daemon also for the client to close) while
+    /// nothing moves, instead of the default.
     #[cfg(feature = "test-hooks")]
     pub close_quiet: Option<std::time::Duration>,
+    /// Both roles: the control reader stops reading once it has passed on
+    /// the peer's `SessionDone`, keeping the stream open (a peer that does
+    /// not read).
+    #[cfg(feature = "test-hooks")]
+    pub stop_reading_after_done: bool,
     /// Both roles: chunk records of room for lists (see
     /// `limits::LIST_BUDGET`) each connection starts with, instead of the
     /// default.

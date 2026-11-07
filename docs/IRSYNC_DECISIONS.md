@@ -440,10 +440,13 @@ cross-referenced from commit messages and review notes.
      place each piece's bases go out just before it (signed once the
      earlier pieces are requested; the ordered writes have not reached
      the piece yet, and a basis region starts at its chunk).
-     Still open, none of them new on this branch: the sender holds a
-     `FileDigest` per file in flight, which the list room does not bound;
-     the client's success path waits for its own control writer without a
-     bound (the user can interrupt it).
+     (m) The client's success path waits for its own control writer
+     under the same progress bound as the daemon (30 s in which nothing
+     moves, at the latest the idle timeout), then aborts it and closes:
+     until 2026-11-07 a daemon that stopped reading while staying
+     connected kept a finished session from returning.
+     Still open, not new on this branch: the sender holds a `FileDigest`
+     per file in flight, which the list room does not bound.
    - *What it cost before the fix below.* Push of a generated tree of
      31,531 files (316 MiB,
      `filegen run --seed 1 --steps 400000 --max-total-size 600M
