@@ -577,6 +577,21 @@ cross-referenced from commit messages and review notes.
      disk with the fsync on and off. If it matters, the likely choice is
      (D) with (C1) as the default and per-file syncing as the flag; (C2)
      only if (C1) proves insufficient.
+   - *Measured 2026-11-07, on btrfs, not ext4 or XFS.* The 31,531-file
+     push (see item 1's workload) from tmpfs to a daemon whose destination
+     and index are on btrfs RAID1 over two WD20EFRX disks, 8 cores, a
+     throwaway build switching the sync by environment, fresh destination
+     and index every run, four interleaved runs each (medians); "+ sync" adds
+     a `sync -f` of the destination after the client returns, which is what
+     (C1) would cost at the end of a session: `sync_all` 22.5 s, + sync
+     26.5 s; `sync_data` 20.8 s, + sync 24.8 s; no sync 10.4 s, + sync
+     18.6 s. So on this disk (C1) saves about 30% of a push, (B) about 60%,
+     and `sync_data` is within the noise. btrfs merges concurrent fsyncs
+     into one log commit (about 500 threads waited in `wait_log_commit` at
+     a time), which is why the per-file cost is about 0.25-0.4 ms, not 5-20 ms.
+     Two of eight runs with a sync took 187-200 s; that was the index
+     feedback loop fixed in f80a77e (`recv.rs`, `PERSIST_EVERY`), not the
+     sync. ext4 and XFS, whose fsync behaves differently, are unmeasured.
 6. **Daemon blocking pool: thread count and futex handoffs** (measured
    2026-11-06, left open). On the 33k-file push to tmpfs (32 cores), the
    daemon uses about 12.2 s of CPU for a push of about 1 s wall, 62% of
@@ -608,7 +623,17 @@ cross-referenced from commit messages and review notes.
      hold a thread for a whole session and need headroom under any cap.
    - *Next step.* Measure with (5), on a real disk: if a cap costs no wall
      time there, set `max_blocking_threads` in `run_daemon`, sized from
-     the core count plus the long-lived tasks per session. The wall time
+     the core count plus the long-lived tasks per session.
+   - *Measured 2026-11-07 on the disk of (5): no cap while files are synced
+     one by one.* Medians of four runs, wall / daemon CPU: with `sync_all`,
+     default 22.5 s / 31 s, cap 64 229 s / 111 s, cap 16 373 s / 130 s,
+     cap 8 520 s / 136 s (`sync_data` with cap 16: 381 s). Each blocking
+     thread waits in `fsync` for the next btrfs log commit, so with eight
+     threads each commit carries about eight files. The index feedback loop
+     (f80a77e) made it worse; with that fixed, cap 8 is 334 s and cap 16
+     210 s, still ten times slower. Without per-file syncing a cap costs
+     nothing at 16 (7.8 s against 10.4 s) but varies at 8 (8.4-61.8 s).
+     A cap becomes possible only together with (C1) or (B). The wall time
      of the tmpfs push is set elsewhere; the next profile is of the
      client and the pipeline between the two sides.
 
