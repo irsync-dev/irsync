@@ -515,3 +515,104 @@ async fn gc_keeps_entries_when_the_root_holds_no_files() {
     assert_eq!(report.entries_removed, 0);
     assert!(ix.lock().unwrap().get_entry(&rel("a")).unwrap().is_some());
 }
+
+/// A stale record whose part file was written since (a receiver that has
+/// not refreshed the record yet): the file's own mtime keeps both.
+#[tokio::test]
+async fn gc_keeps_a_stale_record_whose_file_is_fresh() {
+    let f = fixture();
+    let r = f.root.path();
+    std::fs::write(r.join(".irsync.busy.part"), b"x").unwrap();
+    touch_ago(&r.join(".irsync.busy.part"), 1);
+    f.ix.lock()
+        .unwrap()
+        .put_partial(&rel("busy"), &partial(now() - 9 * DAY as i64))
+        .unwrap();
+    let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    assert!(r.join(".irsync.busy.part").exists());
+    assert!(!rep.parts_removed.contains(&rel(".irsync.busy.part")));
+    assert_eq!(rep.parts_kept, 2, "busy, and held by a session");
+    assert!(f
+        .ix
+        .lock()
+        .unwrap()
+        .partial(&rel("busy"))
+        .unwrap()
+        .is_some());
+}
+
+/// `irsync gc` as a user runs it: finds every index under the configured
+/// state dir by the root recorded in it, lists what it removes (or would),
+/// and counts parts, sessions and index entries.
+#[test]
+fn irsync_gc_end_to_end() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, root, state) = (
+        d.path().join("home"),
+        d.path().join("root"),
+        d.path().join("state"),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(root.join("d")).unwrap();
+    let config = d.path().join("irsync.toml");
+    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    std::fs::write(root.join("d/.irsync.old.part"), b"x").unwrap();
+    touch_ago(&root.join("d/.irsync.old.part"), 8);
+    std::fs::write(root.join(".irsync.new.part"), b"x").unwrap();
+    touch_ago(&root.join(".irsync.new.part"), 1);
+    std::fs::write(root.join("keep"), b"k").unwrap();
+    std::fs::write(root.join("gone"), b"g").unwrap();
+    {
+        let ix = Index::open(&state, &root).unwrap().into_handle();
+        index_file(&ix, &root, "keep");
+        index_file(&ix, &root, "gone");
+        ix.lock()
+            .unwrap()
+            .save_session(&session(1, "elsewhere", 9))
+            .unwrap();
+    }
+    std::fs::remove_file(root.join("gone")).unwrap();
+    let gc = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+            .arg("gc")
+            .args(args)
+            .arg("--config")
+            .arg(&config)
+            .env("HOME", &home)
+            .env("XDG_STATE_HOME", home.join("xdg"))
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    };
+    let old = std::fs::canonicalize(&root)
+        .unwrap()
+        .join("d/.irsync.old.part");
+    let line = |what: &str| format!("1 part file(s), 1 session(s), 1 index entry {what}");
+
+    let out = gc(&["-n"]);
+    assert_eq!(
+        out,
+        format!("{}\n{}\n", old.display(), line("would be removed"))
+    );
+    assert!(old.exists());
+
+    let out = gc(&[]);
+    assert_eq!(out, format!("{}\n{}\n", old.display(), line("removed")));
+    assert!(!old.exists());
+    assert!(root.join(".irsync.new.part").exists());
+    assert!(root.join("keep").exists());
+    let ix = Index::open(&state, &root).unwrap();
+    assert!(ix.load_session_by_id(&[1; 16]).unwrap().is_none());
+    assert!(ix.get_entry(&rel("gone")).unwrap().is_none());
+    assert!(ix.get_entry(&rel("keep")).unwrap().is_some());
+    drop(ix);
+
+    assert_eq!(
+        gc(&[]),
+        "0 part file(s), 0 session(s), 0 index entries removed\n"
+    );
+    assert_eq!(gc(&["-q"]), "");
+}
