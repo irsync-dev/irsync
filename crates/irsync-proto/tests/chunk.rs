@@ -98,7 +98,7 @@ fn sub_minimum_tail_is_its_own_chunk() {
     let d = digest_bytes(&data);
     let lens: Vec<u32> = d.chunks.iter().map(|c| c.len).collect();
     assert_eq!(lens, [max as u32, 7]);
-    assert!(7 < CHUNK_PARAMS.min);
+    const { assert!(7 < CHUNK_PARAMS.min) };
     assert_eq!(d.chunks[1].hash, *blake3::hash(&data[max..]).as_bytes());
 }
 
