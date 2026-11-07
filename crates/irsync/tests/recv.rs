@@ -366,6 +366,10 @@ async fn read_only_mode_with_dir_dest_stays_resumable() {
     ent.mode = 0o100444;
     let err = w.finalize(&ent, &OPTS).await.unwrap_err();
     assert!(matches!(err, FinalizeError::Io(_)), "{err:?}");
+    // The failure came after the read-only mode was applied: owner
+    // read/write is restored on the `.part` before anything reopens it.
+    let mode = fs::metadata(part_path(&e.root)).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644, "{mode:o}");
     let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
     // Even a .part left read-only by an older failure is reopened.
