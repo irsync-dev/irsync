@@ -472,7 +472,9 @@ impl SenderRole {
         // Resumed from the receiver's stored plan, nothing was listed: each
         // path is checked as the walk would have admitted it, and one gone
         // since is an honest source error.
+        // The root is never sent as a file, even when it is one and was listed.
         let walked = match self.listing {
+            _ if path.as_bytes().is_empty() => None,
             Listing::FromPlan => None,
             Listing::Running(_) | Listing::Undecided(_) => {
                 let walked = self

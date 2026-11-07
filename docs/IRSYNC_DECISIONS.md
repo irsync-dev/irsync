@@ -426,6 +426,18 @@ cross-referenced from commit messages and review notes.
      listing, which the peer would take as a transport error and retry.
      Likewise an undecodable frame on either stream is a protocol error,
      not a transport error.
+     (k) A failed session aborts its control writer after the 5 s drain
+     rather than detaching it, so the backlog (h) stops and the
+     connection it held is freed. A digest's hasher permit travels with
+     its blocking read, so aborting the task does not free a worker
+     early. The sender never sends the root as a file, even when it is
+     one and was listed.
+     Still open, none of them new on this branch: a `NeedChunks` for a
+     file of more than about 4M chunks (about 1 TB) exceeds `MAX_FRAME`
+     and fails the control writer; the sender holds a `FileDigest` per
+     file in flight, which the list room does not bound; the client's
+     success path waits for its own control writer without a bound (the
+     user can interrupt it).
    - *What it cost before the fix below.* Push of a generated tree of
      31,531 files (316 MiB,
      `filegen run --seed 1 --steps 400000 --max-total-size 600M

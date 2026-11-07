@@ -1367,7 +1367,16 @@ async fn run_role(
                 message: format!("{e:#}"),
             }));
             out.finish();
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
+            // Aborted, not detached, on expiry: a peer that does not read
+            // would otherwise keep the writer, its backlog and the
+            // connection alive.
+            let abort = writer.abort_handle();
+            if tokio::time::timeout(std::time::Duration::from_secs(5), writer)
+                .await
+                .is_err()
+            {
+                abort.abort();
+            }
             // Ending our listing half short, or stopping one of the peer's
             // halves, fails the peer with a transport error, which could
             // overtake our `Error` and make it retry a session that cannot

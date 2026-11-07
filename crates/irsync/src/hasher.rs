@@ -229,9 +229,12 @@ impl Hasher {
             .meter
             .as_deref()
             .map(|m| m.hold("irsync_hash_queue_depth"));
-        let _permit = self
+        // Owned and moved into the blocking read: aborting this task must not
+        // free the worker while the read runs on.
+        let permit = self
             .sem
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|_| io::Error::other("hasher closed"))?;
         drop(queued);
@@ -243,6 +246,7 @@ impl Hasher {
         let progress = self.progress.clone();
         let meter = self.meter.clone();
         let res = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             if !force {
                 if let Some(d) = lookup(&index, &path, want)? {
                     return Ok(d);
