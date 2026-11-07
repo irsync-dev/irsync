@@ -1149,6 +1149,7 @@ async fn serve_daemon_inner(
                 h.stop_reading_after_done = p.stop_reading_after_done;
                 h.list_budget = p.list_budget;
                 h.list_peak = p.list_peak;
+                h.lists_ahead_peak = p.lists_ahead_peak;
                 h.slow_peer_events = p.slow_peer_events;
                 h.cut_listing_after = p.cut_listing_after;
             }

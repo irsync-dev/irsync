@@ -9,9 +9,11 @@
 //! with `ListRoom` once it drops the list ([`ListBudget`]).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{ChunkListPart, Hash};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Records per part: about 1.6 MiB on the wire, a tenth of a control frame.
 pub(super) const PART_RECORDS: usize = 32 * 1024;
@@ -203,11 +205,28 @@ impl ListBudget {
 /// list goes out whole once its total fits, never in part: two half-sent
 /// lists could otherwise each wait for room only the other frees. First
 /// in, first out, so a large list is not overtaken forever.
+///
+/// The sender digests ahead of the room only as much as the room holds:
+/// a digest takes [`ListCredit::ahead`] permits, one per record it may
+/// have (see [`records_at_most`]), before it reads the file, and its list
+/// keeps them until it goes out. So the lists digested and waiting, and
+/// the digests running, never hold more records than one room, however
+/// many files are in flight; a file that needs the whole room is digested
+/// alone.
 pub(super) struct ListCredit {
     room: u64,
     /// The room a connection starts with.
     limit: u64,
-    queue: VecDeque<(u64, Vec<ChunkListPart>)>,
+    queue: VecDeque<(u64, Vec<ChunkListPart>, Option<OwnedSemaphorePermit>)>,
+    ahead: Arc<Semaphore>,
+}
+
+/// The most chunk records a file of `size` bytes can have (every chunk but
+/// the last is at least `CHUNK_PARAMS.min`), at least one and at most
+/// `limit`: the permits its digest takes (see [`ListCredit`]).
+pub(super) fn records_at_most(size: u64, limit: u32) -> u32 {
+    let n = size / u64::from(CHUNK_PARAMS.min) + 1;
+    u32::try_from(n).unwrap_or(u32::MAX).min(limit).max(1)
 }
 
 impl ListCredit {
@@ -216,12 +235,30 @@ impl ListCredit {
             room,
             limit: room,
             queue: VecDeque::new(),
+            ahead: Arc::new(Semaphore::new(Self::permits(room) as usize)),
         }
     }
 
-    /// Queues a file's whole list.
-    pub fn push(&mut self, file_id: u64, parts: Vec<ChunkListPart>) {
-        self.queue.push_back((file_id, parts));
+    /// The permits of digests ahead of the room: one per record of room.
+    fn permits(room: u64) -> u32 {
+        u32::try_from(room).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// What a digest waits on before it reads the file: the semaphore, and
+    /// the most permits one digest takes. It hands its permits to
+    /// [`ListCredit::push`] with its list.
+    pub fn ahead(&self) -> (Arc<Semaphore>, u32) {
+        (self.ahead.clone(), Self::permits(self.limit))
+    }
+
+    /// Queues a file's whole list, with the permits its digest took.
+    pub fn push(
+        &mut self,
+        file_id: u64,
+        parts: Vec<ChunkListPart>,
+        held: Option<OwnedSemaphorePermit>,
+    ) {
+        self.queue.push_back((file_id, parts, held));
     }
 
     /// Room the receiver freed. It frees only what our lists took, so the
@@ -244,21 +281,33 @@ impl ListCredit {
     /// false if none was queued.
     pub fn cancel(&mut self, file_id: u64) -> bool {
         let before = self.queue.len();
-        self.queue.retain(|(id, _)| *id != file_id);
+        self.queue.retain(|(id, _, _)| *id != file_id);
         self.queue.len() != before
+    }
+
+    /// The records of the lists waiting for room.
+    #[cfg(feature = "test-hooks")]
+    pub fn queued(&self) -> u64 {
+        self.queue.iter().map(|(_, p, _)| list_total(p)).sum()
     }
 
     /// The parts of every file, from the front, whose list fits in the room
     /// left; their room is taken.
     pub fn ready(&mut self) -> Vec<ChunkListPart> {
         let mut out = Vec::new();
-        while let Some((_, parts)) = self.queue.front() {
+        while let Some((_, parts, _)) = self.queue.front() {
             let total = list_total(parts);
             if total > self.room {
                 break;
             }
             self.room -= total;
-            out.extend(self.queue.pop_front().map(|(_, p)| p).unwrap_or_default());
+            // Out under the room: its digest's permits go back.
+            out.extend(
+                self.queue
+                    .pop_front()
+                    .map(|(_, p, _)| p)
+                    .unwrap_or_default(),
+            );
         }
         out
     }
@@ -308,6 +357,20 @@ mod tests {
             out = assemble(&mut slot, p)?;
         }
         Ok(out)
+    }
+
+    #[test]
+    fn a_file_reserves_at_least_the_records_it_can_have_within_the_room() {
+        let min = u64::from(CHUNK_PARAMS.min);
+        assert_eq!(records_at_most(0, 24), 1);
+        assert_eq!(records_at_most(min - 1, 24), 1);
+        // Two chunks: one at the minimum and a short tail.
+        assert_eq!(records_at_most(min + 1, 24), 2);
+        assert_eq!(records_at_most(100 * min, 24), 24);
+        assert_eq!(records_at_most(u64::MAX, u32::MAX), u32::MAX);
+        let bytes: Vec<u8> = (0..3 * min as u32 + 5).map(|i| (i % 251) as u8).collect();
+        let d = irsync_proto::chunk::digest_bytes(&bytes);
+        assert!(d.chunks.len() as u32 <= records_at_most(bytes.len() as u64, u32::MAX));
     }
 
     #[test]
@@ -488,8 +551,8 @@ mod tests {
     #[test]
     fn credit_sends_whole_files_in_order() {
         let mut c = ListCredit::new(10);
-        c.push(1, list(1, 8));
-        c.push(2, list(2, 5));
+        c.push(1, list(1, 8), None);
+        c.push(2, list(2, 5), None);
         let out = c.ready();
         assert_eq!(out.len(), 8);
         assert!(out.iter().all(|p| p.file_id == 1));
@@ -503,12 +566,12 @@ mod tests {
     #[test]
     fn credit_never_splits_a_file() {
         let mut c = ListCredit::new(10);
-        c.push(1, list(1, 6));
+        c.push(1, list(1, 6), None);
         assert_eq!(c.ready().len(), 6);
-        c.push(2, list(2, 5));
+        c.push(2, list(2, 5), None);
         // 5 records never fit in the 4 left, not even in part.
         assert!(c.ready().is_empty());
-        c.push(3, list(3, 1));
+        c.push(3, list(3, 1), None);
         // ...and nothing overtakes the file at the front.
         assert!(c.ready().is_empty());
         c.grant(1).unwrap();
@@ -520,11 +583,11 @@ mod tests {
     #[test]
     fn room_above_the_start_is_refused() {
         let mut c = ListCredit::new(10);
-        c.push(1, list(1, 6));
+        c.push(1, list(1, 6), None);
         assert_eq!(c.ready().len(), 6);
         assert!(c.grant(7).is_err());
         // Refused: nothing was granted.
-        c.push(2, list(2, 5));
+        c.push(2, list(2, 5), None);
         assert!(c.ready().is_empty());
         c.grant(6).unwrap();
         assert_eq!(c.ready().len(), 5);
@@ -534,15 +597,15 @@ mod tests {
     #[test]
     fn an_empty_list_needs_no_room() {
         let mut c = ListCredit::new(0);
-        c.push(1, list(1, 0));
+        c.push(1, list(1, 0), None);
         assert_eq!(c.ready().len(), 1);
     }
 
     #[test]
     fn a_cancelled_file_leaves_the_queue() {
         let mut c = ListCredit::new(4);
-        c.push(1, list(1, 8));
-        c.push(2, list(2, 3));
+        c.push(1, list(1, 8), None);
+        c.push(2, list(2, 3), None);
         assert!(c.cancel(1));
         assert!(!c.cancel(1));
         assert_eq!(ids(&c.ready()), vec![(2, 0), (2, 1), (2, 2)]);

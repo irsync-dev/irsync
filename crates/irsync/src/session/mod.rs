@@ -453,6 +453,7 @@ pub struct DaemonHooks {
     pub stop_reading_after_done: bool,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub lists_ahead_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub cut_listing_after: Option<usize>,
 }
 
@@ -687,6 +688,10 @@ pub struct SideHooks {
     /// Receiver: the most chunk records of lists it has held at once.
     #[cfg(feature = "test-hooks")]
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Sender: the most chunk records of lists it has held at once
+    /// digested and waiting for room.
+    #[cfg(feature = "test-hooks")]
+    pub lists_ahead_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Receiver: each `Done::Planned` reaches the main loop this much later
     /// than the planner posts it (a completion hidden behind another
     /// producer's half-written slot), still before the planner finishes.

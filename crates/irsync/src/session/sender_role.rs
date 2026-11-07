@@ -20,7 +20,7 @@ use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck,
     NeedChunks, PlanEntry, PlanItem, SessionDone,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -31,7 +31,7 @@ use super::control::{
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::limits::{basis_budget, basis_wire_len, list_budget};
 use super::listing_stream::ListingOut;
-use super::parts::{split, ListCredit, PART_RECORDS};
+use super::parts::{records_at_most, split, ListCredit, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
@@ -55,7 +55,8 @@ pub(super) enum Done {
     Digested {
         file_id: u64,
         gen: u32,
-        result: io::Result<FileDigest>,
+        /// With the permits the digest took (see `ListCredit`).
+        result: io::Result<(FileDigest, OwnedSemaphorePermit)>,
     },
     Sent {
         file_id: u64,
@@ -297,6 +298,7 @@ impl SenderRole {
     ) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
         let append_from = self.files.get(&file_id).and_then(|f| f.append_from);
+        let (ahead, most) = self.lists.ahead();
         let hash = self.files.get(&file_id).map_or_else(
             tracing::Span::none,
             |f| tracing::debug_span!(parent: &f.span, "hash"),
@@ -316,46 +318,51 @@ impl SenderRole {
                     }
                     // Hashing works on index keys under the index root.
                     let key = ctx.key(&path);
-                    if let Some(walked) = walked {
-                        // The walk saw a regular file; the opens below refuse
-                        // anything else now.
-                        if let Some(from) = append_from {
-                            let full = ctx.full_key(&key);
-                            return blocking(move || tail_digest(&full, from)).await;
+                    // The walk saw a regular file (the opens below refuse
+                    // anything else now); without it, re-stat: the digest
+                    // must describe the file as it is now.
+                    let (size, item) = match walked {
+                        Some(walked) => (walked.size, None),
+                        None => {
+                            let (base, rel) = (ctx.base.clone(), key.clone());
+                            let (entry, ctime) =
+                                blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
+                            if entry.kind() != Kind::Regular {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "no longer a regular file",
+                                ));
+                            }
+                            let item = ScanItem {
+                                path: key.clone(),
+                                entry,
+                                ctime,
+                            };
+                            (item.entry.size, Some(item))
                         }
-                        let since = super::wait_start(&ctx.meter);
-                        let digest = sender.lookahead_digest_walked(key, walked).await;
-                        super::record_hash_wait(&ctx.meter, since);
-                        return digest;
-                    }
-                    // Re-stat: the digest must describe the file as it is now.
-                    let (base, rel) = (ctx.base.clone(), key.clone());
-                    let (entry, ctime) =
-                        blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
-                    if entry.kind() != Kind::Regular {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "no longer a regular file",
-                        ));
-                    }
-                    if let Some(from) = append_from {
+                    };
+                    // Only as far ahead of the room as it holds.
+                    let size = size.saturating_sub(append_from.unwrap_or(0));
+                    let held = ahead
+                        .acquire_many_owned(records_at_most(size, most))
+                        .await
+                        .map_err(|_| io::Error::other("the session ended"))?;
+                    let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
                         let full = ctx.full_key(&key);
-                        return blocking(move || tail_digest(&full, from)).await;
-                    }
-                    let item = ScanItem {
-                        path: key,
-                        entry,
-                        ctime,
-                    };
-                    let since = super::wait_start(&ctx.meter);
-                    let digest = if force {
-                        ctx.forced.digest(&item).await
+                        blocking(move || tail_digest(&full, from)).await
                     } else {
-                        sender.lookahead_digest(&item).await
+                        let since = super::wait_start(&ctx.meter);
+                        let digest = match (walked, item) {
+                            (Some(walked), _) => sender.lookahead_digest_walked(key, walked).await,
+                            (None, Some(item)) if force => ctx.forced.digest(&item).await,
+                            (None, Some(item)) => sender.lookahead_digest(&item).await,
+                            (None, None) => unreachable!("no walk without a re-stat"),
+                        };
+                        super::record_hash_wait(&ctx.meter, since);
+                        digest
                     };
-                    super::record_hash_wait(&ctx.meter, since);
-                    digest
+                    Ok((digest?, held))
                 }
                 .await;
                 let _ = events.send(Ev::Send(Done::Digested {
@@ -561,7 +568,12 @@ impl SenderRole {
         self.ctx.hooks.bus.emit(super::Event::Itemized(path, code));
     }
 
-    fn on_digested(&mut self, file_id: u64, gen: u32, result: io::Result<FileDigest>) {
+    fn on_digested(
+        &mut self,
+        file_id: u64,
+        gen: u32,
+        result: io::Result<(FileDigest, OwnedSemaphorePermit)>,
+    ) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -570,7 +582,7 @@ impl SenderRole {
         }
         f.digesting = None;
         match result {
-            Ok(d) if d.chunks.len() as u64 > self.list_budget => {
+            Ok((d, _)) if d.chunks.len() as u64 > self.list_budget => {
                 let msg = format!(
                     "chunk list of {} chunks, beyond the session's room of {}",
                     d.chunks.len(),
@@ -578,11 +590,15 @@ impl SenderRole {
                 );
                 self.source_error(file_id, msg);
             }
-            Ok(d) => {
+            Ok((d, held)) => {
                 let with_hash = f.append_from.is_none();
                 // Sent once the receiver has room for it (`pump_lists`).
                 let parts = split(file_id, &d, part_records(&self.ctx), with_hash);
-                self.lists.push(file_id, parts);
+                self.lists.push(file_id, parts, Some(held));
+                #[cfg(feature = "test-hooks")]
+                if let Some(p) = &self.ctx.hooks.lists_ahead_peak {
+                    p.fetch_max(self.lists.queued(), std::sync::atomic::Ordering::SeqCst);
+                }
                 f.span.record("size", d.size);
                 f.digest = Some(Arc::new(d));
             }

@@ -697,6 +697,38 @@ async fn chunk_lists_wait_for_room() {
     .await;
 }
 
+/// The same lists, seen from the sender: it digests ahead of the room only
+/// as much as the room holds, so what it digested and holds waiting for
+/// room stays within it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sender_digests_ahead_of_the_room_only_a_room() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        twelve_listed_files(h.src(flow));
+        h.daemon.hooks.lock().unwrap().list_budget = Some(LIST_ROOM);
+        let peak = Arc::new(AtomicU64::new(0));
+        let mut local = h.local_side();
+        local.hooks.list_budget = Some(LIST_ROOM);
+        local.hooks.lists_ahead_peak = Some(peak.clone());
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 12);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+        let peak = peak.load(SeqCst);
+        assert!(
+            peak <= LIST_ROOM,
+            "the sender held {peak} records digested ahead of the room"
+        );
+        assert!(peak >= 9, "the sender never held a list: {peak}");
+    })
+    .await;
+}
+
 /// A sender that announces a list longer than the room it was granted.
 /// The receiver must refuse it before it checks the list against the file
 /// (which would only fail that file).

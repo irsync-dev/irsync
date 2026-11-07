@@ -445,8 +445,18 @@ cross-referenced from commit messages and review notes.
      moves, at the latest the idle timeout), then aborts it and closes:
      until 2026-11-07 a daemon that stopped reading while staying
      connected kept a finished session from returning.
-     Still open, not new on this branch: the sender holds a `FileDigest`
-     per file in flight, which the list room does not bound.
+     (n) The sender digests ahead of the room only as much as the room
+     holds: a digest stats its file, then takes one permit per chunk
+     record the file can have (`size / CHUNK_PARAMS.min + 1`, at most the
+     room) before it reads it, and its list keeps them until it goes out
+     under the room (`parts::ListCredit`). Digests running and lists
+     waiting for room so hold at most one room of records; with the lists
+     sent (within the room) the sender holds at most two rooms of digests
+     however many files are in flight, and a file that needs the whole
+     room is digested alone. Until 2026-11-07 every planned file was
+     digested at once and its list held until room came, which the room
+     did not bound (`the_sender_digests_ahead_of_the_room_only_a_room`:
+     126 records held ahead of a room of 24).
    - *What it cost before the fix below.* Push of a generated tree of
      31,531 files (316 MiB,
      `filegen run --seed 1 --steps 400000 --max-total-size 600M
@@ -598,11 +608,11 @@ cross-referenced from commit messages and review notes.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
-- A hostile receiver can still make a sender digest up to `MAX_INFLIGHT`
-  of the export's largest files at once (the sender checks that a `Plan`
-  names a listed path and that no more than `MAX_INFLIGHT` are in flight,
-  not which ones). Memory is bounded by the real file sizes, not by
-  anything the peer sends.
+- A hostile receiver can still make a sender read the export's largest
+  files (the sender checks that a `Plan` names a listed path and that no
+  more than `MAX_INFLIGHT` are in flight, not which ones). The digests it
+  holds are bounded by the list room (2.1 (1) (n)), so this costs reads,
+  not memory.
 - A `PermissionDenied`/`restore_owner_rw` window can leave a placed,
   verified file with extra `u+rw` bits; fixed by the next `-p` run.
 - Activity bumps in `digest_held`, the hasher, the delete pass and the
