@@ -218,6 +218,8 @@ impl ListBudget {
 /// in, first out, so a large list is not overtaken forever.
 pub(super) struct ListCredit {
     room: u64,
+    /// The room a connection starts with.
+    limit: u64,
     queue: VecDeque<(u64, Vec<ChunkListPart>)>,
 }
 
@@ -225,6 +227,7 @@ impl ListCredit {
     pub fn new(room: u64) -> Self {
         ListCredit {
             room,
+            limit: room,
             queue: VecDeque::new(),
         }
     }
@@ -234,9 +237,20 @@ impl ListCredit {
         self.queue.push_back((file_id, parts));
     }
 
-    /// Room the receiver freed.
-    pub fn grant(&mut self, records: u64) {
-        self.room = self.room.saturating_add(records);
+    /// Room the receiver freed. It frees only what our lists took, so the
+    /// room never exceeds what the connection started with; `Err` (nothing
+    /// is granted) if it would.
+    pub fn grant(&mut self, records: u64) -> Result<(), String> {
+        match self.room.checked_add(records) {
+            Some(room) if room <= self.limit => {
+                self.room = room;
+                Ok(())
+            }
+            _ => Err(format!(
+                "{records} records granted with {} left, above the {} a connection starts with",
+                self.room, self.limit
+            )),
+        }
     }
 
     /// Drops the file's queued list (it was superseded or given up);
@@ -493,7 +507,7 @@ mod tests {
         assert_eq!(out.len(), 8);
         assert!(out.iter().all(|p| p.file_id == 1));
         assert!(c.ready().is_empty());
-        c.grant(8);
+        c.grant(8).unwrap();
         let out = c.ready();
         assert_eq!(ids(&out), (0..5).map(|k| (2, k)).collect::<Vec<_>>());
         assert!(c.ready().is_empty());
@@ -502,16 +516,32 @@ mod tests {
     #[test]
     fn credit_never_splits_a_file() {
         let mut c = ListCredit::new(10);
-        c.push(1, list(1, 12));
-        // 12 records never fit in 10, not even in part.
+        c.push(1, list(1, 6));
+        assert_eq!(c.ready().len(), 6);
+        c.push(2, list(2, 5));
+        // 5 records never fit in the 4 left, not even in part.
         assert!(c.ready().is_empty());
-        c.push(2, list(2, 1));
+        c.push(3, list(3, 1));
         // ...and nothing overtakes the file at the front.
         assert!(c.ready().is_empty());
-        c.grant(2);
-        assert_eq!(c.ready().len(), 12);
-        c.grant(1);
-        assert_eq!(ids(&c.ready()), vec![(2, 0)]);
+        c.grant(1).unwrap();
+        assert_eq!(c.ready().len(), 5);
+        c.grant(1).unwrap();
+        assert_eq!(ids(&c.ready()), vec![(3, 0)]);
+    }
+
+    #[test]
+    fn room_above_the_start_is_refused() {
+        let mut c = ListCredit::new(10);
+        c.push(1, list(1, 6));
+        assert_eq!(c.ready().len(), 6);
+        assert!(c.grant(7).is_err());
+        // Refused: nothing was granted.
+        c.push(2, list(2, 5));
+        assert!(c.ready().is_empty());
+        c.grant(6).unwrap();
+        assert_eq!(c.ready().len(), 5);
+        assert!(c.grant(u64::MAX).is_err());
     }
 
     #[test]

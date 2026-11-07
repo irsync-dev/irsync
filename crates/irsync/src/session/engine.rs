@@ -32,7 +32,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use super::control::{self, Ev};
-use super::limits::LISTING_QUEUE;
+use super::limits::{out_ceiling, LISTING_QUEUE};
 use super::listing_stream::{self, ListingSink};
 use super::{
     receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
@@ -1216,7 +1216,11 @@ async fn run_role(
     // tasks send (the planner's `Itemized`, `offer_bases`), never while
     // holding a lock a main loop awaits; the writer always makes progress,
     // since the peer's control reader drains into a main loop that never
-    // waits on us. Chunk lists wait for room the receiver grants
+    // waits on us. What main loops queue is bounded by the protocol, as
+    // long as the peer reads; one that does not, while it frees slots or
+    // room so that we keep replying, fails the session once the writer's
+    // whole backlog passes `limits::out_ceiling` (twice the honest most).
+    // Chunk lists wait for room the receiver grants
     // (`ListRoom`) in the sender's `ListCredit`, never in a task or the
     // writer: the main loop queues them, and sends those that fit with
     // `Out::send` (the room bounds them). The receiver grants room from its
@@ -1225,7 +1229,12 @@ async fn run_role(
     // a waiting list needs is always freed by files that can progress.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
-    let (out, writer) = control::spawn_writer(send, ev_tx.clone(), &ctx.hooks);
+    let (out, writer) = control::spawn_writer(
+        send,
+        ev_tx.clone(),
+        &ctx.hooks,
+        out_ceiling(&ctx.hooks, sends),
+    );
     let (listing_send, listing_recv) = listing;
     // The gate holds back an empty listing half until the role has ended
     // (see `spawn_listing_writer`).
@@ -1554,6 +1563,87 @@ pub(super) type Events = mpsc::UnboundedReceiver<Ev>;
 /// The channel both roles receive peer events on, fed only by the control
 /// and listing readers (see [`super::limits::PEER_EVENTS`]).
 pub(super) type PeerEvents = mpsc::Receiver<Ev>;
+
+/// A role's context over a loopback connection, for unit tests of the
+/// roles; what keeps it alive comes with it.
+#[cfg(test)]
+pub(super) struct TestCtx {
+    pub ctx: Arc<Ctx>,
+    /// The other end of `ctx.conn`.
+    pub _peer: Connection,
+    pub _endpoints: (iroh::Endpoint, iroh::Endpoint),
+    pub _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+#[cfg(test)]
+pub(super) async fn test_ctx() -> TestCtx {
+    use crate::net::{build_endpoint, EndpointOpts};
+    let endpoint = || async {
+        let mut opts = EndpointOpts::isolated(iroh::SecretKey::generate());
+        opts.bind_addrs = vec!["127.0.0.1:0".parse().unwrap()];
+        build_endpoint(opts).await.unwrap()
+    };
+    let (a, b) = (endpoint().await, endpoint().await);
+    let (conn, peer) = tokio::join!(
+        async { a.connect(b.addr(), irsync_proto::ALPN).await.unwrap() },
+        async { b.accept().await.unwrap().await.unwrap() },
+    );
+    let (root, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let index = crate::index::Index::open(state.path(), root.path())
+        .unwrap()
+        .into_handle();
+    let hasher = Arc::new(Hasher::new(index.clone(), root.path().to_path_buf(), 1));
+    let ctx = Ctx {
+        conn,
+        session_id: [7; 16],
+        key: b"test".to_vec(),
+        resumed: false,
+        record: None,
+        remote_id: None,
+        progress: Arc::default(),
+        activity: Arc::default(),
+        meter: Meter::new(Side::Client, Role::Sender, None, false),
+        busy: Arc::default(),
+        idle_timeout: None,
+        #[cfg(feature = "test-hooks")]
+        fault: None,
+        #[cfg(feature = "test-hooks")]
+        rerequests: None,
+        root: root.path().to_path_buf(),
+        base: root.path().to_path_buf(),
+        scope: IndexScope::new(index, RelPath::root()),
+        hasher: hasher.clone(),
+        forced: hasher,
+        cold: Arc::default(),
+        filters: Arc::new(FilterSet::new(vec![])),
+        opts: RoleOpts {
+            preserve: Preserve::default(),
+            checksum: false,
+            update_only: false,
+            reuse_local: true,
+            partial_dir: None,
+            parallel: 1,
+            bwlimit: None,
+            delete: DeleteMode::Off,
+            delete_excluded: false,
+            max_delete: None,
+            dry_run: false,
+            ignore_errors: false,
+            itemize: false,
+            inplace: false,
+            numeric_ids: false,
+            append: Append::Off,
+        },
+        privs: Privs::current(),
+        hooks: SideHooks::default(),
+    };
+    TestCtx {
+        ctx: Arc::new(ctx),
+        _peer: peer,
+        _endpoints: (a, b),
+        _dirs: (root, state),
+    }
+}
 
 #[cfg(test)]
 mod tests {

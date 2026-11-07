@@ -64,7 +64,11 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A file is given up after this many whole-file hash mismatches.
 const MAX_MISMATCHES: u32 = 2;
 /// Re-requests per file and connection for chunks its data streams did not deliver.
-const MAX_REREQUESTS: u32 = 3;
+pub(super) const MAX_REREQUESTS: u32 = 3;
+/// Chunk lists a sender starts per file and connection (first parts): the
+/// first list, and per retry an empty part withdrawing the list so far and
+/// the new list (see `SenderRole::retry`).
+const MAX_LIST_STARTS: u32 = 1 + 2 * super::sender_role::MAX_RETRIES;
 /// How long a failed session waits for its own file tasks to stop.
 const TASK_DRAIN: Duration = Duration::from_secs(10);
 
@@ -231,10 +235,15 @@ struct Receiver {
     /// the sender (see `parts::ListBudget`). Fresh for every connection, as
     /// the sender's room is.
     lists: ListBudget,
-    /// Every file id requested on this connection: a chunk list part for
-    /// any other is a protocol error, one for a file that has left `files`
-    /// is late and ignored.
-    planned: HashSet<u64>,
+    /// Every file id requested on this connection, with the chunk lists the
+    /// sender has started for it (first parts): a chunk list part for any
+    /// other id is a protocol error, one for a file that has left `files`
+    /// is late and ignored, and more than [`MAX_LIST_STARTS`] lists for a
+    /// file are a protocol error (each would make us grant room again).
+    planned: HashMap<u64, u32>,
+    /// Records of list room freed and not yet granted back: sent as one
+    /// `ListRoom` after each main-loop event (see `grant_room`).
+    freed: u64,
 }
 
 impl Receiver {
@@ -312,7 +321,7 @@ impl Receiver {
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
         self.active += 1;
-        self.planned.insert(file_id);
+        self.planned.entry(file_id).or_insert(0);
         #[cfg(feature = "test-hooks")]
         if let Some(peak) = &self.ctx.hooks.inflight_peak {
             peak.fetch_max(self.active, Ordering::SeqCst);
@@ -450,10 +459,17 @@ impl Receiver {
         drop(f);
     }
 
-    /// Grants the sender room for `records` chunk records of lists. Sent
-    /// with `Out::send`, which never waits: the main loop must not wait on
-    /// the peer (see the deadlock invariant at `run_role`).
-    fn grant_lists(&self, records: u64) {
+    /// Grants the sender room for `records` chunk records of lists, with
+    /// the rest freed by this main-loop event (see `grant_room`).
+    fn grant_lists(&mut self, records: u64) {
+        self.freed += records;
+    }
+
+    /// Sends the room freed by the event just handled, in one `ListRoom`.
+    /// Sent with `Out::send`, which never waits: the main loop must not
+    /// wait on the peer (see the deadlock invariant at `run_role`).
+    fn grant_room(&mut self) {
+        let records = std::mem::take(&mut self.freed);
         if records > 0 {
             self.out.send(Msg::ListRoom(ListRoom { records }));
         }
@@ -471,13 +487,19 @@ impl Receiver {
     /// first: before the part is looked at, and before any of it is held.
     async fn on_chunk_list_part(&mut self, p: ChunkListPart) -> anyhow::Result<()> {
         let file_id = p.file_id;
-        if !self.planned.contains(&file_id) {
+        let Some(starts) = self.planned.get_mut(&file_id) else {
             anyhow::bail!(
                 "protocol error: chunk list part for file id {file_id}, which was never planned"
             );
-        }
+        };
         let known = self.files.contains_key(&file_id);
         if p.first == 0 {
+            *starts += 1;
+            if *starts > MAX_LIST_STARTS {
+                anyhow::bail!(
+                    "protocol error: more than {MAX_LIST_STARTS} chunk lists for file id {file_id}"
+                );
+            }
             // The first part takes the list's whole announced total; the
             // later parts are covered by it (assembly refuses more). A new
             // list for the file replaces the old one, whose room is freed.
@@ -604,7 +626,10 @@ impl Receiver {
                 // is not always received first (an mpsc slot still being
                 // written hides the ones behind it). `Out::send` never waits:
                 // a main loop must not wait on the peer, so this frame is not
-                // paced; the planner's in-flight slots bound how many queue.
+                // paced. With a peer that reads, the planner's in-flight slots
+                // bound how many queue; one that frees slots without reading
+                // (acks for files it never read the plan of) is stopped by
+                // the writer's ceiling (`limits::out_ceiling`).
                 self.ctx.hooks.event("plan", &p.path);
                 self.out.send(Msg::Plan(PlanItem {
                     file_id: p.file_id,
@@ -1115,7 +1140,8 @@ pub(super) async fn run(
         inflight_cap: inflight_cap(&ctx),
         basis_budget: Arc::new(ByteBudget::new(basis_budget(&ctx.hooks))),
         lists: ListBudget::new(list_budget(&ctx.hooks)),
-        planned: HashSet::new(),
+        planned: HashMap::new(),
+        freed: 0,
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores
@@ -1224,6 +1250,7 @@ pub(super) async fn run(
         if let Err(e) = r.handle(ev).await {
             break Err(e);
         }
+        r.grant_room();
         r.pump();
     };
     r.transfer.end();

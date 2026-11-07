@@ -46,7 +46,7 @@ use crate::telemetry::PhaseKind;
 use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
-const MAX_RETRIES: u32 = 1;
+pub(super) const MAX_RETRIES: u32 = 1;
 /// How long to wait for in-flight data streams after `SessionDone`.
 const DRAIN_SENDS: Duration = Duration::from_secs(10);
 
@@ -148,6 +148,9 @@ struct SFile {
     /// The file's send task, while it runs (of this generation or an older
     /// one): there is at most one, see `pending`.
     task: Option<u64>,
+    /// The file's digest task, while it runs: aborted with the file (see
+    /// `remove_file`), or when a retry starts another.
+    digesting: Option<tokio::task::AbortHandle>,
     /// Chunks requested while the send task runs, sent once it is done.
     pending: Option<Pending>,
     /// When the receiver first asked for data; for the transfer histogram.
@@ -282,7 +285,7 @@ impl SenderRole {
     /// `walked`: this connection's walk stat of the file, which spares the
     /// re-stat; a retry passes none, so it describes the file as it is now.
     fn spawn_digest(
-        &self,
+        &mut self,
         file_id: u64,
         gen: u32,
         path: RelPath,
@@ -296,7 +299,7 @@ impl SenderRole {
             tracing::Span::none,
             |f| tracing::debug_span!(parent: &f.span, "hash"),
         );
-        tokio::spawn(
+        let task = tokio::spawn(
             async move {
                 let result = async {
                     if check {
@@ -361,15 +364,26 @@ impl SenderRole {
             }
             .instrument(hash),
         );
+        match self.files.get_mut(&file_id) {
+            Some(f) => {
+                if let Some(old) = f.digesting.replace(task.abort_handle()) {
+                    old.abort();
+                }
+            }
+            None => task.abort(),
+        }
     }
 
     /// Takes a file out of `files`, with what it held of the basis budget.
     fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
         let mut f = self.files.remove(&file_id)?;
         drop_bases(&mut self.basis_held, &mut f);
-        // Done with or given up: its task goes too. What it sent counts.
+        // Done with or given up: its tasks go too. What it sent counts.
         if let Some(task) = f.task.take() {
             self.bytes += self.tasks.abort(task);
+        }
+        if let Some(task) = f.digesting.take() {
+            task.abort();
         }
         self.lists.cancel(file_id);
         Some(f)
@@ -446,6 +460,33 @@ impl SenderRole {
             bail!("protocol error: more than {MAX_INFLIGHT} files in flight");
         }
         let path = RelPath::new(&p.path).unwrap_or_default();
+        // Only paths this side listed as regular files are ever read: a peer
+        // cannot ask for something outside the walk (e.g. through a symlink).
+        // With a listing of this connection, a receiver plans each listed
+        // regular file once (a retry keeps its id and sends no new plan;
+        // `-H` names after the first are linked on its side, never planned):
+        // anything else is a protocol error, refused before the file costs
+        // anything. Taking the path out of `listed` catches a second plan.
+        // Resumed from the receiver's stored plan, nothing was listed: each
+        // path is checked as the walk would have admitted it, and one gone
+        // since is an honest source error.
+        let walked = match self.listing {
+            Listing::FromPlan => None,
+            Listing::Running(_) | Listing::Undecided(_) => {
+                let walked = self
+                    .listed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&path);
+                match walked {
+                    Some(w) => Some(w),
+                    None => bail!(
+                        "protocol error: PlanItem for file id {file_id} names a path this side \
+                         did not list as a regular file, or one already planned"
+                    ),
+                }
+            }
+        };
         let append_from = (p.action == Action::Append as i32).then_some(p.append_from);
         let kind = if p.action == Action::Whole as i32 {
             "new"
@@ -472,6 +513,7 @@ impl SenderRole {
                 requested: HashSet::new(),
                 streams: 0,
                 task: None,
+                digesting: None,
                 pending: None,
                 started: None,
                 #[cfg(feature = "test-hooks")]
@@ -485,27 +527,13 @@ impl SenderRole {
             action: p.action,
             ..PlanEntry::default()
         });
-        // Only paths this side listed as regular files are ever read: a peer
-        // cannot ask for something outside the walk (e.g. through a symlink).
-        if path.as_bytes().is_empty() {
-            self.source_error(file_id, "not a listed regular file".into());
-            return Ok(());
+        match walked {
+            Some(walked) => self.spawn_digest(file_id, 0, path, false, false, Some(walked)),
+            None if path.as_bytes().is_empty() => {
+                self.source_error(file_id, "not a listed regular file".into());
+            }
+            None => self.spawn_digest(file_id, 0, path, false, true, None),
         }
-        if let Listing::FromPlan = self.listing {
-            self.spawn_digest(file_id, 0, path, false, true, None);
-            return Ok(());
-        }
-        let walked = self
-            .listed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&path)
-            .copied();
-        let Some(walked) = walked else {
-            self.source_error(file_id, "not a listed regular file".into());
-            return Ok(());
-        };
-        self.spawn_digest(file_id, 0, path, false, false, Some(walked));
         Ok(())
     }
 
@@ -536,6 +564,7 @@ impl SenderRole {
         if f.gen != gen {
             return;
         }
+        f.digesting = None;
         match result {
             Ok(d) if d.chunks.len() as u64 > self.list_budget => {
                 let msg = format!(
@@ -1125,10 +1154,10 @@ pub(super) async fn run(
                 s.on_ack(a);
                 Ok(())
             }
-            Ev::Ctrl(Msg::ListRoom(r)) => {
-                s.lists.grant(r.records);
-                Ok(())
-            }
+            Ev::Ctrl(Msg::ListRoom(r)) => s
+                .lists
+                .grant(r.records)
+                .map_err(|e| anyhow::anyhow!("protocol error: list room beyond the budget: {e}")),
             Ev::Ctrl(Msg::ListingEnd(e)) => {
                 if e.incomplete {
                     let msg = "the receiver's listing is incomplete".to_string();
@@ -1291,6 +1320,111 @@ mod tests {
 
         assert!(tasks.finished(b));
         assert_eq!(tasks.len(), 0);
+    }
+
+    /// A sender role over a loopback connection, resumed from a plan (no
+    /// listing), and what keeps it alive.
+    async fn role() -> (SenderRole, crate::session::engine::TestCtx) {
+        let t = crate::session::engine::test_ctx().await;
+        let ctx = t.ctx.clone();
+        let (send, _) = ctx.conn.open_bi().await.unwrap();
+        let (events, _) = mpsc::unbounded_channel();
+        let (out, _) =
+            crate::session::control::spawn_writer(send, events.clone(), &ctx.hooks, usize::MAX);
+        let sender = Arc::new(Sender::new(
+            ctx.conn.clone(),
+            ctx.session_id,
+            ctx.base.clone(),
+            ctx.hasher.clone(),
+            1,
+            DEFAULT_SPLIT_THRESHOLD,
+            None,
+        ));
+        let s = SenderRole {
+            ctx: ctx.clone(),
+            out,
+            events,
+            sender,
+            listed: Arc::default(),
+            listing: Listing::FromPlan,
+            files: HashMap::new(),
+            basis_held: 0,
+            basis_budget: 1 << 20,
+            lists: ListCredit::new(1000),
+            list_budget: 1000,
+            seen: HashSet::new(),
+            abandoned: HashMap::new(),
+            files_done: 0,
+            bytes: 0,
+            transferred_size: 0,
+            created: 0,
+            tasks: SendTasks::default(),
+            errors: Vec::new(),
+            persist: Persister::start(&ctx).await,
+            transfer: TransferPhase::default(),
+            deleted: Vec::new(),
+            would_delete: Vec::new(),
+            max_delete_reached: false,
+        };
+        (s, t)
+    }
+
+    /// A file in flight at `path`, with `digest` as its chunk list sent.
+    fn in_flight(path: &str, digest: Option<FileDigest>) -> SFile {
+        SFile {
+            path: RelPath::new(path.as_bytes()).unwrap(),
+            gen: 0,
+            retries: 0,
+            append_from: None,
+            digest: digest.map(Arc::new),
+            bases: HashMap::new(),
+            bases_held: 0,
+            requested: HashSet::new(),
+            streams: 0,
+            task: None,
+            digesting: None,
+            pending: None,
+            started: None,
+            #[cfg(feature = "test-hooks")]
+            hooked: false,
+            span: tracing::Span::none(),
+        }
+    }
+
+    /// A file the receiver acknowledges while its digest still runs: the
+    /// digest task ends with the file, as its send task does.
+    #[tokio::test]
+    async fn a_file_acknowledged_early_takes_its_digest_task_with_it() {
+        let (mut s, _t) = role().await;
+        let (ended, started) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let task = tokio::spawn({
+            let (e, s) = (ended.clone(), started.clone());
+            async move {
+                let _ended = Ended(e);
+                s.notify_one();
+                std::future::pending::<()>().await;
+            }
+        });
+        started.notified().await;
+        let mut f = in_flight("a", None);
+        f.digesting = Some(task.abort_handle());
+        s.files.insert(1, f);
+        s.on_ack(FileAck {
+            file_id: 1,
+            status: Status::Done as i32,
+            ..FileAck::default()
+        });
+        assert!(s.files.is_empty());
+        for _ in 0..100 {
+            if ended.load(SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(ended.load(SeqCst), "the digest task still runs");
     }
 
     /// Files that come and go, each leaving a task that would never end on

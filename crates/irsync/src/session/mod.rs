@@ -644,6 +644,11 @@ pub struct SideHooks {
     /// `Out::send_paced`) queued for the control stream's writer at once.
     #[cfg(feature = "test-hooks")]
     pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Both roles: bytes of control frames queued for the writer and not
+    /// yet written above which the peer counts as not reading (see
+    /// `limits::out_ceiling`), instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub out_ceiling: Option<usize>,
     /// Both roles: bytes of chunk bases (see `limits::BASIS_BUDGET`) the
     /// session holds at once, instead of the default.
     #[cfg(feature = "test-hooks")]

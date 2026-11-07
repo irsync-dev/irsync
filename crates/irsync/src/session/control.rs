@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use super::engine::{Ctx, PeerEvents};
-use super::limits::{ByteBudget, OUT_BUDGET, PEER_EVENTS};
+use super::limits::{Backlog, ByteBudget, OUT_BUDGET, PEER_EVENTS};
 use super::listing_stream::{ListingOut, PeerScan};
 use super::{IndexScope, SessionRecord, StreamKind};
 use crate::filter::FilterSet;
@@ -96,10 +96,12 @@ impl PeerTx {
 }
 
 /// A frame on its way to the writer; `paced` is the bytes it holds of the
-/// writer's [`ByteBudget`] (zero for `Out::send`), given back once written.
+/// writer's [`ByteBudget`] (zero for `Out::send`), given back once written,
+/// and `len` its size in the writer's [`Backlog`].
 struct Queued {
     frame: Control,
     paced: usize,
+    len: usize,
 }
 
 /// Handle for queueing control frames to the writer task.
@@ -107,6 +109,10 @@ struct Queued {
 pub(super) struct Out {
     tx: mpsc::UnboundedSender<Option<Queued>>,
     budget: Arc<ByteBudget>,
+    /// Every byte queued and not yet written, paced or not.
+    backlog: Arc<Backlog>,
+    /// Where the role learns that the backlog went past its ceiling.
+    events: mpsc::UnboundedSender<Ev>,
     #[cfg(feature = "test-hooks")]
     peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
@@ -114,8 +120,7 @@ pub(super) struct Out {
 /// A frame that holds its bytes of the writer's budget and is not queued
 /// yet (see [`Out::reserve`]); dropped unsent, it gives them back.
 pub(super) struct Paced {
-    tx: mpsc::UnboundedSender<Option<Queued>>,
-    budget: Arc<ByteBudget>,
+    out: Out,
     frame: Option<Queued>,
 }
 
@@ -124,8 +129,8 @@ impl Paced {
     pub fn send(mut self) {
         if let Some(q) = self.frame.take() {
             let n = q.paced;
-            if self.tx.send(Some(q)).is_err() {
-                self.budget.release(n);
+            if !self.out.queue(q) {
+                self.out.budget.release(n);
             }
         }
     }
@@ -134,7 +139,7 @@ impl Paced {
 impl Drop for Paced {
     fn drop(&mut self) {
         if let Some(q) = self.frame.take() {
-            self.budget.release(q.paced);
+            self.out.budget.release(q.paced);
         }
     }
 }
@@ -143,11 +148,36 @@ impl Out {
     /// Queues `msg` without waiting: for main loops, which must never wait
     /// on the network (see the invariant in `run_role`).
     pub fn send(&self, msg: Msg) {
+        let frame = Control { msg: Some(msg) };
+        let len = frame.encoded_len();
         // A closed writer surfaces as `Ev::WriterFailed`; nothing to do here.
-        let _ = self.tx.send(Some(Queued {
-            frame: Control { msg: Some(msg) },
+        self.queue(Queued {
+            frame,
             paced: 0,
-        }));
+            len,
+        });
+    }
+
+    /// Hands `q` to the writer, counting it in the backlog; false if the
+    /// writer is gone. The backlog past its ceiling (see
+    /// `limits::out_ceiling`) means the peer is not reading what an honest
+    /// peer reads: the role is told, once, and fails the session. Nothing
+    /// here waits, so the main loops may queue as before.
+    fn queue(&self, q: Queued) -> bool {
+        let len = q.len;
+        if self.backlog.add(len) {
+            let _ = self.events.send(Ev::ProtocolError(format!(
+                "the peer is not reading its control stream: {} bytes wait for it, \
+                 above the ceiling of {}",
+                self.backlog.bytes(),
+                self.backlog.ceiling()
+            )));
+        }
+        if self.tx.send(Some(q)).is_err() {
+            self.backlog.sub(len);
+            return false;
+        }
+        true
     }
 
     /// Queues `msg` once the writer has room for it under [`OUT_BUDGET`]
@@ -174,9 +204,12 @@ impl Out {
             p.fetch_max(self.budget.held(), std::sync::atomic::Ordering::SeqCst);
         }
         Paced {
-            tx: self.tx.clone(),
-            budget: self.budget.clone(),
-            frame: (!gone).then_some(Queued { frame, paced: n }),
+            out: self.clone(),
+            frame: (!gone).then_some(Queued {
+                frame,
+                paced: n,
+                len: n,
+            }),
         }
     }
 
@@ -188,16 +221,19 @@ impl Out {
 
 /// Spawns the writer: frames go out in queue order, and a paced frame's
 /// bytes return to the budget once written; `finish` ends the stream and
-/// waits (bounded) until the peer has the bytes.
+/// waits (bounded) until the peer has the bytes. `ceiling` bounds the
+/// bytes queued and not yet written (see `limits::out_ceiling`).
 pub(super) fn spawn_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
     hooks: &super::SideHooks,
+    ceiling: usize,
 ) -> (Out, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Option<Queued>>();
     let budget = Arc::new(ByteBudget::new(OUT_BUDGET));
+    let backlog = Arc::new(Backlog::new(ceiling));
     let tamper = hooks.tamper();
-    let written = budget.clone();
+    let (written, unqueued, writer_events) = (budget.clone(), backlog.clone(), events.clone());
     let task = tokio::spawn(
         async move {
             while let Some(Some(q)) = rx.recv().await {
@@ -209,11 +245,13 @@ pub(super) fn spawn_writer(
                 {
                     let c = Control { msg: Some(msg) };
                     if let Err(e) = write_msg(&mut send, &c).await {
-                        let _ = events.send(Ev::WriterFailed(format!("control stream: {e}")));
+                        let _ =
+                            writer_events.send(Ev::WriterFailed(format!("control stream: {e}")));
                         return;
                     }
                 }
                 written.release(q.paced);
+                unqueued.sub(q.len);
             }
             if send.finish().is_ok() {
                 let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
@@ -224,6 +262,8 @@ pub(super) fn spawn_writer(
     let out = Out {
         tx,
         budget,
+        backlog,
+        events,
         #[cfg(feature = "test-hooks")]
         peak: hooks.out_peak.clone(),
     };

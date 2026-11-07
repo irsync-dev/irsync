@@ -25,6 +25,122 @@ pub(super) const PEER_EVENTS: usize = 1024;
 /// link stalls the task instead of growing the queue.
 pub(super) const OUT_BUDGET: usize = 4 * 1024 * 1024;
 
+/// The most bytes one chunk record takes in a `ChunkListPart`: its offset
+/// (a varint of at most 10 bytes) and length (at most 5), each with a tag
+/// byte, its 32-byte hash in a nested `Hash` (with tag and length, 36
+/// bytes), and the record's own tag and length (2). A typical record is a
+/// few bytes shorter (offsets below 2^42 take 6 bytes).
+const RECORD_WIRE: usize = 11 + 6 + 36 + 2;
+
+/// The most bytes one chunk index takes in a `NeedChunks`: a packed varint
+/// below [`MAX_LIST_CHUNKS`] (2^24), so at most 4 bytes.
+const INDEX_WIRE: usize = 4;
+
+/// What a main loop queues per file in flight besides chunk records and
+/// indices, rounded up: a `PlanItem` and an `Itemized`, each with a path
+/// (at most 4 KiB, `PATH_MAX`); `FileAck`s with their messages; the
+/// `ChunkListPart` headers of up to three lists (see
+/// `receiver::MAX_LIST_STARTS`) and a `ListRoom`. About 9 KiB at most.
+const FILE_WIRE: usize = 16 * 1024;
+
+/// The most bytes an honest session queues for its control stream's
+/// writer, if the peer reads them as fast as it can but the link is slow.
+/// Frames a main loop queues are not paced (it must not wait on the
+/// peer); each kind is bounded by the protocol instead:
+///
+/// - Sender: chunk lists, sent only into the room the receiver granted
+///   (`list_budget` records, `RECORD_WIRE` each); per file in flight
+///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`) and the empty first
+///   part that withdraws a retried file's list (`FILE_WIRE`).
+/// - Receiver: paced frames ([`OUT_BUDGET`]: the planner's `Itemized`,
+///   `offer_bases`); `NeedChunks` for at most every chunk of the lists it
+///   holds (`list_budget` records), once per list (1 + [`MAX_RETRIES`]) and
+///   per re-request ([`MAX_REREQUESTS`]), `INDEX_WIRE` each; per file in
+///   flight a `PlanItem`, an `Itemized`, a `FileAck` and a `ListRoom`
+///   (`FILE_WIRE`).
+/// - Both: one frame up to [`MAX_FRAME`] beyond these (a paced frame larger
+///   than the budget passes alone; `SessionDone`, `Error`), which also
+///   covers heartbeats (two a second at most, a few dozen bytes each).
+///
+/// With the defaults: a sender 2^24 × 55 B + 4096 × 16 KiB + 16 MiB ≈ 1.0
+/// GB (960 MiB, nearly all of it chunk lists), a receiver 4 MiB + 5 × 2^24
+/// × 4 B + 4096 × 16 KiB + 16 MiB ≈ 424 MB.
+///
+/// [`MAX_INFLIGHT`]: super::planner::MAX_INFLIGHT
+/// [`MAX_RETRIES`]: super::sender_role::MAX_RETRIES
+/// [`MAX_REREQUESTS`]: super::receiver::MAX_REREQUESTS
+/// [`MAX_FRAME`]: crate::net::frame::MAX_FRAME
+fn honest_out(list_budget: u64, sends: bool) -> usize {
+    use super::planner::MAX_INFLIGHT;
+    use crate::net::frame::MAX_FRAME;
+    let records = usize::try_from(list_budget).unwrap_or(usize::MAX);
+    let files = MAX_INFLIGHT.saturating_mul(FILE_WIRE);
+    let frames = if sends {
+        records.saturating_mul(RECORD_WIRE)
+    } else {
+        let lists =
+            (1 + super::sender_role::MAX_RETRIES + super::receiver::MAX_REREQUESTS) as usize;
+        OUT_BUDGET.saturating_add(lists.saturating_mul(records).saturating_mul(INDEX_WIRE))
+    };
+    frames.saturating_add(files).saturating_add(MAX_FRAME)
+}
+
+/// Bytes of control frames queued for the writer and not yet written past
+/// which the peer counts as not reading its control stream, and the
+/// session fails: twice what an honest session can queue (see
+/// [`honest_out`]), about 2.0 GB for a sender and 850 MB for a receiver
+/// with the defaults. Below it, a peer that stops reading while freeing
+/// slots or room with frames of its own (so this side keeps replying)
+/// costs no more than that; it ends at once, without waiting for the idle
+/// timeout, which such a peer could hold off.
+pub(super) fn out_ceiling(hooks: &super::SideHooks, sends: bool) -> usize {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = hooks.out_ceiling {
+        return n;
+    }
+    honest_out(list_budget(hooks), sends).saturating_mul(2)
+}
+
+/// Bytes queued for a writer and not yet written, against a ceiling (see
+/// [`out_ceiling`]).
+pub(super) struct Backlog {
+    bytes: std::sync::atomic::AtomicUsize,
+    ceiling: usize,
+    over: std::sync::atomic::AtomicBool,
+}
+
+impl Backlog {
+    pub fn new(ceiling: usize) -> Self {
+        Backlog {
+            bytes: Default::default(),
+            ceiling,
+            over: Default::default(),
+        }
+    }
+
+    /// Counts `n` bytes queued; true the first time the count goes past
+    /// the ceiling (only once, however long it stays there).
+    pub fn add(&self, n: usize) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = self.bytes.fetch_add(n, SeqCst).saturating_add(n);
+        now > self.ceiling && !self.over.swap(true, SeqCst)
+    }
+
+    /// Counts `n` bytes written (or dropped).
+    pub fn sub(&self, n: usize) {
+        self.bytes.fetch_sub(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Bytes queued now.
+    pub fn bytes(&self) -> usize {
+        self.bytes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn ceiling(&self) -> usize {
+        self.ceiling
+    }
+}
+
 /// Bytes of chunk bases (see [`basis_wire_len`]) a session holds: the
 /// receiver's bases sent but not yet requested, and the sender's bases
 /// received and not yet taken by a request. The receiver waits for room
@@ -211,6 +327,93 @@ mod tests {
         assert!(h.try_take(6));
         drop(h);
         assert_eq!(b.held(), 0);
+    }
+
+    #[test]
+    fn the_backlog_trips_once_past_its_ceiling() {
+        let b = Backlog::new(100);
+        assert!(!b.add(60));
+        assert!(!b.add(40), "at the ceiling is not past it");
+        assert!(b.add(1));
+        assert!(!b.add(1000), "reported once");
+        b.sub(1101);
+        assert_eq!(b.bytes(), 0);
+        assert!(!b.add(500), "still reported once");
+    }
+
+    /// The sizes the ceiling is derived from hold for the largest frames
+    /// an honest session sends.
+    #[test]
+    fn the_wire_sizes_behind_the_ceiling_hold() {
+        use irsync_proto::v1::{
+            control::Msg, file_ack::Status, ChunkListPart, Control, FileAck, Hash, Itemized,
+            ListRoom, NeedChunks, PlanItem,
+        };
+        use prost::Message as _;
+        let len = |m: Msg| Control { msg: Some(m) }.encoded_len();
+        let record = irsync_proto::v1::ChunkRecord {
+            offset: u64::MAX,
+            len: u32::MAX,
+            hash: Some(Hash {
+                bytes: vec![0xff; 32],
+            }),
+        };
+        let part = |n: usize| ChunkListPart {
+            file_id: u64::MAX,
+            size: u64::MAX,
+            whole_hash: Some(Hash {
+                bytes: vec![0xff; 32],
+            }),
+            total: u32::MAX,
+            first: u32::MAX,
+            chunks: vec![record.clone(); n],
+            last: true,
+        };
+        let header = len(Msg::ChunkListPart(part(0)));
+        let full = len(Msg::ChunkListPart(part(super::super::parts::PART_RECORDS)));
+        // A few bytes more for the longer lengths of the part and the frame.
+        assert!(
+            full - header <= super::super::parts::PART_RECORDS * RECORD_WIRE + 8,
+            "{}",
+            full - header
+        );
+        let need = |n: usize| {
+            len(Msg::Need(NeedChunks {
+                file_id: u64::MAX,
+                chunk_idx: vec![MAX_LIST_CHUNKS as u32 - 1; n],
+            }))
+        };
+        // A few bytes more for the packed field's length.
+        assert!(need(100_000) - need(0) <= 100_000 * INDEX_WIRE + 8);
+        let path = vec![b'p'; 4096];
+        let message = "m".repeat(1024);
+        let per_file = len(Msg::Plan(PlanItem {
+            file_id: u64::MAX,
+            path: path.clone(),
+            action: 2,
+            append_from: u64::MAX,
+        })) + len(Msg::Itemized(Itemized {
+            path,
+            code: ">f.st......".into(),
+        })) + 2 * len(Msg::Ack(FileAck {
+            file_id: u64::MAX,
+            status: Status::WriteError as i32,
+            message,
+            matched: u64::MAX,
+        })) + 3 * header
+            + len(Msg::ListRoom(ListRoom { records: u64::MAX }));
+        assert!(per_file <= FILE_WIRE, "{per_file}");
+    }
+
+    #[test]
+    fn the_ceiling_is_twice_the_honest_most() {
+        let hooks = crate::session::SideHooks::default();
+        let (sender, receiver) = (out_ceiling(&hooks, true), out_ceiling(&hooks, false));
+        assert_eq!(sender, 2 * honest_out(LIST_BUDGET, true));
+        assert_eq!(receiver, 2 * honest_out(LIST_BUDGET, false));
+        // The figures the documentation gives.
+        assert!((1_950_000_000..2_050_000_000).contains(&sender), "{sender}");
+        assert!((800_000_000..900_000_000).contains(&receiver), "{receiver}");
     }
 
     #[test]

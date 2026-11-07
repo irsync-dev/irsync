@@ -761,8 +761,12 @@ async fn a_list_sent_again_first_frees_the_old_one() {
     .await;
 }
 
-/// A receiver that plans far more files than the window of files in flight
-/// (fresh ids for a path it listed): the sender refuses to track them.
+/// A receiver that plans far more files than the window of files in flight:
+/// the sender refuses to track them. Each plan names a different listed
+/// file not planned yet (one plan per listed file is all a receiver may
+/// send): 5 000 files already in place, which the receiver's planner skips,
+/// and a new one, `z`, listed after them, whose plan the receiver follows
+/// with plans for all the others.
 ///
 /// A push with the daemon (the receiver) tampering: the sender's own error
 /// is what the client reports, and it is deterministic, as the sender takes
@@ -774,19 +778,29 @@ async fn more_plans_than_the_window_fail_the_session() {
     within60(async {
         let flow = Flow::Push;
         let h = Harness::new().await;
-        fs::write(h.src(flow).join("a"), data(4096, 1)).unwrap();
+        for i in 0..5000 {
+            fs::write(h.src(flow).join(format!("s{i:04}")), b"s").unwrap();
+        }
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        fs::write(h.src(flow).join("z"), data(4096, 1)).unwrap();
         let first = AtomicBool::new(true);
         let local = h.local_side();
         h.daemon.hooks.lock().unwrap().tamper_frames =
             Some(Arc::new(move |kind, msg| match (kind, msg) {
-                (StreamKind::Control, Msg::Plan(p)) if first.swap(false, SeqCst) => (0..=5000u64)
-                    .map(|k| {
-                        Msg::Plan(PlanItem {
-                            file_id: p.file_id + 1_000_000 * k,
-                            ..p.clone()
-                        })
-                    })
-                    .collect(),
+                (StreamKind::Control, Msg::Plan(p)) if first.swap(false, SeqCst) => {
+                    assert_eq!(p.path, b"z", "only z is planned");
+                    std::iter::once(Msg::Plan(p.clone()))
+                        .chain((0..5000u64).map(|k| {
+                            Msg::Plan(PlanItem {
+                                file_id: p.file_id + 1_000_000 * (k + 1),
+                                path: format!("s{k:04}").into_bytes(),
+                                ..p.clone()
+                            })
+                        }))
+                        .collect()
+                }
                 (_, m) => vec![m],
             }));
         let err = h
@@ -796,6 +810,174 @@ async fn more_plans_than_the_window_fail_the_session() {
         let err = format!("{err:#}");
         assert!(err.contains("protocol error"), "{err}");
         assert!(err.contains("files in flight"), "{err}");
+    })
+    .await;
+}
+
+/// The receiver's plans in a push as the daemon (the receiver) sends them:
+/// the first one goes out as `first` makes it (a test adds plans around it).
+fn tamper_first_plan(h: &Harness, first: impl Fn(PlanItem) -> Vec<Msg> + Send + Sync + 'static) {
+    let once = AtomicBool::new(true);
+    h.daemon.hooks.lock().unwrap().tamper_frames =
+        Some(Arc::new(move |kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::Plan(p)) if once.swap(false, SeqCst) => first(p),
+            (_, m) => vec![m],
+        }));
+}
+
+/// A receiver that asks for a path the sender never listed (under a fresh
+/// id): the sender refuses it as a protocol error, rather than giving the
+/// file up and keeping what that costs for the rest of the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plan_for_an_unlisted_path_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("a"), data(4096, 1)).unwrap();
+        tamper_first_plan(&h, |p| {
+            vec![
+                Msg::Plan(PlanItem {
+                    file_id: p.file_id + 1_000_000,
+                    path: b"never-listed".to_vec(),
+                    ..p.clone()
+                }),
+                Msg::Plan(p),
+            ]
+        });
+        let err = h
+            .run_side(&archive_opts(), flow, h.local_side())
+            .await
+            .expect_err("a plan for an unlisted path was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("did not list"), "{err}");
+    })
+    .await;
+}
+
+/// A receiver that asks for the same listed path twice, under two ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_path_planned_twice_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("a"), data(4096, 1)).unwrap();
+        tamper_first_plan(&h, |p| {
+            vec![
+                Msg::Plan(p.clone()),
+                Msg::Plan(PlanItem {
+                    file_id: p.file_id + 1_000_000,
+                    ..p
+                }),
+            ]
+        });
+        let err = h
+            .run_side(&archive_opts(), flow, h.local_side())
+            .await
+            .expect_err("a path planned twice was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("already planned"), "{err}");
+    })
+    .await;
+}
+
+/// A receiver that grants one record of list room more than it freed: the
+/// sender's room would exceed what a connection starts with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn list_room_beyond_the_budget_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        for i in 0..3 {
+            fs::write(h.src(flow).join(format!("f{i}")), data(MIB, 30 + i)).unwrap();
+        }
+        h.daemon.hooks.lock().unwrap().tamper_frames =
+            Some(Arc::new(|kind, msg| match (kind, msg) {
+                (StreamKind::Control, Msg::ListRoom(mut r)) => {
+                    r.records += 1;
+                    vec![Msg::ListRoom(r)]
+                }
+                (_, m) => vec![m],
+            }));
+        let err = h
+            .run_side(&archive_opts(), flow, h.local_side())
+            .await
+            .expect_err("list room beyond the budget was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("list room"), "{err}");
+    })
+    .await;
+}
+
+/// A sender that starts a file's chunk list over and over (empty first
+/// parts, each withdrawing the list so far, then the real list): more
+/// first parts than an honest sender's retries allow fail the session.
+/// (Empty ones free no room, so this sender never sees a grant it did not
+/// expect.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chunk_list_started_too_often_fails_the_session() {
+    within60(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("f.bin"), data(MIB, 40)).unwrap();
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::ChunkListPart(p)) if p.first == 0 && p.total > 0 => {
+                let empty = irsync_proto::v1::ChunkListPart {
+                    file_id: p.file_id,
+                    ..Default::default()
+                };
+                let mut v = vec![Msg::ChunkListPart(empty); 4];
+                v.push(Msg::ChunkListPart(p));
+                v
+            }
+            (_, m) => vec![m],
+        }));
+        let err = h
+            .run_side(&archive_opts(), flow, local)
+            .await
+            .expect_err("a chunk list started five times was accepted");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("chunk lists for file id"), "{err}");
+    })
+    .await;
+}
+
+/// A sender that stops reading its control stream (its main loop takes a
+/// minute per peer event) while the receiver requests 5 000 files with
+/// 3.6 KB paths: once the in-flight window's `PlanItem`s outgrow what the
+/// sender's queue and the stream window take, they wait in the receiver's
+/// control writer, which must not hold more than its ceiling. (The client
+/// runs alone: the daemon's stalled main loop takes minutes to end.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_that_stops_reading_control_fails_the_session() {
+    within60(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        deep_tree(h.src(flow), 500);
+        h.daemon.hooks.lock().unwrap().slow_peer_events = Some(Duration::from_secs(60));
+        let mut local = h.local_side();
+        local.hooks.out_ceiling = Some(512 * 1024);
+        let conn = h
+            .client
+            .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
+            .await
+            .unwrap();
+        let out = irsync::session::engine::run_client(
+            conn.clone(),
+            Harness::hello(flow),
+            local,
+            &archive_opts(),
+        )
+        .await;
+        conn.close(0u32.into(), b"done");
+        let err = out.expect_err("a peer that stopped reading was waited for");
+        let err = format!("{err:#}");
+        assert!(err.contains("protocol error"), "{err}");
+        assert!(err.contains("not reading its control stream"), "{err}");
     })
     .await;
 }
