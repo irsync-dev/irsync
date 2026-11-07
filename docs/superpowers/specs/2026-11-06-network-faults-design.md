@@ -1,7 +1,7 @@
 # Network-fault test rig — design
 
 Date: 2026-11-06
-Status: approved 2026-11-06; plan to follow
+Status: implemented 2026-11-07 (plan: ../plans/2026-11-06-network-faults.md)
 
 ## Intent
 

@@ -71,7 +71,7 @@ name (APFS does); on Linux they always run. See R29 in
 
 ### Workload and stress tools
 
-Two crates in the workspace exist for testing irsync. Neither shares code
+Three crates in the workspace exist for testing irsync. None shares code
 with it.
 
 **`filegen`** is a deterministic, resumable filesystem workload generator:
@@ -97,6 +97,23 @@ Its end-to-end test needs the other binaries, which `cargo test -p stress`
 alone does not build: run `cargo build --workspace` first, or use
 `cargo test --workspace`.
 
+**`irsync-netstress`** is the same loop across a simulated bad network: a
+fault layer inside irsync (the cargo feature `netsim`) shapes every QUIC
+packet between client and daemon with a named profile (`4g-vehicle`,
+`dsl-video`). It needs a separate build, kept in its own target directory so
+`target/release` never holds fault code:
+
+```
+cargo build --release --workspace --features netsim --target-dir target/netsim
+```
+
+The binaries land in `target/netsim/release/`; that `irsync --version` ends
+with ` [netsim]`. Write it exactly so: `--features irsync/netsim` looks
+similar but builds irsync without the feature, because irsync lists itself
+as a dev-dependency. See
+[crates/netstress/README.md](crates/netstress/README.md) and
+[docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md).
+
 ## Design documents
 
 | Document | What it holds |
@@ -107,6 +124,7 @@ alone does not build: run `cargo build --workspace` first, or use
 | [docs/IRSYNC_DECISIONS.md](docs/IRSYNC_DECISIONS.md) | Design and implementation decisions of v1 that the code does not show, and the points knowingly left open. |
 | [docs/FILESET_DECISIONS.md](docs/FILESET_DECISIONS.md), [docs/FILEGEN_DECISIONS.md](docs/FILEGEN_DECISIONS.md), [docs/IRSYNC_HARNESS_DECISIONS.md](docs/IRSYNC_HARNESS_DECISIONS.md) | The same for fileset, filegen and irsync-stress; the last also lists the irsync bugs the harness found. |
 | [docs/STRESS_BUG_HUNTING.md](docs/STRESS_BUG_HUNTING.md) | A strategy for finding bugs with irsync-stress. |
+| [docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md) | The calls made building irsync-netstress and its fault layer, and the first real runs. |
 | [docs/telemetry.md](docs/telemetry.md) | Spans, metrics and their sinks. |
 | [docs/daemon.md](docs/daemon.md) | Running the daemon. |
 | `docs/superpowers/` | The specs (`specs/`), implementation plans (`plans/`) and progress ledgers (`ledgers/`) features were built from. |

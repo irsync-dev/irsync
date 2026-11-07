@@ -6,6 +6,10 @@ loop that finds things. It builds on what the first runs taught us
 client already expose, and on irsync's own list of open points
 (`IRSYNC_DECISIONS.md`, section 2), which is a map of where the thin ice is.
 
+Network faults (loss, delay, dead zones that force a reconnect and resume)
+are covered by a separate rig, `irsync-netstress`; see
+[crates/netstress/README.md](../crates/netstress/README.md).
+
 Written 2026-10-21. Commands assume a release build in `target/release` and
 roots on a filesystem with room for twice the size cap.
 
@@ -164,7 +168,9 @@ and should land with its own end-to-end test like the existing ones.
 3. **Kill-and-resume.** `--kill-after <secs>` sends SIGKILL to the client
    once per iteration after that delay, then re-runs the identical command
    and verifies. This is the spec's fault-injection non-goal and the single
-   largest untested surface: resume, `.part` adoption, hash-verified chunk
+   largest untested surface (the network half, a dead zone that forces a
+   reconnect and resume, is now covered by `irsync-netstress`; killing the
+   client is the second project): resume, `.part` adoption, hash-verified chunk
    reuse, orphaned finalize during reconnect. The acceptance run saw none
    of it because no sync was ever interrupted.
 4. **Destination drift.** Before each sync, run a second filegen (own seed,
