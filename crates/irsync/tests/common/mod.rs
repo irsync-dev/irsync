@@ -55,11 +55,26 @@ pub fn offline_opts() -> EndpointOpts {
     }
 }
 
+tokio::task_local! {
+    /// Each stream's receive window for the endpoints bound inside
+    /// [`with_stream_window`].
+    static STREAM_WINDOW: u32;
+}
+
+/// Runs `f` with every endpoint it binds through [`loopback_endpoint`]
+/// (a [`Harness`]'s daemon and clients among them) taking `window` bytes
+/// per stream instead of the default 8 MiB.
+pub async fn with_stream_window<F: std::future::Future>(window: u32, f: F) -> F::Output {
+    STREAM_WINDOW.scope(window, f).await
+}
+
 /// Binds one offline endpoint on loopback.
 pub async fn loopback_endpoint() -> Endpoint {
-    build_endpoint(offline_opts())
-        .await
-        .expect("bind loopback endpoint")
+    match STREAM_WINDOW.try_with(|w| *w) {
+        Ok(w) => irsync::net::build_endpoint_with_stream_window(offline_opts(), w).await,
+        Err(_) => build_endpoint(offline_opts()).await,
+    }
+    .expect("bind loopback endpoint")
 }
 
 /// Binds two offline endpoints on loopback. Dial one from the other with [`addr_of`].

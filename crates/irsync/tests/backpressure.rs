@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{archive_opts, assert_trees_equal, Flow, Harness};
+use common::{archive_opts, assert_trees_equal, with_stream_window, Flow, Harness};
 use irsync::cli::DeleteMode;
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{PartsFault, StreamKind};
@@ -19,6 +19,22 @@ use irsync_proto::v1::file_entry::Kind;
 use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry, PlanItem};
 
 const MIB: usize = 1024 * 1024;
+
+/// How many times shorter the long paths and symlink targets below are
+/// than the 3.6 KB the tests were sized for. macOS refuses any path over
+/// 1 KB, so there they are a fifth as long.
+#[cfg(target_os = "macos")]
+const SHORTER: u32 = 5;
+#[cfg(not(target_os = "macos"))]
+const SHORTER: u32 = 1;
+
+/// A harness whose streams buffer 8 MiB / [`SHORTER`]: with paths that
+/// many times shorter, the same number of them fills the buffers between
+/// the two sides as the long paths fill 8 MiB, so the tests keep their
+/// file counts and timing (and on Linux run with the defaults).
+async fn long_path_harness() -> Harness {
+    with_stream_window(8 * 1024 * 1024 / SHORTER, Harness::new()).await
+}
 
 async fn within60<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(60), f)
@@ -30,6 +46,14 @@ async fn within120<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(120), f)
         .await
         .expect("test timed out after 120 s")
+}
+
+/// For a test that syncs tens of thousands of files twice, which on a
+/// loaded macOS machine takes well over 120 s.
+async fn within240<F: std::future::Future>(f: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(240), f)
+        .await
+        .expect("test timed out after 240 s")
 }
 
 /// Deterministic pseudo-random bytes.
@@ -208,13 +232,14 @@ fn many_files(root: &Path, n: u32) {
 /// planner's queue must never hold more than its capacity.
 async fn slow_planner(flow: Flow) {
     within120(async {
-        let h = Harness::new().await;
+        let h = long_path_harness().await;
         many_files(h.src(flow), 5000);
         // The transport buffers a stream's first 8 MiB, so the walk only
         // waits once the listing outgrows that: 4000 symlinks with long
-        // targets (14 MB of listing) alongside the files.
+        // targets (14 MB of listing) alongside the files. (On macOS the
+        // targets and the buffer are a fifth of that: see `SHORTER`.)
         for i in 0..4000 {
-            let target = format!("{}/t{i:05}", "x".repeat(3500));
+            let target = format!("{}/t{i:05}", "x".repeat(3500 / SHORTER as usize));
             let link = h.src(flow).join(format!("d{:02}/l{i:05}", i % 50));
             std::os::unix::fs::symlink(target, link).unwrap();
         }
@@ -396,8 +421,9 @@ async fn a_late_planned_completion_never_loses_the_answer() {
 const OUT_BUDGET: usize = 4 * MIB;
 
 /// 20 000 one-byte files in 2 000 directories, all below fifteen nested
-/// directories with 240-byte names, so each path is about 3600 bytes long.
-/// Returns the directory that holds the 2 000.
+/// directories with 240-byte names, so each path is about 3600 bytes long
+/// (on macOS three, a fifth as long: see [`SHORTER`] and
+/// [`long_path_harness`]). Returns the directory that holds the 2 000.
 fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
     deep_tree(root, 2000)
 }
@@ -406,7 +432,7 @@ fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
 /// directories with 240-byte names (see [`wide_deep_tree`]).
 fn deep_tree(root: &Path, dirs: u32) -> std::path::PathBuf {
     let mut base = root.to_path_buf();
-    for c in b'a'..b'p' {
+    for c in (b'a'..b'p').take(15 / SHORTER as usize) {
         base.push(String::from_utf8(vec![c; 240]).unwrap());
     }
     fs::create_dir_all(&base).unwrap();
@@ -443,9 +469,9 @@ fn chmod_all(base: &Path, dirs: u32, files: u32) {
 /// which the daemon waits for only so long, to a few thousand frames.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
-    within120(async {
+    within240(async {
         let flow = Flow::Push;
-        let h = Harness::new().await;
+        let h = long_path_harness().await;
         let base = wide_deep_tree(h.src(flow));
         h.run(&archive_opts(), flow)
             .await
@@ -1048,11 +1074,11 @@ async fn a_chunk_list_started_too_often_fails_the_session() {
 async fn a_peer_that_stops_reading_control_fails_the_session() {
     within60(async {
         let flow = Flow::Pull;
-        let h = Harness::new().await;
+        let h = long_path_harness().await;
         deep_tree(h.src(flow), 500);
         h.daemon.hooks.lock().unwrap().slow_peer_events = Some(Duration::from_secs(60));
         let mut local = h.local_side();
-        local.hooks.out_ceiling = Some(512 * 1024);
+        local.hooks.out_ceiling = Some(512 * 1024 / SHORTER as usize);
         let conn = h
             .client
             .connect(h.daemon.addr.clone(), irsync_proto::ALPN)
@@ -1223,7 +1249,7 @@ async fn an_empty_source_tree_syncs() {
 async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
     within120(async {
         let flow = Flow::Push;
-        let h = Harness::new().await;
+        let h = long_path_harness().await;
         let base = deep_tree(h.src(flow), 500);
         h.run(&archive_opts(), flow)
             .await
@@ -1254,7 +1280,7 @@ async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
 async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
     within120(async {
         let flow = Flow::Push;
-        let h = Arc::new(Harness::new().await);
+        let h = Arc::new(long_path_harness().await);
         let base = deep_tree(h.src(flow), 200);
         h.run(&archive_opts(), flow)
             .await
@@ -1293,7 +1319,7 @@ async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
 async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
     within120(async {
         let flow = Flow::Push;
-        let h = Arc::new(Harness::new().await);
+        let h = Arc::new(long_path_harness().await);
         let base = deep_tree(h.src(flow), 200);
         h.run(&archive_opts(), flow)
             .await

@@ -95,17 +95,26 @@ fn immediate_acks() -> AckFrequencyConfig {
     ack
 }
 
+/// Bytes each stream may receive ahead of what the application has read.
+const STREAM_WINDOW: u32 = 8 * MIB;
+
 /// QUIC transport tuned for bulk transfer: 60 s idle, 5 s keep-alive, large
 /// windows, BBR congestion control, and immediate ACKs asked of the peer
 /// (see [`immediate_acks`]).
 pub fn transport_config() -> QuicTransportConfig {
+    transport_config_with(STREAM_WINDOW)
+}
+
+/// [`transport_config`] with each stream's receive window `stream_window`
+/// bytes.
+fn transport_config_with(stream_window: u32) -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(
             IdleTimeout::try_from(Duration::from_secs(60)).expect("60 s fits in an IdleTimeout"),
         ))
         .keep_alive_interval(Duration::from_secs(5))
         .receive_window(VarInt::from_u32(64 * MIB))
-        .stream_receive_window(VarInt::from_u32(8 * MIB))
+        .stream_receive_window(VarInt::from_u32(stream_window))
         .send_window(64 * u64::from(MIB))
         .max_concurrent_uni_streams(VarInt::from_u32(256))
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
@@ -203,6 +212,21 @@ pub fn daemon_endpoint_opts(
 
 /// Builds and binds the endpoint speaking [`irsync_proto::ALPN`].
 pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
+    build(opts, transport_config()).await
+}
+
+/// Test hook: [`build_endpoint`] with each stream's receive window
+/// `stream_window` bytes instead of 8 MiB, so a test can fill the buffers
+/// between two sides with fewer bytes (for one, where paths must be short).
+#[cfg(feature = "test-hooks")]
+pub async fn build_endpoint_with_stream_window(
+    opts: EndpointOpts,
+    stream_window: u32,
+) -> Result<Endpoint, NetError> {
+    build(opts, transport_config_with(stream_window)).await
+}
+
+async fn build(opts: EndpointOpts, transport: QuicTransportConfig) -> Result<Endpoint, NetError> {
     let builder = match &opts.relay {
         RelayChoice::N0Default => Endpoint::builder(presets::N0),
         RelayChoice::Custom(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
@@ -219,7 +243,7 @@ pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
         .clear_address_lookup()
         .secret_key(opts.secret.clone())
         .alpns(vec![irsync_proto::ALPN.to_vec()])
-        .transport_config(transport_config());
+        .transport_config(transport);
 
     if opts.dns {
         if opts.publish {
