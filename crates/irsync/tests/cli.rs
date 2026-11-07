@@ -106,9 +106,46 @@ fn bwlimit_forms() {
         Some(100 * 1024)
     );
     assert_eq!(opts(&["--bwlimit=2M", "a", "h:m"]).bwlimit, Some(2 << 20));
-    assert_eq!(opts(&["--bwlimit=1gb", "a", "h:m"]).bwlimit, Some(1 << 30));
+    // rsync: K/M/G and KiB/MiB/GiB are 1024-based, KB/MB/GB 1000-based.
+    assert_eq!(opts(&["--bwlimit=1g", "a", "h:m"]).bwlimit, Some(1 << 30));
+    assert_eq!(opts(&["--bwlimit=1GiB", "a", "h:m"]).bwlimit, Some(1 << 30));
+    assert_eq!(
+        opts(&["--bwlimit=1gb", "a", "h:m"]).bwlimit,
+        Some(1_000_000_000)
+    );
+    assert_eq!(opts(&["--bwlimit=3KB", "a", "h:m"]).bwlimit, Some(3000));
+    assert_eq!(opts(&["--bwlimit=500b", "a", "h:m"]).bwlimit, Some(500));
+    assert_eq!(opts(&["--bwlimit=1.5M", "a", "h:m"]).bwlimit, Some(3 << 19));
+    assert_eq!(opts(&["--bwlimit=.5k", "a", "h:m"]).bwlimit, Some(512));
     assert_eq!(opts(&["--bwlimit=0", "a", "h:m"]).bwlimit, None);
-    assert!(Args::try_parse_from(["irsync", "--bwlimit=x", "a", "h:m"]).is_err());
+    for bad in [
+        "x",
+        "",
+        "1.2.3",
+        "-1",
+        "1xb",
+        "k",
+        "1kib2",
+        "inf",
+        "99999999999P",
+    ] {
+        let a = format!("--bwlimit={bad}");
+        assert!(
+            Args::try_parse_from(["irsync", a.as_str(), "a", "h:m"]).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn timeout_zero_is_none_and_parallel_zero_is_rejected() {
+    assert_eq!(opts(&["--timeout=0", "a", "h:m"]).timeout, None);
+    assert_eq!(
+        opts(&["--timeout=5", "a", "h:m"]).timeout,
+        Some(std::time::Duration::from_secs(5))
+    );
+    assert!(Args::try_parse_from(["irsync", "--parallel=0", "a", "h:m"]).is_err());
+    assert_eq!(opts(&["--parallel=3", "a", "h:m"]).parallel, Some(3));
 }
 
 #[test]

@@ -290,7 +290,7 @@ irsync-specific:
 | `--relay URL` | use this relay (self-hosted) instead of n0's default |
 | `--no-relay` | direct connections only: never fall back to a relay; lookups stay on (default: `relay_mode` of the host entry, else `[client]`'s) |
 | `--no-dht` | do not use the mainline DHT for lookup |
-| `--address ADDR` | dial this `ip:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
+| `--address ADDR` | dial this `ip:port`, `[ipv6]:port` or `host:port` directly (repeatable); turns relay, DNS, DHT, mDNS and the port mapper off |
 | `--config PATH` | the config file (default: `~/.config/irsync/irsync.toml`); a `hosts.toml` beside it is read too |
 | `--identity PATH` | private key to use (default: `identity` in `irsync.toml`, else `~/.config/irsync/id_ed25519`, else `~/.ssh/id_ed25519`, else generated at the former) |
 | `--passphrase-file PATH` | passphrase for an encrypted key (first line); otherwise `IRSYNC_PASSPHRASE`, otherwise a prompt on a terminal (also for `irsync daemon`, `irsync id show` and `irsync show`) |

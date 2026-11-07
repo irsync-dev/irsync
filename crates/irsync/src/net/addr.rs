@@ -30,6 +30,10 @@ impl FromStr for HostPort {
         if host.is_empty() || host.contains([':', '[', ']']) {
             return Err(bad());
         }
+        // `u16::from_str` accepts a leading `+`.
+        if port.starts_with('+') {
+            return Err(bad());
+        }
         let port = port.parse::<u16>().map_err(|_| bad())?;
         Ok(HostPort::Name {
             host: host.to_string(),

@@ -116,8 +116,8 @@ pub fn transport_config() -> QuicTransportConfig {
 
 /// The client's endpoint options. Any address in `addresses` (from the
 /// command line, else the host entry) means isolated mode: no relay, no
-/// lookups, no port mapper, whatever `cli_relay` is absent and the config
-/// says. Without addresses: the relay from `cli_relay`, else none when
+/// lookups, no port mapper, whatever the config says; `cli_relay` together
+/// with addresses is an error. Without addresses: the relay from `cli_relay`, else none when
 /// `no_relay` or a `relay_mode = "disabled"` (host entry, then client
 /// settings) says so, else the host entry's, else the client settings',
 /// else n0's; lookups likewise (host entry, then client settings, then on).
@@ -140,6 +140,13 @@ pub fn client_endpoint_opts(
     let host_dht = host.and_then(|h| h.dht);
     let host_mdns = host.and_then(|h| h.mdns);
     if !addresses.is_empty() {
+        // The host entry's addresses with `--relay` on the command line: the
+        // same contradiction as `--address` with `--relay`.
+        if cli_relay.is_some() {
+            anyhow::bail!(
+                "--relay cannot be used with direct addresses (the host entry has `address`)"
+            );
+        }
         if host_relay.is_some()
             || host_dht.is_some()
             || host_mdns.is_some()

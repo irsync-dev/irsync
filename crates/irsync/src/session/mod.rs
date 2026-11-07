@@ -499,6 +499,9 @@ pub enum Event {
     FileSent(RelPath),
     /// A file was placed (receiver) or acknowledged (sender); its size.
     FileDone(RelPath, u64),
+    /// A dry run (`-n`) found this file would be transferred; listed for
+    /// `-v`, counted nowhere.
+    WouldTransfer(RelPath),
     /// The planner found this regular file up to date; its size.
     Skipped(RelPath, u64),
     /// Bytes of source files the peer's planner skipped so far (cumulative).

@@ -368,7 +368,7 @@ pub struct HostAddArgs {
     pub address: Vec<HostPort>,
     /// Files in flight at once when syncing with this host (default: the
     /// client settings', else 32).
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long a sync with this host keeps redialling after a dropped
     /// connection: `<N>[s|m|h|d]`, e.g. `1h`; 0 gives up at once.
@@ -475,18 +475,50 @@ pub struct DaemonArgs {
     pub log: LogArgs,
 }
 
+/// rsync's rate syntax: a number, decimals allowed (`1.5M`), then an optional
+/// unit. No unit means KiB. `K`/`M`/`G`/`T`/`P` and the `iB` forms (`KiB`)
+/// are powers of 1024; the `B` forms (`KB`) are powers of 1000; `b` alone is
+/// bytes. Returns bytes per second; 0 means no limit.
 fn parse_bwlimit(s: &str) -> Result<u64, String> {
     let bad = || format!("invalid rate {s:?}");
     let lower = s.to_ascii_lowercase();
-    let t = lower.strip_suffix('b').unwrap_or(&lower);
-    let (digits, mult) = match t.chars().last() {
-        Some('k') => (&t[..t.len() - 1], 1024u64),
-        Some('m') => (&t[..t.len() - 1], 1024 * 1024),
-        Some('g') => (&t[..t.len() - 1], 1024 * 1024 * 1024),
-        _ => (t, 1024),
+    let split = lower
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(lower.len());
+    let (num, unit) = lower.split_at(split);
+    let (int, frac) = num.split_once('.').unwrap_or((num, ""));
+    if (int.is_empty() && frac.is_empty()) || frac.contains('.') {
+        return Err(bad());
+    }
+    let mult = match unit {
+        "" => 1024.0,
+        "b" => 1.0,
+        _ => {
+            let (letter, rest) = unit.split_at(1);
+            let base = match rest {
+                "" | "ib" => 1024.0_f64,
+                "b" => 1000.0,
+                _ => return Err(bad()),
+            };
+            let exp = match letter {
+                "k" => 1,
+                "m" => 2,
+                "g" => 3,
+                "t" => 4,
+                "p" => 5,
+                _ => return Err(bad()),
+            };
+            base.powi(exp)
+        }
     };
-    let n: u64 = digits.parse().map_err(|_| bad())?;
-    n.checked_mul(mult).ok_or_else(bad)
+    let n: f64 = format!("{}.{}0", if int.is_empty() { "0" } else { int }, frac)
+        .parse()
+        .map_err(|_| bad())?;
+    let bytes = (n * mult).floor();
+    if !bytes.is_finite() || bytes >= u64::MAX as f64 {
+        return Err(bad());
+    }
+    Ok(bytes as u64)
 }
 
 #[derive(Debug, clap::Args)]
@@ -602,7 +634,9 @@ pub struct SyncArgs {
     /// Read include patterns from FILE, one per line, as --exclude-from.
     #[arg(long, value_name = "FILE", action = ArgAction::Append)]
     pub include_from: Vec<String>,
-    /// Bytes/s limit: KiB/s by default, or with k/m/g suffix; 0 = unlimited.
+    /// Rate limit: KiB/s by default; suffixes K, M, G are 1024-based (also
+    /// KiB), KB, MB, GB 1000-based, `b` bytes; decimals allowed (1.5M);
+    /// 0 = unlimited.
     #[arg(long, value_name = "RATE", value_parser = parse_bwlimit)]
     pub bwlimit: Option<u64>,
     /// Apply owner and group ids as sent, instead of mapping the sender's
@@ -633,12 +667,12 @@ pub struct SyncArgs {
     #[arg(short = 'i', long)]
     pub itemize_changes: bool,
     /// Inactivity timeout: a connection that moves no data and no control
-    /// message for this long is dropped and the session reconnects.
+    /// message for this long is dropped and the session reconnects. 0 = none.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
     /// Files in flight at once (default: `parallel` from the host entry or
     /// the client settings, else 32).
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
@@ -849,7 +883,7 @@ impl SyncOptions {
             progress: a.progress,
             info: a.info.clone(),
             itemize: a.itemize_changes,
-            timeout: a.timeout.map(Duration::from_secs),
+            timeout: a.timeout.filter(|&t| t != 0).map(Duration::from_secs),
             parallel: a.parallel,
             reconnect: a.reconnect,
             relay: a.relay.clone(),

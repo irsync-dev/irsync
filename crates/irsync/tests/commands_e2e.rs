@@ -154,6 +154,14 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
     assert!(lines[0].starts_with("ssh-ed25519 "));
     let client = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
     assert!(home.join(".config/irsync/id_ed25519").exists());
+    // `id show --daemon` never creates the identity.
+    let o = irsync(&home, &["id", "show", "--daemon"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no daemon identity"));
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    assert!(irsync(&home, &["id", "generate", "--daemon"])
+        .status
+        .success());
     let o = irsync(&home, &["id", "show", "--daemon"]);
     let daemon = irsync::identity::parse_endpoint_id(
         String::from_utf8(o.stdout).unwrap().lines().nth(1).unwrap(),
@@ -334,7 +342,9 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
     use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    assert!(irsync(&home, &["id", "show", "--daemon"]).status.success());
+    assert!(irsync(&home, &["id", "generate", "--daemon"])
+        .status
+        .success());
     let key = home.join(".config/irsync/daemon_ed25519");
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read(&key).is_ok() {

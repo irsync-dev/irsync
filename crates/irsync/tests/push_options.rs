@@ -97,11 +97,11 @@ async fn dry_run_verbose_push_lists_files() {
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let mut listed = Vec::new();
         while let Ok(e) = rx.try_recv() {
-            if let irsync::session::Event::FileDone(p, _) = e {
+            if let irsync::session::Event::WouldTransfer(p) = e {
                 listed.push(String::from_utf8_lossy(p.as_bytes()).into_owned());
             }
         }
-        // What the reporter prints under `-n -v` (FileDone lines).
+        // What the reporter prints under `-n -v` (WouldTransfer lines).
         assert_eq!(listed, vec!["new.txt".to_string()]);
         assert!(!h.export.path().join("new.txt").exists());
     })

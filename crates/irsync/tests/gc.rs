@@ -224,6 +224,12 @@ fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
         ),
     )
     .unwrap();
+    let g = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["id", "generate", "--daemon", "--config"])
+        .arg(&cfg)
+        .output()
+        .unwrap();
+    assert!(g.status.success(), "{}", String::from_utf8_lossy(&g.stderr));
     let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["id", "show", "--daemon", "--config"])
         .arg(&cfg)

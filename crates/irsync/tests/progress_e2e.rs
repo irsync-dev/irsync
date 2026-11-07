@@ -138,7 +138,7 @@ async fn dry_run_push_itemizes() {
         // -v -n lists the files that would be transferred.
         assert!(events
             .iter()
-            .any(|e| matches!(e, Event::FileDone(p, _) if p.as_bytes() == b"d/e/deep.bin")));
+            .any(|e| matches!(e, Event::WouldTransfer(p) if p.as_bytes() == b"d/e/deep.bin")));
         assert_eq!(fs::read_dir(h.dst(Flow::Push)).unwrap().count(), 0);
     })
     .await;
@@ -152,7 +152,7 @@ async fn dry_run_pull_lists_files_for_verbose() {
         let (_, events) = run(&h, &opts(&["-n"]), Flow::Pull).await;
         assert!(events
             .iter()
-            .any(|e| matches!(e, Event::FileDone(p, 0) if p.as_bytes() == b"top.txt")));
+            .any(|e| matches!(e, Event::WouldTransfer(p) if p.as_bytes() == b"top.txt")));
         assert_eq!(fs::read_dir(h.dst(Flow::Pull)).unwrap().count(), 0);
     })
     .await;

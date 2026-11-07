@@ -257,7 +257,7 @@ impl Reporter {
         }
         self.live.apply(&ev, Instant::now());
         match ev {
-            Event::FileDone(p, _) => {
+            Event::FileDone(p, _) | Event::WouldTransfer(p) => {
                 if self.verbosity >= 1 && !self.itemize {
                     self.line(&shown(&p));
                 }

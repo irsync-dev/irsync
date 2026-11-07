@@ -29,6 +29,7 @@ fn rejects_missing_port_bad_port_and_bare_ipv6() {
         "host:",
         ":9",
         "host:99999",
+        "host:+80",
         "::1:9",
         "[::1]",
         "",
