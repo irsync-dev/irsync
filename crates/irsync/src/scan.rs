@@ -184,7 +184,9 @@ fn run_walk(
             Err(e) => gap(sum, rel, e.to_string()),
         }
     };
-    if !send(&mut sum, RelPath::root()) {
+    if !send(&mut sum, RelPath::root()) || sum.incomplete {
+        // A root that cannot be stat'ed has its gap; the walk would only
+        // report it again.
         return sum;
     }
 
@@ -207,7 +209,9 @@ fn run_walk(
             children.retain_mut(|c| {
                 let Ok(e) = c else { return true };
                 let Ok(rel) = dir_rel.join(e.file_name().as_bytes()) else {
-                    return false;
+                    // Kept, unwalked, for the loop below to report.
+                    e.read_children = None;
+                    return true;
                 };
                 if filters.matches(&rel, e.file_type().is_dir()) == Verdict::Exclude {
                     return false;
@@ -220,6 +224,14 @@ fn run_walk(
         match item {
             Ok(e) => {
                 let Some(rel) = rel_of(&root, &e.path()) else {
+                    // A name no path can carry (the filesystem handed out
+                    // `.`, `..`, or a name with `/` or NUL): missing from
+                    // the listing, so a gap, at the root since it has no
+                    // place in path order.
+                    let msg = format!("{}: invalid file name", e.path().display());
+                    if !gap(&mut sum, RelPath::root(), msg) {
+                        return sum;
+                    }
                     continue;
                 };
                 let unread = e
@@ -351,6 +363,15 @@ mod tests {
         assert!(summary.incomplete);
         assert_eq!(summary.errors.len(), 1);
         assert_eq!(summary.errors[0].0.as_bytes(), b"locked");
+    }
+
+    #[tokio::test]
+    async fn a_missing_root_is_one_gap() {
+        let t = tempfile::tempdir().unwrap();
+        let (v, summary) = events(&t.path().join("missing")).await;
+        assert_eq!(v, vec![(String::new(), true)]);
+        assert!(summary.incomplete);
+        assert_eq!(summary.errors.len(), 1, "{:?}", summary.errors);
     }
 
     #[tokio::test]
