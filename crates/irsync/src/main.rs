@@ -1414,6 +1414,14 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
                 Ok(())
             };
             let show_daemon = || -> anyhow::Result<()> {
+                // Showing is read-only: never create the daemon identity.
+                let path = &settings.daemon.identity;
+                if path.symlink_metadata().is_err() {
+                    anyhow::bail!(
+                        "no daemon identity at {}; run the daemon once or `irsync id generate --daemon`",
+                        path.display()
+                    );
+                }
                 print(
                     &identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?,
                     "irsync-daemon",
