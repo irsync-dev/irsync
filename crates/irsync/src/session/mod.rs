@@ -716,8 +716,9 @@ pub struct SideHooks {
     #[cfg(feature = "test-hooks")]
     pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Receiver: runs once a `DELTA` file's chunk bases have been sent,
-    /// before the request for those chunks goes out (a test changes the
-    /// old file meanwhile).
+    /// before the final request goes out (the last batch's chunks and the
+    /// rest; earlier batches were requested already); a test changes the
+    /// old file meanwhile.
     #[cfg(feature = "test-hooks")]
     pub after_bases: Option<PathHook>,
     /// Receiver: runs when a file's chunk list is about to be opened,

@@ -571,7 +571,9 @@ pub(super) async fn open_writer(
 /// file signs bases at disk speed, so a slow link stalls this task instead
 /// of the queue growing. It holds no lock while it waits (see [`Slot`]),
 /// and what it holds of the budget goes back however it ends, dropped
-/// included (see [`Held`]).
+/// included (see [`Held`]). Once the file's writer is retired (a new chunk
+/// list, a failure) its bases are stale: the task stops before signing
+/// another or waiting for room for one (see [`retired`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn offer_bases(
     ctx: Arc<Ctx>,
@@ -590,6 +592,9 @@ pub(super) async fn offer_bases(
     // Chunks a batch requested; the last request has the rest.
     let mut batched: HashSet<u32> = HashSet::new();
     for (idx, offset, len) in specs {
+        if retired(&route) {
+            break;
+        }
         let (f, meter) = (old.clone(), ctx.meter.clone());
         let basis = blocking(move || {
             let _timed = meter.start(Activity::Read);
@@ -614,6 +619,9 @@ pub(super) async fn offer_bases(
                             return;
                         }
                         batch.clear();
+                    }
+                    if retired(&route) {
+                        break;
                     }
                     // Holding nothing: others free what this waits for.
                     held.take(n).await;
@@ -646,6 +654,14 @@ pub(super) async fn offer_bases(
         .filter(|i| !batched.contains(i))
         .collect();
     request_chunks(&out, &route, file_id, &rest, &mut held).await;
+}
+
+/// Whether the file's writer was retired: its bases are no longer wanted.
+/// Never waits: a slot someone else holds (for local disk work, see
+/// [`Slot`]) counts as current, and the request that ends the task checks
+/// again (see [`request_chunks`]).
+fn retired(route: &Route) -> bool {
+    route.slot.try_lock().is_ok_and(|w| w.is_none())
 }
 
 /// Queues the request for `chunks` once the writer has room for it, then
@@ -1295,6 +1311,72 @@ mod tests {
                 c
             })
             .collect()
+    }
+
+    /// A file whose writer was retired (a new chunk list arrived, or it
+    /// failed) before its bases went out: none is signed or sent, and no
+    /// request either (nothing is held, so nothing needs dropping).
+    #[tokio::test]
+    async fn a_retired_writer_offers_no_bases() {
+        use irsync_proto::v1::Control;
+        let t = super::super::engine::test_ctx().await;
+        let ctx = t.ctx.clone();
+        const LEN: u32 = 64 * 1024;
+        let path = ctx.root.join("old");
+        let bytes: Vec<u8> = (0..4 * LEN).map(|i| (i * 7919 % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let old = Arc::new(File::open(&path).unwrap());
+        let (send, _) = ctx.conn.open_bi().await.unwrap();
+        let (events, _events) = mpsc::unbounded_channel();
+        let (out, writer) =
+            super::super::control::spawn_writer(send, events, &ctx.hooks, usize::MAX);
+        let route = Route {
+            gen: 1,
+            slot: Arc::new(tokio::sync::Mutex::new(None)),
+            digest: Arc::new(FileDigest {
+                size: bytes.len() as u64,
+                hash: [0; 32],
+                chunks: chunks(&[LEN; 4]),
+            }),
+            pending: Arc::default(),
+            path: RelPath::new(b"old").unwrap(),
+            old: Some(old.clone()),
+            gate: None,
+            idx_base: 0,
+        };
+        let specs = (0..4).map(|i| (i, u64::from(i * LEN), LEN)).collect();
+        let budget = Arc::new(ByteBudget::new(1 << 20));
+        let read = async {
+            let (_, mut recv) = t._peer.accept_bi().await.unwrap();
+            let mut frames = Vec::new();
+            while let Some(c) = read_msg::<Control, _>(&mut recv).await.unwrap() {
+                frames.extend(c.msg);
+            }
+            frames
+        };
+        let offer = async {
+            offer_bases(
+                ctx.clone(),
+                out.clone(),
+                route,
+                old,
+                specs,
+                vec![0, 1, 2, 3],
+                9,
+                budget,
+            )
+            .await;
+            out.finish();
+            drop(out);
+            writer.await.unwrap();
+        };
+        let (frames, ()) = tokio::join!(read, offer);
+        let bases = frames
+            .iter()
+            .filter(|m| matches!(m, Msg::ChunkBasis(_)))
+            .count();
+        assert_eq!(bases, 0, "bases signed for a retired writer");
+        assert!(frames.is_empty(), "{} frames sent", frames.len());
     }
 
     #[test]
