@@ -313,6 +313,57 @@ fn save_session_waits_out_another_writer() {
     assert!(ix.load_session_by_id(&[7; 16]).unwrap().is_some());
 }
 
+/// The index files under `state`.
+fn index_files(state: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(state.join("index"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sqlite"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// A root is keyed by its canonical path: through a symlink, and before it
+/// exists (a dry run's destination, a removed root under `irsync gc`), it
+/// opens the index it has once created.
+#[test]
+fn a_root_opens_one_index_however_it_is_named() {
+    let (state, d) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let real = d.path().join("real");
+    let root = real.join("a/b");
+    drop(Index::open(state.path(), &root).unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(&real, d.path().join("link")).unwrap();
+    drop(Index::open(state.path(), &root).unwrap());
+    drop(Index::open(state.path(), &d.path().join("link/a/b")).unwrap());
+    drop(Index::open(state.path(), &d.path().join("link/a/./b")).unwrap());
+    assert_eq!(index_files(state.path()).len(), 1);
+    let file = &index_files(state.path())[0];
+    assert_eq!(
+        Index::root_of_file(file).unwrap().unwrap(),
+        std::fs::canonicalize(&root).unwrap()
+    );
+}
+
+/// A root that cannot be resolved (here: below a regular file, or a
+/// missing one with `..` in it) is an error, not an index keyed by
+/// whatever the path happened to say.
+#[test]
+fn an_unresolvable_root_refuses_to_open() {
+    let (state, d) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let file = d.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(matches!(
+        Index::open(state.path(), &file.join("sub")),
+        Err(IndexError::Io(_))
+    ));
+    assert!(matches!(
+        Index::open(state.path(), &d.path().join("missing/../x")),
+        Err(IndexError::Io(_))
+    ));
+}
+
 #[test]
 fn metered_handle_times_only_contended_locks() {
     use irsync::telemetry::meter::{Activity, Meter};

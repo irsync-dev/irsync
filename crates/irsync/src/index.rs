@@ -671,6 +671,32 @@ fn cutoff(age: Duration) -> i64 {
     now().saturating_sub(age.as_secs().min(i64::MAX as u64) as i64)
 }
 
+/// The canonical path an index for `root` is keyed by. A root that does not
+/// exist yet (a dry run's destination) or any more (`irsync gc` of a removed
+/// root) is its nearest existing ancestor, canonical, with the missing
+/// names after it: the path it has once created. Anything else that stops
+/// the path resolving is an error rather than a key for the path as given.
+fn canonical_root(root: &Path) -> std::io::Result<PathBuf> {
+    let abs = std::path::absolute(root)?;
+    let mut missing = Vec::new();
+    let mut cur = abs.as_path();
+    loop {
+        match std::fs::canonicalize(cur) {
+            Ok(base) => return Ok(missing.iter().rev().fold(base, |p, name| p.join(name))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // `file_name` is `None` for a path ending in `..`, which
+                // cannot be resolved without the directory it leaves.
+                let (Some(parent), Some(name)) = (cur.parent(), cur.file_name()) else {
+                    return Err(e);
+                };
+                missing.push(name);
+                cur = parent;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn arr<const N: usize>(b: Vec<u8>, what: &'static str) -> Result<[u8; N]> {
     b.try_into().map_err(|_| IndexError::Corrupt(what))
 }
@@ -699,7 +725,7 @@ impl Index {
     }
 
     pub fn open(state_dir: &Path, root: &Path) -> Result<Index> {
-        let canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canon = canonical_root(root)?;
         let h = blake3::hash(canon.as_os_str().as_bytes());
         let name: String = h.as_bytes()[..16]
             .iter()
