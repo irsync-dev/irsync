@@ -1,5 +1,6 @@
 //! The fault layer end to end: a real daemon and a real client with
-//! `IRSYNC_NETSIM` set, syncing through the `test-blackout` profile's dead zone.
+//! `IRSYNC_NETSIM` set, syncing through the `test-blackout` profile's dead
+//! zone and the `test-slow` profile's slow uplink.
 #![cfg(feature = "netsim")]
 
 mod common;
@@ -63,6 +64,16 @@ fn rig(daemon_env: &[(&str, &str)]) -> Rig {
 /// Runs the client with `env`, bounded to 60 s; returns its output and its
 /// stderr without colour codes.
 fn client(rig: &Rig, env: &[(&str, &str)], args: &[&str]) -> (Output, String) {
+    client_within(rig, env, args, Duration::from_secs(60))
+}
+
+/// [`client`], bounded to `limit`.
+fn client_within(
+    rig: &Rig,
+    env: &[(&str, &str)],
+    args: &[&str],
+    limit: Duration,
+) -> (Output, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(args)
         .env("HOME", &rig.client)
@@ -75,13 +86,13 @@ fn client(rig: &Rig, env: &[(&str, &str)], args: &[&str]) -> (Output, String) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + limit;
     while child.try_wait().unwrap().is_none() {
         if Instant::now() > deadline {
             let _ = child.kill();
             let out = child.wait_with_output().unwrap();
             panic!(
-                "irsync {args:?} did not finish within 60 s: {}",
+                "irsync {args:?} did not finish within {limit:?}: {}",
                 plain(&String::from_utf8_lossy(&out.stderr))
             );
         }
@@ -222,4 +233,60 @@ fn without_the_variable_nothing_changes() {
     let (out, log) = plain_sync();
     assert!(out.status.success(), "{log}");
     assert!(!log.contains("netsim"), "{log}");
+}
+
+/// A push over a slow but healthy uplink (`test-slow`, 256 kbit/s) that takes
+/// well over a minute: the data streams share the link, so every range is
+/// confirmed late. None may give up while the link is still carrying data
+/// (the sender once allowed each range 60 s from the moment it was queued).
+#[test]
+fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything() {
+    let rig = rig(&[
+        (
+            "IRSYNC_NETSIM",
+            "profile=test-slow,side=daemon,seed=1,stream=0",
+        ),
+        ("RUST_LOG", "info"),
+    ]);
+    // 3 MiB: about 100 s at 32 KB/s.
+    let names: Vec<String> = (0..12).map(|i| format!("f{i:02}")).collect();
+    for (i, name) in names.iter().enumerate() {
+        let mut bytes = noise(256 << 10);
+        bytes[0] = i as u8;
+        std::fs::write(rig.local.join(name), bytes).unwrap();
+    }
+    let address = rig.daemon.listen.to_string();
+    let start = Instant::now();
+    let (out, log) = client_within(
+        &rig,
+        &[
+            (
+                "IRSYNC_NETSIM",
+                "profile=test-slow,side=client,seed=1,stream=1",
+            ),
+            ("RUST_LOG", "info"),
+        ],
+        &[
+            "-a",
+            "--address",
+            &address,
+            &format!("{}/", rig.local.display()),
+            &format!("{}:m/", rig.daemon.id),
+        ],
+        Duration::from_secs(300),
+    );
+    let took = start.elapsed();
+    assert!(out.status.success(), "{log}");
+    assert!(!log.contains("did not take the range"), "{log}");
+    assert!(
+        took > Duration::from_secs(60),
+        "the sync took only {took:?}, so it no longer tests a wait over a minute"
+    );
+    for name in &names {
+        assert_eq!(
+            std::fs::read(rig.local.join(name)).unwrap(),
+            std::fs::read(rig.export.join(name)).unwrap(),
+            "{name}"
+        );
+    }
 }

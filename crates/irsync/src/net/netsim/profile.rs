@@ -132,6 +132,29 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
             duplicate: 0.0,
             cross: None,
         },
+        // For tests only: a slow, clean uplink and an unlimited downlink.
+        ProfileName::TestSlow => LinkParams {
+            rate_bps: match d {
+                Dir::Down => (u64::MAX, u64::MAX),
+                Dir::Up => (256_000, 256_000),
+            },
+            rate_change_ms: (0, 0),
+            queue_bytes: match d {
+                Dir::Down => u64::MAX,
+                Dir::Up => 64 * KIB,
+            },
+            base_delay_ms: 0,
+            jitter_ms: 0,
+            loss: GilbertElliott {
+                to_bad: 0.0,
+                to_good: 1.0,
+                loss_good: 0.0,
+                loss_bad: 0.0,
+            },
+            reorder: 0.0,
+            duplicate: 0.0,
+            cross: None,
+        },
     }
 }
 
@@ -156,7 +179,7 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             dead_zone_ms: (20_000, 60_000),
             dead_zone_after_bytes: (256 * KIB, 4 * KIB * KIB),
         }),
-        ProfileName::DslVideo => None,
+        ProfileName::DslVideo | ProfileName::TestSlow => None,
         ProfileName::TestBlackout => Some(OutageParams {
             handover_every_ms: (0, 0),
             handover_ms: (0, 0),

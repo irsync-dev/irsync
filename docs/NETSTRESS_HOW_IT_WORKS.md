@@ -387,13 +387,13 @@ Why the numbers fit together:
 - `--reconnect 5m` is far longer than the longest dead zone (60 s), so the
   client never gives up because of the dead zone itself.
 
-Not everything in irsync waits that long. The sender waits up to 60 s for
-the receiver to confirm a piece of a file (`STOPPED_TIMEOUT` in
-`crates/irsync/src/send.rs`), and gives up on that file with
-`peer did not take the range in time`. A dead zone of up to 60 s, or a
-slow uplink with a deep queue, can come close to that limit. Whether this
-causes the exit 23 failures seen so far is an open question; see
-[NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md).
+The sender waits for the receiver to confirm each piece of a file it sent,
+with no time limit of its own: on a slow link, many pieces share the line
+and confirmation can take minutes. Until 2026-11-07 that wait was capped at
+60 s, which failed healthy pushes over slow uplinks with
+`peer did not take the range in time`; the first sweep found it (see
+[NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md)). A dead peer still ends
+the wait, through a lost connection.
 
 ## How the rig judges a run
 

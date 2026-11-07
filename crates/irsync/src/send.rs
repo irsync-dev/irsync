@@ -35,8 +35,6 @@ use crate::telemetry::meter::{Activity, Counter, Meter};
 pub const DEFAULT_PARALLEL: usize = 32;
 pub const DEFAULT_SPLIT_THRESHOLD: u64 = 64 * 1024 * 1024;
 
-/// Matches the transport idle timeout: how long to wait for the peer to take a range.
-const STOPPED_TIMEOUT: Duration = Duration::from_secs(60);
 /// The most a bucket saves up while idle (and never more than one second
 /// of its rate, so a low limit does not burst far past it after a pause).
 const MAX_BURST: u64 = 1024 * 1024;
@@ -505,16 +503,18 @@ impl Inner {
             let _send = timed();
             send.finish().map_err(io::Error::other)?;
         }
-        match tokio::time::timeout(STOPPED_TIMEOUT, send.stopped()).await {
-            Ok(Ok(None)) => Ok(()),
-            Ok(Ok(Some(code))) => Err(io::Error::other(format!(
+        // No time limit: this resolves once the peer has acknowledged every
+        // byte, and the stream shares the link with up to `parallel` others,
+        // so on a slow link it can take minutes while the link is busy. A
+        // peer that answers anything acknowledges this data too; a dead one
+        // ends the connection (QUIC idle timeout, `--timeout`), which ends
+        // this wait with an error.
+        match send.stopped().await {
+            Ok(None) => Ok(()),
+            Ok(Some(code)) => Err(io::Error::other(format!(
                 "{name}: peer stopped stream with code {code}"
             ))),
-            Ok(Err(e)) => Err(io::Error::other(e)),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("{name}: peer did not take the range in time"),
-            )),
+            Err(e) => Err(io::Error::other(e)),
         }
     }
 }

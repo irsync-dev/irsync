@@ -196,6 +196,14 @@ It is also a quick way to check that a build and a machine work before
 starting a long real run. It does not simulate any real network; don't use
 it for campaigns.
 
+### `test-slow`: for irsync's own tests
+
+A clean 256 kbit/s uplink with a 64 KiB queue, an unlimited downlink, no
+loss, no delay, no outages. irsync's test
+`a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything`
+(in `crates/irsync/tests/netsim.rs`) uses it to push data that takes over
+a minute. `irsync-netstress` does not offer it.
+
 ### Where the numbers come from
 
 The numbers are a first proposal based on what these networks are known to
@@ -455,7 +463,7 @@ What each kind of failure usually points at:
 
 | Symptom | Where to look |
 | --- | --- |
-| Client `exit 23` with `peer did not take the range in time` | The sender waited 60 s for the receiver to confirm a piece of a file and gave up (`STOPPED_TIMEOUT` in `crates/irsync/src/send.rs`). Seen under both real profiles. Not yet known whether the wait is too short for a slow link, the receiver is stuck, or the fault layer holds packets back. Compare with the counts lines. |
+| Client `exit 23` with `peer did not take the range in time` | A build from before 2026-11-07: the sender gave each piece of a file 60 s to be confirmed, counted from when it was queued, so pushes over slow uplinks failed. Fixed by removing that limit; rebuild the fault build. |
 | `reconnect without a dead zone` | The client saw 10 s without any packet from the daemon while the link was up. Look at the counts around that time: many drops point at the profile or the link model, few drops point at irsync. |
 | `dead zone did not end in a resumed session` | The reconnect worked but a new session started instead of the old one resuming, or the client never got back. Look at what the client logged after `dead zone closed`. |
 | `partial file left behind` | A failed or interrupted file left its `.irsync.<name>.part`. It usually goes with a client exit 23 earlier in the run. |

@@ -29,6 +29,9 @@ Where the code and the spec differ, the code is what shipped.
    6 s dead zone after 256 KiB of traffic, client `--timeout 2`, sizes 3
    iterations of 8M/1M. Why: the end-to-end tests need an outage that fits
    in seconds. The README marks it as not for campaigns.
+   `test-slow` (added with the fix below) is irsync's own: a clean
+   256 kbit/s uplink for a regression test of a push that takes over a
+   minute. The rig does not offer it.
 
 3. **When the dead zone opens.** After 256 KiB to 4 MiB of traffic (drawn per
    client process), not after a fixed time. One per client process, so one per
@@ -293,12 +296,28 @@ promised=4`); the session delivered 1.8 MB in about 60 s, about a quarter
 of what the 1 Mbit/s uplink can carry. The pull direction, whose data goes
 down the 16 Mbit/s link, almost always passes.
 
-Hypothesis, not yet shown: the 60 s starts when the range is in QUIC's
-local send buffer, not when it is on the wire. With up to 32 files sending
-at once (`DEFAULT_PARALLEL`) and a 64 MiB send window, the sender can queue
-far more than a slow uplink carries in 60 s, so the ranges at the back time
-out though nothing is wrong. After a dead zone the resumed session queues
-its whole backlog at once, which explains the 4G case. Why the uplink ran
+Confirmed after the sweep: the 60 s starts when the range is in QUIC's
+local send buffer, not when it is on the wire, and `stopped()` resolves
+when the peer's transport has acknowledged every byte (noq's own
+documentation), not when the receiver has processed it. Up to 32 ranges
+(`DEFAULT_PARALLEL`) share the link in turn (noq's send fairness), so each
+one's clock also counts the time the others take. Experiment: the same
+6 MB of 256K files under `dsl-video` push, seed 101, failed with 34 timed
+out ranges at `--parallel 32` (78 s) and passed at `--parallel 1` (89 s,
+longer, but no range waited 60 s). After a dead zone the resumed session
+queues its whole backlog at once, which explains the 4G case.
+
+The fix removes the limit: the sender waits for `stopped()` as long as it
+takes. The limit added nothing: a peer that acknowledges anything (keep-
+alives included) acknowledges this data too, and a dead peer ends the
+connection (QUIC's 60 s idle timeout, the client's `--timeout`), which ends
+the wait with an error. Regression test:
+`a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything` in
+`crates/irsync/tests/netsim.rs` pushes 3 MiB over the new `test-slow`
+profile (256 kbit/s); before the fix all 12 files failed at 60 s, after
+it the push takes about 100 s and succeeds.
+
+Why the uplink ran
 at only about a quarter of its rate with no drops is a separate open
 question (congestion control on a link with 0.5 s of queue is one
 candidate).

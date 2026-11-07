@@ -33,6 +33,7 @@ pub enum ProfileName {
     FourGVehicle,
     DslVideo,
     TestBlackout,
+    TestSlow,
 }
 
 impl FromStr for ProfileName {
@@ -43,6 +44,7 @@ impl FromStr for ProfileName {
             "4g-vehicle" => Ok(Self::FourGVehicle),
             "dsl-video" => Ok(Self::DslVideo),
             "test-blackout" => Ok(Self::TestBlackout),
+            "test-slow" => Ok(Self::TestSlow),
             _ => bail!("unknown profile {s:?}"),
         }
     }
@@ -54,6 +56,7 @@ impl std::fmt::Display for ProfileName {
             Self::FourGVehicle => "4g-vehicle",
             Self::DslVideo => "dsl-video",
             Self::TestBlackout => "test-blackout",
+            Self::TestSlow => "test-slow",
         })
     }
 }
