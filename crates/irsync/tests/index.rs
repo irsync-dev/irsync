@@ -276,6 +276,43 @@ fn schema_version_mismatch_refuses_open() {
     ));
 }
 
+/// `save_session` reads, then writes. Another process committing a write
+/// in between must make it wait for the lock, not fail with a stale
+/// snapshot (`SQLITE_BUSY`): its transaction takes the write lock up front.
+#[test]
+fn save_session_waits_out_another_writer() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ix = Index::open(d.path(), d.path()).unwrap();
+    let f = std::fs::read_dir(d.path().join("index"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().unwrap() == "sqlite")
+        .unwrap();
+    let (locked_tx, locked) = std::sync::mpsc::channel();
+    let other = std::thread::spawn(move || {
+        let c = rusqlite::Connection::open(&f).unwrap();
+        c.execute_batch(
+            "BEGIN IMMEDIATE; INSERT OR REPLACE INTO meta (key, value) VALUES ('x', 1);",
+        )
+        .unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        c.execute_batch("COMMIT").unwrap();
+    });
+    locked.recv().unwrap();
+    let s = SessionRow {
+        id: [7; 16],
+        key: b"k".to_vec(),
+        plan: vec![1],
+        progress: vec![2],
+        created_at: 10,
+        updated_at: 20,
+    };
+    assert_eq!(ix.save_session(&s).unwrap(), None);
+    other.join().unwrap();
+    assert!(ix.load_session_by_id(&[7; 16]).unwrap().is_some());
+}
+
 #[test]
 fn metered_handle_times_only_contended_locks() {
     use irsync::telemetry::meter::{Activity, Meter};

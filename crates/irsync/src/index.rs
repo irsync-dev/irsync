@@ -708,12 +708,17 @@ impl Index {
         let dir = state_dir.join("index");
         std::fs::create_dir_all(&dir)?;
         let file = dir.join(format!("{name}.sqlite"));
-        let conn = Connection::open(&file)?;
+        let mut conn = Connection::open(&file)?;
+        // First: switching to WAL takes a lock another process may hold.
+        conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "mmap_size", MMAP_SIZE)?;
-        conn.busy_timeout(Duration::from_secs(5))?;
+        // Every transaction on this connection writes, several after a
+        // read: take the write lock up front, so another process's commit
+        // in between is waited out rather than failing the upgrade.
+        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         // Every statement is cached; this many are in use.
         conn.set_prepared_statement_cache_capacity(64);
         let mut ix = Index { conn, file };
