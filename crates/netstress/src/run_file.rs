@@ -1,10 +1,9 @@
 //! The `run.toml` file: irsync-stress's fields plus the network section.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use stress::run_file::RunFile;
+use stress::run_file::{read_toml, write_toml, RunFile};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Network {
@@ -24,20 +23,11 @@ pub struct NetRunFile {
 impl NetRunFile {
     /// Writes atomically: a sibling temp file, then a rename.
     pub fn write(&self, path: &Path) -> anyhow::Result<()> {
-        let text = toml::to_string_pretty(self).context("serialising run.toml")?;
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, path)
-            .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
-        Ok(())
+        write_toml(self, path)
     }
 
     pub fn read(path: &Path) -> anyhow::Result<NetRunFile> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        read_toml(path)
     }
 }
 

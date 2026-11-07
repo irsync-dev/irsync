@@ -28,9 +28,17 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// The running daemon and the signal handler's pid slot. Dropping it (on
 /// every path, `Err` included) stops the daemon and only then clears the
 /// slot, so a signal during the stop's grace period still reaches it.
-struct RunningDaemon {
+pub struct RunningDaemon {
     daemon: Daemon,
     pid_slot: Arc<AtomicI32>,
+}
+
+impl RunningDaemon {
+    /// Takes over `daemon`, whose pid the caller has already stored in
+    /// `pid_slot`.
+    pub fn new(daemon: Daemon, pid_slot: Arc<AtomicI32>) -> RunningDaemon {
+        RunningDaemon { daemon, pid_slot }
+    }
 }
 
 impl Deref for RunningDaemon {
@@ -104,7 +112,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
         )
     );
 
-    ping(&daemon, &sync, seed, &started)?;
+    ping(&daemon, &layout, seed, &started, |log| sync.run(log))?;
 
     let opts = FilegenOpts {
         steps: cli.steps,
@@ -150,7 +158,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
 
 /// One filegen run, its stderr appended to `logs/filegen.stderr.log`; a
 /// failure also names filegen's own log.
-fn run_filegen(tools: &Tools, layout: &Layout, seed: u64, args: &[OsString]) -> Result<()> {
+pub fn run_filegen(tools: &Tools, layout: &Layout, seed: u64, args: &[OsString]) -> Result<()> {
     filegen::run(&tools.filegen.path, args, &layout.filegen_stderr_log()).with_context(|| {
         format!(
             "filegen failed; its own log is {}",
@@ -159,14 +167,15 @@ fn run_filegen(tools: &Tools, layout: &Layout, seed: u64, args: &[OsString]) -> 
     })
 }
 
-fn direction_name(d: Direction) -> &'static str {
+pub fn direction_name(d: Direction) -> &'static str {
     match d {
         Direction::Push => "push",
         Direction::Pull => "pull",
     }
 }
 
-fn new_run_file(cli: &Cli, tools: &Tools, seed: u64, started: &str) -> RunFile {
+/// The run file for `cli`, without the daemon yet.
+pub fn new_run_file(cli: &Cli, tools: &Tools, seed: u64, started: &str) -> RunFile {
     RunFile {
         started: started.to_string(),
         seed,
@@ -220,7 +229,7 @@ fn start_daemon<'a>(
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);
-    let daemon = RunningDaemon { daemon, pid_slot };
+    let daemon = RunningDaemon::new(daemon, pid_slot);
     drop(blocked); // a pending signal is delivered here, with the pid set
     run_file.daemon = Some(DaemonInfo {
         endpoint_id: daemon.startup.endpoint_id.clone(),
@@ -249,14 +258,21 @@ fn start_daemon<'a>(
 }
 
 /// The sentinel round: one sync of a single small file, which must arrive
-/// byte for byte. Any failure is a setup failure.
-fn ping(daemon: &Daemon, sync: &Syncer, seed: u64, started: &str) -> Result<()> {
-    let src = sync.layout.ping_file();
+/// byte for byte. Any failure is a setup failure. `sync` runs the client
+/// with its output going to the given log.
+pub fn ping(
+    daemon: &Daemon,
+    layout: &Layout,
+    seed: u64,
+    started: &str,
+    sync: impl Fn(&std::path::Path) -> Result<client::SyncResult>,
+) -> Result<()> {
+    let src = layout.ping_file();
     let content = format!("seed={seed} started={started}\n");
     std::fs::write(&src, &content).with_context(|| format!("writing {}", src.display()))?;
     daemon.marker("ping")?;
-    let log = sync.layout.ping_client_log();
-    let r = sync.run(&log)?;
+    let log = layout.ping_client_log();
+    let r = sync(&log)?;
     if r.exit != SyncExit::Ok {
         bail!(
             "sentinel sync failed: irsync client exited {}; see {}",
@@ -265,7 +281,7 @@ fn ping(daemon: &Daemon, sync: &Syncer, seed: u64, started: &str) -> Result<()> 
         );
     }
     let name = src.file_name().expect("the ping file has a name");
-    let dst = sync.layout.dst_data.join(name);
+    let dst = layout.dst_data.join(name);
     let got = std::fs::read(&dst)
         .with_context(|| format!("sentinel sync did not create {}", dst.display()))?;
     if got != content.as_bytes() {

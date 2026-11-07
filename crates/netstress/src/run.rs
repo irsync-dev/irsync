@@ -3,7 +3,6 @@
 //! for what the network did.
 
 use std::ffi::OsString;
-use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -11,14 +10,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use stress::cli::Direction;
 use stress::client::{self, ClientSetup, SyncExit};
 use stress::daemon::{self, Daemon, DaemonConfig, DaemonLog};
 use stress::filegen::{self, FilegenOpts};
 use stress::fileset;
 use stress::layout::Layout;
 use stress::report as base;
-use stress::run_file::{DaemonInfo, RunFile};
+use stress::run::{new_run_file, ping, run_filegen, RunningDaemon};
+use stress::run_file::DaemonInfo;
 use stress::signals;
 use stress::tools::Tools;
 use stress::verify;
@@ -32,41 +31,10 @@ use crate::run_file::{NetRunFile, Network};
 /// How long the daemon may take to print its startup lines, and then to
 /// log `netsim active`.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long the daemon may take to exit after SIGINT before SIGKILL.
-const STOP_GRACE: Duration = Duration::from_secs(10);
 /// The client's `--reconnect` window under every profile.
 const RECONNECT: &str = "5m";
 /// What a fault build's `irsync --version` ends with.
 const NETSIM_SUFFIX: &str = " [netsim]";
-
-/// The running daemon and the signal handler's pid slot. Dropping it (on
-/// every path, `Err` included) stops the daemon and only then clears the
-/// slot, so a signal during the stop's grace period still reaches it.
-/// (Copied from `stress::run`, where it is private.)
-struct RunningDaemon {
-    daemon: Daemon,
-    pid_slot: Arc<AtomicI32>,
-}
-
-impl Deref for RunningDaemon {
-    type Target = Daemon;
-    fn deref(&self) -> &Daemon {
-        &self.daemon
-    }
-}
-
-impl DerefMut for RunningDaemon {
-    fn deref_mut(&mut self) -> &mut Daemon {
-        &mut self.daemon
-    }
-}
-
-impl Drop for RunningDaemon {
-    fn drop(&mut self) {
-        self.daemon.stop(STOP_GRACE);
-        self.pid_slot.store(0, Ordering::SeqCst);
-    }
-}
 
 /// What every sync of the run shares.
 struct Syncer<'a> {
@@ -160,7 +128,7 @@ pub fn run(net: &Cli) -> Result<i32> {
         )
     );
 
-    ping(&daemon, &sync, seed, &started)?;
+    ping(&daemon, &layout, seed, &started, |log| sync.run(log, 0))?;
 
     let opts = FilegenOpts {
         steps: cli.steps,
@@ -218,44 +186,6 @@ pub fn run(net: &Cli) -> Result<i32> {
     Ok(code)
 }
 
-/// One filegen run, its stderr appended to `logs/filegen.stderr.log`; a
-/// failure also names filegen's own log. (Copied from `stress::run`.)
-fn run_filegen(tools: &Tools, layout: &Layout, seed: u64, args: &[OsString]) -> Result<()> {
-    filegen::run(&tools.filegen.path, args, &layout.filegen_stderr_log()).with_context(|| {
-        format!(
-            "filegen failed; its own log is {}",
-            layout.filegen_log(seed).display()
-        )
-    })
-}
-
-/// irsync-stress's `run.toml` fields. (Copied from `stress::run`.)
-fn new_run_file(cli: &stress::cli::Cli, tools: &Tools, seed: u64, started: &str) -> RunFile {
-    RunFile {
-        started: started.to_string(),
-        seed,
-        direction: match cli.direction {
-            Direction::Push => "push",
-            Direction::Pull => "pull",
-        }
-        .to_string(),
-        iterations: cli.iterations,
-        steps: cli.steps,
-        max_total_size: cli.max_total_size.clone(),
-        max_file_size: cli.max_file_size.clone(),
-        filegen_set: cli.filegen_set.clone(),
-        log_level: cli.log_level.clone(),
-        keep_going: cli.keep_going,
-        client_args: cli
-            .client_args
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect(),
-        tools: tools.versions(),
-        daemon: None,
-    }
-}
-
 /// Client key, daemon config, daemon start with the fault layer on; checks
 /// the daemon logged `netsim active`; publishes the pid to the signal
 /// handler and to `run.toml`.
@@ -291,7 +221,7 @@ fn start_daemon<'a>(
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);
-    let daemon = RunningDaemon { daemon, pid_slot };
+    let daemon = RunningDaemon::new(daemon, pid_slot);
     drop(blocked); // a pending signal is delivered here, with the pid set
     wait_for_netsim_active(&layout.daemon_log(), STARTUP_TIMEOUT)?;
     run_file.base.daemon = Some(DaemonInfo {
@@ -346,33 +276,6 @@ fn wait_for_netsim_active(log: &Path, timeout: Duration) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// The sentinel round: one sync of a single small file, which must arrive
-/// byte for byte. Any failure is a setup failure. (Copied from
-/// `stress::run`, with the fault layer on as stream 0.)
-fn ping(daemon: &Daemon, sync: &Syncer, seed: u64, started: &str) -> Result<()> {
-    let src = sync.layout.ping_file();
-    let content = format!("seed={seed} started={started}\n");
-    std::fs::write(&src, &content).with_context(|| format!("writing {}", src.display()))?;
-    daemon.marker("ping")?;
-    let log = sync.layout.ping_client_log();
-    let r = sync.run(&log, 0)?;
-    if r.exit != SyncExit::Ok {
-        bail!(
-            "sentinel sync failed: irsync client exited {}; see {}",
-            r.exit.code(),
-            log.display()
-        );
-    }
-    let name = src.file_name().expect("the ping file has a name");
-    let dst = sync.layout.dst_data.join(name);
-    let got = std::fs::read(&dst)
-        .with_context(|| format!("sentinel sync did not create {}", dst.display()))?;
-    if got != content.as_bytes() {
-        bail!("sentinel {} differs from the source", dst.display());
-    }
-    Ok(())
 }
 
 /// One iteration: sync as stream `i`, daemon check, client log, manifest
