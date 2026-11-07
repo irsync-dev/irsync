@@ -255,6 +255,28 @@ fn chunk_params_mismatch_refuses_open() {
 }
 
 #[test]
+fn schema_version_mismatch_refuses_open() {
+    let d = tempfile::tempdir().unwrap();
+    drop(Index::open(d.path(), d.path()).unwrap());
+    let f = std::fs::read_dir(d.path().join("index"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().unwrap() == "sqlite")
+        .unwrap();
+    let c = rusqlite::Connection::open(&f).unwrap();
+    c.execute(
+        "UPDATE meta SET value = value + 1 WHERE key = 'schema_version'",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    assert!(matches!(
+        Index::open(d.path(), d.path()),
+        Err(IndexError::SchemaVersionChanged)
+    ));
+}
+
+#[test]
 fn metered_handle_times_only_contended_locks() {
     use irsync::telemetry::meter::{Activity, Meter};
     use irsync::telemetry::{Role, Side};
