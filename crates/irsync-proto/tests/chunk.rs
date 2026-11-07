@@ -77,6 +77,52 @@ fn small_file_is_single_chunk() {
     assert_eq!(d.chunks[0].hash, d.hash);
 }
 
+/// All-zero input never hits a content cut point, so every chunk but the tail
+/// is forced to the maximum size.
+#[test]
+fn low_entropy_input_is_cut_at_max() {
+    let max = CHUNK_PARAMS.max as usize;
+    let data = vec![0u8; 2 * max + 1000];
+    let d = digest_bytes(&data);
+    let lens: Vec<u32> = d.chunks.iter().map(|c| c.len).collect();
+    assert_eq!(lens, [max as u32, max as u32, 1000]);
+    assert_eq!(d.chunks[1].offset, max as u64);
+    assert_eq!(d.chunks[2].offset, 2 * max as u64);
+}
+
+/// A tail shorter than the minimum is kept as its own (short) last chunk.
+#[test]
+fn sub_minimum_tail_is_its_own_chunk() {
+    let max = CHUNK_PARAMS.max as usize;
+    let data = vec![0u8; max + 7];
+    let d = digest_bytes(&data);
+    let lens: Vec<u32> = d.chunks.iter().map(|c| c.len).collect();
+    assert_eq!(lens, [max as u32, 7]);
+    assert!(7 < CHUNK_PARAMS.min);
+    assert_eq!(d.chunks[1].hash, *blake3::hash(&data[max..]).as_bytes());
+}
+
+#[test]
+fn chunk_record_conversion_errors() {
+    use irsync_proto::chunk::ChunkRecord;
+    use irsync_proto::v1;
+    let rec = |hash| v1::ChunkRecord {
+        offset: 1,
+        len: 2,
+        hash,
+    };
+    let err = ChunkRecord::try_from(rec(None)).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("missing hash"));
+    for n in [0, 31, 33] {
+        let err = ChunkRecord::try_from(rec(Some(v1::Hash { bytes: vec![0; n] }))).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("32 bytes"));
+    }
+    let ok = ChunkRecord::try_from(rec(Some(v1::Hash { bytes: vec![9; 32] }))).unwrap();
+    assert_eq!((ok.offset, ok.len, ok.hash), (1, 2, [9; 32]));
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct GoldenChunk {
     offset: u64,
