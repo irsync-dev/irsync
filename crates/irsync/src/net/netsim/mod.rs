@@ -103,6 +103,40 @@ impl Spec {
     }
 }
 
+/// What a fault random stream drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    /// The side's outgoing link.
+    Link,
+    /// The client's handovers and dead zone.
+    Outages,
+}
+
+/// The seed of one random stream, from the run's seed, the side, the stream
+/// number and what it drives: each part is folded in through splitmix64, so
+/// streams that differ in any part are unrelated.
+pub fn fault_seed(seed: u64, side: Side, stream: u64, purpose: Purpose) -> u64 {
+    let side = match side {
+        Side::Client => 1,
+        Side::Daemon => 2,
+    };
+    let purpose = match purpose {
+        Purpose::Link => 1,
+        Purpose::Outages => 2,
+    };
+    [side, stream, purpose]
+        .into_iter()
+        .fold(splitmix64(seed), |h, part| splitmix64(h ^ part))
+}
+
+/// One step of splitmix64: a bijective mix of all 64 bits.
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 /// The settings from `IRSYNC_NETSIM`, read once. `None` when it is unset; a
 /// bad value is an error on every call.
 pub fn active() -> anyhow::Result<Option<&'static Spec>> {
@@ -192,6 +226,22 @@ mod tests {
             "profile=dsl-video,side=daemon,seed=1,stream=0,x=1", // unknown key
         ] {
             assert!(Spec::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn fault_seeds_do_not_collide() {
+        // client iteration 3's uplink against the daemon's downlink
+        assert_ne!(
+            fault_seed(1, Side::Client, 3, Purpose::Link),
+            fault_seed(1, Side::Daemon, 0, Purpose::Link)
+        );
+        for purpose in [Purpose::Link, Purpose::Outages] {
+            let seeds: std::collections::HashSet<u64> = (1..=10)
+                .flat_map(|seed| (1..=10).map(move |stream| (seed, stream)))
+                .map(|(seed, stream)| fault_seed(seed, Side::Client, stream, purpose))
+                .collect();
+            assert_eq!(seeds.len(), 100, "{purpose:?}");
         }
     }
 

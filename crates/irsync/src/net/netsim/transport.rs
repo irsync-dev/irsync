@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use super::link::Link;
 use super::outage::{Change, Outages, State};
 use super::profile::{link, outages, Dir};
-use super::{custom_addr, socket_addr, Side, Spec, TRANSPORT_ID};
+use super::{custom_addr, fault_seed, socket_addr, Purpose, Side, Spec, TRANSPORT_ID};
 
 /// Where the last bound transport's socket listens.
 pub(super) static BOUND: Mutex<Option<SocketAddrV4>> = Mutex::new(None);
@@ -89,13 +89,17 @@ impl CustomTransport for NetsimTransport {
             seed,
             stream,
         } = self.spec;
-        let (dir, dir_tag) = match side {
-            Side::Client => (Dir::Up, 1),
-            Side::Daemon => (Dir::Down, 2),
+        let dir = match side {
+            Side::Client => Dir::Up,
+            Side::Daemon => Dir::Down,
         };
         let outages = match side {
-            Side::Client => outages(profile)
-                .map(|p| Mutex::new(Outages::new(p, seed ^ stream ^ 0x6f75_7461_6765))),
+            Side::Client => outages(profile).map(|p| {
+                Mutex::new(Outages::new(
+                    p,
+                    fault_seed(seed, side, stream, Purpose::Outages),
+                ))
+            }),
             Side::Daemon => None,
         };
         let (queue, rx) = mpsc::unbounded_channel();
@@ -104,7 +108,10 @@ impl CustomTransport for NetsimTransport {
             socket,
             local,
             start: Instant::now(),
-            link: Mutex::new(Link::new(link(profile, dir), seed ^ stream ^ dir_tag)),
+            link: Mutex::new(Link::new(
+                link(profile, dir),
+                fault_seed(seed, side, stream, Purpose::Link),
+            )),
             outages,
             queue,
         });
