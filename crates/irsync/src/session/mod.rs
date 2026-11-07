@@ -452,6 +452,7 @@ pub struct DaemonHooks {
     pub close_quiet: Option<Duration>,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub cut_listing_after: Option<usize>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -702,6 +703,10 @@ pub struct SideHooks {
     /// queued (once per hook instance, across reconnects).
     #[cfg(feature = "test-hooks")]
     pub drop_after_listing: Option<Arc<PartsFault>>,
+    /// Sender: queue only this many listing frames, then none, not even
+    /// `ListingEnd` (a lister that stops short).
+    #[cfg(feature = "test-hooks")]
+    pub cut_listing_after: Option<usize>,
     /// Both roles: every outgoing frame of the control and listing streams
     /// passes through this; the frames it returns go out instead (a test
     /// drops, duplicates, alters or injects frames).

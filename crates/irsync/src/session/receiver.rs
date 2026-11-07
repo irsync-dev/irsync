@@ -1194,6 +1194,8 @@ pub(super) async fn run(
                     inject: None,
                     #[cfg(feature = "test-hooks")]
                     drop_after: None,
+                    #[cfg(feature = "test-hooks")]
+                    cut_after: None,
                 },
                 out.clone(),
                 listing_out,

@@ -272,6 +272,8 @@ impl SenderRole {
                     .drop_after_listing
                     .clone()
                     .map(|f| (f, self.ctx.conn.clone())),
+                #[cfg(feature = "test-hooks")]
+                cut_after: self.ctx.hooks.cut_listing_after,
             },
             self.out.clone(),
             listing,

@@ -1244,6 +1244,40 @@ async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
     .await;
 }
 
+/// A sender whose lister stops short (five frames, no `ListingEnd`), as
+/// one that fails mid-listing, and which then fails for good (the client's
+/// first `PlanItem` comes behind a listing frame on the control stream):
+/// the client must report the daemon's error, never the transport error of
+/// a listing cut short, which would be retried.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sender_whose_listing_ends_short_reports_its_own_error() {
+    within60(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        twenty_files(h.src(flow));
+        h.daemon.hooks.lock().unwrap().cut_listing_after = Some(5);
+        let mut local = h.local_side();
+        let first = AtomicBool::new(true);
+        local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
+            (StreamKind::Control, m @ Msg::Plan(_)) if first.swap(false, SeqCst) => {
+                let entry = FileEntry {
+                    path: b"zz".to_vec(),
+                    kind: Kind::Regular as i32,
+                    ..FileEntry::default()
+                };
+                vec![Msg::Listing(ListingEntry { entry: Some(entry) }), m]
+            }
+            (_, m) => vec![m],
+        }));
+        let (out, _) = h
+            .run_reconnect(&archive_opts(), flow, no_reconnect(), local)
+            .await;
+        let err = format!("{:#}", out.expect_err("a broken protocol was accepted"));
+        assert!(err.contains("listing frame on the control stream"), "{err}");
+    })
+    .await;
+}
+
 /// A sender that fails before it lists: a resumed daemon sender waits for
 /// the receiver's first frame to decide whether to list, and the client's
 /// first control frame breaks the protocol. The client (listing afresh,

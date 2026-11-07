@@ -96,14 +96,16 @@ impl ListingOut {
 /// [`ListingOut`] is gone it ends the stream and waits (bounded) until the
 /// peer has the bytes.
 ///
-/// A half that ends with nothing queued at all waits for the returned gate
-/// to be dropped first, which the caller does once the role has ended (on
-/// failure, after its `Error` had its chance to arrive). A role that fails
-/// before it lists drops its handle, and that empty half would otherwise
-/// reach the peer ahead of the `Error`: a receiver listing afresh takes an
-/// empty half as a protocol error of ours, which would hide the real one.
-/// An honest empty half (no listing, as a resumed session decides) is
-/// never waited for, so nothing waits on the gate.
+/// A half whose last frame queued is not a `ListingEnd` (nothing queued
+/// at all, or cut short) waits for the returned gate to be dropped
+/// first, which the caller does once the role has ended (on failure, after
+/// its `Error` had its chance to arrive). A role that fails before or while
+/// it lists drops its handle, and that half would otherwise reach the peer
+/// ahead of the `Error`: a receiver listing afresh takes an empty half as
+/// a protocol error of ours, and a half cut short as a transport error
+/// (retried), either of which would hide the real error. An honest half
+/// without `ListingEnd` (no listing, as a resumed session decides) is never
+/// waited for, so nothing waits on the gate.
 pub(super) fn spawn_listing_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
@@ -114,9 +116,12 @@ pub(super) fn spawn_listing_writer(
     let (gate, gated) = oneshot::channel::<()>();
     let task = tokio::spawn(
         async move {
-            let mut queued = false;
+            // The last frame the role queued was `ListingEnd`: the half is
+            // complete. (Judged before the test hook that tampers with what
+            // goes out, so a test can still cut a running role's half short.)
+            let mut ended = false;
             while let Some(c) = rx.recv().await {
-                queued = true;
+                ended = matches!(c.msg, Some(Msg::ListingEnd(_)));
                 for msg in c
                     .msg
                     .into_iter()
@@ -129,7 +134,7 @@ pub(super) fn spawn_listing_writer(
                     }
                 }
             }
-            if !queued {
+            if !ended {
                 let _ = gated.await;
             }
             if send.finish().is_ok() {

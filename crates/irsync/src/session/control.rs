@@ -430,6 +430,10 @@ pub(super) struct ListingSpec {
     /// frames is reached.
     #[cfg(feature = "test-hooks")]
     pub drop_after: Option<(Arc<super::PartsFault>, iroh::endpoint::Connection)>,
+    /// Test hook: queue only this many listing frames, then none (no
+    /// `ListingEnd` either), as a lister that stops short.
+    #[cfg(feature = "test-hooks")]
+    pub cut_after: Option<usize>,
 }
 
 /// Walks `spec.root` and streams the listing to the peer on `listing` (with
@@ -472,7 +476,16 @@ pub(super) fn spawn_listing(
         let mut last_emit = std::time::Instant::now();
         // The directory last published to `spec.busy.walking`.
         let mut walking = RelPath::root();
+        #[cfg(feature = "test-hooks")]
+        let queued = std::cell::Cell::new(0usize);
         let send = |msg: Msg| {
+            #[cfg(feature = "test-hooks")]
+            if let Some(n) = spec.cut_after {
+                if queued.get() >= n {
+                    return;
+                }
+                queued.set(queued.get() + 1);
+            }
             listing.send_blocking(msg);
             #[cfg(feature = "test-hooks")]
             if let Some((fault, conn)) = &spec.drop_after {
