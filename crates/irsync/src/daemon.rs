@@ -430,7 +430,7 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
                 _ = tick.tick() => {}
             }
             // Walks the export only when a day has passed or
-            // collectable (dormant) partial records exist.
+            // partial records have become collectable (dormant) since.
             let dormant = shared.dormant();
             match gc_if_due(gc_index.clone(), &root, dormant, dormant).await {
                 Ok(Some(r)) => tracing::info!(
@@ -788,24 +788,45 @@ enum Removal {
 }
 
 /// Removes `root/rel` if its name is a part name, it is a regular file
-/// (never follows a symlink) and its mtime is not newer than `cutoff`. With
-/// `dry_run` only classifies.
+/// and its mtime is not newer than `cutoff`. With `dry_run` only
+/// classifies. No symlink is followed, the final name's or a directory's
+/// on the way (one swapped in since the path was recorded): such a path
+/// holds no part of ours, so it counts as missing.
+// The `stat` field types differ by platform; the mode cast is a no-op here.
+#[allow(clippy::unnecessary_cast)]
 fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
-    use std::os::unix::fs::MetadataExt;
+    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::fstatat;
+    use nix::unistd::{unlinkat, UnlinkatFlags};
     if !rel.components().last().is_some_and(is_part_name) {
         return Ok(Removal::Skipped);
     }
-    let full = root.join(rel.to_os());
-    match std::fs::symlink_metadata(&full) {
-        Ok(m) if m.file_type().is_file() && m.mtime() <= cutoff => {
+    let (dir, name) = split_last(rel)?;
+    let name = &name[..];
+    let dfd = match open_dir_beneath(root, &dir) {
+        Ok(fd) => fd,
+        // A symlinked or non-directory component (`InvalidInput`), or gone.
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+            ) =>
+        {
+            return Ok(Removal::Missing);
+        }
+        Err(e) => return Err(e),
+    };
+    match fstatat(&dfd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(st) if is_regular_mode(st.st_mode as u32) && st.st_mtime <= cutoff => {
             if !dry_run {
-                std::fs::remove_file(&full)?;
+                unlinkat(&dfd, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
             }
             Ok(Removal::Removed)
         }
         Ok(_) => Ok(Removal::Skipped),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Removal::Missing),
-        Err(e) => Err(e),
+        Err(nix::Error::ENOENT) => Ok(Removal::Missing),
+        Err(e) => Err(errno(e)),
     }
 }
 
@@ -1013,9 +1034,10 @@ fn prune_entries(
 pub const GC_EVERY: Duration = Duration::from_secs(24 * 3600);
 
 /// Whether a GC walk is due: never walked, the last walk is [`GC_EVERY`]
-/// old, or partial records have gone stale since (Ruling 32).
+/// old (or in the future: the clock stepped back), or partial records have
+/// gone stale since (Ruling 32).
 pub fn gc_due(last_gc_at: Option<i64>, now: i64, stale_partials: bool) -> bool {
-    stale_partials || last_gc_at.is_none_or(|t| now.saturating_sub(t) >= GC_EVERY.as_secs() as i64)
+    stale_partials || last_gc_at.is_none_or(|t| now < t || now - t >= GC_EVERY.as_secs() as i64)
 }
 
 /// Runs [`gc`] only when [`gc_due`] says so; `stale_after` is the age at
@@ -1029,12 +1051,23 @@ pub async fn gc_if_due(
     let ix = index.clone();
     let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
         let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
-        let last = ix.last_gc_at().map_err(io_err)?;
-        let stale = !ix
-            .partials_older_than(stale_after)
-            .map_err(io_err)?
-            .is_empty();
-        Ok(gc_due(last, unix_now(), stale))
+        let (last, now) = (ix.last_gc_at().map_err(io_err)?, unix_now());
+        // Records that went stale since the last walk: one stale at that
+        // walk already was looked at, and kept (younger than `older_than`,
+        // or still referenced); it must not make every run walk again.
+        let stale = match last {
+            Some(t) if t <= now => {
+                let since = Duration::from_secs((now - t) as u64);
+                let stale_now = ix.partials_older_than(stale_after).map_err(io_err)?;
+                let stale_then = ix
+                    .partials_older_than(stale_after + since)
+                    .map_err(io_err)?;
+                stale_now.len() > stale_then.len()
+            }
+            // Due anyway.
+            _ => false,
+        };
+        Ok(gc_due(last, now, stale))
     })
     .await
     .map_err(io_err)??;

@@ -530,3 +530,59 @@ async fn delete_pass_reports_progress_per_candidate() {
     assert_eq!(rep.deleted.len(), 2);
     assert_eq!(*seen.lock().unwrap(), vec![(0, 2), (1, 2), (2, 2)]);
 }
+
+/// A deleted file's index row goes with it: nothing offers its chunks for
+/// reuse, and GC has nothing to prune.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_forgets_the_index_rows_of_what_it_removed() {
+    use irsync::index::Index;
+    use irsync_proto::v1::FileEntry;
+    within30(async {
+        let o = opts(&["--delete"]);
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let (src, dst) = (h.src(flow), h.dst(flow));
+            fs::write(src.join("keep.txt"), b"keep").unwrap();
+            fs::create_dir_all(dst.join("gone")).unwrap();
+            fs::write(dst.join("old.txt"), b"old").unwrap();
+            fs::write(dst.join("gone/x.txt"), b"x").unwrap();
+            let dst_index = || match flow {
+                Flow::Push => h.daemon_index(),
+                Flow::Pull => Index::open(h.client_state.path(), h.local.path()).unwrap(),
+            };
+            {
+                let mut ix = dst_index();
+                for p in ["old.txt", "gone/x.txt"] {
+                    let e = FileEntry {
+                        path: p.as_bytes().to_vec(),
+                        ..Default::default()
+                    };
+                    let rp = RelPath::new(p.as_bytes()).unwrap();
+                    ix.put_entry(&rp, &e, (0, 0), None).unwrap();
+                }
+            }
+
+            let (out, _) = run(&h, &o, flow).await;
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert_eq!(
+                paths(&out.deleted),
+                ["gone", "gone/x.txt", "old.txt"],
+                "{flow:?}"
+            );
+            // The daemon writes its index after the session has ended.
+            let gone = |p: &str| {
+                let rp = RelPath::new(p.as_bytes()).unwrap();
+                dst_index().get_entry(&rp).unwrap().is_none()
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !(gone("old.txt") && gone("gone/x.txt")) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{flow:?}: rows of deleted files are still indexed"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    })
+    .await;
+}

@@ -350,6 +350,8 @@ enum Write {
         inode: u64,
         size: u64,
     },
+    /// [`Index::remove_entry`].
+    Forget(RelPath),
 }
 
 /// Work for the writer thread, in the order it was queued.
@@ -414,7 +416,7 @@ fn write_batch(index: &Mutex<Index>, batch: &[Write]) {
         if let Err(err) = apply_all(&mut ix.conn, std::slice::from_ref(w)) {
             let path = match w {
                 Write::Put(e) => &e.path,
-                Write::Remove { path, .. } => path,
+                Write::Remove { path, .. } | Write::Forget(path) => path,
             };
             tracing::warn!(?path, error = %err, "updating the index failed");
         }
@@ -436,7 +438,18 @@ fn apply(conn: &Connection, w: &Write) -> Result<()> {
     match w {
         Write::Put(e) => write_entry(conn, &e.path, &e.entry, e.ctime, e.digest.as_ref()),
         Write::Remove { path, inode, size } => remove_entry_if(conn, path, *inode, *size),
+        Write::Forget(path) => remove_entry(conn, path),
     }
+}
+
+/// The statements of [`Index::remove_entry`].
+fn remove_entry(conn: &Connection, path: &RelPath) -> Result<()> {
+    let p = path.as_bytes();
+    conn.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
+        .execute([p])?;
+    conn.prepare_cached("DELETE FROM entries WHERE path = ?1")?
+        .execute([p])?;
+    Ok(())
 }
 
 /// The statements of [`Index::remove_entry_if`].
@@ -582,6 +595,12 @@ impl IndexHandle {
         self.queue(Write::Remove { path, inode, size });
     }
 
+    /// Queues [`Index::remove_entry`] (the file was deleted), like
+    /// [`IndexHandle::queue_entry`].
+    pub fn queue_forget(&self, path: RelPath) {
+        self.queue(Write::Forget(path));
+    }
+
     fn queue(&self, w: Write) {
         if let Err(mpsc::SendError(Job::Write(w))) = self.writer.send(Job::Write(w)) {
             // The writer thread is gone (it panicked): write it here.
@@ -671,6 +690,32 @@ fn cutoff(age: Duration) -> i64 {
     now().saturating_sub(age.as_secs().min(i64::MAX as u64) as i64)
 }
 
+/// The canonical path an index for `root` is keyed by. A root that does not
+/// exist yet (a dry run's destination) or any more (`irsync gc` of a removed
+/// root) is its nearest existing ancestor, canonical, with the missing
+/// names after it: the path it has once created. Anything else that stops
+/// the path resolving is an error rather than a key for the path as given.
+fn canonical_root(root: &Path) -> std::io::Result<PathBuf> {
+    let abs = std::path::absolute(root)?;
+    let mut missing = Vec::new();
+    let mut cur = abs.as_path();
+    loop {
+        match std::fs::canonicalize(cur) {
+            Ok(base) => return Ok(missing.iter().rev().fold(base, |p, name| p.join(name))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // `file_name` is `None` for a path ending in `..`, which
+                // cannot be resolved without the directory it leaves.
+                let (Some(parent), Some(name)) = (cur.parent(), cur.file_name()) else {
+                    return Err(e);
+                };
+                missing.push(name);
+                cur = parent;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn arr<const N: usize>(b: Vec<u8>, what: &'static str) -> Result<[u8; N]> {
     b.try_into().map_err(|_| IndexError::Corrupt(what))
 }
@@ -699,7 +744,7 @@ impl Index {
     }
 
     pub fn open(state_dir: &Path, root: &Path) -> Result<Index> {
-        let canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let canon = canonical_root(root)?;
         let h = blake3::hash(canon.as_os_str().as_bytes());
         let name: String = h.as_bytes()[..16]
             .iter()
@@ -708,12 +753,17 @@ impl Index {
         let dir = state_dir.join("index");
         std::fs::create_dir_all(&dir)?;
         let file = dir.join(format!("{name}.sqlite"));
-        let conn = Connection::open(&file)?;
+        let mut conn = Connection::open(&file)?;
+        // First: switching to WAL takes a lock another process may hold.
+        conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "mmap_size", MMAP_SIZE)?;
-        conn.busy_timeout(Duration::from_secs(5))?;
+        // Every transaction on this connection writes, several after a
+        // read: take the write lock up front, so another process's commit
+        // in between is waited out rather than failing the upgrade.
+        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         // Every statement is cached; this many are in use.
         conn.set_prepared_statement_cache_capacity(64);
         let mut ix = Index { conn, file };
@@ -887,12 +937,8 @@ impl Index {
     /// Forgets the entry at `path` and its chunk rows (its file is gone or
     /// was replaced).
     pub fn remove_entry(&mut self, path: &RelPath) -> Result<()> {
-        let p = path.as_bytes();
         let tx = self.conn.transaction()?;
-        tx.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
-            .execute([p])?;
-        tx.prepare_cached("DELETE FROM entries WHERE path = ?1")?
-            .execute([p])?;
+        remove_entry(&tx, path)?;
         tx.commit()?;
         Ok(())
     }

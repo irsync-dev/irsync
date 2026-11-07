@@ -79,7 +79,7 @@ message Hello {
   // from deletion. Absent: no rules.
   message FilterRule {
     bool include = 1;
-    string pattern = 2; // rsync pattern as typed
+    bytes pattern = 2; // rsync pattern as typed (a pattern file may hold non-UTF-8 names)
   }
   repeated FilterRule filters = 23;
   // --partial-dir, relative to the destination root (a canonical relative
