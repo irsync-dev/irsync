@@ -2,7 +2,8 @@
 //! pushing to and pulling from a daemon. Skipped when `rsync` is not installed.
 //!
 //! Not compared: uid/gid (the test runs unprivileged, so both tools skip
-//! ownership) and sparse-ness (rsync without `-S` writes the zeros out).
+//! ownership), sparse-ness (rsync without `-S` writes the zeros out) and
+//! directory nlink (filesystem-dependent; only regular files' nlink is compared).
 //! Modification times are compared to the nanosecond (rsync >= 3.1 keeps them).
 
 mod common;
@@ -228,13 +229,25 @@ fn rsync_present() -> bool {
     out.status.success() && !first.contains("openrsync") && (major, minor) >= (3, 1)
 }
 
+/// Called when rsync is unusable: under CI the comparison must not be skipped.
+fn skip_allowed(ci: bool) {
+    assert!(
+        !ci,
+        "CI is set but GNU rsync >= 3.1 is not on PATH: the comparison must not be skipped"
+    );
+}
+
+#[test]
+fn missing_rsync_panics_in_ci() {
+    skip_allowed(false);
+    let r = std::panic::catch_unwind(|| skip_allowed(true));
+    assert!(r.is_err(), "a skip under CI must fail");
+}
+
 #[tokio::test]
 async fn matches_rsync_archive_mode() {
     if !rsync_present() {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "CI is set but GNU rsync >= 3.1 is not on PATH: the comparison must not be skipped"
-        );
+        skip_allowed(std::env::var_os("CI").is_some());
         eprintln!("skipping: rsync not on PATH (or older than 3.1)");
         return;
     }

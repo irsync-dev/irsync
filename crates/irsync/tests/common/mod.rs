@@ -9,14 +9,17 @@ pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::pa
     let p = dir.join(std::ffi::OsStr::from_bytes(name));
     match std::fs::write(&p, b"x") {
         Ok(()) => Some(p),
+        // Only macOS filesystems (APFS) refuse such names; on Linux any such
+        // error is unexpected and must fail rather than skip silently.
         Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
-            ) || matches!(
-                e.raw_os_error(),
-                Some(x) if x == nix::libc::EILSEQ || x == nix::libc::EINVAL
-            ) =>
+            if cfg!(target_os = "macos")
+                && (matches!(
+                    e.kind(),
+                    std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
+                ) || matches!(
+                    e.raw_os_error(),
+                    Some(x) if x == nix::libc::EILSEQ || x == nix::libc::EINVAL
+                )) =>
         {
             eprintln!("skipping non-UTF-8 name: filesystem refused");
             None
