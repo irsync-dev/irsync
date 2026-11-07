@@ -372,12 +372,73 @@ fn merge_join_drops_duplicate_src_key() {
 }
 
 #[test]
-fn merge_join_out_of_order_does_not_panic() {
+fn merge_join_drops_duplicates_on_a_one_sided_key() {
+    // A duplicate source key with no destination counterpart (after Less).
+    let out = collect_keys(
+        vec![reg("a", 1, 1), reg("a", 1, 1), reg("c", 1, 1)],
+        vec![reg("b", 1, 1)],
+    );
+    assert_eq!(
+        out,
+        vec![
+            (b"a".to_vec(), true, false),
+            (b"b".to_vec(), false, true),
+            (b"c".to_vec(), true, false),
+        ]
+    );
+    // A duplicate destination key with no source counterpart (after Greater).
+    let out = collect_keys(
+        vec![reg("c", 1, 1)],
+        vec![reg("a", 1, 1), reg("b", 1, 1), reg("b", 1, 1)],
+    );
+    assert_eq!(
+        out,
+        vec![
+            (b"a".to_vec(), false, true),
+            (b"b".to_vec(), false, true),
+            (b"c".to_vec(), true, false),
+        ]
+    );
+    // Both sides list the key twice: one pair, never a stray one-sided `a`.
+    let out = collect_keys(
+        vec![reg("a", 1, 1), reg("a", 1, 1)],
+        vec![reg("a", 1, 1), reg("a", 1, 1)],
+    );
+    assert_eq!(out, vec![(b"a".to_vec(), true, true)]);
+}
+
+#[test]
+fn merge_join_out_of_order_drops_the_key_that_goes_back() {
+    // `a` after `b` on the source: the dropped item is the late source `a`,
+    // which must not reappear as a source-only key (nor turn the paired
+    // destination `a` into a deletion).
     let out = collect_keys(
         vec![reg("b", 1, 1), reg("a", 1, 1)],
         vec![reg("a", 1, 1), reg("b", 1, 1)],
     );
-    assert!(!out.is_empty());
+    assert_eq!(
+        out,
+        vec![(b"a".to_vec(), false, true), (b"b".to_vec(), true, true)]
+    );
+}
+
+#[test]
+fn special_mode_mask_ignores_type_bits() {
+    // A listing carries the full `st_mode`; only the permission bits count.
+    let mut s = side("p", Kind::Fifo, 0o010640);
+    s.entry.rdev = 0;
+    let mut d = side("p", Kind::Fifo, 0o640);
+    let mut o = opts();
+    o.preserve.specials = true;
+    o.preserve.perms = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
+    d.entry.mode = 0o010600;
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
+    // The same for a device node.
+    let s = side("c", Kind::CharDev, 0o020600);
+    let d = side("c", Kind::CharDev, 0o600);
+    o.preserve.devices = true;
+    assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
