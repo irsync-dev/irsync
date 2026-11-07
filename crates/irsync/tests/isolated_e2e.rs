@@ -63,15 +63,47 @@ fn expect_line(rx: &mpsc::Receiver<String>, what: &str, pred: impl Fn(&str) -> b
     }
 }
 
+/// Runs the client with a clean environment and a wall-clock bound: a hung
+/// run is killed and fails the test instead of blocking it.
 fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_irsync"))
+    use std::io::Read;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(args)
         .env("HOME", tmp.join("home"))
         .env("XDG_STATE_HOME", tmp.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().unwrap()));
+    let err = drain(Box::new(child.stderr.take().unwrap()));
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("irsync {args:?} did not finish within 60 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    std::process::Output {
+        status,
+        stdout: out.join().unwrap(),
+        stderr: err.join().unwrap(),
+    }
 }
 
 /// A daemon on localhost exporting `m` (read-write for the client's
@@ -128,6 +160,8 @@ fn start_daemon(tmp: &Path) -> Daemon {
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
         .args(["--listen", "127.0.0.1:0"])
+        .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

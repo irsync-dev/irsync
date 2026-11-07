@@ -184,6 +184,18 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
     .unwrap();
     assert_eq!(o.relay, RelayChoice::Disabled);
     assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
+    // `--relay` with the host entry's addresses is refused.
+    let e = client_endpoint_opts(
+        SecretKey::generate(),
+        Some("https://c.example"),
+        false,
+        false,
+        &cs,
+        Some(&he),
+        &he.address,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("--relay"), "{e}");
     // Addresses from the command line only.
     let cli = vec!["localhost:1".parse().unwrap()];
     let o =
