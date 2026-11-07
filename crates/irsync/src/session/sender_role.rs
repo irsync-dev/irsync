@@ -1429,6 +1429,41 @@ mod tests {
         assert!(ended.load(SeqCst), "the digest task still runs");
     }
 
+    /// A receiver whose writer was retired after it offered bases, before
+    /// it requested them, sends an empty request: the sender drops the
+    /// file's bases, and their bytes leave the budget.
+    #[tokio::test]
+    async fn an_empty_need_drops_the_bases_offered() {
+        let (mut s, _t) = role().await;
+        let chunks = (0..4u32)
+            .map(|i| irsync_proto::chunk::ChunkRecord {
+                offset: u64::from(i) * 65536,
+                len: 65536,
+                hash: [0; 32],
+            })
+            .collect();
+        let digest = FileDigest {
+            size: 4 * 65536,
+            hash: [0; 32],
+            chunks,
+        };
+        s.files.insert(1, in_flight("a", Some(digest)));
+        let block: Vec<u8> = (0..65536u32).map(|i| (i * 7919 % 251) as u8).collect();
+        for idx in 0..2 {
+            s.on_basis(Basis::sign(0, &block).to_wire(1, idx)).unwrap();
+        }
+        assert!(s.basis_held > 0, "no basis was held");
+        assert_eq!(s.files[&1].bases.len(), 2);
+        s.on_need(NeedChunks {
+            file_id: 1,
+            chunk_idx: Vec::new(),
+        });
+        assert_eq!(s.basis_held, 0);
+        assert_eq!(s.files[&1].bases_held, 0);
+        assert!(s.files[&1].bases.is_empty());
+        assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
     /// Files that come and go, each leaving a task that would never end on
     /// its own: none of them stays behind.
     #[tokio::test]

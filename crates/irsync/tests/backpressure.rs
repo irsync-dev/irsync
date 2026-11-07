@@ -581,17 +581,30 @@ async fn bases_above_the_budget_fail_the_session() {
 }
 
 /// The room for chunk lists in these tests, in records.
-const LIST_ROOM: u64 = 100;
+const LIST_ROOM: u64 = 24;
 
-/// 30 files of 13 MiB: 30 to 60 chunks each (about 350 KiB a chunk on
-/// random data), so two or three lists fill the room.
-fn thirty_listed_files(root: &Path) {
-    for i in 0..30 {
-        let bytes = data(13 * MIB, 100 + i);
+/// 12 files of 3.5 MiB: 10 to 15 chunks each (about 300 KiB a chunk on
+/// random data), so one or two lists fill the room, and all of them
+/// together (about 150 records) are six times the room.
+fn twelve_listed_files(root: &Path) {
+    for i in 0..12 {
+        let bytes = data(7 * MIB / 2, 100 + i);
         let chunks = irsync_proto::chunk::digest_bytes(&bytes).chunks.len();
-        assert!((30..=60).contains(&chunks), "file {i}: {chunks} chunks");
+        assert!((9..=16).contains(&chunks), "file {i}: {chunks} chunks");
         fs::write(root.join(format!("f{i:02}.bin")), bytes).unwrap();
     }
+}
+
+/// A file of 6 MiB with more chunks than half the room of these tests
+/// (`LIST_ROOM`) and no more than all of it: 20 for seed 100, 18 for 101.
+fn over_half_the_room(seed: u32) -> Vec<u8> {
+    let bytes = data(6 * MIB, seed);
+    let chunks = irsync_proto::chunk::digest_bytes(&bytes).chunks.len() as u64;
+    assert!(
+        chunks > LIST_ROOM / 2 && chunks <= LIST_ROOM,
+        "{chunks} chunks"
+    );
+    bytes
 }
 
 /// Lists far larger in sum than the room: the sender holds them back until
@@ -601,7 +614,7 @@ async fn chunk_lists_wait_for_room() {
     within120(async {
         let flow = Flow::Push;
         let h = Harness::new().await;
-        thirty_listed_files(h.src(flow));
+        twelve_listed_files(h.src(flow));
         let peak = Arc::new(AtomicU64::new(0));
         {
             let mut d = h.daemon.hooks.lock().unwrap();
@@ -617,12 +630,12 @@ async fn chunk_lists_wait_for_room() {
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        assert_eq!(out.files_transferred, 30);
+        assert_eq!(out.files_transferred, 12);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
         let peak = peak.load(SeqCst);
         assert!(peak <= LIST_ROOM, "the receiver held {peak} records");
         assert!(
-            peak >= 30,
+            peak >= 9,
             "the receiver held at most {peak} records: no list was ever held"
         );
     })
@@ -637,7 +650,7 @@ async fn a_chunk_list_beyond_the_room_fails_the_session() {
     within60(async {
         let flow = Flow::Push;
         let h = Harness::new().await;
-        fs::write(h.src(flow).join("f.bin"), data(9 * MIB, 7)).unwrap();
+        fs::write(h.src(flow).join("f.bin"), data(4 * MIB, 7)).unwrap();
         h.daemon.hooks.lock().unwrap().list_budget = Some(LIST_ROOM);
         let mut local = h.local_side();
         local.hooks.list_budget = Some(LIST_ROOM);
@@ -693,17 +706,14 @@ async fn a_chunk_list_for_an_unplanned_file_fails_the_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_room_starts_afresh_on_every_connection() {
     within60(async {
-        const ROOM: u64 = 60;
         let flow = Flow::Push;
         let h = Harness::new().await;
-        let bytes = data(13 * MIB, 100);
-        let chunks = irsync_proto::chunk::digest_bytes(&bytes).chunks.len() as u64;
-        assert!(chunks > ROOM / 2 && chunks <= ROOM, "{chunks} chunks");
+        let bytes = over_half_the_room(100);
         fs::write(h.src(flow).join("x.bin"), &bytes).unwrap();
-        h.daemon.hooks.lock().unwrap().list_budget = Some(ROOM);
+        h.daemon.hooks.lock().unwrap().list_budget = Some(LIST_ROOM);
         let fault = PartsFault::after(2);
         let mut local = h.local_side();
-        local.hooks.list_budget = Some(ROOM);
+        local.hooks.list_budget = Some(LIST_ROOM);
         local.hooks.chunk_list_part_records = Some(3);
         local.hooks.drop_after_parts = Some(fault.clone());
         let (out, reconnects) = h.run_reconnect(&archive_opts(), flow, fast(), local).await;
@@ -722,19 +732,14 @@ async fn list_room_starts_afresh_on_every_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_list_sent_again_first_frees_the_old_one() {
     within60(async {
-        const ROOM: u64 = 60;
         let flow = Flow::Push;
         let h = Harness::new().await;
-        let (old, new) = (data(13 * MIB, 100), data(13 * MIB, 101));
-        for bytes in [&old, &new] {
-            let chunks = irsync_proto::chunk::digest_bytes(bytes).chunks.len() as u64;
-            assert!(chunks > ROOM / 2 && chunks <= ROOM, "{chunks} chunks");
-        }
+        let (old, new) = (over_half_the_room(100), over_half_the_room(101));
         let src = h.src(flow).to_path_buf();
         fs::write(src.join("x.bin"), &old).unwrap();
-        h.daemon.hooks.lock().unwrap().list_budget = Some(ROOM);
+        h.daemon.hooks.lock().unwrap().list_budget = Some(LIST_ROOM);
         let mut local = h.local_side();
-        local.hooks.list_budget = Some(ROOM);
+        local.hooks.list_budget = Some(LIST_ROOM);
         let fired = Arc::new(AtomicUsize::new(0));
         local.hooks.on_first_chunk_sent = Some({
             let (src, new, fired) = (src.clone(), new.clone(), fired.clone());
@@ -1137,6 +1142,9 @@ async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
         chmod_all(&base, 0o750, 0o600);
+        // Explicit, so the margin over the ~17 s of reading stays wide
+        // whatever the default.
+        h.daemon.hooks.lock().unwrap().close_quiet = Some(Duration::from_secs(60));
         let mut local = h.local_side();
         local.hooks.slow_peer_events = Some(Duration::from_millis(4));
         let mut opts = archive_opts();

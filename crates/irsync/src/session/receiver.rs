@@ -505,7 +505,7 @@ impl Receiver {
             // list for the file replaces the old one, whose room is freed.
             let freed = self
                 .lists
-                .charge(file_id, u64::from(p.total), true)
+                .reserve(file_id, u64::from(p.total))
                 .map_err(|e| {
                     anyhow::anyhow!("protocol error: chunk list beyond the granted room: {e}")
                 })?;

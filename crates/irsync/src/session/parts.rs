@@ -165,36 +165,23 @@ impl ListBudget {
         }
     }
 
-    /// Takes `part_records` for `file_id` (for a first part: the list's
-    /// announced total). A first part replaces the file's earlier list: what
+    /// Reserves a list of `total` records for `file_id` (at its first
+    /// part, its announced total). It replaces the file's earlier list: what
     /// that held is released first and returned, for the caller to grant
-    /// back. `Err` when the total would exceed the limit; nothing is taken
-    /// then (an earlier list stays held).
-    pub fn charge(
-        &mut self,
-        file_id: u64,
-        part_records: u64,
-        first_part: bool,
-    ) -> Result<u64, String> {
-        let old = if first_part {
-            self.held.get(&file_id).copied().unwrap_or(0)
-        } else {
-            0
-        };
-        let total = self.total - old + part_records;
-        if total > self.limit {
+    /// back. `Err` when the records held would exceed the limit; nothing is
+    /// reserved then (an earlier list stays held).
+    pub fn reserve(&mut self, file_id: u64, total: u64) -> Result<u64, String> {
+        let old = self.held.get(&file_id).copied().unwrap_or(0);
+        let held = self.total - old + total;
+        if held > self.limit {
             return Err(format!(
-                "{part_records} records with {} held, beyond the {} granted",
+                "{total} records with {} held, beyond the {} granted",
                 self.total - old,
                 self.limit
             ));
         }
-        self.total = total;
-        let held = self.held.entry(file_id).or_insert(0);
-        if first_part {
-            *held = 0;
-        }
-        *held += part_records;
+        self.total = held;
+        self.held.insert(file_id, total);
         Ok(old)
     }
 
@@ -466,13 +453,13 @@ mod tests {
     }
 
     #[test]
-    fn charge_beyond_the_limit_is_refused() {
+    fn a_reservation_beyond_the_limit_is_refused() {
         let mut b = ListBudget::new(10);
-        assert_eq!(b.charge(1, 6, true), Ok(0));
-        assert!(b.charge(2, 5, true).is_err());
+        assert_eq!(b.reserve(1, 6), Ok(0));
+        assert!(b.reserve(2, 5).is_err());
         // Refused: nothing was taken.
         assert_eq!(b.total(), 6);
-        assert_eq!(b.charge(2, 4, true), Ok(0));
+        assert_eq!(b.reserve(2, 4), Ok(0));
         assert_eq!(b.total(), 10);
         assert_eq!(b.release(1), 6);
         assert_eq!(b.release(1), 0);
@@ -482,8 +469,8 @@ mod tests {
     #[test]
     fn a_new_first_part_releases_the_old_list() {
         let mut b = ListBudget::new(10);
-        assert_eq!(b.charge(1, 10, true), Ok(0));
-        assert_eq!(b.charge(1, 4, true), Ok(10));
+        assert_eq!(b.reserve(1, 10), Ok(0));
+        assert_eq!(b.reserve(1, 4), Ok(10));
         assert_eq!(b.total(), 4);
         assert_eq!(b.release(1), 4);
         assert_eq!(b.total(), 0);
