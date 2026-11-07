@@ -26,7 +26,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Persist the partial record after this many newly verified chunks...
 const PERSIST_EVERY_CHUNKS: u32 = 64;
-/// ...or after this much time, whichever comes first.
+/// ...or once the oldest of them is this old, whichever comes first. The
+/// age counts from that chunk, not from opening: a file that waited long for
+/// its data but then arrives in one go is placed without a record, which
+/// would cost three writes under the index lock (here, at finalize, and its
+/// removal). Counting from opening made every file pay them once files
+/// spent more than this long in flight (a slow disk), slowing them further.
 const PERSIST_EVERY: Duration = Duration::from_secs(2);
 
 /// How long `open` waits for another holder of the `.part` lock (typically
@@ -1004,6 +1009,9 @@ impl FileWriter {
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
             self.tree.add(c.offset, &data);
+            if self.chunks_since_persist == 0 {
+                self.last_persist = Instant::now();
+            }
             self.chunks_since_persist += 1;
             if remote {
                 self.received += data.len() as u64;
