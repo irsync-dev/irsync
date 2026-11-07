@@ -788,24 +788,45 @@ enum Removal {
 }
 
 /// Removes `root/rel` if its name is a part name, it is a regular file
-/// (never follows a symlink) and its mtime is not newer than `cutoff`. With
-/// `dry_run` only classifies.
+/// and its mtime is not newer than `cutoff`. With `dry_run` only
+/// classifies. No symlink is followed, the final name's or a directory's
+/// on the way (one swapped in since the path was recorded): such a path
+/// holds no part of ours, so it counts as missing.
+// The `stat` field types differ by platform; the mode cast is a no-op here.
+#[allow(clippy::unnecessary_cast)]
 fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
-    use std::os::unix::fs::MetadataExt;
+    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::fstatat;
+    use nix::unistd::{unlinkat, UnlinkatFlags};
     if !rel.components().last().is_some_and(is_part_name) {
         return Ok(Removal::Skipped);
     }
-    let full = root.join(rel.to_os());
-    match std::fs::symlink_metadata(&full) {
-        Ok(m) if m.file_type().is_file() && m.mtime() <= cutoff => {
+    let (dir, name) = split_last(rel)?;
+    let name = &name[..];
+    let dfd = match open_dir_beneath(root, &dir) {
+        Ok(fd) => fd,
+        // A symlinked or non-directory component (`InvalidInput`), or gone.
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+            ) =>
+        {
+            return Ok(Removal::Missing);
+        }
+        Err(e) => return Err(e),
+    };
+    match fstatat(&dfd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(st) if is_regular_mode(st.st_mode as u32) && st.st_mtime <= cutoff => {
             if !dry_run {
-                std::fs::remove_file(&full)?;
+                unlinkat(&dfd, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
             }
             Ok(Removal::Removed)
         }
         Ok(_) => Ok(Removal::Skipped),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Removal::Missing),
-        Err(e) => Err(e),
+        Err(nix::Error::ENOENT) => Ok(Removal::Missing),
+        Err(e) => Err(errno(e)),
     }
 }
 

@@ -174,6 +174,30 @@ async fn gc_never_follows_symlinks() {
     assert!(outside.path().join(".irsync.out.part").exists());
 }
 
+/// A record written while `d` was a directory; `d` has since been swapped
+/// for a symlink out of the root. Its part is not followed there.
+#[tokio::test]
+async fn gc_never_follows_a_symlinked_directory_of_a_record() {
+    let f = fixture();
+    let r = f.root.path();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join(".irsync.x.part"), b"v").unwrap();
+    touch_ago(&outside.path().join(".irsync.x.part"), 30);
+    std::fs::create_dir(r.join("swapped")).unwrap();
+    f.ix.lock()
+        .unwrap()
+        .put_partial(&rel("swapped/x"), &partial(now() - 9 * DAY as i64))
+        .unwrap();
+    std::fs::remove_dir(r.join("swapped")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), r.join("swapped")).unwrap();
+    let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    assert!(outside.path().join(".irsync.x.part").exists());
+    assert!(!rep.parts_removed.contains(&rel("swapped/.irsync.x.part")));
+    assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+}
+
 #[tokio::test]
 async fn gc_dry_run_removes_nothing() {
     let f = fixture();
