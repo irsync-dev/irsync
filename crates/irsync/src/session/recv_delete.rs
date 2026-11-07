@@ -52,6 +52,8 @@ impl Receiver {
         match executed {
             Ok(rep) => {
                 for p in &rep.deleted {
+                    // Its row would offer chunks nothing holds any more.
+                    self.ctx.index().queue_forget(self.ctx.key(p));
                     self.ctx.hooks.event("delete", p);
                     let bus = &self.ctx.hooks.bus;
                     bus.emit(crate::session::Event::Itemized(

@@ -350,6 +350,8 @@ enum Write {
         inode: u64,
         size: u64,
     },
+    /// [`Index::remove_entry`].
+    Forget(RelPath),
 }
 
 /// Work for the writer thread, in the order it was queued.
@@ -414,7 +416,7 @@ fn write_batch(index: &Mutex<Index>, batch: &[Write]) {
         if let Err(err) = apply_all(&mut ix.conn, std::slice::from_ref(w)) {
             let path = match w {
                 Write::Put(e) => &e.path,
-                Write::Remove { path, .. } => path,
+                Write::Remove { path, .. } | Write::Forget(path) => path,
             };
             tracing::warn!(?path, error = %err, "updating the index failed");
         }
@@ -436,7 +438,18 @@ fn apply(conn: &Connection, w: &Write) -> Result<()> {
     match w {
         Write::Put(e) => write_entry(conn, &e.path, &e.entry, e.ctime, e.digest.as_ref()),
         Write::Remove { path, inode, size } => remove_entry_if(conn, path, *inode, *size),
+        Write::Forget(path) => remove_entry(conn, path),
     }
+}
+
+/// The statements of [`Index::remove_entry`].
+fn remove_entry(conn: &Connection, path: &RelPath) -> Result<()> {
+    let p = path.as_bytes();
+    conn.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
+        .execute([p])?;
+    conn.prepare_cached("DELETE FROM entries WHERE path = ?1")?
+        .execute([p])?;
+    Ok(())
 }
 
 /// The statements of [`Index::remove_entry_if`].
@@ -580,6 +593,12 @@ impl IndexHandle {
     /// waiting for it, like [`IndexHandle::queue_entry`].
     pub fn queue_removal(&self, path: RelPath, inode: u64, size: u64) {
         self.queue(Write::Remove { path, inode, size });
+    }
+
+    /// Queues [`Index::remove_entry`] (the file was deleted), like
+    /// [`IndexHandle::queue_entry`].
+    pub fn queue_forget(&self, path: RelPath) {
+        self.queue(Write::Forget(path));
     }
 
     fn queue(&self, w: Write) {
@@ -918,12 +937,8 @@ impl Index {
     /// Forgets the entry at `path` and its chunk rows (its file is gone or
     /// was replaced).
     pub fn remove_entry(&mut self, path: &RelPath) -> Result<()> {
-        let p = path.as_bytes();
         let tx = self.conn.transaction()?;
-        tx.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
-            .execute([p])?;
-        tx.prepare_cached("DELETE FROM entries WHERE path = ?1")?
-            .execute([p])?;
+        remove_entry(&tx, path)?;
         tx.commit()?;
         Ok(())
     }
