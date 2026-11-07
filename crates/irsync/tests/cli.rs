@@ -118,7 +118,17 @@ fn bwlimit_forms() {
     assert_eq!(opts(&["--bwlimit=1.5M", "a", "h:m"]).bwlimit, Some(3 << 19));
     assert_eq!(opts(&["--bwlimit=.5k", "a", "h:m"]).bwlimit, Some(512));
     assert_eq!(opts(&["--bwlimit=0", "a", "h:m"]).bwlimit, None);
-    for bad in ["x", "", "1.2.3", "-1", "1xb", "k", "1kib2", "inf", "99999999999P"] {
+    for bad in [
+        "x",
+        "",
+        "1.2.3",
+        "-1",
+        "1xb",
+        "k",
+        "1kib2",
+        "inf",
+        "99999999999P",
+    ] {
         let a = format!("--bwlimit={bad}");
         assert!(
             Args::try_parse_from(["irsync", a.as_str(), "a", "h:m"]).is_err(),
