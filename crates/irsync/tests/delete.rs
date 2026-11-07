@@ -176,6 +176,37 @@ async fn delete_removes_extraneous_after_transfer() {
     .await;
 }
 
+/// An interrupted sync left `.part`s of files the source then removed with
+/// their directories (netstress `dsl-video-pull-2`): the directories go,
+/// with irsync's leftovers in them, instead of failing as not empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_removes_a_directory_holding_only_leftover_parts() {
+    within30(async {
+        let o = opts(&["--delete"]);
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let (src, dst) = (h.src(flow), h.dst(flow));
+            fs::write(src.join("keep.txt"), b"keep").unwrap();
+            fs::create_dir_all(dst.join("gone/deep")).unwrap();
+            fs::write(dst.join("gone/.irsync.a.bin.part"), b"partial").unwrap();
+            fs::write(dst.join("gone/deep/.irsync.b.bin.part"), b"partial").unwrap();
+            fs::write(dst.join("gone/deep/c.txt"), b"c").unwrap();
+
+            let (out, _) = run(&h, &o, flow).await;
+            assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+            assert_eq!(
+                paths(&out.deleted),
+                ["gone", "gone/deep", "gone/deep/c.txt"],
+                "{flow:?}"
+            );
+            assert!(!dst.join("gone").exists(), "{flow:?}");
+            assert_trees_equal(src, dst, &o.preserve);
+            assert_eq!(out.exit_code(), 0);
+        }
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_before_frees_space_first() {
     within30(async {

@@ -333,6 +333,16 @@ whole directory, and irsync failed to delete it on the destination with
 interrupted sync followed by deleting the file's directory at the source
 should show it.
 
+Fixed 2026-11-07: before removing a directory, the delete pass removes
+irsync's own temporaries (`.irsync.<name>.part` / `.tmp`) from it when they
+are all it holds and no running writer holds a `.part` (each is locked
+while written); otherwise they stay and the directory is reported as not
+empty, as before. Their progress records go at the next GC. Regression
+test: `delete_removes_a_directory_holding_only_leftover_parts` in
+`crates/irsync/tests/delete.rs`, which failed with `Directory not empty`
+before the fix. A leftover `.part` in a directory that stays is still kept
+until GC removes it after 7 days.
+
 Also seen: about 600 debug lines per sync of iroh's `failed to initiate NAT
 traversal: Not enough addresses`, because the fault layer gives each side
 only one address. Harmless noise.

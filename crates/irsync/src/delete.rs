@@ -11,11 +11,13 @@
 //!   candidate whose parent is no longer a real directory is an error;
 //! - directories are removed with `AT_REMOVEDIR` only, after their contents
 //!   (deepest first); a directory that still holds something is an error for
-//!   that path, never a recursive removal;
+//!   that path, never a recursive removal, except irsync's own leftover
+//!   temporaries when they are all it holds (see `clear_temporaries`);
 //! - it stops at `max_delete` (rsync exit code 25);
 //! - on a dry run it only lists what it would delete.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
@@ -24,13 +26,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
-use nix::fcntl::AtFlags;
+use nix::dir::Dir;
+use nix::fcntl::{openat, AtFlags, OFlag};
+use nix::sys::stat::Mode;
 use nix::sys::stat::{fstatat, SFlag};
 use nix::unistd::{unlinkat, UnlinkatFlags};
 
 use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{errno, open_dir_beneath, split_last};
+use crate::recv::is_temp_name;
 use crate::telemetry::meter::{Activity, Meter};
 
 /// The deletion pass was not run because a listing was incomplete: a path
@@ -314,6 +319,62 @@ impl DeletePass {
 /// deepest first in reverse path order, so siblings share it.
 type ParentCache = Option<(RelPath, OwnedFd)>;
 
+/// Clears irsync's own temporaries (`.irsync.<name>.part` / `.tmp`, see
+/// [`is_temp_name`]) from the directory `name` in `parent`, so that what an
+/// interrupted sync left there does not keep a directory the source
+/// removed. Only when they are all it holds and no writer holds one of its
+/// `.part`s (each is locked while its writer runs): otherwise they stay,
+/// and removing the directory fails as for any that is not empty. Their
+/// progress records go at the next GC, which finds the parts missing.
+fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    // Not a directory we can open: removing it reports why.
+    let Ok(fd) = openat(parent, name, flags, Mode::empty()) else {
+        return Ok(());
+    };
+    let mut temps = Vec::new();
+    for entry in Dir::from_fd(fd.try_clone()?).map_err(errno)?.iter() {
+        let n = entry.map_err(errno)?.file_name().to_bytes().to_vec();
+        if n == b"." || n == b".." {
+            continue;
+        }
+        if !is_temp_name(&n) {
+            return Ok(());
+        }
+        temps.push(n);
+    }
+    // Every `.part` locked before any goes: none is a running writer's.
+    let mut held = Vec::new();
+    for t in temps.iter().filter(|t| t.ends_with(b".part")) {
+        let part = OsStr::from_bytes(t);
+        let opened = openat(
+            &fd,
+            part,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        );
+        let file = match opened {
+            Ok(fd) => std::fs::File::from(fd),
+            // A symlink is no writer's: removed below, never followed.
+            Err(nix::Error::ELOOP | nix::Error::ENOENT) => continue,
+            Err(e) => return Err(errno(e)),
+        };
+        match file.try_lock() {
+            Ok(()) => held.push(file),
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
+    for t in &temps {
+        match unlinkat(&fd, OsStr::from_bytes(t), UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(nix::Error::ENOENT) => {}
+            Err(e) => return Err(errno(e)),
+        }
+    }
+    tracing::debug!(dir = ?name, n = temps.len(), "removed leftover temporaries");
+    Ok(())
+}
+
 /// Removes one path relative to its parent directory, which is opened from
 /// `root` component by component with `O_NOFOLLOW` (see
 /// [`open_dir_beneath`]) and held while the path is checked and removed: a
@@ -335,7 +396,7 @@ fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Resu
     let Some((_, fd)) = parent.as_ref() else {
         unreachable!("the parent was just opened")
     };
-    let name = std::ffi::OsStr::from_bytes(&name);
+    let name = OsStr::from_bytes(&name);
     let st = match fstatat(fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(st) => st,
         Err(nix::Error::ENOENT) => return Ok(false),
@@ -343,6 +404,7 @@ fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Resu
     };
     let is_dir = SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR;
     let flag = if is_dir {
+        clear_temporaries(fd, name)?;
         UnlinkatFlags::RemoveDir
     } else {
         UnlinkatFlags::NoRemoveDir
@@ -461,6 +523,46 @@ mod tests {
         // error, not a silent skip.
         assert_eq!(rep.errors.len(), 1, "{:?}", rep.errors);
         assert_eq!(rep.errors[0].0, rel("link/precious"));
+    }
+
+    /// An interrupted sync left a `.part` (and a `.tmp`) in a directory the
+    /// source has since removed: they are irsync's own, so the directory
+    /// goes with them.
+    #[tokio::test]
+    async fn a_directory_holding_only_leftover_temporaries_is_removed() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("d")).unwrap();
+        std::fs::write(t.path().join("d/.irsync.f.part"), b"partial").unwrap();
+        std::fs::write(t.path().join("d/.irsync.l.tmp"), b"").unwrap();
+        let mut p = pass(None, false, false);
+        p.plan(rel("d"), Kind::Directory);
+        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert_eq!(rep.deleted, [rel("d")]);
+        assert!(!t.path().join("d").exists());
+    }
+
+    /// A `.part` another writer holds, or anything besides irsync's
+    /// temporaries, keeps the directory, and the temporaries in it.
+    #[tokio::test]
+    async fn temporaries_stay_when_the_directory_cannot_go() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("busy")).unwrap();
+        std::fs::write(t.path().join("busy/.irsync.f.part"), b"partial").unwrap();
+        let held = std::fs::File::open(t.path().join("busy/.irsync.f.part")).unwrap();
+        held.lock().unwrap();
+        std::fs::create_dir(t.path().join("full")).unwrap();
+        std::fs::write(t.path().join("full/.irsync.f.part"), b"partial").unwrap();
+        std::fs::write(t.path().join("full/kept"), b"k").unwrap();
+        let mut p = pass(None, false, false);
+        p.plan(rel("busy"), Kind::Directory);
+        p.plan(rel("full"), Kind::Directory);
+        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        assert!(rep.deleted.is_empty(), "{:?}", rep.deleted);
+        assert_eq!(rep.errors.len(), 2, "{:?}", rep.errors);
+        assert!(t.path().join("busy/.irsync.f.part").exists());
+        assert!(t.path().join("full/.irsync.f.part").exists());
+        drop(held);
     }
 
     #[tokio::test]
