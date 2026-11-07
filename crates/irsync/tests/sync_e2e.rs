@@ -495,6 +495,64 @@ async fn daemon_index_rows_are_export_relative() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_and_chunk_reuse_work_below_an_export_prefix() {
+    within30(async {
+        let opts = archive_opts();
+        let h = Harness::new().await;
+        let push_to = |path: &[u8], dir: &Path, state: &Path| {
+            let mut hello = Harness::hello(Flow::Push);
+            hello.path = path.to_vec();
+            (hello, Harness::side_for(dir, state))
+        };
+        let content = data(2 * MIB + 77, 21);
+        fs::write(h.local.path().join("photo.jpg"), &content).unwrap();
+        let (hello, side) = push_to(b"m/sub", h.local.path(), h.client_state.path());
+        let out = h.run_hello(&opts, hello, side).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+
+        // Renamed under the same prefix: copied from the old name, whose
+        // index key carries the prefix (`sub/photo.jpg`).
+        fs::create_dir(h.local.path().join("album")).unwrap();
+        fs::rename(
+            h.local.path().join("photo.jpg"),
+            h.local.path().join("album/renamed.jpg"),
+        )
+        .unwrap();
+        let (hello, side) = push_to(b"m/sub", h.local.path(), h.client_state.path());
+        let out = h.run_hello(&opts, hello, side).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.bytes_transferred, 0);
+        assert_eq!(out.files_transferred, 1);
+        assert_eq!(
+            fs::read(h.export.path().join("sub/album/renamed.jpg")).unwrap(),
+            content
+        );
+
+        // Under another prefix, a changed copy: its unchanged chunks come
+        // from the file below `sub`, outside this session's root.
+        let mut changed = content.clone();
+        let n = changed.len();
+        changed[n - 50 * KIB..].copy_from_slice(&data(50 * KIB, 22));
+        let other = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        fs::write(other.path().join("copy.jpg"), &changed).unwrap();
+        let (hello, side) = push_to(b"m/other", other.path(), state.path());
+        let out = h.run_hello(&opts, hello, side).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(
+            out.bytes_transferred < 600 * KIB as u64,
+            "sent {} bytes for a 50 KiB change",
+            out.bytes_transferred
+        );
+        assert_eq!(
+            fs::read(h.export.path().join("other/copy.jpg")).unwrap(),
+            changed
+        );
+    })
+    .await;
+}
+
 /// Events are really emitted during a session: every placed file, its bytes,
 /// itemize codes on a pull, and the connection state.
 async fn events_during_sync(flow: Flow) {
