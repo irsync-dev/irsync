@@ -388,11 +388,34 @@ cross-referenced from commit messages and review notes.
      (first request to DONE) goes from 0.40 s to 0.66 s, and its `recv`
      activity (waiting for the sender's data streams) from 1.9 s to 4.2 s
      of wall time, while `write` and `place` are unchanged. The sender
-     (`send` busy 1.3 s) is not busier. Where the extra latency comes
-     from is not yet found.
-   - *Next step.* Find the stall (an off-CPU profile of both ends, or a
-     counter on each bounded queue and budget wait) before changing
-     `LISTING_QUEUE`, `PEER_EVENTS` or `OUT_BUDGET`.
+     (`send` busy 1.3 s) is not busier.
+   - *The stall, found 2026-11-07.* A data stream holds one of the
+     sender's `DEFAULT_PARALLEL` (32) send permits until `stopped()`
+     resolves, which is when the peer has QUIC-ACKed every byte. The
+     receiver ACKs every second packet or after 25 ms, so when all 32
+     permits wait on `stopped()` and nothing else is sent, all of them sit
+     idle for about 25 ms. Per run, the number of `stopped()` waits of 20
+     ms or more tracks wall time: `main` has 500-2200, the branch
+     2100-3700. This exposure is already on `main`; the dedicated listing
+     stream and the held-open stream tasks make the stalls more frequent
+     (which of the two is not isolated). Not the cause: the close wait,
+     `PEER_EVENTS`, `OUT_BUDGET`, `BASIS_BUDGET`, list room (no budget
+     waits, no QUIC loss). Releasing the permit before `stopped()` made
+     it slower (the 256-stream limit binds).
+   - *Transport fix.* `transport_config()` asks the peer for immediate
+     ACKs (`ack_eliciting_threshold` 0, `max_ack_delay` 1 ms), on both
+     endpoints. No queue, budget or protocol rule changes. Same workload,
+     separate release builds of `main` (ffea8b1) and the fixed branch,
+     ten interleaved runs each, load 1-4: `main` 2600-3808 ms, median
+     3293 ms; branch 1933-2353 ms, median 2022 ms (about 39% faster than
+     `main`; before the fix the branch's median was 4.4-4.5 s). Daemon
+     CPU is unchanged (`main` median 14.3 s, branch 14.1 s).
+   - *Still open.* The effect of immediate ACKs on a real long-RTT link
+     is untested (all runs were on loopback); the gain is expected to be
+     smaller there, and the extra ACK traffic is unmeasured. Threshold 1
+     (the default) with `max_ack_delay` 1 ms is a possible gentler
+     setting, since the stalls come from the delay timer; it was not
+     measured.
 2. **Application heartbeat (R35).** One peer's long local work (e.g. hashing
    a multi-GB file on a slow disk) is invisible to the other peer's idle
    watchdog. Mitigated by the 30-min daemon default and `idle_timeout = 0`.
