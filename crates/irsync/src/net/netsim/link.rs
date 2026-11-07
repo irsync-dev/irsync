@@ -32,6 +32,16 @@ pub struct Link {
     next_jitter_step: Duration,
     /// The latest delivery time of a packet that was not reordered.
     last_delivery: Duration,
+    drops: Drops,
+}
+
+/// Datagrams the link dropped, by cause.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drops {
+    /// Found the queue full.
+    pub queue: u64,
+    /// Random loss.
+    pub loss: u64,
 }
 
 struct Cross {
@@ -68,13 +78,20 @@ impl Link {
             jitter_ns,
             next_jitter_step: JITTER_STEP,
             last_delivery: Duration::ZERO,
+            drops: Drops::default(),
         }
+    }
+
+    /// The datagrams dropped so far.
+    pub fn drops(&self) -> Drops {
+        self.drops
     }
 
     /// What happens to one datagram of `len` bytes offered at `now` (time since the link was made):
     /// empty = dropped; otherwise the delivery times (two when duplicated).
     pub fn offer(&mut self, now: Duration, len: usize) -> Vec<Duration> {
         let Some(queueing) = self.enqueue(now, len) else {
+            self.drops.queue += 1;
             return Vec::new();
         };
         self.step_jitter(now);
@@ -92,6 +109,7 @@ impl Link {
         let extra = self.rng.gen_range(5..=30);
         let duplicated = self.rng.gen_bool(self.params.duplicate);
         if lost {
+            self.drops.loss += 1;
             return Vec::new();
         }
 
@@ -265,6 +283,36 @@ mod tests {
         assert!((0.005..=0.05).contains(&rate), "{rate}");
         let longest = lost.split(|x| !*x).map(<[bool]>::len).max().unwrap_or(0);
         assert!(longest < 100, "{longest} drops in a row");
+    }
+
+    #[test]
+    fn drops_are_counted_by_cause() {
+        // a full queue: dsl-video Up without its random loss
+        let mut p = link(ProfileName::DslVideo, Dir::Up);
+        p.loss.loss_good = 0.0;
+        let mut l = Link::new(p, 1);
+        let dropped = (0..200).filter(|_| l.offer(ms(0), 1250).is_empty()).count() as u64;
+        assert!(dropped > 0);
+        assert_eq!(
+            l.drops(),
+            Drops {
+                queue: dropped,
+                loss: 0
+            }
+        );
+        // random loss alone: 4g Down well under its slowest rate
+        let mut l = Link::new(link(ProfileName::FourGVehicle, Dir::Down), 11);
+        let dropped = (0..200_000)
+            .filter(|i| l.offer(ms(*i), 100).is_empty())
+            .count() as u64;
+        assert!(dropped > 0);
+        assert_eq!(
+            l.drops(),
+            Drops {
+                queue: 0,
+                loss: dropped
+            }
+        );
     }
 
     #[test]
