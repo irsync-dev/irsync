@@ -346,6 +346,8 @@ fn client_gc_skipped_within_24h() {
     assert!(!gc_due(Some(t), t + DAY as i64 - 1, false));
     assert!(gc_due(Some(t), t + DAY as i64, false));
     assert!(gc_due(Some(t), t + 60, true), "stale partials make it due");
+    // The clock stepped back past the last walk: its time says nothing.
+    assert!(gc_due(Some(t + 3600), t, false), "last walk in the future");
 }
 
 #[tokio::test]
@@ -364,7 +366,12 @@ async fn gc_if_due_records_and_skips() {
         .await
         .unwrap()
         .is_none());
-    // A partial record untouched for two hours makes it due again.
+    // A record that went stale (an hour untouched) since the last walk
+    // makes it due again; the walk keeps it (younger than `age`).
+    f.ix.lock()
+        .unwrap()
+        .set_last_gc_at(now() - 3 * 3600)
+        .unwrap();
     f.ix.lock()
         .unwrap()
         .put_partial(&rel("p"), &partial(now() - 7200))
@@ -373,6 +380,12 @@ async fn gc_if_due_records_and_skips() {
         .await
         .unwrap()
         .is_some());
+    assert!(f.ix.lock().unwrap().partial(&rel("p")).unwrap().is_some());
+    // It was stale at that walk already: not due again until the day is up.
+    assert!(gc_if_due(f.ix.clone(), f.root.path(), age, stale)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// A destination name too long for the plain `.irsync.<name>.part` form.

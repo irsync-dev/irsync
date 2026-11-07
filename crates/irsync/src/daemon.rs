@@ -430,7 +430,7 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
                 _ = tick.tick() => {}
             }
             // Walks the export only when a day has passed or
-            // collectable (dormant) partial records exist.
+            // partial records have become collectable (dormant) since.
             let dormant = shared.dormant();
             match gc_if_due(gc_index.clone(), &root, dormant, dormant).await {
                 Ok(Some(r)) => tracing::info!(
@@ -1013,9 +1013,10 @@ fn prune_entries(
 pub const GC_EVERY: Duration = Duration::from_secs(24 * 3600);
 
 /// Whether a GC walk is due: never walked, the last walk is [`GC_EVERY`]
-/// old, or partial records have gone stale since (Ruling 32).
+/// old (or in the future: the clock stepped back), or partial records have
+/// gone stale since (Ruling 32).
 pub fn gc_due(last_gc_at: Option<i64>, now: i64, stale_partials: bool) -> bool {
-    stale_partials || last_gc_at.is_none_or(|t| now.saturating_sub(t) >= GC_EVERY.as_secs() as i64)
+    stale_partials || last_gc_at.is_none_or(|t| now < t || now - t >= GC_EVERY.as_secs() as i64)
 }
 
 /// Runs [`gc`] only when [`gc_due`] says so; `stale_after` is the age at
@@ -1029,12 +1030,23 @@ pub async fn gc_if_due(
     let ix = index.clone();
     let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
         let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
-        let last = ix.last_gc_at().map_err(io_err)?;
-        let stale = !ix
-            .partials_older_than(stale_after)
-            .map_err(io_err)?
-            .is_empty();
-        Ok(gc_due(last, unix_now(), stale))
+        let (last, now) = (ix.last_gc_at().map_err(io_err)?, unix_now());
+        // Records that went stale since the last walk: one stale at that
+        // walk already was looked at, and kept (younger than `older_than`,
+        // or still referenced); it must not make every run walk again.
+        let stale = match last {
+            Some(t) if t <= now => {
+                let since = Duration::from_secs((now - t) as u64);
+                let stale_now = ix.partials_older_than(stale_after).map_err(io_err)?;
+                let stale_then = ix
+                    .partials_older_than(stale_after + since)
+                    .map_err(io_err)?;
+                stale_now.len() > stale_then.len()
+            }
+            // Due anyway.
+            _ => false,
+        };
+        Ok(gc_due(last, now, stale))
     })
     .await
     .map_err(io_err)??;

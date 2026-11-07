@@ -786,7 +786,7 @@ async fn session(
     .await??;
     if !dry_run {
         // Housekeeping for this root, at most daily unless partial records
-        // have gone stale (an hour untouched); never fatal.
+        // have gone stale (an hour untouched) since; never fatal.
         match irsync::daemon::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await
         {
             Ok(Some(r)) => tracing::debug!(
