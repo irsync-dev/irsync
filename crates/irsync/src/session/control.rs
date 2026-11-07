@@ -311,8 +311,8 @@ pub(super) fn spawn_reader(
 }
 
 /// The reader's loop; see [`spawn_reader`].
-async fn read_control(
-    mut recv: RecvStream,
+async fn read_control<R: tokio::io::AsyncRead + Unpin>(
+    mut recv: R,
     events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
@@ -372,6 +372,15 @@ async fn read_control(
             Ok(None) => {
                 events.send(Ev::PeerEof).await;
                 return;
+            }
+            // Not a frame of ours (undecodable, or longer than any frame):
+            // the peer broke the protocol, which no reconnect mends. Read
+            // no further, but keep the stream, as for a listing frame above.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                events
+                    .send(Ev::ProtocolError(format!("control stream: {e}")))
+                    .await;
+                std::future::pending::<()>().await;
             }
             Err(e) => {
                 events
@@ -886,6 +895,35 @@ pub(super) fn hex(b: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the control reader makes of `bytes`: its first peer event.
+    async fn first_event(bytes: &'static [u8]) -> Ev {
+        let (tx, mut rx) = PeerTx::channel(&super::super::SideHooks::default());
+        let reader = tokio::spawn(read_control(
+            bytes,
+            tx,
+            super::super::EventBus::default(),
+            Arc::default(),
+            Arc::default(),
+        ));
+        let ev = rx.recv().await.expect("an event");
+        reader.abort();
+        ev
+    }
+
+    /// Bytes that are not a frame of ours break the protocol; they are not
+    /// a failed stream, which a client would retry.
+    #[tokio::test]
+    async fn an_undecodable_control_frame_is_a_protocol_error() {
+        // Field 1 with wire type 7, which does not exist.
+        for bytes in [&[0u8, 0, 0, 1, 0x0f][..], &[0xff, 0xff, 0xff, 0xff][..]] {
+            match first_event(bytes).await {
+                Ev::ProtocolError(e) => assert!(e.contains("control stream"), "{e}"),
+                Ev::PeerFailed(e) => panic!("a transport error: {e}"),
+                _ => panic!("another event"),
+            }
+        }
+    }
 
     #[test]
     fn session_done_errors_are_capped() {

@@ -236,8 +236,8 @@ fn out_of_order(path: &RelPath, last: &RelPath) -> Ev {
 }
 
 /// The reader's loop; see [`spawn_listing_reader`].
-async fn read_listing(
-    mut recv: RecvStream,
+async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
+    mut recv: R,
     sink: ListingSink,
     mut ids: Option<IdMap>,
     events: PeerTx,
@@ -285,6 +285,11 @@ async fn read_listing(
                     "listing stream: the peer's listing is incomplete (the stream ended before ListingEnd)"
                         .into(),
                 ))
+            }
+            // Not a frame of ours (undecodable, or longer than any frame):
+            // the peer broke the protocol, which no reconnect mends.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                break Some(Ev::ProtocolError(format!("listing stream: {e}")))
             }
             Err(_) if ended => break None,
             // The connection is gone: the control reader reports that, after
@@ -394,5 +399,36 @@ async fn read_listing(
         // to the planner (and its destination copies extraneous). Keep the
         // planner waiting until the session ends and aborts this task.
         std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bytes that are not a frame of ours, on the listing stream, break the
+    /// protocol; they are not a failed stream, which a client would retry.
+    #[tokio::test]
+    async fn an_undecodable_listing_frame_is_a_protocol_error() {
+        // Field 1 with wire type 7, which does not exist; then a length
+        // longer than any frame.
+        for bytes in [&[0u8, 0, 0, 1, 0x0f][..], &[0xff, 0xff, 0xff, 0xff][..]] {
+            let (tx, mut rx) = PeerTx::channel(&SideHooks::default());
+            let reader = tokio::spawn(read_listing(
+                bytes,
+                ListingSink::Drain,
+                None,
+                tx,
+                SideHooks::default(),
+                Arc::default(),
+                Arc::default(),
+            ));
+            match rx.recv().await.expect("an event") {
+                Ev::ProtocolError(e) => assert!(e.contains("listing stream"), "{e}"),
+                Ev::PeerFailed(e) => panic!("a transport error: {e}"),
+                _ => panic!("another event"),
+            }
+            reader.abort();
+        }
     }
 }
