@@ -133,8 +133,9 @@ Where the code and the spec differ, the code is what shipped.
 ## First real runs (2026-11-07)
 
 One run per profile and direction, seed 1, started together on the same Mac
-(so they shared CPU), build `011dcad`. Roots are kept under
-`~/work/netstress-<profile>-<direction>`.
+(so they shared CPU), build `011dcad`. The roots were under
+`~/work/netstress-<profile>-<direction>` and have since been deleted; the
+2026-11-07 sweep below replaces these findings.
 
 | run | wall time | result |
 | --- | --- | --- |
@@ -179,7 +180,7 @@ layer. All are expected from a dead zone.
 and the resume, one file failed with `peer did not take the range in time`;
 the file was not delivered and its `.irsync.*.part` was left in the
 destination. `fileset check` reported 1 added (the `.part`) and 1 deleted
-(the file). Log: `~/work/netstress-4g-vehicle-push/logs/iter-0003.client.log`.
+(the file).
 
 ### dsl-video
 
@@ -194,13 +195,11 @@ in the fault layer or in irsync would look the same. A further hypothesis,
 found after the run: the cross-traffic model then in use (call 12, first
 version) dropped every irsync packet for up to about 1.2 s in every 2 to 4
 s, and QUIC's retransmit backoff over repeated blackouts of that length may
-well add up to 10 s without activity. Log:
-`~/work/netstress-dsl-video-pull/logs/iter-0001.client.log`.
+well add up to 10 s without activity.
 
 **Push, iteration 1 (failed).** Client exit 23. About 60 s into the sync six
 files failed with `peer did not take the range in time`, leaving three
-`.part` files and six missing files. No reconnect, no dead zone. Log:
-`~/work/netstress-dsl-video-push/logs/iter-0001.client.log`.
+`.part` files and six missing files. No reconnect, no dead zone.
 
 ### What to look at next
 
@@ -217,8 +216,8 @@ other seeds (`tools/sweep.sh`) to see how often each failure occurs.
 
 One run, alone on the Mac, after the seed mixing (call 5), the new
 cross-traffic model (call 12) and the counts (call 13):
-`irsync-netstress --profile dsl-video --direction pull --seed 1`, root
-`~/work/netstress-dsl-video-pull-fixed`. It passed 10 of 10 in 166.5 s
+`irsync-netstress --profile dsl-video --direction pull --seed 1` (root
+since deleted). It passed 10 of 10 in 166.5 s
 (syncs 2.4 to 26.5 s), exit 0, no reconnect, no `no activity` line, no send
 error. The last counts lines were:
 
@@ -256,3 +255,66 @@ time`, which the single pull run never showed. The faults run on the real
 clock, so a seed fixes the draws but does not replay the run (see call 11).
 What the two have in common is only that `dsl-video` did not pass cleanly on
 seed 1 in either direction.
+
+## Sweep after the listing-backpressure merge (2026-11-07)
+
+`tools/sweep.sh` with its defaults: seeds 1 to 10, both profiles, both
+directions, 40 runs, four at a time, build `42d9b9c`. About 2.5 hours.
+Roots of the failing runs are under `~/work/irsync-netstress-sweep`.
+
+| | runs that passed | iterations that passed |
+| --- | --- | --- |
+| `4g-vehicle` pull | 10 of 10 | 100 of 100 (99 dead zones, all resumed) |
+| `dsl-video` pull | 9 of 10 | 92 of 100 |
+| `4g-vehicle` push | 0 of 10 | 25 of 100 |
+| `dsl-video` push | 0 of 10 | 1 of 100 |
+
+No run exited 2 or 3. No crash of the client or the daemon, no reconnect
+outside a dead zone, and no dead zone that failed to resume. The rig and
+the reconnect path work.
+
+**One cause behind every failing run.** In all 21 failing runs the first
+failed iteration exits 23 with `peer did not take the range in time` on 1
+to 11 files (twice with a `hard link target failed` that follows from it).
+Later iterations of a run fail mostly from the `.part` files the first
+failure left behind.
+
+The timing is exact. Under `dsl-video` push every failing sync takes 61
+to 62 s, and the files fail 60.0 s after `session started`. Under
+`4g-vehicle` push the files fail 60 s after the session resumes from its
+dead zone. That is `STOPPED_TIMEOUT` in `crates/irsync/src/send.rs`: after
+writing a range and calling `finish()`, the sender waits at most 60 s for
+the receiver to confirm it.
+
+Observed in `dsl-video-push-1` iteration 1: the client's counts show no
+queue drops and no loss; the daemon's receiver had 0 to 2 of each failed
+range's chunks after 60 s (`arrived=0 promised=12`, `arrived=1
+promised=4`); the session delivered 1.8 MB in about 60 s, about a quarter
+of what the 1 Mbit/s uplink can carry. The pull direction, whose data goes
+down the 16 Mbit/s link, almost always passes.
+
+Hypothesis, not yet shown: the 60 s starts when the range is in QUIC's
+local send buffer, not when it is on the wire. With up to 32 files sending
+at once (`DEFAULT_PARALLEL`) and a 64 MiB send window, the sender can queue
+far more than a slow uplink carries in 60 s, so the ranges at the back time
+out though nothing is wrong. After a dead zone the resumed session queues
+its whole backlog at once, which explains the 4G case. Why the uplink ran
+at only about a quarter of its rate with no drops is a separate open
+question (congestion control on a link with 0.5 s of queue is one
+candidate).
+
+**A second problem: an orphaned `.part` blocks deleting its directory.**
+In `dsl-video-pull-2`, iteration 3 failed as above and left three `.part`
+files. Two were picked up and finished by later syncs. The third belonged
+to a file the source later deleted; it stayed (the client's garbage
+collection only removes parts older than 7 days), so `fileset check`
+flagged it in iterations 4 to 9. In iteration 10 the source removed the
+whole directory, and irsync failed to delete it on the destination with
+`Directory not empty` (exit 23). This does not need a bad network: any
+interrupted sync followed by deleting the file's directory at the source
+should show it.
+
+Also seen: about 600 debug lines per sync of iroh's `failed to initiate NAT
+traversal: Not enough addresses`, because the fault layer gives each side
+only one address. Harmless noise.
+
