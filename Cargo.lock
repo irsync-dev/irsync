@@ -2969,9 +2969,11 @@ dependencies = [
  "anyhow",
  "clap",
  "jiff",
+ "nix",
  "rand 0.8.8",
  "serde",
  "stress",
+ "tempfile",
  "toml",
 ]
 

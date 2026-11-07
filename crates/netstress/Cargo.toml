@@ -15,3 +15,7 @@ toml = { workspace = true }
 rand = { workspace = true }
 jiff = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+nix = { workspace = true, features = ["signal"] }
