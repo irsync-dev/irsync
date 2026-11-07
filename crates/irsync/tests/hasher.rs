@@ -58,10 +58,30 @@ async fn changed_content_same_mtime_rehashed() {
     let p = root.path().join("f");
     fs::write(&p, b"aaaa").unwrap();
     set_mtime(&p, 1_700_000_000, 5);
-    let d1 = h.digest(&item(root.path(), b"f")).await.unwrap();
+    let before = item(root.path(), b"f");
+    let d1 = h.digest(&before).await.unwrap();
+    // The row is in the index: only the ctime can tell the rewrite apart.
+    h.flush();
     fs::write(&p, b"bbbb").unwrap();
     set_mtime(&p, 1_700_000_000, 5);
-    let d2 = h.digest(&item(root.path(), b"f")).await.unwrap();
+    // A kernel may keep ctime in coarse ticks: touch again until it moves.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut after = item(root.path(), b"f");
+    while after.ctime == before.ctime {
+        assert!(std::time::Instant::now() < deadline, "ctime never moved");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        set_mtime(&p, 1_700_000_000, 5);
+        after = item(root.path(), b"f");
+    }
+    assert_eq!(
+        (after.entry.size, after.entry.inode, after.entry.mtime_nsec),
+        (
+            before.entry.size,
+            before.entry.inode,
+            before.entry.mtime_nsec
+        )
+    );
+    let d2 = h.digest(&after).await.unwrap();
     assert_eq!(h.stats().files_hashed.load(Relaxed), 2);
     assert_ne!(d1.hash, d2.hash);
 }
