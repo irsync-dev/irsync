@@ -37,9 +37,12 @@ pub const DEFAULT_SPLIT_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// Matches the transport idle timeout: how long to wait for the peer to take a range.
 const STOPPED_TIMEOUT: Duration = Duration::from_secs(60);
-const MIN_BURST: u64 = 1024 * 1024;
+/// The most a bucket saves up while idle (and never more than one second
+/// of its rate, so a low limit does not burst far past it after a pause).
+const MAX_BURST: u64 = 1024 * 1024;
 
-/// Token bucket refilled continuously at `rate` bytes/s. Tokens may go
+/// Token bucket refilled continuously at `rate` bytes/s, holding at most
+/// [`MAX_BURST`] or one second of rate, whichever is less. Tokens may go
 /// negative: a taker deducts first, then sleeps off its deficit.
 struct Bucket {
     rate: f64,
@@ -53,7 +56,7 @@ impl Bucket {
         let rate = bytes_per_sec.max(1);
         Bucket {
             rate: rate as f64,
-            burst: rate.max(MIN_BURST) as f64,
+            burst: rate.min(MAX_BURST) as f64,
             tokens: 0.0,
             last: Instant::now(),
         }
@@ -589,6 +592,24 @@ async fn read_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bucket_bursts_at_most_one_second_after_idle_at_low_limits() {
+        let mut b = Bucket::new(1000);
+        // Idle for a minute: the bucket refills to one second of rate, not more.
+        b.last -= Duration::from_secs(60);
+        assert_eq!(b.take(1000), Duration::ZERO);
+        let wait = b.take(1000);
+        assert!(
+            wait >= Duration::from_millis(990) && wait <= Duration::from_millis(1010),
+            "{wait:?}"
+        );
+        // At high limits the burst stays at most 1 MiB.
+        let mut b = Bucket::new(1 << 30);
+        b.last -= Duration::from_secs(60);
+        assert_eq!(b.take(MAX_BURST), Duration::ZERO);
+        assert!(b.take(1 << 20) > Duration::ZERO);
+    }
 
     fn digest(lens: &[u32]) -> FileDigest {
         let mut off = 0;
