@@ -1229,7 +1229,7 @@ async fn run_role(
     // a waiting list needs is always freed by files that can progress.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
-    let (out, writer) = control::spawn_writer(
+    let (out, mut writer) = control::spawn_writer(
         send,
         ev_tx.clone(),
         &ctx.hooks,
@@ -1328,11 +1328,19 @@ async fn run_role(
                 o.usage.process = process;
                 o.usage.net = net;
             }
-            let _ = writer.await;
             if side == Side::Daemon {
-                // Closing now could cut the client off from what it has not
-                // read yet; the readers stay, so it can still end its side.
-                await_client_close(&ctx).await;
+                // Our last frames, then the client's close: closing now
+                // could cut it off from what it has not read yet (the
+                // readers stay, so it can still end its side). Both waits
+                // are bounded by progress (see `await_client_close`): a
+                // client that stops reading while the writer still holds
+                // more than the stream window takes would otherwise hold
+                // the session forever, the watchdog being gone.
+                if !await_client_close(&ctx, &mut writer).await {
+                    writer.abort();
+                }
+            } else {
+                let _ = writer.await;
             }
             reader.abort();
             // The sender's listing ended before the receiver could finish;
@@ -1381,23 +1389,25 @@ async fn run_role(
 /// while nothing moves on the connection (see [`await_client_close`]).
 const CLOSE_QUIET: Duration = Duration::from_secs(30);
 
-/// Daemon, at a session's end: waits for the client to close the
-/// connection. Until then it may still be reading what we sent: up to a
-/// stream window, besides the frames its own queue holds, which on a slow
-/// link or with a slow client takes a while, and a connection we close is
-/// lost to it with all it has not read. So the wait is bounded by
-/// progress, not by a fixed time: it ends after [`CLOSE_QUIET`] in which
-/// we sent no stream data and the client granted no flow-control credit
-/// (it reads nothing, or has everything and is done with it), and at the
-/// latest after the session's idle timeout. Credit grants stop once our
-/// streams have ended (the client knows their size), so the quiet time
-/// also covers a client reading the rest of what it holds.
+/// Daemon, at a session's end: waits for the control writer to write what
+/// it holds, then for the client to close the connection; false if it gave
+/// up first (the writer still runs then). Until the client closes it may
+/// still be reading what we sent: up to a stream window, besides the
+/// frames its own queue holds, which on a slow link or with a slow client
+/// takes a while, and a connection we close is lost to it with all it has
+/// not read. So the wait is bounded by progress, not by a fixed time: it
+/// ends after [`CLOSE_QUIET`] in which we sent no stream data and the
+/// client granted no flow-control credit (it reads nothing, or has
+/// everything and is done with it), and at the latest after the session's
+/// idle timeout. Credit grants stop once our streams have ended (the client
+/// knows their size), so the quiet time also covers a client reading the
+/// rest of what it holds.
 ///
 /// With the daemon's idle timeout off (`idle_timeout = 0`) there is no
 /// latest: a client that keeps something moving holds the session open as
 /// long as it likes (the quiet time still ends a wait in which nothing
 /// moves).
-async fn await_client_close(ctx: &Ctx) {
+async fn await_client_close(ctx: &Ctx, writer: &mut tokio::task::JoinHandle<()>) -> bool {
     #[cfg(feature = "test-hooks")]
     let quiet = ctx.hooks.close_quiet.unwrap_or(CLOSE_QUIET);
     #[cfg(not(feature = "test-hooks"))]
@@ -1413,12 +1423,15 @@ async fn await_client_close(ctx: &Ctx) {
     let started = tokio::time::Instant::now();
     let mut last = moved(&ctx.conn);
     let mut since = started;
-    let closed = ctx.conn.closed();
-    tokio::pin!(closed);
+    let done = async {
+        let _ = writer.await;
+        ctx.conn.closed().await;
+    };
+    tokio::pin!(done);
     let mut tick = tokio::time::interval((quiet / 10).max(Duration::from_millis(100)));
     loop {
         tokio::select! {
-            _ = &mut closed => return,
+            () = &mut done => return true,
             _ = tick.tick() => {}
         }
         let now = moved(&ctx.conn);
@@ -1426,11 +1439,11 @@ async fn await_client_close(ctx: &Ctx) {
             (last, since) = (now, tokio::time::Instant::now());
         } else if since.elapsed() >= quiet {
             tracing::info!(quiet = ?quiet, "the client did not close; closing the connection");
-            return;
+            return false;
         }
         if ctx.idle_timeout.is_some_and(|t| started.elapsed() >= t) {
             tracing::info!("the client did not close within the idle timeout");
-            return;
+            return false;
         }
     }
 }

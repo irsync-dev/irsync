@@ -1190,6 +1190,60 @@ async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
     .await;
 }
 
+/// As above, but the daemon's writer still holds far more than the
+/// buffers between the two take when its role ends (its `SessionDone`
+/// goes out behind 18 MB of `Itemized` frames): it waits for the writer
+/// only while the connection moves, then gives up on it and on the client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
+    within120(async {
+        let flow = Flow::Push;
+        let h = Arc::new(Harness::new().await);
+        let base = deep_tree(h.src(flow), 200);
+        h.run(&archive_opts(), flow)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        chmod_all(&base, 0o750, 0o600);
+        let before = h.daemon.sessions.load(SeqCst);
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.close_quiet = Some(Duration::from_secs(2));
+            d.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+                (StreamKind::Control, m @ Msg::Done(_)) => {
+                    let tail = Msg::Itemized(irsync_proto::v1::Itemized {
+                        path: vec![b'x'; 3600],
+                        code: ".d..p......".into(),
+                    });
+                    let mut v = vec![tail; 5000];
+                    v.push(m);
+                    v
+                }
+                (_, m) => vec![m],
+            }));
+        }
+        let mut local = h.local_side();
+        local.hooks.slow_peer_events = Some(Duration::from_secs(1));
+        let mut opts = archive_opts();
+        opts.itemize = true;
+        let started = std::time::Instant::now();
+        let client = tokio::spawn({
+            let h = h.clone();
+            async move { h.run_reconnect(&opts, flow, no_reconnect(), local).await }
+        });
+        while h.daemon.sessions.load(SeqCst) == before {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the daemon still waits for its writer after {:?}",
+                started.elapsed()
+            );
+            assert!(!client.is_finished(), "the client finished");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        client.abort();
+    })
+    .await;
+}
+
 /// A sender that fails before it lists: a resumed daemon sender waits for
 /// the receiver's first frame to decide whether to list, and the client's
 /// first control frame breaks the protocol. The client (listing afresh,
