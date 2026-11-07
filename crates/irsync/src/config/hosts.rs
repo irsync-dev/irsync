@@ -3,7 +3,7 @@
 
 use super::settings::de_opt_duration;
 use super::{line_of, toml_err, ConfigError};
-use crate::config::settings::RelayMode;
+use crate::config::settings::{Congestion, RelayMode};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -20,6 +20,8 @@ pub struct HostEntry {
     pub relay: Option<Url>,
     /// `"disabled"`: reach this host directly only, never through a relay.
     pub relay_mode: Option<RelayMode>,
+    /// For pushes to this host; unset: the client settings'.
+    pub congestion: Option<Congestion>,
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
@@ -35,6 +37,8 @@ pub(crate) struct RawHost {
     relay: Option<Url>,
     #[serde(default)]
     relay_mode: Option<RelayMode>,
+    #[serde(default)]
+    congestion: Option<Congestion>,
     #[serde(default)]
     address: Vec<HostPort>,
     #[serde(default)]
@@ -94,6 +98,7 @@ pub(crate) fn hosts_from_raw(
                 endpoint_id,
                 relay: r.relay,
                 relay_mode: r.relay_mode,
+                congestion: r.congestion,
                 address: r.address,
                 parallel: r.parallel,
                 reconnect: r.reconnect,

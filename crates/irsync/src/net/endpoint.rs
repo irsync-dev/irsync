@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::Context;
 
 use crate::config::hosts::HostEntry;
-use crate::config::settings::{ClientSettings, DaemonSettings, RelayMode as DaemonRelayMode};
+use crate::config::settings::{
+    ClientSettings, Congestion, DaemonSettings, RelayMode as DaemonRelayMode,
+};
 use crate::net::addr::HostPort;
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
@@ -18,7 +20,7 @@ use iroh::endpoint::{
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
-use noq_proto::congestion::Bbr3Config;
+use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig};
 
 const MIB: u32 = 1024 * 1024;
 
@@ -52,6 +54,8 @@ pub struct EndpointOpts {
     pub bind_addrs: Vec<SocketAddr>,
     /// iroh's UPnP/PCP/NAT-PMP port mapper.
     pub portmap: bool,
+    /// The congestion controller for what this endpoint sends.
+    pub congestion: Congestion,
 }
 
 impl EndpointOpts {
@@ -67,6 +71,7 @@ impl EndpointOpts {
             publish: false,
             bind_addrs: Vec::new(),
             portmap: false,
+            congestion: Congestion::default(),
         }
     }
 }
@@ -99,15 +104,19 @@ fn immediate_acks() -> AckFrequencyConfig {
 const STREAM_WINDOW: u32 = 8 * MIB;
 
 /// QUIC transport tuned for bulk transfer: 60 s idle, 5 s keep-alive, large
-/// windows, BBR congestion control, and immediate ACKs asked of the peer
-/// (see [`immediate_acks`]).
-pub fn transport_config() -> QuicTransportConfig {
-    transport_config_with(STREAM_WINDOW)
+/// windows, the congestion controller `congestion`, and immediate ACKs
+/// asked of the peer (see [`immediate_acks`]).
+pub fn transport_config(congestion: Congestion) -> QuicTransportConfig {
+    transport_config_with(STREAM_WINDOW, congestion)
 }
 
 /// [`transport_config`] with each stream's receive window `stream_window`
 /// bytes.
-fn transport_config_with(stream_window: u32) -> QuicTransportConfig {
+fn transport_config_with(stream_window: u32, congestion: Congestion) -> QuicTransportConfig {
+    let controller: Arc<dyn ControllerFactory + Send + Sync> = match congestion {
+        Congestion::Bbr => Arc::new(Bbr3Config::default()),
+        Congestion::Cubic => Arc::new(CubicConfig::default()),
+    };
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(
             IdleTimeout::try_from(Duration::from_secs(60)).expect("60 s fits in an IdleTimeout"),
@@ -118,7 +127,7 @@ fn transport_config_with(stream_window: u32) -> QuicTransportConfig {
         .send_window(64 * u64::from(MIB))
         .max_concurrent_uni_streams(VarInt::from_u32(256))
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
-        .congestion_controller_factory(Arc::new(Bbr3Config::default()))
+        .congestion_controller_factory(controller)
         .ack_frequency_config(Some(immediate_acks()))
         .build()
 }
@@ -148,6 +157,11 @@ pub fn client_endpoint_opts(
             .is_some_and(|m| m == DaemonRelayMode::Disabled);
     let host_dht = host.and_then(|h| h.dht);
     let host_mdns = host.and_then(|h| h.mdns);
+    // The host entry's, else the client settings', else BBR.
+    let congestion = host
+        .and_then(|h| h.congestion)
+        .or(client.congestion)
+        .unwrap_or_default();
     if !addresses.is_empty() {
         // The host entry's addresses with `--relay` on the command line: the
         // same contradiction as `--address` with `--relay`.
@@ -165,7 +179,10 @@ pub fn client_endpoint_opts(
         {
             tracing::debug!("address given: ignoring relay/dht/mdns from the config");
         }
-        return Ok(EndpointOpts::isolated(secret));
+        return Ok(EndpointOpts {
+            congestion,
+            ..EndpointOpts::isolated(secret)
+        });
     }
     // A `--relay` on the command line beats a config file's "disabled".
     let relay = match (cli_relay, host_relay.or(client.relay.as_ref())) {
@@ -183,6 +200,7 @@ pub fn client_endpoint_opts(
         publish: false,
         bind_addrs: Vec::new(),
         portmap: true,
+        congestion,
     })
 }
 
@@ -207,12 +225,14 @@ pub fn daemon_endpoint_opts(
         publish: true,
         bind_addrs,
         portmap: cfg.portmap,
+        congestion: cfg.congestion,
     }
 }
 
 /// Builds and binds the endpoint speaking [`irsync_proto::ALPN`].
 pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
-    build(opts, transport_config()).await
+    let transport = transport_config(opts.congestion);
+    build(opts, transport).await
 }
 
 /// Test hook: [`build_endpoint`] with each stream's receive window
@@ -223,7 +243,8 @@ pub async fn build_endpoint_with_stream_window(
     opts: EndpointOpts,
     stream_window: u32,
 ) -> Result<Endpoint, NetError> {
-    build(opts, transport_config_with(stream_window)).await
+    let transport = transport_config_with(stream_window, opts.congestion);
+    build(opts, transport).await
 }
 
 async fn build(opts: EndpointOpts, transport: QuicTransportConfig) -> Result<Endpoint, NetError> {

@@ -318,9 +318,32 @@ profile (256 kbit/s); before the fix all 12 files failed at 60 s, after
 it the push takes about 100 s and succeeds.
 
 Why the uplink ran
-at only about a quarter of its rate with no drops is a separate open
-question (congestion control on a link with 0.5 s of queue is one
-candidate).
+at only about a quarter of its rate with no drops was a separate question,
+answered 2026-11-08: BBR on a return path that delays acknowledgements.
+`dsl-video`'s downlink cross traffic holds up to 1280 KiB in the queue for
+1 to 2 s every 2 to 4 s, so a push's ACKs come back up to about 0.65 s
+late. BBR keeps no more in flight than about twice bandwidth times minimum
+RTT (a few KB here) plus an ACK-aggregation allowance capped at its window,
+so the sender idles through each burst; the fault layer drops nothing.
+3 MiB pushes (kbit/s, 1 Mbit/s uplink): `dsl-video` 560; without the cross
+traffic 964; without loss and jitter but with it 576; with Cubic 871
+(Cubic fills the uplink queue: about 220 queue drops a push). BBR against
+Cubic, two runs each, kbit/s:
+
+| profile, direction | BBR | Cubic |
+| --- | --- | --- |
+| `dsl-video` push, 3 MiB | 498, 546 | 850, 874 |
+| `dsl-video` pull, 24 MiB | 4422, 4709 | 7596, 8650 |
+| `4g-vehicle` push, 8 MiB | 1273, 1240 | 1001, 1041 |
+| `4g-vehicle` pull, 8 MiB | 1701, 1794 | 1088, 1283 |
+
+Neither wins everywhere: Cubic is 1.6 to 1.8 times faster on the stable
+line with cross traffic, BBR 23 to 50% faster on the lossy 4G link, and
+Cubic's full queue costs other traffic on the line about 0.5 s of latency.
+noq's BBR exposes no gain to tune. So BBR stays the default and
+`congestion = "cubic"` is a setting (`[client]`, a host entry, `[daemon]`;
+the sending side's applies). With it, the same `dsl-video` push runs at
+911 kbit/s against 566 with the default.
 
 **A second problem: an orphaned `.part` blocks deleting its directory.**
 In `dsl-video-pull-2`, iteration 3 failed as above and left three `.part`

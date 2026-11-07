@@ -104,6 +104,15 @@ fn defaults_for_settings_keys() {
         Some(vec!["default".to_string()])
     );
     assert!(kind_of(&p("hosts.home.relay_mode")).is_some());
+    assert_eq!(
+        default_of(&p("client.congestion")),
+        Some(vec!["bbr".into()])
+    );
+    assert_eq!(
+        default_of(&p("daemon.congestion")),
+        Some(vec!["bbr".into()])
+    );
+    assert!(kind_of(&p("hosts.home.congestion")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
     let _ = id();

@@ -166,6 +166,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         endpoint_id: SecretKey::generate().public(),
         relay: Some("https://r.example".parse().unwrap()),
         relay_mode: None,
+        congestion: None,
         address: vec!["127.0.0.1:1".parse().unwrap()],
         parallel: None,
         reconnect: None,
@@ -261,6 +262,88 @@ fn daemon_opts_follow_the_isolated_config() {
     );
 }
 
+/// The congestion controller: the host entry's, else the client settings',
+/// else BBR, with or without direct addresses; the daemon's from its own.
+#[test]
+fn opts_carry_the_congestion_controller() {
+    use irsync::config::hosts::HostEntry;
+    use irsync::config::settings::{ClientSettings, Congestion, DaemonSettings};
+    use irsync::net::{client_endpoint_opts, daemon_endpoint_opts};
+    let addr: Vec<irsync::net::addr::HostPort> = vec!["127.0.0.1:1".parse().unwrap()];
+    let cs = ClientSettings::default();
+    let cubic = ClientSettings {
+        congestion: Some(Congestion::Cubic),
+        ..ClientSettings::default()
+    };
+    let mut he = HostEntry {
+        endpoint_id: SecretKey::generate().public(),
+        relay: None,
+        relay_mode: None,
+        congestion: None,
+        address: vec![],
+        parallel: None,
+        reconnect: None,
+        dht: None,
+        mdns: None,
+    };
+    for a in [&[][..], &addr[..]] {
+        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, None, a);
+        assert_eq!(o.unwrap().congestion, Congestion::Bbr);
+        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cubic, None, a);
+        assert_eq!(o.unwrap().congestion, Congestion::Cubic);
+        he.congestion = Some(Congestion::Bbr);
+        let o = client_endpoint_opts(
+            SecretKey::generate(),
+            None,
+            false,
+            false,
+            &cubic,
+            Some(&he),
+            a,
+        );
+        assert_eq!(o.unwrap().congestion, Congestion::Bbr);
+        he.congestion = Some(Congestion::Cubic);
+        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, Some(&he), a);
+        assert_eq!(o.unwrap().congestion, Congestion::Cubic);
+    }
+    let ds = DaemonSettings {
+        congestion: Congestion::Cubic,
+        ..DaemonSettings::default()
+    };
+    let o = daemon_endpoint_opts(&ds, SecretKey::generate(), vec![]);
+    assert_eq!(o.congestion, Congestion::Cubic);
+    assert_eq!(
+        daemon_endpoint_opts(&DaemonSettings::default(), SecretKey::generate(), vec![]).congestion,
+        Congestion::Bbr
+    );
+}
+
+/// Endpoints on Cubic carry data like the default ones.
+#[tokio::test(flavor = "multi_thread")]
+async fn endpoints_on_cubic_carry_data() {
+    use irsync::config::settings::Congestion;
+    let mut opts = [common::offline_opts(), common::offline_opts()];
+    for o in &mut opts {
+        o.congestion = Congestion::Cubic;
+    }
+    let [a, b] = opts;
+    let a = irsync::net::build_endpoint(a).await.unwrap();
+    let b = irsync::net::build_endpoint(b).await.unwrap();
+    let (client, server) = connect_pair(&b, &a).await;
+    let data: Vec<u8> = (0..4u32 << 20).map(|i| (i % 251) as u8).collect();
+    let sent = data.clone();
+    let writer = tokio::spawn(async move {
+        let mut send = client.open_uni().await.unwrap();
+        send.write_all(&sent).await.unwrap();
+        send.finish().unwrap();
+        send.stopped().await.unwrap();
+    });
+    let mut recv = within(server.accept_uni()).await.unwrap();
+    let got = within(recv.read_to_end(8 << 20)).await.unwrap();
+    assert_eq!(got, data);
+    writer.await.unwrap();
+}
+
 #[test]
 fn client_opts_disable_the_relay_but_keep_the_lookups() {
     use irsync::config::hosts::HostEntry;
@@ -285,6 +368,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         endpoint_id: SecretKey::generate().public(),
         relay: None,
         relay_mode: Some(RelayMode::Default),
+        congestion: None,
         address: vec![],
         parallel: None,
         reconnect: None,

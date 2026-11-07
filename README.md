@@ -138,6 +138,7 @@ dht = true
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
 relay_mode = "default"       # or "disabled": direct connections only
+congestion = "bbr"           # or "cubic", for pushes; see below
 
 [daemon]
 identity = "~/.config/irsync/daemon_ed25519"
@@ -147,6 +148,7 @@ listen = ["0.0.0.0:0", "[::]:0"]      # at most one IPv4 and one IPv6; port 0 = 
 portmap = true               # UPnP/PCP/NAT-PMP; false in isolated setups
 relay = "https://relay.example.net"
 relay_mode = "default"       # or "disabled"
+congestion = "bbr"           # or "cubic", for pulls
 
 [daemon.discovery]
 dht = true
@@ -159,6 +161,7 @@ mdns = true
 endpoint_id = "k51qzi5uqu5dj..."      # hex or z-base-32, as iroh prints it
 relay = "https://relay.example.net"   # the rest is optional
 relay_mode = "disabled"               # direct only, lookups on
+congestion = "cubic"                  # for pushes to this host
 address = ["192.168.1.10:4000"]       # dial directly: no relay or lookup
 parallel = 64
 reconnect = "1h"
@@ -186,6 +189,16 @@ path = "/srv/docs"
 read_only = true             # caps everyone, even ids under rw
 ro = ["7f3a0c..."]
 ```
+
+`congestion` picks QUIC's congestion controller for the side that sends:
+the client's (a host entry's, else `[client]`'s) for a push, the daemon's
+for a pull. `bbr`, the default, keeps the bottleneck's queue short and
+copes best with random loss, as on mobile links. `cubic` keeps the link
+busier when the return path delays acknowledgements, typically an upload
+on a home line whose download is busy with other traffic (about 1.6x
+faster in the netstress `dsl-video` profile), but it fills the line's
+queue, which adds latency for everything else on it while it sends. See
+[docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md).
 
 A sync resolves each setting from the command-line flag, then the alias's
 table, then `[client]`, then the built-in default. Aliases match exactly; there

@@ -49,6 +49,25 @@ fn settings_tables_parse_and_expand_tilde() {
 }
 
 #[test]
+fn congestion_is_bbr_unless_set_to_cubic() {
+    use irsync::config::settings::Congestion;
+    let d = Settings::default();
+    assert_eq!(
+        (d.client.congestion, d.daemon.congestion),
+        (None, Congestion::Bbr)
+    );
+    let s = Settings::parse(
+        "[client]\ncongestion = \"cubic\"\n[daemon]\ncongestion = \"cubic\"\n",
+        p(),
+    )
+    .unwrap();
+    assert_eq!(s.client.congestion, Some(Congestion::Cubic));
+    assert_eq!(s.daemon.congestion, Congestion::Cubic);
+    let e = Settings::parse("[client]\ncongestion = \"reno\"\n", p()).unwrap_err();
+    assert!(e.to_string().contains("reno"), "{e}");
+}
+
+#[test]
 fn settings_unknown_key_names_file_and_key() {
     let e = Settings::parse("[client]\nbogus = 1\n", p()).unwrap_err();
     let msg = e.to_string();

@@ -16,6 +16,29 @@ pub enum RelayMode {
     Disabled,
 }
 
+/// The congestion controller of the side that sends: the client's for a
+/// push, the daemon's for a pull. BBR keeps the bottleneck's queue short
+/// and copes with random loss (mobile links); Cubic fills the queue but
+/// keeps a link busy when the reverse path delays acknowledgements, e.g.
+/// an upload beside a saturated download (see `NETSTRESS_DECISIONS.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Congestion {
+    #[default]
+    Bbr,
+    Cubic,
+}
+
+impl Congestion {
+    /// The name the config files use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Congestion::Bbr => "bbr",
+            Congestion::Cubic => "cubic",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Discovery {
@@ -143,6 +166,8 @@ pub struct ClientSettings {
     /// `"disabled"`: direct connections only, no relay fallback; the lookups
     /// stay on. Unset: relays as usual.
     pub relay_mode: Option<RelayMode>,
+    /// For pushes; unset: BBR.
+    pub congestion: Option<Congestion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -158,6 +183,8 @@ pub struct DaemonSettings {
     pub portmap: bool,
     pub relay: Option<Url>,
     pub relay_mode: RelayMode,
+    /// For pulls.
+    pub congestion: Congestion,
     pub discovery: Discovery,
     /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
     #[serde(deserialize_with = "de_debug_addr")]
@@ -190,6 +217,7 @@ impl Default for DaemonSettings {
             portmap: true,
             relay: None,
             relay_mode: RelayMode::Default,
+            congestion: Congestion::Bbr,
             discovery: Discovery::default(),
             debug_addr: None,
         }

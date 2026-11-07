@@ -52,6 +52,7 @@ pub fn offline_opts() -> EndpointOpts {
         publish: false,
         bind_addrs: vec!["127.0.0.1:0".parse().unwrap()],
         portmap: false,
+        congestion: Default::default(),
     }
 }
 

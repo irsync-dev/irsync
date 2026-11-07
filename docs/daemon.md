@@ -61,8 +61,8 @@ NAME:PATH`. The daemon's log shows `rejecting unauthorized key` (or
 
 `kill -HUP <pid>` (`systemctl reload irsync` with the unit below) makes the
 daemon re-read `irsync.toml` and apply the `[daemon]` table: `listen`,
-`relay`, `relay_mode`, `portmap`, `discovery`, `identity`, `idle_timeout` and
-`dormant_session_timeout`. It binds a new endpoint with the new network
+`relay`, `relay_mode`, `congestion`, `portmap`, `discovery`, `identity`,
+`idle_timeout` and `dormant_session_timeout`. It binds a new endpoint with the new network
 settings and prints `endpoint id:` and `listening on:` again; sessions in
 progress finish on the connection they started on, while a dialer that still
 uses a retired address is refused. `idle_timeout` applies to sessions
