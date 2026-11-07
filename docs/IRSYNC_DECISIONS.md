@@ -615,117 +615,69 @@ cross-referenced from commit messages and review notes.
   window; local attacker only).
 - `SessionKey` changed in the final fix wave, so sessions persisted by
   pre-release builds do not resume (acceptable pre-release).
-- `gc_due` does not handle the clock stepping backwards; the client's 1 h
-  stale-row threshold may cause more-than-daily walks until GC runs.
 - Missing tests: `Parallel` from config, `HelloAck` timeout, daemon
   watchdog, `--max-delete` across a reconnect (budget may reset after a lost
-  `SessionDone`), `irsync gc` end-to-end.
+  `SessionDone`).
 
 ### 2.3 Deferred minors by area
 
-**Build / proto**
-- `build.rs` uses a cwd-relative `../../proto`; prefer `CARGO_MANIFEST_DIR`.
-- No standalone assertion that `PROTOCOL_VERSION == 1`; no golden-bytes/tag
-  assertions for `Control` and `DataStreamHeader` (roundtrip tests cannot
-  catch field-number drift).
-- Chunker golden vector lacks a forced-max-cut (low-entropy) case and a
-  sub-minimum tail case; no tests for `ChunkRecord` conversion error paths.
+Worked through on 2026-11-07. Fixed then, among others: deletions and GC's
+`remove_part` remove relative to a parent opened with `O_NOFOLLOW` per
+component (`unlinkat`), and a swapped parent is a delete error; the index
+takes its write lock up front, refuses a root that does not resolve and
+forgets the rows of deleted paths; `**` patterns match the full path and
+pattern files are bytes (`FilterRule.pattern` is `bytes`); a missing root is
+one error and an unnameable entry a gap; `gc_due` treats a last walk in the
+future as due and walks again only for newly stale rows; `--bwlimit` follows
+the rsync man page, `--timeout=0` is none, `--parallel 0` is refused; `id
+show --daemon` no longer creates an identity; a dry run no longer counts
+listed files as transferred; a host entry's `Address` with `--relay` is
+refused; `host:+80` is rejected; the sender's burst is at most one second
+of rate; golden wire bytes pin `Control` and `DataStreamHeader`. What is
+left:
 
-**Identity / authz / config**
-- Several `exports=` options on one line: last wins (OpenSSH: first);
-  `Exports=` is case-sensitive; escaped quotes / whitespace inside quoted
-  values are unsupported (fails closed). No test captures the warning for
-  skipped non-Ed25519 lines.
-- The v1 config-path environment variable and default-path branches of
-  `ClientConfig::load` were untested; host matching was
-  case-sensitive (ssh is insensitive); quoted values with spaces unsupported.
-- `irsync id show --daemon` creates a new identity as a side effect if none
-  exists. Two exports sharing one path share one SQLite file via two handles
-  (works under WAL; intent undecided).
+**Config**
+- Two exports sharing one path share one SQLite file via two handles
+  (works under WAL; intent undecided). Host aliases match exactly
+  (case-sensitive).
 
 **CLI**
-- `--bwlimit` decimals / `b` suffix / 1000-vs-1024 fidelity vs the rsync man
-  page; `--timeout=0` should mean "none"; `--parallel 0` accepted.
 - CLI paths are `String` (non-UTF-8 arguments rejected); consider `OsString`.
 - A local source literally named `gc` or `daemon` parses as a subcommand.
 - Push `-v -n` without `-i` lists nothing (daemon sends `Itemized` only when
-  `Hello.itemize`); dry-run `FileDone(path, 0)` inflates `xfr#`/`to-chk`;
-  "Number of files" is approximate (hard-link classification); stats omit
-  "File list generation/transfer time".
+  `Hello.itemize`); "Number of files" is approximate (hard-link
+  classification); stats omit "File list generation/transfer time".
 
 **Index**
-- `busy_timeout` is set after the `journal_mode` pragma; `save_session` uses
-  a deferred transaction (read→write upgrade can hit `SQLITE_BUSY` under
-  multi-process contention; use `Immediate`). No test for
-  `SchemaVersionChanged`. Canonicalize failure silently hashes the
-  non-canonical path. Index rows for deleted paths are not purged.
+- Setting `busy_timeout` before `journal_mode` has no test (the race is not
+  reproducible).
 
 **Scan / filter / hasher**
-- Entries whose `RelPath::join` fails are dropped silently rather than
-  recorded as errors; a missing root yields two errors.
-- `**` in a pattern without a slash matches the final component only (rsync:
-  full path); pattern files are read as lossy UTF-8, so non-UTF-8 filenames
-  in `--exclude-from` never match.
-- `changed_content_same_mtime_rehashed` relies on ctime differing between two
-  writes microseconds apart (could flake on coarse-ctime kernels).
 - jwalk read-ahead is unbounded (the bounded channel only throttles
-  lstat+send).
+  lstat+send; jwalk 0.9 has no knob). An unnameable entry's gap has no test
+  (Linux cannot create one).
 
 **Planner / receiver / sender**
-- Duplicate-listing tests cover only duplicate-after-Equal; out-of-order test
-  asserts only non-empty; `Special` mode mask untested.
-- No test forces a failure after `apply_metadata` (the `u+w` restore path);
-  no parent-directory fsync after rename; whole-file re-hash on adoption
-  reopens by path rather than the held fd.
+- No parent-directory fsync after rename (part of 2.1 item 5).
 - Stale `FileEntry` (mtime/mode) is applied after a changed-source resume
   (repaired on the next run); a retried file gets the original listing's
-  mtime/mode. Rename detection and `find_chunk` reuse under a non-empty
-  export prefix lack an end-to-end test. `Decision::LocalCopy` and the
-  `HASH_MISMATCH` retry path are only lightly exercised.
-- A hard link can point at stale target content when the target failed only
-  at planning time (only the receiver's `failed` set is consulted). Hard
-  links are not counted in `files_transferred`. `may_chgrp` calls
-  `getgroups` per file.
-- Sender: token bucket can burst up to 1 MiB after idle at low limits;
+  mtime/mode. Fixing it needs the hashed file's stat in `ChunkListPart`,
+  carried through the three digest paths, and a decision on which
+  attributes it may override.
+- The `HASH_MISMATCH` retry path is only lightly exercised;
   `parallel_bound_respected` depends on the receiver holding streams open.
 - `Outcome` counts only the final connection; cumulative figures live in
   `SessionProgress`. Stored session errors are re-encoded every 2 s
   (persister rewrites the whole plan blob, O(N)).
 - Single-file sources are refused in v1 (directories only).
 
-**Deletions**
-- Path-based removal has a TOCTOU window (parents checked, then remove);
-  harden with `openat(O_NOFOLLOW|O_DIRECTORY)` + `unlinkat`. Skipped
-  deletions under a swapped parent only warn.
-
 **GC**
-- No test for a stale row with a fresh file (mtime re-check path);
-  `older_than` conflates the client 7-day constant and the daemon
-  `dormant_session_timeout`; a non-regular file at a part path leaves its
-  row forever (conservative); a directory-component symlink swapped in after
-  a row was written could redirect `remove_part`.
+- `older_than` is one age for parts and sessions on each side (on purpose:
+  a part never outlives a session that could resume it); a non-regular file
+  at a part path leaves its row forever (conservative).
 
 **Tests / platform**
-- `try_create_non_utf8` skip branch is not platform-gated (a spurious
-  `EINVAL` on Linux would skip silently); the rsync comparison header's "Not
-  compared" list omits directory nlink; the CI-set panic path is untested.
 - chown paths are untested (need root); macOS compiled only in CI.
-
-**Isolated network mode** (design
-`docs/superpowers/specs/2026-10-21-isolated-network-design.md`, final review
-2026-10-21)
-- `Address` in the client config together with `--relay` on the command
-  line ignores `--relay` with only a debug log. The spec is silent on this
-  pair; a warning, or refusing it like `--address` with `--relay`, would be
-  friendlier.
-- The end-to-end test's daemon spawn inherits the developer's environment
-  (`IRSYNC_PASSPHRASE`, `RUST_LOG`), unlike its client run; the client run
-  has no wall-clock bound beyond `--reconnect 0` and iroh's connect timeout.
-- `HostPort` accepts a leading `+` in the port (`host:+80` parses and
-  displays as `host:80`), because `u16::from_str` does.
-- README: the `--address` row omits the `[ipv6]:port` form; the daemon
-  example's `listen = ["0.0.0.0:0", "[::]:0"]` is captioned "pin sockets"
-  but, with port 0 and the default addresses, pins nothing.
 
 ### 2.4 Out of scope for v1 (by design)
 

@@ -6,7 +6,7 @@ message Hash {
 } // 32-byte BLAKE3
 
 message Hello {
-  uint32 protocol_version = 1; // 1
+  uint32 protocol_version = 1; // `PROTOCOL_VERSION` (irsync-proto)
   bytes session_id = 2; // 16 bytes; empty = new session
   reserved 3; // was the export name; the daemon resolves `path` now
   // PATH as typed: an export name followed by a path inside it, a path
