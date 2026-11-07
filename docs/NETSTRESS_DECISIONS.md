@@ -93,8 +93,20 @@ One run per profile and direction, seed 1, started together on the same Mac
 | `dsl-video` pull | 72 s | failed at iteration 1 |
 | `dsl-video` push | 66 s | failed at iteration 1 |
 
-Only one of the four runs passed. These are findings about irsync under the
-fault layer, not about the rig; irsync was not changed.
+Only one of the four runs passed. Where the fault lies is unresolved. The
+causes may be in irsync, in the fault layer (a bug in the link model or the
+transport), or in the profile (for example `dsl-video`'s 1 Mbit/s uplink
+with a 64 KiB queue may simply be too harsh). The sections below record what
+was observed; every cause named is a hypothesis. irsync was not changed.
+
+What would tell them apart, none of it done yet:
+- the same profile with relaxed numbers (faster uplink, bigger queue, no
+  loss): if the failures go away, the profile was too harsh;
+- the fault layer active but with no shaping (the `test-blackout` link
+  without its dead zone): if the failures stay, the transport is suspect;
+- packet counts from the fault layer (sent, dropped by queue, dropped by
+  loss, delivered) for a failing sync, to see whether the losses match what
+  the profile should give.
 
 ### 4g-vehicle
 
@@ -126,8 +138,9 @@ No dead zone is configured, so any reconnect is a failure.
 **Pull, iteration 1 (failed).** Client exit 0, manifests equal, check clean,
 but the rig failed the iteration: `reconnect without a dead zone (1)`. About
 57 s into the sync the client logged `no activity; dropping the connection
-secs=10`, then reconnected and resumed. So the 16 Mbit/s link with video
-bursts stalled the connection for 10 s once. Log:
+secs=10`, then reconnected and resumed. Hypothesis, not shown: the link
+(16 Mbit/s with video bursts) stalled the connection for 10 s once; a stall
+in the fault layer or in irsync would look the same. Log:
 `~/work/netstress-dsl-video-pull/logs/iter-0001.client.log`.
 
 **Push, iteration 1 (failed).** Client exit 23. About 60 s into the sync six
@@ -137,12 +150,13 @@ files failed with `peer did not take the range in time`, leaving three
 
 ### What to look at next
 
-`peer did not take the range in time` appears in two runs (4g push iteration 3,
-dsl push iteration 1) and is the likely common cause of the exit 23s. It
-means the sender gave up waiting for the receiver to accept a file range.
-Whether the wait is too short for a slow uplink or the receiver is stuck is
-for the irsync side to answer; the rig has shown only that it happens under
-these profiles. The next step is to re-run the four with `--keep-going` and
+Observed: `peer did not take the range in time` appears in two of the
+single runs (4g push iteration 3, dsl push iteration 1) and in the smoke
+runs. Hypothesis: it is the common cause of the exit 23s; it says the
+sender gave up waiting for the receiver to accept a file range. Whether the
+wait is too short for a slow uplink, the receiver is stuck, or the fault
+layer is holding packets back is not known; the tests listed above would
+separate these. The next step is to re-run the four with `--keep-going` and
 other seeds (`tools/sweep.sh`) to see how often each failure occurs.
 
 ### The sweep smoke run
@@ -154,5 +168,12 @@ the sweep always passes) `dsl-video` failed 10 of 10 iterations on push, all
 with client exit 23 and `outages 0`, and 9 of 10 on pull (iteration 1
 passed). Later failures include `.part` files left behind by earlier ones,
 so only the first failing iteration of each run says anything about the
-cause. This agrees with the single-seed runs above: `dsl-video` does not
-yet pass on seed 1 in either direction.
+cause.
+
+The same seed failed differently in the two runs. In the single run the dsl
+pull failed iteration 1 on a stray reconnect (client exit 0); in the smoke
+run it passed iteration 1 and failed iteration 2 with exit 23 and `range in
+time`, which the single pull run never showed. The faults run on the real
+clock, so a seed fixes the draws but does not replay the run (see call 11).
+What the two have in common is only that `dsl-video` did not pass cleanly on
+seed 1 in either direction.
