@@ -532,7 +532,7 @@ impl Planner {
                         Decision::Whole | Decision::Delta | Decision::Append { .. }
                     )
                 {
-                    bus.emit(crate::session::Event::FileDone(path.clone(), 0));
+                    bus.emit(crate::session::Event::WouldTransfer(path.clone()));
                 }
             }
         }

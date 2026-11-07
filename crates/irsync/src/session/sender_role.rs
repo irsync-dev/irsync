@@ -552,7 +552,7 @@ impl SenderRole {
             self.ctx
                 .hooks
                 .bus
-                .emit(super::Event::FileDone(path.clone(), 0));
+                .emit(super::Event::WouldTransfer(path.clone()));
         }
         let code = match i.code.strip_prefix('>') {
             Some(rest) => format!("<{rest}"),

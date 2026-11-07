@@ -301,6 +301,7 @@ impl Live {
                 self.xfr += 1;
                 self.done_bytes = self.done_bytes.saturating_add(*size);
             }
+            Event::WouldTransfer(_) => {}
             Event::Skipped(_, size) => {
                 self.skipped_local = self.skipped_local.saturating_add(*size);
             }
