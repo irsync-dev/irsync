@@ -657,6 +657,10 @@ pub struct SideHooks {
     /// Sender: the most bytes of chunk bases it has held at once.
     #[cfg(feature = "test-hooks")]
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Receiver: the most chunk indices one `NeedChunks` carries (see
+    /// `limits::NEED_PIECE`), instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub need_piece: Option<usize>,
     /// Sender: the most send tasks it has had running at once for the
     /// files in flight.
     #[cfg(feature = "test-hooks")]

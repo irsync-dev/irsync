@@ -26,15 +26,15 @@ use std::sync::Arc;
 use iroh::endpoint::{RecvStream, VarInt};
 use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{
-    control::Msg, file_entry::Kind, plan_item::Action, DataChunk, DataStreamHeader, FileEntry,
-    Hash, NeedChunks,
+    control::Msg, file_entry::Kind, plan_item::Action, ChunkBasis, DataChunk, DataStreamHeader,
+    FileEntry, Hash, NeedChunks,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::control::{Ev, Out};
 use super::engine::{blocking, Ctx};
-use super::limits::{basis_wire_len, ByteBudget, Held, BASIS_BATCH};
+use super::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
 use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
@@ -585,60 +585,58 @@ pub(super) async fn offer_bases(
     file_id: u64,
     budget: Arc<ByteBudget>,
 ) {
-    let inplace = route.gate.is_some();
+    let held = Held::new(budget);
+    if route.gate.is_some() {
+        offer_in_place(ctx, out, route, old, specs, request, file_id, held).await;
+    } else {
+        offer_batched(ctx, out, route, old, specs, request, file_id, held).await;
+    }
+}
+
+/// [`offer_bases`] for a new file: bases in batches, each followed by its
+/// request, then the request for the rest.
+#[allow(clippy::too_many_arguments)]
+async fn offer_batched(
+    ctx: Arc<Ctx>,
+    out: Out,
+    route: Route,
+    old: Arc<File>,
+    specs: Vec<BasisSpec>,
+    request: Vec<u32>,
+    file_id: u64,
     // The bytes of the bases sent and not yet requested.
-    let mut held = Held::new(budget);
+    mut held: Held,
+) {
     let mut batch: Vec<u32> = Vec::new();
     // Chunks a batch requested; the last request has the rest.
     let mut batched: HashSet<u32> = HashSet::new();
-    for (idx, offset, len) in specs {
+    for spec in specs {
         if retired(&route) {
             break;
         }
-        let (f, meter) = (old.clone(), ctx.meter.clone());
-        let basis = blocking(move || {
-            let _timed = meter.start(Activity::Read);
-            let mut buf = vec![0u8; len as usize];
-            f.read_exact_at(&mut buf, offset)?;
-            meter.add(Counter::DiskRead, u64::from(len));
-            Ok(Basis::sign(offset, &buf))
-        })
-        .await;
-        ctx.activity.fetch_add(1, Ordering::Relaxed);
-        match basis {
-            Ok(b) if b.blocks() > 0 => {
-                let wire = b.to_wire(file_id, sender_idx(route.idx_base, idx));
-                let n = basis_wire_len(&wire);
-                if inplace {
-                    if !held.try_take(n) {
-                        continue; // No room: the chunk goes raw.
-                    }
-                } else if batch.len() == BASIS_BATCH || !held.try_take(n) {
-                    if !batch.is_empty() {
-                        if !request_chunks(&out, &route, file_id, &batch, &mut held).await {
-                            return;
-                        }
-                        batch.clear();
-                    }
-                    if retired(&route) {
-                        break;
-                    }
-                    // Holding nothing: others free what this waits for.
-                    held.take(n).await;
+        let wire = match sign(&ctx, &old, &route, file_id, spec).await {
+            Ok(Some(wire)) => wire,
+            Ok(None) => continue,
+            Err(()) => break,
+        };
+        let n = basis_wire_len(&wire);
+        if batch.len() == BASIS_BATCH || !held.try_take(n) {
+            if !batch.is_empty() {
+                if !request_chunks(&out, &route, file_id, &batch, &mut held).await {
+                    return;
                 }
-                out.send_paced(Msg::ChunkBasis(wire)).await;
-                ctx.hooks.event("basis", &route.path);
-                if !inplace {
-                    batch.push(idx);
-                    batched.insert(idx);
-                }
+                batch.clear();
             }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::debug!(path = ?route.path, idx, error = %e, "reading the old file for a basis failed");
+            if retired(&route) {
                 break;
             }
+            // Holding nothing: others free what this waits for.
+            held.take(n).await;
         }
+        out.send_paced(Msg::ChunkBasis(wire)).await;
+        ctx.hooks.event("basis", &route.path);
+        batch.push(spec.0);
+        batched.insert(spec.0);
     }
     #[cfg(feature = "test-hooks")]
     if let Some(h) = &ctx.hooks.after_bases {
@@ -647,13 +645,113 @@ pub(super) async fn offer_bases(
     if !batch.is_empty() && !request_chunks(&out, &route, file_id, &batch, &mut held).await {
         return;
     }
-    // The rest, raw (always sent, even empty); in place, every chunk, and
-    // only now do its bases go back to the budget.
+    // The rest, raw (always sent, even empty), in pieces that fit a frame.
     let rest: Vec<u32> = request
         .into_iter()
         .filter(|i| !batched.contains(i))
         .collect();
-    request_chunks(&out, &route, file_id, &rest, &mut held).await;
+    for piece in pieces(&rest, need_piece(&ctx.hooks)) {
+        if !request_chunks(&out, &route, file_id, piece, &mut held).await {
+            return;
+        }
+    }
+}
+
+/// [`offer_bases`] in place: the one ascending request, in pieces that fit
+/// a frame, each after the bases of its chunks. Each request takes every
+/// basis the sender holds for the file, so a basis sent before an earlier
+/// piece would be dropped unused. A piece's bases are signed once the
+/// pieces before it are requested, which is safe: the writes are ordered,
+/// so none has reached this piece's first chunk, and a basis region starts
+/// at its chunk (`forward_only`).
+#[allow(clippy::too_many_arguments)]
+async fn offer_in_place(
+    ctx: Arc<Ctx>,
+    out: Out,
+    route: Route,
+    old: Arc<File>,
+    specs: Vec<BasisSpec>,
+    request: Vec<u32>,
+    file_id: u64,
+    mut held: Held,
+) {
+    let pieces = pieces(&request, need_piece(&ctx.hooks));
+    let last = pieces.len() - 1;
+    // The specs follow the request's order (a subsequence of it).
+    let mut specs = specs.into_iter().peekable();
+    let mut signing = true;
+    for (k, piece) in pieces.into_iter().enumerate() {
+        for &idx in piece {
+            while let Some(spec) = specs.next_if(|s| s.0 == idx) {
+                signing = signing && !retired(&route);
+                if !signing {
+                    continue;
+                }
+                match sign(&ctx, &old, &route, file_id, spec).await {
+                    Ok(Some(wire)) => {
+                        // No room: the chunk goes raw. Nothing waits here,
+                        // since only this task's own request frees room.
+                        if held.try_take(basis_wire_len(&wire)) {
+                            out.send_paced(Msg::ChunkBasis(wire)).await;
+                            ctx.hooks.event("basis", &route.path);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(()) => signing = false,
+                }
+            }
+        }
+        #[cfg(feature = "test-hooks")]
+        if k == last {
+            if let Some(h) = &ctx.hooks.after_bases {
+                h(&route.path).await;
+            }
+        }
+        #[cfg(not(feature = "test-hooks"))]
+        let _ = (k, last);
+        if !request_chunks(&out, &route, file_id, piece, &mut held).await {
+            return;
+        }
+    }
+}
+
+/// `chunks` in pieces of at most `piece`; none at all as one empty piece
+/// (an empty request still goes out).
+fn pieces(chunks: &[u32], piece: usize) -> Vec<&[u32]> {
+    if chunks.is_empty() {
+        return vec![chunks];
+    }
+    chunks.chunks(piece).collect()
+}
+
+/// Signs the basis of chunk `idx` over `len` bytes of the old file at
+/// `offset`, as it goes on the wire; `None` for a region without a whole
+/// block, `Err` when reading the old file fails (no more bases for it).
+async fn sign(
+    ctx: &Ctx,
+    old: &Arc<File>,
+    route: &Route,
+    file_id: u64,
+    (idx, offset, len): BasisSpec,
+) -> Result<Option<ChunkBasis>, ()> {
+    let (f, meter) = (old.clone(), ctx.meter.clone());
+    let basis = blocking(move || {
+        let _timed = meter.start(Activity::Read);
+        let mut buf = vec![0u8; len as usize];
+        f.read_exact_at(&mut buf, offset)?;
+        meter.add(Counter::DiskRead, u64::from(len));
+        Ok(Basis::sign(offset, &buf))
+    })
+    .await;
+    ctx.activity.fetch_add(1, Ordering::Relaxed);
+    match basis {
+        Ok(b) if b.blocks() > 0 => Ok(Some(b.to_wire(file_id, sender_idx(route.idx_base, idx)))),
+        Ok(_) => Ok(None),
+        Err(e) => {
+            tracing::debug!(path = ?route.path, idx, error = %e, "reading the old file for a basis failed");
+            Err(())
+        }
+    }
 }
 
 /// Whether the file's writer was retired: its bases are no longer wanted.

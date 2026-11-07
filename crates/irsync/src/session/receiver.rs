@@ -31,7 +31,9 @@ use super::control::{
     capped_errors, msg_name, spawn_listing, walk_errors, Ev, Listed, ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, list_budget, ByteBudget, LISTING_QUEUE};
+use super::limits::{
+    basis_budget, list_budget, need_piece, need_pieces, ByteBudget, LISTING_QUEUE,
+};
 use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly, ListBudget};
 use super::planner::{
@@ -396,13 +398,21 @@ impl Receiver {
         }
         tracing::info!(path = ?f.path, missing = missing.len(), "re-requesting chunks");
         route.pending.fetch_add(missing.len(), Ordering::SeqCst);
-        self.out.send(Msg::Need(NeedChunks {
+        self.send_need(
             file_id,
-            chunk_idx: missing
+            missing
                 .into_iter()
                 .map(|i| sender_idx(route.idx_base, i))
                 .collect(),
-        }));
+        );
+    }
+
+    /// Requests chunks `idxs` (sender indices) of `file_id`, in pieces
+    /// that fit a frame (see `limits::need_pieces`).
+    fn send_need(&self, file_id: u64, idxs: Vec<u32>) {
+        for n in need_pieces(file_id, idxs, need_piece(&self.ctx.hooks)) {
+            self.out.send(Msg::Need(n));
+        }
     }
 
     fn ack(&self, file_id: u64, status: Status, message: String) {
@@ -855,10 +865,10 @@ impl Receiver {
             }
         };
         if let Some(raw) = raw {
-            self.out.send(Msg::Need(NeedChunks {
+            self.send_need(
                 file_id,
-                chunk_idx: raw.into_iter().map(|i| sender_idx(idx_base, i)).collect(),
-            }));
+                raw.into_iter().map(|i| sender_idx(idx_base, i)).collect(),
+            );
         }
         if !request.is_empty() {
             match route.old.clone() {
@@ -869,13 +879,13 @@ impl Receiver {
                         ctx, out, r, old, bases, request, file_id, budget,
                     ));
                 }
-                None => self.out.send(Msg::Need(NeedChunks {
+                None => self.send_need(
                     file_id,
-                    chunk_idx: request
+                    request
                         .into_iter()
                         .map(|i| sender_idx(idx_base, i))
                         .collect(),
-                })),
+                ),
             }
         }
         if !local.is_empty() {

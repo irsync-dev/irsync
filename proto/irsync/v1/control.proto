@@ -76,7 +76,8 @@ message ListRoom {
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
-} // receiver -> sender; empty = nothing needed (local copy / already have)
+} // receiver -> sender; empty = nothing needed (local copy / already have).
+// A large request comes as several, each taking the bases sent before it.
 // receiver -> sender, before the NeedChunks that asks for `chunk_idx`: block
 // signatures over a region of the receiver's old file (`offset` is where it
 // starts in that file; the region is `block` * blocks long, a shorter tail

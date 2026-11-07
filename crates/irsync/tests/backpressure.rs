@@ -536,6 +536,61 @@ async fn a_large_inplace_delta_keeps_bases_within_the_budget() {
     a_large_delta_within_the_basis_budget(true).await;
 }
 
+/// A 16 MiB file pulled once, then edited once every 64 KiB over its
+/// first 40% (about 20 changed chunks, each with a basis) and pulled
+/// again, with chunk requests of at most `piece` indices (`None`: the
+/// default). Returns the bytes the client received.
+async fn a_delta_pulled_in_pieces(inplace: bool, piece: Option<usize>) -> u64 {
+    let flow = Flow::Pull;
+    let h = Harness::new().await;
+    let path = h.src(flow).join("f.bin");
+    let mut bytes = data(16 * MIB, 21);
+    fs::write(&path, &bytes).unwrap();
+    let mut opts = archive_opts();
+    opts.inplace = inplace;
+    h.run(&opts, flow).await.unwrap_or_else(|e| panic!("{e:#}"));
+    for off in (0..bytes.len() * 2 / 5).step_by(64 * 1024) {
+        bytes[off + 1000] ^= 0x5a;
+    }
+    fs::write(&path, &bytes).unwrap();
+    let mut local = h.local_side();
+    local.hooks.need_piece = piece;
+    let out = h
+        .run_side(&opts, flow, local)
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    out.bytes_received
+}
+
+/// Chunk requests split into pieces of a few indices (as a file of more
+/// than `NEED_PIECE` chunks has them) still sync the file, and lose none
+/// of its bases: the delta costs about what it costs in one request.
+async fn a_delta_in_pieces_keeps_its_bases(inplace: bool) {
+    within120(async {
+        let whole = a_delta_pulled_in_pieces(inplace, None).await;
+        let pieces = a_delta_pulled_in_pieces(inplace, Some(3)).await;
+        assert!(
+            pieces <= whole + whole / 10 + 64 * 1024,
+            "in pieces {pieces} bytes, in one request {whole}"
+        );
+        // The bases were used at all: about 20 raw chunks would be 6 MiB.
+        assert!(whole < 2 * MIB as u64, "{whole}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delta_in_pieces_keeps_its_bases_with_a_new_file() {
+    a_delta_in_pieces_keeps_its_bases(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delta_in_pieces_keeps_its_bases_in_place() {
+    a_delta_in_pieces_keeps_its_bases(true).await;
+}
+
 /// A receiver (the client, pulling) that sends far more bases than the
 /// budget before requesting them: every `ChunkBasis` goes out 10 000
 /// times, for successive chunk indices (a basis replaces an earlier one

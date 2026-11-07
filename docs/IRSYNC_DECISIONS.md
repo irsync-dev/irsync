@@ -432,12 +432,18 @@ cross-referenced from commit messages and review notes.
      its blocking read, so aborting the task does not free a worker
      early. The sender never sends the root as a file, even when it is
      one and was listed.
-     Still open, none of them new on this branch: a `NeedChunks` for a
-     file of more than about 4M chunks (about 1 TB) exceeds `MAX_FRAME`
-     and fails the control writer; the sender holds a `FileDigest` per
-     file in flight, which the list room does not bound; the client's
-     success path waits for its own control writer without a bound (the
-     user can interrupt it).
+     (l) A request for more than `NEED_PIECE` (2^18) chunks goes out as
+     several `NeedChunks` of at most that many (about 1 MiB each); before
+     2026-11-07 a file of more than about 4M chunks (about 1 TB) asked in
+     one frame above `MAX_FRAME`, which failed the control writer. Since
+     each request takes every basis the sender holds for the file, in
+     place each piece's bases go out just before it (signed once the
+     earlier pieces are requested; the ordered writes have not reached
+     the piece yet, and a basis region starts at its chunk).
+     Still open, none of them new on this branch: the sender holds a
+     `FileDigest` per file in flight, which the list room does not bound;
+     the client's success path waits for its own control writer without a
+     bound (the user can interrupt it).
    - *What it cost before the fix below.* Push of a generated tree of
      31,531 files (316 MiB,
      `filegen run --seed 1 --steps 400000 --max-total-size 600M

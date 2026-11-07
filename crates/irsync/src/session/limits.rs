@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use irsync_proto::v1::ChunkBasis;
+use irsync_proto::v1::{ChunkBasis, NeedChunks};
 
 use super::parts::MAX_LIST_CHUNKS;
 
@@ -35,6 +35,42 @@ const RECORD_WIRE: usize = 11 + 6 + 36 + 2;
 /// The most bytes one chunk index takes in a `NeedChunks`: a packed varint
 /// below [`MAX_LIST_CHUNKS`] (2^24), so at most 4 bytes.
 const INDEX_WIRE: usize = 4;
+
+/// The most chunk indices one `NeedChunks` carries. A request for more
+/// (a file of up to [`MAX_LIST_CHUNKS`] chunks) goes out in pieces of this
+/// many, each at most 1 MiB ([`INDEX_WIRE`] bytes an index), so every piece
+/// fits a frame (`MAX_FRAME`, 16 MiB) and, paced, the [`OUT_BUDGET`].
+pub(super) const NEED_PIECE: usize = 1 << 18;
+
+/// This side's [`NEED_PIECE`], unless a test sets another.
+pub(super) fn need_piece(hooks: &super::SideHooks) -> usize {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = hooks.need_piece {
+        return n.max(1);
+    }
+    let _ = hooks;
+    NEED_PIECE
+}
+
+/// The request for `idxs` (sender indices) of file `file_id` as
+/// `NeedChunks` of at most `piece` indices each, in order; an empty request
+/// is one empty `NeedChunks`. The sender treats consecutive requests for a
+/// file as one, except for bases: each request takes all the bases it holds
+/// for the file, so bases must precede the piece that names their chunks.
+pub(super) fn need_pieces(file_id: u64, idxs: Vec<u32>, piece: usize) -> Vec<NeedChunks> {
+    if idxs.len() <= piece {
+        return vec![NeedChunks {
+            file_id,
+            chunk_idx: idxs,
+        }];
+    }
+    idxs.chunks(piece)
+        .map(|c| NeedChunks {
+            file_id,
+            chunk_idx: c.to_vec(),
+        })
+        .collect()
+}
 
 /// What a main loop queues per file in flight besides chunk records and
 /// indices, rounded up: a `PlanItem` and an `Itemized`, each with a path
@@ -403,6 +439,49 @@ mod tests {
         })) + 3 * header
             + len(Msg::ListRoom(ListRoom { records: u64::MAX }));
         assert!(per_file <= FILE_WIRE, "{per_file}");
+    }
+
+    /// A request for every chunk of the largest legal list does not fit in
+    /// one frame; its pieces do, and together they ask for the same chunks.
+    #[test]
+    fn the_largest_request_goes_out_in_pieces_that_fit_a_frame() {
+        use crate::net::frame::MAX_FRAME;
+        use irsync_proto::v1::{control::Msg, Control, NeedChunks};
+        use prost::Message as _;
+        let len = |n: &NeedChunks| {
+            Control {
+                msg: Some(Msg::Need(n.clone())),
+            }
+            .encoded_len()
+        };
+        let all: Vec<u32> = (0..MAX_LIST_CHUNKS as u32).collect();
+        let whole = NeedChunks {
+            file_id: u64::MAX,
+            chunk_idx: all.clone(),
+        };
+        assert!(len(&whole) > MAX_FRAME, "{}", len(&whole));
+        let pieces = need_pieces(u64::MAX, all.clone(), NEED_PIECE);
+        assert!(pieces.len() > 1);
+        for p in &pieces {
+            assert_eq!(p.file_id, u64::MAX);
+            assert!(len(p) <= OUT_BUDGET / 2, "{}", len(p));
+        }
+        let joined: Vec<u32> = pieces.into_iter().flat_map(|p| p.chunk_idx).collect();
+        assert_eq!(joined, all);
+    }
+
+    /// An empty request still goes out, as one empty `NeedChunks`.
+    #[test]
+    fn an_empty_request_is_one_empty_piece() {
+        let pieces = need_pieces(7, Vec::new(), 3);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].file_id, 7);
+        assert!(pieces[0].chunk_idx.is_empty());
+        let sizes: Vec<usize> = need_pieces(7, (0..7).collect(), 3)
+            .iter()
+            .map(|p| p.chunk_idx.len())
+            .collect();
+        assert_eq!(sizes, [3, 3, 1]);
     }
 
     #[test]
