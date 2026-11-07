@@ -64,6 +64,10 @@ A dead zone opens after a profile-set amount of traffic (256 KiB to 4 MiB
 for `4g-vehicle`), once per client process, so every sync gets one. It cuts
 both directions. The client logs when it opens and closes.
 
+Each process also logs, at `warn`, what became of its datagrams: `netsim:
+counts sent=… queue_drops=… loss_drops=… outage_drops=… send_errors=…
+truncated=…`, every 10 s while traffic flows and when the transport closes.
+
 ## What counts as a pass
 
 On top of irsync-stress's checks:
@@ -111,7 +115,8 @@ runs at a time, both real profiles, the binaries in `target/netsim/release`.
 It refuses to start without a fault build, writes `summary.txt` and exits
 non-zero if any run did not exit 0. See the header of the script for its
 environment variables (`BIN`, `OUT`, `SEEDS`, `JOBS`, `PROFILES`). A full
-default sweep is 40 runs of up to 10 minutes each.
+default sweep is 40 runs of up to 10 minutes each; the first `4g-vehicle`
+pull run took 919 s with four runs sharing the CPU, so expect longer.
 
 ## Testing
 

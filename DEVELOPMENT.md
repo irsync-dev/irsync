@@ -71,8 +71,9 @@ name (APFS does); on Linux they always run. See R29 in
 
 ### Workload and stress tools
 
-Three crates in the workspace exist for testing irsync. None shares code
-with it.
+Three crates in the workspace exist for testing irsync. None links irsync;
+they drive it through its command line. `netstress` reuses the `stress`
+crate's library.
 
 **`filegen`** is a deterministic, resumable filesystem workload generator:
 from a seed it applies a reproducible sequence of creates, writes, renames,

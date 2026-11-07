@@ -19,8 +19,9 @@ Where the code and the spec differ, the code is what shipped.
      dead zone of 20 to 60 s.
    - `dsl-video`: down 16 Mbit/s, up 1 Mbit/s, fixed; queue 1536 KiB down
      and 64 KiB up; 10 ms one way, 2 ms jitter; 0.01% random loss. Video
-     cross traffic on the downlink only: a burst of 1 to 2 s every 2 to 4 s,
-     arriving at twice the link rate. No outages.
+     cross traffic on the downlink only: a burst of 1 to 2 s every 2 to 4 s
+     that fills the queue to 1280 KiB and then takes 10 of the 16 Mbit/s
+     (see call 12). No outages.
    Why: they follow the spec's descriptions. Cost if wrong: the profiles
    mislead; they are one table, so retuning is cheap.
 
@@ -44,12 +45,19 @@ Where the code and the spec differ, the code is what shipped.
    longer than the 2 s worst handover and shorter than the 20 s shortest dead
    zone, so a dead zone always forces a reconnect and a handover never does.
 
-5. **Stream numbering.** The fault layer's random streams are derived from
-   the run seed and a stream number: the daemon is stream 0, the ping
-   (sentinel) client is stream 0 as well, and iteration i's client is stream
-   i. Each side and direction also mixes in its own tag. Why: the processes
-   must not make correlated decisions, and an iteration's faults should not
-   depend on how many earlier iterations ran.
+5. **Stream numbering and seed mixing.** The fault layer's random streams
+   are derived from the run seed and a stream number: the daemon is stream
+   0, the ping (sentinel) client is stream 0 as well, and iteration i's
+   client is stream i. Each generator's seed is the run seed, the side, the
+   stream number and the purpose (link or outages) folded together through
+   splitmix64, one part after another (`fault_seed` in
+   `crates/irsync/src/net/netsim/mod.rs`). Why: the processes must not make
+   correlated decisions, and an iteration's faults should not depend on how
+   many earlier iterations ran. The first version XORed the parts with fixed
+   tags, which made streams collide: client iteration 3's uplink drew the
+   same numbers as the daemon's downlink, and seeds 1 to 10 times iterations
+   1 to 10 gave only 16 distinct client fault schedules. A test now checks
+   that 10 seeds by 10 streams give 100 distinct seeds for each purpose.
 
 6. **The environment variable.** `IRSYNC_NETSIM=profile=<name>,side=<client|daemon>,seed=<n>,stream=<n>`,
    all four keys required. A build without the feature never reads it.
@@ -80,6 +88,48 @@ Where the code and the spec differ, the code is what shipped.
     jitter). A seed fixes the draws but not the interleaving of real threads
     and clocks, so runs are not bit-for-bit repeatable.
 
+12. **`dsl-video`'s cross traffic leaves room for irsync.** The first
+    version had the video arrive at twice the link rate into the shared
+    queue. Once the queue was full every irsync packet was dropped, which
+    meant 100% loss for up to about 1.2 s in every 2 to 4 s cycle, not the
+    spec's "clumps of a few percent while full". Now, during a burst, the
+    video fills the queue at twice the link rate up to a standing 1280 KiB
+    (about 650 ms at 16 Mbit/s) and then holds it there, taking 10 of the
+    16 Mbit/s. The remaining 6 Mbit/s and the last 256 KiB of the queue are
+    irsync's: its packets queue behind the video (delay 650 to 790 ms) and
+    are dropped only when irsync itself sends faster than its share. Why: a
+    real video stream is a responsive flow that backs off rather than
+    overfilling the buffer forever, and the spec asks for a few percent of
+    loss while full. A test sends 8 Mbit/s for 60 s and checks 0.5% to 5%
+    overall loss with fewer than 100 drops in a row (seeds 0 to 29
+    gave 0.6% to 3%). Cost if wrong: the profile is gentler than a
+    real overloaded line; `hold_bytes` and `share` in `profile.rs` tune it.
+
+13. **Datagram counts.** Each process's transport counts the datagrams iroh
+    handed it to send (`sent`), those dropped because the queue was full
+    (`queue_drops`), by random loss (`loss_drops`), by an outage in either
+    direction (`outage_drops`, client only), the sends the socket refused
+    (`send_errors`) and received datagrams larger than iroh's buffer
+    (`truncated`, detected by reading into a buffer one byte larger, and
+    dropped). It logs them at `warn` as `netsim: counts sent=…
+    queue_drops=… loss_drops=… outage_drops=… send_errors=… truncated=…`
+    every 10 s while traffic flows and once when the transport is dropped
+    (best effort: a process that exits without dropping its endpoint skips
+    the last line). The first send error is logged at `warn`, later ones at
+    `debug`. Why: before, losses outside the model were invisible, and
+    there was no way to compare a failing sync's losses with what the
+    profile should give.
+
+14. **`4g-vehicle`'s queues are kept, and give seconds of delay at the
+    lowest rates.** 256 KiB up at 0.7 Mbit/s is about 3 s of queueing
+    delay, 512 KiB down at 2 Mbit/s about 2 s. Kept as a known property:
+    cellular links are known for multi-second bufferbloat, and a queue small
+    enough for 500 ms at the lowest rate (about 43 KiB up) would hold only
+    35 ms at 10 Mbit/s and drop most bursts at the higher rates. Both are
+    under the client's 10 s `--timeout`. Cost if wrong: syncs under
+    `4g-vehicle` see longer delays than a real link might give; shrink
+    `queue_bytes` in `profile.rs` if that turns out to matter.
+
 ## First real runs (2026-11-07)
 
 One run per profile and direction, seed 1, started together on the same Mac
@@ -106,7 +156,7 @@ What would tell them apart, none of it done yet:
   without its dead zone): if the failures stay, the transport is suspect;
 - packet counts from the fault layer (sent, dropped by queue, dropped by
   loss, delivered) for a failing sync, to see whether the losses match what
-  the profile should give.
+  the profile should give. The fault layer now logs these (call 13).
 
 ### 4g-vehicle
 
@@ -140,7 +190,11 @@ but the rig failed the iteration: `reconnect without a dead zone (1)`. About
 57 s into the sync the client logged `no activity; dropping the connection
 secs=10`, then reconnected and resumed. Hypothesis, not shown: the link
 (16 Mbit/s with video bursts) stalled the connection for 10 s once; a stall
-in the fault layer or in irsync would look the same. Log:
+in the fault layer or in irsync would look the same. A further hypothesis,
+found after the run: the cross-traffic model then in use (call 12, first
+version) dropped every irsync packet for up to about 1.2 s in every 2 to 4
+s, and QUIC's retransmit backoff over repeated blackouts of that length may
+well add up to 10 s without activity. Log:
 `~/work/netstress-dsl-video-pull/logs/iter-0001.client.log`.
 
 **Push, iteration 1 (failed).** Client exit 23. About 60 s into the sync six
@@ -158,6 +212,31 @@ wait is too short for a slow uplink, the receiver is stuck, or the fault
 layer is holding packets back is not known; the tests listed above would
 separate these. The next step is to re-run the four with `--keep-going` and
 other seeds (`tools/sweep.sh`) to see how often each failure occurs.
+
+### dsl-video pull after the final-review fixes (2026-11-07)
+
+One run, alone on the Mac, after the seed mixing (call 5), the new
+cross-traffic model (call 12) and the counts (call 13):
+`irsync-netstress --profile dsl-video --direction pull --seed 1`, root
+`~/work/netstress-dsl-video-pull-fixed`. It passed 10 of 10 in 166.5 s
+(syncs 2.4 to 26.5 s), exit 0, no reconnect, no `no activity` line, no send
+error. The last counts lines were:
+
+```
+daemon.log            sent=62601 queue_drops=0 loss_drops=12 outage_drops=0 send_errors=0 truncated=0
+iter-0001.client.log  sent=4814 queue_drops=0 loss_drops=0 outage_drops=0 send_errors=0 truncated=0
+iter-0002.client.log  sent=5558 queue_drops=0 loss_drops=3 outage_drops=0 send_errors=0 truncated=0
+```
+
+The other clients show the same pattern (399 to 4744 sent, nothing
+dropped). The daemon's line is its last 10 s report; the rig stops it
+without dropping the transport, so there is no final line. Observed: no
+queue drops at all on the downlink, so irsync's congestion control stayed
+inside its 6 Mbit/s share and the 256 KiB of headroom, and only the 0.01%
+random loss bit. The earlier stray reconnect did not recur. One run on
+one seed does not show which change mattered (the seeds changed too, so
+this was a different fault schedule), and under the new model this
+direction may now be too gentle to find much; a sweep would say more.
 
 ### The sweep smoke run
 
