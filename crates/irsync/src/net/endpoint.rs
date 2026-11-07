@@ -12,8 +12,8 @@ use crate::net::addr::HostPort;
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
-    presets, BindError, IdleTimeout, InvalidSocketAddr, PortmapperConfig, QuicTransportConfig,
-    VarInt,
+    presets, AckFrequencyConfig, BindError, IdleTimeout, InvalidSocketAddr, PortmapperConfig,
+    QuicTransportConfig, VarInt,
 };
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use iroh_mainline_address_lookup::DhtAddressLookup;
@@ -82,8 +82,22 @@ pub enum NetError {
     NetSim(anyhow::Error),
 }
 
+/// Ask the peer to ACK every packet, within 1 ms. A data stream holds one
+/// of the sender's send permits until `stopped()` resolves, which is when
+/// the peer has ACKed every byte (see `send.rs`, where the permit is held
+/// across `stopped()`). With the default delayed ACKs (every second packet
+/// or 25 ms) all permits go idle together and the sender stalls for the
+/// delay.
+fn immediate_acks() -> AckFrequencyConfig {
+    let mut ack = AckFrequencyConfig::default();
+    ack.ack_eliciting_threshold(VarInt::from_u32(0));
+    ack.max_ack_delay(Some(Duration::from_millis(1)));
+    ack
+}
+
 /// QUIC transport tuned for bulk transfer: 60 s idle, 5 s keep-alive, large
 /// windows, BBR congestion control.
+/// Peers are asked for immediate ACKs.
 pub fn transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(
@@ -96,6 +110,7 @@ pub fn transport_config() -> QuicTransportConfig {
         .max_concurrent_uni_streams(VarInt::from_u32(256))
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
         .congestion_controller_factory(Arc::new(Bbr3Config::default()))
+        .ack_frequency_config(Some(immediate_acks()))
         .build()
 }
 
