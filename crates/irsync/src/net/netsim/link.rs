@@ -142,12 +142,19 @@ impl Link {
                 until = until.min(c.next_edge);
             }
             let drained = self.rate as f64 / 8.0 * (until - self.clock).as_secs_f64();
-            let arrived = match &self.cross {
-                Some(c) if c.bursting => c.params.load * drained,
-                _ => 0.0,
+            self.occupancy = match &self.cross {
+                // The video fills the queue up to its standing queue, then
+                // holds it there, taking its share of what drains.
+                Some(c) if c.bursting => {
+                    let hold = c.params.hold_bytes as f64;
+                    if self.occupancy >= hold {
+                        (self.occupancy - (1.0 - c.params.share) * drained).max(hold)
+                    } else {
+                        (self.occupancy + (c.params.load - 1.0) * drained).min(hold)
+                    }
+                }
+                _ => (self.occupancy - drained).max(0.0),
             };
-            self.occupancy =
-                (self.occupancy + arrived - drained).clamp(0.0, self.params.queue_bytes as f64);
             self.clock = until;
 
             if self.next_rate_change == Some(until) {
@@ -244,6 +251,20 @@ mod tests {
             .max()
             .unwrap();
         assert!(worst >= ms(300), "{worst:?}");
+    }
+
+    #[test]
+    fn cross_traffic_leaves_room_for_our_packets() {
+        // dsl-video Down at 8 Mbit/s, half the line, for 60 s: a few percent
+        // lost while the video holds the queue, never a long blackout
+        let mut l = Link::new(link(ProfileName::DslVideo, Dir::Down), 3);
+        let lost: Vec<bool> = (0..60_000)
+            .map(|i| l.offer(ms(i), 1000).is_empty())
+            .collect();
+        let rate = lost.iter().filter(|x| **x).count() as f64 / lost.len() as f64;
+        assert!((0.005..=0.05).contains(&rate), "{rate}");
+        let longest = lost.split(|x| !*x).map(<[bool]>::len).max().unwrap_or(0);
+        assert!(longest < 100, "{longest} drops in a row");
     }
 
     #[test]

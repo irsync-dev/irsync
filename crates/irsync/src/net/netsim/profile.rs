@@ -41,14 +41,21 @@ pub struct GilbertElliott {
     pub loss_bad: f64,
 }
 
-/// Other traffic that shares the link's queue in bursts.
+/// Other traffic that shares the link's queue in bursts. During a burst it
+/// fills the queue up to `hold_bytes` and keeps it there; above that our
+/// packets drain at the rate's remaining share, and only they can fill the
+/// rest of the queue, so they compete rather than always losing.
 #[derive(Clone, Copy, Debug)]
 pub struct CrossTraffic {
     /// Time from one burst's start to the next one's.
     pub every_ms: (u64, u64),
     pub burst_ms: (u64, u64),
-    /// Arrival rate as a multiple of the link rate during a burst.
+    /// Arrival rate as a multiple of the link rate while filling the queue.
     pub load: f64,
+    /// The standing queue it keeps during a burst; below `queue_bytes`.
+    pub hold_bytes: u64,
+    /// Its share of the link rate while it holds the queue.
+    pub share: f64,
 }
 
 const KIB: u64 = 1024;
@@ -103,6 +110,8 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
                     every_ms: (2000, 4000),
                     burst_ms: (1000, 2000),
                     load: 2.0,
+                    hold_bytes: 1280 * KIB,
+                    share: 0.625,
                 }),
                 Dir::Up => None,
             },
