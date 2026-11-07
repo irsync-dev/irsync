@@ -68,7 +68,8 @@ message ChunkListPart {
 }
 // receiver -> sender: `records` chunk records of room freed (lists the
 // receiver dropped: placed, failed or replaced files). Each connection
-// starts with the session's list budget of room and no grant.
+// starts with the session's list budget of room and no grant; a grant that
+// would raise the sender's room above that budget is a protocol error.
 message ListRoom {
   uint64 records = 1;
 }

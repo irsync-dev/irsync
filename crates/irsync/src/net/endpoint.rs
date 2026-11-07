@@ -96,8 +96,8 @@ fn immediate_acks() -> AckFrequencyConfig {
 }
 
 /// QUIC transport tuned for bulk transfer: 60 s idle, 5 s keep-alive, large
-/// windows, BBR congestion control.
-/// Peers are asked for immediate ACKs.
+/// windows, BBR congestion control, and immediate ACKs asked of the peer
+/// (see [`immediate_acks`]).
 pub fn transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(

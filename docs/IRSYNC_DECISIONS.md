@@ -355,28 +355,79 @@ cross-referenced from commit messages and review notes.
    - *Granted list room.* The receiver holds chunk lists under a
      session-wide budget (`LIST_BUDGET` chunk records) and grants room per
      file; a file whose list does not fit waits. A list part sent without
-     room is a protocol error.
+     room is a protocol error. The budget is 2^24 records (one maximal
+     list), at about 50 bytes a record: about 800 MB per session on the
+     receiver (its assembled lists), up to about twice that with the
+     obsolete-list allowance of (a) below, and as much again on the sender
+     (lists queued for its control writer and not yet written, see (h)).
+     A daemon's bound is that times its concurrent sessions.
    - *Enforced rules.* Each side fails the session, with an `Error` frame,
      for a peer that breaks a limit: more than `MAX_INFLIGHT` files in
-     flight, unknown or unlisted paths, bases for files not in flight,
-     list parts beyond the per-file cap or the budget, listing paths out
+     flight, unknown or unlisted paths or a path planned twice, bases for
+     files not in flight, list parts beyond the per-file cap or the
+     budget, more list room granted than a connection starts with, more
+     chunk lists started for a file than retries allow, listing paths out
      of order, a `ListingEnd` whose count differs from the entries
-     received, or a missing or repeated `ListingEnd`.
+     received, a missing or repeated `ListingEnd`, an undecodable frame,
+     or a peer that does not read its control stream.
    - *Settled along the way.*
      (a) A receiver may briefly hold an obsolete chunk list beyond its
      counted room, so the bound is about 2x `LIST_BUDGET`, not 1x.
      (b) Bases parked in a file's pending request sit outside the
      sender's basis budget; they are bounded by the receiver's batches and
      the files in flight.
-     (c) At session end the daemon waits for the client to close while the
-     connection makes progress, so a slow client can finish reading. It
-     gives up after 30 s of no progress or at the idle timeout, and the
-     wait is unbounded when the idle timeout is 0.
+     (c) At session end the daemon waits for its control writer and then
+     for the client to close, while the connection makes progress, so a
+     slow client can finish reading. It gives up after 30 s of no progress
+     or at the idle timeout (aborting the writer if it still runs), and
+     the wait is unbounded when the idle timeout is 0.
      (d) `LIST_BUDGET` (= `MAX_LIST_CHUNKS`) is an implicit protocol
      constant shared by both sides: the sender starts with that much room
      and the receiver grants against the same number, so the two must
      agree.
-   - *What it costs.* Push of a generated tree of 31,531 files (316 MiB,
+     (e) With a listing of the connection, a receiver plans each listed
+     regular file once (a retry keeps its file id and sends no new plan;
+     `-H` names after the first are linked on the receiver, never
+     planned), so a `PlanItem` for a path the sender did not list as a
+     regular file, or one already planned, is a protocol error. A sender
+     resumed from the receiver's stored plan has no listing to check
+     against: it checks each path as its walk would have admitted it, and
+     a path gone since is an honest source error. There, what a hostile
+     receiver's plans leave behind (a stat each, and per source error an
+     entry in the outcome and the session row) grows with the plans it
+     sends, at most `MAX_INFLIGHT` at a time, and the unread replies are
+     bounded by (h).
+     (f) The sender's list room never exceeds what the connection
+     started with: the receiver frees only what the sender's lists took,
+     so a `ListRoom` that would raise it higher is a protocol error.
+     (g) A sender starts at most 1 + 2 x `MAX_RETRIES` (3) chunk lists per
+     file and connection: the first, and per retry an empty first part
+     withdrawing the old list and the new list. More is a protocol error,
+     since each would make the receiver grant room again. Room freed by
+     one main-loop event goes back in one `ListRoom`.
+     (h) Every byte queued for the control writer, paced or not, counts
+     against a ceiling of twice what an honest session can queue
+     (`limits::out_ceiling`, derived in `limits.rs`: about 2.0 GB for a
+     sender, nearly all of it chunk lists within the granted room, and
+     850 MB for a receiver, mostly `NeedChunks`). Past it the session
+     fails with "the peer is not reading its control stream". This stops
+     a peer that frees slots or room with frames of its own while never
+     reading what we send, which no queue bound stops (main loops queue
+     replies without waiting) and which the idle timeout misses (its own
+     frames count as activity). The earlier reasoning that the queued
+     `PlanItem`s are bounded by `MAX_INFLIGHT` holds only for a peer that
+     reads: one that acks files it never read the plan of frees slots at
+     once.
+     (i) A file's digest task ends with the file, as its send task does,
+     and a retired `offer_bases` task stops before signing another basis.
+     (j) A listing half that ends without `ListingEnd` (nothing listed, or
+     a lister that stopped short) is held back until the role ends, so a
+     side failing mid-listing reports its `Error` first rather than a cut
+     listing, which the peer would take as a transport error and retry.
+     Likewise an undecodable frame on either stream is a protocol error,
+     not a transport error.
+   - *What it cost before the fix below.* Push of a generated tree of
+     31,531 files (316 MiB,
      `filegen run --seed 1 --steps 400000 --max-total-size 600M
      --max-file-size 16K`) to a local daemon on tmpfs, `-a --no-resume`,
      release builds, six interleaved runs per build, 32 cores, busy
@@ -404,12 +455,26 @@ cross-referenced from commit messages and review notes.
      it slower (the 256-stream limit binds).
    - *Transport fix.* `transport_config()` asks the peer for immediate
      ACKs (`ack_eliciting_threshold` 0, `max_ack_delay` 1 ms), on both
-     endpoints. No queue, budget or protocol rule changes. Same workload,
-     separate release builds of `main` (ffea8b1) and the fixed branch,
-     ten interleaved runs each, load 1-4: `main` 2600-3808 ms, median
-     3293 ms; branch 1933-2353 ms, median 2022 ms (about 39% faster than
-     `main`; before the fix the branch's median was 4.4-4.5 s). Daemon
-     CPU is unchanged (`main` median 14.3 s, branch 14.1 s).
+     endpoints. No queue, budget or protocol rule changes. With it the
+     branch's median fell from 4.4-4.5 s to about 2.0 s. (A first
+     comparison against `main` without the fix, 3293 ms against 2022 ms,
+     credited the branch with removing `main`'s own stall.)
+   - *What it costs, with the fix on both.* `main` with the same ACK
+     setting (ffea8b1 plus ac13135) against the branch (d89c63e, with the
+     final review's fixes): same workload and method, separate release
+     builds in separate target directories (binaries checked distinct),
+     one warm-up run per build, then two batches of ten interleaved runs
+     each, every destination removed after its run; 32 cores, 1-minute
+     load 3.8 at the start and 6-14 during (the benchmark itself takes
+     about five cores). Wall time, all 20 runs: `main`+ACKs median
+     1973 ms (quartiles 1937-2223, range 1907-3257); branch median
+     2018 ms (quartiles 1982-2241, range 1960-2364). The branch is about
+     45 ms (2%) slower on the median, in both batches (1958 against 2006,
+     1986 against 2034), which is within the run-to-run spread: the
+     quartile ranges overlap, and the noise floor of the median measured
+     during the investigation is about 150 ms. Daemon CPU is about 3%
+     higher on the branch, in both batches (median 14.2 s against
+     13.8 s).
    - *Still open.* The effect of immediate ACKs on a real long-RTT link
      is untested (all runs were on loopback); the gain is expected to be
      smaller there, and the extra ACK traffic is unmeasured. Threshold 1
