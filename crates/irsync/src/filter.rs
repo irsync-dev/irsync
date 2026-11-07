@@ -29,18 +29,21 @@ enum Tok {
 /// A compiled rsync pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
-    /// As typed, so the rule can travel to the daemon.
-    text: String,
+    /// As typed (raw bytes: a pattern file may name non-UTF-8 files), so
+    /// the rule can travel to the daemon.
+    text: Vec<u8>,
     anchored: bool,
     dir_only: bool,
-    has_slash: bool,
+    /// Matched against the full path (a `/` or `**` in it), not the last
+    /// component.
+    full_path: bool,
     toks: Vec<Tok>,
 }
 
 impl Pattern {
-    pub fn new(pat: &str) -> Pattern {
-        let text = pat.to_string();
-        let mut b = pat.as_bytes();
+    pub fn new(pat: &[u8]) -> Pattern {
+        let text = pat.to_vec();
+        let mut b = pat;
         let anchored = b.first() == Some(&b'/');
         if anchored {
             b = &b[1..];
@@ -49,13 +52,16 @@ impl Pattern {
         if dir_only {
             b = &b[..b.len() - 1];
         }
-        let has_slash = b.contains(&b'/');
+        let toks = compile(b);
+        // rsync: a pattern with a `/` (not counting a trailing one) or a
+        // `**` is matched against the full path, not the last component.
+        let full_path = b.contains(&b'/') || toks.contains(&Tok::StarStar);
         Pattern {
             text,
             anchored,
             dir_only,
-            has_slash,
-            toks: compile(b),
+            full_path,
+            toks,
         }
     }
 
@@ -66,11 +72,11 @@ impl Pattern {
         if self.anchored {
             return glob(&self.toks, path);
         }
-        if !self.has_slash {
+        if !self.full_path {
             let last = path.rsplit(|&c| c == b'/').next().unwrap_or(path);
             return glob(&self.toks, last);
         }
-        // Unanchored with a slash: match any trailing run of whole components.
+        // Unanchored, on the full path: match any trailing run of whole components.
         let mut start = 0;
         loop {
             if glob(&self.toks, &path[start..]) {
@@ -205,14 +211,14 @@ impl Rule {
     }
 
     /// The pattern as typed.
-    pub fn pattern(&self) -> &str {
+    pub fn pattern(&self) -> &[u8] {
         match self {
             Rule::Include(p) | Rule::Exclude(p) => &p.text,
         }
     }
 
     /// A rule from its wire form (see [`Rule::pattern`]).
-    pub fn from_parts(include: bool, pattern: &str) -> Rule {
+    pub fn from_parts(include: bool, pattern: &[u8]) -> Rule {
         if include {
             Rule::Include(Pattern::new(pattern))
         } else {
@@ -227,12 +233,14 @@ pub struct FilterSet {
     rules: Vec<Rule>,
 }
 
-fn read_patterns(path: &std::path::Path) -> io::Result<Vec<String>> {
+/// The patterns of a `--exclude-from`/`--include-from` file, as bytes.
+fn read_patterns(path: &std::path::Path) -> io::Result<Vec<Vec<u8>>> {
     let data = std::fs::read(path)?;
     Ok(data
         .split(|&b| b == b'\n')
-        .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)).into_owned())
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with(';'))
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
+        .filter(|l| !l.is_empty() && !l.starts_with(b"#") && !l.starts_with(b";"))
+        .map(<[u8]>::to_vec)
         .collect())
 }
 
@@ -255,8 +263,8 @@ impl FilterSet {
         let mut out = Vec::new();
         for r in rules {
             match r {
-                FilterRule::Include(p) => out.push(Rule::Include(Pattern::new(p))),
-                FilterRule::Exclude(p) => out.push(Rule::Exclude(Pattern::new(p))),
+                FilterRule::Include(p) => out.push(Rule::Include(Pattern::new(p.as_bytes()))),
+                FilterRule::Exclude(p) => out.push(Rule::Exclude(Pattern::new(p.as_bytes()))),
                 FilterRule::IncludeFrom(f) => {
                     for p in read_patterns(f)? {
                         out.push(Rule::Include(Pattern::new(&p)));

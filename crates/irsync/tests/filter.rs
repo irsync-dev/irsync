@@ -84,3 +84,28 @@ fn from_files_skip_comments() {
     assert_eq!(v(&s, "# c", false), Verdict::Include);
     assert!(FilterSet::from_rules(&[FilterRule::IncludeFrom(d.path().join("nope"))]).is_err());
 }
+
+/// rsync: a pattern with `**` is matched against the full path, like one
+/// with a slash, even when it has no slash.
+#[test]
+fn doublestar_without_slash_matches_the_full_path() {
+    let s = set(&[ex("a**z")]);
+    assert_eq!(v(&s, "a/b/z", false), Verdict::Exclude);
+    assert_eq!(v(&s, "x/a/b/z", false), Verdict::Exclude);
+    assert_eq!(v(&s, "x/ab/z", false), Verdict::Exclude);
+    assert_eq!(v(&s, "xa/b/z", false), Verdict::Include);
+    let s = set(&[ex("**.o")]);
+    assert_eq!(v(&s, "d/x.o", false), Verdict::Exclude);
+}
+
+/// A pattern file is read as bytes: a non-UTF-8 name in it matches.
+#[test]
+fn from_files_keep_non_utf8_bytes() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("pats");
+    std::fs::write(&f, b"caf\xe9.txt\n").unwrap();
+    let s = set(&[FilterRule::ExcludeFrom(f)]);
+    let p = RelPath::new(b"d/caf\xe9.txt").unwrap();
+    assert_eq!(s.matches(&p, false), Verdict::Exclude);
+    assert_eq!(s.rules()[0].pattern(), b"caf\xe9.txt");
+}

@@ -234,7 +234,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
         .iter()
         .map(|r| irsync_proto::v1::hello::FilterRule {
             include: r.is_include(),
-            pattern: r.pattern().to_string(),
+            pattern: r.pattern().to_vec(),
         })
         .collect();
     let p = &o.preserve;
