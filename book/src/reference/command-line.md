@@ -34,7 +34,9 @@ The daemon honours the client's flags in both directions, filters included.
 
 ## rsync-compatible flags
 
-These have rsync's spelling and meaning.
+These have rsync's spelling and meaning. The flags that have rsync's spelling
+and a different meaning follow in
+[the next table](#rsync-spelling-different-meaning).
 
 | Flag | Meaning |
 | --- | --- |
@@ -51,17 +53,14 @@ These have rsync's spelling and meaning.
 | `--devices` | Preserve character and block device nodes. |
 | `--specials` | Preserve FIFOs. Sockets are never copied. |
 | `-H`, `--hard-links` | Files linked together in the source are linked together in the destination. |
-| `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. |
 | `-v`, `--verbose` | List each file as it is handled and end each session with a summary of time, CPU, memory and bytes. `-vv` adds debug logs, `-vvv` trace logs. |
 | `-q`, `--quiet` | Print errors only. Also turns the live progress block off. |
 | `-n`, `--dry-run` | Change nothing on either side. With `-v` or `-i`, list what would be done. |
 | `-c`, `--checksum` | Compare by content, not by size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read. |
 | `-u`, `--update` | Skip files that are newer on the destination. |
-| `--delete` | Delete destination files that are gone from the source, after the transfer. Nothing is deleted without one of the `--delete` flags. |
 | `--delete-before` | Delete before the transfer, once both sides are listed. |
 | `--delete-during` | Delete each directory's extraneous entries as the run leaves that directory, so space is freed as the run goes. |
 | `--delete-after` | Delete after the transfer; what `--delete` does. |
-| `--delete-excluded` | Also delete destination files that the filters exclude. Implies `--delete`. |
 | `--max-delete N` | Stop deleting after `N` removals. The run exits with code 25. |
 | `--exclude PATTERN` | Exclude paths that match an rsync pattern: `*`, `**`, `?`, `[...]`; a leading `/` anchors the pattern to the root, a trailing `/` matches directories only. |
 | `--include PATTERN` | Include paths that match, even if a later `--exclude` would hide them. |
@@ -76,14 +75,22 @@ These have rsync's spelling and meaning.
 | `--ignore-errors` | Run the deletion pass even when a listing was cut short by I/O errors. |
 | `--stats` | Print a block of transfer statistics at the end. |
 | `-i`, `--itemize-changes` | Print rsync's per-file change summary, the itemize codes. |
-| `--progress` | Accepted and ignored: the live progress block is always drawn when stdout is a terminal. |
-| `--info SPEC` | Accepted and ignored, for example `--info=progress2`. |
-| `--timeout SECS` | Drop a connection that moves no data and no control message for `SECS` seconds; the session then reconnects. `0`, the default, means no timeout. |
 | `-h`, `--help` | Print the flags. |
 | `-V`, `--version` | Print the version and the commit it was built from. |
 
 Filter rules apply in command-line order, and the first rule that matches
 wins.
+
+### rsync spelling, different meaning
+
+| Flag | irsync | rsync |
+| --- | --- | --- |
+| `--delete` | Delete destination files that are gone from the source, after the transfer, the same as `--delete-after`. Nothing is deleted without one of the `--delete` flags. | The same as `--delete-during`. |
+| `--delete-excluded` | Also delete destination files that the filters exclude. Implies `--delete`, so the deletions run after the transfer. | Implies `--delete`, so the deletions run during the transfer. |
+| `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. | Finds runs of zeros at write granularity, not only whole chunks. |
+| `--timeout SECS` | Drop a connection that moves no data and no control message for `SECS` seconds; the session then reconnects. `0`, the default, means no timeout. | A connection idle for `SECS` seconds ends the run with code 30. |
+| `--progress` | Accepted and ignored: the live progress block is always drawn when stdout is a terminal. | Prints the progress of each file. |
+| `--info SPEC` | Accepted and ignored, for example `--info=progress2`. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
 
 ### Deletions
 
@@ -98,9 +105,16 @@ directory where the gap was found. `--ignore-errors` deletes anyway. Combine
 
 On a terminal the client draws a live block at the bottom of the screen: the
 listing walk on both sides, a transfer bar with rsync's percent semantics, one
-bar per file in flight, and the deletion pass. `-q` turns it off. When stdout
-is not a terminal, or `TERM` is `dumb`, the block is not drawn and the output
-is plain lines.
+row per file that is being hashed or has a data stream open and is not yet
+sent in full, and the deletion pass. The rows are as many as half the
+terminal's height allows, largest file first; a last line `… and N more`
+counts the others. The transfer bar's `N in flight` counts these files,
+including those beyond the rows drawn. It is not the session's window of up to
+4,096 files in flight described in
+[Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams):
+a file in that window that is neither being hashed nor has a stream open has
+no row and is not counted. `-q` turns the block off. When stdout is not a terminal, or `TERM` is
+`dumb`, the block is not drawn and the output is plain lines.
 
 ## irsync flags
 
@@ -192,7 +206,8 @@ irsync gc [-n] [-v|-q] [--config PATH]
 
 ## Exit codes
 
-A sync uses rsync's codes.
+Of these, 23 and 25 have rsync's meaning; 1 and 2 do not (rsync uses 1 for a
+syntax or usage error and 2 for a protocol incompatibility).
 
 | Code | Meaning |
 | --- | --- |

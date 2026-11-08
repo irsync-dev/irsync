@@ -127,7 +127,7 @@ The first hides the per-file round trips; the second fills the link.
 | Smallest file that gets a delta | any (blocks go down to 700 B) | any whose old version on the receiver is at least 1 KiB and whose new version is at least 512 B (blocks go down to 512 B) |
 | What a 1-byte edit in a 1 GiB file sends | ~32 KiB literal + tokens | ~1 KiB literal + a few operations, with ~10 KiB of block signatures the other way |
 | Signature direction | receiver to sender (basis blocks) | sender to receiver (new file's chunks); receiver to sender (block signatures, per missing chunk of a `DELTA`) |
-| Signature size, 1 GiB file | ~640 KiB (32,768 blocks x 20 B) | ~200 KiB (4,096 chunks x 49 B), plus ~10 KiB per missing chunk offered a basis |
+| Signature size, 1 GiB file | ~224 KiB (32,768 blocks of 32 KiB x 7 B: 4 B rolling + 3 B strong checksum, the length rsync's `sum_sizes_sqroot` picks for this file size and block size) | ~200 KiB (4,096 chunks x 49 B), plus ~10 KiB per missing chunk offered a basis |
 | Signature for a *new* file | none | full chunk list, ~0.02% of the data |
 | Reuse scope | the basis at the same path (`--fuzzy`, `--link-dest`, `--compare-dest` widen it) | every chunk of every file the receiver's index knows; before a whole file is fetched, up to four destination files of its size are hashed into the index |
 | Rename detection | none (name similarity only, `--fuzzy`) | by content: a renamed or copied file's chunks are found in the index and copied locally |
@@ -191,8 +191,8 @@ The first hides the per-file round trips; the second fills the link.
 
 ## Where rsync is ahead
 
-- **Compression.** rsync's `-z` can halve the bytes on the wire for text-heavy
-  trees; irsync has no compression (see
+- **Compression.** rsync's `-z` reduces the bytes on the wire for
+  compressible data; irsync has no compression (see
   [Known limitations](../reference/limitations.md)).
 - **Zero round trips before the first data byte.** rsync's generator runs
   ahead and the sender's token stream follows without waiting. irsync spends
@@ -210,9 +210,6 @@ The first hides the per-file round trips; the second fills the link.
   neighbourhood of its own offset. Content that moved by more than about a
   chunk, and is not a whole chunk, is sent as literal; rsync finds it anywhere
   in the basis. Whole chunks are found anywhere through the index.
-- **Insertions in place.** With `--inplace` reuse is forward-only, so an
-  insertion near the start loses the reuse below it. This is rsync's rule and
-  rsync's cost too; without `--inplace`, irsync does not pay it.
 - **Sparse files.** irsync leaves only whole zero chunks as holes, so a run of
   zeros shorter than a chunk is written. rsync `-S` finds zero runs at write
   granularity.
@@ -227,3 +224,10 @@ The first hides the per-file round trips; the second fills the link.
   `warm_index` covers the rest.
 - **Largest file.** A chunk list holds at most 2^24 records, about 4 TiB of
   typical data; rsync has no such limit.
+- **Extended attributes and ACLs.** rsync copies them with `-X` and `-A`;
+  irsync copies neither (see
+  [Known limitations](../reference/limitations.md#rsync-options-irsync-does-not-have)).
+
+A limit both share: with `--inplace` reuse is forward-only, so an insertion
+near the start of a file loses the reuse below it, in rsync and in irsync
+alike. Without `--inplace`, irsync does not pay it.

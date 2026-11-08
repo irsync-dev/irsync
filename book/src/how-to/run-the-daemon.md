@@ -96,6 +96,7 @@ may change it, to its own groups, as rsync does without privilege.
    Type=simple
    ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml
    ExecReload=/bin/kill -HUP $MAINPID
+   KillSignal=SIGINT
    Restart=on-failure
    RestartSec=5
    User=irsync
@@ -105,9 +106,11 @@ may change it, to its own groups, as rsync does without privilege.
    WantedBy=multi-user.target
    ```
 
-   The `User=` account needs read access to the export paths, write access
-   to the read-write ones, read access to the key and to `irsync.toml`,
-   `hosts.toml` and `exports.toml`, and write access to `state_dir`.
+   `KillSignal=SIGINT` makes `systemctl stop` send the signal the daemon
+   shuts down cleanly on (see [Stop it](#stop-it)). The `User=` account needs
+   read access to the export paths, write access to the read-write ones, read
+   access to the key and to `irsync.toml`, `hosts.toml` and `exports.toml`, and
+   write access to `state_dir`.
 
 2. Start it, and start it at boot:
 
@@ -190,9 +193,10 @@ sessions apart.
 ## Stop it
 
 SIGINT (Ctrl-C) stops the daemon cleanly: it closes its endpoint and flushes
-its telemetry. The daemon installs no handler for SIGTERM, which
-`systemctl stop` and launchd send, so SIGTERM ends the process at once,
-without that flush. A session cut off either way resumes like any dropped
+its telemetry. `systemctl stop` sends SIGINT with the unit above. The daemon
+installs no handler for SIGTERM, which launchd sends to stop a job and which
+is systemd's default, so SIGTERM ends the process at once, without that
+flush. A session cut off either way resumes like any dropped
 connection. SIGHUP does not stop the daemon; it
 [reloads the settings](change-exports.md#reload-the-daemon-settings).
 

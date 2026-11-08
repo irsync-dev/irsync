@@ -9,10 +9,11 @@ daemon side is reached by its iroh identity, not by an address.
 It is designed to fill whatever bandwidth the link has, and to survive a bad
 one. A sync session outlives any single network connection: when hotel wifi
 drops, the laptop sleeps or the process is killed, the next run of the same
-command resumes where it stopped, without re-walking and re-comparing the
-whole tree. Many files are in flight at once, scanning runs alongside the
-transfer, and a persistent index makes repeat runs over a large, mostly
-unchanged tree cheap.
+command resumes where it stopped; when the interrupted run had finished
+listing and no deletion is asked for, it does so without re-walking and
+re-comparing the whole tree. Many files are in flight at once, scanning runs
+alongside the transfer, and a persistent index makes repeat runs over a large,
+mostly unchanged tree cheap.
 
 ## Install
 
@@ -51,7 +52,7 @@ and see [Contributing](https://irsync.org/book/contributing/setup.html) to work
 on irsync itself.
 
 `fileset` shares no code with irsync; see
-[crates/fileset/README.md](crates/fileset/README.md).
+its [reference](https://irsync.org/book/reference/fileset.html).
 
 ## License
 

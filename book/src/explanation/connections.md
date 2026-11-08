@@ -40,9 +40,9 @@ read or change them. n0 runs public relays, which are the default.
 
 Relays are the fallback. Every packet takes the detour through the relay
 server and shares it with other users, so a relayed transfer is slower than a
-direct one. When both ends sit behind a symmetric NAT, as many mobile and
-carrier-grade NATs are, hole punching fails and the connection stays on the
-relay. For them a self-hosted relay near the daemon is the better choice than
+direct one. When one end sits behind a symmetric NAT, as many mobile and
+carrier-grade NATs are, and the other behind a symmetric or port-restricted
+NAT, hole punching fails and the connection stays on the relay. For them a self-hosted relay near the daemon is the better choice than
 the shared public ones.
 
 Relays can be refused, on either side. A client with relays off still looks

@@ -9,17 +9,21 @@ daemon side is reached by its iroh identity, not by an address.
 It is designed to fill whatever bandwidth the link has, and to survive a bad
 one. A sync session outlives any single network connection: when hotel wifi
 drops, the laptop sleeps or the process is killed, the next run of the same
-command resumes where it stopped, without re-walking and re-comparing the
-whole tree. Many files are in flight at once, scanning runs alongside the
-transfer, and a persistent index makes repeat runs over a large, mostly
-unchanged tree cheap.
+command resumes where it stopped; when the interrupted run had finished
+listing and no deletion is asked for, it does so without re-walking and
+re-comparing the whole tree. Many files are in flight at once, scanning runs
+alongside the transfer, and a persistent index makes repeat runs over a large,
+mostly unchanged tree cheap.
 
 ## Who this book is for
 
 People who copy large directory trees between machines they control, such as a
 laptop and a home server, and who want a transfer to finish after the network
 has failed along the way. If you know rsync, you know most of the command line:
-irsync accepts the common rsync flags and adds its own.
+irsync accepts many of rsync's flags, some with a different meaning, and adds
+its own; the [command-line reference](reference/command-line.md) lists them,
+and [Known limitations](reference/limitations.md#rsync-options-irsync-does-not-have)
+lists the rsync options it does not have.
 
 ## How the book is organised
 
