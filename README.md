@@ -52,3 +52,7 @@ on irsync itself.
 
 `fileset` shares no code with irsync; see
 [crates/fileset/README.md](crates/fileset/README.md).
+
+## License
+
+irsync is licensed under the MIT License; see [LICENSE](LICENSE).

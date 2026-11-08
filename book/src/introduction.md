@@ -40,3 +40,8 @@ setting up a checkout, running the tests, the stress and network-stress
 tools, and how this website is built.
 
 The source is at [github.com/irsync-dev/irsync](https://github.com/irsync-dev/irsync).
+
+## License
+
+irsync, and the tools in its repository, are MIT licensed; see the
+[LICENSE](https://github.com/irsync-dev/irsync/blob/main/LICENSE) file.
