@@ -34,7 +34,8 @@ site/build.sh
 It empties `target/site/`, generates the token CSS, builds the book into
 `target/site/book/` and copies the landing page files into `target/site/`.
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,
-because the build deletes it first.
+because the build deletes it first. The check is on the resolved path, so a
+`target/` that is a symlink to somewhere outside the checkout is refused too.
 
 ## The checker
 
@@ -102,20 +103,25 @@ site/deploy.sh promote
 builds `target/site/`, writes the `HEAD` commit to `target/site/BUILD`,
 deploys to `irsync-dev`, and copies the build to `target/site-staging/`.
 `promote` deploys `target/site-staging/` to `irsync-org` and prints its
-`BUILD`; without a `target/site-staging/BUILD` it refuses. Run the checker
-before `staging`; the script does not.
+`BUILD`. It refuses without a `target/site-staging/BUILD`, and when that
+`BUILD` differs from `https://dev.irsync.org/BUILD` or cannot be compared
+with it: someone else may have deployed staging since, and promotion ships
+only what staging serves. Run the checker before `staging`; the script does
+not.
 
 ### After the move
 
-`.github/workflows/site.yml` takes over. Its `staging` job runs on every push
+`.github/workflows/site.yml` takes over both deploys, and promotion goes
+through it rather than `site/deploy.sh promote`, whose local copy may not be
+the build staging serves. Its `staging` job runs on every push
 to `main` that touches `book/`, `site/`, `README.md` or the workflow: it runs
 the tool tests, builds, runs the checker, uploads `target/site` as the
 artifact `site` and deploys it to `irsync-dev`. Its `promote` job runs only
-when the workflow is started by hand (Actions, Site, Run workflow): it
+when the workflow is started by hand on `main` (Actions, Site, Run workflow): it
 downloads the `site` artifact of the newest successful push run on `main`,
 deploys it to `irsync-org` and writes its `BUILD` to the job summary. The
 repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` hold
-the credentials. Artifacts expire after the repository's retention period
+the credentials; only the two deploy steps see them. Artifacts expire after the repository's retention period
 (90 days by default); a staging build older than that has to be rebuilt by a
 new push before it can be promoted.
 

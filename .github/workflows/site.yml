@@ -23,8 +23,6 @@ env:
   # Kept in step with site/deploy.sh.
   WRANGLER_VERSION: 4.20.0
   MDBOOK_VERSION: 0.5.2
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
 jobs:
   staging:
@@ -60,10 +58,13 @@ jobs:
           path: target/site
           include-hidden-files: true
       - name: Deploy to irsync-dev
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy target/site --project-name irsync-dev --branch main
 
   promote:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: site-promote
     env:
@@ -77,13 +78,16 @@ jobs:
         run: |
           # --event push: a promote run of this workflow succeeds too, but has no artifact.
           id=$(gh run list --workflow site.yml --branch main --event push --status success \
-            --limit 1 --json databaseId --jq '.[0].databaseId')
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           if [ -z "$id" ]; then
             echo "no successful staging run on main" >&2
             exit 1
           fi
           gh run download "$id" -n site -D site-out
       - name: Deploy to irsync-org
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy site-out --project-name irsync-org --branch main
       - name: Summary
         run: echo "Promoted $(cat site-out/BUILD) to irsync.org" >> "$GITHUB_STEP_SUMMARY"
