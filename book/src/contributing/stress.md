@@ -191,7 +191,7 @@ has the full record of each.
 | Bug | Found by | Regression tests |
 | --- | --- | --- |
 | A file name longer than about 242 bytes could not be transferred: its staging name `.irsync.<name>.part` exceeded `NAME_MAX`. | a default run | `tests/posix_extras.rs` `name_max_entries_transfer`, `tests/gc.rs` `gc_handles_shortened_part_names`, the `temp_names` tests in `tests/recv.rs` |
-| A FIFO whose only change was its modification time was never updated. | a default run | `tests/posix_extras.rs` `fifo_mtime_is_applied_and_updated`, `tests/plan.rs` `special_metadata_only_difference_is_meta_only` |
+| A FIFO whose only change was its modification time was never updated. | the acceptance run | `tests/posix_extras.rs` `fifo_mtime_is_applied_and_updated`, `tests/plan.rs` `special_metadata_only_difference_is_meta_only` |
 | One side's long local work, such as the daemon hashing with `-c`, was invisible to the other side's inactivity watchdog. | the `bigfile` matrix row | `tests/resume.rs` `peer_local_progress_resets_idle_watchdog` |
 | Metadata applied to a destination file with several links reached the names the source had unlinked. | the `hardlink` matrix row | `tests/posix_extras.rs` `link_broken_at_source_with_equal_content_is_broken_at_destination`, `mode_change_does_not_reach_a_destination_link_outside_the_tree` |
 
