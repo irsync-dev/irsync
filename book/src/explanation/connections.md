@@ -48,8 +48,8 @@ the shared public ones.
 Relays can be refused, on either side. A client with relays off still looks
 the daemon up, but since the DNS and DHT records carry only a relay address,
 it finds a daemon through mDNS on the local network or through an address it
-is given. A daemon with relays off has nothing to publish in the DHT, and
-warns at start when `dht` is on.
+is given. A daemon with relays off has nothing to publish in DNS or the
+DHT; it warns at start when `dht` is on.
 
 ## Direct addresses
 

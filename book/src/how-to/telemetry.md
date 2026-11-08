@@ -137,7 +137,8 @@ The other standard `OTEL_*` variables are honoured: headers, timeouts, the
 sampler, `OTEL_SERVICE_NAME` (by default `irsync` for the client and
 `irsync-daemon` for the daemon), `OTEL_RESOURCE_ATTRIBUTES` and
 `OTEL_METRIC_EXPORT_INTERVAL`. Metrics are exported every 10 seconds, unless
-`OTEL_METRIC_EXPORT_INTERVAL` says otherwise, and once more at exit. The exit
+`OTEL_METRIC_EXPORT_INTERVAL` says otherwise, and once more at exit. An empty
+`OTEL_METRIC_EXPORT_INTERVAL` counts as unset. The exit
 flush takes at most 2 seconds.
 
 The daemon samples every session unless `OTEL_TRACES_SAMPLER` is set on its

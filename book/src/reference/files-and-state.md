@@ -15,7 +15,7 @@ daemon run system-wide is given `--config` (see
 | `hosts.toml`, `exports.toml` | Optional split files, read as part of `irsync.toml`. `irsync` never edits them. See [Configuration](configuration.md#split-files). |
 | `irsync.toml.lock` | Present only while a management command edits the file. See [Management commands](management.md#editing-rules). |
 | `id_ed25519`, `id_ed25519.pub` | The client's key, generated when no other key serves. See [Configuration](configuration.md#identity-and-state). |
-| `daemon_ed25519`, `daemon_ed25519.pub` | The daemon's key, `[daemon] identity`, generated when missing by the daemon, `irsync export add` or `irsync show`. |
+| `daemon_ed25519`, `daemon_ed25519.pub` | The daemon's key, `[daemon] identity`, generated when missing by the daemon, `irsync export add` or `irsync show`, or on demand by `irsync id generate --daemon`. |
 
 Generated private keys are written with mode 0600, in OpenSSH format. The
 `.pub` file beside each holds the public key line. `irsync id show` prints the

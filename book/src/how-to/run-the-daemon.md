@@ -189,7 +189,11 @@ sessions apart.
 
 ## Stop it
 
-SIGINT (Ctrl-C) stops the daemon. SIGHUP does not stop it; it
+SIGINT (Ctrl-C) stops the daemon cleanly: it closes its endpoint and flushes
+its telemetry. The daemon installs no handler for SIGTERM, which
+`systemctl stop` and launchd send, so SIGTERM ends the process at once,
+without that flush. A session cut off either way resumes like any dropped
+connection. SIGHUP does not stop the daemon; it
 [reloads the settings](change-exports.md#reload-the-daemon-settings).
 
 ## See also
