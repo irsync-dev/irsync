@@ -113,15 +113,24 @@ def check_moved(repo, moved):
         if (repo / rel).exists():
             continue
         name = re.escape(Path(rel).name)
-        # By path, or by bare name (not as the tail of another path).
-        patterns.append((rel, re.compile(re.escape(rel) + "|(?<![\\w./-])" + name)))
+        # By full path, or by bare name; neither as the tail of another path.
+        # A bare name is captured with the rest of its path-like token, so a
+        # link such as `x.md` or `x.md#top` can be resolved.
+        path = re.compile("(?<![\\w./-])" + re.escape(rel))
+        bare = re.compile("(?<![\\w./-])(" + name + ")[\\w./#-]*")
+        patterns.append((rel, path, bare))
     problems = []
     if not patterns:
         return problems
     for rel, text in _tracked_text_files(repo):
+        here = (repo / rel).parent
         for lineno, line in enumerate(text.splitlines(), 1):
-            for moved_rel, pattern in patterns:
-                if pattern.search(line):
+            for moved_rel, path, bare in patterns:
+                hit = path.search(line) or any(
+                    not (here / m.group(0).split("#")[0].rstrip(".")).is_file()
+                    for m in bare.finditer(line)
+                )
+                if hit:
                     problems.append(f"{rel}:{lineno}: refers to moved file {moved_rel}")
     return problems
 

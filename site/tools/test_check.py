@@ -70,6 +70,21 @@ class MovedTests(TmpCase):
         git_repo(self.d, {"tools/a.sh": "# see x.md\n"})
         self.assertEqual(len(check_moved(self.d, ["docs/x.md"])), 1)
 
+    def test_sibling_link_with_moved_name_is_not_reported(self):
+        git_repo(
+            self.d,
+            {"book/src/a/x.md": "x\n", "book/src/a/b.md": "see [x](x.md)\n"},
+        )
+        self.assertEqual(check_moved(self.d, ["docs/x.md"]), [])
+
+    def test_bare_name_without_existing_target_is_reported(self):
+        git_repo(self.d, {"tools/a.sh": "# see x.md\n"})
+        self.assertEqual(len(check_moved(self.d, ["docs/x.md"])), 1)
+
+    def test_longer_path_is_not_a_match(self):
+        git_repo(self.d, {"notes.md": "see book/docs/x.md\n"})
+        self.assertEqual(check_moved(self.d, ["docs/x.md"]), [])
+
 
 class FlagTests(TmpCase):
     def test_unknown_flag_is_reported(self):

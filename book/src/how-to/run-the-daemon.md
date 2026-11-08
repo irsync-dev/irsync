@@ -17,7 +17,7 @@ debug port: <socket>
 ```
 
 There is one `listening on:` line per bound socket. The `debug port:` line
-appears only when `debug_addr` is set (see [Telemetry](./telemetry.md)). A
+appears only when `debug_addr` is set (see [Telemetry](telemetry.md)). A
 process that starts the daemon can read these lines and dial at once.
 
 ## Run it as its own account
