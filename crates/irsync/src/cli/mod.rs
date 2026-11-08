@@ -69,8 +69,9 @@ const AFTER_HELP: &str = "\
 Notes:
   The daemon honours the client's flags in both directions, filters
   included; only an absolute --partial-dir is refused on a push.
-  Exit codes as rsync: 0 ok, 1 usage or connection error, 23 partial
-  transfer, 25 deletions stopped at --max-delete.";
+  Exit codes: 0 ok, 1 nothing got through (a configuration, identity,
+  operand or connection error), 2 command line not parsed, 23 partial
+  transfer, 25 deletions stopped at --max-delete; 23 and 25 as in rsync.";
 
 impl Args {
     /// The command with the help template applied to the subcommands too,
@@ -221,7 +222,8 @@ pub struct IdArgs {
 #[derive(Debug, Subcommand)]
 pub enum IdCmd {
     /// Print the public key line and EndpointId of the client (default),
-    /// the daemon, or both; an identity is generated if it does not exist.
+    /// the daemon, or both. A missing client identity is generated as for a
+    /// sync; a missing daemon identity is an error, never generated.
     Show {
         /// The daemon's identity instead of the client's.
         #[arg(long, conflicts_with = "all")]

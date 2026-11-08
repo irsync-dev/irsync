@@ -115,8 +115,9 @@ fn early_settings(config: Option<&std::path::Path>) -> Settings {
         .unwrap_or_default()
 }
 
-/// Exit codes as rsync: 0 ok, 1 usage/connection errors, 23 partial
-/// transfer, 25 deletions stopped at `--max-delete`.
+/// Exit codes: 0 ok, 1 configuration, operand or connection errors, 23
+/// partial transfer, 25 deletions stopped at `--max-delete` (23 and 25 as in
+/// rsync; a command line clap cannot parse has already exited 2).
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let log = LogWriter::new();
     let rt = match tokio::runtime::Runtime::new() {
