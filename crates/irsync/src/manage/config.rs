@@ -92,7 +92,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
         ["identity"] => one(as_written(&s.identity)),
-        // The effective [client] defaults, as the README lists them.
+        // The effective [client] defaults, as book/src/reference/configuration.md lists them.
         ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
         ["client", "reconnect"] => one(duration::format(
             crate::session::reconnect::ReconnectOpts::default().max,

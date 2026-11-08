@@ -4,29 +4,29 @@
 
 # Tutorial
 
-- [Your first sync]()
+- [Your first sync](tutorial/first-sync.md)
 
 # How-to guides
 
 - [Run the daemon]()
 - [Change exports and settings]()
 - [Connect directly or through a relay]()
-- [Seed the index]()
-- [Clean up state]()
+- [Seed the index](how-to/seed-the-index.md)
+- [Clean up state](how-to/clean-up.md)
 - [Watch a transfer with telemetry]()
 - [Verify a transfer with fileset]()
 
 # Reference
 
-- [Command line]()
-- [Management commands]()
-- [Remote addresses]()
-- [Configuration]()
+- [Command line](reference/command-line.md)
+- [Management commands](reference/management.md)
+- [Remote addresses](reference/remote-addresses.md)
+- [Configuration](reference/configuration.md)
 - [Files and state]()
 - [Metrics]()
 - [Protocol]()
 - [The fileset format]()
-- [Limitations]()
+- [Known limitations](reference/limitations.md)
 
 # Explanation
 

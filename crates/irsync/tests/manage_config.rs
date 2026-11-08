@@ -93,7 +93,7 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.identity")),
         Some(vec!["~/.config/irsync/daemon_ed25519".into()])
     );
-    // The [client] keys the README lists with defaults: the effective ones.
+    // The [client] keys book/src/reference/configuration.md lists with defaults: the effective ones.
     assert_eq!(default_of(&p("client.parallel")), Some(vec!["32".into()]));
     assert_eq!(default_of(&p("client.reconnect")), Some(vec!["1d".into()]));
     assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
