@@ -1,0 +1,13 @@
+# Cloudflare Pages response headers.
+# Staging (dev.irsync.org and every *.pages.dev deployment) is public but not
+# indexed; production (irsync.org) is. Both serve these same files.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+https://dev.irsync.org/*
+  X-Robots-Tag: noindex
+
+https://:project.pages.dev/*
+  X-Robots-Tag: noindex

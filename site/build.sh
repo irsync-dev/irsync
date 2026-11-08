@@ -19,10 +19,10 @@ tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
 mkdir -p "$out"
 mdbook build "$root/book" -d "$out/book"
 
-# Landing page files; the tools and the token source stay behind.
+# Landing page files; the tools, the token source and the scripts stay behind.
 for f in "$root"/site/*; do
   case $f in
-    "$root"/site/tools | "$root"/site/tokens.json) ;;
+    "$root"/site/tools | "$root"/site/tokens.json | "$root"/site/*.sh) ;;
     *) cp -R "$f" "$out/" ;;
   esac
 done
