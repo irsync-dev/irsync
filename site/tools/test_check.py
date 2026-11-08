@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check import check_flags, check_links, check_moved
+from check import check_flags, check_links, check_moved, cli_flags
 
 
 def write(root, rel, text):
@@ -98,6 +98,21 @@ class FlagTests(TmpCase):
         problems = check_flags([p], {"--known"})
         self.assertEqual(len(problems), 1)
         self.assertIn("--nope", problems[0])
+
+
+    def test_cli_flags_reads_repeatable_option(self):
+        # clap marks a counted or repeatable flag with `...`: `-v, --verbose...`.
+        help_text = (
+            "Usage: x [OPTIONS]\n\nOptions:\n"
+            "  -v, --verbose...    Log more\n"
+            "      --exclude <PATTERN>  Exclude\n"
+            "  -h, --help          Print help\n"
+        )
+        binary = Path(self.d) / "fakebin"
+        binary.write_text("#!/bin/sh\ncat <<'EOF'\n" + help_text + "EOF\n")
+        binary.chmod(0o755)
+        flags = cli_flags(binary)
+        self.assertTrue({"-v", "--verbose", "--exclude", "-h", "--help"} <= flags, flags)
 
 
 if __name__ == "__main__":

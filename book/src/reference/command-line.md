@@ -52,7 +52,7 @@ These have rsync's spelling and meaning.
 | `--specials` | Preserve FIFOs. Sockets are never copied. |
 | `-H`, `--hard-links` | Files linked together in the source are linked together in the destination. |
 | `-S`, `--sparse` | Write every run of zeros as a hole. Without it, only files that are sparse in the source are written sparse. |
-| `-v` | Long form `--verbose`. List each file as it is handled and end each session with a summary of time, CPU, memory and bytes. `-vv` adds debug logs, `-vvv` trace logs. |
+| `-v`, `--verbose` | List each file as it is handled and end each session with a summary of time, CPU, memory and bytes. `-vv` adds debug logs, `-vvv` trace logs. |
 | `-q`, `--quiet` | Print errors only. Also turns the live progress block off. |
 | `-n`, `--dry-run` | Change nothing on either side. With `-v` or `-i`, list what would be done. |
 | `-c`, `--checksum` | Compare by content, not by size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read. |
@@ -67,7 +67,7 @@ These have rsync's spelling and meaning.
 | `--include PATTERN` | Include paths that match, even if a later `--exclude` would hide them. |
 | `--exclude-from FILE` | Read exclude patterns from `FILE`, one per line. Blank lines and lines that start with `#` or `;` are skipped. |
 | `--include-from FILE` | Read include patterns from `FILE`, as `--exclude-from` does. |
-| `--bwlimit RATE` | Limit the rate. A bare number is KiB/s. `K`, `M`, `G` (also `KiB`, `MiB`, `GiB`) are powers of 1024, `KB`, `MB`, `GB` powers of 1000, `b` is bytes; decimals are allowed (`1.5M`). `0` means no limit. |
+| `--bwlimit RATE` | Limit the rate. A bare number is KiB/s. `K`, `M`, `G`, `T`, `P` (also `KiB` to `PiB`) are powers of 1024, `KB` to `PB` powers of 1000, `b` is bytes; decimals are allowed (`1.5M`). `0` means no limit. |
 | `--numeric-ids` | Apply owner and group ids as sent. By default the sender's user and group names are mapped to the receiver's ids where they exist, as rsync does. |
 | `--partial-dir DIR` | Keep the partial files of interrupted transfers under `DIR`, relative to the destination root, instead of beside their files. On a pull `DIR` may be absolute; on a push the daemon keeps them, and only a relative `DIR` inside the destination is allowed. |
 | `--inplace` | Write a changed file into the destination itself instead of into a temporary file renamed over it. No second copy is needed on disk, but readers see a torn file during the transfer and a crash leaves a mixture. |
@@ -152,7 +152,7 @@ overrides all of them.
 | `--config PATH` | The config file. A `hosts.toml` or `exports.toml` beside it is read too. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
-| `-v` | Long form `--verbose`. Log more; repeat for more still. |
+| `-v`, `--verbose` | Log more; repeat for more still. |
 | `-q`, `--quiet` | Log errors only. |
 
 ### irsync index
@@ -164,7 +164,7 @@ irsync index [-n] [-v|-q] [--config PATH] ROOT...
 | Flag | Meaning |
 | --- | --- |
 | `-n`, `--dry-run` | Walk and count what would be hashed; read nothing. |
-| `-v` | Long form `--verbose`. Log more. |
+| `-v`, `--verbose` | Log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
 | `--config PATH` | The config file, for `state_dir`. |
 
@@ -177,7 +177,7 @@ irsync gc [-n] [-v|-q] [--config PATH]
 | Flag | Meaning |
 | --- | --- |
 | `-n`, `--dry-run` | List what would be removed without removing anything. |
-| `-v` | Long form `--verbose`. Log more. |
+| `-v`, `--verbose` | Log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
 | `--config PATH` | The config file, for `state_dir`. |
 
@@ -202,7 +202,9 @@ A sync uses rsync's codes.
 | 23 | Partial transfer: some files could not be transferred, or some sources of a push failed while others synced. |
 | 25 | Deletions stopped at `--max-delete`. |
 
-When several apply, 25 wins over 23. A listing exits 0 or 1.
+When several apply, 25 wins over 23. A file listing, `irsync HOST:PATH`, is a
+dry-run pull and uses the same codes; the export listing, `irsync HOST:`,
+exits 0 or 1.
 
 The other commands exit 0 on success and 1 on an error, with these
 additions: `irsync index` and `irsync export update` exit 23 when a file could

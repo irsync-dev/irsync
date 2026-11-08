@@ -39,7 +39,7 @@ Index the directory that the pull writes into. For
    ```
 
    Files whose index row is still fresh (same size, modification time, change
-   time and inode) are skipped, so running it again costs only the walk.
+   time, device and inode) are skipped, so running it again costs only the walk.
 
 You can name several roots in one command. If a file cannot be read or a
 directory cannot be listed, `irsync index` reports it, carries on, and exits

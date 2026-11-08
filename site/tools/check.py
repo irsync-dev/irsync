@@ -128,7 +128,9 @@ def check_moved(repo, moved):
 
 # ---- command-line flags ---------------------------------------------------
 
-_OPTION = re.compile(r"^\s+(?:(-[A-Za-z0-9]),?\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:[ <\[=]|$)")
+_OPTION = re.compile(
+    r"^\s+(?:(-[A-Za-z0-9]),?\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)?(?:\.\.\.)?(?:[ <\[=]|$)"
+)
 _COMMAND = re.compile(r"^  ([a-z][a-z0-9-]*)(?:\s|$)")
 
 
