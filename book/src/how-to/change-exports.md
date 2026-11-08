@@ -14,7 +14,7 @@ hand:
 
 ```sh
 irsync export add music:/srv/music
-irsync grant add music laptop
+irsync grant add music myclient
 irsync grant remove photos phone
 ```
 

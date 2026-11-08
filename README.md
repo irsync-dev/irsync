@@ -33,14 +33,14 @@ cargo install --git https://github.com/irsync-dev/irsync fileset
 
 ## Example
 
-Push a photo library from a laptop to a home server:
+Push a photo library from a client to a server:
 
 ```sh
-irsync id show                             # laptop: the second line is its EndpointId
+irsync id show                             # client: the second line is its EndpointId
 irsync export add photos:/srv/photos       # server: prints the daemon's EndpointId
-irsync grant add photos <laptop-id>        # server: let the laptop's key in
+irsync grant add photos <client-id>        # server: let the client's key in
 irsync daemon                              # server: serve until interrupted
-irsync -av ~/Photos/ <server-id>:photos/   # laptop: push
+irsync -av ~/Photos/ <server-id>:photos/   # client: push
 ```
 
 ## Documentation

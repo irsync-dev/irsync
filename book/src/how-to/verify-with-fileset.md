@@ -7,8 +7,8 @@ against the manifest there. The same manifest later tells you whether either
 copy has rotted on disk.
 
 The examples use the setup from [Your first sync](../tutorial/first-sync.md):
-the laptop is the client with `~/Photos`, and the server is the daemon, known
-on the laptop as `home`, with the export `photos` at `/srv/photos`. Every
+the client has `~/Photos`, and the server runs the daemon, known on the
+client as `myserver`, with the export `photos` at `/srv/photos`. Every
 option is listed in the [fileset reference](../reference/fileset.md).
 
 ## Install fileset
@@ -21,7 +21,7 @@ cargo install --git https://github.com/irsync-dev/irsync fileset
 
 ## 1. Record a manifest on the client
 
-On the laptop, create the manifest:
+On the client, create the manifest:
 
 ```sh
 fileset init ~/Photos
@@ -46,11 +46,11 @@ fileset update ~/Photos
 Push the tree, manifest included:
 
 ```sh
-irsync -av ~/Photos/ home:photos/
+irsync -av ~/Photos/ myserver:photos/
 ```
 
 The manifest is an ordinary file in the tree, so `irsync` carries it like any
-other. If you removed files on the laptop since the last sync, add
+other. If you removed files on the client since the last sync, add
 `--delete`, or the daemon's copy keeps them and the check reports them as
 `ADD`.
 
@@ -96,7 +96,7 @@ machines use the same ids, compare owners as well:
 fileset check --require uid --require gid /srv/photos
 ```
 
-If the laptop runs macOS and the server Linux, or the other way round, symlink
+If the client runs macOS and the server Linux, or the other way round, symlink
 permissions differ between the two systems. Leave them out:
 
 ```sh
@@ -118,13 +118,13 @@ size and modification time. Copy the good version from the other machine with
 `-c`, which compares content. If the server's copy is damaged, push again:
 
 ```sh
-irsync -avc ~/Photos/ home:photos/
+irsync -avc ~/Photos/ myserver:photos/
 ```
 
-If the laptop's copy is damaged, pull instead:
+If the client's copy is damaged, pull instead:
 
 ```sh
-irsync -avc home:photos/ ~/Photos/
+irsync -avc myserver:photos/ ~/Photos/
 ```
 
 Check the other copy first, so that you do not spread the damage.

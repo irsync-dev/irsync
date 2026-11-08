@@ -65,7 +65,7 @@ otlp_protocol = "http"       # or "grpc"
 
 # One [hosts.ALIAS] table per remote. On a daemon's machine the same tables
 # name the clients that exports are granted to.
-[hosts.home]
+[hosts.myserver]
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 relay = "https://relay.example.net"   # the rest is optional
 relay_mode = "disabled"
@@ -76,7 +76,7 @@ reconnect = "1h"
 dht = false
 mdns = false
 
-[hosts.laptop]
+[hosts.myclient]
 endpoint_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 
 # What the daemon shares and with whom. Entries in rw and ro are aliases
@@ -87,13 +87,13 @@ ro = []
 
 [exports.photos]
 path = "/srv/photos"
-rw = ["laptop"]
+rw = ["myclient"]
 warm_index = false
 
 [exports.docs]
 path = "/srv/docs"
 read_only = true
-ro = ["laptop"]
+ro = ["myclient"]
 ```
 
 ## Identity and state

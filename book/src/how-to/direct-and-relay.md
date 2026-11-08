@@ -11,14 +11,14 @@ this way is in [Connections](../explanation/connections.md).
 Run the sync with `-v`:
 
 ```sh
-irsync -av ~/Photos/ home:photos/
+irsync -av ~/Photos/ myserver:photos/
 ```
 
 The first line of the summary at the end of each session names the path,
 `direct` or `relay`:
 
 ```text
-session 1/1  push  /home/me/Photos/ -> home:photos/  wall 3:12  direct
+session 1/1  push  /home/me/Photos/ -> myserver:photos/  wall 3:12  direct
 ```
 
 The live progress block shows the same word while the sync runs.
@@ -31,13 +31,13 @@ relay.
 - For one sync, on the client:
 
   ```sh
-  irsync -a --no-relay ~/Photos/ home:photos/
+  irsync -a --no-relay ~/Photos/ myserver:photos/
   ```
 
 - For every sync to one host, or to every host:
 
   ```sh
-  irsync host add home <id> --relay-mode disabled
+  irsync host add myserver <id> --relay-mode disabled
   irsync config set client.relay_mode disabled
   ```
 
@@ -70,7 +70,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 3. Point the client at it, for one host or for all:
 
    ```sh
-   irsync host add home <id> --relay https://relay.example.net
+   irsync host add myserver <id> --relay https://relay.example.net
    irsync config set client.relay https://relay.example.net
    ```
 
@@ -82,7 +82,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
   `dht` and `mdns` keys, or `[client]`'s, turn either lookup off for good:
 
   ```sh
-  irsync host add home <id> --dht no --mdns no
+  irsync host add myserver <id> --dht no --mdns no
   ```
 
 - On the daemon, `[daemon.discovery]` says where it publishes its addresses:

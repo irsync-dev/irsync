@@ -20,7 +20,7 @@ With all three off the cost is a few untaken branches; the measurements are in
 Add `-v` to the client:
 
 ```sh
-irsync -av ~/Photos/ home:photos/
+irsync -av ~/Photos/ myserver:photos/
 ```
 
 At the end of each session it prints a block like this one:
@@ -47,7 +47,7 @@ had nothing to do. What each activity covers is in
    binds `127.0.0.1`:
 
    ```sh
-   irsync -a --debug-addr 9464 ~/Photos/ home:photos/
+   irsync -a --debug-addr 9464 ~/Photos/ myserver:photos/
    ```
 
    After the sync the client prints `irsync: debug port open at ADDR; Ctrl-C
@@ -105,7 +105,7 @@ of tens of thousands of files would swamp a trace. Set `IRSYNC_TRACE_FILES=1`
 to send them to the span sinks: OTLP, `/debug/timing` and `/debug/flame`.
 
 ```sh
-IRSYNC_TRACE_FILES=1 irsync -a --debug-addr 9464 ~/Photos/ home:photos/
+IRSYNC_TRACE_FILES=1 irsync -a --debug-addr 9464 ~/Photos/ myserver:photos/
 ```
 
 Set it on the daemon's side to get the daemon's per-file spans.

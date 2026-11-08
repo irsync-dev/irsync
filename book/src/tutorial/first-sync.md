@@ -1,12 +1,12 @@
 # Your first sync
 
-In this tutorial you push a photo library from a laptop to a home server, list
+In this tutorial you push a photo library from a client to a server, list
 what the server shares, and pull the library back. You need `irsync`
 installed on both machines (see the
 [README](https://github.com/irsync-dev/irsync#install)) and a shell on each.
 
-The laptop runs `irsync` as the *client*. The home server runs `irsync daemon`,
-the *daemon*, which serves the directories you export. The two machines find
+The client runs `irsync`. The server runs `irsync daemon`, the *daemon*,
+which serves the directories you export. The two machines find
 each other by their identity, an `EndpointId`, not by an address: you need no
 port forwarding, dynamic DNS or SSH tunnel.
 
@@ -14,9 +14,9 @@ You write no configuration file by hand. Each machine generates its key the
 first time a command needs it and says so on stderr:
 `generated identity <path>`.
 
-## 1. Find the laptop's EndpointId
+## 1. Find the client's EndpointId
 
-On the laptop, print its identity:
+On the client, print its identity:
 
 ```sh
 irsync id show
@@ -30,14 +30,14 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKPkdT5ep05k50XpxNELD9dR2+AwSddC6w6lRciXA9+6
 a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba
 ```
 
-If the laptop already has an ssh key at `~/.ssh/id_ed25519`, `irsync` uses it
+If the client already has an ssh key at `~/.ssh/id_ed25519`, `irsync` uses it
 instead of generating one, and reads it without changing it.
 
 Copy the second line. You paste it on the server in step 3.
 
 ## 2. Export two directories on the server
 
-On the home server, create the directories and export them under a name:
+On the server, create the directories and export them under a name:
 
 ```sh
 sudo mkdir -p /srv/photos /backup
@@ -47,18 +47,18 @@ irsync export add backup:/backup
 ```
 
 `irsync export add` writes `~/.config/irsync/irsync.toml` and prints the
-daemon's `EndpointId` on stdout. Copy it. You paste it on the laptop in
+daemon's `EndpointId` on stdout. Copy it. You paste it on the client in
 step 5.
 
-## 3. Grant the laptop access
+## 3. Grant the client access
 
-Still on the server, give the laptop's `EndpointId` a readable name and grant
-it both exports. Replace `<laptop-id>` with the line you copied in step 1:
+Still on the server, give the client's `EndpointId` a readable name and grant
+it both exports. Replace `<client-id>` with the line you copied in step 1:
 
 ```sh
-irsync host add laptop <laptop-id>
-irsync grant add photos laptop
-irsync grant add backup laptop
+irsync host add myclient <client-id>
+irsync grant add photos myclient
+irsync grant add backup myclient
 ```
 
 Each `grant add` gives read-write access. The daemon refuses every key that no
@@ -82,24 +82,24 @@ listening on: 192.168.1.10:41235
 The daemon publishes its addresses so that a client holding its `EndpointId`
 can find it. Leave it running for the rest of the tutorial.
 
-## 5. Name the server on the laptop
+## 5. Name the server on the client
 
-On the laptop, give the server's `EndpointId` the name `home`. Replace
+On the client, give the server's `EndpointId` the name `myserver`. Replace
 `<server-id>` with the line you copied in step 2:
 
 ```sh
-irsync host add home <server-id>
+irsync host add myserver <server-id>
 ```
 
-The client now pins this `EndpointId` for `home`. If anything else answers, the
-connection fails; there is no trust-on-first-use prompt.
+The client now pins this `EndpointId` for `myserver`. If anything else
+answers, the connection fails; there is no trust-on-first-use prompt.
 
 ## 6. See what the server shares
 
-Ask the daemon what this laptop may reach:
+Ask the daemon what this client may reach:
 
 ```sh
-irsync home:
+irsync myserver:
 ```
 
 The daemon answers with one line per export, its name, its real path and your
@@ -115,7 +115,7 @@ photos /srv/photos rw
 Copy the contents of `~/Photos` into the `photos` export:
 
 ```sh
-irsync -av ~/Photos/ home:photos/
+irsync -av ~/Photos/ myserver:photos/
 ```
 
 `-a` recurses into directories and keeps symlinks, permissions, times, group,
@@ -131,7 +131,7 @@ Add a few large files to `~/Photos`, start the push, and press Ctrl-C while
 it runs. Then run the same command again:
 
 ```sh
-irsync -av ~/Photos/ home:photos/
+irsync -av ~/Photos/ myserver:photos/
 ```
 
 `irsync` finds the stopped session and says `resuming session <id> from
@@ -141,29 +141,29 @@ redials on its own, for up to 24 hours by default.
 
 ## 9. Pull the library back
 
-Pull the export into a new directory on the laptop:
+Pull the export into a new directory on the client:
 
 ```sh
-irsync -av home:photos/ ~/Photos-copy/
+irsync -av myserver:photos/ ~/Photos-copy/
 ```
 
 A pull is the same command with the remote side first. To see what a pull
 would fetch without writing anything, give the remote side alone:
 
 ```sh
-irsync home:photos/
+irsync myserver:photos/
 ```
 
 ## 10. Push by real path
 
 You can also name a path on the server directly. The path must lie inside an
-export that the laptop has a grant for, here `backup`:
+export that the client has a grant for, here `backup`:
 
 ```sh
-irsync -av ~/Documents/ home:/backup/laptop/Documents/
+irsync -av ~/Documents/ myserver:/backup/myclient/Documents/
 ```
 
-A path outside every export the laptop may use is refused as "no access",
+A path outside every export the client may use is refused as "no access",
 whether it exists or not.
 
 ## What you did
@@ -175,13 +175,13 @@ whether it exists or not.
 
 The alias is optional: the raw `EndpointId` works in its place, as in
 `irsync -av ~/Photos/ <server-id>:photos/`, and `irsync grant add photos
-<laptop-id>` works without `host add`.
+<client-id>` works without `host add`.
 
 ## Next steps
 
 - [Command line](../reference/command-line.md): every flag.
 - [Remote addresses](../reference/remote-addresses.md): how the daemon
-  resolves `home:photos`, `home:Pictures` and `home:/backup`.
+  resolves `myserver:photos`, `myserver:Pictures` and `myserver:/backup`.
 - [Management commands](../reference/management.md): `host`, `export`,
   `grant`, `id` and `config`.
 - [Seed the index](../how-to/seed-the-index.md): when the server already

@@ -19,12 +19,12 @@ The daemon reads `PATH` in this order:
 
 1. **An export name**, then a path inside it. When the first component of a
    relative `PATH` names an export, the rest is resolved under that export's
-   directory: `home:photos/2024` is `2024` inside the `photos` export.
+   directory: `myserver:photos/2024` is `2024` inside the `photos` export.
 2. **A path relative to the home directory** of the account the daemon runs
-   as. `home:Pictures` is `~/Pictures` on the daemon's machine; `home:` and
-   `home:~` are the home directory itself, and `home:~/Pictures` is the same
-   as `home:Pictures`.
-3. **An absolute path**, as is: `home:/backup/laptop`.
+   as. `myserver:Pictures` is `~/Pictures` on the daemon's machine;
+   `myserver:` and `myserver:~` are the home directory itself, and
+   `myserver:~/Pictures` is the same as `myserver:Pictures`.
+3. **An absolute path**, as is: `myserver:/backup/myclient`.
 
 `.` and empty components are dropped. A `..` component or a NUL byte is
 refused.
@@ -64,17 +64,17 @@ copies the directory's contents; one without copies the directory itself.
 
 | Command | Result on the daemon |
 | --- | --- |
-| `irsync -a ~/Photos/ home:photos/` | The contents of `~/Photos` in the `photos` export. |
-| `irsync -a ~/Photos home:photos/` | `~/Photos` as `Photos` inside the `photos` export. |
-| `irsync -a home:photos/ ~/copy/` | The contents of the export in `~/copy`. |
-| `irsync -a home:photos ~/copy/` | The export as `~/copy/photos`. |
+| `irsync -a ~/Photos/ myserver:photos/` | The contents of `~/Photos` in the `photos` export. |
+| `irsync -a ~/Photos myserver:photos/` | `~/Photos` as `Photos` inside the `photos` export. |
+| `irsync -a myserver:photos/ ~/copy/` | The contents of the export in `~/copy`. |
+| `irsync -a myserver:photos ~/copy/` | The export as `~/copy/photos`. |
 
 ## Listing
 
 A single remote operand lists instead of copying:
 
-- `irsync home:` prints the exports this client may reach, one
+- `irsync myserver:` prints the exports this client may reach, one
   `NAME PATH ACCESS` line each, `ACCESS` being `rw` or `ro` with `read_only`
   applied.
-- `irsync home:photos/` prints the files a pull would fetch, and writes
+- `irsync myserver:photos/` prints the files a pull would fetch, and writes
   nothing. It recurses unless `--no-recursive` is given.

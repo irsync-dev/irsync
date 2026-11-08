@@ -54,8 +54,8 @@ A grant names a key and an export, read-write or read-only. Grants live in the
 daemon's configuration, under each `[exports.NAME]` or under `[all]` for every
 export, as aliases or raw `EndpointId`s. `irsync grant add` also takes a pasted
 `ssh-ed25519` line or a `.pub` file and writes the id it holds. A grant that
-names an alias follows the alias: pointing `laptop` at a new id with
-`irsync host add` moves every grant that names `laptop`.
+names an alias follows the alias: pointing `myclient` at a new id with
+`irsync host add` moves every grant that names `myclient`.
 
 The daemon reads its configuration afresh for every connection, once the
 handshake has proved the client's key, and checks the key against it before it

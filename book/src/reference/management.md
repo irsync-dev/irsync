@@ -97,19 +97,19 @@ for the old key stops working.
 | --- | --- |
 | `irsync config get KEY` | Print a key: a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded). An unset setting prints its default; a key with no value and no default exits 1. |
 | `irsync config set KEY VALUE...` | Set a key in its type: `true` or `false`, an integer, a duration such as `30m`, a path, a URL, an `EndpointId`. An array key takes one `VALUE` per element, and none for an empty array. Tables are created as needed. |
-| `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset hosts.home`). A table left empty goes with it. |
+| `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset hosts.myserver`). A table left empty goes with it. |
 | `irsync config list` | Every key the files set, as `dotted.key = value`, in file order. |
 
-`KEY` is a dotted path such as `daemon.listen` or `hosts.home.relay`. Quote a
-segment that holds a dot: `exports."www.example.com".path`. An unknown key is
-an error.
+`KEY` is a dotted path such as `daemon.listen` or `hosts.myserver.relay`.
+Quote a segment that holds a dot: `exports."www.example.com".path`. An unknown
+key is an error.
 
 `config` writes what you say; the nouns know what you mean. `export add` joins
 a relative path onto the working directory and checks that the directory
 exists, and `grant add` reads a pasted key line or a `.pub` file. In contrast,
 `irsync config set exports.photos.path ./x` is refused, because the file wants
-an absolute path, and `irsync config set exports.photos.rw ~/laptop.pub` writes
-that string as a grant entry that matches nobody.
+an absolute path, and `irsync config set exports.photos.rw ~/myclient.pub`
+writes that string as a grant entry that matches nobody.
 
 ## show
 

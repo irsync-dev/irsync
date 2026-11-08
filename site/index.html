@@ -34,12 +34,12 @@
     </p>
 
     <figure class="session">
-      <pre class="terminal" tabindex="0" role="region" aria-label="Terminal session: name the daemon, list its exports, push a photo library"><span class="prompt">$</span> irsync host add home 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
-home: 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
-<span class="prompt">$</span> irsync home:
+      <pre class="terminal" tabindex="0" role="region" aria-label="Terminal session: name the daemon, list its exports, push a photo library"><span class="prompt">$</span> irsync host add myserver 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
+myserver: 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
+<span class="prompt">$</span> irsync myserver:
 backup /backup rw
 photos /srv/photos rw
-<span class="prompt">$</span> irsync -av ~/Photos/ home:photos/
+<span class="prompt">$</span> irsync -av ~/Photos/ myserver:photos/
 2021/07/IMG_4466.heic
 2021/07/IMG_4467.heic
 2021/07/IMG_4468.heic
@@ -136,7 +136,7 @@ transfer  <span class="flow">[████████████░░░░�
     <ul class="map">
       <li>
         <h3><a href="book/tutorial/first-sync.html">Tutorial</a></h3>
-        <p>Push a photo library to a home server, interrupt and resume the push,
+        <p>Push a photo library to a server, interrupt and resume the push,
         pull the library back.</p>
       </li>
       <li>

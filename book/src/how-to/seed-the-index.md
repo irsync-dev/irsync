@@ -21,8 +21,8 @@ fetch.
 ## On the client, before a pull
 
 Index the directory that the pull writes into. For
-`irsync -a home:photos/ ~/Photos/` that is `~/Photos`; for
-`irsync -a home:photos ~/` it is `~/photos`.
+`irsync -a myserver:photos/ ~/Photos/` that is `~/Photos`; for
+`irsync -a myserver:photos ~/` it is `~/photos`.
 
 1. See how much would be read:
 
