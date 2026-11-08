@@ -536,7 +536,12 @@ cross-referenced from commit messages and review notes.
    (R36), the filters (R38) and a relative `--partial-dir` (R39); an
    absolute one stays client-side and a push with it is refused.
 5. **Durability of received files: one fsync per file** (raised
-   2026-11-05, left open). `FileWriter::place` (`recv.rs`) writes the
+   2026-11-05; decided 2026-11-08: (D), with (B) as the default). The
+   receiver flushes nothing by default, as rsync does; `--fsync` (rsync's
+   flag, carried to a receiving daemon as `Hello.fsync`) and an export's
+   `fsync = true` (for pushes into it) restore the per-file `sync_all` of
+   (A). (C1) and (C2) were not built. What follows is the state before the
+   decision: `FileWriter::place` (`recv.rs`) writes the
    `.part`, calls `sync_all`, applies mode, owner and times, then renames.
    The parent directory is not synced after the rename (see 2.3), and the
    index runs with `synchronous=NORMAL`.

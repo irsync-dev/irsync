@@ -48,7 +48,7 @@ column.
 | `irsync_phase_duration_seconds` | seconds | `phase` | Wall time of each session phase: `connect`, `handshake`, `list`, `plan`, `transfer`, `delete`, `reconnect`. Phases overlap. |
 | `irsync_file_transfer_seconds` | seconds | | From a file's first request to its completion. |
 | `irsync_hash_wait_seconds` | seconds | | Time a role waited on a hash result. |
-| `irsync_fsync_seconds` | seconds | | Time to fsync a received file. |
+| `irsync_fsync_seconds` | seconds | | Time to fsync a received file (only with `--fsync`, or a push into an export with `fsync = true`). |
 | `irsync_file_size_bytes` | bytes | | Size of each transferred file. |
 | `irsync_quic_rtt_seconds` | seconds | | QUIC path RTT, sampled once a second per connection. |
 
@@ -127,7 +127,7 @@ session            session_id, direction, side, role, endpoint_id, peer,
  |       +- hash   (sender)
  |       +- send   (sender)
  |       +- recv   (receiver)
- |       +- place  (receiver: rename, metadata, fsync)
+ |       +- place  (receiver: rename, metadata, fsync with --fsync)
  +- delete         mode                   (each deletion pass)
  +- reconnect      attempt, reason        (wait between attempts)
 ```

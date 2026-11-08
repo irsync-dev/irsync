@@ -736,6 +736,12 @@ pub struct SyncArgs {
     /// torn file during the transfer and a crash leaves a mixture.
     #[arg(long)]
     pub inplace: bool,
+    /// Flush each received file to disk before it is renamed into place
+    /// (rsync's --fsync). Without it, as in rsync, a power loss or kernel
+    /// crash in the seconds after a sync can leave a file at its name with
+    /// the right size and time but not its content.
+    #[arg(long)]
+    pub fsync: bool,
     /// Extend a destination file that is shorter than the source by the
     /// source's tail, trusting what is already there; a destination that
     /// is not shorter is skipped (rsync's rule).
@@ -849,6 +855,7 @@ pub struct SyncOptions {
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub inplace: bool,
+    pub fsync: bool,
     pub append: Append,
     pub debug_addr: Option<SocketAddr>,
     pub debug_no_wait: bool,
@@ -912,6 +919,7 @@ impl SyncOptions {
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,
+            fsync: a.fsync,
             append: if a.append {
                 Append::Append
             } else if a.append_verify {

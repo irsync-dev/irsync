@@ -97,6 +97,9 @@ message Hello {
   // other files on its side hold; everything not in a file's own old
   // version comes from the sender.
   bool no_local_reuse = 28;
+  // --fsync: a receiving daemon flushes each file to disk before renaming
+  // it into place. Off (rsync's default): nothing is flushed explicitly.
+  bool fsync = 29;
 }
 // One export the asking key may use.
 message ExportEntry {

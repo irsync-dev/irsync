@@ -59,7 +59,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["hosts", _, "reconnect"] => Duration,
         ["hosts", _, "dht" | "mdns"] => Bool,
         ["exports", _, "path"] => Path,
-        ["exports", _, "read_only" | "warm_index"] => Bool,
+        ["exports", _, "read_only" | "warm_index" | "fsync"] => Bool,
         ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] => StrArray,
         _ => return None,
     })

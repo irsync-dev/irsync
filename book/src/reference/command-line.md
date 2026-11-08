@@ -72,6 +72,7 @@ and a different meaning follow in
 | `--inplace` | Write a changed file into the destination itself instead of into a temporary file renamed over it. No second copy is needed on disk, but readers see a torn file during the transfer and a crash leaves a mixture. |
 | `--append` | Extend a destination file that is shorter than the source with the source's tail, trusting what is already there. A destination that is not shorter is skipped. |
 | `--append-verify` | Like `--append`, but the existing prefix is verified too. |
+| `--fsync` | Flush each received file to disk before renaming it into place, on whichever side receives (the daemon, on a push). Off by default, as in rsync: a power loss or kernel crash in the seconds after a run can then leave a file at its name with the right size and time but not its content, which the next run's quick check does not notice (`-c` does). An export's `fsync = true` turns it on for every push into it. |
 | `--ignore-errors` | Run the deletion pass even when a listing was cut short by I/O errors. |
 | `--stats` | Print a block of transfer statistics at the end. |
 | `-i`, `--itemize-changes` | Print rsync's per-file change summary, the itemize codes. |

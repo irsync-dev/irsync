@@ -498,6 +498,7 @@ pub(super) async fn open_writer(
     }
     w.set_sparse(sparse);
     w.set_verify_whole(verify_whole);
+    w.set_sync(ctx.opts.fsync);
     let (mut remote, mut local) = (Vec::new(), Vec::new());
     match found {
         Ok(found) => {
@@ -1106,6 +1107,9 @@ pub(super) async fn finalize(
         ctx.hooks.event("open", &path);
     }
     let placed = w.place(&entry, &apply).await?;
+    if ctx.opts.fsync {
+        ctx.hooks.event("fsync", &path);
+    }
     ctx.hooks.event("placed", &path);
     record(&ctx, &path, &digest, placed.hash, placed.stat).await;
     Ok(())

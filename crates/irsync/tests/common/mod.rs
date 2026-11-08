@@ -198,6 +198,7 @@ pub async fn spawn_daemon(
                     path,
                     read_only,
                     warm_index: false,
+                    fsync: false,
                     rw: Vec::new(),
                     ro: Vec::new(),
                 },
@@ -224,6 +225,7 @@ pub async fn spawn_daemon_home(
                     path,
                     read_only,
                     warm_index: false,
+                    fsync: false,
                     rw: Vec::new(),
                     ro: Vec::new(),
                 },
@@ -350,23 +352,31 @@ impl Harness {
     /// A harness whose export and local dirs are created under `base`
     /// (a filesystem with properties the default temp dir may lack).
     pub async fn new_in(base: &std::path::Path) -> Harness {
-        Self::build(Some(base), false, |_| {}).await.0
+        Self::build(Some(base), |_| {}, |_| {}).await.0
     }
 
     /// A harness plus a second client endpoint the daemon also authorises.
     pub async fn with_guest() -> (Harness, Endpoint) {
-        Self::build(None, false, |_| {}).await
+        Self::build(None, |_| {}, |_| {}).await
     }
 
     /// A harness whose export is filled by `seed` before the daemon starts,
     /// with `warm_index` set on it.
     pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
-        Self::build(None, true, seed).await.0
+        Self::build(None, |e| e.warm_index = true, seed).await.0
+    }
+
+    /// A harness whose export is first adjusted by `configure`.
+    #[allow(dead_code)]
+    pub async fn with_export(
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
+    ) -> Harness {
+        Self::build(None, configure, |_| {}).await.0
     }
 
     async fn build(
         base: Option<&std::path::Path>,
-        warm_index: bool,
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
         seed: impl FnOnce(&std::path::Path),
     ) -> (Harness, Endpoint) {
         let tmp = || match base {
@@ -383,13 +393,15 @@ impl Harness {
             ..Grants::default()
         };
         let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);
-        let m = irsync::config::exports::Export {
+        let mut m = irsync::config::exports::Export {
             path: export.path().to_path_buf(),
             read_only: false,
-            warm_index,
+            warm_index: false,
+            fsync: false,
             rw: Vec::new(),
             ro: Vec::new(),
         };
+        configure(&mut m);
         let daemon = spawn_daemon_exports(vec![("m", m)], authz).await;
         let h = Harness {
             daemon,

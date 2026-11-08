@@ -130,6 +130,8 @@ pub struct FileWriter {
     /// Compare the folded whole-file hash with the expected one at
     /// finalize (false for an `APPEND`, whose expected hash is unknown).
     verify_whole: bool,
+    /// `--fsync`: flush the file before its metadata and rename.
+    sync: bool,
     #[cfg(feature = "test-hooks")]
     written: u64,
     #[cfg(feature = "test-hooks")]
@@ -708,6 +710,7 @@ impl FileWriter {
             cloned: false,
             inplace: false,
             verify_whole: true,
+            sync: false,
             #[cfg(feature = "test-hooks")]
             written: 0,
             #[cfg(feature = "test-hooks")]
@@ -769,6 +772,14 @@ impl FileWriter {
     /// receiver's folded hash is the only one there is.
     pub fn set_verify_whole(&mut self, verify: bool) {
         self.verify_whole = verify;
+    }
+
+    /// Whether `finalize` flushes the file to disk before applying its
+    /// metadata and renaming it (`--fsync`). Off by default, as in rsync: a
+    /// power loss or kernel crash shortly after can then leave the file at
+    /// its name with its size and mtime but not its content.
+    pub fn set_sync(&mut self, sync: bool) {
+        self.sync = sync;
     }
 
     /// Bytes written into the `.part` so far (test hook).
@@ -1115,6 +1126,7 @@ impl FileWriter {
         let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
         let sync_meter = meter.clone();
+        let sync = self.sync;
         #[cfg(feature = "test-hooks")]
         let delay = self.finalize_delay;
         let placed = tokio::task::spawn_blocking(move || {
@@ -1134,20 +1146,23 @@ impl FileWriter {
             if inplace {
                 file.set_len(size)?;
             }
-            let synced = sync_meter
-                .as_deref()
-                .filter(|m| m.is_enabled())
-                .map(|_| Instant::now());
-            file.sync_all()?;
-            if let (Some(m), Some(t)) = (&sync_meter, synced) {
-                let took = t.elapsed();
-                m.add(
-                    Counter::FsyncNanos,
-                    u64::try_from(took.as_nanos()).unwrap_or(u64::MAX),
-                );
-                metrics::histogram!("irsync_fsync_seconds", m.labels()).record(took.as_secs_f64());
+            if sync {
+                let synced = sync_meter
+                    .as_deref()
+                    .filter(|m| m.is_enabled())
+                    .map(|_| Instant::now());
+                file.sync_all()?;
+                if let (Some(m), Some(t)) = (&sync_meter, synced) {
+                    let took = t.elapsed();
+                    m.add(
+                        Counter::FsyncNanos,
+                        u64::try_from(took.as_nanos()).unwrap_or(u64::MAX),
+                    );
+                    metrics::histogram!("irsync_fsync_seconds", m.labels())
+                        .record(took.as_secs_f64());
+                }
+                activity.fetch_add(1, Ordering::Relaxed);
             }
-            activity.fetch_add(1, Ordering::Relaxed);
             if let Some(expected) = expected.filter(|e| *e != actual) {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }

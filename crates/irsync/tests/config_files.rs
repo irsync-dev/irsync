@@ -146,12 +146,13 @@ fn hosts_old_layout_names_the_new_location() {
 
 #[test]
 fn exports_parse_all_table_and_exports_tables() {
-    let t = "[all]\nrw = [\"admin\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\n";
+    let t = "[all]\nrw = [\"admin\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\nfsync = true\n";
     let x = Exports::parse(t, p()).unwrap();
     assert_eq!(x.rw, vec!["admin"]);
     assert_eq!(x.exports["photos"].rw, vec!["laptop"]);
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
+    assert!(x.exports["docs"].fsync && !x.exports["photos"].fsync);
     assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
     assert!(Exports::parse("[all]\n", p()).unwrap().rw.is_empty());
 }

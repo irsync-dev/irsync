@@ -98,7 +98,10 @@ The client sends `Hello` on the control stream:
 - the receiver-side options, which the daemon honours only when it receives:
   the deletion mode, `--delete-excluded`, `--max-delete`, `-n`, `-u`, `-c`,
   `--inplace`, `--append` or `--append-verify`, `--partial-dir` (relative and
-  inside the destination, or refused), `--no-rename-detection`. `-i`,
+  inside the destination, or refused), `--no-rename-detection`, `--fsync`
+  (field 29; a daemon older than it ignores the field and flushes every file,
+  as every version did before it, while an export's `fsync = true` flushes
+  whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
 - `traceparent` and `tracestate`, the client's W3C trace context (empty: no
   trace). A daemon that exports traces makes its `session` span a child of it;

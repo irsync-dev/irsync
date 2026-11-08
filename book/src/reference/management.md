@@ -52,7 +52,7 @@ granted to.
 | `irsync export add NAME:PATH [--ro] [--warm-index]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
 | `irsync export add PATH [--ro] [--warm-index]` | The same, named after the directory's last component. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
-| `irsync export list` | One block per export: `NAME: PATH`, then `read_only` and `warm_index` when set, then its grant lines. |
+| `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `warm_index` and `fsync` when set, then its grant lines. |
 | `irsync export update [-n] [-v\|-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
 
 `export add` joins a relative `PATH` onto the working directory, expands a

@@ -89,6 +89,7 @@ ro = []
 path = "/srv/photos"
 rw = ["myclient"]
 warm_index = false
+fsync = false
 
 [exports.docs]
 path = "/srv/docs"
@@ -205,6 +206,7 @@ be `all`.
 | `path` | required | The directory, an absolute path; `~` is expanded. |
 | `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. |
 | `warm_index` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. |
+| `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
 | `rw` | `[]` | Peers with read-write access: aliases or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
 

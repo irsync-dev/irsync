@@ -249,7 +249,8 @@ three re-requests fails with `WRITE_ERROR`.
 
 ### Finalize
 
-`recv_io::finalize` runs `fsync`, compares the whole-file hash with the
+`recv_io::finalize` runs `fsync` (only with `--fsync`, or on a push into an
+export with `fsync = true`), compares the whole-file hash with the
 sender's, applies metadata through the descriptor, renames the `.part` over
 the destination, records the file in the index and sends `FileAck DONE`.
 

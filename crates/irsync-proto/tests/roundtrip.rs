@@ -21,6 +21,7 @@ fn hello_roundtrips() {
         update_only: true,
         checksum: true,
         inplace: true,
+        fsync: true,
         append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
         build: Some(irsync_proto::v1::BuildInfo {
             version: "0.1.0".into(),

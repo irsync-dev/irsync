@@ -174,6 +174,8 @@ fn irsync_flags_and_misc() {
         "names are mapped unless asked not to"
     );
     assert!(opts(&["--numeric-ids", "a", "h:m"]).numeric_ids);
+    assert!(!o.fsync, "no flush unless asked, as in rsync");
+    assert!(opts(&["--fsync", "a", "h:m"]).fsync);
     assert_eq!(o.max_delete, Some(5));
     assert_eq!(o.partial_dir, Some(PathBuf::from(".p")));
 }

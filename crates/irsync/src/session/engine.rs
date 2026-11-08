@@ -118,6 +118,8 @@ pub(super) struct RoleOpts {
     pub itemize: bool,
     /// Receiver only: `--inplace`, write changed files into the destination.
     pub inplace: bool,
+    /// Receiver only: `--fsync`, flush each file before it is placed.
+    pub fsync: bool,
     /// Receiver only: `--numeric-ids`, apply the ids as sent instead of
     /// mapping the sender's owner and group names to local ids.
     pub numeric_ids: bool,
@@ -142,6 +144,7 @@ impl RoleOpts {
             ignore_errors: o.ignore_errors,
             itemize: o.itemize,
             inplace: o.inplace,
+            fsync: o.fsync,
             numeric_ids: o.numeric_ids,
             append: o.append,
         }
@@ -151,8 +154,8 @@ impl RoleOpts {
     /// (`-l -p -t -g -o -D -H -S`; everything, from a client that sent none)
     /// and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
-    /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, append,
-    /// local reuse).
+    /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, fsync,
+    /// append, local reuse).
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
             _ if !receives => DeleteMode::Off,
@@ -206,6 +209,7 @@ impl RoleOpts {
             ignore_errors: hello.ignore_errors,
             itemize: hello.itemize,
             inplace: receives && hello.inplace,
+            fsync: receives && hello.fsync,
             numeric_ids: hello.numeric_ids,
             append: match hello.append() {
                 _ if !receives => Append::Off,
@@ -268,6 +272,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
     hello.numeric_ids = o.numeric_ids;
     hello.checksum = o.checksum;
     hello.inplace = o.inplace;
+    hello.fsync = o.fsync;
     hello.append = match o.append {
         Append::Off => WireAppend::AppendOff,
         Append::Append => WireAppend::Append,
@@ -808,6 +813,9 @@ pub struct Place {
     pub root: PathBuf,
     pub export: String,
     pub rel: RelPath,
+    /// The export's `fsync` setting: a push into it flushes every file,
+    /// whatever the client asked for.
+    pub fsync: bool,
 }
 
 /// `HelloAck` and plays the role opposite to the client's.
@@ -930,6 +938,7 @@ async fn serve_daemon_inner(
         root: export_root,
         export: export_name,
         rel,
+        fsync: export_fsync,
     } = place;
     let handshake = phase(
         PhaseKind::Handshake,
@@ -1116,6 +1125,7 @@ async fn serve_daemon_inner(
         opts: {
             #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
             let mut o = RoleOpts::daemon(&hello, !sends);
+            o.fsync |= export_fsync && !sends;
             #[cfg(feature = "test-hooks")]
             if let Some(p) = std::num::NonZeroUsize::new(
                 shared
@@ -1658,6 +1668,7 @@ pub(super) async fn test_ctx() -> TestCtx {
             ignore_errors: false,
             itemize: false,
             inplace: false,
+            fsync: false,
             numeric_ids: false,
             append: Append::Off,
         },

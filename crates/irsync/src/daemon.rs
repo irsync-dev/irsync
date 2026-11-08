@@ -521,6 +521,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
                 root,
                 export: name,
                 rel,
+                fsync: resolved.export.fsync,
             };
             let res = serve_daemon(conn, send, recv, place, hello, index, hosting, &local_id).await;
             #[cfg(feature = "test-hooks")]

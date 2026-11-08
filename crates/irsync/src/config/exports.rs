@@ -20,6 +20,10 @@ pub struct Export {
     /// Hash the export's files into its index when the daemon starts.
     #[serde(default)]
     pub warm_index: bool,
+    /// Flush every file a push writes into the export before placing it,
+    /// as if the client had passed `--fsync`.
+    #[serde(default)]
+    pub fsync: bool,
     #[serde(default)]
     pub rw: Vec<String>,
     #[serde(default)]

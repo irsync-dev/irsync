@@ -1031,3 +1031,35 @@ async fn a_late_first_chunk_does_not_persist_a_record() {
     let p = e.index.lock().unwrap().partial(&rel()).unwrap().unwrap();
     assert_eq!(p.size, data.len() as u64);
 }
+
+/// `--fsync` is opt-in, as in rsync: without `set_sync` finalize flushes
+/// nothing, with it the flush is timed.
+#[tokio::test]
+async fn finalize_flushes_only_when_asked() {
+    use irsync::telemetry::meter::{Counter, Meter};
+    use irsync::telemetry::{Role, Side};
+    for sync in [false, true] {
+        let e = env();
+        let data = content(5);
+        let cl = chunk_list(&data);
+        let meter = Meter::new(Side::Client, Role::Receiver, None, true);
+        let mut w = FileWriter::open_tracked(
+            &e.root,
+            &rel(),
+            &cl,
+            None,
+            e.index.clone(),
+            Default::default(),
+            Some(meter.clone()),
+        )
+        .unwrap();
+        if sync {
+            w.set_sync(true);
+        }
+        write_all(&mut w, &data, &cl, &all(&cl)).await;
+        w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+        assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
+        let flushed = meter.usage().count(Counter::FsyncNanos);
+        assert_eq!(flushed > 0, sync, "sync {sync}: {flushed} ns flushing");
+    }
+}

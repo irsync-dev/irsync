@@ -179,6 +179,18 @@ restart, send the signal yourself:
 kill -HUP $(pgrep -f 'irsync daemon')
 ```
 
+## Durability
+
+A push writes each file to a temporary name and renames it into place. By
+default, as in rsync, nothing is flushed to disk explicitly: a power loss or
+kernel crash in the seconds after a push can leave a file at its name with
+the right size and time but not its content, which the next quick check does
+not notice. A client asks for a flush per file with `--fsync`; an export
+with `fsync = true` (`irsync config set exports.NAME.fsync true`) flushes
+every push into it whatever the client asked. On a slow disk this costs
+time: about 30% of a push of 31,000 small files to btrfs on two spinning
+disks. Like `read_only`, the setting is read on every connection.
+
 ## Logs
 
 The daemon logs to stderr; journald and launchd's `StandardErrorPath` capture

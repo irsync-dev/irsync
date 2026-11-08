@@ -66,7 +66,12 @@ async fn pull_usage_counts_recv_write_place() {
     assert!(u.busy(Activity::Place) > Duration::ZERO);
     assert_eq!(u.count(Counter::DiskWrite), FILES * SIZE as u64);
     assert_eq!(u.count(Counter::BytesLiteral), out.bytes_transferred);
-    assert!(u.count(Counter::FsyncNanos) > 0);
+    assert_eq!(u.count(Counter::FsyncNanos), 0, "no flush without --fsync");
+    let mut opts = opts;
+    opts.fsync = true;
+    let (out, _h) = sync_trees(tree, |_| {}, &opts, Flow::Pull).await;
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(out.usage.count(Counter::FsyncNanos) > 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

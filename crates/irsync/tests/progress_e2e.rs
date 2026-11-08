@@ -222,8 +222,7 @@ async fn scanned_event_emitted_on_push() {
             fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
         // A dry run: the walk is what is tested, and placing 1100 files
-        // fsyncs each one (a full flush on macOS), which under load takes
-        // longer than the test may.
+        // under load takes longer than the test may.
         let (_, events) = run(&h, &opts(&["--dry-run"]), Flow::Push).await;
         assert!(
             events.iter().any(|e| matches!(e, Event::Scanned { party: Party::Local, entries, .. } if *entries >= 1000)),
@@ -575,8 +574,7 @@ async fn peer_listing_is_counted_on_push_and_local_walk_says_where_it_is() {
         }
         fs::write(h.dst(Flow::Push).join("extra"), b"x").unwrap();
         // A dry run: the walk is what is tested, and placing 1100 files
-        // fsyncs each one (a full flush on macOS), which under load takes
-        // longer than the test may.
+        // under load takes longer than the test may.
         let (_, events) = run(&h, &opts(&["--dry-run"]), Flow::Push).await;
         assert!(
             events

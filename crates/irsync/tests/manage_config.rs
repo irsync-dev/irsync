@@ -29,6 +29,7 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("daemon.listen")), Some(Kind::AddrArray));
     assert_eq!(kind_of(&p("hosts.home.reconnect")), Some(Kind::Duration));
     assert_eq!(kind_of(&p("exports.photos.read_only")), Some(Kind::Bool));
+    assert_eq!(kind_of(&p("exports.photos.fsync")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("hosts.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
     assert_eq!(kind_of(&p("all.rw")), Some(Kind::StrArray));
