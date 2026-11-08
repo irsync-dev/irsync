@@ -92,8 +92,10 @@ transfer  <span class="flow">[████████████░░░░�
 
   <section id="rsync" aria-labelledby="rsync-heading">
     <h2 id="rsync-heading">If you know rsync</h2>
-    <p><code>-a</code>, <code>-v</code> and rsync's trailing-slash rule work as
-    they do in rsync; <code>--delete</code> deletes after the transfer, as
+    <p><code>-a</code> and rsync's trailing-slash rule work as they do in
+    rsync; <code>-v</code> lists files as rsync's does, but <code>-vv</code>
+    and <code>-vvv</code> turn on debug and trace logs.
+    <code>--delete</code> deletes after the transfer, as
     <code>--delete-after</code> does. What changes is underneath.</p>
     <div class="table-scroll" tabindex="0" role="region" aria-label="irsync compared with rsync">
       <table>

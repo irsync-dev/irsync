@@ -12,7 +12,8 @@
   to direct connections. Relays are a fallback and are much slower. When one
   end sits behind a symmetric NAT and the other behind a symmetric or
   port-restricted NAT, hole punching fails and the connection stays on the
-  relay; then run a self-hosted relay and point `relay` in [`[client]`](configuration.md#client) and
+  relay; then run a self-hosted relay and point `relay` in
+  [`[client]`](configuration.md#client) and
   [`[daemon]`](configuration.md#daemon) at it. See
   [Connections](../explanation/connections.md#relays).
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data

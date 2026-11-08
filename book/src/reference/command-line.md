@@ -206,9 +206,6 @@ irsync gc [-n] [-v|-q] [--config PATH]
 
 ## Exit codes
 
-Of these, 23 and 25 have rsync's meaning; 1 and 2 do not (rsync uses 1 for a
-syntax or usage error and 2 for a protocol incompatibility).
-
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
@@ -216,6 +213,9 @@ syntax or usage error and 2 for a protocol incompatibility).
 | 2 | The command line could not be parsed: an unknown flag, a bad value, a missing operand. |
 | 23 | Partial transfer: some files could not be transferred, or some sources of a push failed while others synced. |
 | 25 | Deletions stopped at `--max-delete`. |
+
+Of these, 23 and 25 have rsync's meaning; 1 and 2 do not (rsync uses 1 for a
+syntax or usage error and 2 for a protocol incompatibility).
 
 When several apply, 25 wins over 23. A file listing, `irsync HOST:PATH`, is a
 dry-run pull and uses the same codes; the export listing, `irsync HOST:`,

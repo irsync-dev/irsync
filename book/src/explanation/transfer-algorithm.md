@@ -162,7 +162,8 @@ The first hides the per-file round trips; the second fills the link.
 - **Small edits in large files.** The delta block is chosen per chunk, not per
   file, so a one-byte edit in a 1 GiB file costs about 1 KiB of literal
   against rsync's 32 KiB, and a hundred scattered 4 KiB writes about 0.6 MiB
-  of literals and 1 MiB of signatures against rsync's 3.2 MiB.
+  of literals and 1 MiB of signatures against rsync's 3.2 MiB of literals and
+  224 KiB of signatures.
 - **Atomic and cheap updates at once.** Where the filesystem clones files, a
   changed file costs only its changed chunks in space and writes and still
   lands by rename. rsync gets the first only with `--inplace`, which gives up

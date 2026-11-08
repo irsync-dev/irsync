@@ -41,7 +41,8 @@ A client opens one QUIC connection to the daemon's `EndpointId`. Before it
 accepts any stream, the daemon reads its grants afresh and looks up the
 verified key of the client. A key that no grant names, or a configuration that
 cannot be read, gets the connection closed with application code 1
-(`unauthorized`) and no message. See [Identity and trust](../explanation/identity-and-trust.md).
+(`unauthorized`) and no message. See
+[Identity and trust](../explanation/identity-and-trust.md).
 
 Close codes:
 
@@ -194,8 +195,8 @@ the chunk's hash like any other. How the receiver chooses and uses bases is in
 
 A `Heartbeat` means "I am busy". A side sends one every 500 ms in which it made
 progress: hashing, writing, finalizing, deleting, or traffic. It carries what
-the other side cannot otherwise see: the directory this side's walk is in, the bytes
-its planner found up to date, and its deletion count. An idle side sends none,
+the other side cannot otherwise see: the directory this side's walk is in,
+the bytes its planner found up to date, and its deletion count. An idle side sends none,
 so a stuck side still times out. See
 [Sessions and resume](../explanation/sessions-and-resume.md#timeouts).
 
@@ -214,6 +215,6 @@ whole-file hash and the exact chunk boundaries (offset, length, BLAKE3 hash)
 of 1 MiB from the xorshift64 generator seeded with `0x9E3779B97F4A7C15` (see
 `crates/irsync-proto/tests/chunk.rs`). An independent implementation must
 reproduce it exactly to interoperate, because chunk boundaries decide which
-chunks a client and a daemon consider equal. `crates/irsync-proto/tests/golden_bytes.rs`
-pins the exact wire bytes of several messages, so a change of field number or
+chunks a client and a daemon consider equal.
+`crates/irsync-proto/tests/golden_bytes.rs` pins the exact wire bytes of several messages, so a change of field number or
 wire type shows.

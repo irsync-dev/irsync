@@ -12,9 +12,9 @@
 
 After the single-config work landed on main. Nothing below is tracked
 anywhere else: the code has no TODO markers, no ignored tests and no
-unfinished plan workspaces. Every fixable entry of the README's "Known
-limitations in version one" was fixed by 2026-10-29; what the README still
-lists there is by design (relay speed, Linux and macOS only).
+unfinished plan workspaces. Every fixable entry of the known limitations
+(now `book/src/reference/limitations.md`) was fixed by 2026-10-29; what the
+book still lists there is by design (relay speed, Linux and macOS only).
 
 ## fileset: deferred findings
 

@@ -43,7 +43,9 @@ case $1 in
     # check needs an irsync built from this commit.
     (cd "$root" && cargo build -p irsync)
     python3 -m unittest discover -s "$root/site/tools" -p 'test_*.py'
-    python3 "$root/site/tools/check.py" --irsync "$root/target/debug/irsync" "$site"
+    target_dir=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
+      python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+    python3 "$root/site/tools/check.py" --irsync "$target_dir/debug/irsync" "$site"
     pages_deploy "$site" irsync-dev
     # Copy beside, then swap, so a failed copy never leaves a partial staging copy.
     rm -rf "$staging.new"
