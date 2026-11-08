@@ -64,14 +64,27 @@ pub struct Args {
 const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
                              {usage-heading} {usage}\n\n{all-args}{after-help}";
 
-/// Cross-cutting facts about a sync that no single flag's help can carry.
+/// A first sync, from nothing to a push and a pull.
 const AFTER_HELP: &str = "\
-Notes:
-  The daemon honours the client's flags in both directions, filters
-  included; only an absolute --partial-dir is refused on a push.
-  Exit codes: 0 ok, 1 nothing got through (a configuration, identity,
-  operand or connection error), 2 command line not parsed, 23 partial
-  transfer, 25 deletions stopped at --max-delete; 23 and 25 as in rsync.";
+Getting started:
+  On the client, print its id (the second line):
+    irsync id show
+
+  On the server, export a directory, let the client in and start the daemon:
+    irsync export add photos:/srv/photos        # prints the server's id
+    irsync host add myclient <client-id>
+    irsync grant add photos myclient
+    irsync daemon
+
+  On the client, name the server, then list, push and pull:
+    irsync host add myserver <server-id>
+    irsync myserver:                            # the exports you may use
+    irsync -av ~/Photos/ myserver:photos/       # push the contents of ~/Photos
+    irsync -av myserver:photos/ ~/Photos/       # pull them back
+    irsync -avn --delete ~/Photos/ myserver:photos/   # dry run, with deletions
+
+  A trailing / on the source copies its contents, as in rsync.
+  The book: https://irsync.org/book/";
 
 impl Args {
     /// The command with the help template applied to the subcommands too,
