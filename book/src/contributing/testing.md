@@ -18,7 +18,8 @@ sub-chunk delta and its fallbacks; `inplace.rs` covers the cloned `.part`,
 `--inplace` and `--append` (the clone tests skip, and say so, where `target/`
 is on a filesystem that cannot clone); `content_equal.rs` covers settling in
 place and `-c`; `warm.rs` covers same-size candidates and `irsync index`;
-`recv.rs` holds the writer-level tests.
+`recv.rs` holds the writer-level tests; `plan.rs` pins the planner's
+`--append` and `--append-verify` decisions.
 
 To find the code for a step: the early hash is the `Delta` arm of
 `session/planner.rs`; opening, comparing, partitioning and choosing bases are

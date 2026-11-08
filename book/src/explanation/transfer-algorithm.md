@@ -181,9 +181,10 @@ The first hides the per-file round trips; the second fills the link.
   against its BLAKE3 hash, against rsync's 2- to 16-byte truncated MD5 per
   block. A source file that changes during the transfer is caught before stale
   bytes leave the sender.
-- **Sender CPU.** A file without a basis costs the sender one hash pass. The
-  rolling match runs only over chunks the receiver offered a basis for, not
-  over every byte of every changed file.
+- **Sender CPU.** A changed or new file costs the sender BLAKE3 hashing
+  only: one pass for its chunk list, and each requested chunk hashed again as
+  it is read for sending. The rolling match runs only over chunks the receiver
+  offered a basis for, not over every byte of every changed file.
 - **Reachability and identity.** NAT traversal and pinned keys without SSH or
   port forwarding (see [Identity and trust](identity-and-trust.md)). This is
   irsync's reason to exist, not a property of the algorithm.
@@ -216,7 +217,7 @@ The first hides the per-file round trips; the second fills the link.
   zeros shorter than a chunk is written. rsync `-S` finds zero runs at write
   granularity.
 - **Fixed chunk parameters.** The chunk sizes are protocol constants. Changing
-  them needs a new protocol version and invalidates every index on every peer.
+  them needs a new protocol version and invalidates every index on every machine.
 - **Memory per file in flight.** The receiver holds two copies of a file's
   chunk list while it is in flight, about 48 bytes per chunk each, which adds
   up when many large files are in flight at once.

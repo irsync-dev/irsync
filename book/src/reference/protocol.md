@@ -214,6 +214,6 @@ whole-file hash and the exact chunk boundaries (offset, length, BLAKE3 hash)
 of 1 MiB from the xorshift64 generator seeded with `0x9E3779B97F4A7C15` (see
 `crates/irsync-proto/tests/chunk.rs`). An independent implementation must
 reproduce it exactly to interoperate, because chunk boundaries decide which
-chunks two peers consider equal. `crates/irsync-proto/tests/golden_bytes.rs`
+chunks a client and a daemon consider equal. `crates/irsync-proto/tests/golden_bytes.rs`
 pins the exact wire bytes of several messages, so a change of field number or
 wire type shows.

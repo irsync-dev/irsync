@@ -282,7 +282,9 @@ The file counts as a metadata-only update: no bytes, no placed file. A
 metadata failure fails the file like a write error, and the next run tries
 again. A `touch` on either side, or a restore from backup, comes to one read
 of the old file on the side whose index row was stale, four small control
-messages and no write. Under `-c` no index row is trusted on either side, so
+messages and no write. The sender takes the count of files transferred from
+the receiver's `SessionDone`, so a push that only settles files in place
+reports zero files transferred. Under `-c` no index row is trusted on either side, so
 every file present on both sides takes this path, read once per side.
 
 ### Where the bytes land: a cloned .part, in place, or appended
@@ -299,7 +301,8 @@ chunk is read, verified and fed to the tree hash (`adopt_from`), and neither
 copied nor written. Only changed and moved chunks are written, and only those
 take new space. A refused clone (tmpfs, ext4, another device with
 `--partial-dir`) costs only the attempt, and the `.part` starts empty. A
-`.part` that already holds bytes is adopted as before.
+`.part` that already holds bytes is not cloned over; its recorded chunks are
+adopted as in step 3 of [Open and partition](#open-and-partition).
 
 **In place** (`--inplace`). `FileWriter::open_inplace` locks the destination
 itself, checks that it is the hashed inode, adopts the old chunks at unchanged
@@ -318,7 +321,9 @@ reuse, an insertion loses it. An in-place file gets one ascending request
 after its bases, so the sender opens its runs in order and the one the cursor
 needs is never behind the others. What `--inplace` costs, as in rsync:
 readers see a torn file during the transfer, a crash leaves a mixture of old
-and new, and hard links to the destination see the new content.
+and new, a whole-file hash mismatch leaves the destination inconsistent until
+the retry, hard links to the destination see the new content, and a file has
+one write front, the gate's cursor.
 
 **Append** (`--append`; planner decision `Append`, action `APPEND`). The
 sender's list covers only the tail. `open_writer` awaits the old file's hash,
