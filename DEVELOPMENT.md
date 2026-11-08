@@ -49,8 +49,8 @@ move to GitHub.
   adds the test fields of `SideHooks` (`crates/irsync/src/session/mod.rs`):
   injected faults, slowed steps, a cap on files in flight, and the
   receiver's event log, which `crates/irsync/tests/delta.rs` checks the
-  order of steps against (see [docs/DELTA_RECEIVE.md](docs/DELTA_RECEIVE.md),
-  section 5).
+  order of steps against (see
+  [book/src/contributing/testing.md](book/src/contributing/testing.md)).
 
 To check by hand that a build without `otel` ignores the telemetry
 settings:
@@ -121,9 +121,9 @@ Decisions and first results:
 
 | Document | What it holds |
 | --- | --- |
-| [docs/protocol.md](docs/protocol.md) | The wire protocol. Protocol and on-disk state change without compatibility paths until the first release. |
-| [docs/DELTA_RECEIVE.md](docs/DELTA_RECEIVE.md) | How the receiver fills a changed file: the overlapped delta algorithm. |
-| [docs/IRSYNC_VS_RSYNC.md](docs/IRSYNC_VS_RSYNC.md) | irsync's transfer algorithm compared critically with rsync's, and the remedies that came of it. |
+| [book/src/reference/protocol.md](book/src/reference/protocol.md) | The wire protocol. Protocol and on-disk state change without compatibility paths until the first release. |
+| [book/src/explanation/receiving-a-changed-file.md](book/src/explanation/receiving-a-changed-file.md) | How the receiver fills a changed file: the overlapped delta algorithm. |
+| [book/src/explanation/transfer-algorithm.md](book/src/explanation/transfer-algorithm.md) | irsync's transfer algorithm compared with rsync's, including where rsync is ahead. |
 | [docs/IRSYNC_DECISIONS.md](docs/IRSYNC_DECISIONS.md) | Design and implementation decisions of v1 that the code does not show, and the points knowingly left open. |
 | [docs/FILESET_DECISIONS.md](docs/FILESET_DECISIONS.md), [docs/FILEGEN_DECISIONS.md](docs/FILEGEN_DECISIONS.md), [docs/IRSYNC_HARNESS_DECISIONS.md](docs/IRSYNC_HARNESS_DECISIONS.md) | The same for fileset, filegen and irsync-stress; the last also lists the irsync bugs the harness found. |
 | [docs/STRESS_BUG_HUNTING.md](docs/STRESS_BUG_HUNTING.md) | A strategy for finding bugs with irsync-stress. |

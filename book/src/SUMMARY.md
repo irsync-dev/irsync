@@ -24,22 +24,22 @@
 - [Configuration](reference/configuration.md)
 - [Files and state](reference/files-and-state.md)
 - [Metrics](reference/metrics.md)
-- [Protocol]()
+- [Protocol](reference/protocol.md)
 - [The fileset format]()
 - [Known limitations](reference/limitations.md)
 
 # Explanation
 
-- [Sessions and resume]()
-- [Identity and trust]()
+- [Sessions and resume](explanation/sessions-and-resume.md)
+- [Identity and trust](explanation/identity-and-trust.md)
 - [Connections](explanation/connections.md)
-- [The transfer algorithm]()
-- [Receiving a changed file]()
+- [The transfer algorithm](explanation/transfer-algorithm.md)
+- [Receiving a changed file](explanation/receiving-a-changed-file.md)
 
 # Contributing
 
 - [Set up a development checkout]()
-- [Testing]()
+- [Testing](contributing/testing.md)
 - [Generating test trees with filegen]()
 - [Stress testing]()
 - [Network stress with netstress]()

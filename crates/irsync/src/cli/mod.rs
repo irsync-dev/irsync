@@ -366,7 +366,7 @@ pub struct HostAddArgs {
     /// stored list).
     #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
-    /// Files in flight at once when syncing with this host (default: the
+    /// Data streams a push to this host keeps open at once (default: the
     /// client settings', else 32).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
@@ -574,8 +574,8 @@ pub struct SyncArgs {
     /// together in the destination.
     #[arg(short = 'H', long = "hard-links")]
     pub hard_links: bool,
-    /// Write every run of zeros as a hole; without it only files that are
-    /// sparse in the source are written sparse.
+    /// Leave chunks that are all zeros as holes; without it only files that
+    /// are sparse in the source are written sparse.
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
     /// List each file as it is handled, and log more per repeat (-vv:
@@ -670,8 +670,8 @@ pub struct SyncArgs {
     /// message for this long is dropped and the session reconnects. 0 = none.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
-    /// Files in flight at once (default: `parallel` from the host entry or
-    /// the client settings, else 32).
+    /// Data streams a push keeps open at once (default: `parallel` from the
+    /// host entry or the client settings, else 32).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:

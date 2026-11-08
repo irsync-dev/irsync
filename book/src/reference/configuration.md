@@ -124,7 +124,7 @@ built-in default.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `parallel` | `32` | Files in flight at once. Flag: `--parallel`. |
+| `parallel` | `32` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
@@ -151,7 +151,7 @@ be an `EndpointId`.
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. Cannot be combined with `--relay`. |
-| `parallel` | `[client]`'s | Files in flight at once. |
+| `parallel` | `[client]`'s | Data streams a push to this host keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |

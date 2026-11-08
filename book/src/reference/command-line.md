@@ -51,7 +51,7 @@ These have rsync's spelling and meaning.
 | `--devices` | Preserve character and block device nodes. |
 | `--specials` | Preserve FIFOs. Sockets are never copied. |
 | `-H`, `--hard-links` | Files linked together in the source are linked together in the destination. |
-| `-S`, `--sparse` | Write every run of zeros as a hole. Without it, only files that are sparse in the source are written sparse. |
+| `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. |
 | `-v`, `--verbose` | List each file as it is handled and end each session with a summary of time, CPU, memory and bytes. `-vv` adds debug logs, `-vvv` trace logs. |
 | `-q`, `--quiet` | Print errors only. Also turns the live progress block off. |
 | `-n`, `--dry-run` | Change nothing on either side. With `-v` or `-i`, list what would be done. |
@@ -108,7 +108,7 @@ These have no rsync counterpart.
 
 | Flag | Meaning |
 | --- | --- |
-| `--parallel N` | Files in flight at once. Default: `parallel` from the host entry, else from `[client]`, else 32. |
+| `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the host entry, else from `[client]`, else 32. A pull uses the daemon's 32. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
 | `--reconnect DUR` | How long to keep redialling after a dropped connection, as `<N>[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the host entry, else from `[client]`, else 24h. |
 | `--relay URL` | Use this relay server instead of the host entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the host entry, else from `[client]`. |
