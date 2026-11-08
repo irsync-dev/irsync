@@ -12,7 +12,8 @@
   to direct connections. Relays are a fallback and are much slower. Behind a
   symmetric NAT, where direct connections fail, run a self-hosted relay and
   point `relay` in [`[client]`](configuration.md#client) and
-  [`[daemon]`](configuration.md#daemon) at it.
+  [`[daemon]`](configuration.md#daemon) at it. See
+  [Connections](../explanation/connections.md#relays).
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data
   crosses the link as it is stored.
 - **Linux and macOS only**, on x86_64 and aarch64, as client and as daemon.

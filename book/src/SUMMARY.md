@@ -8,12 +8,12 @@
 
 # How-to guides
 
-- [Run the daemon]()
-- [Change exports and settings]()
-- [Connect directly or through a relay]()
+- [Run the daemon](how-to/run-the-daemon.md)
+- [Change exports and settings](how-to/change-exports.md)
+- [Connect directly or through a relay](how-to/direct-and-relay.md)
 - [Seed the index](how-to/seed-the-index.md)
 - [Clean up state](how-to/clean-up.md)
-- [Watch a transfer with telemetry]()
+- [Watch a transfer with telemetry](how-to/telemetry.md)
 - [Verify a transfer with fileset]()
 
 # Reference
@@ -22,8 +22,8 @@
 - [Management commands](reference/management.md)
 - [Remote addresses](reference/remote-addresses.md)
 - [Configuration](reference/configuration.md)
-- [Files and state]()
-- [Metrics]()
+- [Files and state](reference/files-and-state.md)
+- [Metrics](reference/metrics.md)
 - [Protocol]()
 - [The fileset format]()
 - [Known limitations](reference/limitations.md)
@@ -32,7 +32,7 @@
 
 - [Sessions and resume]()
 - [Identity and trust]()
-- [Connections]()
+- [Connections](explanation/connections.md)
 - [The transfer algorithm]()
 - [Receiving a changed file]()
 

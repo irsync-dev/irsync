@@ -134,13 +134,8 @@ built-in default.
 
 `congestion` picks the congestion controller of the side that sends: the
 client's (the host's, else `[client]`'s) for a push, the daemon's for a pull.
-`bbr` keeps the bottleneck's queue short and copes with random loss, as on
-mobile links. `cubic` keeps the link busier when the return path delays
-acknowledgements, typically an upload on a home line whose download is busy
-with other traffic; it was about 1.6 times faster in the netstress `dsl-video`
-profile, but it fills the line's queue, which adds latency for everything else
-on the line while it sends. The measurements are in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+When to choose `cubic` over `bbr`, with measurements, is in
+[Connections](../explanation/connections.md#congestion-control).
 
 ## Hosts
 

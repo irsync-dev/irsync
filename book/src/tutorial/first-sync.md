@@ -186,3 +186,5 @@ The alias is optional: the raw `EndpointId` works in its place, as in
   `grant`, `id` and `config`.
 - [Seed the index](../how-to/seed-the-index.md): when the server already
   holds a copy that `irsync` did not make.
+- [Run the daemon](../how-to/run-the-daemon.md): under systemd or launchd,
+  as its own account.

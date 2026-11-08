@@ -1,5 +1,5 @@
 # A local OpenTelemetry collector, Jaeger and Prometheus for trying irsync's
-# telemetry; see docs/telemetry.md. Start with:
+# telemetry; see book/src/how-to/telemetry.md. Start with:
 #   docker compose -f docs/telemetry/compose.yaml up -d
 services:
   collector:

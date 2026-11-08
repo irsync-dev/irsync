@@ -129,8 +129,8 @@ Decisions and first results:
 | [docs/STRESS_BUG_HUNTING.md](docs/STRESS_BUG_HUNTING.md) | A strategy for finding bugs with irsync-stress. |
 | [docs/NETSTRESS_HOW_IT_WORKS.md](docs/NETSTRESS_HOW_IT_WORKS.md) | How irsync-netstress and its fault layer work inside: the transport, the link and outage models, seeds, and how a run is judged. |
 | [docs/NETSTRESS_DECISIONS.md](docs/NETSTRESS_DECISIONS.md) | The calls made building irsync-netstress and its fault layer, and the first real runs. |
-| [docs/telemetry.md](docs/telemetry.md) | Spans, metrics and their sinks. |
-| [docs/daemon.md](docs/daemon.md) | Running the daemon. |
+| [book/src/how-to/telemetry.md](book/src/how-to/telemetry.md), [book/src/reference/metrics.md](book/src/reference/metrics.md) | Spans, metrics and their sinks. |
+| [book/src/how-to/run-the-daemon.md](book/src/how-to/run-the-daemon.md) | Running the daemon. |
 | `docs/superpowers/` | The specs (`specs/`), implementation plans (`plans/`) and progress ledgers (`ledgers/`) features were built from. |
 | [TODO.md](TODO.md) | Open ideas, in no particular order. |
 
@@ -154,7 +154,7 @@ Decisions and first results:
    and interleave their runs: old, new, old, new. Check that each run did the
    same work (`-v` shows files and bytes transferred) and that the trees match
    afterwards (`diff -r`), or the faster run may simply have done less. The
-   [Overhead](docs/telemetry.md#overhead) benchmark in the telemetry docs is
+   [Overhead](book/src/reference/metrics.md#overhead) benchmark in the telemetry docs is
    a worked example: interleaved runs, pooled medians, and CPU time
    reported beside wall time.
 4. **Prefer counts to times.** CPU time, context switches and syscall counts
@@ -224,7 +224,7 @@ Start here to see which phase and which side to look at.
 
 **Telemetry.** `--debug-addr` serves span timings and flamegraph input over
 HTTP. These are irsync's own spans, so they show time per phase rather than
-per function. See [docs/telemetry.md](docs/telemetry.md).
+per function. See [book/src/how-to/telemetry.md](book/src/how-to/telemetry.md).
 
 **`perf stat`.** CPU time and context switches for a whole process:
 
