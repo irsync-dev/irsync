@@ -10,7 +10,7 @@ landing page at `/` and this book at `/book/`.
 | `site/index.html`, `site/404.html`, `site/style.css`, `site/robots.txt`, `site/_headers` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
 | `site/tokens.json` | The design tokens: colours, type, spacing, radius, shadow. |
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
-| `site/build.sh`, `site/deploy.sh` | Build and deploy. Not deployed. |
+| `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/`. |
 
 ## Updating the design tokens
@@ -69,11 +69,17 @@ It enforces four things:
 ## Serving locally
 
 ```sh
-python3 -m http.server -d target/site 8000
+site/serve.sh
 ```
 
-Then open `http://localhost:8000/` and `http://localhost:8000/book/`. The
-local server ignores `_headers`; the headers apply on Cloudflare Pages only.
+It builds the site, serves `target/site/` at `http://localhost:9999/` and
+rebuilds whenever a file under `book/` or `site/` changes; open pages reload
+on their own. `site/serve.sh PORT` serves on another port. It needs Node.js:
+it runs `chokidar-cli` (the watcher) and `browser-sync` (the server) through
+`npx`, at the versions pinned at its top. Ctrl-C stops both.
+
+The local server ignores `_headers`; the headers apply on Cloudflare Pages
+only.
 
 ## Staging and production
 
