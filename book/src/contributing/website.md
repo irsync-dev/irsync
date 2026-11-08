@@ -25,7 +25,7 @@ radius and shadow on the site comes from these properties.
 
 ## Building
 
-The build needs mdbook 0.5.2 (it warns on any other version) and Python 3:
+The build needs mdbook and Python 3:
 
 ```sh
 site/build.sh

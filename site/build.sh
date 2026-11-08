@@ -22,10 +22,6 @@ case $base in
 esac
 out=$parent/$base
 
-if [ "$(mdbook --version)" != "mdbook v0.5.2" ]; then
-  echo "warning: built and tested with mdbook v0.5.2, found $(mdbook --version)" >&2
-fi
-
 tokens() { python3 "$root/site/tools/gen_tokens.py" "$root/site/tokens.json" "$@"; }
 
 # The book takes its tokens from the theme class mdbook puts on <html>.
