@@ -8,7 +8,7 @@ shipped.
 
 | Record | What it holds |
 | --- | --- |
-| [IRSYNC_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_DECISIONS.md) | irsync's design and implementation decisions that the code does not show (rulings R1 to R35), and the points knowingly left open. |
+| [IRSYNC_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_DECISIONS.md) | irsync's design and implementation decisions that the code does not show (its numbered rulings), and the points knowingly left open. |
 | [FILESET_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/FILESET_DECISIONS.md) | The rulings made while building `fileset`. |
 | [FILEGEN_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/FILEGEN_DECISIONS.md) | The rulings made while building `filegen`. |
 | [IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md) | The rulings made while building `irsync-stress`, the irsync bugs the harness found, its acceptance run and its sweeps. |

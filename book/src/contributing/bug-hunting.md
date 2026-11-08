@@ -211,7 +211,7 @@ should come with its own end-to-end test, like the existing one.
 
 A campaign is only readable when known failures are subtracted
 automatically. That takes a classifier script that attributes each failure
-to a known cause by its signature; the repository has none yet. Keep it
+to a known cause by its signature; the repository has none. Keep it
 under `crates/stress/tools/` and extend it with each new signature.
 
 ## Cadence

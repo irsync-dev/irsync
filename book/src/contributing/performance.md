@@ -4,7 +4,6 @@ How to find out where irsync spends its time, and how to tell whether a
 change made it faster. [Watch a transfer with telemetry](../how-to/telemetry.md)
 covers irsync's own timings; this page adds the method and the system tools.
 
-
 ## Method
 
 1. **Measure before changing anything.** Pick one workload that shows the

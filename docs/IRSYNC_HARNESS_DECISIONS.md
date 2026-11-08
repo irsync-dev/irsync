@@ -348,7 +348,7 @@ markers.
 
 ## Breadth sweeps
 
-The campaign of `book/src/contributing/bug-hunting.md` section 3, run with
+The campaign of `book/src/contributing/bug-hunting.md` "Breadth before depth", run with
 `crates/stress/tools/breadth.sh`: 20 iterations of 200 steps per run under
 a 4G cap (256M per file), client `--timeout 300`, both directions for every
 seed, eight runs at a time, the root of every passing run deleted.
@@ -385,6 +385,6 @@ What the sweep did not exercise, and so says nothing about: non-default
 filegen weights (hard links stay at about 1 percent, `set_xattr`, `chown`
 and `mknod` off), interrupted syncs, destination drift, and the `-c`
 flag, which the newest commit changed. These are the matrix rows and
-harness extensions of `book/src/contributing/bug-hunting.md` sections 4 and 6. The only
+harness extensions of `book/src/contributing/bug-hunting.md` "The campaign matrix" and "Harness extensions". The only
 artefacts kept are the two `summary.txt` files under
 `~/work/irsync-breadth-normal` and `~/work/irsync-breadth-paranoid`.
