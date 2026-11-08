@@ -46,7 +46,7 @@ html.ayu {
   --blockquote-caution-color: var(--ir-danger);
   --sidebar-header-border-color: var(--ir-accent);
   --mono-font: var(--ir-font-mono);
-  --code-font-size: calc(var(--ir-code-size) / var(--ir-body-size) * 1em);
+  --code-font-size: var(--ir-code-size);
 }
 
 html.light,
@@ -68,7 +68,7 @@ body {
 }
 
 .content main {
-  line-height: calc(var(--ir-body-line) / var(--ir-body-size));
+  line-height: var(--ir-body-line);
 }
 
 h1, h2, h3, h4, h5, h6,
@@ -80,7 +80,7 @@ h1, h2, h3, h4, h5, h6,
 
 h1 {
   font-size: var(--ir-display-size);
-  line-height: calc(var(--ir-display-line) / var(--ir-display-size));
+  line-height: var(--ir-display-line);
   font-weight: var(--ir-display-weight);
   letter-spacing: var(--ir-display-tracking);
 }
@@ -142,8 +142,16 @@ pre > code.hljs {
   padding: 0 var(--ir-space-1);
 }
 
-.content main pre,
+.content main pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* A table that is wider than the page scrolls inside itself; as a block box
+   it can, and its rows and cells keep their table layout in an anonymous
+   table. */
 .content main table {
+  display: block;
   max-width: 100%;
   overflow-x: auto;
 }
