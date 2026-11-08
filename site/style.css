@@ -91,7 +91,7 @@ a:hover {
 a:focus-visible,
 button:focus-visible,
 [tabindex]:focus-visible {
-  outline: none;
+  outline: 2px solid transparent;
   box-shadow: var(--ir-focus-ring);
 }
 
@@ -162,6 +162,7 @@ button:focus-visible,
   font-size: var(--ir-code-size);
   line-height: var(--ir-code-line);
   font-weight: var(--ir-heading-weight);
+  text-decoration: none;
 }
 
 .button:hover {
@@ -296,7 +297,7 @@ main > section > h2 + pre {
   line-height: var(--ir-code-small-line);
 }
 
-/* The rsync table scrolls inside itself. */
+/* The rsync table: three columns from 600px, one block per row below. */
 
 .table-scroll {
   overflow-x: auto;
@@ -305,7 +306,6 @@ main > section > h2 + pre {
 
 table {
   width: 100%;
-  min-width: 600px;
   border-collapse: collapse;
   font-family: var(--ir-font-mono);
   font-size: var(--ir-code-small-size);
@@ -333,6 +333,59 @@ tbody th {
 td code {
   font-size: inherit;
   line-height: inherit;
+}
+
+@media (max-width: 599px) {
+  thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  table,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+  }
+
+  tr {
+    padding: var(--ir-space-2) 0;
+    border-bottom: 1px solid var(--ir-line);
+  }
+
+  tbody th,
+  td {
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+
+  tbody th {
+    margin-bottom: var(--ir-space-1);
+  }
+
+  td {
+    position: relative;
+    padding-left: 8ch;
+  }
+
+  td::before {
+    position: absolute;
+    left: 0;
+    color: var(--ir-ink-muted);
+  }
+
+  td:nth-of-type(1)::before {
+    content: "rsync";
+  }
+
+  td:nth-of-type(2)::before {
+    content: "irsync";
+  }
 }
 
 .more {

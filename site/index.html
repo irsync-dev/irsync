@@ -47,9 +47,14 @@ photos /srv/photos rw
 list      31,204 entries  walking 2021/08/  peer 29,877 entries  walking 2021/07/
 transfer  <span class="flow">[████████████░░░░░░░░░░░░░░░░░░]</span>   40%  74.31G/183.62G  112.40MB/s  0:11:17  32 in flight  [direct]
   <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
-  <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   26%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
+  <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   25%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
   hashing                       2021/08/VID_20210815_101230.mov  640.55M
-  … and 29 more</pre>
+  <span class="flow">[█████████░░░░░░░░░░░]</span>   47%  2021/08/VID_20210811_200417.mov  212.37M  4.70MB/s
+  <span class="flow">[██████████████████░░]</span>   92%  2021/07/IMG_4502.dng  48.16M  3.20MB/s
+  <span class="flow">[██░░░░░░░░░░░░░░░░░░]</span>   11%  2021/07/IMG_4503.dng  46.90M  2.90MB/s
+  <span class="flow">[██████████░░░░░░░░░░]</span>   54%  2021/07/IMG_4470.heic  4.31M  2.40MB/s
+  <span class="flow">[█░░░░░░░░░░░░░░░░░░░]</span>    7%  2021/07/IMG_4471.heic  3.87M  1.10MB/s
+  … and 24 more</pre>
       <figcaption>The commands from <a href="book/tutorial/first-sync.html">Your first
       sync</a>. Below the files that <code>-v</code> lists, irsync draws a live block
       on a terminal: the listing on both sides, the transfer, and one row per file
@@ -65,7 +70,7 @@ transfer  <span class="flow">[████████████░░░░�
         <p>The daemon is reached by its <code>EndpointId</code>, the public half of
         its key, not by an address. The client pins that key for each host; there is
         no trust-on-first-use.</p>
-        <a href="book/explanation/connections.html#finding-the-daemon">Connections →</a>
+        <a href="book/explanation/identity-and-trust.html#the-client-pins-the-daemon">Identity and trust →</a>
       </li>
       <li class="card">
         <h3>Survives a bad link</h3>
@@ -76,9 +81,9 @@ transfer  <span class="flow">[████████████░░░░�
       </li>
       <li class="card">
         <h3>Fills the link</h3>
-        <p>Up to 4,096 files in flight per session over 32 QUIC data streams by
-        default, a scan that runs alongside the transfer, and a persistent index
-        that makes repeat runs over a mostly unchanged tree cheap.</p>
+        <p>Up to 4,096 files in flight per session hide the per-file round trips,
+        and up to 32 QUIC data streams by default fill the link; a large file spreads
+        over several streams.</p>
         <a href="book/explanation/transfer-algorithm.html#files-in-flight-and-streams">The transfer algorithm →</a>
       </li>
     </ul>
@@ -107,8 +112,7 @@ transfer  <span class="flow">[████████████░░░░�
         </tbody>
       </table>
     </div>
-    <p class="more"><a href="book/explanation/transfer-algorithm.html#compared-with-rsync">The full comparison →</a>
-    including where rsync is ahead.</p>
+    <p class="more"><a href="book/explanation/transfer-algorithm.html#compared-with-rsync">The full comparison, including where rsync is ahead →</a></p>
   </section>
 
   <section id="install" aria-labelledby="install-heading">

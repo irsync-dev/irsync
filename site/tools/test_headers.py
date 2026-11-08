@@ -56,6 +56,9 @@ class PatternTest(unittest.TestCase):
         self.assertFalse(pattern_matches("https://dev.irsync.org/*", "https://irsync.org/"))
         self.assertTrue(pattern_matches("https://:project.pages.dev/*", "https://irsync-dev.pages.dev/"))
         self.assertFalse(pattern_matches("https://:project.pages.dev/*", "https://irsync.org/"))
+        self.assertTrue(
+            pattern_matches("https://:version.:project.pages.dev/*", "https://0a1b2c3d.irsync-dev.pages.dev/")
+        )
 
 
 class HeadersTest(unittest.TestCase):
@@ -68,7 +71,14 @@ class HeadersTest(unittest.TestCase):
             for pattern, headers in self.rules.items()
             if headers.get("X-Robots-Tag") == "noindex"
         }
-        self.assertEqual(noindex, {"https://dev.irsync.org/*", "https://:project.pages.dev/*"})
+        self.assertEqual(
+            noindex,
+            {
+                "https://dev.irsync.org/*",
+                "https://:project.pages.dev/*",
+                "https://:version.:project.pages.dev/*",
+            },
+        )
         for pattern, headers in self.rules.items():
             if pattern_matches(pattern, "https://irsync.org/"):
                 self.assertNotIn("X-Robots-Tag", headers, pattern)

@@ -16,6 +16,11 @@ tokens() { python3 "$root/site/tools/gen_tokens.py" "$root/site/tokens.json" "$@
 tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
   -o "$root/book/theme/tokens.css"
 
+# Start from an empty output, so files removed from site/ do not linger.
+case $out in
+  "" | /) echo "refusing to build into '$out'" >&2; exit 1 ;;
+esac
+rm -rf "$out"
 mkdir -p "$out"
 mdbook build "$root/book" -d "$out/book"
 
