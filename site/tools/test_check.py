@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check import check_flags, check_links, check_moved, cli_flags
+from check import check_flags, check_fonts, check_links, check_moved, cli_flags
 
 
 def write(root, rel, text):
@@ -51,6 +51,19 @@ class LinkTests(TmpCase):
         )
         write(self.d, "b.html", '<h1 id="here">b</h1>')
         self.assertEqual(check_links(self.d), [])
+
+
+class FontTests(TmpCase):
+    def test_font_files_and_fonts_directory_are_reported(self):
+        write(self.d, "book/fonts/fonts.css", "")
+        write(self.d, "book/x/open-sans.woff2", "")
+        problems = check_fonts(self.d)
+        self.assertEqual(len(problems), 2, problems)
+
+    def test_site_without_fonts_passes(self):
+        write(self.d, "index.html", "<p>x</p>")
+        write(self.d, "book/css/general.css", "body { font-family: sans-serif; }")
+        self.assertEqual(check_fonts(self.d), [])
 
 
 class MovedTests(TmpCase):

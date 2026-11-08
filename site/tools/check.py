@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check the built site: links, references to moved files, documented flags."""
+"""Check the built site: links, no fonts, references to moved files, documented
+flags."""
 
 import argparse
 import re
@@ -81,6 +82,25 @@ def check_links(site_dir):
                     pages[target] = _parse(target)
                 if unquote(parts.fragment) not in pages[target].ids:
                     problems.append(f"{rel_src}: {ref}: no id #{parts.fragment}")
+    return problems
+
+
+# ---- fonts ----------------------------------------------------------------
+
+_FONT_SUFFIXES = {".woff", ".woff2", ".ttf", ".otf", ".eot"}
+
+
+def check_fonts(site_dir):
+    """No font files and no `fonts/` directory ship: the site uses the
+    system font stacks from the tokens."""
+    site_dir = Path(site_dir).resolve()
+    problems = []
+    for p in sorted(site_dir.rglob("*")):
+        rel = p.relative_to(site_dir)
+        if p.is_dir() and p.name == "fonts":
+            problems.append(f"{rel}: a fonts directory ships")
+        elif p.is_file() and p.suffix.lower() in _FONT_SUFFIXES:
+            problems.append(f"{rel}: a font file ships")
     return problems
 
 
@@ -233,7 +253,8 @@ def main(argv=None):
             text=True,
         ).stdout.strip()
     )
-    problems = check_links(args.site_dir) + check_moved(repo, MOVED_FILES)
+    problems = check_links(args.site_dir) + check_fonts(args.site_dir)
+    problems += check_moved(repo, MOVED_FILES)
     if args.irsync:
         pages = sorted((repo / "book/src").rglob("*.md"))
         pages += [repo / "site/index.html", repo / "README.md"]

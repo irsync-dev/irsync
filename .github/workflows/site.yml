@@ -1,9 +1,10 @@
 name: Site
 
-# A push to main that touches the site or the book builds it and deploys it to
-# staging (irsync-dev, dev.irsync.org). Running the workflow by hand promotes
-# the newest staging build to production (irsync-org, irsync.org): the same
-# files, downloaded from that run's artifact, not rebuilt.
+# A push to main that touches the site, the book, or what the site check reads
+# (the CLI's flags, files the book refers to) builds it, checks it and deploys
+# it to staging (irsync-dev, dev.irsync.org). Running the workflow by hand
+# promotes the newest staging build to production (irsync-org, irsync.org): the
+# same files, downloaded from that run's artifact, not rebuilt.
 
 on:
   push:
@@ -12,6 +13,11 @@ on:
       - book/**
       - site/**
       - README.md
+      - crates/**
+      - proto/**
+      - docs/**
+      - .githooks/**
+      - tools/**
       - .github/workflows/site.yml
   workflow_dispatch:
 

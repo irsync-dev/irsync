@@ -36,6 +36,11 @@ tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
 rm -rf "$out"
 mkdir -p "$out"
 mdbook build "$root/book" -d "$out/book"
+# The book uses the system font stacks from the tokens. The empty
+# book/theme/fonts/fonts.css keeps mdbook's web fonts out; drop that file too,
+# and its link from every page.
+rm -rf "$out/book/fonts"
+python3 "$root/site/tools/strip_font_link.py" "$out/book"
 
 # Landing page files; the tools, the token source and the scripts stay behind.
 for f in "$root"/site/*; do

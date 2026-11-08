@@ -7,9 +7,9 @@ landing page at `/` and this book at `/book/`.
 
 | Path | What it holds |
 | --- | --- |
-| `site/index.html`, `site/style.css`, `site/robots.txt`, `site/_headers` | The landing page and the files served next to it, copied as they are. |
+| `site/index.html`, `site/404.html`, `site/style.css`, `site/robots.txt`, `site/_headers` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
 | `site/tokens.json` | The design tokens: colours, type, spacing, radius, shadow. |
-| `site/tools/` | `gen_tokens.py` (tokens to CSS), `check.py` (the checker) and their tests. Not deployed. |
+| `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/deploy.sh` | Build and deploy. Not deployed. |
 | `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/`. |
 
@@ -33,6 +33,9 @@ site/build.sh
 
 It empties `target/site/`, generates the token CSS, builds the book into
 `target/site/book/` and copies the landing page files into `target/site/`.
+No font files ship: the site uses the system font stacks from the tokens. The
+empty `book/theme/fonts/fonts.css` keeps mdbook from copying its web fonts,
+and the build removes that stylesheet and its link from every book page.
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,
 because the build deletes it first. The check is on the resolved path, so a
 `target/` that is a symlink to somewhere outside the checkout is refused too.
@@ -46,11 +49,12 @@ python3 -m unittest discover -s site/tools -p 'test_*.py'
 ```
 
 `check.py` prints one line per problem and exits non-zero if there is any.
-It enforces three things:
+It enforces four things:
 
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
   resolves to a file, and every `#fragment` to an `id` on the target page.
   External links are not fetched.
+- **No fonts.** No font file and no `fonts/` directory is in the build.
 - **Moved files.** Documents that moved into the book (the list is
   `MOVED_FILES` in `check.py`) are not referred to, by path or by bare name,
   from any tracked file once they are gone. `docs/superpowers/` is history
@@ -101,29 +105,43 @@ site/deploy.sh promote
 
 `staging` refuses a working tree with uncommitted or untracked changes. It
 builds `target/site/`, writes the `HEAD` commit to `target/site/BUILD`,
-deploys to `irsync-dev`, and copies the build to `target/site-staging/`.
+builds irsync (`cargo build -p irsync`), runs the tool tests and the checker,
+and refuses to deploy when either fails. Then it deploys to `irsync-dev` and
+copies the build to `target/site-staging/`.
 `promote` deploys `target/site-staging/` to `irsync-org` and prints its
 `BUILD`. It refuses without a `target/site-staging/BUILD`, and when that
 `BUILD` differs from `https://dev.irsync.org/BUILD` or cannot be compared
 with it: someone else may have deployed staging since, and promotion ships
-only what staging serves. Run the checker before `staging`; the script does
-not.
+only what staging serves.
 
 ### After the move
 
 `.github/workflows/site.yml` takes over both deploys, and promotion goes
 through it rather than `site/deploy.sh promote`, whose local copy may not be
 the build staging serves. Its `staging` job runs on every push
-to `main` that touches `book/`, `site/`, `README.md` or the workflow: it runs
+to `main` that touches `book/`, `site/`, `README.md`, the workflow, or what
+the checker reads beyond them (`crates/`, `proto/`, `docs/`, `.githooks/`,
+`tools/`): it runs
 the tool tests, builds, runs the checker, uploads `target/site` as the
 artifact `site` and deploys it to `irsync-dev`. Its `promote` job runs only
 when the workflow is started by hand on `main` (Actions, Site, Run workflow): it
 downloads the `site` artifact of the newest successful push run on `main`,
 deploys it to `irsync-org` and writes its `BUILD` to the job summary. The
 repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` hold
-the credentials; only the two deploy steps see them. Artifacts expire after the repository's retention period
-(90 days by default); a staging build older than that has to be rebuilt by a
+the credentials; only the two deploy steps see them. Artifacts expire after
+the repository's retention period (90 days by default); a staging build older than that has to be rebuilt by a
 new push before it can be promoted.
+
+After the first deploy to each project, confirm that an unknown URL gets a
+404 status and not the landing page:
+
+```sh
+curl -I https://dev.irsync.org/nope
+```
+
+The first line of the answer should read `HTTP/2 404`. Cloudflare Pages
+serves `404.html` with that status; without one it would serve the landing
+page with a 200 for every unknown path.
 
 ## Indexing
 

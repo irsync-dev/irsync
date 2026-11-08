@@ -2,7 +2,8 @@
 # Deploy the site to Cloudflare Pages from a developer machine.
 #
 # Usage:
-#   site/deploy.sh staging   build target/site, deploy it to irsync-dev
+#   site/deploy.sh staging   build target/site, run the site tool tests and the
+#                            site check, deploy it to irsync-dev
 #                            (dev.irsync.org), keep a copy in target/site-staging/
 #   site/deploy.sh promote   deploy target/site-staging/ unchanged to irsync-org
 #                            (irsync.org)
@@ -38,6 +39,11 @@ case $1 in
     fi
     "$root/site/build.sh" "$site"
     echo "$build" >"$site/BUILD"
+    # The workflow's checks; set -e refuses the deploy when one fails. The flag
+    # check needs an irsync built from this commit.
+    (cd "$root" && cargo build -p irsync)
+    python3 -m unittest discover -s "$root/site/tools" -p 'test_*.py'
+    python3 "$root/site/tools/check.py" --irsync "$root/target/debug/irsync" "$site"
     pages_deploy "$site" irsync-dev
     # Copy beside, then swap, so a failed copy never leaves a partial staging copy.
     rm -rf "$staging.new"

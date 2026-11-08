@@ -58,7 +58,8 @@ transfer  <span class="flow">[████████████░░░░�
       <figcaption>The commands from <a href="book/tutorial/first-sync.html">Your first
       sync</a>. Below the files that <code>-v</code> lists, irsync draws a live block
       on a terminal: the listing on both sides, the transfer, and one row per file
-      with an open stream or a hash. Shown here at one moment.</figcaption>
+      that is being hashed or has a data stream open. <code>32 in flight</code>
+      counts those files. Shown here at one moment.</figcaption>
     </figure>
   </section>
 
@@ -81,9 +82,9 @@ transfer  <span class="flow">[████████████░░░░�
       </li>
       <li class="card">
         <h3>Fills the link</h3>
-        <p>Up to 4,096 files in flight per session hide the per-file round trips,
-        and up to 32 QUIC data streams by default fill the link; a large file spreads
-        over several streams.</p>
+        <p>A session keeps up to 4,096 files between request and acknowledgement,
+        which hides the per-file round trips, and up to 32 QUIC data streams by
+        default fill the link; a large file spreads over several streams.</p>
         <a href="book/explanation/transfer-algorithm.html#files-in-flight-and-streams">The transfer algorithm →</a>
       </li>
     </ul>
@@ -91,8 +92,9 @@ transfer  <span class="flow">[████████████░░░░�
 
   <section id="rsync" aria-labelledby="rsync-heading">
     <h2 id="rsync-heading">If you know rsync</h2>
-    <p><code>-a</code>, <code>-v</code>, <code>--delete</code> and rsync's
-    trailing-slash rule work as they do in rsync. What changes is underneath.</p>
+    <p><code>-a</code>, <code>-v</code> and rsync's trailing-slash rule work as
+    they do in rsync; <code>--delete</code> deletes after the transfer, as
+    <code>--delete-after</code> does. What changes is underneath.</p>
     <div class="table-scroll" tabindex="0" role="region" aria-label="irsync compared with rsync">
       <table>
         <thead>
@@ -105,7 +107,7 @@ transfer  <span class="flow">[████████████░░░░�
           <tr><th scope="row">Rename detection</th><td>none (name similarity only, <code>--fuzzy</code>)</td><td>by content: a renamed or copied file's chunks are found in the index and copied locally</td></tr>
           <tr><th scope="row">Digest caching across runs</th><td>none; <code>-c</code> re-reads everything</td><td>persistent SQLite index keyed on size, mtime, ctime, inode</td></tr>
           <tr><th scope="row">Streams</th><td>one, in order</td><td>up to <code>--parallel</code> QUIC streams (32 by default), runs split at 64 MiB</td></tr>
-          <tr><th scope="row">Files in flight</th><td>pipelined, bounded by the window</td><td>up to 4,096 per session</td></tr>
+          <tr><th scope="row">Files in flight</th><td>pipelined, bounded by the window</td><td>up to 4,096 per session, from request to acknowledgement</td></tr>
           <tr><th scope="row">Resume</th><td><code>--partial</code> keeps bytes; the next run re-checksums them</td><td>chunk-granular, verified ranges persisted; plan persisted</td></tr>
           <tr><th scope="row">Round trips before first data byte</th><td>~0 (pipelined)</td><td>1.5 (plan, chunk list, request)</td></tr>
           <tr><th scope="row">Compression</th><td><code>-z</code></td><td>none</td></tr>
