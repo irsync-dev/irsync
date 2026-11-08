@@ -1,0 +1,229 @@
+/* irsync book theme: mdbook's variables mapped onto the generated --ir-*
+   design tokens (theme/tokens.css, from site/tokens.json). The same mapping
+   serves all five mdbook themes; tokens.css switches the --ir-* values by
+   theme class. Written against mdbook v0.5.2. */
+
+html.light,
+html.rust,
+html.coal,
+html.navy,
+html.ayu {
+  --bg: var(--ir-surface);
+  --fg: var(--ir-ink);
+  --sidebar-bg: var(--ir-surface-raised);
+  --sidebar-fg: var(--ir-ink);
+  --sidebar-non-existant: var(--ir-ink-muted);
+  --sidebar-active: var(--ir-accent);
+  --sidebar-spacer: var(--ir-line);
+  --scrollbar: var(--ir-line-strong);
+  --icons: var(--ir-ink-muted);
+  --icons-hover: var(--ir-ink);
+  --links: var(--ir-link);
+  --inline-code-color: var(--ir-ink);
+  --theme-popup-bg: var(--ir-surface-raised);
+  --theme-popup-border: var(--ir-line-strong);
+  --theme-hover: var(--ir-accent-soft);
+  --quote-bg: var(--ir-surface-raised);
+  --quote-border: var(--ir-line);
+  --warning-border: var(--ir-warn);
+  --table-border-color: var(--ir-line);
+  --table-header-bg: var(--ir-line);
+  --table-alternate-bg: var(--ir-surface-raised);
+  --searchbar-border-color: var(--ir-line-strong);
+  --searchbar-bg: var(--ir-surface-raised);
+  --searchbar-fg: var(--ir-ink);
+  --searchbar-shadow-color: var(--ir-accent);
+  --searchresults-header-fg: var(--ir-ink-muted);
+  --searchresults-border-color: var(--ir-line-strong);
+  --searchresults-li-bg: var(--ir-surface-raised);
+  --search-mark-bg: var(--ir-accent-soft);
+  --footnote-highlight: var(--ir-accent-soft);
+  --overlay-bg: color-mix(in srgb, var(--ir-surface) 60%, transparent);
+  --blockquote-note-color: var(--ir-accent);
+  --blockquote-tip-color: var(--ir-accent);
+  --blockquote-important-color: var(--ir-ink-muted);
+  --blockquote-warning-color: var(--ir-warn);
+  --blockquote-caution-color: var(--ir-danger);
+  --sidebar-header-border-color: var(--ir-accent);
+  --mono-font: var(--ir-font-mono);
+  --code-font-size: calc(var(--ir-code-size) / var(--ir-body-size) * 1em);
+}
+
+html.light,
+html.rust {
+  --color-scheme: light;
+}
+
+html.coal,
+html.navy,
+html.ayu {
+  --color-scheme: dark;
+}
+
+/* Type */
+body {
+  font-family: var(--ir-font-sans);
+  font-size: var(--ir-body-size);
+  font-weight: var(--ir-body-weight);
+}
+
+.content main {
+  line-height: calc(var(--ir-body-line) / var(--ir-body-size));
+}
+
+h1, h2, h3, h4, h5, h6,
+.menu-title,
+#mdbook-searchbar,
+#mdbook-searchresults-header {
+  font-family: var(--ir-font-sans);
+}
+
+h1 {
+  font-size: var(--ir-display-size);
+  line-height: calc(var(--ir-display-line) / var(--ir-display-size));
+  font-weight: var(--ir-display-weight);
+  letter-spacing: var(--ir-display-tracking);
+}
+
+h2, h3, h4, h5, h6 {
+  font-weight: var(--ir-heading-weight);
+}
+
+h2 {
+  font-size: calc(var(--ir-heading-size) * 1.25);
+}
+
+h3 {
+  font-size: var(--ir-heading-size);
+}
+
+code,
+pre,
+.hljs,
+kbd {
+  font-family: var(--ir-font-mono) !important;
+}
+
+/* Shape: nearly square corners */
+pre,
+:not(pre) > code,
+.hljs,
+kbd,
+table,
+blockquote,
+.theme-popup,
+#mdbook-searchbar {
+  border-radius: var(--ir-radius-md);
+}
+
+pre > code.hljs,
+pre > .buttons button {
+  border-radius: var(--ir-radius-md);
+}
+
+/* Code blocks and inline code on the raised surface */
+pre,
+.hljs {
+  background: var(--ir-surface-raised);
+  color: var(--ir-ink);
+}
+
+pre {
+  border: 1px solid var(--ir-line);
+}
+
+pre > code.hljs {
+  border: 0;
+}
+
+:not(pre) > code {
+  background: var(--ir-surface-raised);
+  border: 1px solid var(--ir-line);
+  padding: 0 var(--ir-space-1);
+}
+
+.content main pre,
+.content main table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Focus */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 0;
+  box-shadow: var(--ir-focus-ring);
+}
+
+#mdbook-searchbar:focus,
+#mdbook-searchbar:active {
+  box-shadow: var(--ir-focus-ring);
+}
+
+/* Links keep an underline so colour is not the only cue */
+.content a:link,
+.content a:visited {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* Highlighting: ink for code, one accent for keywords, muted comments, warn
+   for literals; no further hues. These beat the per-theme highlight.js sheets
+   by specificity. */
+html .hljs-comment,
+html .hljs-quote {
+  color: var(--ir-ink-muted);
+  font-style: italic;
+}
+
+html .hljs-keyword,
+html .hljs-selector-tag,
+html .hljs-built_in,
+html .hljs-builtin-name,
+html .hljs-name,
+html .hljs-tag,
+html .hljs-section {
+  color: var(--ir-accent);
+}
+
+html .hljs-string,
+html .hljs-symbol,
+html .hljs-bullet,
+html .hljs-regexp,
+html .hljs-addition,
+html .hljs-number,
+html .hljs-literal,
+html .hljs-meta,
+html .hljs-type,
+html .hljs-params {
+  color: var(--ir-warn);
+}
+
+html .hljs-variable,
+html .hljs-template-variable,
+html .hljs-attribute,
+html .hljs-attr,
+html .hljs-link,
+html .hljs-title,
+html .hljs-selector-id,
+html .hljs-selector-class {
+  color: var(--ir-ink);
+}
+
+html .hljs-title,
+html .hljs-section,
+html .hljs-strong {
+  font-weight: 600;
+}
+
+html .hljs-addition,
+html .hljs-deletion {
+  background: transparent;
+}
+
+html .hljs-deletion {
+  color: var(--ir-danger);
+}

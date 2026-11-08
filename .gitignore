@@ -3,3 +3,4 @@
 /target
 # fileset manifests from manual runs of the tool, anywhere in the tree
 .fileset*
+/book/theme/tokens.css
