@@ -22,7 +22,7 @@ use stress::signals;
 use stress::tools::Tools;
 use stress::verify;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Congestion};
 use crate::netlog;
 use crate::profile::Profile;
 use crate::report::{self, NetIteration};
@@ -62,6 +62,11 @@ impl Syncer<'_> {
 }
 
 /// `IRSYNC_NETSIM=profile=<p>,side=<side>,seed=<seed>,stream=<stream>`.
+/// The client's `irsync.toml` with `[client] congestion` set.
+fn client_settings(c: Congestion) -> String {
+    format!("[client]\ncongestion = \"{}\"\n", c.name())
+}
+
 fn netsim_env(profile: Profile, side: &str, seed: u64, stream: u64) -> Vec<(OsString, OsString)> {
     vec![(
         "IRSYNC_NETSIM".into(),
@@ -107,15 +112,8 @@ pub fn run(net: &Cli) -> Result<i32> {
     run_file.write(&layout.run_file)?;
 
     let pid_slot = signals::install();
-    let (mut daemon, sync) = start_daemon(
-        &cli,
-        net.profile,
-        seed,
-        &layout,
-        &tools,
-        pid_slot,
-        &mut run_file,
-    )?;
+    let (mut daemon, sync) =
+        start_daemon(&cli, net, seed, &layout, &tools, pid_slot, &mut run_file)?;
     println!(
         "{}",
         report::header(
@@ -124,7 +122,10 @@ pub fn run(net: &Cli) -> Result<i32> {
             cli.direction,
             &daemon.startup.endpoint_id,
             &daemon.startup.address,
-            net.profile.name(),
+            &match net.congestion {
+                Some(c) => format!("{}, congestion {}", net.profile.name(), c.name()),
+                None => net.profile.name().to_string(),
+            },
         )
     );
 
@@ -191,13 +192,14 @@ pub fn run(net: &Cli) -> Result<i32> {
 /// handler and to `run.toml`.
 fn start_daemon<'a>(
     cli: &'a stress::cli::Cli,
-    profile: Profile,
+    net: &Cli,
     seed: u64,
     layout: &'a Layout,
     tools: &'a Tools,
     pid_slot: Arc<AtomicI32>,
     run_file: &mut NetRunFile,
 ) -> Result<(RunningDaemon, Syncer<'a>)> {
+    let profile = net.profile;
     let (client_config, _) = layout.client_side(cli.direction);
     let (daemon_config, daemon_data) = layout.daemon_side(cli.direction);
     let (key, _pub_line, client_id) =
@@ -206,6 +208,7 @@ fn start_daemon<'a>(
         config_dir: daemon_config,
         export_path: daemon_data,
         client_id: &client_id,
+        congestion: net.congestion.map(Congestion::name),
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;
     // From the spawn until the pid is in the slot the handler could not
@@ -232,6 +235,11 @@ fn start_daemon<'a>(
     run_file.write(&layout.run_file)?;
 
     let setup = client::setup(client_config, key)?;
+    if let Some(c) = net.congestion {
+        // The client's config is empty: this is all of it.
+        std::fs::write(&setup.config, client_settings(c))
+            .with_context(|| format!("writing {}", setup.config.display()))?;
+    }
     let mut extra: Vec<OsString> = vec![
         "--timeout".into(),
         profile.defaults().client_timeout_secs.to_string().into(),
@@ -383,6 +391,12 @@ mod tests {
         let mut want = vec![a.join("sub/.irsync.x.part"), b.join(".irsync.y.part")];
         want.sort();
         assert_eq!(leftover_parts(&[&a, &b]).unwrap(), want);
+    }
+
+    #[test]
+    fn client_settings_set_the_client_congestion() {
+        let t: toml::Table = client_settings(Congestion::Cubic).parse().unwrap();
+        assert_eq!(t["client"]["congestion"].as_str(), Some("cubic"));
     }
 
     #[test]

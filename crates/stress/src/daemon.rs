@@ -33,6 +33,8 @@ pub struct DaemonConfig<'a> {
     pub export_path: &'a Path,
     /// The client's EndpointId, granted read-write on the export.
     pub client_id: &'a str,
+    /// `[daemon] congestion` (`"bbr"` or `"cubic"`); unset: irsync's default.
+    pub congestion: Option<&'a str>,
 }
 
 /// The file [`write_config`] wrote.
@@ -56,9 +58,14 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
     let dir = c.config_dir;
     let state = dir.join("state");
     std::fs::create_dir_all(&state).with_context(|| format!("creating {}", state.display()))?;
+    let congestion = match c.congestion {
+        Some(name) => format!("congestion = {}\n", toml::Value::String(name.to_string())),
+        None => String::new(),
+    };
     let settings = format!(
         "state_dir = {}\n\
          [daemon]\n\
+         {congestion}\
          identity = {}\n\
          relay_mode = \"disabled\"\n\
          portmap = false\n\
@@ -515,6 +522,7 @@ mod tests {
             config_dir: &cfg,
             export_path: &export,
             client_id: "abc",
+            congestion: None,
         })
         .unwrap();
         assert_eq!(
@@ -533,6 +541,10 @@ mod tests {
         assert_eq!(d["identity"], s(cfg.join("daemon_ed25519")));
         assert_eq!(d["relay_mode"].as_str(), Some("disabled"));
         assert_eq!(d["portmap"].as_bool(), Some(false));
+        assert!(
+            d.get("congestion").is_none(),
+            "irsync's default unless asked"
+        );
         for k in ["dht", "dns", "mdns"] {
             assert_eq!(d["discovery"][k].as_bool(), Some(false));
         }
@@ -542,6 +554,23 @@ mod tests {
             toml::Value::Array(vec![toml::Value::String("abc".into())])
         );
         assert!(cfg.join("state").is_dir());
+    }
+
+    #[test]
+    fn write_config_sets_the_daemon_congestion_when_given() {
+        let t = tempfile::tempdir().unwrap();
+        let files = write_config(&DaemonConfig {
+            config_dir: t.path(),
+            export_path: t.path(),
+            client_id: "abc",
+            congestion: Some("cubic"),
+        })
+        .unwrap();
+        let parsed: toml::Table = std::fs::read_to_string(&files.config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(parsed["daemon"]["congestion"].as_str(), Some("cubic"));
     }
 
     #[test]

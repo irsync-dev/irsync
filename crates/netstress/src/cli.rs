@@ -8,6 +8,23 @@ use stress::cli::Direction;
 
 use crate::profile::Profile;
 
+/// irsync's `congestion` setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Congestion {
+    Bbr,
+    Cubic,
+}
+
+impl Congestion {
+    /// The name irsync's config files use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Congestion::Bbr => "bbr",
+            Congestion::Cubic => "cubic",
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "irsync-netstress", version)]
 pub struct Cli {
@@ -39,6 +56,11 @@ pub struct Cli {
     pub log_level: String,
     #[arg(long)]
     pub keep_going: bool,
+    /// QUIC congestion controller for both sides (written to the client's
+    /// `[client]` and the daemon's `[daemon]` config). Unset: irsync's
+    /// default.
+    #[arg(long, value_enum)]
+    pub congestion: Option<Congestion>,
     #[arg(long)]
     pub irsync: Option<PathBuf>,
     #[arg(long)]
@@ -103,6 +125,21 @@ mod tests {
             (s.max_total_size.as_deref(), s.max_file_size.as_deref()),
             (Some("32M"), Some("4M"))
         );
+    }
+
+    #[test]
+    fn congestion_is_unset_unless_given() {
+        let base = [
+            "irsync-netstress",
+            "--profile",
+            "dsl-video",
+            "--direction",
+            "push",
+        ];
+        let c = Cli::try_parse_from(base.iter().chain(&["/r"])).unwrap();
+        assert_eq!(c.congestion, None);
+        let c = Cli::try_parse_from(base.iter().chain(&["--congestion", "cubic", "/r"])).unwrap();
+        assert_eq!(c.congestion, Some(Congestion::Cubic));
     }
 
     #[test]

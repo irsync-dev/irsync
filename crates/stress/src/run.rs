@@ -214,6 +214,7 @@ fn start_daemon<'a>(
         config_dir: daemon_config,
         export_path: daemon_data,
         client_id: &client_id,
+        congestion: None,
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;
     // From the spawn until the pid is in the slot the handler could not

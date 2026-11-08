@@ -129,8 +129,10 @@ It exits non-zero if any run did not exit 0.
 Plan for the time. A full default sweep is 40 runs. With four sharing the
 CPU, a `dsl-video` pull run takes about 4 minutes, a `4g-vehicle` run 14
 to 23 minutes and a `dsl-video` push run about 30 (up to 37), because pushes
-go up the slow uplink. Expect over three hours at `JOBS=4`. Lower `JOBS` if
-syncs slow down enough to cause timeouts of their own.
+go up the slow uplink. Expect over three hours at `JOBS=4`. With
+`--congestion cubic` the `dsl-video` runs take about half as long and the
+`4g-vehicle` runs up to twice as long, so the total is about the same.
+Lower `JOBS` if syncs slow down enough to cause timeouts of their own.
 
 ### Reading the logs
 
@@ -345,6 +347,7 @@ irsync-netstress [OPTIONS] --direction <DIRECTION> --profile <PROFILE> <ROOT> [-
 | `--max-total-size <SIZE>` | Passed to filegen: the most data the tree may hold. | the profile's |
 | `--max-file-size <SIZE>` | Passed to filegen: the largest single file. | the profile's |
 | `--filegen-set <KEY=VALUE>` | An extra filegen `--set` for every filegen run; repeatable. | none |
+| `--congestion <bbr\|cubic>` | Write `congestion = "<NAME>"` into both the daemon's and the client's config, so both directions use that congestion control. | irsync's (`bbr`) |
 | `--log-level <LEVEL>` | Log level for the daemon and the client. | `debug` |
 | `--keep-going` | Carry on after a failed iteration instead of stopping. | off |
 | `--irsync`, `--filegen`, `--fileset <PATH>` | Use this binary instead of looking one up. The tools are looked up next to `irsync-netstress` first, then on `PATH`. | lookup |
