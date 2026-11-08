@@ -17,9 +17,9 @@ mostly unchanged tree cheap.
 
 ## Who this book is for
 
-People who copy large directory trees between machines they control, such as a
-laptop and a home server, and who want a transfer to finish after the network
-has failed along the way. If you know rsync, you know most of the command line:
+People who copy large directory trees between a client and a server, both
+machines they control, and who want a transfer to finish after the network has
+failed along the way. If you know rsync, you know most of the command line:
 irsync accepts many of rsync's flags, some with a different meaning, and adds
 its own; the [command-line reference](reference/command-line.md) lists them,
 and [Known limitations](reference/limitations.md#rsync-options-irsync-does-not-have)
