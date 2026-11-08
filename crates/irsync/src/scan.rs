@@ -104,11 +104,42 @@ pub fn walk(
 ) -> (mpsc::Receiver<ScanEvent>, oneshot::Receiver<ScanSummary>) {
     let (tx, rx) = mpsc::channel(1024);
     let (stx, srx) = oneshot::channel();
-    tokio::task::spawn_blocking(move || {
+    // Not `spawn_blocking`: the walk waits on the channel for as long as it
+    // runs (see `spawn_thread`).
+    drop(spawn_thread("irsync-walk", move || {
         let summary = run_walk(root, filters, opts, tx, meter);
         let _ = stx.send(summary);
-    });
+    }));
     (rx, srx)
+}
+
+/// Runs `f` on a thread of its own, not on tokio's blocking pool, and
+/// returns a handle that yields its result (aborting the handle stops only
+/// the waiting, as with `spawn_blocking`). For blocking work that lives as
+/// long as a walk and waits on bounded channels whose consumers depend on
+/// per-file blocking calls: on the pool, such tasks of concurrent sessions
+/// took every thread (tokio's limit is 512) while those calls queued behind
+/// them, and no session moved again. Must be called within a runtime.
+pub fn spawn_thread<T: Send + 'static>(
+    name: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let (tx, rx) = oneshot::channel();
+    let name = name.to_string();
+    let spawned = std::thread::Builder::new()
+        .name(name.clone())
+        .spawn(move || {
+            let _ = tx.send(f());
+        });
+    tokio::spawn(async move {
+        if let Err(e) = spawned {
+            panic!("cannot start thread {name}: {e}");
+        }
+        match rx.await {
+            Ok(v) => v,
+            Err(_) => panic!("thread {name} panicked"),
+        }
+    })
 }
 
 /// Puts a directory's children in file-name order, errors included: the

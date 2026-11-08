@@ -505,7 +505,9 @@ pub(super) fn spawn_listing(
         },
         spec.meter.clone(),
     );
-    tokio::task::spawn_blocking(move || {
+    // Waits on `listing` and `local` for the whole walk: a thread of its
+    // own, not one of the blocking pool's (see `scan::spawn_thread`).
+    crate::scan::spawn_thread("irsync-listing", move || {
         let _in_list = spec.phase.span().clone().entered();
         let under_skip = |p: &RelPath| {
             spec.skip.as_ref().is_some_and(|s| {

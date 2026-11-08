@@ -628,7 +628,9 @@ cross-referenced from commit messages and review notes.
      hold a thread for a whole session and need headroom under any cap.
    - *Next step.* Measure with (5), on a real disk: if a cap costs no wall
      time there, set `max_blocking_threads` in `run_daemon`, sized from
-     the core count plus the long-lived tasks per session.
+     the core count plus the long-lived tasks per session. The wall time
+     of the tmpfs push is set elsewhere; the next profile is of the
+     client and the pipeline between the two sides.
    - *Measured 2026-11-07 on the disk of (5): no cap while files are synced
      one by one.* Medians of four runs, wall / daemon CPU: with `sync_all`,
      default 22.5 s / 31 s, cap 64 229 s / 111 s, cap 16 373 s / 130 s,
@@ -638,9 +640,27 @@ cross-referenced from commit messages and review notes.
      (f80a77e) made it worse; with that fixed, cap 8 is 334 s and cap 16
      210 s, still ten times slower. Without per-file syncing a cap costs
      nothing at 16 (7.8 s against 10.4 s) but varies at 8 (8.4-61.8 s).
-     A cap becomes possible only together with (C1) or (B). The wall time
-     of the tmpfs push is set elsewhere; the next profile is of the
-     client and the pipeline between the two sides.
+     A cap becomes possible only together with (C1) or (B).
+   - *Measured 2026-11-08 without the sync ((B), now the default): a cap
+     buys little, and deadlocked the daemon.* Six interleaved runs per
+     cap, medians, wall / daemon CPU / context switches: default 6.9 s /
+     22.1 s / 790k; 64: 7.7 / 21.8 / 753k; 32: 8.4 / 21.3 / 719k; 16: 7.6
+     / 20.6 / 630k; 12: 8.8 / 21.6 / 575k; 8: 8.7 / 21.7 / 503k, every
+     wall range 5-15 s. On this 8-core machine the saving is 2-7% of CPU
+     (25% on the 32-core tmpfs runs above). With a cap of 8, four
+     concurrent pulls of the 31,531-file tree hung (1,063 files in 240 s,
+     the daemon idle), three finished: every pool thread was a session's
+     walk (`scan::walk`) or its listing loop (`control::spawn_listing`),
+     each blocked on a full bounded channel for the whole walk, while the
+     per-file reads that would let the peer drain them queued behind.
+     With tokio's default limit of 512 that is 256 concurrent sessions, a
+     number one client can open. Fixed by running both on threads of
+     their own (`scan::spawn_thread`); `tests/blocking_pool.rs` pins it.
+     With the fix and the cap of 8, the four pulls finished in 267-271 s
+     and six in 640-645 s, against 193-204 s for six uncapped: cold reads
+     gain from many in flight. The pool itself stays uncapped: that, and
+     an export's `fsync` or a client's `--fsync`, which would make a
+     capped pool ten times slower for that session.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
