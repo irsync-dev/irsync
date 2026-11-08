@@ -215,6 +215,11 @@ layer is holding packets back is not known; the tests listed above would
 separate these. The next step is to re-run the four with `--keep-going` and
 other seeds (`tools/sweep.sh`) to see how often each failure occurs.
 
+Answered since: the sweep below found the cause, a fixed 60 s limit in the
+sender (`STOPPED_TIMEOUT` in `send.rs`) that a slow uplink could not meet.
+It was removed in `2d7f708`, and the sweep after the timeout fix passed
+400 of 400 iterations.
+
 ### dsl-video pull after the final-review fixes (2026-11-07)
 
 One run, alone on the Mac, after the seed mixing (call 5), the new
