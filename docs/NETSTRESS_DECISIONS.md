@@ -399,3 +399,37 @@ push goes up the 1 Mbit/s uplink and BBR uses only about half of it there
 (see above). A full default sweep now takes over 3 hours at `JOBS=4`. A
 sweep on a build with `e9ce098` and `congestion = "cubic"` would show
 whether Cubic shortens the `dsl-video` push runs without hurting `4g-vehicle`.
+
+
+## Sweep with Cubic (2026-11-08)
+
+The same sweep with `--congestion cubic`, a new rig option that writes
+`congestion = "cubic"` into both the daemon's and the client's config, so
+both directions use Cubic. Build: `8ed0392` plus that option, so it also
+has the leftover-`.part` delete fix (`88a06c9`). Same seeds, so the same
+networks and the same dead zones as the BBR sweep above. About 3 h 12 min.
+Outputs and `summary.txt` are under `~/work/irsync-netstress-sweep-cubic`.
+
+40 of 40 runs and 400 of 400 iterations passed, with 99 dead zones in each
+`4g-vehicle` direction, all resumed. Mean run time (10 iterations), against
+the BBR sweep:
+
+| | BBR | Cubic | Cubic against BBR |
+| --- | --- | --- | --- |
+| `dsl-video` pull | 213 s (158 to 253) | 107 s (89 to 128) | 2 times as fast |
+| `dsl-video` push | 1798 s (1446 to 2234) | 1009 s (829 to 1256) | 44% less time |
+| `4g-vehicle` pull | 832 s (765 to 929) | 1556 s (1294 to 1790) | 87% more time |
+| `4g-vehicle` push | 1393 s (1169 to 1605) | 1768 s (1466 to 2079) | 27% more time |
+
+The ranges do not overlap in any row. This matches the two-run comparison
+under "Sweep after the listing-backpressure merge", at larger scale: Cubic wins clearly on the
+stable `dsl-video` line, BBR on the lossy `4g-vehicle` link. On `4g-vehicle`
+pull the gap is bigger than the 23 to 50% seen there. The longest single
+sync moved too: with BBR it was a `dsl-video` push (505 s), with Cubic a
+`4g-vehicle` push (488 s, seed 7, iteration 10). The wall time hardly
+changed, because the slow runs just moved from one profile to the other.
+
+So BBR stays the default: a slow sync on a bad mobile link hurts more than
+a slow one on a good line, and Cubic's full queue adds latency for other
+traffic on the line. Users on a stable wired line who sync a lot can set
+`congestion = "cubic"`.
