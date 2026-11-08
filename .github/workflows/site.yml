@@ -1,0 +1,89 @@
+name: Site
+
+# A push to main that touches the site or the book builds it and deploys it to
+# staging (irsync-dev, dev.irsync.org). Running the workflow by hand promotes
+# the newest staging build to production (irsync-org, irsync.org): the same
+# files, downloaded from that run's artifact, not rebuilt.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - book/**
+      - site/**
+      - README.md
+      - .github/workflows/site.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # Kept in step with site/deploy.sh.
+  WRANGLER_VERSION: 4.20.0
+  MDBOOK_VERSION: 0.5.2
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  staging:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency: site-staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install mdbook
+        run: |
+          mkdir -p "$RUNNER_TEMP/mdbook"
+          curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/v$MDBOOK_VERSION/mdbook-v$MDBOOK_VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/mdbook"
+          echo "$RUNNER_TEMP/mdbook" >> "$GITHUB_PATH"
+      - name: Build irsync (for the flag check)
+        run: cargo build -p irsync
+      - name: Site tool tests
+        run: python3 -m unittest discover -s site/tools -p 'test_*.py'
+      - name: Build
+        run: |
+          site/build.sh
+          echo "$GITHUB_SHA" > target/site/BUILD
+      - name: Check
+        run: python3 site/tools/check.py --irsync target/debug/irsync target/site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: target/site
+          include-hidden-files: true
+      - name: Deploy to irsync-dev
+        run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy target/site --project-name irsync-dev --branch main
+
+  promote:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency: site-promote
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the newest staging build
+        run: |
+          # --event push: a promote run of this workflow succeeds too, but has no artifact.
+          id=$(gh run list --workflow site.yml --branch main --event push --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$id" ]; then
+            echo "no successful staging run on main" >&2
+            exit 1
+          fi
+          gh run download "$id" -n site -D site-out
+      - name: Deploy to irsync-org
+        run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy site-out --project-name irsync-org --branch main
+      - name: Summary
+        run: echo "Promoted $(cat site-out/BUILD) to irsync.org" >> "$GITHUB_STEP_SUMMARY"

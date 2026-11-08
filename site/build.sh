@@ -3,8 +3,24 @@
 # Usage: site/build.sh [OUT]   (default: target/site)
 set -eu
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(cd "$(dirname "$0")/.." && pwd -P)
 out=${1:-"$root/target/site"}
+
+# OUT is emptied below, so it must be a directory under target/.
+mkdir -p "$root/target"
+base=$(basename "$out")
+parent=$(cd "$(dirname "$out")" 2>/dev/null && pwd -P) || {
+  echo "refusing to build into '$out': its parent directory does not exist" >&2
+  exit 1
+}
+case $parent/$base in
+  "$root"/target/*) ;;
+  *) echo "refusing to build into '$out': not under $root/target/" >&2; exit 1 ;;
+esac
+case $base in
+  . | ..) echo "refusing to build into '$out': not under $root/target/" >&2; exit 1 ;;
+esac
+out=$parent/$base
 
 if [ "$(mdbook --version)" != "mdbook v0.5.2" ]; then
   echo "warning: built and tested with mdbook v0.5.2, found $(mdbook --version)" >&2
@@ -17,9 +33,6 @@ tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
   -o "$root/book/theme/tokens.css"
 
 # Start from an empty output, so files removed from site/ do not linger.
-case $out in
-  "" | /) echo "refusing to build into '$out'" >&2; exit 1 ;;
-esac
 rm -rf "$out"
 mkdir -p "$out"
 mdbook build "$root/book" -d "$out/book"
