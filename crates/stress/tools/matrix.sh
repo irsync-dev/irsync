@@ -1,5 +1,5 @@
 #!/bin/bash
-# The campaign matrix of docs/STRESS_BUG_HUNTING.md section 4: one breadth.sh
+# The campaign matrix of book/src/contributing/bug-hunting.md: one breadth.sh
 # sweep per row, each aiming filegen or the client at one part of irsync.
 # Every passing run gets clean-check.sh (paranoid check, no .part left over).
 #

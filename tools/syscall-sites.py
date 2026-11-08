@@ -3,8 +3,8 @@
 
 Usage: tools/syscall-sites.py TRACE BINARY [FRAMES]
 
-BINARY is the traced irsync, built with line tables (see DEVELOPMENT.md,
-"Syscalls per call site"). Each output line is a count, the syscall (with
+BINARY is the traced irsync, built with line tables (see
+book/src/contributing/performance.md, "Syscalls per call site"). Each output line is a count, the syscall (with
 "(fd)" for a stat through a descriptor and the errno of failed calls) and
 the innermost FRAMES (default 3) frames in irsync's own sources."""
 import collections, re, subprocess, sys

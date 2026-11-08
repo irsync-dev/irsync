@@ -38,13 +38,13 @@
 
 # Contributing
 
-- [Set up a development checkout]()
+- [Set up a development checkout](contributing/setup.md)
 - [Testing](contributing/testing.md)
-- [Generating test trees with filegen]()
-- [Stress testing]()
-- [Network stress with netstress]()
-- [How netstress works]()
-- [Hunting bugs]()
-- [Performance]()
-- [Design records]()
+- [Generating test trees with filegen](contributing/filegen.md)
+- [Stress testing](contributing/stress.md)
+- [Network stress with netstress](contributing/netstress.md)
+- [How netstress works](contributing/netstress-internals.md)
+- [Hunting bugs](contributing/bug-hunting.md)
+- [Performance](contributing/performance.md)
+- [Design records](contributing/design-records.md)
 - [This website]()

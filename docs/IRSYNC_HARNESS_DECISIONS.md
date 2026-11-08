@@ -195,7 +195,7 @@ as the NAME_MAX fix: 50 `mkfifo` steps per run, no `CHG` lines.
 
 ### Idle watchdog versus the daemon's hashing (R35, reproduced)
 
-Found by the large-file matrix row of `docs/STRESS_BUG_HUNTING.md` on
+Found by the large-file matrix row of `book/src/contributing/bug-hunting.md` on
 2026-10-21: six seeds, both directions, five iterations of ten steps, files
 up to 8 GB under a 16 GB cap, filegen's size distribution tilted to large
 files, client `--timeout 10 -c`, four runs at a time on one disk. Two of the
@@ -239,7 +239,7 @@ Roots kept for inspection: `~/work/irsync-breadth-largefile/push-2` and
 
 ### Hard links: metadata applied through a link the source had broken
 
-Found by the hard-link matrix row of `docs/STRESS_BUG_HUNTING.md` on
+Found by the hard-link matrix row of `book/src/contributing/bug-hunting.md` on
 2026-11-06 (`hardlink` 10, `rename` and `rename_over` 8 in every row; seeds
 101 to 120, both directions, binaries of f9621a2). Seeds 109 and 112 failed
 in both directions, from iterations 9 and 13 on; the check reported only
@@ -348,7 +348,7 @@ markers.
 
 ## Breadth sweeps
 
-The campaign of `STRESS_BUG_HUNTING.md` section 3, run with
+The campaign of `book/src/contributing/bug-hunting.md` section 3, run with
 `crates/stress/tools/breadth.sh`: 20 iterations of 200 steps per run under
 a 4G cap (256M per file), client `--timeout 300`, both directions for every
 seed, eight runs at a time, the root of every passing run deleted.
@@ -385,6 +385,6 @@ What the sweep did not exercise, and so says nothing about: non-default
 filegen weights (hard links stay at about 1 percent, `set_xattr`, `chown`
 and `mknod` off), interrupted syncs, destination drift, and the `-c`
 flag, which the newest commit changed. These are the matrix rows and
-harness extensions of `STRESS_BUG_HUNTING.md` sections 4 and 6. The only
+harness extensions of `book/src/contributing/bug-hunting.md` sections 4 and 6. The only
 artefacts kept are the two `summary.txt` files under
 `~/work/irsync-breadth-normal` and `~/work/irsync-breadth-paranoid`.

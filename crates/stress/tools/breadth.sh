@@ -1,6 +1,6 @@
 #!/bin/bash
-# Breadth sweep from docs/STRESS_BUG_HUNTING.md: many seeds, short runs, both
-# directions, several at a time. Roots of passing runs are deleted (a pass is
+# Breadth sweep from book/src/contributing/bug-hunting.md: many seeds, short
+# runs, both directions, several at a time. Roots of passing runs are deleted (a pass is
 # reproducible from its seed); roots of failing runs are kept for diagnosis.
 #
 #   crates/stress/tools/breadth.sh [EXTRA irsync-stress ARGS...]

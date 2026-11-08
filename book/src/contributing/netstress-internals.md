@@ -1,25 +1,11 @@
-# How irsync-netstress works
+# How netstress works
 
-This explains what happens inside the network-fault rig: how the fault
+This page explains what happens inside the network-fault rig: how the fault
 layer gets between irsync and the network, how it decides what happens to
 each packet, and how the rig decides whether a run passed. For how to use
-it, see [crates/netstress/README.md](../crates/netstress/README.md). For
-the decisions made while building it and the first results, see
-[NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md).
-
-- [The big picture](#the-big-picture)
-- [Why a custom transport](#why-a-custom-transport)
-- [How irsync is wired to the fault layer](#how-irsync-is-wired-to-the-fault-layer)
-- [The path of one packet](#the-path-of-one-packet)
-- [The link model](#the-link-model)
-- [Handovers and dead zones](#handovers-and-dead-zones)
-- [Time](#time)
-- [Seeds and streams](#seeds-and-streams)
-- [What irsync does during a dead zone](#what-irsync-does-during-a-dead-zone)
-- [How the rig judges a run](#how-the-rig-judges-a-run)
-- [The counts](#the-counts)
-- [Simplifications](#simplifications)
-- [Where the code is](#where-the-code-is)
+it, see [Network stress with netstress](netstress.md). The decisions made
+while building it and the first results are in
+[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
 
 ## The big picture
 
@@ -34,7 +20,7 @@ There are two parts:
    daemon and on every client, plus checks that read the client logs to
    make sure the network did what it should.
 
-```
+```text
                          irsync-netstress
             (filegen, fileset, run.toml, logs, checks)
                |                                  |
@@ -72,7 +58,8 @@ whether, when and how often it gets sent.
 
 The alternatives, and why they were not used:
 
-- **A proxy between client and daemon**: ruled out by Mike.
+- **A proxy between client and daemon**: ruled out in the
+  [design](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-11-06-network-faults-design.md).
 - **The operating system's traffic shaping** (`pf` and dummynet on macOS,
   `tc netem` on Linux): needs root, and differs per system.
 - **turmoil or another whole-program simulator**: needs both peers in one
@@ -141,7 +128,7 @@ processes having to agree on timing.
 
 **Sending** (`Shared::send` in `transport.rs`):
 
-```
+```text
 iroh hands over a transmit (one packet, or several packed together)
   |
   split into individual packets
@@ -165,7 +152,7 @@ so the packet arrives when the model said it would.
 
 **Receiving** (`poll_recv` in `transport.rs`):
 
-```
+```text
 read a packet from the real socket
   |
   bigger than iroh's buffer?                                    yes -> drop (truncated)
@@ -236,10 +223,10 @@ extra delay.
 
 Between bursts the queue drains at the full link speed.
 
-An earlier version let the video overfill the queue, which dropped every
-irsync packet for up to about a second in every burst. That was a total
-blackout, not an overloaded line. See call 12 in
-[NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md).
+A video that filled the queue completely would drop every irsync packet
+for up to about a second in every burst: a total blackout, not an
+overloaded line. See call 12 in
+[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
 
 ### 4. Bursty loss
 
@@ -355,15 +342,15 @@ So each iteration has its own fault schedule, and that schedule does not
 depend on how many iterations ran before it: iteration 5 of seed 3 gets
 the same draws whether the run has 5 iterations or 50. A test checks
 that 10 seeds times 10 streams give 100 different seeds for each purpose.
-The first version mixed the parts more simply and many schedules came out
-the same; see call 5 in [NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md).
+Simpler mixing makes many schedules come out the same; see call 5 in
+[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
 
 ## What irsync does during a dead zone
 
 The rig gives the client `--timeout 10` (under the real profiles) and
 `--reconnect 5m`. A typical 4G dead zone of, say, 40 s then goes like this:
 
-```
+```text
   0 s   dead zone opens. Every packet in both directions is dropped.
         QUIC resends and sends keep-alives (every 5 s); all are dropped.
  10 s   client: "no activity; dropping the connection secs=10"
@@ -389,11 +376,10 @@ Why the numbers fit together:
 
 The sender waits for the receiver to confirm each piece of a file it sent,
 with no time limit of its own: on a slow link, many pieces share the line
-and confirmation can take minutes. Until 2026-11-07 that wait was capped at
-60 s, which failed healthy pushes over slow uplinks with
-`peer did not take the range in time`; the first sweep found it (see
-[NETSTRESS_DECISIONS.md](NETSTRESS_DECISIONS.md)). A dead peer still ends
-the wait, through a lost connection.
+and confirmation can take minutes. A fixed limit there fails healthy pushes
+over slow uplinks, as the first sweeps in
+[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md) show. A dead peer
+still ends the wait, through a lost connection.
 
 ## How the rig judges a run
 
@@ -440,7 +426,7 @@ or 23.
 Each transport counts what happens to its packets and logs it at `warn`
 every 10 s while traffic flows and once when the transport is dropped:
 
-```
+```text
 netsim: counts sent=4814 queue_drops=0 loss_drops=0 outage_drops=0 send_errors=0 truncated=0
 ```
 
@@ -449,7 +435,7 @@ failure. They answer "did the network do what the profile says, or
 something else?". For example, losses far above what the profile should
 give point at the fault layer; a stall with no drops at all points at
 irsync. The meaning of each count is in the
-[user guide](../crates/netstress/README.md#reading-the-logs).
+[user guide](netstress.md#reading-the-logs).
 
 The final line is best effort: a process that exits without closing its
 endpoint, like the daemon when the rig stops it, skips it, and its last

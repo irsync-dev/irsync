@@ -1,8 +1,8 @@
 #!/bin/sh
 # Refuses a push whose commits are not rustfmt-clean.
 #
-# The CI workflow checks formatting too, but it only runs on GitHub, and the
-# repository's remote is not there; this hook is what actually enforces it.
+# The CI workflow on GitHub (.github/workflows/ci.yml) checks formatting too;
+# this hook catches a formatting slip before the push leaves the machine.
 # Install once per clone:
 #
 #     git config core.hooksPath .githooks
