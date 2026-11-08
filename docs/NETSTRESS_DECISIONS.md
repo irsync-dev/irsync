@@ -263,7 +263,8 @@ seed 1 in either direction.
 
 `tools/sweep.sh` with its defaults: seeds 1 to 10, both profiles, both
 directions, 40 runs, four at a time, build `42d9b9c`. About 2.5 hours.
-Roots of the failing runs are under `~/work/irsync-netstress-sweep`.
+The failing runs' roots were deleted at the next sweep; their outputs and
+summary are kept under `~/work/irsync-netstress-sweep/prev`.
 
 | | runs that passed | iterations that passed |
 | --- | --- | --- |
@@ -370,3 +371,31 @@ Also seen: about 600 debug lines per sync of iroh's `failed to initiate NAT
 traversal: Not enough addresses`, because the fault layer gives each side
 only one address. Harmless noise.
 
+
+## Sweep after the timeout fix (2026-11-08)
+
+The same sweep, defaults again, on build `bc95ad2`: the timeout fix
+(`2d7f708`) and everything before it, but not the leftover-`.part` delete fix
+(`88a06c9`) or the `congestion` setting (`e9ce098`), so BBR throughout.
+About 3 h 15 min. Outputs and `summary.txt` are under
+`~/work/irsync-netstress-sweep`; every run passed, so no roots were kept.
+
+| | runs that passed | iterations that passed | the sweep before | mean run |
+| --- | --- | --- | --- | --- |
+| `4g-vehicle` pull | 10 of 10 | 100 of 100 (99 dead zones, all resumed) | 100 of 100 | 832 s |
+| `dsl-video` pull | 10 of 10 | 100 of 100 | 92 of 100 | 213 s |
+| `4g-vehicle` push | 10 of 10 | 100 of 100 (99 dead zones, all resumed) | 25 of 100 | 1393 s |
+| `dsl-video` push | 10 of 10 | 100 of 100 | 1 of 100 | 1798 s |
+
+400 of 400 iterations passed, with no exit 2 or 3 and no crash. The push
+direction, which failed in every run before, now passes: the longest single
+sync took 505 s (`dsl-video` push seed 6, iteration 1), far past the 60 s
+the old limit allowed. The 8 failed `dsl-video` pull iterations of the
+sweep before did not come back; they were not looked into further.
+
+What is left is speed, not correctness. A `dsl-video` push run takes about
+8 times as long as a pull run (the longest, seed 6, 2234 s), because the
+push goes up the 1 Mbit/s uplink and BBR uses only about half of it there
+(see above). A full default sweep now takes over 3 hours at `JOBS=4`. A
+sweep on a build with `e9ce098` and `congestion = "cubic"` would show
+whether Cubic shortens the `dsl-video` push runs without hurting `4g-vehicle`.

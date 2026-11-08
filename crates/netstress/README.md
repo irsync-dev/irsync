@@ -536,10 +536,12 @@ to `OUT/summary.txt`:
 
 It exits non-zero if any run did not exit 0.
 
-Plan for the time. A full default sweep is 40 runs of up to about 10
-minutes each, more when four share the CPU: the first `4g-vehicle` pull
-took 919 s that way. Expect two to three hours at `JOBS=4`. Lower `JOBS` if
-syncs slow down enough to cause timeouts of their own.
+Plan for the time. A full default sweep is 40 runs. With four sharing the
+CPU, a `dsl-video` pull run takes about 4 minutes, a `4g-vehicle` run 14
+to 23 minutes and a `dsl-video` push run about 30 (up to 37), because pushes
+go up the slow uplink. Expect over three hours at `JOBS=4` (3 h 15 min on
+2026-11-08). Lower `JOBS` if syncs slow down enough to cause timeouts of
+their own.
 
 ## Using the fault layer by hand
 
