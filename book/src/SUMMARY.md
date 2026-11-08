@@ -14,7 +14,7 @@
 - [Seed the index](how-to/seed-the-index.md)
 - [Clean up state](how-to/clean-up.md)
 - [Watch a transfer with telemetry](how-to/telemetry.md)
-- [Verify a transfer with fileset]()
+- [Verify a transfer with fileset](how-to/verify-with-fileset.md)
 
 # Reference
 
@@ -25,7 +25,7 @@
 - [Files and state](reference/files-and-state.md)
 - [Metrics](reference/metrics.md)
 - [Protocol](reference/protocol.md)
-- [The fileset format]()
+- [fileset](reference/fileset.md)
 - [Known limitations](reference/limitations.md)
 
 # Explanation

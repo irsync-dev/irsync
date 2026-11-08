@@ -331,5 +331,5 @@ deferred rather than fixed are listed in
   commits were rewritten after the fact because subagents running on a
   different model used their own name in the trailer.
 - The fjall backend preallocates a sparse 64 MiB journal on open. This is
-  noted in `crates/fileset/README.md` for the planned sqlite-vs-fjall
+  noted in `book/src/reference/fileset.md` for the planned sqlite-vs-fjall
   benchmark, since on-disk size is one of its measures.
