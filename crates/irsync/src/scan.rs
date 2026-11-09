@@ -80,6 +80,11 @@ pub struct ScanSummary {
     pub errors: Vec<(RelPath, String)>,
 }
 
+/// Threads a walk lists directories with. From a cold spinning disk more
+/// directories in flight let it order its reads; warm, the count makes no
+/// difference (`docs/IRSYNC_DECISIONS.md`, 2.1 item 7).
+pub const WALK_THREADS: usize = 16;
+
 #[derive(Debug, Clone, Copy)]
 pub struct WalkOpts {
     /// Walk the target if the root itself is a symlink to a directory.

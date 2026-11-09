@@ -35,7 +35,7 @@ identity = "~/.config/irsync/id_ed25519"
 state_dir = "~/.local/state/irsync"
 
 [client]                     # defaults for every host
-parallel = 32
+parallel = 128
 reconnect = "1d"
 dht = true
 mdns = true
@@ -125,7 +125,7 @@ built-in default.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `parallel` | `32` | Data streams a push keeps open at once. Flag: `--parallel`. |
+| `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |

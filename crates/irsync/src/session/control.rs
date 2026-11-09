@@ -30,14 +30,13 @@ use crate::hasher::Hasher;
 use crate::index::IndexHandle;
 use crate::net::frame::{read_msg, write_msg};
 use crate::plan::Side;
-use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
+use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts, WALK_THREADS};
 use crate::telemetry::Phase;
 
 /// How long to wait for the peer to take our last bytes before giving up.
 pub(super) const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Session rows are written at most this often (plus a final write).
 const PERSIST_EVERY: Duration = Duration::from_secs(2);
-const WALK_THREADS: usize = 4;
 
 /// What a role's main loop reacts to: inbound control frames, transport
 /// trouble, and completions of the tasks the role spawned.

@@ -179,6 +179,25 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
             duplicate: 0.0,
             cross: None,
         },
+        // For measurements only: a fast, clean long-distance link, 100
+        // Mbit/s each way and 80 ms round trip, with a queue of about twice
+        // its bandwidth-delay product.
+        ProfileName::TestWan => LinkParams {
+            rate_bps: (100_000_000, 100_000_000),
+            rate_change_ms: (0, 0),
+            queue_bytes: 2 * KIB * KIB,
+            base_delay_ms: 40,
+            jitter_ms: 0,
+            loss: GilbertElliott {
+                to_bad: 0.0,
+                to_good: 1.0,
+                loss_good: 0.0,
+                loss_bad: 0.0,
+            },
+            reorder: 0.0,
+            duplicate: 0.0,
+            cross: None,
+        },
     }
 }
 
@@ -203,7 +222,10 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             dead_zone_ms: (20_000, 60_000),
             dead_zone_after_bytes: (256 * KIB, 4 * KIB * KIB),
         }),
-        ProfileName::DslVideo | ProfileName::TestSlow | ProfileName::LongRtt => None,
+        ProfileName::DslVideo
+        | ProfileName::TestSlow
+        | ProfileName::LongRtt
+        | ProfileName::TestWan => None,
         ProfileName::TestBlackout => Some(OutageParams {
             handover_every_ms: (0, 0),
             handover_ms: (0, 0),

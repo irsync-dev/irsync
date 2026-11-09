@@ -75,8 +75,8 @@ unidirectional ones.
   contiguous requested chunks of one file, a run being cut at 64 MiB. Each
   starts with a `DataStreamHeader` (session id, file id, offset, length,
   index of the first chunk) and carries one `DataChunk` frame per chunk. A
-  sender keeps at most `--parallel` of them open, 32 by default; a daemon that
-  sends always uses 32.
+  sender keeps at most `--parallel` of them open, 128 by default; a daemon that
+  sends always uses 128.
 
 ## Handshake
 

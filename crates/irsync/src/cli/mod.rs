@@ -686,7 +686,7 @@ pub struct SyncArgs {
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
     /// Data streams a push keeps open at once (default: `parallel` from the
-    /// host entry or the client settings, else 32).
+    /// host entry or the client settings, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:

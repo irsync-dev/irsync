@@ -39,7 +39,6 @@ use crate::scan::{walk, ScanSummary, WalkOpts};
 pub const CANDIDATES: usize = 4;
 /// Files smaller than this are never candidates.
 pub const MIN_SIZE: u64 = CHUNK_PARAMS.min as u64;
-const WALK_THREADS: usize = 4;
 
 /// Regular files a receiver's walk listed without a fresh index row, by
 /// size: index keys, in walk order.
@@ -109,7 +108,7 @@ pub async fn index_root(
         Arc::new(FilterSet::new(vec![])),
         WalkOpts {
             follow_root_symlink: true,
-            threads: WALK_THREADS,
+            threads: crate::scan::WALK_THREADS,
             max_depth: None,
         },
         None,

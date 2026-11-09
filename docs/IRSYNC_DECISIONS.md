@@ -662,7 +662,7 @@ cross-referenced from commit messages and review notes.
      an export's `fsync` or a client's `--fsync`, which would make a
      capped pool ten times slower for that session.
 7. **Reading a cold source from a spinning disk** (measured 2026-11-09).
-   **Hashing done; walk threads and `--parallel` open.** A push from a
+   **Done.** A push from a
    source on the btrfs RAID1 pair of item 5, caches dropped before every
    run, to a daemon on tmpfs, so only the source's reads count; medians
    of three. Trees: item 1's 31,531 files of at most 16 KiB (321 MB),
@@ -698,12 +698,44 @@ cross-referenced from commit messages and review notes.
      sessions hashing at once fill tokio's 512-thread blocking pool;
      hash tasks never wait on each other, so other blocking work queues
      behind them instead of hanging as in item 6.
-   - *Open: walk threads and `--parallel`.* With the index filled, so
-     only the sends read: defaults (4 walk threads, `--parallel` 32) 24.3
-     s; `--parallel` 128: 20.3, 256: 20.4, 512: 21.5; 16 walk threads:
-     21.5; both: 15.9; 1 walk thread: 27.6; `--parallel` 1: 47.9.
-     `--parallel` also sets streams and memory per session, so it needs
-     its own look before its default moves.
+   - *Walk threads and `--parallel`.* With the index filled, so only the
+     sends read (build before the hashing change): 4 walk threads and
+     `--parallel` 32, the old defaults, 24.3 s; `--parallel` 128: 20.3,
+     256: 20.4, 512: 21.5; 16 walk threads: 21.5; both: 15.9; 1 walk
+     thread: 27.6; `--parallel` 1: 47.9. After the hashing change the same
+     four combinations took 23.9 / 20.0 / 22.1 / 15.2 s with the index
+     filled, and 15.3 / 15.5 / - / 14.9 s with it deleted (hashing then
+     reads ahead of the sends).
+   - *`--parallel` on a long link.* A stream holds its slot until the
+     peer has acknowledged its last byte, so it bounds files per round
+     trip, not only reads in flight. The small tree from tmpfs to tmpfs
+     through the netsim profile `test-wan` (100 Mbit/s each way, 80 ms
+     round trip, added for this): `--parallel` 32: 79.2 s (about 400
+     files a second, 32 per round trip); 64: 40.9; 128: 28.2; 256: 28.7,
+     against about 25 s for the bytes at the link's rate. Client RSS
+     209 MB at 32, 218 at 128; client CPU 72 s at 32, 32 s at 128.
+   - *What 128 streams cost.* In flight the connection is bounded by its
+     64 MiB send and receive windows whatever the stream count, and the
+     receiver accepts at most 256 streams. On the disk, 16 files of 256
+     MiB (four 64 MiB ranges each) took 23.4 s at 32 and 25.0 s at 128
+     (22.3 / 24.6 in an earlier set): 7-10% for files that large. Holding
+     ranges of at least 4 MiB to four at a time, as the hasher does, made
+     it worse (28.2 s at 32, 25.5 at 128; 128 x 4 MiB 4.2 -> 5.7 s) and
+     changed nothing over `test-wan` (48.9 vs 48.6 s): a send reads one
+     chunk at a time, paced by the network, so its reads do not thrash
+     as the hasher's long ones do. No such limit.
+   - *Walk threads alone: a no-change push.* 200,000 files of at most
+     512 bytes in 20,000 directories, filled once, then pushed again
+     with nothing to send, both trees on the HDD, caches dropped: 1
+     thread 35.6 s; 4: 26.9; 8: 25.7; 16: 23.9; 32: 24.5. Both on tmpfs,
+     warm, five runs: 3.6-3.85 s at every count from 1 to 32. `fileset`
+     saw 8 threads slower than 4 on a warm APFS SSD (kernel metadata
+     serialisation); that does not show here, on Linux.
+   - *Decision:* `scan::WALK_THREADS` = 16 (the session walk and index
+     warm-up, which had 4 each), `send::DEFAULT_PARALLEL` = 128 (a push's
+     default and what a daemon sends a pull with). Each walk starts its
+     own pool of that many threads, so a daemon walking for many sessions
+     at once holds four times the threads it did.
    - *Not the cause: on-disk order.* The trees were written by `cp -a`
      in directory order, irsync reads in sorted order. A copy laid out
      in sorted order by rsync made `tar` faster (10.3 s) but not irsync

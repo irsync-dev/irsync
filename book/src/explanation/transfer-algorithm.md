@@ -112,8 +112,8 @@ Two numbers bound how much a session has going at once.
   file's `.part` is opened by its first write, so files waiting for the
   sender's data hold no descriptor.
 - **Data streams**: the sender keeps at most `--parallel` QUIC streams open at
-  once, across all files of the session, 32 by default (`DEFAULT_PARALLEL` in
-  `crates/irsync/src/send.rs`). A daemon that sends always uses 32. A run of
+  once, across all files of the session, 128 by default (`DEFAULT_PARALLEL` in
+  `crates/irsync/src/send.rs`). A daemon that sends always uses 128. A run of
   contiguous chunks longer than 64 MiB is split, so one large file spreads
   over several streams.
 
@@ -136,7 +136,7 @@ The first hides the per-file round trips; the second fills the link.
 | Round trips before first data byte | ~0 (pipelined) | 1.5 (plan, chunk list, request) |
 | Serial disk passes before first data byte, one big changed file | 1 (basis checksums) | 1 (the sender's hash and the receiver's old-file hash run concurrently; local copies overlap the transfer) |
 | Extra receiver pass after last byte | none (MD5 computed while writing) | none (BLAKE3 folded from the verified chunks) |
-| Streams | one, in order | up to `--parallel` QUIC streams (32 by default), runs split at 64 MiB |
+| Streams | one, in order | up to `--parallel` QUIC streams (128 by default), runs split at 64 MiB |
 | Files in flight | pipelined, bounded by the window | up to 4,096 per session, fewer when the open-file limit is low |
 | Resume | `--partial` keeps bytes; the next run re-checksums them | chunk-granular, verified ranges persisted; plan persisted |
 | In place, append | `--inplace`, `--append`, `--append-verify` | the same three; by default a `.part` that is a reflink clone of the old file where the filesystem allows, so only changed chunks are written and the file is still renamed into place |

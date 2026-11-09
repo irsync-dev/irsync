@@ -35,6 +35,7 @@ pub enum ProfileName {
     TestBlackout,
     TestSlow,
     LongRtt,
+    TestWan,
 }
 
 impl FromStr for ProfileName {
@@ -47,6 +48,7 @@ impl FromStr for ProfileName {
             "test-blackout" => Ok(Self::TestBlackout),
             "test-slow" => Ok(Self::TestSlow),
             "long-rtt" => Ok(Self::LongRtt),
+            "test-wan" => Ok(Self::TestWan),
             _ => bail!("unknown profile {s:?}"),
         }
     }
@@ -60,6 +62,7 @@ impl std::fmt::Display for ProfileName {
             Self::TestBlackout => "test-blackout",
             Self::TestSlow => "test-slow",
             Self::LongRtt => "long-rtt",
+            Self::TestWan => "test-wan",
         })
     }
 }

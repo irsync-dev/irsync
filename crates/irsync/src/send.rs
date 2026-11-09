@@ -32,7 +32,12 @@ use crate::net::frame::write_msg;
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 
-pub const DEFAULT_PARALLEL: usize = 32;
+/// Data streams a sender keeps open at once. Each waits a round trip for
+/// the peer's acknowledgement after its last byte, so on a long link this
+/// bounds files per round trip; from a cold spinning disk it is also the
+/// reads in flight (`docs/IRSYNC_DECISIONS.md`, 2.1 item 7). The receiver
+/// accepts 256 at once (`net::endpoint`).
+pub const DEFAULT_PARALLEL: usize = 128;
 pub const DEFAULT_SPLIT_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// The most a bucket saves up while idle (and never more than one second

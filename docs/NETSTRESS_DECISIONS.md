@@ -31,7 +31,9 @@ Where the code and the spec differ, the code is what shipped.
    in seconds. The README marks it as not for campaigns.
    `test-slow` (added with the fix below) is irsync's own: a clean
    256 kbit/s uplink for a regression test of a push that takes over a
-   minute. The rig does not offer it.
+   minute. The rig does not offer it. Neither does it offer `test-wan`
+   (added 2026-11-09): 100 Mbit/s each way and 80 ms round trip, clean,
+   for measuring `--parallel` (`IRSYNC_DECISIONS.md`, 2.1 item 7).
 
 3. **When the dead zone opens.** After 256 KiB to 4 MiB of traffic (drawn per
    client process), not after a fixed time. One per client process, so one per

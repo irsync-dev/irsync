@@ -469,6 +469,14 @@ loss, no delay, no outages. irsync's test
 (in `crates/irsync/tests/netsim.rs`) uses it to push data that takes over
 a minute. `irsync-netstress` does not offer it.
 
+#### `test-wan`: for measurements
+
+A fast, clean long-distance link: 100 Mbit/s each way, 40 ms of delay in
+each direction (80 ms round trip), a 2 MiB queue, no loss, no outages. It
+was added to measure how `--parallel` bounds files per round trip (see
+`docs/IRSYNC_DECISIONS.md`, 2.1 item 7); set `IRSYNC_NETSIM` by hand, as for
+`test-slow`. `irsync-netstress` does not offer it.
+
 #### Where the numbers come from
 
 The numbers are a first proposal based on what these networks are known to
