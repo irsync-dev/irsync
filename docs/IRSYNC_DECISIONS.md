@@ -517,7 +517,9 @@ cross-referenced from commit messages and review notes.
      the slow `dsl-video` uplink the peer's default was slower on pulls,
      and the 10 s idle drops on pushes came from a large `SessionDone`
      (fixed 2026-11-09), which immediate ACKs only kept under the limit.
-     The immediate setting stays.
+     The immediate setting stays. The occasional multi-minute syncs on the
+     90 ms link were not an ACK effect but a bug in noq's BBR after a quiet
+     spell (2026-11-09, "The stalls on a long-delay pull" in the same file).
 2. **Application heartbeat (R35).** One peer's long local work (e.g. hashing
    a multi-GB file on a slow disk) is invisible to the other peer's idle
    watchdog. Mitigated by the 30-min daemon default and `idle_timeout = 0`.

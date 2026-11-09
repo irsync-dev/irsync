@@ -101,6 +101,10 @@ struct Inner {
     bucket: Option<Mutex<Bucket>>,
     active: AtomicU32,
     max_active: AtomicU32,
+    /// Sends waiting for the peer to allow another stream.
+    opening: AtomicU32,
+    /// Sends waiting for the peer to acknowledge every byte.
+    acking: AtomicU32,
     /// Told of every file's first stream and every chunk put on the wire.
     progress: std::sync::OnceLock<ProgressFn>,
     /// Times the disk reads and stream writes, and counts literal bytes.
@@ -181,7 +185,7 @@ impl Sender {
         split_threshold: u64,
         bwlimit: Option<u64>,
     ) -> Sender {
-        Sender {
+        let s = Sender {
             inner: Arc::new(Inner {
                 conn,
                 session_id: session_id.to_vec(),
@@ -192,12 +196,16 @@ impl Sender {
                 bucket: bwlimit.map(|b| Mutex::new(Bucket::new(b))),
                 active: AtomicU32::new(0),
                 max_active: AtomicU32::new(0),
+                opening: AtomicU32::new(0),
+                acking: AtomicU32::new(0),
                 progress: std::sync::OnceLock::new(),
                 meter: std::sync::OnceLock::new(),
                 #[cfg(feature = "test-hooks")]
                 truncate: std::sync::OnceLock::new(),
             }),
-        }
+        };
+        report_sends(Arc::downgrade(&s.inner));
+        s
     }
 
     /// The hashing step before a `ChunkList` is sent.
@@ -341,12 +349,12 @@ impl Sender {
                 if cancelled.load(Ordering::SeqCst) {
                     return Ok(());
                 }
-                let now = inner.active.fetch_add(1, Ordering::SeqCst) + 1;
-                inner.max_active.fetch_max(now, Ordering::SeqCst);
+                let active = Counted::new(&inner.active);
+                inner.max_active.fetch_max(active.now, Ordering::SeqCst);
                 let res = inner
                     .send_range(file_id, &full, &name, &rel, &digest, r, &bases, &sent)
                     .await;
-                inner.active.fetch_sub(1, Ordering::SeqCst);
+                drop(active);
                 if res.is_err() {
                     cancelled.store(true, Ordering::SeqCst);
                 }
@@ -387,6 +395,72 @@ fn split_ranges(sorted: &[usize], digest: &FileDigest, threshold: u64) -> Vec<Ra
     out
 }
 
+/// Counts one task in `counter` while it lives, so a task cancelled while
+/// it waits is uncounted too.
+struct Counted<'a> {
+    counter: &'a AtomicU32,
+    /// The count with this task in it.
+    now: u32,
+}
+
+impl<'a> Counted<'a> {
+    fn new(counter: &'a AtomicU32) -> Counted<'a> {
+        let now = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        Counted { counter, now }
+    }
+}
+
+impl Drop for Counted<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Logs at debug level, every 2 s while ranges are being sent, the
+/// connection's congestion window, round trip, congestion events and lost
+/// packets, and how many sends wait for a stream, wait for acknowledgement,
+/// or are moving data. A congestion window far below the link's capacity
+/// with no losses showed noq's BBR collapsing after a quiet spell (see "The
+/// stalls on a long-delay pull" in `docs/NETSTRESS_DECISIONS.md`). Ends
+/// with the sender.
+fn report_sends(inner: std::sync::Weak<Inner>) {
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let Some(i) = inner.upgrade() else { return };
+            let active = i.active.load(Ordering::SeqCst);
+            if active == 0 {
+                continue;
+            }
+            let opening = i.opening.load(Ordering::SeqCst);
+            let acking = i.acking.load(Ordering::SeqCst);
+            let paths = i.conn.paths();
+            let path = paths
+                .iter()
+                .find(|p| p.is_selected())
+                .or_else(|| paths.iter().next())
+                .map(|p| p.stats());
+            let (cwnd, rtt_ms, congestion_events) = path.map_or((0, 0, 0), |s| {
+                (s.cwnd, s.rtt.as_millis() as u64, s.congestion_events)
+            });
+            tracing::debug!(
+                cwnd,
+                rtt_ms,
+                congestion_events,
+                lost = i.conn.stats().lost_packets,
+                active,
+                opening,
+                acking,
+                moving = active.saturating_sub(opening + acking),
+                "sends"
+            );
+        }
+    });
+}
+
 impl Inner {
     async fn throttle(&self, n: u64) {
         if let Some(b) = &self.bucket {
@@ -418,7 +492,10 @@ impl Inner {
         // Verify the first chunk before opening a stream: the common
         // "file changed" case then never touches the wire.
         let first = read_chunk(&file, &chunks[0], name, r.first, self.meter.get()).await?;
-        let mut send = self.conn.open_uni().await.map_err(io::Error::other)?;
+        let opening = Counted::new(&self.opening);
+        let opened = self.conn.open_uni().await;
+        drop(opening);
+        let mut send = opened.map_err(io::Error::other)?;
         let _open = self.meter.get().map(|m| m.hold("irsync_streams_open"));
         let res = self
             .write_range(
@@ -514,7 +591,10 @@ impl Inner {
         // peer that answers anything acknowledges this data too; a dead one
         // ends the connection (QUIC idle timeout, `--timeout`), which ends
         // this wait with an error.
-        match send.stopped().await {
+        let acking = Counted::new(&self.acking);
+        let stopped = send.stopped().await;
+        drop(acking);
+        match stopped {
             Ok(None) => Ok(()),
             Ok(Some(code)) => Err(io::Error::other(format!(
                 "{name}: peer stopped stream with code {code}"
@@ -597,6 +677,25 @@ async fn read_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A send cancelled while it waits is no longer counted as waiting.
+    #[tokio::test]
+    async fn a_cancelled_wait_is_uncounted() {
+        let n = Arc::new(AtomicU32::new(0));
+        let task = tokio::spawn({
+            let n = n.clone();
+            async move {
+                let _waiting = Counted::new(&n);
+                std::future::pending::<()>().await;
+            }
+        });
+        while n.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn bucket_bursts_at_most_one_second_after_idle_at_low_limits() {

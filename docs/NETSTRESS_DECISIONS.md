@@ -479,9 +479,10 @@ What it shows:
 
 - **`long-rtt`: no difference.** In 12 of the 15 pulls all three settings
   took the same time to a tenth of a second. The totals come from three
-  syncs where one setting stalled for no visible reason, a different one
-  each time: `peer-default` once (193 s against 45 s), `immediate` once
-  and `gentle` once (77 s against 44 s). Pushes are held by the 10 Mbit/s
+  syncs where one setting stalled, a different one each time:
+  `peer-default` once (193 s against 45 s), `immediate` once and `gentle`
+  once (77 s against 44 s). The stalls were later traced to noq's BBR (see
+  "The stalls on a long-delay pull"). Pushes are held by the 10 Mbit/s
   uplink and are within 1% of each other. Immediate ACKs sent 5% more
   packets.
 - **`dsl-video` pull: `peer-default` is slower.** It lost in 2 of 3 seeds
@@ -516,11 +517,9 @@ down here.
 
 - **The 10 s drops at the end of a push.** First written up here as a
   resume the daemon refused; see the next section for what it really was.
-- **Random stalls on `long-rtt` pull.** Some syncs took 2 to 4 times their
-  usual time, with every setting. The info-level logs show nothing but the
-  periodic counts, so the cause is unknown; a debug-level rerun of one of
-  them (`long-rtt`, pull, seed 2, `--acks peer-default`, iteration 2, or
-  seed 5, `--acks immediate`, iteration 3) is the next step.
+- **Stalls on `long-rtt` pull.** Some syncs took 2 to 4 times their
+  usual time, with every setting. A bug in noq's BBR, not an ACK effect;
+  see "The stalls on a long-delay pull" below.
 
 
 ## The 10 s drops at the end of a push (2026-11-09)
@@ -570,3 +569,79 @@ reconnect, against 6 drops before. The end of a sync with many deletions
 now takes 2 to 7 s instead of 3 to 11 s. It is still slower than the size
 of the message explains, so the slow start after a quiet push remains;
 the client no longer mistakes it for a dead peer.
+
+
+## The stalls on a long-delay pull (2026-11-09)
+
+The stalls noted under "ACK settings on a long-delay link" come from noq's
+BBR, irsync's default congestion controller. After a quiet spell of about
+15 s with only small packets (heartbeats, control messages), BBR takes the
+trickle's rate for the link's bandwidth and its window drops from about
+1 MB to under 10 KB. It stays there for minutes, with no loss and no
+congestion signal on the link.
+
+**Reproduced** with `long-rtt`, pull, seed 2, the three `--acks` settings
+run at once (as in the ACK measurement), iterations of 60000 steps, 256 MiB,
+files up to 16 KiB. With BBR about one round in three had a sync of 394 s
+to over 20 min (stopped there), against about 50 s normally; the case
+stalled 4 times in 12 rounds, each time with `peer-default` (the ACK measurement had seen
+`immediate` and `gentle` stall too). Stack samples showed
+both processes idle, so it is neither disk nor CPU.
+
+**Traced** with debug lines on both sides, logged every 2 s. The sending
+side's stays as the debug-level `sends` line (`send::report_sends`):
+congestion window, round trip, congestion events, losses, and how many
+sends wait for a stream, wait for acknowledgement or move data. The
+client's line was dropped. They showed that the daemon's sends had all handed their data to QUIC and
+were waiting for acknowledgement; the client had about 30 streams open,
+reading as data trickled in; no errors, retries or losses. The daemon's
+path statistics then showed:
+
+```
+13:54:29 cwnd=1007213 rtt_ms=92 cong=0 lost=0
+(nothing but heartbeats for 15 s)
+13:54:45 cwnd=8713    rtt_ms=95 cong=0 lost=0
+13:55:03 cwnd=23184   rtt_ms=94 cong=0 lost=0
+...
+14:01:56 cwnd=24686   rtt_ms=95 cong=0 lost=0
+```
+
+About 20 to 30 KB a round trip is the 50 packets a second the fault layer
+counted during every stall.
+
+**Cubic does not stall.** The same case with `--congestion cubic`, 8 rounds
+of 3 runs of 3 iterations: 72 of 72 syncs passed, the slowest 65.7 s, no
+stall. Iteration 3 took 57 to 66 s, against about 50 s with BBR when BBR
+does not stall. Outputs under `~/work/irsync-netstress-cubic`.
+
+**Cause, in noq-proto 1.3.0** (1.4.0 has the same code). Two parts, found
+with a test that drives noq's `Bbr3` through bulk sending, 15 s of one
+packet every 500 ms, then bulk again:
+
+1. `Connection::poll_transmit` marks a path app-limited only when it sent
+   nothing (`last_packet_number.is_none() && !send_blocked`). A heartbeat
+   is a packet sent, so the quiet spell is not app-limited, and its
+   delivery rate counts as a bandwidth sample. Once BBR's max filter (two
+   probe cycles) has dropped the earlier samples, `max_bw` falls to about
+   13 KB/s, one packet per round trip.
+2. Even when told the sender is app-limited, `Bbr3::on_end_acks` clears its
+   app-limited marker and does not set it again in the same call (an
+   `if ... else if`), so every other heartbeat counts as a sample. With
+   both cleared and re-armed, the app-limited case keeps its estimate and
+   noq's 28 BBR tests still pass.
+
+In the simulation BBR recovers within about 6 s once bulk sending resumes;
+in irsync it stayed low for minutes. Why is not known; a guess is that
+irsync's traffic after the pause, many small streams each waiting for its
+acknowledgements, also looks partly app-limited.
+
+**What follows.** Cubic as the default would trade this for the losses
+measured under "Sweep with Cubic" (`4g-vehicle` pulls 87% slower), so BBR
+stays the default for now. The fix belongs in noq; a report with the test
+and the `on_end_acks` change is drafted. Part 1 needs noq to tell "ran out
+of data" from "stopped at the datagram batch limit" in `poll_transmit`.
+
+**Also seen:** the slower syncs that were not BBR stalls (70 to 77 s against
+about 50 s) were the client's delete pass. Three runs deleting about 6900
+deep paths each at the same time on one disk took 18 s, with the network
+idle.
