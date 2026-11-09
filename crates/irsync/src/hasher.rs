@@ -27,12 +27,23 @@ pub struct HashStats {
     pub bytes_hashed: AtomicU64,
 }
 
-/// Clones share the worker limit, the counters and the activity marker.
+/// Files of at least this many bytes are read [`LARGE_WORKERS`] at a time.
+pub const LARGE_FILE: u64 = 4 << 20;
+
+/// Large files read at once, whatever a hasher's worker limit. On a spinning
+/// disk many small files in flight let it order its reads, while more than
+/// a few long sequential reads make it seek between them (see
+/// `docs/IRSYNC_DECISIONS.md`, 2.1 item 7).
+pub const LARGE_WORKERS: usize = 4;
+
+/// Clones share the worker limits, the counters and the activity marker.
 #[derive(Clone)]
 pub struct Hasher {
     index: IndexHandle,
     root: PathBuf,
     sem: Arc<Semaphore>,
+    /// Taken before `sem` by a file of at least [`LARGE_FILE`] bytes.
+    large: Arc<Semaphore>,
     force: bool,
     stats: Arc<HashStats>,
     /// The session's activity marker: bumped on every digest completion and
@@ -128,12 +139,15 @@ fn lookup(index: &IndexHandle, path: &RelPath, want: Freshness) -> io::Result<Op
 }
 
 impl Hasher {
-    /// `workers` bounds how many files are read concurrently (minimum 1).
+    /// `workers` bounds how many files are read concurrently (minimum 1),
+    /// and at most [`LARGE_WORKERS`] of them large.
     pub fn new(index: IndexHandle, root: PathBuf, workers: usize) -> Hasher {
+        let workers = workers.max(1);
         Hasher {
             index,
             root,
-            sem: Arc::new(Semaphore::new(workers.max(1))),
+            sem: Arc::new(Semaphore::new(workers)),
+            large: Arc::new(Semaphore::new(workers.min(LARGE_WORKERS))),
             force: false,
             stats: Arc::new(HashStats::default()),
             activity: Arc::default(),
@@ -230,7 +244,20 @@ impl Hasher {
             .as_deref()
             .map(|m| m.hold("irsync_hash_queue_depth"));
         // Owned and moved into the blocking read: aborting this task must not
-        // free the worker while the read runs on.
+        // free the worker while the read runs on. A large file waits for its
+        // large slot first, so it holds no worker other files could use.
+        // The walk's size decides: a cache hit takes the slot too, briefly.
+        let large = if want.size >= LARGE_FILE {
+            Some(
+                self.large
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| io::Error::other("hasher closed"))?,
+            )
+        } else {
+            None
+        };
         let permit = self
             .sem
             .clone()
@@ -246,7 +273,7 @@ impl Hasher {
         let progress = self.progress.clone();
         let meter = self.meter.clone();
         let res = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let _permit = (permit, large);
             if !force {
                 if let Some(d) = lookup(&index, &path, want)? {
                     return Ok(d);

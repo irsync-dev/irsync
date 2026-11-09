@@ -30,8 +30,10 @@ use crate::hasher::Hasher;
 use crate::index::{IndexHandle, SessionRow};
 use crate::telemetry::meter::{Meter, Usage};
 
-/// Files hashed concurrently by a session's hasher.
-pub const HASH_WORKERS: usize = 4;
+/// Files hashed concurrently by a session's hasher, at most
+/// `hasher::LARGE_WORKERS` of them large. Many small reads in flight let a
+/// spinning disk order them (`docs/IRSYNC_DECISIONS.md`, 2.1 item 7).
+pub const HASH_WORKERS: usize = 128;
 
 /// Identity of a session: BLAKE3 over a canonical byte string of everything
 /// that changes what the session does (daemon, both locations, and the

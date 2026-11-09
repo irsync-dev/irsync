@@ -136,3 +136,55 @@ async fn a_forced_hasher_reports_no_cached_digest() {
     let forced = h.with_force(true);
     assert!(forced.cached(&it).unwrap().is_none());
 }
+
+/// Many small files are read at once, but at most `LARGE_WORKERS` large ones
+/// (a spinning disk seeks between long sequential reads).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_files_are_read_a_few_at_a_time() {
+    use irsync::hasher::{HashEvent, LARGE_FILE, LARGE_WORKERS};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    const WORKERS: usize = 16;
+    let root = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    for i in 0..WORKERS {
+        fs::write(root.path().join(format!("small{i}")), b"x").unwrap();
+        let big = fs::File::create(root.path().join(format!("big{i}"))).unwrap();
+        big.set_len(LARGE_FILE).unwrap();
+    }
+    // Per kind: files being read now, and the most at once. Each read
+    // lingers so that reads allowed to overlap do.
+    let counts: Arc<[AtomicUsize; 4]> = Arc::default();
+    let c = counts.clone();
+    let progress = Arc::new(move |p: &RelPath, e: HashEvent| {
+        let k = if p.as_bytes().starts_with(b"big") {
+            0
+        } else {
+            2
+        };
+        match e {
+            HashEvent::Start { .. } => {
+                let now = c[k].fetch_add(1, Relaxed) + 1;
+                c[k + 1].fetch_max(now, Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            HashEvent::Done => {
+                c[k].fetch_sub(1, Relaxed);
+            }
+        }
+    });
+    let idx = Index::open(state.path(), root.path())
+        .unwrap()
+        .into_handle();
+    let h = Hasher::new(idx, root.path().to_path_buf(), WORKERS).with_progress(progress);
+    for kind in ["big", "small"] {
+        let items: Vec<_> = (0..WORKERS)
+            .map(|i| item(root.path(), format!("{kind}{i}").as_bytes()))
+            .collect();
+        let digests = futures::future::join_all(items.iter().map(|it| h.digest(it))).await;
+        assert!(digests.iter().all(Result::is_ok));
+    }
+    let (big, small) = (counts[1].load(Relaxed), counts[3].load(Relaxed));
+    assert!(big <= LARGE_WORKERS, "{big} large files at once");
+    assert!(small > LARGE_WORKERS, "only {small} small files at once");
+}

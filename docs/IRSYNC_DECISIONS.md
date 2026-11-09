@@ -661,6 +661,54 @@ cross-referenced from commit messages and review notes.
      gain from many in flight. The pool itself stays uncapped: that, and
      an export's `fsync` or a client's `--fsync`, which would make a
      capped pool ten times slower for that session.
+7. **Reading a cold source from a spinning disk** (measured 2026-11-09).
+   **Hashing done; walk threads and `--parallel` open.** A push from a
+   source on the btrfs RAID1 pair of item 5, caches dropped before every
+   run, to a daemon on tmpfs, so only the source's reads count; medians
+   of three. Trees: item 1's 31,531 files of at most 16 KiB (321 MB),
+   2,048 of 256 KiB, 512 of 1 MiB and 128 of 4 MiB (512 MiB each), and 16
+   of 256 MiB. `tar cf - | cat` reads them in 12.8, 16.3, 8.4, 5.5 and
+   32.7 s.
+   - *A first push reads every file twice:* once to hash it (the client's
+     index has no row) and once to send it, which then mostly hits the
+     page cache. The hashing ran `HASH_WORKERS` = 4 files at a time, and
+     that set the pace: 33.4 s for the small tree, against 24.3 s for the
+     same push with the index filled. Hash workers, small tree: 4: 33.4 s;
+     8: 30.1; 16: 26.1; 32: 21.3; 64: 19.1; 128: 15.0. Walk threads and
+     `--parallel` made no difference while hashing was the limit.
+   - *More is not better for large files.* 256 MiB files: 1 worker 35.8
+     s; 2: 28.3; 4: 26.2; 8: 28.0; 16: 34.3; 128: 34.5. With a few
+     readers btrfs serves both mirrors (irsync beats `tar`); with many
+     long sequential reads at once the disks seek between them. 256 KiB:
+     4: 9.3 s, 16: 7.4, 128: 7.0; 1 MiB: 5.5, 4.1, 4.1; 4 MiB: 4.3, 4.2,
+     4.1: up to 1 MiB more helps, at 4 MiB the count no longer matters.
+   - *Decision:* `HASH_WORKERS` = 128, and a file of at least
+     `hasher::LARGE_FILE` (4 MiB) also takes one of
+     `hasher::LARGE_WORKERS` (4) slots before its worker, so long reads
+     stay four at a time while small files fill the rest. Release builds
+     before and after, alternating, three runs each (index deleted unless
+     said): small tree 33.8 s → 15.1 s, client CPU 45 → 27 s; with the
+     index filled 22.8 → 23.2 s; 1 MiB 5.4 → 4.0 s; 4 MiB 4.3 → 4.4 s;
+     256 MiB 27.1 → 24.8 s. The cost is memory: each worker holds a
+     1 MiB chunking buffer and a chunk, so peak client RSS rose 60 → 214
+     MB on the 1 MiB tree and 271 → 399 MB on the small one, and on
+     tmpfs, where hashing is CPU-bound, 128 threads on 8 cores made the
+     1 MiB tree 8% slower (2.32 → 2.51 s, five runs each; the small tree
+     went 6.55 → 5.81 s). The daemon builds a hasher per session, so four
+     sessions hashing at once fill tokio's 512-thread blocking pool;
+     hash tasks never wait on each other, so other blocking work queues
+     behind them instead of hanging as in item 6.
+   - *Open: walk threads and `--parallel`.* With the index filled, so
+     only the sends read: defaults (4 walk threads, `--parallel` 32) 24.3
+     s; `--parallel` 128: 20.3, 256: 20.4, 512: 21.5; 16 walk threads:
+     21.5; both: 15.9; 1 walk thread: 27.6; `--parallel` 1: 47.9.
+     `--parallel` also sets streams and memory per session, so it needs
+     its own look before its default moves.
+   - *Not the cause: on-disk order.* The trees were written by `cp -a`
+     in directory order, irsync reads in sorted order. A copy laid out
+     in sorted order by rsync made `tar` faster (10.3 s) but not irsync
+     (19-23 s against 16-26 s): the gap to `tar` is the number of reads
+     in flight, not their order.
 
 ### 2.2 Parked after final review (real, judged not load-bearing)
 
