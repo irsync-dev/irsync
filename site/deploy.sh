@@ -5,7 +5,7 @@
 #   site/deploy.sh staging   build target/site, run the site tool tests and the
 #                            site check, deploy it to irsync-dev
 #                            (dev.irsync.org), keep a copy in target/site-staging/
-#   site/deploy.sh promote   deploy target/site-staging/ unchanged to irsync-org
+#   site/deploy.sh promote   deploy target/site-staging/ unchanged to irsync-pub
 #                            (irsync.org)
 #
 # Credentials: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or `wrangler login`.
@@ -71,7 +71,7 @@ case $1 in
         "run site/deploy.sh staging again" >&2
       exit 1
     fi
-    pages_deploy "$staging" irsync-org
+    pages_deploy "$staging" irsync-pub
     echo "promoted $build"
     ;;
   *) usage ;;

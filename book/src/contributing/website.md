@@ -89,10 +89,10 @@ branch `main`:
 | Project | Domain | Role |
 | --- | --- | --- |
 | `irsync-dev` | [dev.irsync.org](https://dev.irsync.org/) | Staging. Every deploy of `main` lands here. |
-| `irsync-org` | [irsync.org](https://irsync.org/) | Production. Changes only when a staging build is promoted. |
+| `irsync-pub` | [irsync.org](https://irsync.org/) | Production. Changes only when a staging build is promoted. |
 
 Promotion ships the files staging served: the staging build's output is
-kept and uploaded to `irsync-org` unchanged, nothing is rebuilt. Each build
+kept and uploaded to `irsync-pub` unchanged, nothing is rebuilt. Each build
 carries a `BUILD` file at its root holding the commit it was built from, so
 `https://irsync.org/BUILD` and `https://dev.irsync.org/BUILD` show what each
 one serves.
@@ -114,7 +114,7 @@ builds `target/site/`, writes the `HEAD` commit to `target/site/BUILD`,
 builds irsync (`cargo build -p irsync`), runs the tool tests and the checker,
 and refuses to deploy when either fails. Then it deploys to `irsync-dev` and
 copies the build to `target/site-staging/`.
-`promote` deploys `target/site-staging/` to `irsync-org` and prints its
+`promote` deploys `target/site-staging/` to `irsync-pub` and prints its
 `BUILD`. It refuses without a `target/site-staging/BUILD`, and when that
 `BUILD` differs from `https://dev.irsync.org/BUILD` or cannot be compared
 with it: someone else may have deployed staging since, and promotion ships
@@ -132,7 +132,7 @@ the tool tests, builds, runs the checker, uploads `target/site` as the
 artifact `site` and deploys it to `irsync-dev`. Its `promote` job runs only
 when the workflow is started by hand on `main` (Actions, Site, Run workflow): it
 downloads the `site` artifact of the newest successful push run on `main`,
-deploys it to `irsync-org` and writes its `BUILD` to the job summary. The
+deploys it to `irsync-pub` and writes its `BUILD` to the job summary. The
 repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` hold
 the credentials; only the two deploy steps see them. Artifacts expire after
 the repository's retention period (90 days by default); a staging build older than that has to be rebuilt by a
