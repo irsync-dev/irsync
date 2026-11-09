@@ -1,0 +1,22 @@
+// Shared settings for both Workers that serve the site: irsync-dev
+// (dev.irsync.org) and irsync-pub (irsync.org). Each deploy passes the
+// Worker's name and the directory to upload:
+//
+//   wrangler deploy --config site/wrangler.jsonc --name irsync-dev --assets target/site
+//
+// There is no Worker code: every request is answered from the uploaded files.
+// The custom domains are not listed here on purpose. The deploy tokens may
+// only change their one Worker, and attaching a domain needs more than that,
+// so the domains are attached once by hand (see the book's website page) and
+// the deploys leave them alone.
+{
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    // An unknown URL gets 404.html with a 404 status.
+    "not_found_handling": "404-page",
+  },
+  // Only the custom domain serves the site: no <name>.<account>.workers.dev
+  // host, and no per-version preview hosts.
+  "workers_dev": false,
+  "preview_urls": false,
+}

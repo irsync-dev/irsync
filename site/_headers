@@ -1,7 +1,6 @@
-# Cloudflare Pages response headers.
-# Staging (dev.irsync.org, *.pages.dev and the preview deployments under it)
-# is public but not indexed; production (irsync.org) is. Both serve these same
-# files.
+# Response headers, applied by Cloudflare to the Workers' static files.
+# Staging (dev.irsync.org) is public but not indexed; production (irsync.org)
+# is. Both serve these same files.
 
 /*
   X-Content-Type-Options: nosniff
@@ -10,8 +9,8 @@
 https://dev.irsync.org/*
   X-Robots-Tag: noindex
 
-https://:project.pages.dev/*
-  X-Robots-Tag: noindex
-
-https://:version.:project.pages.dev/*
+# site/wrangler.jsonc turns off the workers.dev hosts. Should one be turned
+# on, it is not indexed either: <worker>.<account>.workers.dev, and the
+# preview hosts <version>-<worker>.<account>.workers.dev.
+https://:worker.:account.workers.dev/*
   X-Robots-Tag: noindex

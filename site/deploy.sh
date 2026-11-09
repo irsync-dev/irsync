@@ -1,18 +1,20 @@
 #!/bin/sh
-# Deploy the site to Cloudflare Pages from a developer machine.
+# Deploy the site to its Cloudflare Workers from a developer machine.
 #
 # Usage:
 #   site/deploy.sh staging   build target/site, run the site tool tests and the
-#                            site check, deploy it to irsync-dev
+#                            site check, deploy it to the Worker irsync-dev
 #                            (dev.irsync.org), keep a copy in target/site-staging/
-#   site/deploy.sh promote   deploy target/site-staging/ unchanged to irsync-pub
-#                            (irsync.org)
+#   site/deploy.sh promote   deploy target/site-staging/ unchanged to the Worker
+#                            irsync-pub (irsync.org)
 #
 # Credentials: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or `wrangler login`.
+# The CI tokens are each limited to one Worker, so staging and promote need
+# different tokens; `wrangler login` covers both.
 set -eu
 
 # Kept in step with .github/workflows/site.yml.
-WRANGLER_VERSION=4.20.0
+WRANGLER_VERSION=4.152.0
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 site=$root/target/site
@@ -24,8 +26,9 @@ usage() {
   exit 2
 }
 
-pages_deploy() { # DIR PROJECT
-  npx --yes "wrangler@$WRANGLER_VERSION" pages deploy "$1" --project-name "$2" --branch main
+worker_deploy() { # DIR WORKER
+  npx --yes "wrangler@$WRANGLER_VERSION" deploy \
+    --config "$root/site/wrangler.jsonc" --name "$2" --assets "$1"
 }
 
 [ $# -eq 1 ] || usage
@@ -46,7 +49,7 @@ case $1 in
     target_dir=$(cd "$root" && cargo metadata --format-version 1 --no-deps |
       python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
     python3 "$root/site/tools/check.py" --irsync "$target_dir/debug/irsync" "$site"
-    pages_deploy "$site" irsync-dev
+    worker_deploy "$site" irsync-dev
     # Copy beside, then swap, so a failed copy never leaves a partial staging copy.
     rm -rf "$staging.new"
     cp -R "$site" "$staging.new"
@@ -71,7 +74,7 @@ case $1 in
         "run site/deploy.sh staging again" >&2
       exit 1
     fi
-    pages_deploy "$staging" irsync-pub
+    worker_deploy "$staging" irsync-pub
     echo "promoted $build"
     ;;
   *) usage ;;

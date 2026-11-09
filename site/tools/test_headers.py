@@ -54,11 +54,10 @@ class PatternTest(unittest.TestCase):
         self.assertTrue(pattern_matches("/*", "https://irsync.org/"))
         self.assertTrue(pattern_matches("https://dev.irsync.org/*", "https://dev.irsync.org/book/"))
         self.assertFalse(pattern_matches("https://dev.irsync.org/*", "https://irsync.org/"))
-        self.assertTrue(pattern_matches("https://:project.pages.dev/*", "https://irsync-dev.pages.dev/"))
-        self.assertFalse(pattern_matches("https://:project.pages.dev/*", "https://irsync.org/"))
-        self.assertTrue(
-            pattern_matches("https://:version.:project.pages.dev/*", "https://0a1b2c3d.irsync-dev.pages.dev/")
-        )
+        workers_dev = "https://:worker.:account.workers.dev/*"
+        self.assertTrue(pattern_matches(workers_dev, "https://irsync-pub.example.workers.dev/"))
+        self.assertTrue(pattern_matches(workers_dev, "https://0a1b2c3d-irsync-pub.example.workers.dev/book/"))
+        self.assertFalse(pattern_matches(workers_dev, "https://irsync.org/"))
 
 
 class HeadersTest(unittest.TestCase):
@@ -75,8 +74,7 @@ class HeadersTest(unittest.TestCase):
             noindex,
             {
                 "https://dev.irsync.org/*",
-                "https://:project.pages.dev/*",
-                "https://:version.:project.pages.dev/*",
+                "https://:worker.:account.workers.dev/*",
             },
         )
         for pattern, headers in self.rules.items():

@@ -11,6 +11,7 @@ landing page at `/` and this book at `/book/`.
 | `site/tokens.json` | The design tokens: colours, type, spacing, radius, shadow. |
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
+| `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
 | `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/`. |
 
 ## Updating the design tokens
@@ -78,15 +79,14 @@ on their own. `site/serve.sh PORT` serves on another port. It needs Node.js:
 it runs `chokidar-cli` (the watcher) and `browser-sync` (the server) through
 `npx`, at the versions pinned at its top. Ctrl-C stops both.
 
-The local server ignores `_headers`; the headers apply on Cloudflare Pages
-only.
+The local server ignores `_headers`; the headers apply on Cloudflare only.
 
 ## Staging and production
 
-The site is served by two Cloudflare Pages projects, each with production
-branch `main`:
+The site is served by two Cloudflare Workers that hold only static files, no
+code. Both are deployed with the settings in `site/wrangler.jsonc`:
 
-| Project | Domain | Role |
+| Worker | Domain | Role |
 | --- | --- | --- |
 | `irsync-dev` | [dev.irsync.org](https://dev.irsync.org/) | Staging. Every deploy of `main` lands here. |
 | `irsync-pub` | [irsync.org](https://irsync.org/) | Production. Changes only when a staging build is promoted. |
@@ -97,12 +97,53 @@ carries a `BUILD` file at its root holding the commit it was built from, so
 `https://irsync.org/BUILD` and `https://dev.irsync.org/BUILD` show what each
 one serves.
 
-### Before the repository moves to GitHub
+Workers rather than Cloudflare Pages, because a Cloudflare API token can be
+limited to a single Worker, while a Pages token can change every Pages
+project in the account. Each Worker gets its own deploy token, so the token
+that staging deploys with cannot touch production.
+
+### One-time setup
+
+A token limited to one Worker can deploy new files to it, but cannot create
+the Worker or attach its domain. So these steps are done once by someone with
+full access to the Cloudflare account (`npx wrangler login`), and
+`site/wrangler.jsonc` leaves the domains out, so deploys never try to change
+them.
+
+1. Create both Workers by deploying to them once, from a checkout with a
+   built site:
+
+   ```sh
+   site/build.sh
+   npx wrangler deploy --config site/wrangler.jsonc --name irsync-dev --assets target/site
+   npx wrangler deploy --config site/wrangler.jsonc --name irsync-pub --assets target/site
+   ```
+
+2. Attach the domains: in the dashboard, Workers & Pages, the Worker,
+   Settings, Domains & Routes, Add, Custom domain: `dev.irsync.org` on
+   `irsync-dev` and `irsync.org` on `irsync-pub`. Cloudflare creates the DNS
+   records; `irsync.org` must be a zone in the same account.
+
+3. Create two API tokens, each with the Workers role Editor on one Worker
+   only: one for `irsync-dev`, one for `irsync-pub`. Editor can deploy new
+   versions of that Worker and nothing else.
+
+4. Store them, with the account ID (`npx wrangler whoami` prints it), as
+   repository secrets:
+
+   ```sh
+   gh secret set CLOUDFLARE_API_TOKEN_DEV
+   gh secret set CLOUDFLARE_API_TOKEN_PUB
+   gh secret set CLOUDFLARE_ACCOUNT_ID
+   ```
+
+### Deploying from a developer machine
 
 Both deploys run from a developer machine with `site/deploy.sh`. It uses
 `wrangler` through `npx` at the version pinned at its top, and takes the
 credentials from `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, or from
-`wrangler login`.
+`wrangler login`. A token limited to one Worker deploys only to that Worker:
+`staging` needs the `irsync-dev` token and `promote` the `irsync-pub` one.
 
 ```sh
 site/deploy.sh staging
@@ -120,9 +161,9 @@ copies the build to `target/site-staging/`.
 with it: someone else may have deployed staging since, and promotion ships
 only what staging serves.
 
-### After the move
+### Deploying from GitHub
 
-`.github/workflows/site.yml` takes over both deploys, and promotion goes
+`.github/workflows/site.yml` runs both deploys, and promotion normally goes
 through it rather than `site/deploy.sh promote`, whose local copy may not be
 the build staging serves. Its `staging` job runs on every push
 to `main` that touches `book/`, `site/`, `README.md`, the workflow, or what
@@ -133,29 +174,31 @@ artifact `site` and deploys it to `irsync-dev`. Its `promote` job runs only
 when the workflow is started by hand on `main` (Actions, Site, Run workflow): it
 downloads the `site` artifact of the newest successful push run on `main`,
 deploys it to `irsync-pub` and writes its `BUILD` to the job summary. The
-repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` hold
-the credentials; only the two deploy steps see them. Artifacts expire after
+repository secrets `CLOUDFLARE_API_TOKEN_DEV`, `CLOUDFLARE_API_TOKEN_PUB` and
+`CLOUDFLARE_ACCOUNT_ID` hold the credentials; each deploy step sees only its
+own Worker's token. Artifacts expire after
 the repository's retention period (90 days by default); a staging build older than that has to be rebuilt by a
 new push before it can be promoted.
 
-After the first deploy to each project, confirm that an unknown URL gets a
+After the first deploy to each Worker, confirm that an unknown URL gets a
 404 status and not the landing page:
 
 ```sh
 curl -I https://dev.irsync.org/nope
 ```
 
-The first line of the answer should read `HTTP/2 404`. Cloudflare Pages
-serves `404.html` with that status; without one it would serve the landing
-page with a 200 for every unknown path.
+The first line of the answer should read `HTTP/2 404`. With
+`not_found_handling` set to `404-page` in `site/wrangler.jsonc`, Cloudflare
+serves `404.html` with that status for any path that is not a file.
 
 ## Indexing
 
 Staging is public but not indexed; production is indexed. Both serve the
 same files, so the difference lives in `site/_headers`, which Cloudflare
-applies per host: responses from `dev.irsync.org`, `*.pages.dev` and the
-per-deployment preview hosts under it carry `X-Robots-Tag: noindex`, and
-responses from `irsync.org` do not. `site/tools/test_headers.py` pins these
+applies per host: responses from `dev.irsync.org` carry
+`X-Robots-Tag: noindex`, and responses from `irsync.org` do not.
+`site/wrangler.jsonc` turns off the Workers' `workers.dev` hosts and preview
+hosts; `_headers` marks those `noindex` too, in case one is turned on. `site/tools/test_headers.py` pins these
 rules.
 
 There is no staging-only `robots.txt`. Promotion uploads staging's files

@@ -2,9 +2,12 @@ name: Site
 
 # A push to main that touches the site, the book, or what the site check reads
 # (the CLI's flags, files the book refers to) builds it, checks it and deploys
-# it to staging (irsync-dev, dev.irsync.org). Running the workflow by hand
-# promotes the newest staging build to production (irsync-pub, irsync.org): the
-# same files, downloaded from that run's artifact, not rebuilt.
+# it to staging (Worker irsync-dev, dev.irsync.org). Running the workflow by
+# hand promotes the newest staging build to production (Worker irsync-pub,
+# irsync.org): the same files, downloaded from that run's artifact, not rebuilt.
+#
+# Each Worker has its own deploy token, allowed to change only that Worker:
+# CLOUDFLARE_API_TOKEN_DEV and CLOUDFLARE_API_TOKEN_PUB.
 
 on:
   push:
@@ -27,7 +30,7 @@ permissions:
 
 env:
   # Kept in step with site/deploy.sh.
-  WRANGLER_VERSION: 4.20.0
+  WRANGLER_VERSION: 4.152.0
   MDBOOK_VERSION: 0.5.2
 
 jobs:
@@ -65,9 +68,11 @@ jobs:
           include-hidden-files: true
       - name: Deploy to irsync-dev
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_DEV }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy target/site --project-name irsync-dev --branch main
+        run: |
+          npx --yes "wrangler@$WRANGLER_VERSION" deploy \
+            --config site/wrangler.jsonc --name irsync-dev --assets target/site
 
   promote:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -77,6 +82,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # Only the deploy settings; the files come from the staging build.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: site/wrangler.jsonc
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -92,8 +102,10 @@ jobs:
           gh run download "$id" -n site -D site-out
       - name: Deploy to irsync-pub
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PUB }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes "wrangler@$WRANGLER_VERSION" pages deploy site-out --project-name irsync-pub --branch main
+        run: |
+          npx --yes "wrangler@$WRANGLER_VERSION" deploy \
+            --config site/wrangler.jsonc --name irsync-pub --assets site-out
       - name: Summary
         run: echo "Promoted $(cat site-out/BUILD) to irsync.org" >> "$GITHUB_STEP_SUMMARY"
