@@ -22,7 +22,7 @@ use stress::signals;
 use stress::tools::Tools;
 use stress::verify;
 
-use crate::cli::{Cli, Congestion};
+use crate::cli::{Acks, Cli, Congestion};
 use crate::netlog;
 use crate::profile::Profile;
 use crate::report::{self, NetIteration};
@@ -40,6 +40,7 @@ const NETSIM_SUFFIX: &str = " [netsim]";
 struct Syncer<'a> {
     cli: &'a stress::cli::Cli,
     profile: Profile,
+    acks: Option<Acks>,
     seed: u64,
     layout: &'a Layout,
     tools: &'a Tools,
@@ -56,26 +57,46 @@ impl Syncer<'_> {
             &self.setup,
             &self.cli.log_level,
             log,
-            &netsim_env(self.profile, "client", self.seed, stream),
+            &netsim_env(self.profile, self.acks, "client", self.seed, stream),
         )
     }
 }
 
-/// `IRSYNC_NETSIM=profile=<p>,side=<side>,seed=<seed>,stream=<stream>`.
 /// The client's `irsync.toml` with `[client] congestion` set.
 fn client_settings(c: Congestion) -> String {
     format!("[client]\ncongestion = \"{}\"\n", c.name())
 }
 
-fn netsim_env(profile: Profile, side: &str, seed: u64, stream: u64) -> Vec<(OsString, OsString)> {
-    vec![(
-        "IRSYNC_NETSIM".into(),
-        format!(
-            "profile={},side={side},seed={seed},stream={stream}",
-            profile.name()
-        )
-        .into(),
-    )]
+/// `IRSYNC_NETSIM=profile=<p>,side=<side>,seed=<seed>,stream=<stream>`,
+/// with `,acks=<acks>` when given.
+fn netsim_env(
+    profile: Profile,
+    acks: Option<Acks>,
+    side: &str,
+    seed: u64,
+    stream: u64,
+) -> Vec<(OsString, OsString)> {
+    let mut v = format!(
+        "profile={},side={side},seed={seed},stream={stream}",
+        profile.name()
+    );
+    if let Some(a) = acks {
+        v.push_str(&format!(",acks={}", a.name()));
+    }
+    vec![("IRSYNC_NETSIM".into(), v.into())]
+}
+
+/// The header's network line: the profile, then any setting changed from
+/// irsync's own.
+fn network_line(net: &Cli) -> String {
+    let mut line = net.profile.name().to_string();
+    if let Some(c) = net.congestion {
+        line.push_str(&format!(", congestion {}", c.name()));
+    }
+    if let Some(a) = net.acks {
+        line.push_str(&format!(", acks {}", a.name()));
+    }
+    line
 }
 
 /// irsync-stress's sequence under a network profile. Returns the process
@@ -122,10 +143,7 @@ pub fn run(net: &Cli) -> Result<i32> {
             cli.direction,
             &daemon.startup.endpoint_id,
             &daemon.startup.address,
-            &match net.congestion {
-                Some(c) => format!("{}, congestion {}", net.profile.name(), c.name()),
-                None => net.profile.name().to_string(),
-            },
+            &network_line(net),
         )
     );
 
@@ -220,7 +238,7 @@ fn start_daemon<'a>(
         log,
         &cli.log_level,
         STARTUP_TIMEOUT,
-        &netsim_env(profile, "daemon", seed, 0),
+        &netsim_env(profile, net.acks, "daemon", seed, 0),
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);
@@ -257,6 +275,7 @@ fn start_daemon<'a>(
     let sync = Syncer {
         cli,
         profile,
+        acks: net.acks,
         seed,
         layout,
         tools,
@@ -402,11 +421,44 @@ mod tests {
     #[test]
     fn netsim_env_has_all_four_keys() {
         assert_eq!(
-            netsim_env(Profile::TestBlackout, "client", 7, 3),
+            netsim_env(Profile::TestBlackout, None, "client", 7, 3),
             [(
                 OsString::from("IRSYNC_NETSIM"),
                 OsString::from("profile=test-blackout,side=client,seed=7,stream=3")
             )]
+        );
+    }
+
+    #[test]
+    fn netsim_env_adds_the_ack_choice_when_given() {
+        assert_eq!(
+            netsim_env(Profile::LongRtt, Some(Acks::Gentle), "daemon", 1, 0),
+            [(
+                OsString::from("IRSYNC_NETSIM"),
+                OsString::from("profile=long-rtt,side=daemon,seed=1,stream=0,acks=gentle")
+            )]
+        );
+    }
+
+    #[test]
+    fn the_network_line_names_what_was_changed() {
+        use clap::Parser;
+        let parse = |extra: &[&str]| {
+            let mut a = vec![
+                "irsync-netstress",
+                "--profile",
+                "long-rtt",
+                "--direction",
+                "pull",
+            ];
+            a.extend(extra);
+            a.push("/r");
+            Cli::try_parse_from(a).unwrap()
+        };
+        assert_eq!(network_line(&parse(&[])), "long-rtt");
+        assert_eq!(
+            network_line(&parse(&["--congestion", "cubic", "--acks", "peer-default"])),
+            "long-rtt, congestion cubic, acks peer-default"
         );
     }
 }

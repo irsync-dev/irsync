@@ -11,6 +11,8 @@ pub enum Profile {
     DslVideo,
     #[value(name = "test-blackout")]
     TestBlackout,
+    #[value(name = "long-rtt")]
+    LongRtt,
 }
 
 /// What a profile uses for anything the user did not set.
@@ -32,6 +34,7 @@ impl Profile {
             Profile::FourGVehicle => "4g-vehicle",
             Profile::DslVideo => "dsl-video",
             Profile::TestBlackout => "test-blackout",
+            Profile::LongRtt => "long-rtt",
         }
     }
 
@@ -61,6 +64,15 @@ impl Profile {
                 client_timeout_secs: 2,
                 has_outages: true,
             },
+            // Many small files: where waiting for ACKs costs the most.
+            Profile::LongRtt => Defaults {
+                iterations: 5,
+                steps: 2000,
+                max_total_size: "64M",
+                max_file_size: "64K",
+                client_timeout_secs: 10,
+                has_outages: false,
+            },
         }
     }
 }
@@ -74,5 +86,6 @@ mod tests {
         assert_eq!(Profile::FourGVehicle.name(), "4g-vehicle");
         assert_eq!(Profile::DslVideo.name(), "dsl-video");
         assert_eq!(Profile::TestBlackout.name(), "test-blackout");
+        assert_eq!(Profile::LongRtt.name(), "long-rtt");
     }
 }

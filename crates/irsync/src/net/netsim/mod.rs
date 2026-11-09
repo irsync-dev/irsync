@@ -34,6 +34,7 @@ pub enum ProfileName {
     DslVideo,
     TestBlackout,
     TestSlow,
+    LongRtt,
 }
 
 impl FromStr for ProfileName {
@@ -45,6 +46,7 @@ impl FromStr for ProfileName {
             "dsl-video" => Ok(Self::DslVideo),
             "test-blackout" => Ok(Self::TestBlackout),
             "test-slow" => Ok(Self::TestSlow),
+            "long-rtt" => Ok(Self::LongRtt),
             _ => bail!("unknown profile {s:?}"),
         }
     }
@@ -57,6 +59,43 @@ impl std::fmt::Display for ProfileName {
             Self::DslVideo => "dsl-video",
             Self::TestBlackout => "test-blackout",
             Self::TestSlow => "test-slow",
+            Self::LongRtt => "long-rtt",
+        })
+    }
+}
+
+/// The ACKs an endpoint asks of its peer, for measuring them against each
+/// other; only the fault build can change them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acks {
+    /// irsync's setting: every packet, within 1 ms.
+    Immediate,
+    /// Every second packet, within 1 ms.
+    Gentle,
+    /// Nothing asked: the peer's own delayed ACKs (every second packet or
+    /// 25 ms).
+    PeerDefault,
+}
+
+impl FromStr for Acks {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "immediate" => Ok(Self::Immediate),
+            "gentle" => Ok(Self::Gentle),
+            "peer-default" => Ok(Self::PeerDefault),
+            _ => bail!("acks must be immediate, gentle or peer-default, got {s:?}"),
+        }
+    }
+}
+
+impl std::fmt::Display for Acks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Immediate => "immediate",
+            Self::Gentle => "gentle",
+            Self::PeerDefault => "peer-default",
         })
     }
 }
@@ -68,13 +107,17 @@ pub struct Spec {
     pub side: Side,
     pub seed: u64,
     pub stream: u64,
+    /// `None`: irsync's own setting.
+    pub acks: Option<Acks>,
 }
 
 impl Spec {
-    /// Parses `profile=<name>,side=<client|daemon>,seed=<u64>,stream=<u64>`;
-    /// keys in any order, all four required.
+    /// Parses `profile=<name>,side=<client|daemon>,seed=<u64>,stream=<u64>`
+    /// and an optional `acks=<immediate|gentle|peer-default>`; keys in any
+    /// order, the first four required.
     pub fn parse(s: &str) -> anyhow::Result<Spec> {
         let (mut profile, mut side, mut seed, mut stream) = (None, None, None, None);
+        let mut acks = None;
         for part in s.split(',') {
             let (key, value) = part
                 .split_once('=')
@@ -93,7 +136,8 @@ impl Spec {
                 "stream" if stream.is_none() => {
                     stream = Some(value.parse::<u64>().context("bad stream")?)
                 }
-                "profile" | "side" | "seed" | "stream" => return Err(dup()),
+                "acks" if acks.is_none() => acks = Some(value.parse()?),
+                "profile" | "side" | "seed" | "stream" | "acks" => return Err(dup()),
                 _ => bail!("unknown key {key:?}"),
             }
         }
@@ -102,6 +146,7 @@ impl Spec {
             side: side.ok_or_else(|| anyhow!("side missing"))?,
             seed: seed.ok_or_else(|| anyhow!("seed missing"))?,
             stream: stream.ok_or_else(|| anyhow!("stream missing"))?,
+            acks,
         })
     }
 }
@@ -175,6 +220,7 @@ pub fn log_active(spec: &Spec) {
         side = ?spec.side,
         seed = spec.seed,
         stream = spec.stream,
+        acks = %spec.acks.map_or("irsync's".to_string(), |a| a.to_string()),
         "netsim active"
     );
 }
@@ -214,9 +260,29 @@ mod tests {
                 profile: ProfileName::FourGVehicle,
                 side: Side::Client,
                 seed: 7,
-                stream: 3
+                stream: 3,
+                acks: None,
             }
         );
+    }
+
+    #[test]
+    fn spec_takes_an_optional_ack_setting() {
+        let base = "profile=long-rtt,side=daemon,seed=1,stream=0";
+        let s = Spec::parse(base).unwrap();
+        assert_eq!(s.profile, ProfileName::LongRtt);
+        assert_eq!(s.acks, None);
+        for (v, want) in [
+            ("immediate", Acks::Immediate),
+            ("gentle", Acks::Gentle),
+            ("peer-default", Acks::PeerDefault),
+        ] {
+            let s = Spec::parse(&format!("{base},acks={v}")).unwrap();
+            assert_eq!(s.acks, Some(want), "{v}");
+            assert_eq!(want.to_string(), v);
+        }
+        assert!(Spec::parse(&format!("{base},acks=often")).is_err());
+        assert!(Spec::parse(&format!("{base},acks=gentle,acks=gentle")).is_err());
     }
 
     #[test]

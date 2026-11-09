@@ -199,6 +199,7 @@ impl NetsimTransport {
             side,
             seed,
             stream,
+            acks: _,
         } = self.spec;
         let dir = match side {
             Side::Client => Dir::Up,
@@ -380,6 +381,7 @@ mod tests {
                 side,
                 seed: 1,
                 stream: 1,
+                acks: None,
             },
             bind: "127.0.0.1:0".parse().unwrap(),
         }

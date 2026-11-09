@@ -155,6 +155,30 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
             duplicate: 0.0,
             cross: None,
         },
+        // A clean line to a far server: fibre at home, a server across an
+        // ocean. No loss, no cross traffic; only the distance.
+        ProfileName::LongRtt => LinkParams {
+            rate_bps: match d {
+                Dir::Down => (50_000_000, 50_000_000),
+                Dir::Up => (10_000_000, 10_000_000),
+            },
+            rate_change_ms: (0, 0),
+            queue_bytes: match d {
+                Dir::Down => 1024 * KIB,
+                Dir::Up => 256 * KIB,
+            },
+            base_delay_ms: 45,
+            jitter_ms: 0,
+            loss: GilbertElliott {
+                to_bad: 0.0,
+                to_good: 1.0,
+                loss_good: 0.0,
+                loss_bad: 0.0,
+            },
+            reorder: 0.0,
+            duplicate: 0.0,
+            cross: None,
+        },
     }
 }
 
@@ -179,7 +203,7 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             dead_zone_ms: (20_000, 60_000),
             dead_zone_after_bytes: (256 * KIB, 4 * KIB * KIB),
         }),
-        ProfileName::DslVideo | ProfileName::TestSlow => None,
+        ProfileName::DslVideo | ProfileName::TestSlow | ProfileName::LongRtt => None,
         ProfileName::TestBlackout => Some(OutageParams {
             handover_every_ms: (0, 0),
             handover_ms: (0, 0),

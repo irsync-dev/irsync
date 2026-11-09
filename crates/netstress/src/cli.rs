@@ -25,6 +25,28 @@ impl Congestion {
     }
 }
 
+/// The ACKs each side asks of the other; fault build only, for measuring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Acks {
+    /// irsync's own: every packet, within 1 ms.
+    Immediate,
+    /// Every second packet, within 1 ms.
+    Gentle,
+    /// Nothing asked: the peer's delayed ACKs (every second packet or 25 ms).
+    PeerDefault,
+}
+
+impl Acks {
+    /// The name the fault layer's `acks=` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Acks::Immediate => "immediate",
+            Acks::Gentle => "gentle",
+            Acks::PeerDefault => "peer-default",
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "irsync-netstress", version)]
 pub struct Cli {
@@ -61,6 +83,10 @@ pub struct Cli {
     /// default.
     #[arg(long, value_enum)]
     pub congestion: Option<Congestion>,
+    /// The ACKs both sides ask of each other (passed to the fault layer).
+    /// Unset: irsync's own (immediate).
+    #[arg(long, value_enum)]
+    pub acks: Option<Acks>,
     #[arg(long)]
     pub irsync: Option<PathBuf>,
     #[arg(long)]

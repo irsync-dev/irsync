@@ -222,7 +222,7 @@ fn jitter_amplitude_ns(p: &LinkParams) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::netsim::profile::{link, Dir};
+    use crate::net::netsim::profile::{link, outages, Dir};
     use crate::net::netsim::ProfileName;
 
     fn ms(n: u64) -> Duration {
@@ -248,6 +248,18 @@ mod tests {
             .count();
         // ≈ 1 Mbit/s × 10 s / 10 kbit
         assert!((900..=1_100).contains(&delivered), "{delivered}");
+    }
+
+    #[test]
+    fn long_rtt_delays_every_packet_and_loses_none() {
+        // long-rtt Down: 50 Mbit/s, 45 ms each way; 20 Mbit/s offered for 10 s
+        let mut l = Link::new(link(ProfileName::LongRtt, Dir::Down), 1);
+        let fates: Vec<_> = (0..10_000).map(|i| (i, l.offer(ms(i), 2500))).collect();
+        assert!(fates.iter().all(|(_, f)| f.len() == 1));
+        assert!(fates
+            .iter()
+            .all(|(i, f)| (ms(45)..=ms(46)).contains(&(f[0] - ms(*i)))));
+        assert!(outages(ProfileName::LongRtt).is_none());
     }
 
     #[test]

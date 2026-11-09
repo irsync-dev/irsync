@@ -100,6 +100,32 @@ fn immediate_acks() -> AckFrequencyConfig {
     ack
 }
 
+/// The ACKs this endpoint asks of its peer: [`immediate_acks`], except
+/// that the fault build takes `acks=` from `IRSYNC_NETSIM` to measure the
+/// choices against each other.
+fn ack_frequency() -> Option<AckFrequencyConfig> {
+    #[cfg(feature = "netsim")]
+    if let Ok(Some(spec)) = crate::net::netsim::active() {
+        return ack_frequency_for(spec.acks);
+    }
+    Some(immediate_acks())
+}
+
+/// The ACK config for one fault-build choice; `None` is irsync's own.
+#[cfg(feature = "netsim")]
+fn ack_frequency_for(acks: Option<crate::net::netsim::Acks>) -> Option<AckFrequencyConfig> {
+    use crate::net::netsim::Acks;
+    match acks {
+        None | Some(Acks::Immediate) => Some(immediate_acks()),
+        Some(Acks::Gentle) => {
+            let mut ack = AckFrequencyConfig::default();
+            ack.max_ack_delay(Some(Duration::from_millis(1)));
+            Some(ack)
+        }
+        Some(Acks::PeerDefault) => None,
+    }
+}
+
 /// Bytes each stream may receive ahead of what the application has read.
 const STREAM_WINDOW: u32 = 8 * MIB;
 
@@ -128,7 +154,7 @@ fn transport_config_with(stream_window: u32, congestion: Congestion) -> QuicTran
         .max_concurrent_uni_streams(VarInt::from_u32(256))
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
         .congestion_controller_factory(controller)
-        .ack_frequency_config(Some(immediate_acks()))
+        .ack_frequency_config(ack_frequency())
         .build()
 }
 
@@ -319,4 +345,30 @@ async fn build(opts: EndpointOpts, transport: QuicTransportConfig) -> Result<End
     }
 
     Ok(builder.bind().await?)
+}
+
+#[cfg(all(test, feature = "netsim"))]
+mod netsim_tests {
+    use super::*;
+    use crate::net::netsim::Acks;
+
+    #[test]
+    fn each_ack_choice_asks_the_peer_for_its_setting() {
+        let show = |a| format!("{:?}", ack_frequency_for(a));
+        let immediate = format!("{:?}", Some(immediate_acks()));
+        assert!(
+            immediate.contains("ack_eliciting_threshold: 0"),
+            "{immediate}"
+        );
+        assert!(
+            immediate.contains("max_ack_delay: Some(1ms)"),
+            "{immediate}"
+        );
+        assert_eq!(show(None), immediate);
+        assert_eq!(show(Some(Acks::Immediate)), immediate);
+        let gentle = show(Some(Acks::Gentle));
+        assert!(gentle.contains("ack_eliciting_threshold: 1"), "{gentle}");
+        assert!(gentle.contains("max_ack_delay: Some(1ms)"), "{gentle}");
+        assert_eq!(show(Some(Acks::PeerDefault)), "None");
+    }
 }
