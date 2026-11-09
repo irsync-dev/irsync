@@ -1514,7 +1514,7 @@ fn record_session(m: &Meter, out: Option<&Outcome>) {
     for (name, key, value, n) in rows {
         metrics::counter!(name, m.labels_with(key, value)).increment(n);
     }
-    metrics::counter!("irsync_deleted_total", m.labels()).increment(o.deleted.len() as u64);
+    metrics::counter!("irsync_deleted_total", m.labels()).increment(o.deleted_count());
 }
 
 /// How long a daemon session may go without activity before the daemon

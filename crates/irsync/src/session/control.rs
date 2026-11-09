@@ -320,17 +320,45 @@ pub(super) fn spawn_reader(
     )
 }
 
+/// A reader that bumps `activity` on every read that brings bytes, so a
+/// large frame still arriving over a slow link counts as progress for the
+/// idle watchdog, not only once it is complete.
+struct Counted<R> {
+    inner: R,
+    activity: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Counted<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if buf.filled().len() > before {
+            self.activity
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        res
+    }
+}
+
 /// The reader's loop; see [`spawn_reader`].
 async fn read_control<R: tokio::io::AsyncRead + Unpin>(
-    mut recv: R,
+    recv: R,
     events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
     scan: Arc<PeerScan>,
 ) {
+    let mut recv = Counted {
+        inner: recv,
+        activity,
+    };
     loop {
+        // Activity is counted per read, in `Counted`.
         let frame = read_msg::<Control, _>(&mut recv).await;
-        activity.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match frame {
             Ok(Some(Control { msg: Some(msg) })) => match msg {
                 Msg::Listing(_) | Msg::ListingError(_) | Msg::ListingEnd(_) => {
@@ -343,7 +371,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                         ))
                         .await;
                 }
-                // Counted as activity above; it also carries the peer's
+                // Counted as activity by `Counted`; it also carries the peer's
                 // progress this side cannot otherwise see.
                 Msg::Heartbeat(h) => {
                     use crate::session::{Event, Party};
@@ -933,6 +961,34 @@ mod tests {
                 _ => panic!("another event"),
             }
         }
+    }
+
+    /// A large frame still arriving is progress: the idle watchdog must not
+    /// see a peer as silent while its `SessionDone` crosses a slow link.
+    #[tokio::test]
+    async fn bytes_of_an_unfinished_frame_count_as_activity() {
+        use tokio::io::AsyncWriteExt;
+        let (mut w, r) = tokio::io::duplex(1 << 16);
+        let (tx, _rx) = PeerTx::channel(&super::super::SideHooks::default());
+        let activity: Arc<std::sync::atomic::AtomicU64> = Arc::default();
+        let reader = tokio::spawn(read_control(
+            r,
+            tx,
+            super::super::EventBus::default(),
+            activity.clone(),
+            Arc::default(),
+        ));
+        // The length prefix of a 400 KB frame and the first part of its body.
+        w.write_all(&400_000u32.to_be_bytes()).await.unwrap();
+        w.write_all(&[0u8; 1000]).await.unwrap();
+        let moved = async {
+            while activity.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        };
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(2), moved).await;
+        reader.abort();
+        assert!(seen.is_ok(), "no activity while a frame was arriving");
     }
 
     #[test]

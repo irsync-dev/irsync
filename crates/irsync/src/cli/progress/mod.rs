@@ -372,10 +372,10 @@ impl Reporter {
         if self.stats {
             let l = &o.listed;
             let deleted = if self.dry_run {
-                o.would_delete.len()
+                o.would_delete_count()
             } else {
-                o.deleted.len()
-            } as u64;
+                o.deleted_count()
+            };
             let rows = [
                 format!(
                     "Number of files: {} (reg: {}, dir: {}, link: {}, special: {})",

@@ -102,9 +102,53 @@ impl Receiver {
 /// At most this many deleted (or would-delete) paths travel in `SessionDone`.
 pub(super) const MAX_DONE_PATHS: usize = 1000;
 
-pub(super) fn capped_paths(v: &[RelPath]) -> Vec<Vec<u8>> {
-    v.iter()
+/// And at most this many bytes of them: long paths would otherwise make
+/// `SessionDone` hundreds of KB, which takes seconds on a slow link.
+pub(super) const MAX_DONE_PATH_BYTES: usize = 64 * 1024;
+
+/// The first paths of `v` within both caps, and how many were left out.
+pub(super) fn capped_paths(v: &[RelPath]) -> (Vec<Vec<u8>>, u64) {
+    let mut bytes = 0;
+    let kept: Vec<Vec<u8>> = v
+        .iter()
         .take(MAX_DONE_PATHS)
+        .take_while(|p| {
+            bytes += p.as_bytes().len();
+            bytes <= MAX_DONE_PATH_BYTES
+        })
         .map(|p| p.as_bytes().to_vec())
-        .collect()
+        .collect();
+    let omitted = (v.len() - kept.len()) as u64;
+    (kept, omitted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(n: usize, len: usize) -> Vec<RelPath> {
+        (0..n)
+            .map(|i| RelPath::new(format!("{i:0len$}").as_bytes()).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn short_paths_are_capped_by_count() {
+        let (v, omitted) = capped_paths(&paths(MAX_DONE_PATHS + 5, 10));
+        assert_eq!(v.len(), MAX_DONE_PATHS);
+        assert_eq!(omitted, 5);
+        let (v, omitted) = capped_paths(&paths(3, 10));
+        assert_eq!((v.len(), omitted), (3, 0));
+    }
+
+    /// Long paths would make `SessionDone` hundreds of KB, which takes
+    /// seconds on a slow link; they are capped by size as well.
+    #[test]
+    fn long_paths_are_capped_by_size() {
+        let (v, omitted) = capped_paths(&paths(1000, 400));
+        let bytes: usize = v.iter().map(Vec::len).sum();
+        assert!(bytes <= MAX_DONE_PATH_BYTES, "{bytes}");
+        assert_eq!(v.len(), MAX_DONE_PATH_BYTES / 400);
+        assert_eq!(v.len() as u64 + omitted, 1000);
+    }
 }

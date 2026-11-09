@@ -938,10 +938,16 @@ pub struct Outcome {
     pub bytes_sent: u64,
     pub bytes_received: u64,
     /// Paths the receiver deleted (`--delete*`), deepest first. A pushing
-    /// client gets at most 1000 of them from the daemon.
+    /// client gets only the first of them from the daemon (at most 1000,
+    /// and at most 64 KiB); [`Outcome::deleted_count`] counts them all.
     pub deleted: Vec<RelPath>,
-    /// `--dry-run`: paths the receiver would have deleted.
+    /// Deleted paths the daemon left out of `deleted`.
+    pub deleted_omitted: u64,
+    /// `--dry-run`: paths the receiver would have deleted, capped as
+    /// `deleted` is.
     pub would_delete: Vec<RelPath>,
+    /// Would-delete paths the daemon left out of `would_delete`.
+    pub would_delete_omitted: u64,
     /// Deletions stopped at `--max-delete` with candidates left.
     pub max_delete_reached: bool,
     /// What this side spent its time and bytes on.
@@ -969,9 +975,21 @@ impl Outcome {
         self.bytes_received += o.bytes_received;
         self.errors.extend(o.errors);
         self.deleted.extend(o.deleted);
+        self.deleted_omitted += o.deleted_omitted;
         self.would_delete.extend(o.would_delete);
+        self.would_delete_omitted += o.would_delete_omitted;
         self.max_delete_reached |= o.max_delete_reached;
         self.usage.add(&o.usage);
+    }
+
+    /// Every path the receiver deleted, listed or not.
+    pub fn deleted_count(&self) -> u64 {
+        self.deleted.len() as u64 + self.deleted_omitted
+    }
+
+    /// `--dry-run`: every path the receiver would have deleted.
+    pub fn would_delete_count(&self) -> u64 {
+        self.would_delete.len() as u64 + self.would_delete_omitted
     }
 
     /// rsync's convention: 0 ok, 23 partial transfer due to error, 25

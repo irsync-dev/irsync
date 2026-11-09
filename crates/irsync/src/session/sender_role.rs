@@ -215,7 +215,9 @@ struct SenderRole {
     transfer: TransferPhase,
     /// What the receiver deleted (or would have, on a dry run).
     deleted: Vec<RelPath>,
+    deleted_omitted: u64,
     would_delete: Vec<RelPath>,
+    would_delete_omitted: u64,
     max_delete_reached: bool,
 }
 
@@ -933,7 +935,9 @@ impl SenderRole {
             v.iter().filter_map(|p| RelPath::new(p).ok()).collect()
         };
         self.deleted = paths(&d.deleted);
+        self.deleted_omitted = d.deleted_omitted;
         self.would_delete = paths(&d.would_delete);
+        self.would_delete_omitted = d.would_delete_omitted;
         for p in &self.deleted {
             self.ctx.hooks.bus.emit(super::Event::Itemized(
                 p.clone(),
@@ -1109,7 +1113,9 @@ pub(super) async fn run(
         persist,
         transfer: TransferPhase::default(),
         deleted: Vec::new(),
+        deleted_omitted: 0,
         would_delete: Vec::new(),
+        would_delete_omitted: 0,
         max_delete_reached: false,
     };
     if !ctx.resumed {
@@ -1269,7 +1275,9 @@ pub(super) async fn run(
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
         deleted: s.deleted,
+        deleted_omitted: s.deleted_omitted,
         would_delete: s.would_delete,
+        would_delete_omitted: s.would_delete_omitted,
         max_delete_reached: s.max_delete_reached,
         usage: Default::default(),
         reconnects: 0,
@@ -1383,7 +1391,9 @@ mod tests {
             persist: Persister::start(&ctx).await,
             transfer: TransferPhase::default(),
             deleted: Vec::new(),
+            deleted_omitted: 0,
             would_delete: Vec::new(),
+            would_delete_omitted: 0,
             max_delete_reached: false,
         };
         (s, t)

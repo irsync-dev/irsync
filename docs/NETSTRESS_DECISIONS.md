@@ -488,12 +488,14 @@ What it shows:
   and 36% more than `peer-default` on the 1 Mbit/s uplink.
 - **`dsl-video` push: only immediate ACKs never dropped the connection.**
   `immediate` was fastest in 2 of 3 seeds. With `gentle` (3 syncs) and
-  `peer-default` (5 syncs) the client heard nothing for 10 s, logged
-  `session failed error=no activity for 10 s`, and reconnected. The daemon
-  then answered that it did not know the session (`BadSession`), so the
-  client started a new session and the sync began again instead of
-  resuming. The sync times include these restarts. The byte counts of
-  those syncs are not usable: `--stats` covers only the last session.
+  `peer-default` (5 syncs) the client logged `session failed error=no
+  activity for 10 s` at the very end of the sync and reconnected. The
+  daemon had already finished the session and answered `BadSession`, so
+  the client started a new one, which only listed again and moved no
+  files. The cause was a large final message, not the ACKs themselves; see
+  "The 10 s drops at the end of a push" below. The sync times include the
+  extra listing. The byte counts of those syncs are not usable: `--stats`
+  covers only the last session.
 
 The client's return traffic on pulls was 7.5 to 8% of the data bytes for
 all three settings, but that also holds the client's listing and requests,
@@ -510,11 +512,59 @@ down here.
 
 ### Found on the way
 
-- **A resume the daemon refused.** After the 10 s drops above, the daemon
-  did not know the session and the transfer restarted. A drop while the
-  link is up should resume, whatever the ACK setting. Not yet looked into.
+- **The 10 s drops at the end of a push.** First written up here as a
+  resume the daemon refused; see the next section for what it really was.
 - **Random stalls on `long-rtt` pull.** Some syncs took 2 to 4 times their
   usual time, with every setting. The info-level logs show nothing but the
   periodic counts, so the cause is unknown; a debug-level rerun of one of
   them (`long-rtt`, pull, seed 2, `--acks peer-default`, iteration 2, or
   seed 5, `--acks immediate`, iteration 3) is the next step.
+
+
+## The 10 s drops at the end of a push (2026-11-09)
+
+A debug-level rerun of the failing cases (`dsl-video` push, seeds 1 and 2,
+`--acks gentle` and `peer-default`, under
+`~/work/irsync-netstress-acks-debug`) reproduced 6 drops. All looked the
+same:
+
+1. The daemon placed every file, ran its delete pass and sent
+   `SessionDone`.
+2. `SessionDone` lists up to 1000 deleted paths. filegen's deep trees make
+   those paths about 340 bytes each, so from the second sync on the message
+   was 340 to 500 KB. In the first sync it listed one path.
+3. That message took 3 to 11 s to reach the client, over a link that
+   should carry it in well under a second. Our reading: during a push the
+   daemon sends almost nothing, so its congestion window starts small, and
+   during video bursts each round trip takes about 0.8 s. Not measured
+   directly.
+4. The client's idle watchdog counted a control message only once it was
+   complete, so the client saw 10 s of silence and dropped the connection,
+   sometimes just before the message would have arrived.
+5. The daemon had finished and forgotten the session, so `BadSession` was
+   the right answer. The new session found nothing left to do.
+
+Time from the daemon's last delete to the end of the session, syncs with
+the large message: immediate ACKs 4 to 8 s, `gentle` 3 to 11 s,
+`peer-default` 5 to 11 s; with the small message 0.1 to 1 s for all. So
+immediate ACKs did not prevent the problem, they only kept it under 10 s.
+
+Fixed in three parts:
+
+- The control reader counts every read that brings bytes as activity, so a
+  large message still arriving is progress
+  (`session::control::Counted`).
+- The deleted and would-delete lists in `SessionDone` stop at 1000 paths or
+  64 KiB, whichever comes first (`MAX_DONE_PATH_BYTES`).
+- `SessionDone` already said how many paths it left out; the pushing
+  client now adds them to its count, so `--stats` and the
+  `irsync_deleted_total` metric are right past the cap
+  (`Outcome::deleted_count`). Before, a push with more than 1000 deletions
+  reported 1000.
+
+Checked with the same four runs on the fixed build (under
+`~/work/irsync-netstress-fixcheck`): 12 of 12 syncs passed with no
+reconnect, against 6 drops before. The end of a sync with many deletions
+now takes 2 to 7 s instead of 3 to 11 s. It is still slower than the size
+of the message explains, so the slow start after a quiet push remains;
+the client no longer mistakes it for a dead peer.

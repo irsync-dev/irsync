@@ -351,6 +351,30 @@ async fn delete_during_stops_at_a_gap_in_the_source_listing() {
     .await;
 }
 
+/// A push gets only the first deleted paths in `SessionDone` (capped by
+/// count and size), but the count is still every deletion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_deleted_count_includes_paths_left_out_of_the_list() {
+    within30(async {
+        let o = opts(&["--delete"]);
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            fs::write(h.src(flow).join("keep.txt"), b"k").unwrap();
+            // 300 names of 250 bytes: about 75 KB of paths.
+            for i in 0..300 {
+                fs::write(h.dst(flow).join(format!("{i:0250}")), b"x").unwrap();
+            }
+            let (out, _) = run(&h, &o, flow).await;
+            assert_eq!(out.deleted_count(), 300, "{flow:?}");
+            assert_eq!(out.would_delete_count(), 0, "{flow:?}");
+            if flow == Flow::Push {
+                assert!(out.deleted.len() < 300, "{flow:?}: not capped");
+            }
+        }
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_delete_stops_and_exit_25() {
     within30(async {

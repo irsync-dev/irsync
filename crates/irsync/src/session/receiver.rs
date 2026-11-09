@@ -52,7 +52,7 @@ use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
-use recv_delete::{capped_paths, MAX_DONE_PATHS};
+use recv_delete::capped_paths;
 
 #[path = "recv_delete.rs"]
 mod recv_delete;
@@ -1309,17 +1309,19 @@ pub(super) async fn run(
     // The final skipped and deletion counts, even for a session shorter
     // than one heartbeat interval.
     out.send(Msg::Heartbeat(ctx.busy.heartbeat()));
+    let (deleted, deleted_omitted) = capped_paths(&r.deleted);
+    let (would_delete, would_delete_omitted) = capped_paths(&r.would_delete);
     out.send(Msg::Done(SessionDone {
         files: r.files_done,
         bytes: bytes_total,
         errors: capped_errors(&errors),
-        deleted: capped_paths(&r.deleted),
-        would_delete: capped_paths(&r.would_delete),
+        deleted,
+        would_delete,
         max_delete_reached: r.max_delete_reached,
         created: report.created,
         transferred_size: r.transferred_size,
-        deleted_omitted: r.deleted.len().saturating_sub(MAX_DONE_PATHS) as u64,
-        would_delete_omitted: r.would_delete.len().saturating_sub(MAX_DONE_PATHS) as u64,
+        deleted_omitted,
+        would_delete_omitted,
     }));
     // Finished: a later run with the same key starts a new session.
     r.persist.finish().await;
@@ -1351,7 +1353,9 @@ pub(super) async fn run(
         files_hashed: ctx.files_hashed() - hashed_before,
         errors,
         deleted: r.deleted,
+        deleted_omitted: 0,
         would_delete: r.would_delete,
+        would_delete_omitted: 0,
         max_delete_reached: r.max_delete_reached,
         usage: Default::default(),
         reconnects: 0,
