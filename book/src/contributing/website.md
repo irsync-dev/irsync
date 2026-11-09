@@ -137,13 +137,89 @@ them.
    gh secret set CLOUDFLARE_ACCOUNT_ID
    ```
 
+### Deploying from GitHub
+
+This is the normal way. `.github/workflows/site.yml` has two jobs.
+
+The `staging` job runs on every push to `main` that touches `book/`,
+`site/`, `README.md`, the workflow, or what the checker reads beyond them
+(`crates/`, `proto/`, `docs/`, `.githooks/`, `tools/`). It runs the tool
+tests, builds the site, runs the checker, keeps `target/site` as the run
+artifact `site`, and deploys it to `irsync-dev`. If a check fails, nothing is
+deployed.
+
+The `promote` job runs only when the workflow is started by hand on `main`.
+It downloads the `site` artifact of the newest successful push run on
+`main`, deploys it to `irsync-pub` and writes its `BUILD` to the job
+summary.
+
+The repository secrets `CLOUDFLARE_API_TOKEN_DEV`, `CLOUDFLARE_API_TOKEN_PUB`
+and `CLOUDFLARE_ACCOUNT_ID` hold the credentials; each deploy step sees only
+its own Worker's token.
+
+### Promoting to irsync.org
+
+Look over [dev.irsync.org](https://dev.irsync.org/) first, then start the
+`promote` job, either in the browser (Actions, Site, Run workflow) or with:
+
+```sh
+gh workflow run site.yml --ref main
+```
+
+To follow it, wait a few seconds for the run to appear, then:
+
+```sh
+gh run watch $(gh run list --workflow site.yml --event workflow_dispatch \
+  --limit 1 --json databaseId --jq '.[0].databaseId')
+```
+
+When it has finished, check that irsync.org serves the staging build, still
+answers an unknown URL with a 404, and is not marked `noindex`:
+
+```sh
+curl https://irsync.org/BUILD                    # the same commit as the next line
+curl https://dev.irsync.org/BUILD
+curl -sI https://irsync.org/nope | head -1       # HTTP/2 404
+curl -sI https://irsync.org/ | grep -i x-robots  # prints nothing
+```
+
+The last check matters most: a `noindex` on irsync.org would drop the site
+from search engines.
+
+The job promotes the newest CI build, not whatever dev.irsync.org serves at
+that moment. The two differ only if someone deployed staging by hand with
+`site/deploy.sh staging` after the last CI build; the `BUILD` comparison
+above shows it. Push, or re-run the newest staging run, to bring staging
+back to a CI build before promoting.
+
+Artifacts expire after the repository's retention period (90 days by
+default). When the newest staging build is older than that, the job fails
+with "no successful staging run on main" or cannot download the build; push,
+or re-run the newest staging run, and promote again.
+
+### Rolling back irsync.org
+
+Every deploy is kept as a version of the Worker. To serve an older one again,
+open the dashboard, Workers & Pages, `irsync-pub`, Deployments, pick the
+version and roll back to it; or, with the `irsync-pub` token or a full-access
+login:
+
+```sh
+npx wrangler deployments list --name irsync-pub
+npx wrangler rollback <version-id> --name irsync-pub
+```
+
+A rollback takes effect at once and does not touch staging. The next
+promotion replaces it.
+
 ### Deploying from a developer machine
 
-Both deploys run from a developer machine with `site/deploy.sh`. It uses
-`wrangler` through `npx` at the version pinned at its top, and takes the
-credentials from `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, or from
-`wrangler login`. A token limited to one Worker deploys only to that Worker:
-`staging` needs the `irsync-dev` token and `promote` the `irsync-pub` one.
+For when GitHub Actions is not available. `site/deploy.sh` runs the same
+checks and deploys. It uses `wrangler` through `npx` at the version pinned
+at its top, and takes the credentials from `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`, or from `wrangler login`. A token limited to one
+Worker deploys only to that Worker: `staging` needs the `irsync-dev` token
+and `promote` the `irsync-pub` one.
 
 ```sh
 site/deploy.sh staging
@@ -155,39 +231,25 @@ builds `target/site/`, writes the `HEAD` commit to `target/site/BUILD`,
 builds irsync (`cargo build -p irsync`), runs the tool tests and the checker,
 and refuses to deploy when either fails. Then it deploys to `irsync-dev` and
 copies the build to `target/site-staging/`.
+
 `promote` deploys `target/site-staging/` to `irsync-pub` and prints its
 `BUILD`. It refuses without a `target/site-staging/BUILD`, and when that
 `BUILD` differs from `https://dev.irsync.org/BUILD` or cannot be compared
 with it: someone else may have deployed staging since, and promotion ships
-only what staging serves.
+only what staging serves. Run the checks under
+[Promoting to irsync.org](#promoting-to-irsyncorg) afterwards.
 
-### Deploying from GitHub
-
-`.github/workflows/site.yml` runs both deploys, and promotion normally goes
-through it rather than `site/deploy.sh promote`, whose local copy may not be
-the build staging serves. Its `staging` job runs on every push
-to `main` that touches `book/`, `site/`, `README.md`, the workflow, or what
-the checker reads beyond them (`crates/`, `proto/`, `docs/`, `.githooks/`,
-`tools/`): it runs
-the tool tests, builds, runs the checker, uploads `target/site` as the
-artifact `site` and deploys it to `irsync-dev`. Its `promote` job runs only
-when the workflow is started by hand on `main` (Actions, Site, Run workflow): it
-downloads the `site` artifact of the newest successful push run on `main`,
-deploys it to `irsync-pub` and writes its `BUILD` to the job summary. The
-repository secrets `CLOUDFLARE_API_TOKEN_DEV`, `CLOUDFLARE_API_TOKEN_PUB` and
-`CLOUDFLARE_ACCOUNT_ID` hold the credentials; each deploy step sees only its
-own Worker's token. Artifacts expire after
-the repository's retention period (90 days by default); a staging build older than that has to be rebuilt by a
-new push before it can be promoted.
+### Checking a new Worker
 
 After the first deploy to each Worker, confirm that an unknown URL gets a
 404 status and not the landing page:
 
 ```sh
 curl -I https://dev.irsync.org/nope
+curl -I https://irsync.org/nope
 ```
 
-The first line of the answer should read `HTTP/2 404`. With
+The first line of each answer should read `HTTP/2 404`. With
 `not_found_handling` set to `404-page` in `site/wrangler.jsonc`, Cloudflare
 serves `404.html` with that status for any path that is not a file.
 
@@ -198,8 +260,8 @@ same files, so the difference lives in `site/_headers`, which Cloudflare
 applies per host: responses from `dev.irsync.org` carry
 `X-Robots-Tag: noindex`, and responses from `irsync.org` do not.
 `site/wrangler.jsonc` turns off the Workers' `workers.dev` hosts and preview
-hosts; `_headers` marks those `noindex` too, in case one is turned on. `site/tools/test_headers.py` pins these
-rules.
+hosts; `_headers` marks those `noindex` too, in case one is turned on.
+`site/tools/test_headers.py` pins these rules.
 
 There is no staging-only `robots.txt`. Promotion uploads staging's files
 unchanged, and identical files cannot carry a different `robots.txt` per
