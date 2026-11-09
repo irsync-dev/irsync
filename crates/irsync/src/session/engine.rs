@@ -1162,6 +1162,7 @@ async fn serve_daemon_inner(
                 h.lists_ahead_peak = p.lists_ahead_peak;
                 h.slow_peer_events = p.slow_peer_events;
                 h.cut_listing_after = p.cut_listing_after;
+                h.inject_listing = p.inject_listing;
             }
             h
         },

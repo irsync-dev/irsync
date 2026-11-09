@@ -455,6 +455,7 @@ pub struct DaemonHooks {
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub lists_ahead_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub cut_listing_after: Option<usize>,
+    pub inject_listing: Option<ListingHook>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -619,8 +620,10 @@ pub struct SideHooks {
     /// Receives the receiver role's events (see [`EventLog`]).
     #[cfg(feature = "test-hooks")]
     pub events: Option<EventLog>,
-    /// The sender role lists these extra entries after an entry (crafts a
-    /// hostile listing).
+    /// Either role's walk lists these extra entries after an entry (crafts
+    /// a hostile listing); it runs on the listing thread, so it may also
+    /// hold the walk back. On a receiver the extra entries reach only the
+    /// peer, not this side's planner.
     #[cfg(feature = "test-hooks")]
     pub inject_listing: Option<ListingHook>,
     /// Receiver: cap on files in flight instead of the default 4096.

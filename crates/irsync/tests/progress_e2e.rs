@@ -644,7 +644,29 @@ async fn push_sees_the_peer_root_before_any_entry() {
         for i in 0..3 {
             fs::write(h.dst(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
-        let (_, events) = run(&h, &opts(&[]), Flow::Push).await;
+        // The root goes out on the control stream before the first entry,
+        // the listing on a stream of its own; a client drops a walk position
+        // that arrives after the `ListingEnd`, and three files are listed
+        // fast enough for that under load. So the daemon's walk waits at its
+        // first entry until the client has shown the root (10 s at most: a
+        // root that never arrives fails below rather than hanging).
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+        let seen_rx = std::sync::Mutex::new(Some(seen_rx));
+        h.daemon.hooks.lock().unwrap().inject_listing = Some(std::sync::Arc::new(move |_| {
+            if let Some(rx) = seen_rx.lock().unwrap().take() {
+                let _ = rx.recv_timeout(Duration::from_secs(10));
+            }
+            Vec::new()
+        }));
+        let (_, events) = run_with(&h, &opts(&[]), Flow::Push, ReconnectOpts::default(), {
+            move |e| {
+                if matches!(e, Event::Scanned { party: Party::Peer, at: Some(p), .. } if p.as_bytes().is_empty())
+                {
+                    let _ = seen_tx.send(());
+                }
+            }
+        })
+        .await;
         assert!(
             events.iter().any(|e| matches!(
                 e,

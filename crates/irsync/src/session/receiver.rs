@@ -1201,7 +1201,7 @@ pub(super) async fn run(
                     activity: Some(ctx.activity.clone()),
                     meter: Some(ctx.meter.clone()),
                     #[cfg(feature = "test-hooks")]
-                    inject: None,
+                    inject: ctx.hooks.inject_listing.clone(),
                     #[cfg(feature = "test-hooks")]
                     drop_after: None,
                     #[cfg(feature = "test-hooks")]
