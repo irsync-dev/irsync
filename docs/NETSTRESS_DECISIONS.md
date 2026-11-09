@@ -438,3 +438,83 @@ So BBR stays the default: a slow sync on a bad mobile link hurts more than
 a slow one on a good line, and Cubic's full queue adds latency for other
 traffic on the line. Users on a stable wired line who sync a lot can set
 `congestion = "cubic"`.
+
+
+## ACK settings on a long-delay link (2026-11-08)
+
+The open point in `docs/IRSYNC_DECISIONS.md` §2.1 item 1: irsync asks the
+peer for immediate ACKs (every packet, within 1 ms), measured so far only
+on loopback. Two rig additions made it measurable:
+
+- A `long-rtt` profile: 45 ms each way (90 ms round trip), 50 Mbit/s down
+  and 10 Mbit/s up, no jitter, loss or outages.
+- A `--acks <immediate|gentle|peer-default>` option, which the fault layer
+  takes as `acks=` in `IRSYNC_NETSIM` and applies on both sides.
+  `immediate` is irsync's setting; `gentle` is every second packet within
+  1 ms; `peer-default` asks for nothing, so the peer ACKs every second
+  packet or after 25 ms.
+
+Build: `8cefd29` plus these two additions, BBR. Many small files (up to
+16K), 3 syncs per run, `--log-level info`, `--stats`. `long-rtt`: 60000
+steps, trees up to 256M, seeds 1 to 5. `dsl-video`: 20000 steps, trees up
+to 128M, seeds 1 to 3. The three settings of one seed and direction ran at
+the same time, so they shared the machine's load. All 144 syncs passed.
+Results and logs are under `~/work/irsync-netstress-acks`.
+
+Total sync time over all seeds, and the packets the client sent on pulls
+(nearly all of them ACKs):
+
+| | immediate | gentle | peer-default |
+| --- | --- | --- | --- |
+| `long-rtt` pull | 544 s | 507 s | 684 s |
+| `long-rtt` push | 1211 s | 1216 s | 1215 s |
+| `dsl-video` pull | 545 s | 559 s | 648 s |
+| `dsl-video` push | 3610 s | 3756 s | 3776 s |
+| client packets, `long-rtt` pull | 378,765 | 360,478 | 360,114 |
+| client packets, `dsl-video` pull | 100,169 | 90,546 | 73,875 |
+
+What it shows:
+
+- **`long-rtt`: no difference.** In 12 of the 15 pulls all three settings
+  took the same time to a tenth of a second. The totals come from three
+  syncs where one setting stalled for no visible reason, a different one
+  each time: `peer-default` once (193 s against 45 s), `immediate` once
+  and `gentle` once (77 s against 44 s). Pushes are held by the 10 Mbit/s
+  uplink and are within 1% of each other. Immediate ACKs sent 5% more
+  packets.
+- **`dsl-video` pull: `peer-default` is slower.** It lost in 2 of 3 seeds
+  (343 s against 280 s, 153 s against 111 s). `immediate` and `gentle` were
+  about equal, although immediate ACKs put 11% more packets than `gentle`
+  and 36% more than `peer-default` on the 1 Mbit/s uplink.
+- **`dsl-video` push: only immediate ACKs never dropped the connection.**
+  `immediate` was fastest in 2 of 3 seeds. With `gentle` (3 syncs) and
+  `peer-default` (5 syncs) the client heard nothing for 10 s, logged
+  `session failed error=no activity for 10 s`, and reconnected. The daemon
+  then answered that it did not know the session (`BadSession`), so the
+  client started a new session and the sync began again instead of
+  resuming. The sync times include these restarts. The byte counts of
+  those syncs are not usable: `--stats` covers only the last session.
+
+The client's return traffic on pulls was 7.5 to 8% of the data bytes for
+all three settings, but that also holds the client's listing and requests,
+so it is not a clean measure of ACK traffic.
+
+**A limit of the rig:** the fault layer releases packets on tokio timers
+of about 1 ms. At these speeds several packets arrive together and get one
+ACK between them, whatever the setting. So the rig shows less extra ACK
+traffic than a real link that delivers packets one at a time would.
+
+So irsync keeps immediate ACKs: they cost no time on a long-delay link and
+helped on the slow uplink, and their extra packets did not slow anything
+down here.
+
+### Found on the way
+
+- **A resume the daemon refused.** After the 10 s drops above, the daemon
+  did not know the session and the transfer restarted. A drop while the
+  link is up should resume, whatever the ACK setting. Not yet looked into.
+- **Random stalls on `long-rtt` pull.** Some syncs took 2 to 4 times their
+  usual time, with every setting. The info-level logs show nothing but the
+  periodic counts, so the cause is unknown; a debug-level rerun of one of
+  them (`long-rtt`, pull, seed 2, `--acks peer-default`, iteration 2, or
+  seed 5, `--acks immediate`, iteration 3) is the next step.

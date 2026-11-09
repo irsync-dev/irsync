@@ -243,7 +243,9 @@ IRSYNC_NETSIM=profile=<name>,side=<client|daemon>,seed=<n>,stream=<n>
 ```
 
 All four keys are required, in any order. A bad value is an error, not
-ignored.
+ignored. An optional fifth key, `acks=<immediate|gentle|peer-default>`,
+changes the ACKs this side asks of the other; see `--acks` under
+[Command line](#command-line).
 
 - Set it on **both** sides with the same profile and seed, `side=daemon`
   for the daemon and `side=client` for the client. With the variable set,
@@ -339,7 +341,7 @@ irsync-netstress [OPTIONS] --direction <DIRECTION> --profile <PROFILE> <ROOT> [-
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `<ROOT>` | Working directory for the run. Created if missing; must be empty if it exists. Never deleted. | required |
-| `--profile <NAME>` | The network to simulate: `4g-vehicle`, `dsl-video` or `test-blackout`. See [Profiles](#profiles). | required |
+| `--profile <NAME>` | The network to simulate: `4g-vehicle`, `dsl-video`, `long-rtt` or `test-blackout`. See [Profiles](#profiles). | required |
 | `--direction <push\|pull>` | Which way the client moves data. On a push the client sends; on a pull the daemon sends. | required |
 | `--iterations <N>` | Number of sync-and-check rounds. | the profile's |
 | `--seed <S>` | Seed for the file trees and for the network's random choices. Printed in the header and saved in `run.toml`. | random |
@@ -348,6 +350,7 @@ irsync-netstress [OPTIONS] --direction <DIRECTION> --profile <PROFILE> <ROOT> [-
 | `--max-file-size <SIZE>` | Passed to filegen: the largest single file. | the profile's |
 | `--filegen-set <KEY=VALUE>` | An extra filegen `--set` for every filegen run; repeatable. | none |
 | `--congestion <bbr\|cubic>` | Write `congestion = "<NAME>"` into both the daemon's and the client's config, so both directions use that congestion control. | irsync's (`bbr`) |
+| `--acks <immediate\|gentle\|peer-default>` | The ACKs each side asks of the other: `immediate` (every packet, within 1 ms), `gentle` (every second packet, within 1 ms) or `peer-default` (nothing asked: every second packet or after 25 ms). For measuring them against each other. | irsync's (`immediate`) |
 | `--log-level <LEVEL>` | Log level for the daemon and the client. | `debug` |
 | `--keep-going` | Carry on after a failed iteration instead of stopping. | off |
 | `--irsync`, `--filegen`, `--fileset <PATH>` | Use this binary instead of looking one up. The tools are looked up next to `irsync-netstress` first, then on `PATH`. | lookup |
@@ -429,6 +432,23 @@ to 4M, client `--timeout 10`.
 What it is meant to catch: timeouts that are too short for a slow or
 overloaded line, stalls when packets wait a long time in a queue, and
 irsync giving up on a peer that is merely slow.
+
+#### `long-rtt`: a long, clean line
+
+| | down (daemon to client) | up (client to daemon) |
+| --- | --- | --- |
+| speed | 50 Mbit/s, fixed | 10 Mbit/s, fixed |
+| queue | 1024 KiB | 256 KiB |
+| delay | 45 ms each way (90 ms round trip), no drift | same |
+| loss | none | none |
+
+No reordering, no cross traffic, no outages, so any reconnect fails the
+iteration. Run defaults: 5 iterations, 2000 filegen steps, trees up to 64M,
+files up to 64K, client `--timeout 10`. The many small files mean many
+round trips.
+
+What it is meant to show: how irsync behaves when every round trip takes a
+long time, and settings that only matter then, such as `--acks`.
 
 #### `test-blackout`: for the rig's own tests
 

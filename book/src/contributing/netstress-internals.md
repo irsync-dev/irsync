@@ -148,7 +148,11 @@ makes iroh wait; a packet that does not fit is dropped, as on a real link.
 **Delivering** (`deliver` in `transport.rs`): a background task keeps the
 waiting packets sorted by delivery time. When a packet's time comes, it
 sends it on the real UDP socket to the peer. Loopback adds almost nothing,
-so the packet arrives when the model said it would.
+so the packet arrives when the model said it would, to within the tokio
+timer's resolution of about 1 ms. On a fast link several packets fall into
+the same millisecond and arrive together, so the receiver sends fewer ACKs
+than it would on a real link where they come one at a time. Measurements
+of ACK traffic undercount for this reason.
 
 **Receiving** (`poll_recv` in `transport.rs`):
 

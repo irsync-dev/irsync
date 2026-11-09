@@ -511,7 +511,12 @@ cross-referenced from commit messages and review notes.
      smaller there, and the extra ACK traffic is unmeasured. Threshold 1
      (the default) with `max_ack_delay` 1 ms is a possible gentler
      setting, since the stalls come from the delay timer; it was not
-     measured.
+     measured. *Measured 2026-11-08* with irsync-netstress (see
+     "ACK settings on a long-delay link" in `docs/NETSTRESS_DECISIONS.md`):
+     on a 90 ms round-trip link the three settings took the same time; on
+     the slow `dsl-video` uplink the peer's default was slower on pulls,
+     and only immediate ACKs never hit a 10 s idle drop on pushes. The
+     immediate setting stays.
 2. **Application heartbeat (R35).** One peer's long local work (e.g. hashing
    a multi-GB file on a slow disk) is invisible to the other peer's idle
    watchdog. Mitigated by the 30-min daemon default and `idle_timeout = 0`.
