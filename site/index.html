@@ -1,168 +1,314 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>irsync</title>
-<meta name="description" content="irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for today's networks.">
-<link rel="stylesheet" href="tokens.css">
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<header class="top">
-  <nav aria-label="Site">
-    <a class="name" href="./">irsync</a>
-    <ul>
-      <li><a href="book/">book</a></li>
-      <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
-      <li><a href="#install">install</a></li>
-    </ul>
-  </nav>
-</header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>irsync</title>
+    <meta
+      name="description"
+      content="irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for today's networks."
+    />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <nav aria-label="Site">
+        <a class="name" href="./">irsync</a>
+        <ul>
+          <li><a href="book/">documentation</a></li>
+          <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
+          <li><a href="#install">install</a></li>
+        </ul>
+      </nav>
+    </header>
 
-<main>
-  <section class="hero" aria-labelledby="headline">
-    <h1 id="headline">rsync, rebuilt for today's networks</h1>
-    <p class="lede">irsync is a one-way directory synchroniser. It runs on both
-    ends of a transfer and connects through <a href="https://iroh.computer">iroh</a>,
-    so two machines find each other and traverse NATs and firewalls without port
-    forwarding, dynamic DNS or SSH tunnels.</p>
-    <p class="actions">
-      <a class="button primary" href="book/">Read the book</a>
-      <a class="button quiet" href="#install">Install</a>
-    </p>
+    <main>
+      <section class="hero" aria-labelledby="headline">
+        <h1 id="headline">irsync - resilient file synchronization</h1>
+        <p class="lede">
+          irsync is a one-way directory synchroniser in the mould of rsync,
+          rebuilt for today's networks.
+        </p>
 
-    <figure class="session">
-      <pre class="terminal" tabindex="0" role="region" aria-label="Terminal session: name the daemon, list its exports, push a photo library"><span class="prompt">$</span> irsync host add myserver 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
+        <p class="lede-last">
+          Using <a href="https://iroh.computer">iroh</a> as network transport,
+          irsync can transfer data traversing NATs and firewalls without port
+          forwarding, dynamic DNS or SSH tunnels. In addition, irsync sessions
+          are using multiplexed over QUIC, ensuring that transfers are resilient
+          to temporary network outages.
+        </p>
+        <p class="actions">
+          <a class="button primary" href="#install">Install irsync</a>
+          <a class="button quiet" href="book/">Read the documentation</a>
+        </p>
+
+        <figure class="session">
+          <pre
+            class="terminal"
+            tabindex="0"
+            role="region"
+            aria-label="Terminal session: name the daemon, list its exports, push a photo library"
+          ><span class="prompt">$</span> irsync host add myserver 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
 myserver: 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
-<span class="prompt">$</span> irsync myserver:
+            <span class="prompt">$</span> irsync myserver:
 backup /backup rw
 photos /srv/photos rw
-<span class="prompt">$</span> irsync -av ~/Photos/ myserver:photos/
+            <span class="prompt">$</span> irsync -av ~/Photos/ myserver:photos/
 2021/07/IMG_4466.heic
 2021/07/IMG_4467.heic
 2021/07/IMG_4468.heic
-<span class="dim">──────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+            <span class="dim">──────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
 list      31,204 entries  walking 2021/08/  peer 29,877 entries  walking 2021/07/
 transfer  <span class="flow">[████████████░░░░░░░░░░░░░░░░░░]</span>   40%  74.31G/183.62G  112.40MB/s  0:11:17  32 in flight  [direct]
-  <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
-  <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   25%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
+            <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
+            <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   25%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
   hashing                       2021/08/VID_20210815_101230.mov  640.55M
-  <span class="flow">[█████████░░░░░░░░░░░]</span>   47%  2021/08/VID_20210811_200417.mov  212.37M  4.70MB/s
-  <span class="flow">[██████████████████░░]</span>   92%  2021/07/IMG_4502.dng  48.16M  3.20MB/s
-  <span class="flow">[██░░░░░░░░░░░░░░░░░░]</span>   11%  2021/07/IMG_4503.dng  46.90M  2.90MB/s
-  <span class="flow">[██████████░░░░░░░░░░]</span>   54%  2021/07/IMG_4470.heic  4.31M  2.40MB/s
-  <span class="flow">[█░░░░░░░░░░░░░░░░░░░]</span>    7%  2021/07/IMG_4471.heic  3.87M  1.10MB/s
+            <span class="flow">[█████████░░░░░░░░░░░]</span>   47%  2021/08/VID_20210811_200417.mov  212.37M  4.70MB/s
+            <span class="flow">[██████████████████░░]</span>   92%  2021/07/IMG_4502.dng  48.16M  3.20MB/s
+            <span class="flow">[██░░░░░░░░░░░░░░░░░░]</span>   11%  2021/07/IMG_4503.dng  46.90M  2.90MB/s
+            <span class="flow">[██████████░░░░░░░░░░]</span>   54%  2021/07/IMG_4470.heic  4.31M  2.40MB/s
+            <span class="flow">[█░░░░░░░░░░░░░░░░░░░]</span>    7%  2021/07/IMG_4471.heic  3.87M  1.10MB/s
   … and 24 more</pre>
-      <figcaption>The commands from <a href="book/tutorial/first-sync.html">Your first
-      sync</a>. Below the files that <code>-v</code> lists, irsync draws a live block
-      on a terminal: the listing on both sides, the transfer, and one row per file
-      that is being hashed or has a data stream open. <code>32 in flight</code>
-      counts those files. Shown here at one moment.</figcaption>
-    </figure>
-  </section>
+          <figcaption>
+            The commands from
+            <a href="book/tutorial/first-sync.html">Your first sync</a>. Below
+            the files that <code>-v</code> lists, irsync draws a live block on a
+            terminal: the listing on both sides, the transfer, and one row per
+            file that is being hashed or has a data stream open.
+            <code>32 in flight</code> counts those files. Shown here at one
+            moment.
+          </figcaption>
+        </figure>
+      </section>
 
-  <section class="claims" aria-labelledby="claims-heading">
-    <h2 id="claims-heading" class="visually-hidden">What irsync does</h2>
-    <ul>
-      <li class="card">
-        <h3>No port forwarding</h3>
-        <p>The daemon is reached by its <code>EndpointId</code>, the public half of
-        its key, not by an address. The client pins that key for each host; there is
-        no trust-on-first-use.</p>
-        <a href="book/explanation/identity-and-trust.html#the-client-pins-the-daemon">Identity and trust →</a>
-      </li>
-      <li class="card">
-        <h3>Survives a bad link</h3>
-        <p>A session outlives any connection. After a drop the client redials for up
-        to 24 hours by default; after Ctrl-C or a reboot, the next run of the same
-        command resumes from the last verified chunk.</p>
-        <a href="book/explanation/sessions-and-resume.html#when-the-connection-drops">Sessions and resume →</a>
-      </li>
-      <li class="card">
-        <h3>Fills the link</h3>
-        <p>A session keeps up to 4,096 files between request and acknowledgement,
-        which hides the per-file round trips, and up to 32 QUIC data streams by
-        default fill the link; a large file spreads over several streams.</p>
-        <a href="book/explanation/transfer-algorithm.html#files-in-flight-and-streams">The transfer algorithm →</a>
-      </li>
-    </ul>
-  </section>
+      <section class="claims" aria-labelledby="claims-heading">
+        <h2 id="claims-heading" class="visually-hidden">What irsync does</h2>
+        <ul>
+          <li class="card">
+            <h3>Transparent Connections</h3>
+            <p>
+              The daemon is reached by its <code>EndpointId</code>, the public
+              half of its key, not by an address. The client pins that key for
+              each host; there is no trust-on-first-use.
+            </p>
+            <a
+              href="book/explanation/identity-and-trust.html#the-client-pins-the-daemon"
+              >Identity and trust →</a
+            >
+          </li>
+          <li class="card">
+            <h3>Resilient Transfers</h3>
+            <p>
+              A session outlives any connection. After a drop the client redials
+              for up to 24 hours by default; after Ctrl-C or a reboot, the next
+              run of the same command resumes from the last verified chunk.
+            </p>
+            <a
+              href="book/explanation/sessions-and-resume.html#when-the-connection-drops"
+              >Sessions and resume →</a
+            >
+          </li>
+          <li class="card">
+            <h3>Efficient Bandwidth Usage</h3>
+            <p>
+              A session keeps up to 4,096 files between request and
+              acknowledgement, which hides the per-file round trips, and up to
+              32 QUIC data streams by default fill the link; a large file
+              spreads over several streams.
+            </p>
+            <a
+              href="book/explanation/transfer-algorithm.html#files-in-flight-and-streams"
+              >The transfer algorithm →</a
+            >
+          </li>
+        </ul>
+      </section>
 
-  <section id="rsync" aria-labelledby="rsync-heading">
-    <h2 id="rsync-heading">If you know rsync</h2>
-    <p><code>-a</code> and rsync's trailing-slash rule work as they do in
-    rsync; <code>-v</code> lists files as rsync's does, but <code>-vv</code>
-    and <code>-vvv</code> turn on debug and trace logs.
-    <code>--delete</code> deletes after the transfer, as
-    <code>--delete-after</code> does. What changes is underneath.</p>
-    <div class="table-scroll" tabindex="0" role="region" aria-label="irsync compared with rsync">
-      <table>
-        <thead>
-          <tr><th scope="col"><span class="visually-hidden">Dimension</span></th><th scope="col">rsync</th><th scope="col">irsync</th></tr>
-        </thead>
-        <tbody>
-          <tr><th scope="row">Transport</th><td>TCP or SSH</td><td>iroh QUIC, NAT traversal, pinned Ed25519 identities</td></tr>
-          <tr><th scope="row">Delta unit</th><td>basis block, 700 B .. 128 KiB, ~sqrt(size)</td><td>content-defined chunk, 64 KiB .. 1 MiB, 256 KiB average; blocks of 512 B .. 4 KiB inside a missing chunk</td></tr>
-          <tr><th scope="row">1-byte edit in a 1 GiB file</th><td>~32 KiB literal + tokens</td><td>~1 KiB literal + a few operations, with ~10 KiB of block signatures the other way</td></tr>
-          <tr><th scope="row">Rename detection</th><td>none (name similarity only, <code>--fuzzy</code>)</td><td>by content: a renamed or copied file's chunks are found in the index and copied locally</td></tr>
-          <tr><th scope="row">Digest caching across runs</th><td>none; <code>-c</code> re-reads everything</td><td>persistent SQLite index keyed on size, mtime, ctime, inode</td></tr>
-          <tr><th scope="row">Streams</th><td>one, in order</td><td>up to <code>--parallel</code> QUIC streams (32 by default), runs split at 64 MiB</td></tr>
-          <tr><th scope="row">Files in flight</th><td>pipelined, bounded by the window</td><td>up to 4,096 per session, from request to acknowledgement</td></tr>
-          <tr><th scope="row">Resume</th><td><code>--partial</code> keeps bytes; the next run re-checksums them</td><td>chunk-granular, verified ranges persisted; plan persisted</td></tr>
-          <tr><th scope="row">Round trips before first data byte</th><td>~0 (pipelined)</td><td>1.5 (plan, chunk list, request)</td></tr>
-          <tr><th scope="row">Compression</th><td><code>-z</code></td><td>none</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="more"><a href="book/explanation/transfer-algorithm.html#compared-with-rsync">The full comparison, including where rsync is ahead →</a></p>
-  </section>
+      <section id="rsync" aria-labelledby="rsync-heading">
+        <h2 id="rsync-heading">If you know rsync</h2>
+        <p>
+          <code>-a</code> and rsync's trailing-slash rule work as they do in
+          rsync; <code>-v</code> lists files as rsync's does, but
+          <code>-vv</code> and <code>-vvv</code> turn on debug and trace logs.
+          <code>--delete</code> deletes after the transfer, as
+          <code>--delete-after</code> does. What changes is underneath.
+        </p>
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="irsync compared with rsync"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">
+                  <span class="visually-hidden">Dimension</span>
+                </th>
+                <th scope="col">rsync</th>
+                <th scope="col">irsync</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Transport</th>
+                <td>TCP or SSH</td>
+                <td>iroh QUIC, NAT traversal, pinned Ed25519 identities</td>
+              </tr>
+              <tr>
+                <th scope="row">Delta unit</th>
+                <td>basis block, 700 B .. 128 KiB, ~sqrt(size)</td>
+                <td>
+                  content-defined chunk, 64 KiB .. 1 MiB, 256 KiB average;
+                  blocks of 512 B .. 4 KiB inside a missing chunk
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">1-byte edit in a 1 GiB file</th>
+                <td>~32 KiB literal + tokens</td>
+                <td>
+                  ~1 KiB literal + a few operations, with ~10 KiB of block
+                  signatures the other way
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Rename detection</th>
+                <td>none (name similarity only, <code>--fuzzy</code>)</td>
+                <td>
+                  by content: a renamed or copied file's chunks are found in the
+                  index and copied locally
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Digest caching across runs</th>
+                <td>none; <code>-c</code> re-reads everything</td>
+                <td>
+                  persistent SQLite index keyed on size, mtime, ctime, inode
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Streams</th>
+                <td>one, in order</td>
+                <td>
+                  up to <code>--parallel</code> QUIC streams (32 by default),
+                  runs split at 64 MiB
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Files in flight</th>
+                <td>pipelined, bounded by the window</td>
+                <td>
+                  up to 4,096 per session, from request to acknowledgement
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Resume</th>
+                <td>
+                  <code>--partial</code> keeps bytes; the next run re-checksums
+                  them
+                </td>
+                <td>
+                  chunk-granular, verified ranges persisted; plan persisted
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Round trips before first data byte</th>
+                <td>~0 (pipelined)</td>
+                <td>1.5 (plan, chunk list, request)</td>
+              </tr>
+              <tr>
+                <th scope="row">Compression</th>
+                <td><code>-z</code></td>
+                <td>none</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="more">
+          <a href="book/explanation/transfer-algorithm.html#compared-with-rsync"
+            >The full comparison, including where rsync is ahead →</a
+          >
+        </p>
+      </section>
 
-  <section id="install" aria-labelledby="install-heading">
-    <h2 id="install-heading">Install</h2>
-    <pre class="terminal" tabindex="0" role="region" aria-label="Install command"><span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync irsync</pre>
-    <p>Linux and macOS, x86_64 and aarch64, as client and as daemon. Install it on
-    both machines.</p>
-    <p>Optional: <code>fileset</code>, an independent tool that records the checksums
-    and metadata of a directory tree and later verifies the tree against them, for
-    example after a transfer (<a href="book/how-to/verify-with-fileset.html">Verify a
-    transfer with fileset</a>).</p>
-    <pre class="terminal" tabindex="0" role="region" aria-label="Install command for fileset"><span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync fileset</pre>
-  </section>
+      <section id="install" aria-labelledby="install-heading">
+        <h2 id="install-heading">Install</h2>
+        <pre
+          class="terminal"
+          tabindex="0"
+          role="region"
+          aria-label="Install command"
+        ><span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync irsync</pre>
+        <p>
+          Linux and macOS, x86_64 and aarch64, as client and as daemon. Install
+          it on both machines.
+        </p>
+        <p>
+          Optional: <code>fileset</code>, an independent tool that records the
+          checksums and metadata of a directory tree and later verifies the tree
+          against them, for example after a transfer (<a
+            href="book/how-to/verify-with-fileset.html"
+            >Verify a transfer with fileset</a
+          >).
+        </p>
+        <pre
+          class="terminal"
+          tabindex="0"
+          role="region"
+          aria-label="Install command for fileset"
+        ><span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync fileset</pre>
+      </section>
 
-  <section id="the-book" aria-labelledby="book-heading">
-    <h2 id="book-heading">The book</h2>
-    <ul class="map">
-      <li>
-        <h3><a href="book/tutorial/first-sync.html">Tutorial</a></h3>
-        <p>Push a photo library to a server, interrupt and resume the push,
-        pull the library back.</p>
-      </li>
-      <li>
-        <h3><a href="book/how-to/run-the-daemon.html">How-to guides</a></h3>
-        <p>Run the daemon under systemd or launchd, connect directly or through a
-        relay, seed the index, watch a transfer with telemetry.</p>
-      </li>
-      <li>
-        <h3><a href="book/reference/command-line.html">Reference</a></h3>
-        <p>Every flag, the management commands, remote addresses, configuration,
-        metrics, the protocol and the known limitations.</p>
-      </li>
-      <li>
-        <h3><a href="book/explanation/transfer-algorithm.html">Explanation</a></h3>
-        <p>The transfer algorithm, sessions and resume, identity and trust,
-        connections, and how a changed file is received.</p>
-      </li>
-    </ul>
-  </section>
-</main>
+      <section id="the-book" aria-labelledby="book-heading">
+        <h2 id="book-heading">The book</h2>
+        <ul class="map">
+          <li>
+            <h3><a href="book/tutorial/first-sync.html">Tutorial</a></h3>
+            <p>
+              Push a photo library to a server, interrupt and resume the push,
+              pull the library back.
+            </p>
+          </li>
+          <li>
+            <h3><a href="book/how-to/run-the-daemon.html">How-to guides</a></h3>
+            <p>
+              Run the daemon under systemd or launchd, connect directly or
+              through a relay, seed the index, watch a transfer with telemetry.
+            </p>
+          </li>
+          <li>
+            <h3><a href="book/reference/command-line.html">Reference</a></h3>
+            <p>
+              Every flag, the management commands, remote addresses,
+              configuration, metrics, the protocol and the known limitations.
+            </p>
+          </li>
+          <li>
+            <h3>
+              <a href="book/explanation/transfer-algorithm.html">Explanation</a>
+            </h3>
+            <p>
+              The transfer algorithm, sessions and resume, identity and trust,
+              connections, and how a changed file is received.
+            </p>
+          </li>
+        </ul>
+      </section>
+    </main>
 
-<footer class="bottom">
-  <p>irsync is <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE">MIT
-  licensed</a>. Source at
-  <a href="https://github.com/irsync-dev/irsync">github.com/irsync-dev/irsync</a>.
-  To work on it, see <a href="book/contributing/setup.html">Contributing</a>.</p>
-</footer>
-</body>
+    <footer class="bottom">
+      <p>
+        irsync is
+        <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
+          >MIT licensed</a
+        >. Source at
+        <a href="https://github.com/irsync-dev/irsync"
+          >github.com/irsync-dev/irsync</a
+        >. To work on it, see
+        <a href="book/contributing/setup.html">Contributing</a>.
+      </p>
+    </footer>
+  </body>
 </html>

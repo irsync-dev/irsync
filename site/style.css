@@ -145,6 +145,12 @@ button:focus-visible,
 .lede {
   color: var(--ir-ink-muted);
   max-width: 44em;
+  margin-bottom: var(--ir-space-2);
+}
+
+.lede-last {
+  color: var(--ir-ink-muted);
+  max-width: 44em;
   margin-bottom: var(--ir-space-6);
 }
 

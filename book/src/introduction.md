@@ -1,6 +1,6 @@
 # Introduction
 
-irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for
+`irsync` is a one-way directory synchroniser in the mould of rsync, rebuilt for
 today's networks. It runs on both ends of a transfer and connects through
 [iroh](https://iroh.computer), so two machines find each other and traverse
 NATs and firewalls without port forwarding, dynamic DNS or SSH tunnels. The
