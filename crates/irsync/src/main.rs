@@ -1315,8 +1315,10 @@ fn client_identity(
             settings.ssh_identity.as_deref(),
         ),
     };
+    // Name the file actually read: with nothing at `path`, the ssh key.
+    let key = irsync::identity::client_key_path(path, ssh);
     let (secret, source) = load_client_identity(path, ssh, pass, "irsync")
-        .with_context(|| format!("loading identity {}", path.display()))?;
+        .with_context(|| format!("loading identity {}", key.display()))?;
     if let KeySource::Ssh(p) = &source {
         tracing::info!(path = %p.display(), "using the ssh key as the client identity");
     }

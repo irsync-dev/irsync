@@ -158,10 +158,16 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
         ),
     )
     .unwrap();
+    // `show` also loads the client key, which the config leaves to the
+    // default lookup: a home of the test's own, so no real
+    // `~/.ssh/id_ed25519` is tried with this passphrase and no key is
+    // generated under the real home.
+    let home = dir.path().join("home");
     let run = |pass: Option<&str>| {
         let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"));
         c.args(["id", "show", "--daemon", "--config"])
             .arg(&cfg)
+            .env("HOME", &home)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(std::process::Stdio::null());
         if let Some(p) = pass {
@@ -194,6 +200,7 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
             .arg(&cfg)
             .arg("--passphrase-file")
             .arg(&pf)
+            .env("HOME", &home)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(std::process::Stdio::null())
             .output()
@@ -208,6 +215,47 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
             "{args:?}"
         );
     }
+}
+
+/// With no client key of irsync's own, the ssh key is the one read, and an
+/// error loading it names it, not the default path that does not exist.
+#[test]
+fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let ssh = home.join(".ssh/id_ed25519");
+    std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
+    PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+        .unwrap()
+        .encrypt(&mut OsRng, "the ssh one")
+        .unwrap()
+        .write_openssh_file(&ssh, LineEnding::LF)
+        .unwrap();
+    let cfg = dir.path().join("c.toml");
+    std::fs::write(
+        &cfg,
+        format!("state_dir = {:?}\n", dir.path().join("state")),
+    )
+    .unwrap();
+    let pf = dir.path().join("pass");
+    std::fs::write(&pf, "another\n").unwrap();
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["show", "--config"])
+        .arg(&cfg)
+        .arg("--passphrase-file")
+        .arg(&pf)
+        .env("HOME", &home)
+        .env_remove("IRSYNC_PASSPHRASE")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains(&format!("loading identity {}:", ssh.display())),
+        "{err}"
+    );
+    assert!(!home.join(".config/irsync/id_ed25519").exists());
 }
 
 #[test]

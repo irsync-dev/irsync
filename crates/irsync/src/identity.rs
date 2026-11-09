@@ -218,6 +218,17 @@ impl KeySource {
     }
 }
 
+/// The file [`load_client_identity`] reads or creates: `ssh` when there is
+/// nothing at `path` and the ssh key exists, else `path`.
+pub fn client_key_path<'a>(path: &'a Path, ssh: Option<&'a Path>) -> &'a Path {
+    if path.symlink_metadata().is_err() {
+        if let Some(ssh) = ssh.filter(|s| s.symlink_metadata().is_ok()) {
+            return ssh;
+        }
+    }
+    path
+}
+
 /// Resolves the client identity the way ssh picks a key: the key at `path`
 /// when it exists; else `ssh` (`~/.ssh/id_ed25519`) when it exists, loaded
 /// as it is; else a new key generated at `path`. `ssh` is `None` when the
@@ -229,11 +240,10 @@ pub fn load_client_identity(
     src: &PassphraseSource,
     comment: &str,
 ) -> Result<(SecretKey, KeySource), IdentityError> {
-    if path.symlink_metadata().is_err() {
-        if let Some(ssh) = ssh.filter(|s| s.symlink_metadata().is_ok()) {
-            let secret = load_identity_interactive(ssh, src)?;
-            return Ok((secret, KeySource::Ssh(ssh.to_path_buf())));
-        }
+    let key = client_key_path(path, ssh);
+    if key != path {
+        let secret = load_identity_interactive(key, src)?;
+        return Ok((secret, KeySource::Ssh(key.to_path_buf())));
     }
     let (secret, generated) = load_or_generate(path, src, comment)?;
     let source = if generated {
