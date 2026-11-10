@@ -58,11 +58,15 @@ fn seed(h: &Harness, flow: Flow) -> Vec<u8> {
     content
 }
 
-/// Writes other data over the first and the last 256 KiB of `path`.
-fn tear(path: &Path, seed: u32) {
+/// Writes other data over the first and the last 256 KiB of `path`, then
+/// sets its mtime to 1e9 + `n` seconds (`n` differs per tear).
+fn tear(path: &Path, seed: u32, n: u32) {
     let f = fs::File::options().write(true).open(path).unwrap();
     f.write_all_at(&data(TEAR, seed), 0).unwrap();
     f.write_all_at(&data(TEAR, seed + 1), (SIZE - TEAR) as u64)
+        .unwrap();
+    // Coarse timestamps (kernels before 6.13) may not show the write itself.
+    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000 + u64::from(n)))
         .unwrap();
 }
 
@@ -84,7 +88,7 @@ fn tearing_hook(src: PathBuf, every_pass: bool, passes: Arc<AtomicU32>) -> HashH
             && (every_pass || pass == 1)
             && !torn.swap(true, Ordering::SeqCst)
         {
-            tear(&src.join("x.bin"), 100 + 2 * pass);
+            tear(&src.join("x.bin"), 100 + 2 * pass, pass);
         }
     })
 }
@@ -129,8 +133,9 @@ async fn torn_hash_twice_fails_for(flow: Flow) {
     let h = Harness::new().await;
     let before = seed(&h, flow);
     let passes = Arc::new(AtomicU32::new(0));
-    let out = run_torn(&h, flow, true, passes).await;
+    let out = run_torn(&h, flow, true, passes.clone()).await;
     assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+    assert_eq!(passes.load(Ordering::SeqCst), 2);
     assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
     let (path, msg) = &out.errors[0];
     assert_eq!(path.as_bytes(), b"x.bin");
