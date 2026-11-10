@@ -1,5 +1,7 @@
 # Hunting bugs
 
+Part of [Testing](testing.md): campaigns, the slowest layer.
+
 A strategy for turning [irsync-stress](stress.md) from a loop that passes into
 a loop that finds bugs. It builds on what the harness has found so far
 ([IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md)),

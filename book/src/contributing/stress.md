@@ -1,5 +1,7 @@
 # Stress testing
 
+Part of [Testing](testing.md): the loopback stress loop.
+
 `irsync-stress` runs the loop that filegen, fileset and irsync were built
 for. It starts an irsync daemon on loopback, fills a source tree with
 [filegen](filegen.md), records it with `fileset init`, then repeats: sync

@@ -1,5 +1,7 @@
 # Generating test trees with filegen
 
+Part of [Testing](testing.md): the tool that changes the tree in every stress loop.
+
 `filegen` simulates the use of a POSIX filesystem. It walks a Markov chain of
 filesystem operations (create, append, truncate, rename, symlink, hard link,
 chmod, set mtime, punch a hole, remove a subtree, and more) and applies each

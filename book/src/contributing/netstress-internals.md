@@ -1,5 +1,7 @@
 # How netstress works
 
+Part of [Testing](testing.md): how the netstress rig works inside.
+
 This page explains what happens inside the network-fault rig: how the fault
 layer gets between irsync and the network, how it decides what happens to
 each packet, and how the rig decides whether a run passed. For how to use

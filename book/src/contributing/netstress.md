@@ -1,5 +1,7 @@
 # Network stress with netstress
 
+Part of [Testing](testing.md): the stress loop over a simulated bad network.
+
 `irsync-netstress` tests irsync over a bad network. It runs the same
 sync-and-check loop as [irsync-stress](stress.md), but every packet between
 the irsync client and the daemon passes through a simulated link: limited

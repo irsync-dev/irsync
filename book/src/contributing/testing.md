@@ -1,5 +1,53 @@
 # Testing
 
+This page is the start of the testing pages. For the case made to users, that
+a finished sync leaves the destination exactly like the source, and what
+backs it, see [How we know irsync is correct](../explanation/correctness.md).
+This section is for people who change irsync and need to know which test to
+add or run.
+
+## The layers
+
+There are four layers. They go from fast and narrow to slow and broad.
+
+1. **Engine tests.** Each runs a sender and a receiver inside one test
+   process and checks the result. They live in `crates/irsync/tests/` and
+   run with `cargo test`. With the `test-hooks` feature (see [Cargo
+   features](#cargo-features)) a test can inject a fault, slow a step or read
+   the receiver's event log. They catch logic bugs in one feature: the
+   planner, the receiver, deletes, resume, filters. Reach for them first. A
+   fix without one is not finished.
+2. **The loopback stress loop.** [`irsync-stress`](stress.md) changes a
+   source tree with [filegen](filegen.md), syncs it, and checks the copy with
+   `fileset check`, over and over. It catches what no one thought to write a
+   test for: odd mixes of files, renames, links, long names and big trees. It
+   takes minutes.
+3. **netstress.** [`irsync-netstress`](netstress.md) runs the same loop
+   through a simulated bad network: slow, lossy, and cut for up to a minute.
+   It catches bugs in sessions, reconnect, resume and the transport. It takes
+   many minutes and needs its own build.
+4. **Campaigns.** [Hunting bugs](bug-hunting.md) turns the stress loop into
+   a search: many seeds, with the settings aimed at one part of irsync per
+   row of a matrix. It catches the bugs a default run is too gentle to hit. It
+   takes hours, so run it before a release or after a risky change, not on
+   every push.
+
+## Which test for which change
+
+| You changed | Add or run |
+| --- | --- |
+| The receiver, the planner, delta or chunk handling | An engine test in `crates/irsync/tests/`. Existing ones to extend: `delta.rs`, `plan.rs`, `recv.rs`, `inplace.rs`, `content_equal.rs`. See [Receiving a changed file](#receiving-a-changed-file). |
+| Deletes, filters or options | An engine test: `delete.rs`, `filter.rs`, `filters_e2e.rs`, `push_options.rs`. |
+| Code that walks or writes the tree: scan, index, metadata, links, renames | An engine test, then a stress run in both directions: `irsync-stress --direction push` and `--direction pull`. |
+| Sessions, reconnect, resume or the transport | An engine test (`resume.rs`), then a netstress run, for example `--profile 4g-vehicle`. |
+| Anything risky, or something a default stress run barely touches (hard links, sparse files, odd timestamps, huge listings) | A row of the [campaign matrix](bug-hunting.md#the-campaign-matrix), run with `crates/stress/tools/matrix.sh`. |
+
+A bug that stress or netstress finds should end as an engine test that fails
+before the fix and passes after it. The stress run found the bug; the engine
+test keeps it from coming back. CI runs the whole `cargo test` suite on every
+push, which includes the engine tests and a short end-to-end test of each
+rig. The long stress, netstress and campaign runs are done by hand.
+
 For everyday work, run the suite with the features CI uses:
 
 ```sh
@@ -54,28 +102,13 @@ instead when `CI` is set ([Requirements](setup.md#requirements)).
 
 ## Workload and stress tools
 
-Three crates in the workspace exist to test irsync. None of them links
-irsync; they drive it through its command line. `irsync-netstress` reuses
-the `stress` crate's library.
-
-- **`filegen`** applies a reproducible, seeded sequence of creates, writes,
-  renames, links, deletes and metadata changes to a directory tree, and
-  times every step. It is the mutating half of a stress loop: filegen
-  changes a tree, `fileset update` records it, irsync carries it to another
-  host, and `fileset check` there confirms every change arrived. It also
-  makes reproducible trees for benchmarks
-  ([Performance](performance.md#method)). See
-  [Generating test trees with filegen](filegen.md).
-- **`irsync-stress`** closes that loop on loopback: it starts an irsync
-  daemon, mutates a source tree with filegen, syncs it and checks the result
-  with `fileset check`, keeping logs and both manifests for every failure.
-  See [Stress testing](stress.md) and, for campaigns that find bugs,
-  [Hunting bugs](bug-hunting.md).
-- **`irsync-netstress`** runs the same loop across a simulated bad network:
-  a fault layer inside irsync (the `netsim` feature) shapes every QUIC
-  packet between client and daemon. See
-  [Network stress with netstress](netstress.md) and
-  [How netstress works](netstress-internals.md).
+Three crates in the workspace exist to test irsync: `filegen`,
+`irsync-stress` and `irsync-netstress`. They are described in the layers
+above and on their own pages: [filegen](filegen.md), [Stress
+testing](stress.md) and [Network stress with netstress](netstress.md). None
+of them links irsync; they drive it through its command line.
+`irsync-netstress` reuses the `stress` crate's library. filegen also makes
+reproducible trees for benchmarks ([Performance](performance.md#method)).
 
 The end-to-end tests of `stress` and `netstress` run the real binaries.
 `cargo test -p stress` does not build the other binaries it needs: run

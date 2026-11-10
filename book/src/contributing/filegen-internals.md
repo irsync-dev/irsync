@@ -1,5 +1,7 @@
 # How filegen works
 
+Part of [Testing](testing.md): how the filegen tool chooses what to do.
+
 This page explains how filegen decides what to do to a tree: the chain
 that picks the next operation, how it picks a target, how big things are
 and what they are called, and how a run is reproduced and resumed. It also
