@@ -1671,22 +1671,45 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
     )
 }
 
+/// Which of a machine's two identities `irsync id show` prints.
+#[derive(Clone, Copy)]
+enum IdRole {
+    Client,
+    Daemon,
+}
+
+impl IdRole {
+    /// The line printed above the identity.
+    fn label(self) -> &'static str {
+        match self {
+            IdRole::Client => "client",
+            IdRole::Daemon => "daemon",
+        }
+    }
+
+    /// The comment on the public key line.
+    fn comment(self) -> &'static str {
+        match self {
+            IdRole::Client => "irsync",
+            IdRole::Daemon => "irsync-daemon",
+        }
+    }
+}
+
 fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathBuf>) -> i32 {
     finish(
         "id show",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
-            // Each identity comes under its label, so a server's client ID
-            // is not mistaken for its daemon's.
-            let print = |secret: &iroh::SecretKey, comment: &str| {
-                let label = if comment == "irsync-daemon" {
-                    "daemon"
-                } else {
-                    "client"
-                };
-                println!("{label}:");
-                println!("{}", irsync::identity::public_key_line(secret, comment));
+            // Each identity comes under its role's label, so a server's
+            // client ID is not mistaken for its daemon's.
+            let print = |secret: &iroh::SecretKey, role: IdRole| {
+                println!("{}:", role.label());
+                println!(
+                    "{}",
+                    irsync::identity::public_key_line(secret, role.comment())
+                );
                 println!("{}", secret.public());
             };
             let client = || -> anyhow::Result<()> {
@@ -1694,7 +1717,7 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
                 if let KeySource::Generated(p) = &source {
                     eprintln!("generated identity {}", p.display());
                 }
-                print(&secret, "irsync");
+                print(&secret, IdRole::Client);
                 Ok(())
             };
             let show_daemon = || -> anyhow::Result<()> {
@@ -1706,9 +1729,10 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
                         path.display()
                     );
                 }
+                let comment = IdRole::Daemon.comment();
                 print(
-                    &identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?,
-                    "irsync-daemon",
+                    &identity_of(&settings.daemon.identity, comment, &pass)?,
+                    IdRole::Daemon,
                 );
                 Ok(())
             };
