@@ -686,6 +686,11 @@ async fn sync(
                 .or(host_entry.and_then(|h| h.reconnect))
                 .or(settings.client.reconnect)
                 .unwrap_or(ReconnectOpts::default().max),
+            dial_retries: opts
+                .dial_retries
+                .or(host_entry.and_then(|h| h.dial_retries))
+                .or(settings.client.dial_retries)
+                .unwrap_or(ReconnectOpts::default().dial_retries),
             source_index: index,
             ..ReconnectOpts::default()
         };
@@ -1492,6 +1497,7 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
         address: (!a.address.is_empty()).then(|| a.address.clone()),
         parallel: a.parallel,
         reconnect: a.reconnect.clone(),
+        dial_retries: a.dial_retries,
         dht: a.dht,
         mdns: a.mdns,
     };

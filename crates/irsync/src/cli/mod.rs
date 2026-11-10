@@ -389,6 +389,11 @@ pub struct HostAddArgs {
     /// connection: `<N>[s|m|h|d]`, e.g. `1h`; 0 gives up at once.
     #[arg(long, value_name = "DUR", value_parser = validate_duration)]
     pub reconnect: Option<String>,
+    /// How often a sync retries this host when it has not answered yet,
+    /// before giving up; 0 gives up on the first failure (default: the
+    /// client settings', else 4).
+    #[arg(long, value_name = "N")]
+    pub dial_retries: Option<u32>,
     /// Look this host up in the mainline DHT (default: the client
     /// settings', else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
@@ -692,9 +697,15 @@ pub struct SyncArgs {
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
     /// from the host entry or the client settings, else 24h). A server that
-    /// has never answered gets only 4 retries.
+    /// has never answered gets only `--dial-retries` retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
+    /// How often to retry a server that has not answered yet, with growing
+    /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
+    /// failure (default: `dial_retries` from the host entry or the client
+    /// settings, else 4).
+    #[arg(long, value_name = "N")]
+    pub dial_retries: Option<u32>,
     /// Use this relay server instead of the host entry's, the client
     /// settings' or n0's default.
     #[arg(long, value_name = "URL")]
@@ -843,6 +854,7 @@ pub struct SyncOptions {
     pub timeout: Option<Duration>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
+    pub dial_retries: Option<u32>,
     pub relay: Option<String>,
     pub no_relay: bool,
     pub no_dht: bool,
@@ -909,6 +921,7 @@ impl SyncOptions {
             timeout: a.timeout.filter(|&t| t != 0).map(Duration::from_secs),
             parallel: a.parallel,
             reconnect: a.reconnect,
+            dial_retries: a.dial_retries,
             relay: a.relay.clone(),
             no_relay: a.no_relay,
             no_dht: a.no_dht,

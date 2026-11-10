@@ -35,7 +35,7 @@ fn settings_defaults_when_empty() {
 
 #[test]
 fn settings_tables_parse_and_expand_tilde() {
-    let t = "identity = \"~/k\"\n[client]\nparallel = 8\nreconnect = \"1h\"\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\n[daemon.discovery]\ndht = false\n";
+    let t = "identity = \"~/k\"\n[client]\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\n[daemon.discovery]\ndht = false\n";
     let s = Settings::parse(t, p()).unwrap();
     assert_eq!(s.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(s.daemon.identity, dirs::home_dir().unwrap().join("d"));
@@ -43,6 +43,8 @@ fn settings_tables_parse_and_expand_tilde() {
     assert_eq!(s.client.relay_mode, Some(RelayMode::Disabled));
     assert_eq!(Settings::default().client.relay_mode, None);
     assert_eq!(s.client.reconnect, Some(Duration::from_secs(3600)));
+    assert_eq!(s.client.dial_retries, Some(2));
+    assert_eq!(Settings::default().client.dial_retries, None);
     assert_eq!(s.daemon.relay_mode, RelayMode::Disabled);
     assert_eq!(s.daemon.listen.len(), 1);
     assert!(!s.daemon.discovery.dht && s.daemon.discovery.dns);

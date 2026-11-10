@@ -33,7 +33,7 @@ connection; nothing needs a restart.
 
 | Command | Effect |
 | --- | --- |
-| `irsync host add ALIAS ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dht yes\|no] [--mdns yes\|no]` | Add an alias for an `EndpointId`, or change the id and the keys given for an existing alias. Keys not given stay as they are. Prints `ALIAS: ID`, or `ALIAS: OLD -> NEW` when the id changed. |
+| `irsync host add ALIAS ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--mdns yes\|no]` | Add an alias for an `EndpointId`, or change the id and the keys given for an existing alias. Keys not given stay as they are. Prints `ALIAS: ID`, or `ALIAS: OLD -> NEW` when the id changed. |
 | `irsync host remove ALIAS` | Remove an alias. |
 | `irsync host list` | One `ALIAS: ID` line per alias, then one indented `key = value` line per other key. |
 

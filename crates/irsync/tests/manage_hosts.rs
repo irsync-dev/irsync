@@ -12,13 +12,14 @@ fn host_add_writes_given_keys_updates_id_and_keeps_others() {
     let f = HostFlags {
         parallel: Some(4),
         reconnect: Some("1h".into()),
+        dial_retries: Some(2),
         ..Default::default()
     };
     assert_eq!(host_add(&mut doc, "home", id(1), &f).unwrap(), None);
     assert_eq!(
         doc.to_string(),
         format!(
-            "[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\nreconnect = \"1h\"\n",
+            "[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\nreconnect = \"1h\"\ndial_retries = 2\n",
             id(1)
         )
     );
@@ -108,7 +109,7 @@ fn host_remove_needs_a_table() {
 #[test]
 fn host_add_keeps_the_other_keys_of_an_inline_table() {
     let mut doc: DocumentMut = format!(
-        "[hosts]\nhome = {{ endpoint_id = \"{}\", parallel = 4 }}\n",
+        "[hosts]\nhome = {{ endpoint_id = \"{}\", parallel = 4, dial_retries = 3 }}\n",
         id(1)
     )
     .parse()
@@ -122,8 +123,8 @@ fn host_add_keeps_the_other_keys_of_an_inline_table() {
         irsync::config::hosts::Hosts::parse(&doc.to_string(), std::path::Path::new("h")).unwrap();
     let e = h.get("home").unwrap();
     assert_eq!(
-        (e.endpoint_id, e.parallel, e.mdns),
-        (id(2), Some(4), Some(true)),
+        (e.endpoint_id, e.parallel, e.dial_retries, e.mdns),
+        (id(2), Some(4), Some(3), Some(true)),
         "{doc}"
     );
 }

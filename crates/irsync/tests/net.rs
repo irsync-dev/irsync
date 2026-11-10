@@ -170,6 +170,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         address: vec!["127.0.0.1:1".parse().unwrap()],
         parallel: None,
         reconnect: None,
+        dial_retries: None,
         dht: Some(true),
         mdns: Some(true),
     };
@@ -283,6 +284,7 @@ fn opts_carry_the_congestion_controller() {
         address: vec![],
         parallel: None,
         reconnect: None,
+        dial_retries: None,
         dht: None,
         mdns: None,
     };
@@ -372,6 +374,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         address: vec![],
         parallel: None,
         reconnect: None,
+        dial_retries: None,
         dht: None,
         mdns: None,
     };

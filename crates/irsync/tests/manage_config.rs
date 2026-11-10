@@ -28,6 +28,8 @@ fn keys_parse_with_toml_grammar() {
 fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("daemon.listen")), Some(Kind::AddrArray));
     assert_eq!(kind_of(&p("hosts.home.reconnect")), Some(Kind::Duration));
+    assert_eq!(kind_of(&p("hosts.home.dial_retries")), Some(Kind::Int));
+    assert_eq!(kind_of(&p("client.dial_retries")), Some(Kind::Int));
     assert_eq!(kind_of(&p("exports.photos.read_only")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("exports.photos.fsync")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("hosts.home")), Some(Kind::Table));
@@ -97,6 +99,10 @@ fn defaults_for_settings_keys() {
     // The [client] keys book/src/reference/configuration.md lists with defaults: the effective ones.
     assert_eq!(default_of(&p("client.parallel")), Some(vec!["128".into()]));
     assert_eq!(default_of(&p("client.reconnect")), Some(vec!["1d".into()]));
+    assert_eq!(
+        default_of(&p("client.dial_retries")),
+        Some(vec!["4".into()])
+    );
     assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("client.mdns")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("client.relay")), None);

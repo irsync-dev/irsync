@@ -153,6 +153,7 @@ fn irsync_flags_and_misc() {
     let o = opts(&[
         "-vv",
         "--reconnect=30s",
+        "--dial-retries=2",
         "--parallel",
         "4",
         "--timeout=9",
@@ -166,6 +167,7 @@ fn irsync_flags_and_misc() {
     ]);
     assert_eq!(o.verbose, 2);
     assert_eq!(o.reconnect, Some(Duration::from_secs(30)));
+    assert_eq!(o.dial_retries, Some(2));
     assert_eq!(o.parallel, Some(4));
     assert_eq!(o.timeout, Some(Duration::from_secs(9)));
     assert_eq!(o.config, Some(PathBuf::from("cfg")));
@@ -409,11 +411,16 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
         "k51",
         "--relay-mode",
         "disabled",
+        "--dial-retries",
+        "1",
     ])
     .unwrap();
     match a.cmd {
         Some(Command::Host(h)) => match h.cmd {
-            irsync::cli::HostCmd::Add(add) => assert_eq!(add.relay_mode, Some(RelayMode::Disabled)),
+            irsync::cli::HostCmd::Add(add) => {
+                assert_eq!(add.relay_mode, Some(RelayMode::Disabled));
+                assert_eq!(add.dial_retries, Some(1));
+            }
             c => panic!("{c:?}"),
         },
         c => panic!("{c:?}"),

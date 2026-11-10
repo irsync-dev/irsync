@@ -25,6 +25,7 @@ pub struct HostEntry {
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
+    pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
 }
@@ -45,6 +46,8 @@ pub(crate) struct RawHost {
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
+    #[serde(default)]
+    dial_retries: Option<u32>,
     #[serde(default)]
     dht: Option<bool>,
     #[serde(default)]
@@ -102,6 +105,7 @@ pub(crate) fn hosts_from_raw(
                 address: r.address,
                 parallel: r.parallel,
                 reconnect: r.reconnect,
+                dial_retries: r.dial_retries,
                 dht: r.dht,
                 mdns: r.mdns,
             },

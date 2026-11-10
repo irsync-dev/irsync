@@ -37,6 +37,7 @@ state_dir = "~/.local/state/irsync"
 [client]                     # defaults for every host
 parallel = 128
 reconnect = "1d"
+dial_retries = 4
 dht = true
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
@@ -73,6 +74,7 @@ congestion = "cubic"
 address = ["192.168.1.10:4000"]
 parallel = 64
 reconnect = "1h"
+dial_retries = 2
 dht = false
 mdns = false
 
@@ -127,6 +129,7 @@ built-in default.
 | --- | --- | --- |
 | `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
+| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Flag: `--dial-retries`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
@@ -154,6 +157,7 @@ be an `EndpointId`.
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. Cannot be combined with `--relay`. |
 | `parallel` | `[client]`'s | Data streams a push to this host keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
+| `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |
 

@@ -160,6 +160,8 @@ pub struct ClientSettings {
     pub parallel: Option<u32>,
     #[serde(deserialize_with = "de_opt_duration")]
     pub reconnect: Option<Duration>,
+    /// Retries for a server that has not answered yet; unset: 4.
+    pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
     pub relay: Option<Url>,

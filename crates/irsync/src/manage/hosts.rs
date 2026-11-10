@@ -20,6 +20,7 @@ pub struct HostFlags {
     pub parallel: Option<u32>,
     /// The validated duration text, written verbatim.
     pub reconnect: Option<String>,
+    pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
 }
@@ -81,6 +82,9 @@ pub fn host_add(
     }
     if let Some(r) = &flags.reconnect {
         t["reconnect"] = toml_edit::value(r.as_str());
+    }
+    if let Some(n) = flags.dial_retries {
+        t["dial_retries"] = toml_edit::value(i64::from(n));
     }
     if let Some(d) = flags.dht {
         t["dht"] = toml_edit::value(d);

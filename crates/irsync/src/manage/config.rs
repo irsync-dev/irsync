@@ -38,6 +38,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         | ["all"] => Table,
         ["client", "parallel"] => Int,
         ["client", "reconnect"] => Duration,
+        ["client", "dial_retries"] => Int,
         ["client", "dht"] | ["client", "mdns"] => Bool,
         ["client", "relay"] => Url,
         ["client", "relay_mode"] | ["client", "congestion"] => Str,
@@ -57,6 +58,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["hosts", _, "address"] => AddrArray,
         ["hosts", _, "parallel"] => Int,
         ["hosts", _, "reconnect"] => Duration,
+        ["hosts", _, "dial_retries"] => Int,
         ["hosts", _, "dht" | "mdns"] => Bool,
         ["exports", _, "path"] => Path,
         ["exports", _, "read_only" | "warm_index" | "fsync"] => Bool,
@@ -97,6 +99,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "reconnect"] => one(duration::format(
             crate::session::reconnect::ReconnectOpts::default().max,
         )),
+        ["client", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
+            .dial_retries
+            .to_string()),
         ["client", "dht"] | ["client", "mdns"] => one("true".to_string()),
         ["client", "relay_mode"] => one("default".to_string()),
         ["client", "congestion"] => one(crate::config::settings::Congestion::default()
