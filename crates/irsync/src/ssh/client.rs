@@ -164,8 +164,9 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
     if probe.os != Some(my_os) || probe.arch != Some(my_arch) {
         bail!(
-            "{dest} runs {} {}, this irsync is {my_os} {my_arch}: install irsync on {dest} \
-             by hand (downloading builds for other platforms is not supported yet)",
+            "{dest} runs {} {}, this irsync is {my_os} {my_arch}, so it cannot copy itself \
+             there. Install irsync on both machines and set the server up by hand: \
+             https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand",
             probe.os.unwrap_or("an unknown OS"),
             probe.arch.unwrap_or("an unknown CPU"),
         );

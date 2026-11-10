@@ -261,7 +261,8 @@ fn other_platform_changes_nothing() {
     let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("install irsync on myserver by hand"), "{err}");
+    assert!(err.contains("so it cannot copy itself there"), "{err}");
+    assert!(err.contains("set the server up by hand"), "{err}");
     assert!(
         !w.client_config().contains("[hosts"),
         "{}",

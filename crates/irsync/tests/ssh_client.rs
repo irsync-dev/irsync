@@ -96,7 +96,19 @@ fn install_refuses_other_platform() {
     let f = fake(Some("Linux riscv64"));
     let p = probe(&f.rsh, "myserver").unwrap();
     let e = ensure_installed(&f.rsh, "myserver", &p).unwrap_err();
-    assert!(e.to_string().contains("install irsync on"), "{e}");
+    let msg = e.to_string();
+    assert!(
+        msg.starts_with("myserver runs linux an unknown CPU, this irsync is "),
+        "{msg}"
+    );
+    assert!(msg.contains("so it cannot copy itself there"), "{msg}");
+    assert!(
+        msg.contains(
+            "Install irsync on both machines and set the server up by hand: \
+             https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand"
+        ),
+        "{msg}"
+    );
     assert!(!f.home.path().join(".local").exists());
 }
 
