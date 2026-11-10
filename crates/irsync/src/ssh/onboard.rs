@@ -360,7 +360,10 @@ mod tests {
         // The plist body starts at column 0 so it can be pasted as a file.
         assert!(h.iter().any(|l| l.starts_with("<?xml ")));
         let pid = at(&h, "  pid=\"$(sed -n 's/^pid=//p' /s/daemon.lock)\"");
-        let wait = at(&h, "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done");
+        let wait = at(
+            &h,
+            "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done",
+        );
         assert!(at(&h, "  kill \"$pid\"") < wait);
         assert!(pid < wait);
         assert!(
@@ -395,7 +398,10 @@ mod tests {
             &h,
             "  pid=\"$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)\"",
         );
-        let wait = at(&h, "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done");
+        let wait = at(
+            &h,
+            "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done",
+        );
         assert!(at(&h, "  kill \"$pid\"") < wait);
         let enable = at(&h, "  systemctl --user enable --now irsync");
         assert!(pid < wait && wait < enable);
