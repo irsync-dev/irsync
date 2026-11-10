@@ -796,6 +796,9 @@ pub async fn run_from_settings(
     if !listen.is_empty() {
         settings.daemon.listen = listen.clone();
     }
+    // Held until this function returns; a second daemon on the same state
+    // dir fails here, before it binds anything.
+    let _lock = crate::daemon_lock::acquire(&settings.state_dir)?;
     let authz = Arc::new(FileAuthorizer::new(paths.clone()));
     // `[immediate]` keys get their exports added as they connect.
     if exports.exports.is_empty() && exports.immediate_rw.is_empty() {

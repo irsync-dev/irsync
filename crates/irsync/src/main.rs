@@ -968,7 +968,18 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             let shutdown = tokio_util::sync::CancellationToken::new();
             let token = shutdown.clone();
             tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
+                use tokio::signal::unix::{signal, SignalKind};
+                match signal(SignalKind::terminate()) {
+                    Ok(mut term) => {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {}
+                            _ = term.recv() => {}
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+                }
                 token.cancel();
             });
             // SIGHUP: re-read irsync.toml and apply the [daemon] settings.

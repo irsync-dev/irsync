@@ -4,6 +4,7 @@ pub mod build;
 pub mod cli;
 pub mod config;
 pub mod daemon;
+pub mod daemon_lock;
 pub mod delete;
 pub mod delta;
 pub mod filter;
