@@ -48,7 +48,8 @@ are listed in [Known limitations](../reference/limitations.md).
 You do not have to take the claim on trust. fileset is a second line of
 defence: it records a manifest of a tree (each file's checksum and metadata),
 and later checks a copy against it. It is a separate tool that shares no
-code with irsync, so it cannot repeat irsync's mistakes. It is also the same
+of irsync's logic, so a mistake in how irsync syncs does not repeat in the
+check. It is also the same
 check the test loops below run after each sync.
 
 Record a manifest on the client, sync, then check the copy on the server:
@@ -132,15 +133,20 @@ irsync first lists the source, then reads each file that needs sending to
 compute its hash (a checksum of each chunk and of the whole file), then sends
 the chunks. Here is what happens when a file changes along the way.
 
-- **Changed after it was hashed.** Before a chunk leaves the sender, irsync
-  reads it again and checks it against the hash. A file that changed, or got
-  shorter, fails this check and is sent again once. If it keeps changing, the
-  file fails and the run ends with exit 23.
-- **Grew after it was hashed.** The chunks up to the old length still match,
-  so the destination gets the file as it was when hashed. The next run sends
-  the rest.
-- **Deleted after it was listed.** The file fails and the run ends with exit
-  23. The destination keeps its old copy, if it had one.
+- **A change, after hashing, in a chunk irsync sends.** Before a chunk leaves
+  the sender, irsync reads it again and checks it against the hash. A chunk
+  that changed, or that the file got too short to hold, fails this check, and
+  the file is sent again once. If it keeps changing, the file fails and the
+  run ends with exit 23.
+- **Other changes after hashing.** A change only in chunks the destination
+  takes from its own copy is not seen, and neither is data appended after the
+  hash. The destination gets the file as it was when hashed: a real earlier
+  state, with the modification time irsync listed. The next run sees the newer
+  time and sends the file again.
+- **Deleted after it was listed.** If irsync still had to read it, the file
+  fails, the run ends with exit 23, and the destination keeps its old copy.
+  Otherwise it is not noticed in this run; the next run with `--delete`
+  removes it.
 - **Created after the listing.** It is not sent in this run.
 
 **Known limit: a file written while irsync is still hashing it can arrive as

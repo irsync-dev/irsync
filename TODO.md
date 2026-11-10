@@ -146,7 +146,8 @@ landed. Items the final review's fix wave closed are not listed.
       matches the digest too. Nothing re-stats the source after the send or
       at `FileAck DONE` (`crates/irsync/src/session/sender_role.rs:870-903`).
       The comment at `hasher.rs:225-229` ("so that never lands") holds only
-      for changes after hashing. Those are caught: chunk mismatch or
+      for changes after hashing in chunks the sender reads. Those are
+      caught: chunk mismatch or
       truncation → `InvalidData` → `retry` once (`sender_role.rs:425-459`,
       `854-857`, `MAX_RETRIES` at `:49`) → `SOURCE_ERROR` and exit 23 if it
       keeps changing.

@@ -142,7 +142,7 @@ The first hides the per-file round trips; the second fills the link.
 | In place, append | `--inplace`, `--append`, `--append-verify` | the same three; by default a `.part` that is a reflink clone of the old file where the filesystem allows, so only changed chunks are written and the file is still renamed into place |
 | Per-block integrity | 4-byte rolling + 2..16-byte MD5 | 32-byte BLAKE3, checked when the sender reads and before the receiver writes |
 | Whole-file integrity | MD5 (xxh3 negotiable in 3.2+), one redo | BLAKE3, folded from the verified chunks; a mismatch re-offers the file once |
-| Change during transfer | noticed at the final whole-file check; whole file redone | a change after the file was hashed is noticed at the sender per chunk, before the bytes leave, and the file is re-offered once; a change while it is being hashed is not noticed ([Files that change during a sync](correctness.md#files-that-change-during-a-sync)) |
+| Change during transfer | noticed at the final whole-file check; whole file redone | a change after the file was hashed, in a chunk the sender sends, is noticed per chunk before the bytes leave, and the file is re-offered once; a change only in chunks the receiver takes from its own copy is not noticed, and the file as hashed is placed; a change while it is being hashed is not noticed ([Files that change during a sync](correctness.md#files-that-change-during-a-sync)) |
 | Sparse files | `-S` finds zero runs at write granularity | all-zero chunks are left as holes |
 | Compression | `-z` | none |
 | Largest file | no protocol limit | 2^24 chunks per list, about 4 TiB of typical data |
@@ -180,8 +180,8 @@ The first hides the per-file round trips; the second fills the link.
 - **Integrity.** Every chunk is checked with a 32-byte BLAKE3 hash when the
   sender reads it and again before the receiver writes it, and the whole file
   against its BLAKE3 hash, against rsync's 2- to 16-byte truncated MD5 per
-  block. A source file that changes after it was hashed is caught before stale
-  bytes leave the sender. A change while it is being hashed is not caught; see
+  block. A chunk that changed after the file was hashed is caught when the
+  sender reads it, before stale bytes leave. A change while it is being hashed is not caught; see
   [Files that change during a sync](correctness.md#files-that-change-during-a-sync).
 - **Sender CPU.** A changed or new file costs the sender BLAKE3 hashing
   only: one pass for its chunk list, and each requested chunk hashed again as
