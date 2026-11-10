@@ -33,7 +33,20 @@ cargo install --git https://github.com/irsync-dev/irsync fileset
 
 ## Example
 
-Push a photo library from a client to a server:
+Push a photo library from a client to a server you can already reach with
+`ssh myserver`:
+
+```sh
+irsync -av ~/Photos/ myserver:/srv/photos/
+```
+
+The first time, irsync sets the server up over SSH: it copies itself there
+(when the server runs the same OS and CPU), gives this client's key access,
+starts the daemon and saves `myserver` as a host alias. It prints what it did.
+Later runs connect over iroh directly and do not use SSH. If the daemon stops
+answering, irsync checks it over SSH once and starts it again.
+
+Without SSH, set the server up by hand:
 
 ```sh
 irsync id show                             # client: the second line is its EndpointId

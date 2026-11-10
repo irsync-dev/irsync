@@ -67,6 +67,8 @@ everyone; `--warm-index` sets `warm_index`.
 | --- | --- |
 | `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. `EXPORT` may be `all`, for every export. An earlier grant of the same peer there is replaced. |
 | `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` everywhere; `irsync grant remove EXPORT all` empties an export's grants. |
+| `irsync grant add immediate WHO` | Let `WHO` reach any path this account can, read-write (there is no `--ro` here). The daemon makes an automatic export for each new path `WHO` uses. See [Immediate grants](configuration.md#immediate-grants). |
+| `irsync grant remove immediate WHO` | Take `WHO` out of `[immediate]`. The automatic exports already made for it stay. |
 | `irsync grant list` | Every grant: an `all:` block, then one block per export. |
 | `irsync grant list EXPORT` | One export's grants; `all` lists those that apply to every export. |
 | `irsync grant list WHO` | What one peer may reach, one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |

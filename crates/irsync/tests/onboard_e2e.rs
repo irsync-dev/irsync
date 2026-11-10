@@ -80,7 +80,8 @@ impl World {
         format!("{}/", self.src.path().display())
     }
 
-    /// Runs the client irsync with `args` plus `--address`, bounded to 60 s.
+    /// Runs the client irsync with `args` plus `--address`, bounded to 180 s
+    /// (a dial to a dead daemon takes the 60 s handshake timeout).
     fn irsync(&self, args: &[&str]) -> Output {
         let addr = format!("127.0.0.1:{}", self.port);
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
@@ -101,12 +102,12 @@ impl World {
             None => cmd.env_remove("FAKE_SSH_UNAME"),
         };
         let mut child = cmd.spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(180);
         while child.try_wait().unwrap().is_none() {
             if Instant::now() > deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("irsync {args:?} did not finish within 60 s");
+                panic!("irsync {args:?} did not finish within 180 s");
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -284,4 +285,141 @@ fn unsavable_alias_stops_before_ssh() {
     assert!(!err.contains("over ssh"), "{err}");
     assert_eq!(w.ssh_calls(), 0);
     assert!(!w.server.path().join(".local").exists());
+}
+
+impl World {
+    /// Kills the daemon `ssh-setup` started and waits until it is gone.
+    fn kill_daemon(&self) {
+        let info = probe(&self.server.path().join("xdg/irsync")).expect("a running daemon");
+        let pid = info.pid.to_string();
+        Command::new("kill").args(["-9", &pid]).status().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+        {
+            assert!(Instant::now() < deadline, "daemon {pid} did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The `endpoint_id` saved for `alias` in the client config.
+    fn saved_id(&self, alias: &str) -> String {
+        let doc: toml::Table = self.client_config().parse().unwrap();
+        doc["hosts"][alias]["endpoint_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn server_toml(&self) -> String {
+        std::fs::read_to_string(self.server.path().join(".config/irsync/irsync.toml")).unwrap()
+    }
+}
+
+/// The client's EndpointId, as `irsync id show` prints it.
+fn client_id(home: &Path) -> String {
+    let out = common::irsync_bin(home, &["id", "show"]);
+    assert!(out.status.success(), "{out:?}");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    text.split_whitespace()
+        .find(|w| irsync::identity::parse_endpoint_id(w).is_ok())
+        .unwrap_or_else(|| panic!("no EndpointId in {text}"))
+        .to_string()
+}
+
+#[test]
+fn dead_daemon_is_restarted_over_ssh() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let calls = w.ssh_calls();
+    w.kill_daemon();
+    std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
+    let err = ok(&w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]));
+    assert!(
+        err.contains("irsync: myserver did not answer; checking it over ssh"),
+        "{err}"
+    );
+    assert!(err.contains("started the daemon"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    assert!(w.ssh_calls() > calls);
+}
+
+#[test]
+fn rebuilt_server_updates_alias() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let before = w.saved_id("myserver");
+    w.kill_daemon();
+    for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
+        let p = entry.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("daemon_ed25519") {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    let err = ok(&w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]));
+    assert!(err.contains("updated host alias myserver:"), "{err}");
+    assert_ne!(w.saved_id("myserver"), before);
+    same_tree(w.src.path(), &dest);
+}
+
+#[test]
+fn refusal_never_uses_ssh() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let calls = w.ssh_calls();
+    let id = client_id(w.client.path());
+    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
+    assert!(out.status.success(), "{out:?}");
+    let other = w.server.path().join("other");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", other.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("the daemon rejected this client's key"),
+        "{err}"
+    );
+    assert!(!err.contains("over ssh"), "{err}");
+    assert_eq!(w.ssh_calls(), calls);
+    let doc: toml::Table = w.server_toml().parse().unwrap();
+    let granted = doc
+        .get("immediate")
+        .and_then(|i| i.get("rw"))
+        .and_then(|rw| rw.as_array())
+        .is_some_and(|rw| rw.iter().any(|v| v.as_str() == Some(id.as_str())));
+    assert!(!granted, "{}", w.server_toml());
+}
+
+#[test]
+fn alias_without_ssh_does_not_fall_back() {
+    let w = World::new();
+    let dead = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
+    let out = common::irsync_bin(w.client.path(), &["host", "add", "myserver", &dead]);
+    assert!(out.status.success(), "{out:?}");
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&[
+        "-a",
+        "--dial-retries",
+        "0",
+        &w.src_arg(),
+        &format!("myserver:{}", dest.display()),
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("gave up after 1 attempt"), "{err}");
+    assert!(!err.contains("over ssh"), "{err}");
+    assert_eq!(w.ssh_calls(), 0);
 }

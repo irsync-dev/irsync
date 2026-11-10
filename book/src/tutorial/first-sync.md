@@ -14,6 +14,59 @@ You write no configuration file by hand. Each machine generates its key the
 first time a command needs it and says so on stderr:
 `generated identity <path>`.
 
+## The quick way: over SSH
+
+If `ssh myserver` already logs you in to the server, one command on the
+client is enough. irsync then only needs to be installed on the client:
+
+```sh
+irsync -av ~/Photos/ myserver:/srv/photos/
+```
+
+`myserver` is not a saved alias yet, so irsync takes it as an ssh destination
+and sets the server up first. It says what it did:
+
+```text
+irsync: myserver is not a saved alias; setting it up over ssh
+irsync: set up myserver over ssh:
+irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
+irsync:   generated the daemon identity
+irsync:   granted this client (a3e4753e5e) access to any path
+irsync:   started the daemon (log: /home/you/.local/state/irsync/daemon.log)
+irsync:   saved host alias myserver -> 4a29f16a4f
+```
+
+In steps, it:
+
+- copies itself to the server, when the server runs the same OS and CPU as
+  the client. Otherwise it stops and asks you to install irsync there by hand;
+- lets this client reach any path your account on the server can, read-write
+  (an [immediate grant](../reference/configuration.md#immediate-grants)). The
+  first push to `/srv/photos` makes it an export, granted to this client
+  only;
+- starts the daemon, which keeps running in the background;
+- saves `myserver` as a host alias on the client, with the daemon's
+  `EndpointId` and `ssh = "myserver"`.
+
+After that, irsync prints how to make the daemon a user service, so that it
+survives a reboot (see
+[Run the daemon](../how-to/run-the-daemon.md#keep-a-daemon-started-over-ssh-running)).
+Then the push runs over iroh.
+
+Later runs use the alias and do not touch ssh. If the daemon has stopped,
+for example after a reboot, a sync gets no answer, says `myserver did not
+answer; checking it over ssh`, starts the daemon again and carries on. A
+daemon that answers but refuses the client is never "fixed" over ssh: that
+refusal is on purpose.
+
+Use `--rsh` or `IRSYNC_RSH` for another ssh command, such as
+`--rsh "ssh -p 2222"`. If the client should not reach every path, set
+`daemon.immediate = false` on the server before the first sync. The setup
+then grants nothing, and you grant exports by hand as in step 3.
+
+The rest of this tutorial sets the server up by hand, without SSH. It shows
+what the quick way does for you, and it works where ssh is not available.
+
 ## 1. Find the client's EndpointId
 
 On the client, print its identity:

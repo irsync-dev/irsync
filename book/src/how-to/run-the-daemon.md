@@ -82,6 +82,63 @@ other users, and device nodes in it. Run the daemon as an unprivileged account
 that owns the export trees. Ownership is then applied only where that account
 may change it, to its own groups, as rsync does without privilege.
 
+## Keep a daemon started over ssh running
+
+When the [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) starts
+the daemon, it runs in the background under your account until the server
+reboots. A later sync that gets no answer starts it again over ssh, but only
+when you sync. To keep it running all the time, make it a user service. The
+setup prints these steps for the server's system; they are the same here.
+
+On Linux, put this in `~/.config/systemd/user/irsync.service`:
+
+```ini
+[Unit]
+Description=irsync daemon
+[Service]
+ExecStart=%h/.local/share/irsync/bin/irsync daemon
+Restart=on-failure
+[Install]
+WantedBy=default.target
+```
+
+Then stop the daemon irsync started and let the service take over:
+
+```sh
+kill "$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+systemctl --user enable --now irsync
+loginctl enable-linger $USER
+```
+
+`loginctl enable-linger` lets your user services run when you are not logged
+in.
+
+On macOS, put this in `~/Library/LaunchAgents/org.irsync.daemon.plist`, with
+your home directory for `$HOME`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.irsync.daemon</string>
+  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+
+Then stop the daemon irsync started and let the service take over:
+
+```sh
+kill "$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+launchctl load -w ~/Library/LaunchAgents/org.irsync.daemon.plist
+```
+
+If the state directory is not the default one, the setup prints the path of
+`daemon.lock` to use instead. The kill is needed because the lock lets only
+one daemon run at a time: the service cannot start while the first daemon
+holds it.
+
 ## Under systemd
 
 1. Write `/etc/systemd/system/irsync.service`:

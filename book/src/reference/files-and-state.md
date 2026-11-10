@@ -30,6 +30,8 @@ Linux when that is set. The client and the daemon use the same layout.
 | --- | --- |
 | `index/<hash>.sqlite` | One SQLite database per root: a local directory the client synced or indexed, or an export. `<hash>` is 32 hex digits of the BLAKE3 hash of the root's canonical path; the database records the path too. |
 | `index/<hash>.sqlite-wal`, `-shm` | SQLite's write-ahead log and shared memory, beside each database. |
+| `daemon.lock` | Held by the running daemon, so a second daemon with the same state directory refuses to start. It holds the daemon's `pid`, the path of its program (`exe`) and its `version`, one `key=value` line each. The ssh setup reads it to tell whether a daemon runs and which build it is. |
+| `daemon.log` | The log of a daemon the ssh setup started. A daemon you start yourself logs to stderr instead. |
 
 Each database holds:
 
@@ -46,6 +48,17 @@ The whole directory is safe to delete. The next sync rebuilds what it needs,
 at the cost of hashing files again and of losing the sessions that could have
 resumed. [Clean up state](../how-to/clean-up.md) removes only what nobody is
 coming back for.
+
+## On a server set up over ssh
+
+The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) puts its own
+copy of `irsync` on the server at `~/.local/share/irsync/bin/irsync`. It
+replaces that copy when the client runs a different build, and leaves an
+`irsync` you installed elsewhere alone. Over ssh it then runs `irsync
+ssh-setup`, a hidden command that grants the client, makes the daemon's key
+when it is missing and starts the daemon. The server's config, keys and state
+are the usual ones above; the daemon it starts writes `daemon.log` in the
+state directory.
 
 ## In the synced trees
 

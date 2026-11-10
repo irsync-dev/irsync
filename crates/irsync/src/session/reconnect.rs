@@ -102,6 +102,20 @@ impl Outage {
     }
 }
 
+/// In a failed session's error when no dial ever reached the daemon (the
+/// run gave up after `dial_retries`), as opposed to a daemon that answered
+/// and refused. Found with `anyhow::Error::downcast_ref`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NeverReached;
+
+impl std::fmt::Display for NeverReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the daemon never answered")
+    }
+}
+
+impl std::error::Error for NeverReached {}
+
 /// The connection's state, as reported to the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnState {
@@ -503,7 +517,9 @@ async fn attempts(
         if !reached && attempt >= opts.dial_retries {
             let tries = attempt + 1;
             let plural = if tries == 1 { "" } else { "s" };
-            return Err(err.context(format!("gave up after {tries} attempt{plural}")));
+            return Err(err
+                .context(NeverReached)
+                .context(format!("gave up after {tries} attempt{plural}")));
         }
         attempt += 1;
         // Kept current on the `session` span, so a session that fails in the

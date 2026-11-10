@@ -16,6 +16,17 @@ Each operand is a local path or `HOST:PATH`. `HOST` is a host alias from the
 on the daemon's machine, as described in
 [Remote addresses](remote-addresses.md).
 
+A `HOST` that is neither is taken as an ssh destination, such as `myserver` or
+`me@myserver`. `irsync` then sets that machine up over ssh before it syncs: it
+copies itself there when the server has no matching build, grants this client
+access to any path (`[immediate]`), starts the daemon and saves `HOST` as an
+alias with `ssh = "HOST"`. It prints what it did. Later runs dial the alias
+over iroh and do not use ssh. When a sync to an alias with `ssh` gives up
+because the daemon never answered, `irsync` checks the server over ssh once,
+starts the daemon again or updates the alias, and retries. A daemon that
+answers and refuses the client is never handled over ssh. See
+[the quick way](../tutorial/first-sync.md#the-quick-way-over-ssh).
+
 - A `:` before the first `/` makes an operand remote, as in rsync. To name a
   local file whose name has a colon, write `./name:with:colons`.
 - Exactly one side is remote. A push (local to remote) may have several
@@ -131,6 +142,7 @@ These have no rsync counterpart.
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off. The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. A `hosts.toml` or `exports.toml` beside it is read too. |
+| `--rsh CMD` | The remote shell for the ssh setup, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--identity FILE` | The private key to connect with. Default: `identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
@@ -149,7 +161,7 @@ alias's table, then `[client]`, then the built-in default. See
 | `irsync daemon` | Run the daemon. See below. |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
-| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). |
+| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
 
 ### irsync daemon
 
@@ -202,6 +214,7 @@ irsync gc [-n] [-v|-q] [--config PATH]
 | Variable | Effect |
 | --- | --- |
 | `IRSYNC_PASSPHRASE` | The passphrase of an encrypted key, when no `--passphrase-file` is given. |
+| `IRSYNC_RSH` | The remote shell for the ssh setup, when no `--rsh` is given. |
 | `RUST_LOG` | The log filter, in place of the one `-v` and `-q` choose. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Export traces and metrics over OpenTelemetry to this endpoint. Overrides `[telemetry]` in the config file. |
 | `TERM` | `dumb` turns the live progress block off. |

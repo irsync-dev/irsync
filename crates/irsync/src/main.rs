@@ -30,7 +30,7 @@ use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
-    describe_dial, explain, run_with_reconnect, ConnState, ReconnectOpts,
+    describe_dial, explain, run_with_reconnect, ConnState, NeverReached, ReconnectOpts,
 };
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync::telemetry::init::trace_files_from_env;
@@ -445,13 +445,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
                 )
             },
         )?;
-        for line in irsync::ssh::onboard::summary(&o) {
-            log.eprintln(&format!("irsync: {line}"));
-        }
-        // Raw, so the unit file and commands can be pasted.
-        for line in irsync::ssh::onboard::howto(&o) {
-            log.eprintln(&line);
-        }
+        report_onboarded(log, &o);
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
     }
@@ -520,6 +514,41 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         host_entry,
         opts,
     })
+}
+
+/// What setting a host up over ssh did, then the service how-to.
+fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
+    for line in irsync::ssh::onboard::summary(o) {
+        log.eprintln(&format!("irsync: {line}"));
+    }
+    // Raw, so the unit file and commands can be pasted.
+    for line in irsync::ssh::onboard::howto(o) {
+        log.eprintln(&line);
+    }
+}
+
+/// A saved host with `ssh` that never answered: set it up over ssh again
+/// (it restarts a dead daemon and updates the alias if the id changed).
+/// `Ok(false)`: not an ssh host, nothing done.
+fn recheck_over_ssh(
+    host: &str,
+    entry: Option<&irsync::config::hosts::HostEntry>,
+    client: iroh::EndpointId,
+    opts: &SyncOptions,
+    log: &LogWriter,
+) -> anyhow::Result<bool> {
+    let Some(dest) = entry.and_then(|h| h.ssh.as_deref()) else {
+        return Ok(false);
+    };
+    log.eprintln(&format!(
+        "irsync: {host} did not answer; checking it over ssh"
+    ));
+    let paths = Paths::resolve(opts.config.as_deref());
+    let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
+    let o = irsync::ssh::onboard::onboard(&paths, &rsh, dest, client)
+        .with_context(|| format!("{host} did not answer, and checking it over ssh failed"))?;
+    report_onboarded(log, &o);
+    Ok(true)
 }
 
 /// The client identity for a sync, with a stderr notice when it was generated.
@@ -673,15 +702,12 @@ async fn sync(
         Direction::DaemonSends => args.sync.src()[0].clone(),
     };
 
-    let Connected {
-        endpoint,
-        target,
-        settings,
-        host_entry,
-        opts,
-    } = connect_for(host, opts, log).await?;
-    let (opts, host_entry) = (&opts, host_entry.as_ref());
-    let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
+    let cli_opts = opts;
+    let mut conn = connect_for(host, cli_opts, log).await?;
+    // A saved ssh host that never answers is checked over ssh once per run.
+    let mut rechecked = false;
+    let filters =
+        Arc::new(FilterSet::from_rules(&conn.opts.filters).context("reading filter rules")?);
 
     // One session per source; several sources only when pushing.
     let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
@@ -690,6 +716,7 @@ async fn sync(
     let of = pairs.len();
     for (index, (src, dst)) in pairs.into_iter().enumerate() {
         bus.emit(Event::SessionStart { index, of });
+        let (opts, settings, host_entry) = (&conn.opts, &conn.settings, conn.host_entry.as_ref());
         let (local, remote) = match direction {
             Direction::ClientSends => (src, dst),
             Direction::DaemonSends => (dst, src),
@@ -744,20 +771,37 @@ async fn sync(
         let started = Instant::now();
         let operand_from = args.sync.src()[index].clone();
         let operand_to = args.sync.dest().unwrap_or_default().to_string();
-        let result = session(
-            &endpoint,
-            target.clone(),
-            &remote_text,
-            direction,
-            root,
-            *local_co,
-            hello,
-            &filters,
-            opts,
-            ropts,
-            bus,
-        )
-        .await;
+        let result = loop {
+            let res = session(
+                &conn.endpoint,
+                conn.target.clone(),
+                &remote_text,
+                direction,
+                root.clone(),
+                *local_co,
+                hello.clone(),
+                &filters,
+                &conn.opts,
+                ropts,
+                bus,
+            )
+            .await;
+            // Only a host that was never reached; a refusal is final.
+            match res {
+                Err(e) if !rechecked && e.downcast_ref::<NeverReached>().is_some() => {
+                    rechecked = true;
+                    let client = conn.endpoint.id();
+                    match recheck_over_ssh(host, conn.host_entry.as_ref(), client, cli_opts, log) {
+                        Ok(true) => {}
+                        Ok(false) => break Err(e),
+                        Err(ssh) => break Err(ssh),
+                    }
+                    conn.endpoint.close().await;
+                    conn = connect_for(host, cli_opts, log).await?;
+                }
+                res => break res,
+            }
+        };
         let mut summary = SessionSummary {
             index,
             of,
@@ -798,7 +842,7 @@ async fn sync(
         };
         total.absorb(out);
     }
-    endpoint.close().await;
+    conn.endpoint.close().await;
     Ok(Totals {
         outcome: total,
         sessions,

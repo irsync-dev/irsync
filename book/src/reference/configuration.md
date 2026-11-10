@@ -54,6 +54,7 @@ relay = "https://relay.example.net"      # no default: n0's relays
 relay_mode = "default"       # or "disabled"
 congestion = "bbr"           # or "cubic", for pulls
 debug_addr = "127.0.0.1:9464"            # no default: off
+immediate = true             # false: ignore [immediate]
 
 [daemon.discovery]
 dht = true
@@ -77,6 +78,7 @@ reconnect = "1h"
 dial_retries = 2
 dht = false
 mdns = false
+ssh = "myserver"             # set by the SSH setup: the ssh destination
 
 [hosts.myclient]
 endpoint_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
@@ -97,6 +99,17 @@ fsync = false
 path = "/srv/docs"
 read_only = true
 ro = ["myclient"]
+
+# Peers that may reach any path this account can, read-write. The SSH
+# setup adds the client here.
+[immediate]
+rw = ["myclient"]
+
+# Made by the daemon the first time an [immediate] peer used /srv/music.
+[exports.auto-srv-music]
+path = "/srv/music"
+auto = true
+rw = ["a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"]
 ```
 
 ## Identity and state
@@ -160,6 +173,7 @@ be an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |
+| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a host with `ssh` never answers, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. A host without `ssh` is never touched over ssh. |
 
 `--address` on the command line replaces the host's `address` list.
 
@@ -180,6 +194,7 @@ take effect at the next start.
 | `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
+| `immediate` | `true` | Honour the `[immediate]` grants. `false`: the daemon ignores `[immediate]` and makes no automatic exports, so peers reach only the exports granted to them. |
 
 `[daemon.discovery]` says how clients may find the daemon:
 
@@ -213,8 +228,28 @@ be `all`.
 | `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
 | `rw` | `[]` | Peers with read-write access: aliases or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
+| `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer (see below). |
 
 `[all]` has `rw` and `ro` too; its grants apply to every export.
+
+### Immediate grants
+
+`[immediate]` has one key, `rw`: peers that may reach any path the daemon's
+account can, read-write. There is no read-only form. `irsync grant add
+immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
+and the SSH setup adds its client here.
+
+When such a peer uses a path that no export covers, the daemon adds an
+automatic export for it, `auto = true`, named `auto-` and the path with `-`
+between its parts (`/srv/music` becomes `auto-srv-music`), granted read-write
+to that peer only. The export is the directory itself, or the directory that
+holds a file. A push to a directory that does not exist yet creates it, when
+its parent exists. `/` is never exported automatically; add that by hand. Once
+made, an automatic export is an ordinary export: you can grant it to others,
+or remove it with `irsync export remove`.
+
+With `daemon.immediate = false` the daemon ignores `[immediate]` and makes no
+automatic exports. Exports it made earlier stay, with their grants.
 
 How grants combine:
 
