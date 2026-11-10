@@ -18,6 +18,7 @@
         <a class="name" href="./">irsync</a>
         <ul>
           <li><a href="book/">documentation</a></li>
+          <li><a href="#fileset">fileset</a></li>
           <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
           <li><a href="#install">install</a></li>
         </ul>
@@ -41,12 +42,17 @@
           rebuilt for today's networks. It takes rsync's flags and its
           trailing-slash rule.
         </p>
-        <p class="lede-last">
+        <p class="lede">
           It connects through <a href="https://iroh.computer">iroh</a>, so it
           gets through NATs and firewalls without port forwarding or dynamic
           DNS. A transfer outlives the network connection: after a drop, a
           closed laptop or Ctrl-C, the same command carries on where it
           stopped.
+        </p>
+        <p class="lede-last">
+          <a href="book/explanation/correctness.html">Correctness comes first</a>:
+          a completed sync leaves an exact copy, and you can check that
+          yourself with <a href="#fileset">fileset</a>.
         </p>
 
         <ul class="needs" aria-label="What you need">
@@ -200,6 +206,28 @@ transfer  <span class="flow">[████████████░░░░�
         </ul>
       </section>
 
+      <section id="fileset" aria-labelledby="fileset-heading">
+        <h2 id="fileset-heading">fileset: check any copy, made by any tool</h2>
+        <p>
+          fileset records the checksums and metadata of a directory tree. Check
+          a copy against that record after rsync, rclone, cp or irsync, or
+          months later to catch bitrot.
+        </p>
+        <pre
+          class="terminal"
+          tabindex="0"
+          role="region"
+          aria-label="Record a manifest, copy with rsync, then check the copy"
+        ><span class="prompt">$</span> fileset init ~/Photos
+<span class="prompt">$</span> rsync -a ~/Photos/ /mnt/backup/Photos/
+<span class="prompt">$</span> fileset check /mnt/backup/Photos</pre>
+        <p class="more">
+          <a href="book/fileset/introduction.html">Introduction to fileset →</a>
+          ·
+          <a href="#install">Install fileset</a>
+        </p>
+      </section>
+
       <section id="rsync" aria-labelledby="rsync-heading">
         <h2 id="rsync-heading">If you know rsync</h2>
         <p>
@@ -331,12 +359,10 @@ transfer  <span class="flow">[████████████░░░░�
           both machines and use the setup under “Without ssh”.
         </p>
         <p>
-          Optional: <code>fileset</code>, an independent tool that records the
-          checksums and metadata of a directory tree and later verifies the tree
-          against them, for example after a transfer (<a
-            href="book/fileset/introduction.html"
-            >Introduction to fileset</a
-          >).
+          <a href="book/fileset/introduction.html"><code>fileset</code></a> is a
+          separate tool that works with any copy tool, not only irsync. It
+          records the checksums and metadata of a directory tree and later
+          checks the tree against them.
         </p>
         <pre
           class="terminal"
@@ -377,6 +403,14 @@ transfer  <span class="flow">[████████████░░░░�
             <p>
               The transfer algorithm, sessions and resume, identity and trust,
               connections, and how a changed file is received.
+            </p>
+          </li>
+          <li>
+            <h3><a href="book/fileset/introduction.html">fileset</a></h3>
+            <p>
+              Record a directory tree, then check a copy of it, whichever tool
+              made the copy: a tutorial, how to check rsync and irsync copies,
+              catching bitrot, and how fileset works.
             </p>
           </li>
         </ul>
