@@ -35,7 +35,7 @@ check itself.
 cargo install --git https://github.com/irsync-dev/irsync fileset
 ```
 
-Install it on every machine where you want to run a check.
+This needs Rust; get it from <https://rustup.rs>. Install it on every machine where you want to run a check.
 
 ## Where to go next
 

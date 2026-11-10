@@ -8,4 +8,6 @@ code that shares nothing with irsync: `init` on the client's tree, let irsync
 carry the tree and its manifest to the daemon, `check` there. Install it with
 `cargo install --git https://github.com/irsync-dev/irsync fileset`. Commands,
 options, output and exit codes are in the
-[fileset reference](https://irsync.org/book/fileset/reference.html).
+[fileset reference](https://irsync.org/book/fileset/reference.html). For what
+it is for, verifying copies made by any tool and finding bitrot, see the
+[introduction](https://irsync.org/book/fileset/introduction.html).

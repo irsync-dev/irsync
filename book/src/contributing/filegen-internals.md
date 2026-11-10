@@ -154,7 +154,8 @@ passing.
    and a line for it in `dispatch` in `ops/mod.rs`. It picks a target with
    the functions in `pick.rs`, changes the disk, and returns an `Applied`
    that says what happened, so the log and the model stay right. It must
-   do nothing in a dry run.
+   not touch the disk in a dry run, but it must make the same random draws and
+   the same model updates as a real run (see the top of `ops/mod.rs`).
 5. The model. If the operation creates something the model has no node
    kind for, add one to `NodeKind` in `model.rs`, and teach `walk.rs` to
    see it.

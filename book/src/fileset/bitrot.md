@@ -33,24 +33,9 @@ and check that copy first so that you do not spread the damage.
 
 ## Rot or an edit?
 
-`check` reports every difference, including edits you made on purpose. Tell
-them apart by the fields:
-
-```text
-CHG 2026/01/IMG_0001.jpg blake3=81c4…→7d27…
-CHG IMG_0003.jpg blake3=d1cd…→67f6… mtime=2026-11-10T19:44:21.607204393Z→2026-11-10T19:44:45.211616300Z size=2→15
-```
-
-The first file changed content and nothing else. That is the sign of rot, or
-of a tool that wrote the file and set the old time back. The second changed
-content, time and size together. That is an edit. (The hashes here are
-shortened.)
-
-Always run `check` before [`update`](keep-current.md). An `update` rehashes
-files you edited and keeps the stored hash of files whose size, time and inode
-did not change. Read the `check` output first, so that an edit does not hide
-a rotted file next to it. `update --rehash` records the current content as
-correct, damage included.
+Rot usually shows as a `CHG` line with `blake3` alone, while an edit changes
+the time and size too. [Check before you update](keep-current.md#check-before-you-update)
+explains how to tell them apart and why the order matters.
 
 ## Check on a schedule
 
@@ -60,8 +45,14 @@ month. It writes everything to a log, and prints a message, which cron mails
 to its owner, only when the check did not exit 0:
 
 ```text
-0 3 1 * * fileset check -q ~/Photos > ~/fileset-check.log 2>&1 || echo "fileset check exited with $?; see ~/fileset-check.log"
+0 3 1 * * $HOME/.cargo/bin/fileset check -q $HOME/Photos > $HOME/fileset-check.log 2>&1 || echo "fileset check exited with $?; see $HOME/fileset-check.log"
 ```
+
+Cron has a short `PATH` that does not include `~/.cargo/bin`, so the line
+gives the full path to `fileset`. Cron runs the command with `sh`, which
+expands `$HOME`; it does not expand `~` everywhere, for example not in `PATH=`
+lines, so write `$HOME` or the full path. The mail only arrives if local mail
+is set up on the machine.
 
 `-q` hides progress. The summary line still goes to stderr, which is why the
 log takes both streams. Add `--fail-on-warnings` when an unreadable file

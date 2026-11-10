@@ -1,4 +1,4 @@
-# fileset
+# fileset reference
 
 `fileset` records the state of a directory tree in a manifest and later
 verifies the tree against it. It lives in `crates/fileset` and shares no code
@@ -241,15 +241,10 @@ See [Check data for bitrot](bitrot.md#read-only-media-and-snapshots).
 - Symlink permission bits differ between Linux (always `0777`) and macOS
   (set from the umask, often `0755`), so a tree carried between them shows
   `mode=` changes on symlinks. Use `--ignore mode` or `--relaxed`.
-- `mtime` is compared to the nanosecond, so copying to a filesystem with
-  coarser timestamps shows `mtime=` changes. Use `--ignore mtime` or
-  `--relaxed`.
-- macOS ACLs are not recorded.
-- Mount points are not crossed unless `--cross-mount-points` is given. On
-  btrfs every subvolume reports its own device number, so a tree that contains
-  subvolumes or snapshots is cut short by default: a warning names the
-  directory, `check` reports what lies below it as `unverified`, and `update`
-  drops it from the manifest. Such a tree needs `--cross-mount-points`.
 - fjall preallocates a sparse 64 MiB journal in the manifest directory. Copy
   a fjall manifest with a sparse-aware tool, such as `cp --sparse=always` or
   `rsync --sparse`, to avoid writing 64 MiB of zeros.
+
+Holes in sparse files, hard links, ACLs, mount points, timestamp precision
+and the other things a check cannot see are in
+[What fileset cannot catch](how-it-works.md#what-fileset-cannot-catch).

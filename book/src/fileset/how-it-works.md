@@ -27,20 +27,19 @@ inode are unchanged. That is what makes it fast, and why you
 ## Comparison tiers
 
 `check` compares a tree with the manifest. How much it compares depends on
-the tier:
+the tier.
 
-| Tier | Compared |
-| --- | --- |
-| `--relaxed` | type, content, symlink target, device numbers |
-| default | relaxed, plus permissions, modification time, size |
-| `--paranoid` | default, plus owner, group, link count, extended attributes |
+There are three tiers: relaxed (content only, plus type, symlink target and
+device numbers), the default (adds permissions, modification time and size)
+and paranoid (adds owner, group, link count and extended attributes). The
+table of exactly which fields each tier compares is in the
+[reference](reference.md#comparison-tiers).
 
 Pick the tier by what the copy tool can keep. A plain `cp` or an `rclone`
 copy to a backend without permissions fits `--relaxed`. An `rsync -a` copy
 between machines that share user ids fits the default plus
 `--require uid --require gid`. `--ignore` and `--require` adjust any tier one
-field at a time. The exact field names and the fields that apply only to some
-types are in the [reference](reference.md#comparison-tiers).
+field at a time.
 
 The tier decides what counts as a difference. Content is compared in every
 tier, so changed bytes always show.
@@ -54,9 +53,9 @@ pass.
 - **Holes in sparse files.** `fileset` hashes the bytes a program reads. A
   hole reads as zeros, so a sparse file and a fully written copy of it have the
   same checksum. A check cannot tell whether a copy kept the holes.
-- **Hard links.** Only the link count is recorded, and only the paranoid tier
-  compares it. `fileset` does not record which paths share a file, so a copy
-  that turned hard links into separate files passes the default check.
+- **Hard links.** Only the link count is recorded, and it is compared only
+  with `--require nlink` or `--paranoid`. `fileset` does not record which
+  paths share a file, so a copy that turned hard links into separate files passes the default check.
 - **ACLs on macOS.** Access control lists are not recorded.
 - **Anything it did not look at.** Mount points are not crossed unless you
   pass `--cross-mount-points`. A tree with btrfs subvolumes is cut short by
@@ -69,8 +68,8 @@ pass.
   it recorded. If the tree was already damaged at `init`, the manifest records
   the damage.
 
-The limitations the reference lists, such as symlink permission bits between
-Linux and macOS and the sparse journal of the `fjall` backend, are in
-[Known limitations](reference.md#known-limitations).
+The [reference](reference.md#known-limitations) lists two more: symlink
+permission bits between Linux and macOS, and the sparse journal of the `fjall`
+backend.
 
 `fileset` reports and repairs nothing, and it never changes the tree.

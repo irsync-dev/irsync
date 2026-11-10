@@ -103,8 +103,9 @@ Before relying on it, read the
 Windows is not supported, extended attributes and ACLs are not copied, and
 relayed connections are much slower than direct ones.
 
-`fileset` shares no code with irsync; see
-its [reference](https://irsync.org/book/fileset/reference.html).
+`fileset` is a separate tool that shares no code with irsync. Use it to verify
+copies made by any tool and to find bitrot; see the
+[introduction to fileset](https://irsync.org/book/fileset/introduction.html).
 
 ## Getting help
 

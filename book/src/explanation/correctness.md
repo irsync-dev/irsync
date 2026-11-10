@@ -33,22 +33,23 @@ in the next section.
 | Symlink targets | `-a` | fileset's default check |
 | Device numbers | `-a` | fileset's default check |
 | Hard links | `-H`, which `-a` does not include (as in rsync) | fileset with `--require nlink` or `--paranoid` only |
-| Holes in sparse files | files sparse in the source are written sparse (see `-S` in the [command line](../reference/command-line.md)) | engine tests and the `sparse` campaign row only; fileset does not record holes |
+| Holes in sparse files | files sparse in the source are written sparse (see `-S` in the [command line](../reference/command-line.md)) | the engine test `sparse_file_stays_sparse` and the `sparse` campaign row (which runs with `-S`) only; fileset does not record holes |
 | Deletions | `--delete` | fileset's default check (`ADD` for anything left behind) |
 
 So for hard links, the full command is `-aH --delete`. That is what the test
 loops run.
 
 Some things irsync does not carry at all, such as extended attributes and
-ACLs. Owners are kept only when the receiving side runs as root. These edges
-are listed in [Known limitations](../reference/limitations.md).
+ACLs. Owners are kept only when the receiving side runs as root (see `-o` in
+the [command line](../reference/command-line.md)), and sockets are never
+copied. These edges are listed in [Known limitations](../reference/limitations.md).
 
 ## Check it yourself with fileset
 
 You do not have to take the claim on trust. fileset is a second line of
 defence: it records a manifest of a tree (each file's checksum and metadata),
-and later checks a copy against it. It is a separate tool that shares no
-of irsync's logic, so a mistake in how irsync syncs does not repeat in the
+and later checks a copy against it. It is a separate tool that shares none
+of irsync's code, so a mistake in how irsync syncs does not repeat in the
 check. It is also the same
 check the test loops below run after each sync.
 
@@ -56,7 +57,7 @@ Record a manifest on the client, sync, then check the copy on the server:
 
 ```sh
 fileset init ~/Photos
-irsync -a --delete ~/Photos/ myserver:/srv/photos/
+irsync -a --delete ~/Photos/ myserver:photos/
 fileset check /srv/photos          # run this on myserver
 ```
 
@@ -69,8 +70,8 @@ permissions, modification time and size. Widen it when you need to:
 - fileset does not record holes in sparse files. A sparse file and a fully
   written copy of it pass every tier.
 
-[Verify an irsync transfer](../fileset/verify-irsync.md) walks through this
-step by step. The [fileset reference](../fileset/reference.md#comparison-tiers)
+[Verify an irsync transfer](../fileset/verify-irsync.md) walks through the
+same check step by step (with `-av` and without `--delete`). The [fileset reference](../fileset/reference.md#comparison-tiers)
 lists every field each tier compares.
 
 ## How we check it, layer by layer
@@ -140,9 +141,9 @@ the chunks. Here is what happens when a file changes along the way.
   run ends with exit 23.
 - **Other changes after hashing.** A change only in chunks the destination
   takes from its own copy is not seen, and neither is data appended after the
-  hash. The destination gets the file as it was when hashed: a real earlier
-  state, with the modification time irsync listed. The next run sees the newer
-  time and sends the file again.
+  hash. The destination gets the file as it was when hashed, with the
+  modification time irsync listed. The next run sees the newer time and usually
+  sends the file again.
 - **Deleted after it was listed.** If irsync still had to read it, the file
   fails, the run ends with exit 23, and the destination keeps its old copy.
   Otherwise it is not noticed in this run; the next run with `--delete`
