@@ -487,3 +487,31 @@ fn daemon_debug_addr_bare_port() {
         .to_string();
     assert!(e.contains("nope"), "{e}");
 }
+
+#[test]
+fn immediate_table_parses() {
+    let a = iroh::SecretKey::from_bytes(&[1; 32]).public();
+    let x = Exports::parse(&format!("[immediate]\nrw = [\"{a}\"]\n"), Path::new("e")).unwrap();
+    assert_eq!(x.immediate_rw, vec![a.to_string()]);
+    let e = Exports::parse(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("e"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("immediate"), "{e}");
+    let e = Config::parse(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("c"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("immediate"), "{e}");
+}
+
+#[test]
+fn daemon_immediate_defaults_on() {
+    let c = Config::parse("", Path::new("c")).unwrap();
+    assert!(c.settings.daemon.immediate);
+    let c = Config::parse("[daemon]\nimmediate = false\n", Path::new("c")).unwrap();
+    assert!(!c.settings.daemon.immediate);
+}
+
+#[test]
+fn export_named_immediate_is_reserved() {
+    assert!(Exports::parse("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
+}

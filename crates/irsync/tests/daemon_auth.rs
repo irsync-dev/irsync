@@ -32,6 +32,7 @@ fn hello(path: &[u8], dir: Direction) -> Hello {
 fn grants(access: Access) -> Grants {
     Grants {
         all: Some(access),
+        immediate: false,
         ..Grants::default()
     }
 }
@@ -204,6 +205,7 @@ async fn an_ungranted_name_reaches_the_granted_twin_on_the_same_path() {
     let g = || Grants {
         exports: [("ro".to_string(), Access::ReadWrite)].into(),
         all: None,
+        immediate: false,
     };
     assert!(matches!(
         exchange_with(g(), hello(b"rw", Direction::DaemonSends))
@@ -234,6 +236,7 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
             Grants {
                 exports: [("srv".to_string(), Access::ReadWrite)].into(),
                 all: None,
+                immediate: false,
             },
         ),
         None,
@@ -411,6 +414,7 @@ async fn ungranted_reply_does_not_reveal_whether_a_path_exists() {
     let none = Grants {
         exports: [("other".to_string(), Access::ReadWrite)].into(),
         all: None,
+        immediate: false,
     };
     let mut existing = abs.clone();
     existing.extend_from_slice(b"/sub");
@@ -540,6 +544,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
     let d = spawn(Grants {
         exports: [("rw".to_string(), Access::ReadWrite)].into(),
         all: None,
+        immediate: false,
     })
     .await;
     assert_eq!(

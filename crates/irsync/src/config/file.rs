@@ -1,7 +1,9 @@
 //! `irsync.toml` as one file: settings, host aliases, exports and grants,
 //! with `hosts.toml` and `exports.toml` still read when they sit beside it.
 
-use super::exports::{exports_from_raw, AllGrants, Exports, RawExports};
+use super::exports::{
+    exports_from_raw, immediate_problem, AllGrants, Exports, ImmediateGrants, RawExports,
+};
 use super::hosts::{hosts_from_raw, Hosts, RawHosts};
 use super::paths::Paths;
 use super::settings::{ClientSettings, DaemonSettings, Settings, TelemetrySettings};
@@ -37,6 +39,7 @@ struct RawMerged {
     hosts: RawHosts,
     exports: RawExports,
     all: AllGrants,
+    immediate: ImmediateGrants,
 }
 
 /// Which top-level tables the merged text has, for the one-home rule.
@@ -67,6 +70,10 @@ impl Config {
             let start = value.span().start;
             let value = value.get_ref();
             let message = match name.as_str() {
+                "immediate" => match immediate_problem(value) {
+                    Some(m) => m,
+                    None => continue,
+                },
                 "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry"
                     if value.is_table() =>
                 {
@@ -128,11 +135,13 @@ impl Config {
             path: path.to_path_buf(),
             entries: hosts_from_raw(raw.hosts, text, path)?,
         };
-        let exports = exports_from_raw(raw.all, raw.exports, text, path)?;
+        let exports = exports_from_raw(raw.all, raw.immediate, raw.exports, text, path)?;
         let line = |k: &str| shape.get(k).map(|v| line_of(text, v.span().start));
         let shape = Shape {
             hosts: line("hosts"),
-            exports: line("exports").or_else(|| line("all")),
+            exports: line("exports")
+                .or_else(|| line("all"))
+                .or_else(|| line("immediate")),
         };
         Ok((
             Config {

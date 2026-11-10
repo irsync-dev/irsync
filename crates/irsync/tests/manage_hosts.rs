@@ -128,3 +128,17 @@ fn host_add_keeps_the_other_keys_of_an_inline_table() {
         "{doc}"
     );
 }
+
+#[test]
+fn host_add_writes_ssh() {
+    let mut doc = DocumentMut::new();
+    let f = HostFlags {
+        ssh: Some("u@h".into()),
+        ..Default::default()
+    };
+    host_add(&mut doc, "h", id(1), &f).unwrap();
+    assert!(doc.to_string().contains("ssh = \"u@h\""));
+    let h =
+        irsync::config::hosts::Hosts::parse(&doc.to_string(), std::path::Path::new("h")).unwrap();
+    assert_eq!(h.get("h").unwrap().ssh.as_deref(), Some("u@h"));
+}

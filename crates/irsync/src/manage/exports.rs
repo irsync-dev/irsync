@@ -4,6 +4,7 @@
 
 use super::ManageError;
 use crate::config::exports::RESERVED;
+use iroh::EndpointId;
 use std::path::{Component, Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
@@ -47,6 +48,57 @@ pub fn add_export(
     // `exports = { ... }` toml_edit stores it inline.
     exports.insert(name, Item::Table(t));
     Ok(())
+}
+
+/// The auto export name for `path`: `auto-` and the components joined by
+/// `-`, every byte outside `[A-Za-z0-9._-]` as `_`; `/` is `auto-root`.
+fn auto_name(path: &Path) -> String {
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.as_encoded_bytes()),
+            _ => None,
+        })
+        .map(|b| {
+            b.iter()
+                .map(|&c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-') {
+                        c as char
+                    } else {
+                        '_'
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    if parts.is_empty() {
+        "auto-root".to_string()
+    } else {
+        format!("auto-{}", parts.join("-"))
+    }
+}
+
+/// Add an automatic export of `path`, read-write for `peer`; the name it
+/// got (`-2`, `-3`, ... when the name is taken).
+pub fn add_auto_export(
+    doc: &mut DocumentMut,
+    path: &Path,
+    peer: EndpointId,
+) -> Result<String, ManageError> {
+    let exports = exports_table(doc)?;
+    let base = auto_name(path);
+    let mut name = base.clone();
+    let mut n = 2;
+    while exports.contains_key(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    let mut t = Table::new();
+    t["path"] = toml_edit::value(path.to_string_lossy().into_owned());
+    t["auto"] = toml_edit::value(true);
+    t["rw"] = toml_edit::value(toml_edit::Array::from_iter([peer.to_string()]));
+    exports.insert(&name, Item::Table(t));
+    Ok(name)
 }
 
 /// Remove `[exports.name]` together with its grants. Only an export (a

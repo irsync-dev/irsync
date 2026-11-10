@@ -23,6 +23,7 @@ pub struct HostFlags {
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
+    pub ssh: Option<String>,
 }
 
 /// The `[hosts]` table, created (implicit, so only its children print
@@ -91,6 +92,9 @@ pub fn host_add(
     }
     if let Some(m) = flags.mdns {
         t["mdns"] = toml_edit::value(m);
+    }
+    if let Some(s) = &flags.ssh {
+        t["ssh"] = toml_edit::value(s.as_str());
     }
     Ok(old)
 }

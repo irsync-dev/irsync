@@ -191,6 +191,8 @@ pub struct DaemonSettings {
     /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
     #[serde(deserialize_with = "de_debug_addr")]
     pub debug_addr: Option<SocketAddr>,
+    /// Honour `[immediate]` grants (and create auto exports for them).
+    pub immediate: bool,
 }
 
 /// How OTLP export talks to the collector.
@@ -222,6 +224,7 @@ impl Default for DaemonSettings {
             congestion: Congestion::Bbr,
             discovery: Discovery::default(),
             debug_addr: None,
+            immediate: true,
         }
     }
 }

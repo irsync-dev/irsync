@@ -10,6 +10,7 @@ fn export(p: &str, ro: bool) -> Export {
         read_only: ro,
         warm_index: false,
         fsync: false,
+        auto: false,
         rw: vec![],
         ro: vec![],
     }
@@ -24,6 +25,7 @@ fn exports(v: &[(&str, &str)]) -> BTreeMap<String, Export> {
 fn all(a: Access) -> Grants {
     Grants {
         all: Some(a),
+        immediate: false,
         ..Grants::default()
     }
 }
@@ -32,6 +34,7 @@ fn only(n: &str, a: Access) -> Grants {
     Grants {
         exports: [(n.to_string(), a)].into(),
         all: None,
+        immediate: false,
     }
 }
 
@@ -142,6 +145,7 @@ fn equal_paths_best_access_wins() {
         ]
         .into(),
         all: None,
+        immediate: false,
     };
     assert_eq!(
         containing(Path::new("/data/x"), &ex, &g, None)

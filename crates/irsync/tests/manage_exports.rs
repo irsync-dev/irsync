@@ -241,3 +241,22 @@ fn add_target_expands_a_leading_tilde() {
         Err(ManageError::NotADirectory(_))
     ));
 }
+
+#[test]
+fn auto_export_names() {
+    use irsync::manage::exports::add_auto_export;
+    let mut doc = DocumentMut::new();
+    let n = |doc: &mut DocumentMut, p: &str| add_auto_export(doc, Path::new(p), id(1)).unwrap();
+    assert_eq!(n(&mut doc, "/srv/photos"), "auto-srv-photos");
+    assert_eq!(n(&mut doc, "/"), "auto-root");
+    assert_eq!(n(&mut doc, "/a b/\u{e7}"), "auto-a_b-__");
+    assert_eq!(n(&mut doc, "/srv/photos"), "auto-srv-photos-2");
+    let t = &doc["exports"]["auto-srv-photos"];
+    assert_eq!(t["auto"].as_bool(), Some(true));
+    assert_eq!(
+        t["rw"].as_array().unwrap().get(0).unwrap().as_str(),
+        Some(id(1).to_string().as_str())
+    );
+    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    assert!(x.exports["auto-srv-photos"].auto);
+}

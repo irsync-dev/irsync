@@ -9,6 +9,7 @@ fn snap(hosts: &str, exports: &str) -> Snapshot {
     Snapshot::from_files(
         &Hosts::parse(hosts, Path::new("h")).unwrap(),
         &Exports::parse(exports, Path::new("e")).unwrap(),
+        true,
     )
 }
 
@@ -62,4 +63,34 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     std::fs::write(&e, "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n").unwrap();
     std::fs::write(&h, format!("[hosts.lap]\nendpoint_id = \"{}\"\n", id(1))).unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
+}
+
+#[test]
+fn immediate_grant_reaches() {
+    let s = Snapshot::from_files(
+        &Hosts::parse("", Path::new("h")).unwrap(),
+        &Exports::parse(
+            &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
+            Path::new("e"),
+        )
+        .unwrap(),
+        true,
+    );
+    assert!(s.grants(&id(1)).immediate);
+    assert!(!s.grants(&id(1)).is_empty());
+}
+
+#[test]
+fn immediate_off_ignores_grant() {
+    let s = Snapshot::from_files(
+        &Hosts::parse("", Path::new("h")).unwrap(),
+        &Exports::parse(
+            &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
+            Path::new("e"),
+        )
+        .unwrap(),
+        false,
+    );
+    assert!(!s.grants(&id(1)).immediate);
+    assert!(s.grants(&id(1)).is_empty());
 }

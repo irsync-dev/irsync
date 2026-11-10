@@ -9,7 +9,7 @@ use toml::Spanned;
 
 /// Names that cannot be export names: `all` is the word `grant add all WHO`
 /// uses for every export.
-pub const RESERVED: [&str; 1] = ["all"];
+pub const RESERVED: [&str; 2] = ["all", "immediate"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +24,10 @@ pub struct Export {
     /// as if the client had passed `--fsync`.
     #[serde(default)]
     pub fsync: bool,
+    /// Created by the daemon for a path an `[immediate]` client reached,
+    /// not written by hand.
+    #[serde(default)]
+    pub auto: bool,
     #[serde(default)]
     pub rw: Vec<String>,
     #[serde(default)]
@@ -35,12 +39,20 @@ pub struct Exports {
     pub path: PathBuf,
     pub rw: Vec<String>,
     pub ro: Vec<String>,
+    /// The `[immediate]` table's `rw`: peers that may reach any path the
+    /// daemon's user can.
+    pub immediate_rw: Vec<String>,
     pub exports: BTreeMap<String, Export>,
 }
 
 /// The message for a reserved export name.
 pub fn reserved(name: &str) -> String {
-    format!("{name:?} is reserved: it is the word `grant add all WHO` uses for every export")
+    let word = if name == "immediate" {
+        "`grant add immediate WHO` uses for a grant to any path"
+    } else {
+        "`grant add all WHO` uses for every export"
+    };
+    format!("{name:?} is reserved: it is the word {word}")
 }
 
 /// The `[all]` table: grants that apply to every export.
@@ -51,6 +63,26 @@ pub(crate) struct AllGrants {
     pub(crate) ro: Vec<String>,
 }
 
+/// The `[immediate]` table: peers that may reach any path (read-write only).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ImmediateGrants {
+    pub(crate) rw: Vec<String>,
+}
+
+/// The message for a bad `[immediate]` table, or `None` when it is fine.
+pub(crate) fn immediate_problem(value: &toml::Value) -> Option<String> {
+    let Some(t) = value.as_table() else {
+        return Some(format!(
+            "immediate: expected a table, found {}",
+            value.type_str()
+        ));
+    };
+    t.keys().find(|k| *k != "rw").map(|k| {
+        format!("[immediate]: unknown key {k:?}; only `rw` is allowed (immediate grants are read-write)")
+    })
+}
+
 /// The `[exports]` table as deserialized: name -> table, with spans.
 pub(crate) type RawExports = BTreeMap<String, Spanned<toml::Value>>;
 
@@ -59,6 +91,7 @@ pub(crate) type RawExports = BTreeMap<String, Spanned<toml::Value>>;
 /// into, `path` the file named in errors (and recorded as `Exports.path`).
 pub(crate) fn exports_from_raw(
     all: AllGrants,
+    immediate: ImmediateGrants,
     raw: RawExports,
     text: &str,
     path: &Path,
@@ -110,6 +143,7 @@ pub(crate) fn exports_from_raw(
         path: path.to_path_buf(),
         rw: all.rw,
         ro: all.ro,
+        immediate_rw: immediate.rw,
         exports,
     })
 }
@@ -120,6 +154,7 @@ pub(crate) fn exports_from_raw(
 #[serde(default, deny_unknown_fields)]
 struct RawFile {
     all: AllGrants,
+    immediate: ImmediateGrants,
     exports: RawExports,
 }
 
@@ -140,6 +175,10 @@ impl Exports {
             let start = value.span().start;
             let value = value.get_ref();
             let message = match name.as_str() {
+                "immediate" => match immediate_problem(value) {
+                    Some(m) => m,
+                    None => continue,
+                },
                 "all" | "exports" if value.is_table() => continue,
                 "all" | "exports" => {
                     format!("{name}: expected a table, found {}", value.type_str())
@@ -163,6 +202,6 @@ impl Exports {
                 .unwrap_or(0);
             at(line, format!("[all]: {}", e.message()))
         })?;
-        exports_from_raw(raw.all, raw.exports, text, path)
+        exports_from_raw(raw.all, raw.immediate, raw.exports, text, path)
     }
 }

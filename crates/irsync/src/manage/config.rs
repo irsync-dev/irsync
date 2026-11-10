@@ -35,7 +35,8 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         | ["hosts", _]
         | ["exports"]
         | ["exports", _]
-        | ["all"] => Table,
+        | ["all"]
+        | ["immediate"] => Table,
         ["client", "parallel"] => Int,
         ["client", "reconnect"] => Duration,
         ["client", "dial_retries"] => Int,
@@ -45,7 +46,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap"] => Bool,
+        ["daemon", "portmap"] | ["daemon", "immediate"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode"] | ["daemon", "congestion"] => Str,
         ["daemon", "debug_addr"] => Str,
@@ -54,15 +55,15 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
         ["hosts", _, "endpoint_id"] => Id,
         ["hosts", _, "relay"] => Url,
-        ["hosts", _, "relay_mode" | "congestion"] => Str,
+        ["hosts", _, "relay_mode" | "congestion" | "ssh"] => Str,
         ["hosts", _, "address"] => AddrArray,
         ["hosts", _, "parallel"] => Int,
         ["hosts", _, "reconnect"] => Duration,
         ["hosts", _, "dial_retries"] => Int,
         ["hosts", _, "dht" | "mdns"] => Bool,
         ["exports", _, "path"] => Path,
-        ["exports", _, "read_only" | "warm_index" | "fsync"] => Bool,
-        ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] => StrArray,
+        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
+        ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] | ["immediate", "rw"] => StrArray,
         _ => return None,
     })
 }

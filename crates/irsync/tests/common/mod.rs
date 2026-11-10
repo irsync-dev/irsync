@@ -199,6 +199,7 @@ pub async fn spawn_daemon(
                     read_only,
                     warm_index: false,
                     fsync: false,
+                    auto: false,
                     rw: Vec::new(),
                     ro: Vec::new(),
                 },
@@ -226,6 +227,7 @@ pub async fn spawn_daemon_home(
                     read_only,
                     warm_index: false,
                     fsync: false,
+                    auto: false,
                     rw: Vec::new(),
                     ro: Vec::new(),
                 },
@@ -398,6 +400,7 @@ impl Harness {
             read_only: false,
             warm_index: false,
             fsync: false,
+            auto: false,
             rw: Vec::new(),
             ro: Vec::new(),
         };

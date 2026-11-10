@@ -294,3 +294,15 @@ fn grant_edits_reach_inline_tables() {
         "nothing to remove for \"all\""
     );
 }
+
+#[test]
+fn grant_immediate_adds_once() {
+    let mut doc = DocumentMut::new();
+    let resolve = |_: &str| None;
+    assert!(irsync::manage::grants::grant_immediate(&mut doc, &peer(1), &resolve).unwrap());
+    assert!(!irsync::manage::grants::grant_immediate(&mut doc, &peer(1), &resolve).unwrap());
+    assert_eq!(doc["immediate"]["rw"].as_array().unwrap().len(), 1);
+    let n =
+        irsync::manage::grants::grant_remove_immediate(&mut doc, Some(&peer(1)), &resolve).unwrap();
+    assert_eq!(n, 1);
+}

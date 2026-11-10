@@ -1192,12 +1192,26 @@ fn run_grant(g: &GrantArgs) -> i32 {
         GrantCmd::Add { export, who, ro } => finish(
             "grant add",
             (|| {
+                if export == "immediate" && *ro {
+                    bail!("immediate grants are read-write only: drop --ro");
+                }
                 let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
                 manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                if export == "immediate" {
+                    let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
+                        .with_context(|| format!("in {}", paths.config.display()))?;
+                    lock.save(&doc)?;
+                    if added {
+                        eprintln!("{}: immediate access", spec.entry());
+                    } else {
+                        eprintln!("{}: already has immediate access", spec.entry());
+                    }
+                    return Ok(());
+                }
                 let target = (export != "all").then_some(export.as_str());
                 manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
@@ -1221,6 +1235,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
                         if export == "all" { "in the file".to_string() } else { format!("on {export}") }
                     );
                 }
+                let is_immediate = export == "immediate";
                 let export = (export != "all").then_some(export.as_str());
                 let who = (who != "all").then_some(who.as_str());
                 // Text that names no known peer still matches entries literally
@@ -1237,8 +1252,12 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
-                let n = manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
+                let n = if is_immediate {
+                    manage::grants::grant_remove_immediate(&mut doc, spec.as_ref(), &resolve)
+                } else {
+                    manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
+                }
+                .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&doc)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
                 Ok(())
@@ -1500,6 +1519,7 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
         dial_retries: a.dial_retries,
         dht: a.dht,
         mdns: a.mdns,
+        ssh: None,
     };
     manage::ensure_editable(paths, manage::Table::Hosts)?;
     let lock = manage::lock_config(&paths.config)?;

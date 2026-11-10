@@ -138,6 +138,64 @@ pub fn grant_add(
     Ok(())
 }
 
+/// Grant `who` immediate access (`[immediate].rw`). False when the peer
+/// was already granted, under either spelling.
+pub fn grant_immediate(
+    doc: &mut DocumentMut,
+    who: &PeerSpec,
+    resolve: &dyn Fn(&str) -> Option<EndpointId>,
+) -> Result<bool, ManageError> {
+    if let PeerSpec::Id {
+        comment: Some(c), ..
+    } = who
+    {
+        check_comment(c)?;
+    }
+    let table = doc
+        .entry("immediate")
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()
+        .ok_or_else(|| ManageError::NotATable("immediate".to_string()))?;
+    let id = who_id(who, resolve);
+    let present = table.get("rw").and_then(Item::as_array).is_some_and(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .any(|t| entry_matches(t, who, id, resolve))
+    });
+    if present {
+        return Ok(false);
+    }
+    let comment = match who {
+        PeerSpec::Id { comment, .. } => comment.as_deref(),
+        PeerSpec::Alias(_) => None,
+    };
+    push_entry(table, "rw", &who.entry(), comment);
+    Ok(true)
+}
+
+/// Remove `who` from `[immediate].rw` (`None`: everyone); the count.
+pub fn grant_remove_immediate(
+    doc: &mut DocumentMut,
+    who: Option<&PeerSpec>,
+    resolve: &dyn Fn(&str) -> Option<EndpointId>,
+) -> Result<usize, ManageError> {
+    let n = match doc.get_mut("immediate").and_then(Item::as_table_like_mut) {
+        Some(t) => match who {
+            None => remove_where(t, "rw", &|_| true),
+            Some(w) => {
+                let id = who_id(w, resolve);
+                remove_where(t, "rw", &|s| entry_matches(s, w, id, resolve))
+            }
+        },
+        None => 0,
+    };
+    if n == 0 {
+        let what = who.map_or_else(|| "immediate".to_string(), PeerSpec::entry);
+        return Err(ManageError::NothingToRemove(what));
+    }
+    Ok(n)
+}
+
 fn remove_in(table: &mut dyn TableLike, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {
         None => remove_where(table, "rw", &|_| true) + remove_where(table, "ro", &|_| true),
@@ -216,7 +274,7 @@ pub fn list_export(exports: &Exports, hosts: &Hosts, name: &str) -> Option<Strin
 /// own entry, ` (read_only export)` when a read-write grant is capped by
 /// the export's `read_only` flag.
 pub fn list_peer(exports: &Exports, hosts: &Hosts, label: &str, id: &EndpointId) -> String {
-    let grants = Snapshot::from_files(hosts, exports).grants(id);
+    let grants = Snapshot::from_files(hosts, exports, true).grants(id);
     let mut out = format!("{label}:\n");
     for (name, e) in &exports.exports {
         let (access, inherited) = match grants.exports.get(name) {

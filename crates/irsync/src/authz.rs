@@ -25,12 +25,16 @@ pub struct Grants {
     pub exports: BTreeMap<String, Access>,
     /// Access granted by the `[all]` table, to every export.
     pub all: Option<Access>,
+    /// Read-write access to any path: in `[immediate].rw` and the daemon
+    /// has `immediate` on.
+    pub immediate: bool,
 }
 
 impl Grants {
-    /// True when the grants cover no export at all (no entries and no `[all]`).
+    /// True when the grants cover nothing at all (no entries, no `[all]`,
+    /// no immediate grant).
     pub fn is_empty(&self) -> bool {
-        self.exports.is_empty() && self.all.is_none()
+        self.exports.is_empty() && self.all.is_none() && !self.immediate
     }
 
     /// The access this key has to `export`: its own entry, else what
@@ -64,7 +68,7 @@ impl Snapshot {
     /// Resolves every grant entry (an alias first, then a raw EndpointId).
     /// An entry that resolves to nobody is skipped with a warning. Within one
     /// list `rw` is applied before `ro`, so `ro` never downgrades a key.
-    pub fn from_files(hosts: &Hosts, exports: &Exports) -> Snapshot {
+    pub fn from_files(hosts: &Hosts, exports: &Exports, immediate_enabled: bool) -> Snapshot {
         let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
         let mut apply = |export: Option<&str>, rw: &[String], ro: &[String]| {
             let lists = [(rw, Access::ReadWrite), (ro, Access::ReadOnly)];
@@ -92,6 +96,16 @@ impl Snapshot {
         apply(None, &exports.rw, &exports.ro);
         for (name, e) in &exports.exports {
             apply(Some(name), &e.rw, &e.ro);
+        }
+        if immediate_enabled {
+            for entry in &exports.immediate_rw {
+                match hosts.resolve_peer(entry) {
+                    Ok(id) => grants.entry(id).or_default().immediate = true,
+                    Err(_) => {
+                        tracing::warn!(entry = %entry, "immediate grant entry matches nobody")
+                    }
+                }
+            }
         }
         Snapshot {
             exports: exports.exports.clone(),
@@ -126,7 +140,11 @@ impl FileAuthorizer {
 impl Authorizer for FileAuthorizer {
     fn snapshot(&self) -> Result<Snapshot, AuthzError> {
         let config = Config::load(&self.paths)?;
-        Ok(Snapshot::from_files(&config.hosts, &config.exports))
+        Ok(Snapshot::from_files(
+            &config.hosts,
+            &config.exports,
+            config.settings.daemon.immediate,
+        ))
     }
 }
 

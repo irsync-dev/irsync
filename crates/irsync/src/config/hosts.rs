@@ -28,6 +28,8 @@ pub struct HostEntry {
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
+    /// The `[user@]host` that `ssh` reaches this daemon's machine by.
+    pub ssh: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +54,8 @@ pub(crate) struct RawHost {
     dht: Option<bool>,
     #[serde(default)]
     mdns: Option<bool>,
+    #[serde(default)]
+    ssh: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +112,7 @@ pub(crate) fn hosts_from_raw(
                 dial_retries: r.dial_retries,
                 dht: r.dht,
                 mdns: r.mdns,
+                ssh: r.ssh,
             },
         );
     }
