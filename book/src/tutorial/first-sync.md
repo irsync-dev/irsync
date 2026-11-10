@@ -61,6 +61,16 @@ over ssh: that refusal is on purpose. The check never adds back an immediate
 grant you removed on the server either; the sync then stops with the same
 "rejected this client's key" message.
 
+To go through ssh on purpose, for example to update irsync on the server
+after you updated the client, pass `--ssh`. It runs the same setup for a
+saved host, then syncs.
+
+The daemon publishes its addresses in the mainline DHT, so later runs find it
+without ssh even when its IP address changes. To keep it out of that public
+table, pass `--no-remote-dht`: the setup writes `dht = false` under
+`[daemon.discovery]` on the server. The daemon can still be found through
+DNS and the relay.
+
 Use `--rsh` or `IRSYNC_RSH` for another ssh command, such as
 `--rsh "ssh -p 2222"`. If the client should not reach every path, set
 `daemon.immediate = false` on the server before the first sync. The setup

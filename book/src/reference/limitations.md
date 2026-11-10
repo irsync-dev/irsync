@@ -36,7 +36,7 @@ only those an rsync user is likely to reach for.
 | `--files-from` | Select files with `--include` and `--exclude`. |
 | `--link-dest`, `--compare-dest` | No hard-link or comparison directories. Chunks of any file the receiver's index knows are reused. |
 | `--backup` | Replaced and deleted files are not kept. |
-| `-e`, `--rsh` | The transport is always iroh QUIC; there is no remote shell. |
+| `-e` | The transport is always iroh QUIC. `--rsh` names the ssh command, but only for setting the server up, never for the data. |
 | `-W`, `--whole-file` | No switch to turn the delta off. |
 | `-z`, `--compress` | No compression. |
 | `-L`, `--copy-links` | Symlinks are copied as symlinks with `-l`, or skipped. |

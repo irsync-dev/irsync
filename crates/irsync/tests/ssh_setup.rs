@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use common::irsync_bin;
 use iroh::{EndpointId, SecretKey};
 use irsync::daemon_lock::probe;
-use irsync::ssh::setup::{Created, DaemonOutcome, GrantOutcome, SetupReport};
+use irsync::ssh::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 
 /// A temp HOME with an offline daemon config; kills the daemon holding its
 /// lock when dropped.
@@ -90,6 +90,7 @@ fn read_config(home: &Home) -> toml::Table {
 fn report_roundtrips() {
     let daemons = [
         DaemonOutcome::Running,
+        DaemonOutcome::Reloaded,
         DaemonOutcome::Started,
         DaemonOutcome::Restarted {
             old_version: "irsync 0.1".into(),
@@ -106,14 +107,16 @@ fn report_roundtrips() {
         GrantOutcome::Missing,
     ];
     let ids = [Created::Existing, Created::Generated];
+    let dhts = [Dht::On, Dht::Off, Dht::TurnedOff];
     for d in &daemons {
-        for g in &grants {
+        for (g, dht) in grants.iter().zip(dhts.iter().cycle()) {
             for i in &ids {
                 let r = SetupReport {
                     version: "irsync 1.2.3 (abc 2026-11-10)".into(),
                     endpoint_id: client_id(),
                     identity: i.clone(),
                     grant: g.clone(),
+                    dht: dht.clone(),
                     daemon: d.clone(),
                     log: PathBuf::from("/home/u/.local/state/irsync/daemon.log"),
                 };
@@ -159,6 +162,49 @@ fn second_run_changes_nothing() {
     assert_eq!(r.endpoint_id, first.endpoint_id);
     assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
     assert_eq!(probe(&home.state()).unwrap().pid, pid);
+}
+
+/// The test config with DHT publishing on (no daemon is running yet, so
+/// nothing ever publishes).
+fn dht_on(home: &Home) {
+    let text = std::fs::read_to_string(home.config()).unwrap();
+    std::fs::write(home.config(), text.replace("dht = false", "dht = true")).unwrap();
+}
+
+/// Without `--no-dht` the setting is only reported. (With it on, the
+/// daemon would publish, so "on" is covered by the reload test below.)
+#[test]
+fn dht_off_is_reported() {
+    let home = Home::new("");
+    let r = home.setup(&client_id());
+    assert_eq!(r.dht, Dht::Off);
+}
+
+/// `--no-dht` writes `dht = false` before the daemon starts; a second run
+/// finds it off. A running daemon whose setting was turned on by hand is
+/// told to reload, not restarted.
+#[test]
+fn no_dht_turns_publishing_off_and_reloads() {
+    let home = Home::new("");
+    dht_on(&home);
+    let client = client_id();
+    let r = home.setup_with(&client, &["--no-dht"]);
+    assert_eq!(r.dht, Dht::TurnedOff);
+    assert_eq!(r.daemon, DaemonOutcome::Started);
+    let doc = read_config(&home);
+    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+    let pid = probe(&home.state()).unwrap().pid;
+    let r = home.setup_with(&client, &["--no-dht"]);
+    assert_eq!(r.dht, Dht::Off);
+    assert_eq!(r.daemon, DaemonOutcome::Running);
+    // Turned on by hand while the daemon (still with DHT off) runs.
+    dht_on(&home);
+    let r = home.setup_with(&client, &["--no-dht"]);
+    assert_eq!(r.dht, Dht::TurnedOff);
+    assert_eq!(r.daemon, DaemonOutcome::Reloaded);
+    assert_eq!(probe(&home.state()).unwrap().pid, pid);
+    let doc = read_config(&home);
+    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
 }
 
 #[test]

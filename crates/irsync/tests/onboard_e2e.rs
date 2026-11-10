@@ -554,3 +554,67 @@ fn alias_without_ssh_does_not_fall_back() {
     assert!(!err.contains("over ssh"), "{err}");
     assert_eq!(w.ssh_calls(), 0);
 }
+
+/// `--ssh` goes through ssh for a saved host (probe and setup, no copy:
+/// the build is current), reports it, then syncs.
+#[test]
+fn force_ssh_checks_a_saved_host() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let calls = w.ssh_calls();
+    std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
+    let err = ok(&w.irsync(&["-a", "--ssh", &w.src_arg(), &target]));
+    assert!(err.contains("irsync: checking myserver over ssh"), "{err}");
+    assert!(err.contains("irsync: set up myserver over ssh:"), "{err}");
+    assert!(!err.contains("not a saved alias"), "{err}");
+    assert!(!err.contains("installed"), "{err}");
+    assert_eq!(w.ssh_calls(), calls + 2);
+    assert_eq!(
+        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+        "changed\n"
+    );
+}
+
+/// `--ssh` with a bare EndpointId has nothing to ssh to.
+#[test]
+fn force_ssh_refuses_an_endpoint_id() {
+    let w = World::new();
+    let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
+    let o = w.irsync(&["-a", "--ssh", &w.src_arg(), &format!("{id}:/x")]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(
+        err.contains("--ssh needs a host alias or an ssh destination, not an EndpointId"),
+        "{err}"
+    );
+    assert_eq!(w.ssh_calls(), 0);
+}
+
+/// `--no-remote-dht` on the first push writes `dht = false` on the server
+/// before its daemon starts (so this test never publishes), and says so.
+#[test]
+fn no_remote_dht_turns_server_publishing_off() {
+    let w = World::new();
+    let cfg = w.server.path().join(".config/irsync/irsync.toml");
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    std::fs::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&[
+        "-a",
+        "--no-remote-dht",
+        &w.src_arg(),
+        &format!("myserver:{}", dest.display()),
+    ]);
+    let err = ok(&o);
+    same_tree(w.src.path(), &dest);
+    assert!(
+        err.contains(
+            "irsync:   turned off DHT publishing on myserver ([daemon.discovery] dht = false)"
+        ),
+        "{err}"
+    );
+    let doc: toml::Table = w.server_toml().parse().unwrap();
+    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+}

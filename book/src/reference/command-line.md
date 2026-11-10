@@ -148,6 +148,8 @@ These have no rsync counterpart.
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off. The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. A `hosts.toml` or `exports.toml` beside it is read too. |
 | `--rsh CMD` | The remote shell for the ssh setup, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
+| `--ssh` | Go through ssh even for a saved host: install or update irsync on the server, check its daemon and the grant, then sync. Uses the host's `ssh` destination, else the alias. Default: off; a saved host is reached over iroh only. |
+| `--no-remote-dht` | When setting the server up over ssh, turn its DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Goes through ssh for a saved host too, like `--ssh`. Without it the server's setting is left alone, and new servers publish. |
 | `--identity FILE` | The private key to connect with. Default: `identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |

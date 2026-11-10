@@ -3,14 +3,16 @@
 - [x] rsync-like "ad-hoc" mode, boot-strapped via ssh: done by SSH onboarding
       (2026-11-10), but as a daemon that stays installed and running rather than
       one spawned and shut down per run.
-    - [ ] Don't register in the DHT for daemons set up this way (not done; they
-          use the normal discovery settings)
+    - [x] DHT: such daemons publish by default, since later runs must find them
+          without ssh; `--no-remote-dht` turns it off, `--ssh` forces the ssh
+          step (2026-11-10)
 - [ ] OpenTelemetry instrumentation, export on the daemon side, stats printing after a run
 - [ ] Auto-update irsync on the remote side, with the correct architecture
     - [x] Same OS and CPU: onboarding copies the client binary over ssh when the
           remote version differs (2026-11-10)
-    - [ ] Only happens when a run goes through ssh (first sync, or the fallback
-          when the daemon can't be reached); a reachable older daemon is not updated
+    - [ ] Only happens when a run goes through ssh (first sync, `--ssh`, or the
+          fallback when the daemon can't be reached); a reachable older daemon is
+          not updated on its own
     - [ ] Other OS or CPU: see the release-binary item under "Open items from SSH
           onboarding" below
 - [ ] Adversarial fuzz testing / hardening for the daemon mode

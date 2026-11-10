@@ -92,6 +92,10 @@ than the shared public relays. iroh ships one as `iroh-relay`.
   irsync config set daemon.discovery.mdns false
   ```
 
+- For a server set up over ssh, `--no-remote-dht` on the client sets the
+  daemon's `dht = false` for you (see
+  [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh)).
+
 ## Dial a known address
 
 Two `irsync` processes on one machine, on one LAN, or anywhere without

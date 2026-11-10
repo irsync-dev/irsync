@@ -1,7 +1,8 @@
 //! `irsync ssh-setup`: every server-side step of SSH onboarding in one
 //! command, run as the SSH user. It makes sure the daemon identity exists,
-//! grants the client immediate access and gets this copy of irsync's daemon
-//! running, then reports what it did as `key=value` lines.
+//! grants the client immediate access, turns DHT publishing off when asked,
+//! and gets this copy of irsync's daemon running, then reports what it did
+//! as `key=value` lines.
 //!
 //! It stops or restarts only a daemon started from its own executable; any
 //! other daemon is reported as foreign and left alone.
@@ -48,10 +49,22 @@ pub enum GrantOutcome {
     Missing,
 }
 
+/// Whether the daemon publishes its addresses in the mainline DHT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dht {
+    On,
+    Off,
+    /// It was on; `--no-dht` turned it off in the config just now.
+    TurnedOff,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonOutcome {
     /// This copy's daemon, at this version, was already running.
     Running,
+    /// This copy's daemon was running and was told to re-read its settings
+    /// (`SIGHUP`), because `ssh-setup` changed them.
+    Reloaded,
     Started,
     /// This copy's daemon ran an older build; it was stopped and started again.
     Restarted {
@@ -72,6 +85,7 @@ pub struct SetupReport {
     pub endpoint_id: EndpointId,
     pub identity: Created,
     pub grant: GrantOutcome,
+    pub dht: Dht,
     pub daemon: DaemonOutcome,
     /// Where a daemon started by `ssh-setup` writes its output.
     pub log: PathBuf,
@@ -100,9 +114,18 @@ impl SetupReport {
                     GrantOutcome::Missing => "missing",
                 }
             ),
+            format!(
+                "dht={}",
+                match self.dht {
+                    Dht::On => "on",
+                    Dht::Off => "off",
+                    Dht::TurnedOff => "turned_off",
+                }
+            ),
         ];
         match &self.daemon {
             DaemonOutcome::Running => lines.push("daemon=running".into()),
+            DaemonOutcome::Reloaded => lines.push("daemon=reloaded".into()),
             DaemonOutcome::Started => lines.push("daemon=started".into()),
             DaemonOutcome::Restarted { old_version } => {
                 lines.push("daemon=restarted".into());
@@ -161,8 +184,15 @@ impl SetupReport {
             "missing" => GrantOutcome::Missing,
             v => return Err(bad("grant", v)),
         };
+        let dht = match get("dht")?.as_str() {
+            "on" => Dht::On,
+            "off" => Dht::Off,
+            "turned_off" => Dht::TurnedOff,
+            v => return Err(bad("dht", v)),
+        };
         let daemon = match get("daemon")?.as_str() {
             "running" => DaemonOutcome::Running,
+            "reloaded" => DaemonOutcome::Reloaded,
             "started" => DaemonOutcome::Started,
             "restarted" => DaemonOutcome::Restarted {
                 old_version: get("daemon_old_version")?,
@@ -178,6 +208,7 @@ impl SetupReport {
             endpoint_id,
             identity,
             grant,
+            dht,
             daemon,
             log: PathBuf::from(get("log")?),
         })
@@ -189,7 +220,14 @@ impl SetupReport {
 /// missing immediate grant is added only when the daemon identity was just
 /// generated, a rebuilt server; otherwise the owner removed it, and it is
 /// reported as [`GrantOutcome::Missing`] instead.
-pub fn run(paths: &Paths, client: EndpointId, recheck: bool) -> anyhow::Result<SetupReport> {
+/// With `no_dht`, `[daemon.discovery] dht` is set to `false` when it is on;
+/// without it the setting is left as it is.
+pub fn run(
+    paths: &Paths,
+    client: EndpointId,
+    recheck: bool,
+    no_dht: bool,
+) -> anyhow::Result<SetupReport> {
     let Config {
         settings, hosts, ..
     } = Config::load(paths)?;
@@ -236,7 +274,22 @@ pub fn run(paths: &Paths, client: EndpointId, recheck: bool) -> anyhow::Result<S
         GrantOutcome::ImmediateOff
     };
 
-    // 3. The daemon.
+    // 3. DHT publishing: only ever turned off here, never back on.
+    let dht = if !settings.daemon.discovery.dht {
+        Dht::Off
+    } else if no_dht {
+        let lock = manage::lock_config(&paths.config)?;
+        let mut doc = lock.load()?;
+        let key = ["daemon", "discovery", "dht"].map(String::from);
+        manage::config::set(&mut doc, &key, toml_edit::Value::from(false))
+            .with_context(|| format!("in {}", paths.config.display()))?;
+        lock.save(&doc)?;
+        Dht::TurnedOff
+    } else {
+        Dht::On
+    };
+
+    // 4. The daemon.
     let state = &settings.state_dir;
     let log = state.join("daemon.log");
     let exe = std::env::current_exe().context("finding this executable")?;
@@ -250,7 +303,10 @@ pub fn run(paths: &Paths, client: EndpointId, recheck: bool) -> anyhow::Result<S
             exe: held,
             version,
         }) if pid != 0 && held == exe => {
-            if version == *LONG_VERSION {
+            if version == *LONG_VERSION && dht == Dht::TurnedOff {
+                reload_daemon(pid)?;
+                DaemonOutcome::Reloaded
+            } else if version == *LONG_VERSION {
                 DaemonOutcome::Running
             } else {
                 stop_daemon(pid, state)?;
@@ -268,9 +324,19 @@ pub fn run(paths: &Paths, client: EndpointId, recheck: bool) -> anyhow::Result<S
         endpoint_id: secret.public(),
         identity,
         grant,
+        dht,
         daemon,
         log,
     })
+}
+
+/// Tells this copy's daemon `pid` to re-read its settings.
+fn reload_daemon(pid: u32) -> anyhow::Result<()> {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    let raw = i32::try_from(pid).context("daemon pid out of range")?;
+    kill(Pid::from_raw(raw), Signal::SIGHUP)
+        .with_context(|| format!("telling the daemon (pid {pid}) to reload"))
 }
 
 /// Sends SIGTERM to this copy's daemon `pid` and waits for its lock to go.

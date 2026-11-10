@@ -68,8 +68,9 @@ fn main() {
         Some(Command::SshSetup {
             client,
             recheck,
+            no_dht,
             files,
-        }) => std::process::exit(run_ssh_setup(client, *recheck, files)),
+        }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -435,23 +436,53 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     let mut config = Config::load(&paths)?;
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
     // An unknown host is an ssh destination: set it up and save the alias.
+    // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
     let mut onboarded_with = None;
-    if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
+    let saved = config.hosts.get(host);
+    let unknown = saved.is_none() && parse_endpoint_id(host).is_err();
+    let forced = opts.force_ssh || opts.no_remote_dht;
+    if forced && saved.is_none() && !unknown {
+        let flag = if opts.force_ssh {
+            "--ssh"
+        } else {
+            "--no-remote-dht"
+        };
+        bail!("{flag} needs a host alias or an ssh destination, not an EndpointId");
+    }
+    if unknown || forced {
+        // A saved host: its `ssh` destination, else the alias itself.
+        let dest = saved
+            .and_then(|h| h.ssh.clone())
+            .unwrap_or_else(|| host.to_string());
         // No ssh call yet: these errors need no "over ssh failed" context.
-        irsync::ssh::onboard::check(&paths, host, host)?;
+        irsync::ssh::onboard::check(&paths, host, &dest)?;
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-        log.eprintln(&format!(
-            "irsync: {host} is not a saved alias; setting it up over ssh"
-        ));
-        let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, host, secret.public(), false)
-            .with_context(|| {
+        log.eprintln(&if unknown {
+            format!("irsync: {host} is not a saved alias; setting it up over ssh")
+        } else {
+            format!("irsync: checking {host} over ssh")
+        });
+        let o = irsync::ssh::onboard::onboard(
+            &paths,
+            &rsh,
+            host,
+            &dest,
+            secret.public(),
+            !unknown,
+            opts.no_remote_dht,
+        )
+        .with_context(|| {
+            if unknown {
                 format!(
                     "{host:?} is not an alias in {} and not an EndpointId; \
                      setting it up over ssh failed",
                     config.hosts.path.display()
                 )
-            })?;
+            } else {
+                format!("checking {host} over ssh failed")
+            }
+        })?;
         report_onboarded(log, &o);
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
@@ -572,7 +603,8 @@ fn recheck_over_ssh(
     ));
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true) {
+    let no_dht = opts.no_remote_dht;
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true, no_dht) {
         Ok(o) => o,
         Err(e) => return Recheck::Failed(e),
     };
@@ -735,8 +767,14 @@ async fn sync(
         Direction::DaemonSends => args.sync.src()[0].clone(),
     };
 
-    let cli_opts = opts;
-    let mut conn = connect_for(host, cli_opts, log).await?;
+    let mut conn = connect_for(host, opts, log).await?;
+    // `--ssh` and `--no-remote-dht` are done with once the first connect
+    // went through ssh: a reconnect after a recheck must not go again.
+    let cli_opts = &SyncOptions {
+        force_ssh: false,
+        no_remote_dht: false,
+        ..opts.clone()
+    };
     // A saved ssh host that never answers is checked over ssh once per run;
     // a host set up over ssh just now counts as checked.
     let mut rechecked = conn.onboarded;
@@ -1301,10 +1339,10 @@ fn file_paths(f: &FilesArgs) -> Paths {
 }
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
-fn run_ssh_setup(client: &str, recheck: bool, files: &FilesArgs) -> i32 {
+fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -> i32 {
     let result = parse_endpoint_id(client)
         .with_context(|| format!("--client {client:?}"))
-        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck));
+        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht));
     match result {
         Ok(report) => {
             print!("{}", report.to_lines());

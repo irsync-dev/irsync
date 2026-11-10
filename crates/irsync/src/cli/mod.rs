@@ -203,6 +203,9 @@ pub enum Command {
         /// identity gets one).
         #[arg(long)]
         recheck: bool,
+        /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
+        #[arg(long)]
+        no_dht: bool,
         #[command(flatten)]
         files: FilesArgs,
     },
@@ -755,6 +758,16 @@ pub struct SyncArgs {
     /// split on whitespace like rsync's `-e`.
     #[arg(long, value_name = "CMD")]
     pub rsh: Option<String>,
+    /// Go through ssh even for a saved host: install or update irsync there,
+    /// check the daemon and the grant, then sync. Uses the host's `ssh`
+    /// destination, else its alias.
+    #[arg(long)]
+    pub ssh: bool,
+    /// When setting the server up over ssh, turn its DHT publishing off
+    /// (`[daemon.discovery] dht = false`). Goes through ssh for a saved host
+    /// too, like `--ssh`. Without it the server's setting is left alone.
+    #[arg(long)]
+    pub no_remote_dht: bool,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -887,6 +900,9 @@ pub struct SyncOptions {
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
     pub rsh: Option<String>,
+    /// `--ssh`.
+    pub force_ssh: bool,
+    pub no_remote_dht: bool,
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub inplace: bool,
@@ -953,6 +969,8 @@ impl SyncOptions {
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
             rsh: a.rsh.clone(),
+            force_ssh: a.ssh,
+            no_remote_dht: a.no_remote_dht,
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,

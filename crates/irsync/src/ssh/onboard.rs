@@ -6,7 +6,7 @@ use anyhow::Context;
 use iroh::EndpointId;
 
 use super::client::{ensure_installed, probe, run_setup, Install, Rsh, REMOTE_BIN};
-use super::setup::{Created, DaemonOutcome, GrantOutcome, SetupReport};
+use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
@@ -36,6 +36,7 @@ pub struct Onboarded {
 /// build, run `ssh-setup`, then save `alias` with `ssh = dest`. A first
 /// run passes the same text for both. `recheck`: `alias` is a saved host
 /// being checked, so `ssh-setup` must not add back a removed grant.
+/// `no_dht`: turn the daemon's DHT publishing off.
 pub fn onboard(
     paths: &Paths,
     rsh: &Rsh,
@@ -43,11 +44,12 @@ pub fn onboard(
     dest: &str,
     client: EndpointId,
     recheck: bool,
+    no_dht: bool,
 ) -> anyhow::Result<Onboarded> {
     check(paths, alias, dest)?;
     let p = probe(rsh, dest)?;
     let install = ensure_installed(rsh, dest, &p)?;
-    let report = run_setup(rsh, dest, client, recheck)?;
+    let report = run_setup(rsh, dest, client, recheck, no_dht)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let flags = HostFlags {
@@ -132,8 +134,16 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             "  warning: the daemon runs as root and this client can reach every path on {dest}"
         ));
     }
+    if r.dht == Dht::TurnedOff {
+        out.push(format!(
+            "  turned off DHT publishing on {dest} ([daemon.discovery] dht = false)"
+        ));
+    }
     match &r.daemon {
         DaemonOutcome::Running => {}
+        DaemonOutcome::Reloaded => {
+            out.push("  told the daemon to reload its settings".into());
+        }
         DaemonOutcome::Started => {
             out.push(format!("  started the daemon (log: {})", r.log.display()));
         }
@@ -317,6 +327,7 @@ mod tests {
                 endpoint_id: id(2),
                 identity: Created::Existing,
                 grant: GrantOutcome::Already,
+                dht: Dht::On,
                 daemon,
                 log: PathBuf::from("/s/daemon.log"),
             },
@@ -433,6 +444,23 @@ mod tests {
         assert!(s[2].starts_with("  the alias points at this config's daemon identity"));
         assert!(!s.join("\n").contains("installed"));
         assert!(howto(&o).is_empty());
+    }
+
+    /// `--no-remote-dht` on a running daemon: the setting line, then the
+    /// reload; no how-to, since the daemon kept running.
+    #[test]
+    fn dht_turned_off_and_reloaded() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Reloaded, Some("linux"));
+        o.report.dht = Dht::TurnedOff;
+        let s = summary(&o);
+        let off = at(
+            &s,
+            "  turned off DHT publishing on myserver ([daemon.discovery] dht = false)",
+        );
+        assert!(off < at(&s, "  told the daemon to reload its settings"));
+        assert!(howto(&o).is_empty());
+        o.report.dht = Dht::Off;
+        assert!(!summary(&o).join("\n").contains("DHT"));
     }
 
     /// `saved` for a new alias, `updated` for a changed id, and nothing
