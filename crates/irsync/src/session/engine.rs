@@ -697,28 +697,31 @@ pub(super) async fn run_client_inner(
     // `-c`: no index row is trusted; every file this side lists or
     // compares is read.
     let hasher = if opts.checksum {
-        Arc::new(
-            Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
-                .with_force(true)
-                .with_activity(activity.clone())
-                .with_progress(on_hash.clone())
-                .with_meter(meter.clone()),
-        )
-    } else {
-        // Shares the side's worker limit and counters across attempts.
-        Arc::new(
-            Hasher::clone(&local.hasher)
-                .with_progress(on_hash.clone())
-                .with_meter(meter.clone()),
-        )
-    };
-    let forced = Arc::new(
-        Hasher::new(index.clone(), local.root.clone(), 1)
+        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
             .with_force(true)
             .with_activity(activity.clone())
-            .with_progress(on_hash)
-            .with_meter(meter.clone()),
-    );
+            .with_progress(on_hash.clone())
+            .with_meter(meter.clone())
+    } else {
+        // Shares the side's worker limit and counters across attempts.
+        Hasher::clone(&local.hasher)
+            .with_progress(on_hash.clone())
+            .with_meter(meter.clone())
+    };
+    let forced = Hasher::new(index.clone(), local.root.clone(), 1)
+        .with_force(true)
+        .with_activity(activity.clone())
+        .with_progress(on_hash)
+        .with_meter(meter.clone());
+    #[cfg(feature = "test-hooks")]
+    let (hasher, forced) = match &local.hooks.during_hash {
+        Some(h) => (
+            hasher.with_hash_hook(h.clone()),
+            forced.with_hash_hook(h.clone()),
+        ),
+        None => (hasher, forced),
+    };
+    let (hasher, forced) = (Arc::new(hasher), Arc::new(forced));
     let ctx = Ctx {
         conn,
         session_id,
@@ -1078,18 +1081,20 @@ async fn serve_daemon_inner(
     let index = index.metered(meter.clone());
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
-    let hasher = Arc::new(
-        Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-            .with_force(hello.checksum)
-            .with_activity(activity.clone())
-            .with_meter(meter.clone()),
-    );
-    let forced = Arc::new(
-        Hasher::new(index.clone(), export_root.clone(), 1)
-            .with_force(true)
-            .with_activity(activity.clone())
-            .with_meter(meter.clone()),
-    );
+    let hasher = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
+        .with_force(hello.checksum)
+        .with_activity(activity.clone())
+        .with_meter(meter.clone());
+    let forced = Hasher::new(index.clone(), export_root.clone(), 1)
+        .with_force(true)
+        .with_activity(activity.clone())
+        .with_meter(meter.clone());
+    #[cfg(feature = "test-hooks")]
+    let (hasher, forced) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
+        Some(h) => (hasher.with_hash_hook(h.clone()), forced.with_hash_hook(h)),
+        None => (hasher, forced),
+    };
+    let (hasher, forced) = (Arc::new(hasher), Arc::new(forced));
     let ctx = Ctx {
         conn,
         session_id,
@@ -1163,6 +1168,7 @@ async fn serve_daemon_inner(
                 h.slow_peer_events = p.slow_peer_events;
                 h.cut_listing_after = p.cut_listing_after;
                 h.inject_listing = p.inject_listing;
+                h.during_hash = p.during_hash;
             }
             h
         },

@@ -27,7 +27,7 @@ use tokio::task::JoinSet;
 
 use crate::delta::{encode, encoded_len, Basis, Op};
 use crate::fs::paths::RelPath;
-use crate::hasher::{Freshness, Hasher};
+use crate::hasher::{Freshness, Hashed, Hasher};
 use crate::net::frame::write_msg;
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
@@ -209,7 +209,7 @@ impl Sender {
     }
 
     /// The hashing step before a `ChunkList` is sent.
-    pub async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<FileDigest> {
+    pub async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<Hashed> {
         self.inner.hasher.digest(item).await
     }
 
@@ -219,7 +219,7 @@ impl Sender {
         &self,
         path: RelPath,
         walked: Freshness,
-    ) -> io::Result<FileDigest> {
+    ) -> io::Result<Hashed> {
         self.inner.hasher.digest_walked(path, walked).await
     }
 

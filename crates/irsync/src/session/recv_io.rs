@@ -285,8 +285,8 @@ async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
         .await;
     }
     match hashed {
-        Ok(digest) => Some(OldFile {
-            digest,
+        Ok(hashed) => Some(OldFile {
+            digest: hashed.digest,
             entry,
             ctime,
         }),

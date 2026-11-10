@@ -38,7 +38,7 @@ use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
-use crate::hasher::Freshness;
+use crate::hasher::{Freshness, Hashed};
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
@@ -56,7 +56,7 @@ pub(super) enum Done {
         file_id: u64,
         gen: u32,
         /// With the permits the digest took (see `ListCredit`).
-        result: io::Result<(FileDigest, OwnedSemaphorePermit)>,
+        result: io::Result<(Hashed, OwnedSemaphorePermit)>,
     },
     Sent {
         file_id: u64,
@@ -133,6 +133,8 @@ struct SFile {
     append_from: Option<u64>,
     /// The digest behind the chunk list last sent (none while re-digesting).
     digest: Option<Arc<FileDigest>>,
+    /// The stat of the source file `digest` was taken under.
+    hash_stat: Option<Freshness>,
     /// Bases the receiver offered for chunks it is about to request, by
     /// chunk index, with their size against the basis budget; each is used
     /// for one request and dropped.
@@ -352,7 +354,7 @@ impl SenderRole {
                     let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
                         let full = ctx.full_key(&key);
-                        blocking(move || tail_digest(&full, from)).await
+                        blocking(move || tail_digest(&full, &key, from)).await
                     } else {
                         let since = super::wait_start(&ctx.meter);
                         let digest = match (walked, item) {
@@ -434,6 +436,7 @@ impl SenderRole {
         f.retries += 1;
         f.gen += 1;
         let listed = f.digest.take().is_some();
+        f.hash_stat = None;
         drop_bases(&mut self.basis_held, f);
         f.requested.clear();
         f.streams = 0;
@@ -521,6 +524,7 @@ impl SenderRole {
                 retries: 0,
                 append_from,
                 digest: None,
+                hash_stat: None,
                 bases: HashMap::new(),
                 bases_held: 0,
                 requested: HashSet::new(),
@@ -574,7 +578,7 @@ impl SenderRole {
         &mut self,
         file_id: u64,
         gen: u32,
-        result: io::Result<(FileDigest, OwnedSemaphorePermit)>,
+        result: io::Result<(Hashed, OwnedSemaphorePermit)>,
     ) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
@@ -584,15 +588,16 @@ impl SenderRole {
         }
         f.digesting = None;
         match result {
-            Ok((d, _)) if d.chunks.len() as u64 > self.list_budget => {
+            Ok((h, _)) if h.digest.chunks.len() as u64 > self.list_budget => {
                 let msg = format!(
                     "chunk list of {} chunks, beyond the session's room of {}",
-                    d.chunks.len(),
+                    h.digest.chunks.len(),
                     self.list_budget
                 );
                 self.source_error(file_id, msg);
             }
-            Ok((d, held)) => {
+            Ok((Hashed { digest: d, stat }, held)) => {
+                f.hash_stat = Some(stat);
                 let with_hash = f.append_from.is_none();
                 // Sent once the receiver has room for it (`pump_lists`).
                 let parts = split(file_id, &d, part_records(&self.ctx), with_hash);
@@ -603,6 +608,10 @@ impl SenderRole {
                 }
                 f.span.record("size", d.size);
                 f.digest = Some(Arc::new(d));
+            }
+            // A write during the hash pass: the digest may be torn.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                self.retry(file_id, "changed while it was hashed".into());
             }
             Err(e) => self.source_error(file_id, e.to_string()),
         }
@@ -974,13 +983,17 @@ fn drop_bases(basis_held: &mut usize, f: &mut SFile) {
     *basis_held -= std::mem::take(&mut f.bases_held);
 }
 
-/// The chunk list of `full` from `from` on (an `APPEND` tail): chunked
-/// from that offset, records at absolute offsets, no whole-file hash.
-fn tail_digest(full: &std::path::Path, from: u64) -> io::Result<FileDigest> {
+/// The chunk list of `full` (index key `key`) from `from` on (an `APPEND`
+/// tail): chunked from that offset, records at absolute offsets, no
+/// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
+/// file changes while it is read.
+fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<Hashed> {
     use std::io::{Read, Seek, SeekFrom};
     // The open's type check already took the file's stat.
     let (mut file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
-    let size = st.st_size as u64;
+    let (entry, ctime) = crate::fs::meta::stat_entry_with_ctime(st, key);
+    let opened = Freshness::of_entry(&entry, ctime);
+    let size = opened.size;
     if size < from {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -989,13 +1002,17 @@ fn tail_digest(full: &std::path::Path, from: u64) -> io::Result<FileDigest> {
     }
     file.seek(SeekFrom::Start(from))?;
     let mut tail = irsync_proto::chunk::digest_reader((&mut file).take(size - from))?;
+    crate::hasher::check_unchanged(&file, key, opened)?;
     for c in &mut tail.chunks {
         c.offset += from;
     }
-    Ok(FileDigest {
-        size,
-        hash: [0; 32],
-        chunks: tail.chunks,
+    Ok(Hashed {
+        digest: FileDigest {
+            size,
+            hash: [0; 32],
+            chunks: tail.chunks,
+        },
+        stat: opened,
     })
 }
 
@@ -1407,6 +1424,7 @@ mod tests {
             retries: 0,
             append_from: None,
             digest: digest.map(Arc::new),
+            hash_stat: None,
             bases: HashMap::new(),
             bases_held: 0,
             requested: HashSet::new(),

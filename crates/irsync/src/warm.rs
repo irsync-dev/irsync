@@ -163,7 +163,7 @@ pub async fn index_root(
             match res {
                 Ok(d) => {
                     r.hashed += 1;
-                    r.bytes += d.size;
+                    r.bytes += d.digest.size;
                 }
                 Err(e) => r.errors.push((item.path.clone(), e.to_string())),
             }

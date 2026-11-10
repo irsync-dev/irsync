@@ -458,6 +458,7 @@ pub struct DaemonHooks {
     pub lists_ahead_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub cut_listing_after: Option<usize>,
     pub inject_listing: Option<ListingHook>,
+    pub during_hash: Option<crate::hasher::HashHook>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -749,6 +750,10 @@ pub struct SideHooks {
     /// before the old file is looked at (a test changes it meanwhile).
     #[cfg(feature = "test-hooks")]
     pub before_open: Option<PathHook>,
+    /// This side's hashers tell it about every pass that reads a file (see
+    /// [`crate::hasher::HashHook`]; a test changes the file mid-pass).
+    #[cfg(feature = "test-hooks")]
+    pub during_hash: Option<crate::hasher::HashHook>,
 }
 
 /// Test hook: a connection drop after a number of frames of one kind

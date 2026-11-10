@@ -54,6 +54,9 @@ pub struct Hasher {
     progress: Option<HashProgress>,
     /// Times and counts the files actually read.
     meter: Option<Arc<Meter>>,
+    /// Told the bytes read so far during each read of a file (a test
+    /// changes the file mid-pass).
+    hash_hook: Option<HashHook>,
 }
 
 /// What a hasher reports about a file it reads.
@@ -67,15 +70,23 @@ pub enum HashEvent {
 /// A callback told when a file is read for its digest.
 pub type HashProgress = Arc<dyn Fn(&RelPath, HashEvent) + Send + Sync>;
 
+/// Told about each pass that reads a file for its digest: once with `0`
+/// before the file is opened, then after each read with the total bytes
+/// read so far. A call with `0` marks the start of a pass.
+pub type HashHook = Arc<dyn Fn(&RelPath, u64) + Send + Sync>;
+
 /// While hashing, bump the activity marker after this many bytes read.
 pub const TICK_BYTES: u64 = 64 << 20;
 
 /// A reader that bumps an activity marker every [`TICK_BYTES`] read (a single
-/// file can take many minutes to hash).
+/// file can take many minutes to hash), and tells a [`HashHook`] after each
+/// read if it has one.
 pub struct Ticking<'a, R> {
     inner: R,
     activity: &'a AtomicU64,
     since: u64,
+    read: u64,
+    hook: Option<(&'a HashHook, &'a RelPath)>,
 }
 
 impl<'a, R> Ticking<'a, R> {
@@ -84,7 +95,15 @@ impl<'a, R> Ticking<'a, R> {
             inner,
             activity,
             since: 0,
+            read: 0,
+            hook: None,
         }
+    }
+
+    /// Tells `hook`, if any, the bytes read so far of `path` after each read.
+    pub fn with_hook(mut self, hook: Option<&'a HashHook>, path: &'a RelPath) -> Self {
+        self.hook = hook.map(|h| (h, path));
+        self
     }
 }
 
@@ -92,9 +111,13 @@ impl<R: io::Read> io::Read for Ticking<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buf)?;
         self.since += n as u64;
+        self.read += n as u64;
         if self.since >= TICK_BYTES {
             self.since = 0;
             self.activity.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some((hook, path)) = self.hook {
+            hook(path, self.read);
         }
         Ok(n)
     }
@@ -115,13 +138,48 @@ pub struct Freshness {
 
 impl Freshness {
     pub fn of(item: &ScanItem) -> Freshness {
-        let e = &item.entry;
+        Freshness::of_entry(&item.entry, item.ctime)
+    }
+
+    /// The freshness of a stat taken as `entry` and its change time.
+    pub fn of_entry(e: &FileEntry, ctime: (i64, u32)) -> Freshness {
         Freshness {
             size: e.size,
             mtime: (e.mtime_sec, e.mtime_nsec),
-            ctime: item.ctime,
+            ctime,
             inode: e.inode,
         }
+    }
+}
+
+/// A file's digest, with the stat of the file it was taken under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hashed {
+    pub digest: FileDigest,
+    /// The stat at open (the same after the read, or the read fails); on a
+    /// cache hit, the one that matched the index row.
+    pub stat: Freshness,
+}
+
+/// The error of a file that changed while it was read for its digest.
+pub fn changed_while_hashed(path: &RelPath) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{}: changed while it was hashed",
+            crate::fs::paths::escape_path(path.as_bytes())
+        ),
+    )
+}
+
+/// Fails with [`changed_while_hashed`] unless the open `file` still has
+/// the stat `opened` it had before it was read.
+pub fn check_unchanged(file: &std::fs::File, path: &RelPath, opened: Freshness) -> io::Result<()> {
+    let (entry, ctime) = crate::fs::meta::fstat_entry_with_ctime(file, path)?;
+    if Freshness::of_entry(&entry, ctime) == opened {
+        Ok(())
+    } else {
+        Err(changed_while_hashed(path))
     }
 }
 
@@ -153,7 +211,14 @@ impl Hasher {
             activity: Arc::default(),
             progress: None,
             meter: None,
+            hash_hook: None,
         }
+    }
+
+    /// Tell `hook` about every pass that reads a file (see [`HashHook`]).
+    pub fn with_hash_hook(mut self, hook: HashHook) -> Self {
+        self.hash_hook = Some(hook);
+        self
     }
 
     /// Report every file actually read (not a cache hit) to `p`.
@@ -208,8 +273,10 @@ impl Hasher {
     }
 
     /// Digest of a regular file: from the index when the quick check passes,
-    /// otherwise read, chunked, and stored in the index.
-    pub async fn digest(&self, item: &ScanItem) -> io::Result<FileDigest> {
+    /// otherwise read, chunked, and stored in the index. A file that
+    /// changes while it is read fails with [`changed_while_hashed`] and
+    /// stores nothing.
+    pub async fn digest(&self, item: &ScanItem) -> io::Result<Hashed> {
         if item.entry.kind() != Kind::Regular {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -226,8 +293,9 @@ impl Hasher {
     /// costs no stat. On a miss the file is read and its row describes the
     /// open file as it is now. A file changed since the walk may get a
     /// digest of what the walk saw; the send checks what it reads against
-    /// the digest, and the receiver the whole file, so that never lands.
-    pub async fn digest_walked(&self, path: RelPath, walked: Freshness) -> io::Result<FileDigest> {
+    /// the digest, and the receiver the whole file. The returned stat is
+    /// the one the digest was taken under, not the walk's.
+    pub async fn digest_walked(&self, path: RelPath, walked: Freshness) -> io::Result<Hashed> {
         self.digest_as(path, walked, None).await
     }
 
@@ -238,7 +306,7 @@ impl Hasher {
         path: RelPath,
         want: Freshness,
         stat: Option<(FileEntry, (i64, u32))>,
-    ) -> io::Result<FileDigest> {
+    ) -> io::Result<Hashed> {
         let queued = self
             .meter
             .as_deref()
@@ -272,22 +340,27 @@ impl Hasher {
         let activity = self.activity.clone();
         let progress = self.progress.clone();
         let meter = self.meter.clone();
+        let hook = self.hash_hook.clone();
         let res = tokio::task::spawn_blocking(move || {
             let _permit = (permit, large);
             if !force {
-                if let Some(d) = lookup(&index, &path, want)? {
-                    return Ok(d);
+                if let Some(digest) = lookup(&index, &path, want)? {
+                    return Ok(Hashed { digest, stat: want });
                 }
+            }
+            if let Some(h) = &hook {
+                h(&path, 0);
             }
             // Never follow a symlink swapped in since the walk lstat'ed it.
             let (file, st) = crate::fs::safe::open_regular_nofollow_stat(&full)?;
-            let (mut entry, ctime) =
-                stat.unwrap_or_else(|| crate::fs::meta::stat_entry_with_ctime(st, &path));
+            let at_open = crate::fs::meta::stat_entry_with_ctime(st, &path);
+            let opened = Freshness::of_entry(&at_open.0, at_open.1);
+            let (mut entry, ctime) = stat.unwrap_or(at_open);
             if let Some(p) = &progress {
                 p(&path, HashEvent::Start { size: entry.size });
             }
             let guard = meter.as_deref().map(|m| m.start(Activity::Hash));
-            let d = digest_reader(Ticking::new(file, &activity));
+            let d = digest_reader(Ticking::new(&file, &activity).with_hook(hook.as_ref(), &path));
             drop(guard);
             if let Some(p) = &progress {
                 p(&path, HashEvent::Done);
@@ -299,6 +372,9 @@ impl Hasher {
                 m.add(Counter::FilesHashed, 1);
                 m.add(Counter::BytesHashed, d.size);
             }
+            // A write during the pass may have given a digest of a state
+            // the file never had: report it, and store no row.
+            check_unchanged(&file, &path, opened)?;
             entry.whole_hash = Some(Hash {
                 bytes: d.hash.to_vec(),
             });
@@ -308,11 +384,46 @@ impl Hasher {
                 ctime,
                 digest: Some(d.clone()),
             });
-            Ok(d)
+            Ok(Hashed {
+                digest: d,
+                stat: opened,
+            })
         })
         .await
         .map_err(io::Error::other)?;
         self.activity.fetch_add(1, Ordering::Relaxed);
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn digest_reports_the_stat_it_hashed_under() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let index = crate::index::Index::open(state.path(), root.path())
+            .unwrap()
+            .into_handle();
+        let h = Hasher::new(index, root.path().to_path_buf(), 1);
+        std::fs::write(root.path().join("f"), b"some content").unwrap();
+        let path = RelPath::new(b"f").unwrap();
+        let (entry, ctime) = crate::fs::meta::lstat_entry_with_ctime(root.path(), &path).unwrap();
+        let item = ScanItem {
+            path: path.clone(),
+            entry,
+            ctime,
+        };
+        let fresh = Freshness::of(&item);
+
+        let read = h.digest_walked(path.clone(), fresh).await.unwrap();
+        assert_eq!(read.stat, fresh);
+        h.flush();
+        let cached = h.digest_walked(path, fresh).await.unwrap();
+        assert_eq!(cached.stat, fresh);
+        assert_eq!(cached.digest, read.digest);
+        assert_eq!(h.stats().files_hashed.load(Ordering::Relaxed), 1);
     }
 }

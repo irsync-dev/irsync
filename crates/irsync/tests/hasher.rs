@@ -83,7 +83,7 @@ async fn changed_content_same_mtime_rehashed() {
     );
     let d2 = h.digest(&after).await.unwrap();
     assert_eq!(h.stats().files_hashed.load(Relaxed), 2);
-    assert_ne!(d1.hash, d2.hash);
+    assert_ne!(d1.digest.hash, d2.digest.hash);
 }
 
 #[tokio::test]
@@ -105,7 +105,7 @@ async fn cached_returns_none_before_first_digest() {
     assert!(h.cached(&it).unwrap().is_none());
     let d = h.digest(&it).await.unwrap();
     h.flush();
-    assert_eq!(h.cached(&it).unwrap(), Some(d));
+    assert_eq!(h.cached(&it).unwrap(), Some(d.digest));
     assert_eq!(h.stats().files_hashed.load(Relaxed), 1);
 }
 
@@ -131,7 +131,7 @@ async fn a_forced_hasher_reports_no_cached_digest() {
     let it = item(root.path(), b"f");
     let d = h.digest(&it).await.unwrap();
     h.flush();
-    assert_eq!(h.cached(&it).unwrap(), Some(d));
+    assert_eq!(h.cached(&it).unwrap(), Some(d.digest));
     // `-c`: a fresh row is not evidence; the file has to be read.
     let forced = h.with_force(true);
     assert!(forced.cached(&it).unwrap().is_none());
