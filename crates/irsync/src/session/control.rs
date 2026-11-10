@@ -924,6 +924,8 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Itemized(_) => "Itemized",
         Msg::Heartbeat(_) => "Heartbeat",
         Msg::ListRoom(_) => "ListRoom",
+        Msg::MayPlace(_) => "MayPlace",
+        Msg::PlaceVerdict(_) => "PlaceVerdict",
     }
 }
 

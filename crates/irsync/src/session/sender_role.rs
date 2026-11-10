@@ -1,8 +1,10 @@
 //! The sender role: walks and streams its listing, then answers the
 //! receiver: `PlanItem` → digest (lookahead) → chunk list in parts; `NeedChunks` →
-//! data streams. A file counts as done only at `FileAck DONE`. A file that
-//! changed while being sent, or whose whole-file hash did not match at the
-//! receiver, is re-stat'ed, re-digested and offered once more.
+//! data streams; `MayPlace` → `PlaceVerdict`, whether the source is still
+//! as it was hashed. A file counts as done only at `FileAck DONE`. A file
+//! that changed while being hashed or sent, or after it was hashed, or
+//! whose whole-file hash did not match at the receiver, is re-stat'ed,
+//! re-digested and offered once more.
 //!
 //! Per-file state lives only while a file is in flight: it is dropped at its
 //! final ack or when the sender gives up on it.
@@ -17,8 +19,8 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck,
-    NeedChunks, PlanEntry, PlanItem, SessionDone,
+    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck, MayPlace,
+    NeedChunks, PlaceVerdict, PlanEntry, PlanItem, SessionDone,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -35,7 +37,7 @@ use super::parts::{records_at_most, split, ListCredit, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
-use crate::filter::{FilterSet, Verdict};
+use crate::filter::{FilterSet, Verdict as FilterVerdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
@@ -113,6 +115,20 @@ impl SendTasks {
     }
 }
 
+/// The answer to a receiver's `MayPlace` (see [`SenderRole::verdict`]).
+enum Verdict {
+    /// The source is as it was hashed: the receiver may place the file.
+    Place,
+    /// The source changed since (why): the receiver drops the file, and
+    /// it is retried.
+    Changed(String),
+    /// The answer needs work off the main loop; it is sent once done.
+    // Constructed once the second hash (`--paranoid`) answers off the main
+    // loop (Task 4 of the source change detection plan).
+    #[allow(dead_code)]
+    Later,
+}
+
 /// A file's chunks requested while its send task runs (see `SFile::pending`).
 #[derive(Default)]
 struct Pending {
@@ -135,6 +151,9 @@ struct SFile {
     digest: Option<Arc<FileDigest>>,
     /// The stat of the source file `digest` was taken under.
     hash_stat: Option<Freshness>,
+    /// The receiver was told it may place the file (`PlaceVerdict`): it
+    /// has verified every chunk, and only its ack is left.
+    placing: bool,
     /// Bases the receiver offered for chunks it is about to request, by
     /// chunk index, with their size against the basis budget; each is used
     /// for one request and dropped.
@@ -204,10 +223,6 @@ struct SenderRole {
     list_budget: u64,
     /// Every file id ever planned (duplicate detection).
     seen: HashSet<u64>,
-    /// Files given up with `SOURCE_ERROR`, by id, with their path. If
-    /// the receiver still places one (it had every chunk verified when our
-    /// give-up arrived), its DONE withdraws the error.
-    abandoned: HashMap<u64, RelPath>,
     files_done: u64,
     bytes: u64,
     /// Send tasks not yet reported back, one per file in flight at most.
@@ -413,7 +428,6 @@ impl SenderRole {
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.errors.push((f.path.clone(), msg.clone()));
-        self.abandoned.insert(file_id, f.path);
         self.out.send(Msg::Ack(FileAck {
             file_id,
             status: Status::SourceError as i32,
@@ -437,6 +451,7 @@ impl SenderRole {
         f.gen += 1;
         let listed = f.digest.take().is_some();
         f.hash_stat = None;
+        f.placing = false;
         drop_bases(&mut self.basis_held, f);
         f.requested.clear();
         f.streams = 0;
@@ -525,6 +540,7 @@ impl SenderRole {
                 append_from,
                 digest: None,
                 hash_stat: None,
+                placing: false,
                 bases: HashMap::new(),
                 bases_held: 0,
                 requested: HashSet::new(),
@@ -860,7 +876,14 @@ impl SenderRole {
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            Err(e) if self.files.get(&file_id).is_some_and(|f| f.gen == gen) => {
+            // Once the receiver may place the file it has every chunk
+            // verified: a late duplicate send's error changes nothing.
+            Err(e)
+                if self
+                    .files
+                    .get(&file_id)
+                    .is_some_and(|f| f.gen == gen && !f.placing) =>
+            {
                 if e.kind() == io::ErrorKind::InvalidData {
                     // The file changed under us; never send stale data.
                     self.retry(file_id, e.to_string());
@@ -876,22 +899,80 @@ impl SenderRole {
         }
     }
 
+    /// The receiver has verified the file and asks whether to place it.
+    fn on_may_place(&mut self, m: MayPlace) -> anyhow::Result<()> {
+        let file_id = m.file_id;
+        if !self.seen.contains(&file_id) {
+            bail!("protocol error: MayPlace for file id {file_id}, which was never planned");
+        }
+        #[cfg(feature = "test-hooks")]
+        if let Some(h) = &self.ctx.hooks.drop_before_verdict {
+            if h.queued() {
+                tracing::warn!("fault injection: dropping the connection before a verdict");
+                self.ctx.conn.close(99u32.into(), b"fault");
+                return Ok(());
+            }
+        }
+        let answer = |changed| Msg::PlaceVerdict(PlaceVerdict { file_id, changed });
+        match self.files.get(&file_id) {
+            // Given up: our SOURCE_ERROR is on its way, or there already.
+            None => {
+                self.out.send(answer(true));
+                return Ok(());
+            }
+            // Re-digesting (a retry under way): its new list follows.
+            Some(f) if f.hash_stat.is_none() => {
+                self.out.send(answer(true));
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+        match self.verdict(file_id) {
+            Verdict::Place => {
+                if let Some(f) = self.files.get_mut(&file_id) {
+                    f.placing = true;
+                }
+                self.out.send(answer(false));
+            }
+            Verdict::Changed(why) => {
+                // The verdict first: the receiver drops what it verified,
+                // then takes the new list (or our give-up).
+                self.out.send(answer(true));
+                self.retry(file_id, why);
+            }
+            Verdict::Later => {}
+        }
+        Ok(())
+    }
+
+    /// Whether the receiver may place the file (which is in flight, with a
+    /// hash stat): its source must still be as it was hashed. Stats the
+    /// source again and compares it with the hash stat.
+    fn verdict(&mut self, file_id: u64) -> Verdict {
+        let Some(f) = self.files.get(&file_id) else {
+            return Verdict::Changed("given up".into());
+        };
+        let Some(hashed) = f.hash_stat else {
+            return Verdict::Changed("not hashed".into());
+        };
+        let changed = || Verdict::Changed("changed after it was hashed".into());
+        match lstat_entry_with_ctime(&self.ctx.base, &self.ctx.key(&f.path)) {
+            Ok((entry, ctime)) if Freshness::of_entry(&entry, ctime) == hashed => Verdict::Place,
+            Ok(_) => changed(),
+            Err(e) => {
+                tracing::debug!(path = ?f.path, error = %e, "source not found before placing");
+                changed()
+            }
+        }
+    }
+
     fn on_ack(&mut self, a: FileAck) {
         let file_id = a.file_id;
         let status = Status::try_from(a.status);
         if !self.files.contains_key(&file_id) {
-            // Withdraw our give-up if the receiver placed the file anyway.
-            if status == Ok(Status::Done) {
-                if let Some(path) = self.abandoned.remove(&file_id) {
-                    self.ctx.meter.add(Counter::BytesMatched, a.matched);
-                    tracing::info!(?path, "placed by the receiver after all");
-                    if let Some(i) = self.errors.iter().rposition(|(p, _)| *p == path) {
-                        self.errors.remove(i);
-                    }
-                    self.files_done += 1;
-                    self.persist.done(file_id);
-                }
-            }
+            // Late: a file given up is never placed (the receiver places
+            // only on our verdict), so this ack changes nothing.
+            tracing::debug!(file_id, "FileAck for a file no longer in flight");
             return;
         }
         match status {
@@ -1039,7 +1120,7 @@ fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
             return false;
         };
         let kind_ok = if last { md.is_file() } else { md.is_dir() };
-        if !kind_ok || filters.matches(&r, !last) == Verdict::Exclude {
+        if !kind_ok || filters.matches(&r, !last) == FilterVerdict::Exclude {
             return false;
         }
     }
@@ -1120,7 +1201,6 @@ pub(super) async fn run(
         lists: ListCredit::new(list_budget(&ctx.hooks)),
         list_budget: list_budget(&ctx.hooks),
         seen: HashSet::new(),
-        abandoned: HashMap::new(),
         files_done: 0,
         bytes: 0,
         transferred_size: 0,
@@ -1189,6 +1269,7 @@ pub(super) async fn run(
                 Ok(())
             }
             Ev::Ctrl(Msg::ChunkBasis(b)) => s.on_basis(b),
+            Ev::Ctrl(Msg::MayPlace(m)) => s.on_may_place(m),
             Ev::Ctrl(Msg::Need(n)) => {
                 s.on_need(n);
                 Ok(())
@@ -1398,7 +1479,6 @@ mod tests {
             lists: ListCredit::new(1000),
             list_budget: 1000,
             seen: HashSet::new(),
-            abandoned: HashMap::new(),
             files_done: 0,
             bytes: 0,
             transferred_size: 0,
@@ -1425,6 +1505,7 @@ mod tests {
             append_from: None,
             digest: digest.map(Arc::new),
             hash_stat: None,
+            placing: false,
             bases: HashMap::new(),
             bases_held: 0,
             requested: HashSet::new(),

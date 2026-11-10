@@ -596,6 +596,11 @@ impl Inner {
         drop(acking);
         match stopped {
             Ok(None) => Ok(()),
+            // Code 0: the receiver is not receiving the file now (it has
+            // every chunk and is placing it, or it dropped the file). It
+            // asks again for anything it still lacks, so this is no error;
+            // a give-up here would fail a file the receiver is placing.
+            Ok(Some(code)) if code.into_inner() == 0 => Ok(()),
             Ok(Some(code)) => Err(io::Error::other(format!(
                 "{name}: peer stopped stream with code {code}"
             ))),

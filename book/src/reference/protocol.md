@@ -16,7 +16,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `2`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `3`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A 4-byte big-endian length, then that many bytes of one protobuf message |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -142,6 +142,8 @@ export.
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
+| `MayPlace` | receiver to sender | The file is verified; may it be placed? |
+| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for `SOURCE_ERROR`. |
 | `FileAck` | either | From the receiver: `DONE`, `HASH_MISMATCH`, `WRITE_ERROR`. From the sender: `SOURCE_ERROR`, it cannot read the file. `DONE` carries the bytes the receiver did not take from the sender. |
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |
@@ -150,7 +152,7 @@ export.
 
 Every message on the control stream is a `Control` frame with exactly one of
 these set. A file costs a `PlanItem`, at least one `ChunkListPart`, a
-`NeedChunks` and a `FileAck`; the room its list took comes back in a
+`NeedChunks`, a `MayPlace`, a `PlaceVerdict` and a `FileAck`; the room its list took comes back in a
 `ListRoom`, which may cover several files.
 
 ### Chunk lists

@@ -66,8 +66,8 @@ fn hello_roundtrips() {
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
         control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListPart, ChunkRecord,
-        Control, Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, NeedChunks, PlanItem,
-        SessionDone,
+        Control, Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, MayPlace, NeedChunks,
+        PlaceVerdict, PlanItem, SessionDone,
     };
     use prost::Message;
     let h = |b: u8| Hash { bytes: vec![b; 32] };
@@ -151,6 +151,11 @@ fn control_oneof_roundtrips() {
         Msg::Error(Error {
             code: 7,
             message: "boom".into(),
+        }),
+        Msg::MayPlace(MayPlace { file_id: 1 << 40 }),
+        Msg::PlaceVerdict(PlaceVerdict {
+            file_id: 9,
+            changed: true,
         }),
     ];
     for m in msgs {

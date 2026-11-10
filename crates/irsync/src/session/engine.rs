@@ -1169,6 +1169,7 @@ async fn serve_daemon_inner(
                 h.cut_listing_after = p.cut_listing_after;
                 h.inject_listing = p.inject_listing;
                 h.during_hash = p.during_hash;
+                h.on_first_chunk_sent = p.on_first_chunk_sent;
             }
             h
         },

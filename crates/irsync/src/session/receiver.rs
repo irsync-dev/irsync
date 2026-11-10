@@ -3,7 +3,9 @@
 //! symlinks, specials and metadata are applied locally; regular files are
 //! requested with `PlanItem`, opened as verified `.part` writers when their
 //! chunk list arrives, filled from local copies and data streams, and
-//! acknowledged only after `finalize` has verified and renamed them.
+//! verified; then the sender is asked whether the source is unchanged
+//! (`MayPlace`), and only on its `PlaceVerdict` saying so is the file
+//! renamed into place and acknowledged.
 //!
 //! Deletions (`--delete*`) run here too: before the transfers (asked for by
 //! the planner once both listings have ended) or after them, before the
@@ -20,7 +22,8 @@ use std::time::Duration;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, FileAck, FileEntry, Itemized,
-    ListRoom, ListingEnd, NeedChunks, PathError, PlanEntry, PlanItem, SessionDone,
+    ListRoom, ListingEnd, MayPlace, NeedChunks, PathError, PlaceVerdict, PlanEntry, PlanItem,
+    SessionDone,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -40,8 +43,8 @@ use super::planner::{
     inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
 };
 use super::recv_io::{
-    accept_streams, copy_local_chunks, finalize, offer_bases, open_writer, sender_idx,
-    settle_identical, Fill, Opened, Route, Routes,
+    accept_streams, commit, copy_local_chunks, offer_bases, open_writer, sender_idx,
+    settle_identical, verify, Fill, Opened, Route, Routes,
 };
 use super::Outcome;
 use crate::cli::DeleteMode;
@@ -49,7 +52,7 @@ use crate::delete::DeletePass;
 use crate::filter::FilterSet;
 use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
-use crate::recv::{FileWriter, FinalizeError};
+use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
 use recv_delete::capped_paths;
@@ -102,6 +105,15 @@ pub(super) enum Done {
         gen: u32,
         writer: Box<FileWriter>,
     },
+    /// The file's `.part` is verified (or failed to be).
+    Verified {
+        file_id: u64,
+        gen: u32,
+        /// Bytes the file's writer took from the sender.
+        received: u64,
+        result: Result<Box<Verified>, FinalizeError>,
+    },
+    /// The file is placed (or settled in place), or failed to be.
     Finalized {
         file_id: u64,
         gen: u32,
@@ -130,7 +142,20 @@ enum St {
     Requested,
     Opening,
     Receiving,
+    /// Verifying the `.part`, or (after the sender's verdict) placing it.
     Finalizing,
+    /// Verified (or found identical); `MayPlace` sent, waiting for the
+    /// sender's `PlaceVerdict`.
+    Confirming,
+}
+
+/// What a file in [`St::Confirming`] holds until the sender's verdict.
+enum Held {
+    /// The verified `.part`, with the bytes its writer took from the sender.
+    Writer(Box<Verified>, u64),
+    /// The destination already holds the content: settled in place on
+    /// the verdict.
+    Identical(std::fs::File),
 }
 
 struct RFile {
@@ -160,8 +185,8 @@ struct RFile {
     pending: Option<Arc<FileDigest>>,
     /// A chunk list arriving in parts, until its last part.
     assembly: Option<Assembly>,
-    /// The sender gave up on this file while we were finalizing it.
-    abandoned: Option<String>,
+    /// In [`St::Confirming`]: what to place on the sender's verdict.
+    held: Option<Held>,
     /// The current chunk list as native records (set once opened).
     digest: Option<Arc<FileDigest>>,
     /// The planner's in-flight slot (none for a resumed plan), released
@@ -351,7 +376,7 @@ impl Receiver {
                 started: super::wait_start(&self.ctx.meter),
                 pending: None,
                 assembly: None,
-                abandoned: None,
+                held: None,
                 digest: None,
                 _slot: slot,
                 span,
@@ -554,7 +579,7 @@ impl Receiver {
         };
         f.assembly = None;
         match f.st {
-            St::Opening | St::Finalizing => {
+            St::Opening | St::Finalizing | St::Confirming => {
                 f.pending = Some(digest);
                 return;
             }
@@ -584,7 +609,30 @@ impl Receiver {
         });
     }
 
-    fn spawn_finalize(&self, file_id: u64, gen: u32, w: FileWriter, digest: Arc<FileDigest>) {
+    /// Verifies the file's `.part`; `on_verified` asks the sender next.
+    fn spawn_verify(&self, file_id: u64, gen: u32, w: FileWriter) {
+        let f = &self.files[&file_id];
+        let (ctx, events, path) = (self.ctx.clone(), self.events.clone(), f.path.clone());
+        let place = tracing::debug_span!(parent: &f.span, "place");
+        let received = w.received();
+        self.tasks.spawn(
+            async move {
+                let result = verify(ctx, w, path).await.map(Box::new);
+                let _ = events.send(Ev::Recv(Done::Verified {
+                    file_id,
+                    gen,
+                    received,
+                    result,
+                }));
+            }
+            .instrument(place),
+        );
+    }
+
+    /// Places what the file holds, now that the sender said its source is
+    /// unchanged: renames the verified `.part`, or settles an identical
+    /// destination in place.
+    fn spawn_commit(&self, file_id: u64, gen: u32, held: Held, digest: Arc<FileDigest>) {
         let f = &self.files[&file_id];
         let (ctx, events, path, entry) = (
             self.ctx.clone(),
@@ -593,10 +641,16 @@ impl Receiver {
             f.entry.clone(),
         );
         let place = tracing::debug_span!(parent: &f.span, "place");
-        let received = w.received();
         self.tasks.spawn(
             async move {
-                let result = finalize(ctx, w, path, entry, digest).await;
+                let (received, result) = match held {
+                    Held::Writer(v, received) => {
+                        (received, commit(ctx, *v, path, entry, digest).await)
+                    }
+                    Held::Identical(file) => {
+                        (0, settle_identical(ctx, file, path, entry, digest).await)
+                    }
+                };
                 let _ = events.send(Ev::Recv(Done::Finalized {
                     file_id,
                     gen,
@@ -683,19 +737,18 @@ impl Receiver {
                 }
                 f.st = St::Finalizing;
                 f.recv = None;
-                let digest = f.digest.clone();
                 self.routes
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&file_id);
-                match digest {
-                    Some(d) => self.spawn_finalize(file_id, gen, *writer, d),
-                    None => {
-                        let msg = "internal: no digest for a ready file".to_string();
-                        self.fail(file_id, Some(Status::WriteError), msg).await;
-                    }
-                }
+                self.spawn_verify(file_id, gen, *writer);
             }
+            Done::Verified {
+                file_id,
+                gen,
+                received,
+                result,
+            } => self.on_verified(file_id, gen, received, result).await,
             Done::Finalized {
                 file_id,
                 gen,
@@ -744,9 +797,8 @@ impl Receiver {
         };
         let fill = match o {
             Opened::Identical { file, digest } => {
-                f.digest = Some(digest.clone());
+                f.digest = Some(digest);
                 f.identical = true;
-                f.st = St::Finalizing;
                 self.ctx
                     .hooks
                     .bus
@@ -759,26 +811,13 @@ impl Receiver {
                 if let Some(code) = f.deferred.itemize.take().and_then(|i| i.meta) {
                     emit_itemized(&self.ctx, &self.out, &f.path, code);
                 }
-                // The sender has nothing to deliver; it waits for the ack.
+                // The sender has nothing to deliver; settled in place once
+                // it says the source is unchanged.
                 self.out.send(Msg::Need(NeedChunks {
                     file_id,
                     chunk_idx: Vec::new(),
                 }));
-                let (ctx, events, path, entry) = (
-                    self.ctx.clone(),
-                    self.events.clone(),
-                    f.path.clone(),
-                    f.entry.clone(),
-                );
-                self.tasks.spawn(async move {
-                    let result = settle_identical(ctx, file, path, entry, digest).await;
-                    let _ = events.send(Ev::Recv(Done::Finalized {
-                        file_id,
-                        gen,
-                        received: 0,
-                        result,
-                    }));
-                });
+                self.confirm(file_id, Held::Identical(file));
                 return;
             }
             Opened::Writer(fill) => *fill,
@@ -824,7 +863,7 @@ impl Receiver {
                 file_id,
                 chunk_idx: Vec::new(),
             }));
-            self.spawn_finalize(file_id, gen, writer, digest);
+            self.spawn_verify(file_id, gen, writer);
             return;
         }
         f.st = St::Receiving;
@@ -895,61 +934,57 @@ impl Receiver {
         }
     }
 
-    async fn on_finalized(
+    /// Holds what is to be placed and asks the sender whether its source
+    /// is unchanged; [`Receiver::on_verdict`] goes on.
+    fn confirm(&mut self, file_id: u64, held: Held) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
+        f.st = St::Confirming;
+        f.held = Some(held);
+        self.ctx.hooks.event("mayplace", &f.path);
+        self.out.send(Msg::MayPlace(MayPlace { file_id }));
+    }
+
+    /// Drops what a file held for placing (its source changed, or a newer
+    /// chunk list replaces it) and goes on with the newer list, if one came.
+    async fn drop_held(&mut self, file_id: u64, held: Option<Held>) {
+        if let Some(Held::Writer(v, received)) = held {
+            v.discard().await;
+            if let Some(f) = self.files.get_mut(&file_id) {
+                f.received_before += received;
+            }
+        }
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
+        f.st = St::Requested;
+        if let Some(cl) = f.pending.take() {
+            self.on_chunk_list(file_id, cl).await;
+        }
+    }
+
+    async fn on_verified(
         &mut self,
         file_id: u64,
         gen: u32,
         received: u64,
-        result: Result<(), FinalizeError>,
+        result: Result<Box<Verified>, FinalizeError>,
     ) {
-        // (`identical` files arrive here from `settle_identical`.)
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
         if f.gen != gen || f.st != St::Finalizing {
             return;
         }
-        let abandoned = f.abandoned.take();
         match result {
-            Ok(()) => {
-                let (path, size) = (f.path.clone(), f.entry.size);
-                // Settled in place is a metadata-only update, not a transfer.
-                if !f.identical {
-                    super::record_file(&self.ctx.meter, f.started, size);
-                    self.transferred_size += size;
-                    self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
-                    self.files_done += 1;
-                }
-                // What this session did not take from the sender: local
-                // copies, earlier sessions' progress, or all of a file
-                // settled in place. Bytes an earlier writer of this session
-                // received were taken from the sender all the same.
-                let matched = size.saturating_sub(f.received_before + received);
-                self.ctx.meter.add(Counter::BytesMatched, matched);
-                // Placed: acknowledged DONE even if the sender gave up meanwhile
-                // (it withdraws its error on this ack). The ack is queued
-                // before the file (and with it the planner's slot) is
-                // dropped: the planner's next `Plan` then follows the ack,
-                // and the sender never sees more files in flight than the
-                // window.
-                let placed = self.files.remove(&file_id);
-                self.active -= 1;
-                self.release_list(file_id);
-                self.persist.done(file_id);
-                self.ctx.progress.store(true, Ordering::Relaxed);
-                self.out.send(Msg::Ack(FileAck {
-                    file_id,
-                    status: Status::Done as i32,
-                    message: String::new(),
-                    matched,
-                }));
-                drop(placed);
+            // The sender has started a newer list meanwhile (it retried
+            // the file): this one is stale, not worth asking about.
+            Ok(v) if f.pending.is_some() || f.assembly.is_some() => {
+                self.drop_held(file_id, Some(Held::Writer(v, received)))
+                    .await;
             }
-            Err(e) if abandoned.is_some() => {
-                f.st = St::Requested;
-                let msg = format!("sender gave up: {}; {e}", abandoned.unwrap_or_default());
-                self.fail(file_id, None, msg).await;
-            }
+            Ok(v) => self.confirm(file_id, Held::Writer(v, received)),
             Err(FinalizeError::HashMismatch { .. }) => {
                 f.mismatches += 1;
                 f.received_before += received;
@@ -977,21 +1012,105 @@ impl Receiver {
         }
     }
 
-    async fn on_source_error(&mut self, file_id: u64, msg: String) {
+    /// The sender's answer to `MayPlace`: place the file, or (its source
+    /// changed) drop it and wait for the new chunk list the sender sends,
+    /// or for its give-up. Not a whole-file mismatch: it is not counted
+    /// as one.
+    async fn on_verdict(&mut self, v: PlaceVerdict) {
+        let file_id = v.file_id;
+        let Some(f) = self.files.get_mut(&file_id) else {
+            tracing::debug!(file_id, "place verdict for a file not in flight");
+            return;
+        };
+        if f.st != St::Confirming {
+            tracing::debug!(file_id, "place verdict for a file not waiting for one");
+            return;
+        }
+        let held = f.held.take();
+        // A newer list started before the verdict (the sender sent it
+        // first): what we hold is stale, whatever the verdict says.
+        if v.changed || f.pending.is_some() || f.assembly.is_some() {
+            tracing::info!(path = ?f.path, "the source changed; not placing it");
+            self.drop_held(file_id, held).await;
+            return;
+        }
+        let (Some(held), Some(digest)) = (held, f.digest.clone()) else {
+            let msg = "internal: nothing held to place".to_string();
+            self.fail(file_id, Some(Status::WriteError), msg).await;
+            return;
+        };
+        f.st = St::Finalizing;
+        let gen = f.gen;
+        self.spawn_commit(file_id, gen, held, digest);
+    }
+
+    async fn on_finalized(
+        &mut self,
+        file_id: u64,
+        gen: u32,
+        received: u64,
+        result: Result<(), FinalizeError>,
+    ) {
+        // (`identical` files arrive here from `settle_identical`.)
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
-        match f.st {
-            // Finalize decides: a verified file is still placed.
-            St::Finalizing => f.abandoned = Some(msg),
-            _ => self.fail(file_id, None, format!("sender: {msg}")).await,
+        if f.gen != gen || f.st != St::Finalizing {
+            return;
         }
+        match result {
+            Ok(()) => {
+                let (path, size) = (f.path.clone(), f.entry.size);
+                // Settled in place is a metadata-only update, not a transfer.
+                if !f.identical {
+                    super::record_file(&self.ctx.meter, f.started, size);
+                    self.transferred_size += size;
+                    self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
+                    self.files_done += 1;
+                }
+                // What this session did not take from the sender: local
+                // copies, earlier sessions' progress, or all of a file
+                // settled in place. Bytes an earlier writer of this session
+                // received were taken from the sender all the same.
+                let matched = size.saturating_sub(f.received_before + received);
+                self.ctx.meter.add(Counter::BytesMatched, matched);
+                // Placed (the sender said its source was unchanged, so it
+                // has not given up on it). The ack is queued before the
+                // file (and with it the planner's slot) is dropped: the
+                // planner's next `Plan` then follows the ack, and the
+                // sender never sees more files in flight than the window.
+                let placed = self.files.remove(&file_id);
+                self.active -= 1;
+                self.release_list(file_id);
+                self.persist.done(file_id);
+                self.ctx.progress.store(true, Ordering::Relaxed);
+                self.out.send(Msg::Ack(FileAck {
+                    file_id,
+                    status: Status::Done as i32,
+                    message: String::new(),
+                    matched,
+                }));
+                drop(placed);
+            }
+            Err(e) => {
+                f.st = St::Requested;
+                self.fail(file_id, Some(Status::WriteError), e.to_string())
+                    .await;
+            }
+        }
+    }
+
+    /// The sender gave up on the file. Nothing of it is placed: a file is
+    /// placed only on the sender's word that its source is unchanged.
+    async fn on_source_error(&mut self, file_id: u64, msg: String) {
+        self.fail(file_id, None, format!("sender: {msg}")).await;
     }
 
     async fn handle(&mut self, ev: Ev) -> anyhow::Result<()> {
         match ev {
             Ev::Recv(d) => self.on_done(d).await,
             Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await?,
+            Ev::Ctrl(Msg::PlaceVerdict(v)) => self.on_verdict(v).await,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
@@ -1024,8 +1143,13 @@ impl Receiver {
 
     /// The session failed: drop every open writer (persisting its progress
     /// for the next connection), let in-flight file tasks end, and record
-    /// the files they placed meanwhile as done.
+    /// the files they placed meanwhile as done. A file verified and
+    /// waiting for its verdict is not done: it is dropped like any writer,
+    /// and the next connection asks again.
     async fn shut_down(&mut self, events: &mut Events) {
+        for f in self.files.values_mut() {
+            drop(f.held.take());
+        }
         let ids: Vec<u64> = self
             .routes
             .lock()

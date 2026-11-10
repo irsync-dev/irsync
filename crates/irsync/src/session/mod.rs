@@ -459,6 +459,7 @@ pub struct DaemonHooks {
     pub cut_listing_after: Option<usize>,
     pub inject_listing: Option<ListingHook>,
     pub during_hash: Option<crate::hasher::HashHook>,
+    pub on_first_chunk_sent: Option<FirstChunkHook>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -728,6 +729,11 @@ pub struct SideHooks {
     /// queued (once per hook instance, across reconnects).
     #[cfg(feature = "test-hooks")]
     pub drop_after_listing: Option<Arc<PartsFault>>,
+    /// Sender: close the connection instead of answering a `MayPlace`
+    /// (once per hook instance, across reconnects; `PartsFault::after(1)`
+    /// drops at the first one).
+    #[cfg(feature = "test-hooks")]
+    pub drop_before_verdict: Option<Arc<PartsFault>>,
     /// Sender: queue only this many listing frames, then none, not even
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]

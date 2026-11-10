@@ -3,12 +3,13 @@
 
 use irsync_proto::v1::{
     control::Msg, ChunkListPart, ChunkRecord, Control, DataStreamHeader, Hash, Heartbeat, ListRoom,
+    MayPlace, PlaceVerdict,
 };
 use prost::Message;
 
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(irsync_proto::PROTOCOL_VERSION, 2);
+    assert_eq!(irsync_proto::PROTOCOL_VERSION, 3);
 }
 
 fn enc(m: Msg) -> Vec<u8> {
@@ -32,6 +33,23 @@ fn control_list_room_golden_bytes() {
     // list_room = 14, records = 1 (varint 300)
     let room = enc(Msg::ListRoom(ListRoom { records: 300 }));
     assert_eq!(room, [0x72, 0x03, 0x08, 0xAC, 0x02]);
+}
+
+#[test]
+fn control_may_place_golden_bytes() {
+    // may_place = 15, file_id = 1 (varint 300)
+    let m = enc(Msg::MayPlace(MayPlace { file_id: 300 }));
+    assert_eq!(m, [0x7A, 0x03, 0x08, 0xAC, 0x02]);
+}
+
+#[test]
+fn control_place_verdict_golden_bytes() {
+    // place_verdict = 16 (two-byte tag), file_id = 1, changed = 2
+    let v = enc(Msg::PlaceVerdict(PlaceVerdict {
+        file_id: 7,
+        changed: true,
+    }));
+    assert_eq!(v, [0x82, 0x01, 0x04, 0x08, 0x07, 0x10, 0x01]);
 }
 
 #[test]

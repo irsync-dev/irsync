@@ -41,7 +41,7 @@ use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
 use crate::net::frame::read_msg;
-use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError};
+use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 
@@ -832,6 +832,8 @@ async fn rebuild(
 /// Settles a `DELTA` file whose destination already holds the content:
 /// applies the sender's metadata to it in place, discards a leftover
 /// `.part`, and records it in the index with the digest the sender gave.
+/// Like a placed file, only once the sender has said its source is
+/// unchanged (`PlaceVerdict`).
 pub(super) async fn settle_identical(
     ctx: Arc<Ctx>,
     file: File,
@@ -1086,16 +1088,12 @@ async fn finish_unit(
     }
 }
 
-/// Verifies and places the file, then records it (with the digest the sender
-/// gave) in the index so later sessions can quick-check and reuse it.
-pub(super) async fn finalize(
+/// Verifies the file (see [`FileWriter::verify`]); nothing is placed yet.
+pub(super) async fn verify(
     ctx: Arc<Ctx>,
     w: FileWriter,
     path: RelPath,
-    entry: FileEntry,
-    digest: Arc<FileDigest>,
-) -> Result<(), FinalizeError> {
-    let apply = ctx.apply_opts(&entry);
+) -> Result<Verified, FinalizeError> {
     #[cfg(feature = "test-hooks")]
     let mut w = w;
     #[cfg(feature = "test-hooks")]
@@ -1103,13 +1101,27 @@ pub(super) async fn finalize(
         w.slow_finalize(d);
     }
     if !w.is_open() {
-        // Nothing was ever written (an empty file): finalize opens it.
+        // Nothing was ever written (an empty file): verifying opens it.
         ctx.hooks.event("open", &path);
     }
-    let placed = w.place(&entry, &apply).await?;
+    let v = w.verify().await?;
     if ctx.opts.fsync {
         ctx.hooks.event("fsync", &path);
     }
+    Ok(v)
+}
+
+/// Places a verified file, then records it (with the digest the sender
+/// gave) in the index so later sessions can quick-check and reuse it.
+pub(super) async fn commit(
+    ctx: Arc<Ctx>,
+    v: Verified,
+    path: RelPath,
+    entry: FileEntry,
+    digest: Arc<FileDigest>,
+) -> Result<(), FinalizeError> {
+    let apply = ctx.apply_opts(&entry);
+    let placed = v.commit(&entry, &apply).await?;
     ctx.hooks.event("placed", &path);
     record(&ctx, &path, &digest, placed.hash, placed.stat).await;
     Ok(())
@@ -1227,6 +1239,7 @@ async fn read_stream(
         .cloned();
     let Some(route) = route else {
         tracing::debug!(file_id, "data stream for a file not being received");
+        // Code 0 tells the sender this is no failure (see `send.rs`).
         return stop(&mut s, 0);
     };
     let accounted = read_range(&ctx, &route, &events, &bytes, &header, &mut s).await;

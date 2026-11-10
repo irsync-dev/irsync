@@ -1,6 +1,6 @@
 //! Source files that change while the sender works on them: a change during
-//! the hash pass is caught, retried once, and given up with exit 23 if it
-//! happens again.
+//! the hash pass, or after it (caught when the receiver asks before placing
+//! a file), is retried once, and given up with exit 23 if it happens again.
 
 mod common;
 
@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime};
 use common::{archive_opts, Flow, Harness};
 use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
-use irsync::session::SideHooks;
+use irsync::session::reconnect::ReconnectOpts;
+use irsync::session::{FirstChunkHook, FrameHook, PartsFault, SideHooks, StreamKind};
+use irsync_proto::v1::control::Msg;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
@@ -167,4 +169,229 @@ async fn torn_hash_is_retried_on_pull() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn torn_hash_twice_fails_with_23_on_pull() {
     within30(torn_hash_twice_fails_for(Flow::Pull)).await;
+}
+
+/// Source and destination hold `x.bin`, the destination's with other data
+/// from 1 MiB to 7 MiB and an mtime far in the past: the planner picks a
+/// delta, the sender sends the middle (in one request: with most of the
+/// file to send, no bases are offered), and the destination copies the
+/// rest, the first 256 KiB among it, from its own old copy. Returns the
+/// destination's content.
+fn seed_delta(h: &Harness, flow: Flow) -> Vec<u8> {
+    let content = data(SIZE, 7);
+    fs::write(h.src(flow).join("x.bin"), &content).unwrap();
+    let mut old = content;
+    old[MIB..7 * MIB].copy_from_slice(&data(6 * MIB, 8));
+    let dst = h.dst(flow).join("x.bin");
+    fs::write(&dst, &old).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&dst)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+        .unwrap();
+    old
+}
+
+/// Writes other data over the first 256 KiB of `path` only, then sets its
+/// mtime to 1e9 + `n` seconds.
+fn rewrite_head(path: &Path, seed: u32, n: u32) {
+    let f = fs::File::options().write(true).open(path).unwrap();
+    f.write_all_at(&data(TEAR, seed), 0).unwrap();
+    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000 + u64::from(n)))
+        .unwrap();
+}
+
+/// After the first chunk of `x.bin` went out, rewrites its first 256 KiB:
+/// a range the destination copies locally, which the sender never reads
+/// again.
+fn head_after_first_chunk(src: PathBuf, fired: Arc<AtomicU32>) -> FirstChunkHook {
+    Arc::new(move |p: &RelPath| {
+        let hit = p.as_bytes() == b"x.bin";
+        let (src, fired) = (src.clone(), fired.clone());
+        Box::pin(async move {
+            if hit {
+                let n = fired.fetch_add(1, Ordering::SeqCst) + 1;
+                rewrite_head(&src.join("x.bin"), 200 + n, n);
+            }
+        })
+    })
+}
+
+/// A receiver's frame hook: before every `MayPlace` goes out, rewrites the
+/// first 256 KiB of the source's `x.bin` (the only file), as a writer would
+/// right after the sender hashed it.
+fn head_before_may_place(src: PathBuf, asked: Arc<AtomicU32>) -> FrameHook {
+    Arc::new(move |kind, m| {
+        if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+            let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
+            rewrite_head(&src.join("x.bin"), 300 + n, 10 + n);
+        }
+        vec![m]
+    })
+}
+
+/// The local side for `flow` with `head_before_may_place` on the receiver.
+fn changing_before_may_place(
+    h: &Harness,
+    flow: Flow,
+    asked: Arc<AtomicU32>,
+) -> irsync::session::LocalSide {
+    let hook = head_before_may_place(h.src(flow).to_path_buf(), asked);
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => h.daemon.hooks.lock().unwrap().tamper_frames = Some(hook),
+        Flow::Pull => local.hooks.tamper_frames = Some(hook),
+    }
+    local
+}
+
+async fn change_after_hash_is_retried_for(flow: Flow) {
+    let h = Harness::new().await;
+    seed_delta(&h, flow);
+    let fired = Arc::new(AtomicU32::new(0));
+    let hook = head_after_first_chunk(h.src(flow).to_path_buf(), fired.clone());
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => local.hooks.on_first_chunk_sent = Some(hook),
+        Flow::Pull => h.daemon.hooks.lock().unwrap().on_first_chunk_sent = Some(hook),
+    }
+    let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "the hook did not fire once"
+    );
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(
+        fs::read(h.dst(flow).join("x.bin")).unwrap()
+            == fs::read(h.src(flow).join("x.bin")).unwrap(),
+        "the destination differs from the source"
+    );
+    assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+}
+
+async fn change_after_hash_twice_fails_for(flow: Flow) {
+    let h = Harness::new().await;
+    let before = seed_delta(&h, flow);
+    let asked = Arc::new(AtomicU32::new(0));
+    let local = changing_before_may_place(&h, flow, asked.clone());
+    let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
+    assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+    let (path, msg) = &out.errors[0];
+    assert_eq!(path.as_bytes(), b"x.bin");
+    assert!(
+        msg.contains("changed after it was hashed (after retry)"),
+        "{msg}"
+    );
+    assert!(
+        fs::read(h.dst(flow).join("x.bin")).unwrap() == before,
+        "the destination changed"
+    );
+    assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_after_hash_is_retried() {
+    within30(change_after_hash_is_retried_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_after_hash_twice_fails_with_23() {
+    within30(change_after_hash_twice_fails_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_after_hash_is_retried_on_pull() {
+    within30(change_after_hash_is_retried_for(Flow::Pull)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_after_hash_twice_fails_with_23_on_pull() {
+    within30(change_after_hash_twice_fails_for(Flow::Pull)).await;
+}
+
+/// Asking before placing costs a round trip per file; with one file in
+/// flight at a time nothing hides it, and the run must still finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ask_before_placing_with_one_file_in_flight() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        for i in 0..200u32 {
+            fs::write(
+                h.src(flow).join(format!("f{i:03}")),
+                data(1000 + i as usize, i),
+            )
+            .unwrap();
+        }
+        h.daemon.hooks.lock().unwrap().max_inflight = Some(1);
+        let opts = archive_opts();
+        let out = h.run(&opts, flow).await.unwrap();
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(out.files_transferred, 200);
+        common::assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+/// The connection drops while a verified file waits for its verdict: the
+/// resumed session places it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drop_while_waiting_for_verdict_resumes() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let content = data(4 * MIB, 41);
+        fs::write(h.src(flow).join("x.bin"), &content).unwrap();
+        let fault = PartsFault::after(1);
+        let mut local = h.local_side();
+        local.hooks.drop_before_verdict = Some(fault.clone());
+        let ropts = ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..ReconnectOpts::default()
+        };
+        let (out, reconnects) = h.run_reconnect(&archive_opts(), flow, ropts, local).await;
+        let out = out.unwrap();
+        assert!(fault.fired(), "the fault never fired");
+        assert_eq!(reconnects, 1);
+        assert!(out.resumed, "the second connection did not resume");
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), content);
+        assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+    })
+    .await;
+}
+
+/// `--inplace` writes into the destination itself: a source that changes
+/// after every hash is still retried once and given up, never reported
+/// placed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inplace_change_after_hash_retries_then_fails() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        seed_delta(&h, flow);
+        let asked = Arc::new(AtomicU32::new(0));
+        let local = changing_before_may_place(&h, flow, asked.clone());
+        let args =
+            irsync::cli::Args::try_parse_from(["irsync", "-a", "--inplace", "src/", "host:m/"])
+                .unwrap();
+        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let out = h.run_side(&opts, flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(out.files_transferred, 0);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"x.bin");
+        assert!(
+            msg.contains("changed after it was hashed (after retry)"),
+            "{msg}"
+        );
+    })
+    .await;
 }

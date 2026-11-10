@@ -1091,11 +1091,16 @@ impl FileWriter {
 
     /// [`FileWriter::finalize`], also returning what the placed file's
     /// entry now is, as the same blocking step read it.
-    pub async fn place(
-        mut self,
-        entry: &FileEntry,
-        opts: &ApplyOpts,
-    ) -> Result<Placed, FinalizeError> {
+    pub async fn place(self, entry: &FileEntry, opts: &ApplyOpts) -> Result<Placed, FinalizeError> {
+        self.verify().await?.commit(entry, opts).await
+    }
+
+    /// The first half of [`FileWriter::place`]: every chunk is there, the
+    /// file is sized (in place, shrunk), flushed if asked, and its folded
+    /// whole-file hash is the expected one. Nothing is at the final name
+    /// yet; [`Verified::commit`] puts it there. On an error the `.part`
+    /// stays, with its progress recorded (on drop at the latest).
+    pub async fn verify(mut self) -> Result<Verified, FinalizeError> {
         if !self.missing_chunks().is_empty() {
             return Err(FinalizeError::Incomplete);
         }
@@ -1113,23 +1118,18 @@ impl FileWriter {
             .tree
             .root()
             .ok_or_else(|| io::Error::other("internal: hash tree incomplete"))?;
-        let (part, dest, size, expected, inplace, rel, held_id, held_owner) = (
-            self.part.clone(),
-            self.dest.clone(),
+        let (size, expected, inplace) = (
             self.size,
             self.verify_whole.then_some(self.whole_hash),
             self.inplace,
-            self.rel.clone(),
-            self.held_id,
-            self.held_owner,
         );
-        let (entry, opts) = (entry.clone(), *opts);
         let activity = self.activity.clone();
         let sync_meter = meter.clone();
         let sync = self.sync;
+        let held = file.clone();
         #[cfg(feature = "test-hooks")]
         let delay = self.finalize_delay;
-        let placed = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             // Simulated slow storage: local work that reports progress.
             #[cfg(feature = "test-hooks")]
             {
@@ -1144,14 +1144,14 @@ impl FileWriter {
             // A `.part` was sized when opened; only a file written in place
             // may still need shrinking.
             if inplace {
-                file.set_len(size)?;
+                held.set_len(size)?;
             }
             if sync {
                 let synced = sync_meter
                     .as_deref()
                     .filter(|m| m.is_enabled())
                     .map(|_| Instant::now());
-                file.sync_all()?;
+                held.sync_all()?;
                 if let (Some(m), Some(t)) = (&sync_meter, synced) {
                     let took = t.elapsed();
                     m.add(
@@ -1166,6 +1166,53 @@ impl FileWriter {
             if let Some(expected) = expected.filter(|e| *e != actual) {
                 return Err(FinalizeError::HashMismatch { expected, actual });
             }
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)??;
+        Ok(Verified {
+            w: self,
+            file,
+            hash: actual,
+        })
+    }
+}
+
+/// A file [`FileWriter::verify`] found complete and correct, not yet at its
+/// name: [`Verified::commit`] places it, [`Verified::discard`] drops it.
+/// Holds the writer, so the `.part` stays locked meanwhile.
+pub struct Verified {
+    w: FileWriter,
+    file: Arc<File>,
+    hash: [u8; 32],
+}
+
+impl Verified {
+    /// Applies metadata and renames the `.part` over the destination (in
+    /// place, the file is already there). On an error the `.part` stays,
+    /// with its progress recorded; nothing appears at the final name.
+    pub async fn commit(
+        self,
+        entry: &FileEntry,
+        opts: &ApplyOpts,
+    ) -> Result<Placed, FinalizeError> {
+        let Verified {
+            mut w,
+            file,
+            hash: actual,
+        } = self;
+        let meter = w.meter.clone();
+        let _timed = meter.as_deref().map(|m| m.start(Activity::Place));
+        let (part, dest, inplace, rel, held_id, held_owner) = (
+            w.part.clone(),
+            w.dest.clone(),
+            w.inplace,
+            w.rel.clone(),
+            w.held_id,
+            w.held_owner,
+        );
+        let (entry, opts) = (entry.clone(), *opts);
+        let placed = tokio::task::spawn_blocking(move || {
             // Metadata goes through the held descriptor; the rename (by
             // path) only once the path still names that very file. In
             // place, the file is already at its name. A directory at the
@@ -1194,7 +1241,7 @@ impl FileWriter {
                 if let Err(pe) = make_owner_writable(&file) {
                     tracing::warn!(path = ?part, error = %pe, "restoring u+w on .part failed");
                 }
-                return Err(e.into());
+                return Err(e);
             }
             // Read after the rename, which changes the ctime.
             Ok(fstat_entry_with_ctime(&file, &rel).ok())
@@ -1205,12 +1252,12 @@ impl FileWriter {
             hash: actual,
             stat: placed,
         };
-        self.activity.fetch_add(1, Ordering::Relaxed);
-        self.done = true;
-        if !self.recorded {
+        w.activity.fetch_add(1, Ordering::Relaxed);
+        w.done = true;
+        if !w.recorded {
             return Ok(placed);
         }
-        let (index, rel) = (self.index.clone(), self.rel.clone());
+        let (index, rel) = (w.index.clone(), w.rel.clone());
         let removed = tokio::task::spawn_blocking(move || {
             index
                 .lock()
@@ -1223,9 +1270,50 @@ impl FileWriter {
         .and_then(|r| r);
         if let Err(e) = removed {
             // The verified file is already in place; a stale record is harmless.
-            tracing::warn!(path = ?self.dest, error = %e, "removing partial record failed");
+            tracing::warn!(path = ?w.dest, error = %e, "removing partial record failed");
         }
         Ok(placed)
+    }
+
+    /// Drops a verified file that is not to be placed (its source changed
+    /// after it was hashed): the `.part` and its record go, so nothing of
+    /// it is left behind or adopted. In place there is no `.part`: the
+    /// destination already holds the written data, and its progress is
+    /// recorded as for any writer dropped.
+    pub async fn discard(self) {
+        let Verified { mut w, file, .. } = self;
+        if w.inplace {
+            return;
+        }
+        w.done = true;
+        let (part, held_id, index, rel, recorded) = (
+            w.part.clone(),
+            w.held_id,
+            w.index.clone(),
+            w.rel.clone(),
+            w.recorded,
+        );
+        let removed = tokio::task::spawn_blocking(move || {
+            // Removed only while it is still the file this writer holds
+            // (and has locked); the lock goes with the descriptor after.
+            still_same_file(held_id, &part)?;
+            std::fs::remove_file(&part)?;
+            drop(file);
+            if recorded {
+                index
+                    .lock()
+                    .map_err(|_| io::Error::other("index poisoned"))?
+                    .remove_partial(&rel)
+                    .map_err(index_err)?;
+            }
+            Ok::<_, io::Error>(())
+        })
+        .await
+        .map_err(io::Error::other)
+        .and_then(|r| r);
+        if let Err(e) = removed {
+            tracing::warn!(path = ?w.part, error = %e, "discarding a verified partial file failed");
+        }
     }
 }
 
@@ -1263,7 +1351,7 @@ fn open_sized_part(
     Ok((file, meta))
 }
 
-/// A file [`FileWriter::place`] put at its name.
+/// A file [`Verified::commit`] put at its name.
 pub struct Placed {
     /// Its whole-file hash, folded from its chunks.
     pub hash: [u8; 32],

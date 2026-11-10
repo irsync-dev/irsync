@@ -76,7 +76,8 @@ pub(super) fn need_pieces(file_id: u64, idxs: Vec<u32>, piece: usize) -> Vec<Nee
 /// indices, rounded up: a `PlanItem` and an `Itemized`, each with a path
 /// (at most 4 KiB, `PATH_MAX`); `FileAck`s with their messages; the
 /// `ChunkListPart` headers of up to three lists (see
-/// `receiver::MAX_LIST_STARTS`) and a `ListRoom`. About 9 KiB at most.
+/// `receiver::MAX_LIST_STARTS`) and a `ListRoom`; a `MayPlace` and a
+/// `PlaceVerdict` per list (a few dozen bytes each). About 9 KiB at most.
 const FILE_WIRE: usize = 16 * 1024;
 
 /// The most bytes an honest session queues for its control stream's
@@ -86,14 +87,15 @@ const FILE_WIRE: usize = 16 * 1024;
 ///
 /// - Sender: chunk lists, sent only into the room the receiver granted
 ///   (`list_budget` records, `RECORD_WIRE` each); per file in flight
-///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`) and the empty first
-///   part that withdraws a retried file's list (`FILE_WIRE`).
+///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`), the empty first
+///   part that withdraws a retried file's list and a `PlaceVerdict` per
+///   list (`FILE_WIRE`).
 /// - Receiver: paced frames ([`OUT_BUDGET`]: the planner's `Itemized`,
 ///   `offer_bases`); `NeedChunks` for at most every chunk of the lists it
 ///   holds (`list_budget` records), once per list (1 + [`MAX_RETRIES`]) and
 ///   per re-request ([`MAX_REREQUESTS`]), `INDEX_WIRE` each; per file in
-///   flight a `PlanItem`, an `Itemized`, a `FileAck` and a `ListRoom`
-///   (`FILE_WIRE`).
+///   flight a `PlanItem`, an `Itemized`, a `FileAck`, a `ListRoom` and a
+///   `MayPlace` per list (`FILE_WIRE`).
 /// - Both: one frame up to [`MAX_FRAME`] beyond these (a paced frame larger
 ///   than the budget passes alone; `SessionDone`, `Error`), which also
 ///   covers heartbeats (two a second at most, a few dozen bytes each).

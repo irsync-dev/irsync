@@ -73,6 +73,19 @@ message ChunkListPart {
 message ListRoom {
   uint64 records = 1;
 }
+// receiver -> sender: every chunk of the file is verified; may it be placed?
+// The receiver renames the file into place (or settles it in place) only
+// after a PlaceVerdict that says the source is unchanged.
+message MayPlace {
+  uint64 file_id = 1;
+}
+// sender -> receiver: the answer to MayPlace. `changed`: the source differs
+// from the stat its chunk list was hashed under; the receiver drops what it
+// verified and waits for a new chunk list (or the sender's SOURCE_ERROR).
+message PlaceVerdict {
+  uint64 file_id = 1;
+  bool changed = 2;
+}
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -93,7 +106,8 @@ message ChunkBasis {
   repeated fixed32 weak = 5;
   bytes strong = 6; // 8 * weak.len() bytes
 }
-// receiver -> sender: DONE, HASH_MISMATCH, WRITE_ERROR. sender -> receiver: SOURCE_ERROR
+// receiver -> sender: DONE (only after a PlaceVerdict saying unchanged), HASH_MISMATCH,
+// WRITE_ERROR. sender -> receiver: SOURCE_ERROR
 // (the sender cannot read the file; the receiver drops it without a reply).
 message FileAck {
   uint64 file_id = 1;
@@ -157,5 +171,7 @@ message Control {
     ChunkBasis chunk_basis = 12;
     PathError listing_error = 13;
     ListRoom list_room = 14;
+    MayPlace may_place = 15;
+    PlaceVerdict place_verdict = 16;
   }
 }
