@@ -54,8 +54,9 @@ survives a reboot (see
 Then the push runs over iroh.
 
 Later runs use the alias and do not touch ssh. If the daemon has stopped,
-for example after a reboot, a sync gets no answer, says `myserver did not
-answer; checking it over ssh`, starts the daemon again and carries on. A
+for example after a reboot, a sync waits about 15 seconds for an answer, then
+says `myserver did not answer; checking it over ssh`, starts the daemon again
+and carries on. A
 daemon that answers but refuses the client is never "fixed" over ssh: that
 refusal is on purpose.
 

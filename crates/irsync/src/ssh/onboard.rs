@@ -20,6 +20,8 @@ pub struct Onboarded {
     pub endpoint_id: EndpointId,
     /// The id `alias` pointed at before, when it changed.
     pub previous_id: Option<EndpointId>,
+    /// `alias` was saved before this run (with `previous_id` or the same id).
+    pub alias_existed: bool,
     pub report: SetupReport,
     pub install: Install,
     /// The server's OS (`std::env::consts::OS` names), from the probe.
@@ -47,6 +49,10 @@ pub fn onboard(
         ssh: Some(dest.to_string()),
         ..HostFlags::default()
     };
+    let alias_existed = doc
+        .get("hosts")
+        .and_then(|h| h.get(dest))
+        .is_some_and(toml_edit::Item::is_table_like);
     let previous_id = manage::hosts::host_add(&mut doc, dest, report.endpoint_id, &flags)
         .with_context(|| format!("saving host alias {dest}"))?;
     lock.save(&doc)?;
@@ -54,6 +60,7 @@ pub fn onboard(
         alias: dest.to_string(),
         endpoint_id: report.endpoint_id,
         previous_id,
+        alias_existed,
         install,
         os: p.os,
         client,
@@ -126,6 +133,8 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         }
     }
     match o.previous_id {
+        // Already saved with this id (a restart): nothing to say.
+        None if o.alias_existed => {}
         None => out.push(format!(
             "  saved host alias {dest} -> {}",
             short(&o.endpoint_id)
@@ -235,6 +244,7 @@ mod tests {
             alias: "myserver".into(),
             endpoint_id: id(2),
             previous_id: Some(id(3)),
+            alias_existed: true,
             report: SetupReport {
                 version: LONG_VERSION.clone(),
                 endpoint_id: id(2),
@@ -344,5 +354,39 @@ mod tests {
         assert!(s[2].starts_with("  the alias points at this config's daemon identity"));
         assert!(!s.join("\n").contains("installed"));
         assert!(howto(&o).is_empty());
+    }
+
+    /// `saved` for a new alias, `updated` for a changed id, and nothing
+    /// about the alias when it existed with the same id (a plain restart).
+    #[test]
+    fn alias_line_says_saved_updated_or_nothing() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.previous_id = None;
+        o.alias_existed = false;
+        let s = summary(&o).join("\n");
+        assert!(
+            s.contains(&format!(
+                "  saved host alias myserver -> {}",
+                id(2).fmt_short()
+            )),
+            "{s}"
+        );
+        o.alias_existed = true;
+        let s = summary(&o);
+        assert!(!s.join("\n").contains("host alias"), "{s:#?}");
+        assert_eq!(
+            s.last().unwrap(),
+            "  started the daemon (log: /s/daemon.log)"
+        );
+        o.previous_id = Some(id(3));
+        let s = summary(&o).join("\n");
+        assert!(
+            s.contains(&format!(
+                "  updated host alias myserver: {} -> {}",
+                id(3).fmt_short(),
+                id(2).fmt_short()
+            )),
+            "{s}"
+        );
     }
 }

@@ -562,3 +562,63 @@ async fn unreachable_server_gives_up_after_dial_retries() {
     })
     .await;
 }
+
+/// A server that never answers fails with `NeverReached`: after the dial
+/// retries, when the reconnect window ran out first, and when the first
+/// dial is bounded by `first_dial_timeout` (instead of iroh's 60 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn never_reached_is_marked_and_first_dial_is_bounded() {
+    use irsync::session::reconnect::{run_with_reconnect, NeverReached};
+    within60(async {
+        let h = Harness::new().await;
+        let nobody = iroh::SecretKey::from_bytes(&[43; 32]).public();
+        // Nothing listens there: a dial waits for the handshake timeout.
+        let dead = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let silent = iroh::EndpointAddr::from_parts(nobody, [iroh::TransportAddr::Ip(dead)]);
+        let base = ReconnectOpts {
+            backoff_min: Duration::from_millis(10),
+            ..ReconnectOpts::default()
+        };
+        for (target, ropts) in [
+            (
+                silent.clone(),
+                ReconnectOpts {
+                    dial_retries: 1,
+                    first_dial_timeout: Some(Duration::from_millis(300)),
+                    ..base
+                },
+            ),
+            (
+                // Another key: the endpoint now knows the dead address for `nobody`.
+                iroh::EndpointAddr::from(iroh::SecretKey::from_bytes(&[44; 32]).public()),
+                ReconnectOpts {
+                    max: Duration::ZERO,
+                    ..base
+                },
+            ),
+        ] {
+            let started = std::time::Instant::now();
+            let res = run_with_reconnect(
+                &h.client,
+                target,
+                "nobody:m/",
+                |_| Harness::hello(Flow::Push),
+                h.local_side(),
+                &archive_opts(),
+                ropts,
+                |_| {},
+            )
+            .await;
+            let err = res.expect_err("an unreachable server must fail");
+            assert!(err.downcast_ref::<NeverReached>().is_some(), "{err:#}");
+            assert!(started.elapsed() < Duration::from_secs(10), "{err:#}");
+            if ropts.first_dial_timeout.is_some() {
+                assert!(format!("{err:#}").contains("no answer within"), "{err:#}");
+            }
+        }
+    })
+    .await;
+}

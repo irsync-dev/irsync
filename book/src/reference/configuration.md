@@ -173,7 +173,7 @@ be an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |
-| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a host with `ssh` never answers, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. A host without `ssh` is never touched over ssh. |
+| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a host with `ssh` does not answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. A host without `ssh` is never touched over ssh. |
 
 `--address` on the command line replaces the host's `address` list.
 

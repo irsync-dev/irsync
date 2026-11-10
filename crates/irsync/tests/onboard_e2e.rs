@@ -341,12 +341,18 @@ fn dead_daemon_is_restarted_over_ssh() {
     let calls = w.ssh_calls();
     w.kill_daemon();
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let err = ok(&w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]));
+    // Default retry settings: one short dial, then ssh, well under the
+    // 60 s a single dial to a dead daemon would take.
+    let started = Instant::now();
+    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(started.elapsed() < Duration::from_secs(40), "{err}");
     assert!(
         err.contains("irsync: myserver did not answer; checking it over ssh"),
         "{err}"
     );
     assert!(err.contains("started the daemon"), "{err}");
+    // Same id: the alias line is left out.
+    assert!(!err.contains("host alias"), "{err}");
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"
@@ -369,7 +375,9 @@ fn rebuilt_server_updates_alias() {
             std::fs::remove_file(p).unwrap();
         }
     }
-    let err = ok(&w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]));
+    let started = Instant::now();
+    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(started.elapsed() < Duration::from_secs(40), "{err}");
     assert!(err.contains("updated host alias myserver:"), "{err}");
     assert_ne!(w.saved_id("myserver"), before);
     same_tree(w.src.path(), &dest);

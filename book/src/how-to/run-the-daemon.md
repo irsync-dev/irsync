@@ -86,8 +86,8 @@ may change it, to its own groups, as rsync does without privilege.
 
 When the [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) starts
 the daemon, it runs in the background under your account until the server
-reboots. A later sync that gets no answer starts it again over ssh, but only
-when you sync. To keep it running all the time, make it a user service. The
+reboots. When a later sync gets no answer within about 15 seconds, it starts
+the daemon again over ssh, but only when you sync. To keep it running all the time, make it a user service. The
 setup prints these steps for the server's system; they are the same here.
 
 On Linux, put this in `~/.config/systemd/user/irsync.service`:

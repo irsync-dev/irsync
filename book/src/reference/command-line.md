@@ -21,9 +21,11 @@ A `HOST` that is neither is taken as an ssh destination, such as `myserver` or
 copies itself there when the server has no matching build, grants this client
 access to any path (`[immediate]`), starts the daemon and saves `HOST` as an
 alias with `ssh = "HOST"`. It prints what it did. Later runs dial the alias
-over iroh and do not use ssh. When a sync to an alias with `ssh` gives up
-because the daemon never answered, `irsync` checks the server over ssh once,
-starts the daemon again or updates the alias, and retries. A daemon that
+over iroh and do not use ssh. A sync to an alias with `ssh` dials once and
+waits at most 15 seconds (`--dial-retries` sets how often it retries first).
+When the daemon does not answer, `irsync` checks the server over ssh once,
+starts the daemon again or updates the alias, and retries with the usual
+`--dial-retries` and `--reconnect` settings. A daemon that
 answers and refuses the client is never handled over ssh. See
 [the quick way](../tutorial/first-sync.md#the-quick-way-over-ssh).
 

@@ -516,6 +516,10 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     })
 }
 
+/// How long the first dial to a host with `ssh` may take before the host
+/// is checked over ssh.
+const SSH_HOST_FIRST_DIAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// What setting a host up over ssh did, then the service how-to.
 fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     for line in irsync::ssh::onboard::summary(o) {
@@ -772,6 +776,19 @@ async fn sync(
         let operand_from = args.sync.src()[index].clone();
         let operand_to = args.sync.dest().unwrap_or_default().to_string();
         let result = loop {
+            // A host set up over ssh gets one short dial first: if it does
+            // not answer, checking it over ssh is quicker than waiting out
+            // the retries. `--dial-retries` still sets the count.
+            let ssh_host = conn.host_entry.as_ref().is_some_and(|h| h.ssh.is_some());
+            let ropts = if ssh_host && !rechecked {
+                ReconnectOpts {
+                    dial_retries: cli_opts.dial_retries.unwrap_or(0),
+                    first_dial_timeout: Some(SSH_HOST_FIRST_DIAL),
+                    ..ropts
+                }
+            } else {
+                ropts
+            };
             let res = session(
                 &conn.endpoint,
                 conn.target.clone(),

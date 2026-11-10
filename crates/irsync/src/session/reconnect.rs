@@ -36,6 +36,10 @@ pub struct ReconnectOpts {
     /// wrong ID or a host that is down for the whole `max` window. Once a
     /// connection has been made, a dropped one is redialled until `max`.
     pub dial_retries: u32,
+    /// Bounds each dial until the server has answered once (`None`: iroh's
+    /// own handshake timeout). Used for a host that can be checked over ssh
+    /// instead of waiting long.
+    pub first_dial_timeout: Option<Duration>,
     /// Which source of the command line this session is (for its trace).
     pub source_index: usize,
 }
@@ -47,6 +51,7 @@ impl Default for ReconnectOpts {
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             dial_retries: 4,
+            first_dial_timeout: None,
             source_index: 0,
         }
     }
@@ -437,10 +442,20 @@ async fn attempts(
         let mut tried = Attempt::default();
         let connect = phase(PhaseKind::Connect, Side::Client, role, None);
         connect.span().record("attempt", attempt);
-        let dialled = endpoint
+        let dial = endpoint
             .connect(target.clone(), irsync_proto::ALPN)
-            .instrument(connect.span().clone())
-            .await;
+            .instrument(connect.span().clone());
+        let dialled = match opts.first_dial_timeout.filter(|_| !reached) {
+            Some(limit) => match tokio::time::timeout(limit, dial).await {
+                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
+                Err(_) => Err(format!(
+                    "connecting to {}: no answer within {} s",
+                    target.id,
+                    limit.as_secs()
+                )),
+            },
+            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
+        };
         *connecting.lock().unwrap() = Some(connect);
         let (res, conn) = match dialled {
             Ok(conn) => {
@@ -456,12 +471,7 @@ async fn attempts(
                 let res = watch_paths(&conn, run, &mut on_state).await;
                 (res, Some(conn))
             }
-            Err(e) => (
-                Err(anyhow::Error::new(TransportError(describe_dial(
-                    &target.id, &e,
-                )))),
-                None,
-            ),
+            Err(msg) => (Err(anyhow::Error::new(TransportError(msg))), None),
         };
         connecting.lock().unwrap().take();
         let next = res.as_ref().err().map(|e| classify(e, conn.as_ref()));
@@ -512,7 +522,11 @@ async fn attempts(
         let now = Instant::now();
         outage.failed(now, progress);
         if outage.expired(now, opts.max) {
-            return Err(err);
+            return Err(if reached {
+                err
+            } else {
+                err.context(NeverReached)
+            });
         }
         if !reached && attempt >= opts.dial_retries {
             let tries = attempt + 1;
