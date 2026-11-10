@@ -198,7 +198,7 @@ fn setup() -> Setup {
     let client_id = String::from_utf8(run(&client, &["id", "show"]).stdout)
         .unwrap()
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     for m in ["m1", "m2"] {

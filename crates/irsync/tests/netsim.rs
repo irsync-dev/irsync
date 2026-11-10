@@ -44,7 +44,7 @@ fn rig(daemon_env: &[(&str, &str)]) -> Rig {
     let daemon = spawn_daemon_binary_env(&server, daemon_env);
     let client_id = ok(&client, &["id", "show"])
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     ok(

@@ -122,7 +122,7 @@ struct Daemon {
 
 fn start_daemon(tmp: &Path) -> Daemon {
     // The client generates its own identity under HOME on first use;
-    // `irsync id show` creates it early and prints its EndpointId (line 2).
+    // `irsync id show` creates it early and prints its EndpointId (the last line).
     let key = tmp.join("home/.config/irsync/id_ed25519");
     let config_path = tmp.join("irsync.toml");
     let o = run_client(
@@ -133,7 +133,7 @@ fn start_daemon(tmp: &Path) -> Daemon {
     let client_id = String::from_utf8(o.stdout)
         .unwrap()
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
 

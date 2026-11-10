@@ -148,11 +148,14 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
     let o = irsync(&home, &["id", "show"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    // No daemon identity yet: no pointer to one.
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("also has a daemon identity"));
     let out = String::from_utf8(o.stdout).unwrap();
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2);
-    assert!(lines[0].starts_with("ssh-ed25519 "));
-    let client = irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "client:");
+    assert!(lines[1].starts_with("ssh-ed25519 "));
+    let client = irsync::identity::parse_endpoint_id(lines[2]).unwrap();
     assert!(home.join(".config/irsync/id_ed25519").exists());
     // `id show --daemon` never creates the identity.
     let o = irsync(&home, &["id", "show", "--daemon"]);
@@ -163,10 +166,11 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
         .status
         .success());
     let o = irsync(&home, &["id", "show", "--daemon"]);
-    let daemon = irsync::identity::parse_endpoint_id(
-        String::from_utf8(o.stdout).unwrap().lines().nth(1).unwrap(),
-    )
-    .unwrap();
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "daemon:");
+    let daemon = irsync::identity::parse_endpoint_id(lines[2]).unwrap();
     assert_ne!(client, daemon);
     let o = irsync(&home, &["id", "show", "--all"]);
     let out = String::from_utf8(o.stdout).unwrap();
@@ -183,6 +187,31 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
     assert!(!String::from_utf8_lossy(&irsync(&home, &["id", "show"]).stderr).contains("generated"));
 }
 
+/// On a machine that also runs a daemon, plain `id show` (the client's
+/// identity) says where the daemon's is: clients need that one.
+#[test]
+fn id_show_on_a_server_points_at_the_daemon_id() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    assert!(irsync(&home, &["id", "generate", "--daemon"])
+        .status
+        .success());
+    let o = irsync(&home, &["id", "show"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("irsync: this machine also has a daemon identity"),
+        "{err}"
+    );
+    assert!(err.contains("irsync id show --daemon"), "{err}");
+    for flag in ["--daemon", "--all"] {
+        let o = irsync(&home, &["id", "show", flag]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("also has a daemon identity"), "{flag}: {err}");
+    }
+}
+
 #[test]
 fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     let d = tempfile::tempdir().unwrap();
@@ -192,7 +221,7 @@ fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
         irsync::identity::generate_openssh(&home.join(".ssh/id_ed25519"), "me@laptop").unwrap();
     let endpoint_of = |o: &std::process::Output| {
         irsync::identity::parse_endpoint_id(
-            String::from_utf8_lossy(&o.stdout).lines().nth(1).unwrap(),
+            String::from_utf8_lossy(&o.stdout).lines().last().unwrap(),
         )
         .unwrap()
     };
@@ -234,11 +263,11 @@ fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     let lines: Vec<&str> = out.lines().collect();
-    let pk = ssh_key::PublicKey::from_openssh(lines[0]).unwrap();
+    let pk = ssh_key::PublicKey::from_openssh(lines[1]).unwrap();
     let from_line = irsync::identity::endpoint_id_of_public_key(&pk).unwrap();
     assert_eq!(
         from_line,
-        irsync::identity::parse_endpoint_id(lines[1]).unwrap()
+        irsync::identity::parse_endpoint_id(lines[2]).unwrap()
     );
     assert!(irsync(&home, &["show"]).status.success());
 }
@@ -695,7 +724,7 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     let o = irsync(&home, &["id", "show"]);
     assert!(!String::from_utf8_lossy(&o.stderr).contains("generated"));
     let shown = String::from_utf8(o.stdout).unwrap();
-    assert_eq!(shown.lines().nth(1).unwrap(), client.to_string());
+    assert_eq!(shown.lines().last().unwrap(), client.to_string());
     // The daemon's with --daemon.
     let o = irsync(&home, &["id", "generate", "--daemon"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -768,7 +797,7 @@ fn id_generate_force_replaces_an_existing_identity() {
         );
         // `id show` now reports the new key.
         let shown = String::from_utf8(irsync(&home, &["id", "show"]).stdout).unwrap();
-        assert_eq!(shown.lines().nth(1).unwrap(), new_id.to_string());
+        assert_eq!(shown.lines().last().unwrap(), new_id.to_string());
     }
     // Without the flag the refusal still stands.
     let o = irsync(&home, &["id", "generate"]);

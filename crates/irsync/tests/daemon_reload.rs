@@ -189,7 +189,7 @@ fn sighup_makes_the_daemon_listen_anew_and_serve_there() {
     };
     let client_id = ok(&client, &["id", "show"])
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     ok(

@@ -85,7 +85,7 @@ fn start_daemon(tmp: &Path, debug_addr: Option<&str>) -> Daemon {
     let client_id = String::from_utf8(o.stdout)
         .unwrap()
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     let debug = debug_addr.map_or(String::new(), |a| format!("debug_addr = {a:?}\n"));

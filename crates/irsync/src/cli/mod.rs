@@ -265,13 +265,14 @@ pub struct IdArgs {
 #[derive(Debug, Subcommand)]
 pub enum IdCmd {
     /// Print the public key line and EndpointId of the client (default),
-    /// the daemon, or both. A missing client identity is generated as for a
-    /// sync; a missing daemon identity is an error, never generated.
+    /// the daemon, or both, each under a `client:` or `daemon:` label. A
+    /// missing client identity is generated as for a sync; a missing daemon
+    /// identity is an error, never generated.
     Show {
         /// The daemon's identity instead of the client's.
         #[arg(long, conflicts_with = "all")]
         daemon: bool,
-        /// Both identities, labelled `client:` and `daemon:`.
+        /// Both identities.
         #[arg(short = 'a', long)]
         all: bool,
         /// Read an encrypted identity's passphrase from the first line of

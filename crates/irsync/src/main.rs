@@ -1669,7 +1669,15 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
+            // Each identity comes under its label, so a server's client ID
+            // is not mistaken for its daemon's.
             let print = |secret: &iroh::SecretKey, comment: &str| {
+                let label = if comment == "irsync-daemon" {
+                    "daemon"
+                } else {
+                    "client"
+                };
+                println!("{label}:");
                 println!("{}", irsync::identity::public_key_line(secret, comment));
                 println!("{}", secret.public());
             };
@@ -1697,14 +1705,18 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
                 Ok(())
             };
             if all {
-                println!("client:");
                 client()?;
-                println!("daemon:");
                 show_daemon()?;
             } else if daemon {
                 show_daemon()?;
             } else {
                 client()?;
+                if settings.daemon.identity.symlink_metadata().is_ok() {
+                    eprintln!(
+                        "irsync: this machine also has a daemon identity; clients connect \
+                         to the daemon, whose id irsync id show --daemon prints"
+                    );
+                }
             }
             Ok(())
         })(),

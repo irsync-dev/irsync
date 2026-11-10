@@ -262,9 +262,10 @@ fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2, "{out}");
-    assert!(lines[0].starts_with("ssh-ed25519 "), "{out}");
-    irsync::identity::parse_endpoint_id(lines[1]).unwrap();
+    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(lines[0], "daemon:", "{out}");
+    assert!(lines[1].starts_with("ssh-ed25519 "), "{out}");
+    irsync::identity::parse_endpoint_id(lines[2]).unwrap();
     assert!(
         dir.path().join("id").exists(),
         "generated at the configured path"

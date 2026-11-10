@@ -45,7 +45,7 @@ fn setup() -> Setup {
     let (daemon_id, listen) = (daemon.id, daemon.listen);
     let client_id = ok(&client, &["id", "show"])
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     ok(
@@ -135,7 +135,7 @@ fn listing_an_unreachable_path_prints_the_hint() {
     let s = setup();
     let client_id = ok(&s.client, &["id", "show"])
         .lines()
-        .nth(1)
+        .last()
         .unwrap()
         .to_string();
     let operand = format!("{}:/nowhere", s.daemon_id);
