@@ -15,6 +15,9 @@ every change arrived. [irsync-stress](stress.md) runs that loop. filegen
 only mutates, logs and records. Every step is timed, so a run is also a
 performance trace of the filesystem under test.
 
+How the chain, targets, sizes and resume work, and how to extend it, is on
+[How filegen works](filegen-internals.md).
+
 The design is in
 [2026-10-20-filegen-design.md](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-10-20-filegen-design.md),
 the calls made while building it in

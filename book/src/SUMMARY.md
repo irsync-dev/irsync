@@ -53,6 +53,7 @@
 - [Set up a development checkout](contributing/setup.md)
 - [Testing](contributing/testing.md)
 - [Generating test trees with filegen](contributing/filegen.md)
+- [How filegen works](contributing/filegen-internals.md)
 - [Stress testing](contributing/stress.md)
 - [Network stress with netstress](contributing/netstress.md)
 - [How netstress works](contributing/netstress-internals.md)
