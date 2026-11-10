@@ -129,3 +129,56 @@ landed. Items the final review's fix wave closed are not listed.
 - [ ] `tests/fixtures/fake-ssh` takes `$1` as the destination (breaks if
       `--rsh` carries flags) and logs only the destination, not the command.
 - [ ] Tidy: redundant `immediate: false` next to `..Grants::default()` in tests.
+
+# Torn file when the source changes during hashing, 2026-11-10
+
+- [ ] A source file written while the sender is still hashing it can land at
+      the destination as a mix of old and new content that the source never
+      held, with no error, no warning and exit 0.
+
+      **What happens.** The sender hashes the file in one pass and does not
+      stat it again afterwards (`crates/irsync/src/hasher.rs:282-292`). If a
+      writer changes the start after the pass has read it and the end before
+      the pass reaches it, the digest holds old-start + new-end. The receiver
+      takes the old start from its own old copy (local chunks verify against
+      the digest) and the sender sends the new end, which also verifies in
+      `read_chunk` (`crates/irsync/src/send.rs:640-675`). The whole-file hash
+      matches the digest too. Nothing re-stats the source after the send or
+      at `FileAck DONE` (`crates/irsync/src/session/sender_role.rs:870-903`).
+      The comment at `hasher.rs:225-229` ("so that never lands") holds only
+      for changes after hashing. Those are caught: chunk mismatch or
+      truncation → `InvalidData` → `retry` once (`sender_role.rs:425-459`,
+      `854-857`, `MAX_RETRIES` at `:49`) → `SOURCE_ERROR` and exit 23 if it
+      keeps changing.
+
+      **Reproduction.** A temporary integration test in `crates/irsync/tests/`
+      using `common::Harness` (`--features test-hooks`), push, `archive_opts()`.
+      Source and destination both hold the same 512 MiB pseudo-random
+      `x.bin`; the destination's mtime is set to 1e9 s so the planner picks a
+      delta. A thread waits T ms after the sync starts, then opens the source
+      `x.bin` for writing and, with `write_all_at`, writes 256 KiB of other
+      data at offset 0 and then 256 KiB of other data at offset size-256 KiB.
+      For T = 50, 150, 300, 500, 700 and 900 ms the sync (about 2 s) ended with
+      `out.errors` empty, and the destination held the old first 256 KiB and
+      the new last 256 KiB. A second `h.run` made it equal to the source.
+
+      **Why the next run usually repairs it.** A retry or a torn send applies
+      the listing's metadata, so the destination keeps the mtime the walk saw
+      (`recv_io.rs:1091-1115`); the source's mtime has moved on, and the quick
+      check sends the file again. It does not when the last write falls in
+      the same timestamp tick as the walk's stat, or the writer resets the
+      mtime; then the torn file stays until a `-c` run.
+
+      **Candidate fixes.** (a) After hashing, fstat the open file and compare
+      size, mtime, ctime and inode with the stat taken at open; on a
+      difference, hash again or re-offer the file (counting against
+      `MAX_RETRIES`), and fail with exit 23 if it does not settle. (b) At
+      `FileAck DONE`, re-stat the source and compare with the stat the digest
+      was taken under; on a difference, warn or exit 23. rsync has the same
+      weakness, so neither is needed for parity, only for correctness.
+
+      Needs its own design, a regression test (the reproduction above, made
+      deterministic with a hook inside the hash pass), and a docs update once
+      fixed: the "Files that change during a sync" section of
+      `book/src/explanation/correctness.md`, and the "Change during transfer"
+      row and Integrity bullet of `book/src/explanation/transfer-algorithm.md`.
