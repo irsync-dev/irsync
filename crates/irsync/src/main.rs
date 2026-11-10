@@ -29,7 +29,9 @@ use irsync::index::Index;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
-use irsync::session::reconnect::{explain, run_with_reconnect, ConnState, ReconnectOpts};
+use irsync::session::reconnect::{
+    describe_dial, explain, run_with_reconnect, ConnState, ReconnectOpts,
+};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
@@ -587,7 +589,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions) -> anyhow::Result<()
         .endpoint
         .connect(c.target.clone(), irsync_proto::ALPN)
         .await
-        .map_err(|e| explain(e.into(), None, operand, &client))?;
+        .map_err(|e| anyhow::anyhow!(describe_dial(&c.target.id, &e)))?;
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;

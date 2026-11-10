@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use iroh::endpoint::{Connection, ConnectionError};
+use iroh::endpoint::{ConnectError, ConnectWithOptsError, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use irsync_proto::v1::{error::Code, Hello};
 use rand_core::{OsRng, RngCore};
@@ -178,6 +178,28 @@ fn describe_close(code: u32, reason: &str, remote: &str, client: &EndpointId) ->
     match code {
         1 => no_access_hint(remote, client),
         _ => format!("the daemon closed the connection: {reason}"),
+    }
+}
+
+/// A failed dial to `target`. When no lookup found any address for it, the
+/// usual cause is a host entry holding the server's client ID instead of its
+/// daemon's, or a daemon that isn't running, so the message says how to check.
+pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
+    let no_address = matches!(
+        err,
+        ConnectError::Connect {
+            source: ConnectWithOptsError::NoAddress { .. },
+            ..
+        }
+    );
+    if no_address {
+        format!(
+            "connecting to {target}: no address found for it. Is this the daemon's \
+             EndpointId? On the server, `irsync id show --daemon` prints it (plain \
+             `irsync id show` prints the client's). Also check that the daemon is running there."
+        )
+    } else {
+        format!("connecting to {target}: {err}")
     }
 }
 
@@ -412,9 +434,8 @@ async fn attempts(
                 (res, Some(conn))
             }
             Err(e) => (
-                Err(anyhow::Error::new(TransportError(format!(
-                    "connecting to {}: {e}",
-                    target.id
+                Err(anyhow::Error::new(TransportError(describe_dial(
+                    &target.id, &e,
                 )))),
                 None,
             ),
@@ -539,6 +560,24 @@ mod tests {
             other.contains("hello timeout") && !other.contains("grant"),
             "{other}"
         );
+    }
+
+    #[tokio::test]
+    async fn dial_without_any_address_points_at_the_daemon_id() {
+        let ep = crate::net::build_endpoint(crate::net::EndpointOpts::isolated(
+            iroh::SecretKey::generate(),
+        ))
+        .await
+        .unwrap();
+        let target = iroh::SecretKey::from_bytes(&[9; 32]).public();
+        let err = ep
+            .connect(EndpointAddr::new(target), irsync_proto::ALPN)
+            .await
+            .unwrap_err();
+        let msg = describe_dial(&target, &err);
+        assert!(msg.contains(&target.to_string()), "{msg}");
+        assert!(msg.contains("irsync id show --daemon"), "{msg}");
+        ep.close().await;
     }
 
     #[test]
