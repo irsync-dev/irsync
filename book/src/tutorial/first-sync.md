@@ -36,7 +36,7 @@ irsync: set up myserver over ssh:
 irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
 irsync:   generated the daemon identity
 irsync:   granted this client (a3e4753e5e) access to any path
-irsync:   started the daemon (log: /home/you/.local/state/irsync/daemon.log)
+irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
 irsync:   saved host alias myserver -> 4a29f16a4f
 ```
 

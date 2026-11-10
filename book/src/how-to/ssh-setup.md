@@ -69,7 +69,7 @@ run the same OS and CPU. Otherwise it stops with:
 
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh
-irsync: "myserver" is not an alias in /Users/you/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
+irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
 ```
 
 Install irsync on the server yourself and

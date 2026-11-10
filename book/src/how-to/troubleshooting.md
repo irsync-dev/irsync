@@ -8,14 +8,14 @@ The sync waits, then stops with one of two messages. When no address was
 ever published for the ID, which is the usual case for a wrong one:
 
 ```text
-irsync: /home/you/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: no address found for it. Is this the daemon's EndpointId? On the server, `irsync id show --daemon` prints it (plain `irsync id show` prints the client's). Also check that the daemon is running there.
+irsync: ~/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: no address found for it. Is this the daemon's EndpointId? On the server, `irsync id show --daemon` prints it (plain `irsync id show` prints the client's). Also check that the daemon is running there.
 ```
 
 When an address is known but nothing answers there, for example a daemon
 that has stopped:
 
 ```text
-irsync: /home/you/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: timed out; if you copied this host's ID by hand, it must be the daemon's EndpointId: on the server, irsync id show --daemon prints it (plain irsync id show prints the client's). Also check that the daemon is running there
+irsync: ~/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: timed out; if you copied this host's ID by hand, it must be the daemon's EndpointId: on the server, irsync id show --daemon prints it (plain irsync id show prints the client's). Also check that the daemon is running there
 ```
 
 The listing, `irsync myserver:`, ends with the same advice.
@@ -44,7 +44,7 @@ Then check that `irsync daemon` is running on the server.
 
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh
-irsync: "myserver" is not an alias in /Users/you/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
+irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
 ```
 
 **Cause.** The ssh setup installs irsync by copying the client's own binary,

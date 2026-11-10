@@ -553,7 +553,7 @@ A header, one line per iteration, a footer:
 
 ```text
 irsync-netstress
-  root:      /home/user/work/ns-4g-push
+  root:      ~/work/ns-4g-push
   seed:      1
   direction: push
   endpoint:  716a53cc4cea6705494da4d3b72cae40cfa658440e2e1fe4afba1f1bfbc2a5bb
@@ -577,7 +577,7 @@ failed, naming the reason and the client log:
 
 ```text
 iter 0001/0010  sync 72.3s  exit 0    manifest ok  check ok  outages 0
-  reconnect without a dead zone (1 time(s)); see /home/user/work/ns-dsl/logs/iter-0001.client.log
+  reconnect without a dead zone (1 time(s)); see ~/work/ns-dsl/logs/iter-0001.client.log
 ```
 
 When the file checks failed, the path of the check report follows instead,
@@ -585,13 +585,13 @@ as in irsync-stress:
 
 ```text
 iter 0003/0010  sync 104.2s  exit 23   manifest MISMATCH  check FAILED (added=1 deleted=1 changed=0)  outages 1
-/home/user/work/ns-4g-push/logs/iter-0003.check.txt
+~/work/ns-4g-push/logs/iter-0003.check.txt
 ```
 
 At the end, any partial files left behind are listed before the footer:
 
 ```text
-partial file left behind: /home/user/work/ns-4g-push/DST/data/a/b/.irsync.report.pdf.part
+partial file left behind: ~/work/ns-4g-push/DST/data/a/b/.irsync.report.pdf.part
 ```
 
 and a run where no dead zone ever opened ends with:

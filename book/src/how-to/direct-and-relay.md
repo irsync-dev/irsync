@@ -18,7 +18,7 @@ The first line of the summary at the end of each session names the path,
 `direct` or `relay`:
 
 ```text
-session 1/1  push  /home/me/Photos/ -> myserver:photos/  wall 3:12  direct
+session 1/1  push  ~/Photos/ -> myserver:photos/  wall 3:12  direct
 ```
 
 The live progress block shows the same word while the sync runs.
