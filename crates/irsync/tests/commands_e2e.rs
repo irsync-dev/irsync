@@ -1327,3 +1327,15 @@ fn config_sets_and_checks_the_telemetry_keys() {
     assert_eq!(err.matches("bad debug address").count(), 1, "{err}");
     assert_eq!(err.matches("irsync.toml").count(), 1, "{err}");
 }
+
+/// The getting-started text in `--help` must point at the line of
+/// `irsync id show` that holds the EndpointId, which is the last one.
+#[test]
+fn help_points_at_the_last_line_of_id_show() {
+    let d = tempfile::tempdir().unwrap();
+    let o = irsync(&d.path().join("home"), &["--help"]);
+    assert!(o.status.success());
+    let help = String::from_utf8_lossy(&o.stdout);
+    assert!(help.contains("print its id (the last line)"), "{help}");
+    assert!(!help.contains("second line"), "{help}");
+}

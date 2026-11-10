@@ -78,11 +78,11 @@ Quick start over ssh (irsync installed on the client only):
   hand as below.
 
 Getting started by hand (irsync installed on both sides):
-  On the client, print its id (the second line):
+  On the client, print its id (the last line):
     irsync id show
 
   On the server, export a directory, let the client in and start the daemon:
-    irsync export add photos:/srv/photos        # prints the server's id
+    irsync export add photos:/srv/photos        # prints the daemon's id
     irsync host add myclient <client-id>
     irsync grant add photos myclient
     irsync daemon

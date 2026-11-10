@@ -118,6 +118,11 @@ Here you export two directories under names, grant the client access to
 them, and start the daemon yourself. Nothing goes through ssh. irsync must
 be installed on both machines.
 
+This part is an alternative to the quick way, not a next step. Follow it on a
+server that was not set up over ssh: on one that was, a daemon is already
+running, so step 4 would start a second one, and step 5 would replace the
+`myserver` alias that the quick way saved.
+
 ### 1. Find the client's EndpointId
 
 On the client, print its identity:
