@@ -117,3 +117,57 @@ fn install_replaces_other_version() {
         }
     );
 }
+
+/// A one-line script standing in for ssh, in the fake home.
+fn script(f: &Fake, name: &str, body: &str) -> Rsh {
+    let p = f.home.path().join(name);
+    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Rsh::from_opts(Some(p.to_str().unwrap()))
+}
+
+#[test]
+fn probe_failure_names_the_destination() {
+    let f = fake(None);
+    let rsh = script(
+        &f,
+        "bad-ssh",
+        "echo 'ssh: Could not resolve hostname x' >&2; exit 255",
+    );
+    let e = probe(&rsh, "x").unwrap_err();
+    assert!(e.to_string().contains("cannot reach x"), "{e}");
+}
+
+#[test]
+fn probe_ignores_a_login_banner() {
+    let f = fake(None);
+    let wrapper = script(
+        &f,
+        "noisy-ssh",
+        &format!(
+            "echo Welcome; echo 'Linux x86_64'; exec {} \"$@\"",
+            fake_ssh().display()
+        ),
+    );
+    let p = probe(&wrapper, "myserver").unwrap();
+    assert_eq!(p.os, Some("linux"));
+    assert_eq!(p.arch, Some("x86_64"));
+}
+
+#[test]
+fn install_removes_a_short_upload() {
+    let f = fake(None);
+    // Truncates stdin to 10 bytes before it reaches the remote command.
+    let wrapper = script(
+        &f,
+        "short-ssh",
+        &format!("head -c 10 | {} \"$@\"", fake_ssh().display()),
+    );
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&wrapper, "myserver", &p).unwrap_err();
+    assert!(e.to_string().contains("cut short"), "{e}");
+    let bin = f.home.path().join(REMOTE_BIN);
+    assert!(!bin.exists());
+    let dir = bin.parent().unwrap();
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+}

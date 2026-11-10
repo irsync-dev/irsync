@@ -13,6 +13,9 @@ use crate::build::LONG_VERSION;
 /// irsync's own copy on the server, relative to the remote home.
 pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
 
+/// Printed first by the probe so a login banner before it can be ignored.
+const PROBE_MARKER: &str = "irsync-probe";
+
 #[cfg(feature = "test-hooks")]
 static EXE_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
@@ -54,8 +57,12 @@ impl Rsh {
         &self.argv
     }
 
-    /// `argv… dest remote_cmd`. The terminal is inherited, so password and
-    /// host-key prompts work. `remote_cmd` is fixed text built by irsync, plus
+    /// `argv… dest remote_cmd`. The child inherits stdin, stdout and stderr
+    /// unless the caller overrides them: `probe` and `ensure_installed` leave
+    /// stderr on the terminal so password and host-key prompts and ssh's own
+    /// errors show live; `probe` and `run_setup` capture stdout; `run_setup`
+    /// also captures stderr; `ensure_installed` feeds the binary on stdin.
+    /// `remote_cmd` is fixed text built by irsync, plus
     /// an EndpointId; it never contains user input.
     fn command(&self, dest: &str, remote_cmd: &str) -> Command {
         let mut c = Command::new(&self.argv[0]);
@@ -90,17 +97,28 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
 
 /// One SSH call: the server's platform and the installed version.
 pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
-    let cmd = format!("uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true");
+    // The marker lets us skip any banner a noisy login shell prints first.
+    let cmd = format!(
+        "echo {PROBE_MARKER}; uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
+    );
     let out = rsh
         .command(dest, &cmd)
         .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .output()
         .with_context(|| format!("cannot run {}", rsh.argv[0]))?;
     if !out.status.success() {
         bail!("cannot reach {dest} over {} ({})", rsh.argv[0], out.status);
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
+    let all: Vec<&str> = text.lines().collect();
+    let Some(at) = all.iter().rposition(|l| l.trim() == PROBE_MARKER) else {
+        bail!(
+            "unexpected reply from {dest} (no probe marker): {}",
+            text.trim()
+        );
+    };
+    let mut lines = all[at + 1..].iter().copied();
     let (os, arch) = parse_uname(lines.next().unwrap_or(""));
     let installed = lines
         .next()
@@ -139,17 +157,23 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     let exe = exe_path()?;
     let file =
         std::fs::File::open(&exe).with_context(|| format!("cannot read {}", exe.display()))?;
+    let len = file.metadata()?.len();
     let dir = REMOTE_BIN.rsplit_once('/').map_or("", |(d, _)| d);
+    let tmp = format!("\"$HOME/{REMOTE_BIN}.tmp.$$\"");
+    // Exit 3 marks a short upload; the temp file is removed first.
     let cmd = format!(
-        "mkdir -p \"$HOME/{dir}\" && cat > \"$HOME/{REMOTE_BIN}.tmp\" \
-         && chmod 755 \"$HOME/{REMOTE_BIN}.tmp\" \
-         && mv -f \"$HOME/{REMOTE_BIN}.tmp\" \"$HOME/{REMOTE_BIN}\""
+        "mkdir -p \"$HOME/{dir}\" && cat > {tmp} \
+         && {{ [ \"$(wc -c < {tmp})\" -eq {len} ] || {{ rm -f {tmp}; exit 3; }}; }} \
+         && chmod 755 {tmp} && mv -f {tmp} \"$HOME/{REMOTE_BIN}\""
     );
     let status = rsh
         .command(dest, &cmd)
         .stdin(Stdio::from(file))
         .status()
         .with_context(|| format!("cannot run {}", rsh.argv[0]))?;
+    if status.code() == Some(3) {
+        bail!("the copy of irsync on {dest} was cut short; nothing was changed, try again");
+    }
     if !status.success() {
         bail!("copying irsync to {dest} failed ({status})");
     }
