@@ -228,6 +228,23 @@ pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
     }
 }
 
+/// The usual reason a host added by hand never answers: its entry holds
+/// the server's client ID, not its daemon's.
+pub const WRONG_ID_HINT: &str = "if you copied this host's ID by hand, it must be the \
+     daemon's EndpointId: on the server, irsync id show --daemon prints it (plain \
+     irsync id show prints the client's). Also check that the daemon is running there";
+
+/// `err` with [`WRONG_ID_HINT`] after it, unless it already points at
+/// `irsync id show --daemon` (as a dial that found no address does).
+pub fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {
+    let text = format!("{err:#}");
+    if text.contains("irsync id show --daemon") {
+        err
+    } else {
+        anyhow::anyhow!("{text}; {WRONG_ID_HINT}")
+    }
+}
+
 /// A failed one-shot exchange (a listing) explained the way a session's
 /// final failure is: the daemon's close code or its refusal become the
 /// no-access hint; anything else is returned as is.
@@ -632,6 +649,23 @@ mod tests {
         assert!(msg.contains(&target.to_string()), "{msg}");
         assert!(msg.contains("irsync id show --daemon"), "{msg}");
         ep.close().await;
+    }
+
+    #[test]
+    fn wrong_id_hint_is_added_once() {
+        let count = |e: &anyhow::Error| format!("{e:#}").matches("irsync id show --daemon").count();
+        let e = with_wrong_id_hint(anyhow::anyhow!("gave up after 1 attempt: timed out"));
+        let text = format!("{e:#}");
+        assert!(text.contains("gave up after 1 attempt"), "{text}");
+        assert!(text.contains("copied this host's ID by hand"), "{text}");
+        assert_eq!(count(&e), 1, "{text}");
+        let twice = with_wrong_id_hint(e);
+        assert_eq!(count(&twice), 1, "{twice:#}");
+        // The no-address dial error already says it: left as it is.
+        let had =
+            anyhow::anyhow!("no address found. On the server, `irsync id show --daemon` prints it");
+        let before = format!("{had:#}");
+        assert_eq!(format!("{:#}", with_wrong_id_hint(had)), before);
     }
 
     #[test]

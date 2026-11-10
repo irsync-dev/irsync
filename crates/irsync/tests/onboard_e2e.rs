@@ -481,6 +481,51 @@ fn ssh_failure_tries_the_daemon_again() {
     let last = err.lines().last().unwrap_or_default();
     assert!(last.contains("cannot reach myserver over false"), "{err}");
     assert!(last.contains("gave up after 1 attempt"), "{err}");
+    // A host set up over ssh never gets the hand-copied-ID hint.
+    assert!(!err.contains("copied this host's ID by hand"), "{err}");
+}
+
+/// The client's config with the ssh link of `myserver` removed: the alias
+/// then looks like one added by hand with `irsync host add`.
+fn forget_ssh(w: &World) {
+    let path = w.client.path().join(".config/irsync/irsync.toml");
+    let cfg = w.client_config();
+    let kept: Vec<&str> = cfg.lines().filter(|l| !l.starts_with("ssh = ")).collect();
+    assert_ne!(kept.len(), cfg.lines().count(), "{cfg}");
+    std::fs::write(&path, kept.join("\n") + "\n").unwrap();
+}
+
+/// A host added by hand that never answers: the error says the ID must be
+/// the daemon's (the usual mistake is copying the server's client ID).
+#[test]
+fn hand_added_host_that_never_answers_gets_the_id_hint() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    forget_ssh(&w);
+    w.kill_daemon();
+    let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(!err.contains("checking it over ssh"), "{err}");
+    assert!(err.contains("copied this host's ID by hand"), "{err}");
+    assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
+}
+
+/// The same for a listing, the first remote command of a manual setup.
+#[test]
+fn hand_added_host_listing_gets_the_id_hint() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    forget_ssh(&w);
+    w.kill_daemon();
+    let o = w.irsync(&["myserver:"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("copied this host's ID by hand"), "{err}");
+    assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
 }
 
 /// A host set up in this run that then does not answer is not checked

@@ -30,7 +30,8 @@ use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
-    describe_dial, explain, run_with_reconnect, ConnState, NeverReached, ReconnectOpts,
+    describe_dial, explain, run_with_reconnect, with_wrong_id_hint, ConnState, NeverReached,
+    ReconnectOpts,
 };
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync::telemetry::init::trace_files_from_env;
@@ -743,7 +744,14 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         .endpoint
         .connect(c.target.clone(), irsync_proto::ALPN)
         .await
-        .map_err(|e| anyhow::anyhow!(describe_dial(&c.target.id, &e)))?;
+        .map_err(|e| {
+            let err = anyhow::anyhow!(describe_dial(&c.target.id, &e));
+            // A host set up over ssh is not one whose ID was copied by hand.
+            match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
+                Some(_) => err,
+                None => with_wrong_id_hint(err),
+            }
+        })?;
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -899,7 +907,7 @@ async fn sync(
                             conn.endpoint.close().await;
                             conn = connect_for(host, cli_opts, log, hints).await?;
                         }
-                        Recheck::NotSsh => break Err(e),
+                        Recheck::NotSsh => break Err(with_wrong_id_hint(e)),
                         Recheck::GrantRemoved(refused) => break Err(refused),
                         // The daemon may only have been slow: one more
                         // try, with the usual settings.
