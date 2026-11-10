@@ -46,6 +46,17 @@ impl Grants {
         self.exports.get(export).copied().or(self.all)
     }
 
+    /// The access this key has to `export`, named `name`: as
+    /// [`Grants::access`], except that `[all]` never reaches an automatic
+    /// export; those belong to the peer they were made for.
+    pub fn access_to(&self, name: &str, export: &Export) -> Option<Access> {
+        match self.exports.get(name) {
+            Some(a) => Some(*a),
+            None if export.auto => None,
+            None => self.all,
+        }
+    }
+
     pub fn allows(&self, export: &str, write: bool) -> bool {
         self.access(export).is_some_and(|a| a.permits(write))
     }
@@ -122,6 +133,16 @@ impl Snapshot {
                         tracing::warn!(entry = %entry, "immediate grant entry matches nobody")
                     }
                 }
+            }
+        }
+        // An automatic export was made for a peer with the immediate grant
+        // and carries its own `rw` entry: it counts only while that grant
+        // is in effect, so removing the grant or turning `immediate` off
+        // ends access through it too.
+        for g in grants.values_mut() {
+            if !g.immediate {
+                g.exports
+                    .retain(|name, _| exports.exports.get(name).is_none_or(|e| !e.auto));
             }
         }
         Snapshot {

@@ -1,7 +1,7 @@
 //! The long-running side: accepts connections, checks the peer's key before reading
 //! anything, resolves and validates the requested export, then hands off to a session.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -574,7 +574,7 @@ fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
         .exports
         .iter()
         .filter_map(|(name, e)| {
-            let access = grants.access(name)?;
+            let access = grants.access_to(name, e)?;
             let access = if e.read_only || access == Access::ReadOnly {
                 export_entry::Access::Ro
             } else {
@@ -656,7 +656,17 @@ async fn serve_immediate(
         Ok(Direction::DaemonSends) => false,
         _ => return Err((Code::Unknown, "bad direction".into())),
     };
-    let abs = match resolve_path(&hello.path, shared.home.as_deref(), &snap.exports) {
+    // An export's short name stands for its path only when this peer may
+    // use that export; any other name is a directory under the home, so
+    // the peer cannot reach (and auto-export) another client's export.
+    let grants = snap.grants(&id);
+    let usable: BTreeMap<String, Export> = snap
+        .exports
+        .iter()
+        .filter(|(name, e)| grants.access_to(name, e).is_some())
+        .map(|(name, e)| (name.clone(), e.clone()))
+        .collect();
+    let abs = match resolve_path(&hello.path, shared.home.as_deref(), &usable) {
         Ok(Some((abs, _))) => abs,
         Ok(None) => return Err(no_access(hello)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),

@@ -182,9 +182,11 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     })
 }
 
-/// Run `ssh-setup` on the server and parse what it reports.
-pub fn run_setup(rsh: &Rsh, dest: &str, client: EndpointId) -> Result<SetupReport> {
-    let cmd = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client}");
+/// Run `ssh-setup` on the server and parse what it reports; `recheck`
+/// passes `--recheck` (a saved host: never add back a removed grant).
+pub fn run_setup(rsh: &Rsh, dest: &str, client: EndpointId, recheck: bool) -> Result<SetupReport> {
+    let flag = if recheck { " --recheck" } else { "" };
+    let cmd = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client}{flag}");
     let out = rsh
         .command(dest, &cmd)
         .stdout(Stdio::piped())

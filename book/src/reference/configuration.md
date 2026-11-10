@@ -173,7 +173,7 @@ be an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |
-| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a host with `ssh` does not answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. A host without `ssh` is never touched over ssh. |
+| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a host with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync HOST:`, is not checked this way. A host without `ssh` is never touched over ssh. |
 
 `--address` on the command line replaces the host's `address` list.
 
@@ -230,7 +230,8 @@ be `all`.
 | `ro` | `[]` | Peers with read-only access. |
 | `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer (see below). |
 
-`[all]` has `rw` and `ro` too; its grants apply to every export.
+`[all]` has `rw` and `ro` too; its grants apply to every export except
+automatic ones (`auto = true`).
 
 ### Immediate grants
 
@@ -244,12 +245,17 @@ automatic export for it, `auto = true`, named `auto-` and the path with `-`
 between its parts (`/srv/music` becomes `auto-srv-music`), granted read-write
 to that peer only. The export is the directory itself, or the directory that
 holds a file. A push to a directory that does not exist yet creates it, when
-its parent exists. `/` is never exported automatically; add that by hand. Once
-made, an automatic export is an ordinary export: you can grant it to others,
-or remove it with `irsync export remove`.
+its parent exists. A push to the home itself (`myserver:`) exports the whole
+home. `/` is never exported automatically; add that by hand. Remove an
+automatic export with `irsync export remove`.
 
-With `daemon.immediate = false` the daemon ignores `[immediate]` and makes no
-automatic exports. Exports it made earlier stay, with their grants.
+An automatic export belongs to the `[immediate]` peers: `[all]` never reaches
+it, and a grant on it counts only while that peer's immediate grant is in
+effect. Removing a peer from `[immediate]`, or setting `daemon.immediate =
+false`, therefore also ends its access through the automatic exports made
+for it; the exports themselves stay in the file. To share such a directory
+with other peers, delete its `auto = true` line: it is then an ordinary
+export.
 
 How grants combine:
 

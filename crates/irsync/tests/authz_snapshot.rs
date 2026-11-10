@@ -94,3 +94,40 @@ fn immediate_off_ignores_grant() {
     assert!(!s.grants(&id(1)).immediate);
     assert!(s.grants(&id(1)).is_empty());
 }
+
+/// An automatic export carries its peer's own `rw` entry; it counts only
+/// while that peer's immediate grant is in effect, so removing the grant
+/// or turning `immediate` off also ends access through earlier automatic
+/// exports. Exports written by hand are unaffected.
+#[test]
+fn auto_export_grant_needs_the_immediate_grant() {
+    let exports = |immediate: bool| {
+        let mut t = format!(
+            "[exports.home-auto]\npath = \"/h\"\nauto = true\nrw = [\"{a}\"]\n\
+             [exports.x]\npath = \"/x\"\nrw = [\"{a}\"]\n",
+            a = id(1)
+        );
+        if immediate {
+            t = format!("[immediate]\nrw = [\"{}\"]\n{t}", id(1));
+        }
+        Exports::parse(&t, Path::new("e")).unwrap()
+    };
+    let hosts = Hosts::parse("", Path::new("h")).unwrap();
+    let on = Snapshot::from_files(&hosts, &exports(true), true);
+    assert!(on.grants(&id(1)).allows("home-auto", true));
+    for (s, why) in [
+        (
+            Snapshot::from_files(&hosts, &exports(false), true),
+            "no grant",
+        ),
+        (
+            Snapshot::from_files(&hosts, &exports(true), false),
+            "immediate off",
+        ),
+    ] {
+        let g = s.grants(&id(1));
+        assert_eq!(g.exports.get("home-auto"), None, "{why}");
+        assert!(g.allows("x", true), "{why}");
+        assert!(!g.immediate, "{why}");
+    }
+}

@@ -56,9 +56,10 @@ Then the push runs over iroh.
 Later runs use the alias and do not touch ssh. If the daemon has stopped,
 for example after a reboot, a sync waits about 15 seconds for an answer, then
 says `myserver did not answer; checking it over ssh`, starts the daemon again
-and carries on. A
-daemon that answers but refuses the client is never "fixed" over ssh: that
-refusal is on purpose.
+and carries on. A daemon that answers but refuses the client is never "fixed"
+over ssh: that refusal is on purpose. The check never adds back an immediate
+grant you removed on the server either; the sync then stops with the same
+"rejected this client's key" message.
 
 Use `--rsh` or `IRSYNC_RSH` for another ssh command, such as
 `--rsh "ssh -p 2222"`. If the client should not reach every path, set

@@ -116,7 +116,7 @@ pub fn containing<'a>(
     type Candidate<'a> = ((usize, bool, u8), &'a str, &'a Export, Access);
     let mut best: Option<Candidate<'a>> = None;
     for (name, export) in exports {
-        let Some(access) = grants.access(name) else {
+        let Some(access) = grants.access_to(name, export) else {
             continue;
         };
         let prefix = parts_of(&export.path);

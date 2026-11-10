@@ -744,3 +744,118 @@ async fn immediate_missing_path_is_bad_path() {
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
+
+fn export_at(
+    path: &std::path::Path,
+    auto: bool,
+    rw: Vec<String>,
+) -> irsync::config::exports::Export {
+    irsync::config::exports::Export {
+        path: path.to_path_buf(),
+        read_only: false,
+        warm_index: false,
+        fsync: false,
+        auto,
+        rw,
+        ro: Vec::new(),
+    }
+}
+
+/// `[all]` covers the exports written by hand only: an automatic export
+/// belongs to the peer it was made for, so an `[all] rw` key can neither
+/// use nor list it.
+#[tokio::test]
+async fn all_grant_does_not_reach_auto_exports() {
+    use irsync_proto::v1::export_entry::Access as A;
+    let tmp = tempfile::tempdir().unwrap();
+    let (normal, auto) = (tmp.path().join("normal"), tmp.path().join("auto"));
+    std::fs::create_dir(&normal).unwrap();
+    std::fs::create_dir(&auto).unwrap();
+    let client = client_endpoint().await;
+    let owner = client_endpoint().await;
+    let authz = Arc::new(
+        MemoryAuthorizer::single(client.id(), grants(Access::ReadWrite)).with_exports(
+            [
+                ("normal".to_string(), export_at(&normal, false, Vec::new())),
+                (
+                    "home-auto".to_string(),
+                    export_at(&auto, true, vec![owner.id().to_string()]),
+                ),
+            ]
+            .into(),
+        ),
+    );
+    let d = spawn_memory(&authz).await;
+    for path in [
+        bytes(&auto),
+        bytes(&auto.join("sub")),
+        b"home-auto".to_vec(),
+    ] {
+        for dir in [Direction::ClientSends, Direction::DaemonSends] {
+            let e = reply(exchange_against(&d, &client, hello(&path, dir)).await);
+            assert_eq!(e, (Code::Unauthorized as i32, no_access(&path)), "{path:?}");
+        }
+    }
+    let r = exchange_against(&d, &client, hello(&bytes(&normal), Direction::ClientSends)).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    assert_eq!(
+        list_against(&d, &client).await.unwrap(),
+        vec![("normal".to_string(), bytes(&normal), A::Rw as i32)]
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// An immediate peer's relative path names another client's export: the
+/// short name only counts for exports this peer may use, so the path
+/// resolves under the home instead and the shared export is untouched.
+#[tokio::test]
+async fn immediate_relative_path_does_not_take_another_clients_export() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(tmp.path()).unwrap();
+    let (home, shared) = (base.join("home"), base.join("srv/shared/photos"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    let client = client_endpoint().await;
+    let other = client_endpoint().await;
+    let authz = Arc::new(
+        MemoryAuthorizer::single(client.id(), immediate())
+            .with(
+                other.id(),
+                Grants {
+                    exports: [("photos".to_string(), Access::ReadWrite)].into(),
+                    ..Grants::default()
+                },
+            )
+            .with_exports(
+                [(
+                    "photos".to_string(),
+                    export_at(&shared, false, vec![other.id().to_string()]),
+                )]
+                .into(),
+            ),
+    );
+    let d = spawn_daemon_full(
+        authz.clone(),
+        tempfile::tempdir().unwrap(),
+        Some(home.clone()),
+    )
+    .await;
+    let r = exchange_against(&d, &client, hello(b"photos", Direction::ClientSends)).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    assert!(home.join("photos").is_dir());
+    let snap = authz.snapshot().unwrap();
+    let autos: Vec<_> = snap
+        .exports
+        .values()
+        .filter(|e| e.auto)
+        .map(|e| e.path.clone())
+        .collect();
+    assert_eq!(autos, vec![home.join("photos")]);
+    let at_shared = snap.exports.values().filter(|e| e.path == shared).count();
+    assert_eq!(at_shared, 1, "{:?}", snap.exports);
+    assert!(!snap.grants(&client.id()).exports.contains_key("photos"));
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}

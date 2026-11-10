@@ -43,6 +43,9 @@ pub enum GrantOutcome {
     Already,
     /// `daemon.immediate` is off: nothing was granted.
     ImmediateOff,
+    /// A recheck found no immediate grant for the client and did not add
+    /// one: the owner removed it.
+    Missing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +97,7 @@ impl SetupReport {
                     GrantOutcome::Added => "added",
                     GrantOutcome::Already => "already",
                     GrantOutcome::ImmediateOff => "immediate_off",
+                    GrantOutcome::Missing => "missing",
                 }
             ),
         ];
@@ -154,6 +158,7 @@ impl SetupReport {
             "added" => GrantOutcome::Added,
             "already" => GrantOutcome::Already,
             "immediate_off" => GrantOutcome::ImmediateOff,
+            "missing" => GrantOutcome::Missing,
             v => return Err(bad("grant", v)),
         };
         let daemon = match get("daemon")?.as_str() {
@@ -180,7 +185,11 @@ impl SetupReport {
 }
 
 /// Does every server-side step for `client`: identity, grant, daemon.
-pub fn run(paths: &Paths, client: EndpointId) -> anyhow::Result<SetupReport> {
+/// With `recheck` (a client checking a saved host that did not answer) a
+/// missing immediate grant is added only when the daemon identity was just
+/// generated, a rebuilt server; otherwise the owner removed it, and it is
+/// reported as [`GrantOutcome::Missing`] instead.
+pub fn run(paths: &Paths, client: EndpointId, recheck: bool) -> anyhow::Result<SetupReport> {
     let Config {
         settings, hosts, ..
     } = Config::load(paths)?;
@@ -214,11 +223,14 @@ pub fn run(paths: &Paths, client: EndpointId) -> anyhow::Result<SetupReport> {
         let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
         let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
             .with_context(|| format!("in {}", paths.config.display()))?;
-        if added {
-            lock.save(&doc)?;
-            GrantOutcome::Added
-        } else {
-            GrantOutcome::Already
+        match (added, recheck && !generated) {
+            (false, _) => GrantOutcome::Already,
+            // Not saved: the edit is dropped with the lock.
+            (true, true) => GrantOutcome::Missing,
+            (true, false) => {
+                lock.save(&doc)?;
+                GrantOutcome::Added
+            }
         }
     } else {
         GrantOutcome::ImmediateOff

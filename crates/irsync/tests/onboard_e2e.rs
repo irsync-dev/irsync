@@ -411,6 +411,41 @@ fn refusal_never_uses_ssh() {
     assert!(!granted, "{}", w.server_toml());
 }
 
+/// Whether the server config grants `id` immediate access.
+fn immediate_granted(w: &World, id: &str) -> bool {
+    let doc: toml::Table = w.server_toml().parse().unwrap();
+    doc.get("immediate")
+        .and_then(|i| i.get("rw"))
+        .and_then(|rw| rw.as_array())
+        .is_some_and(|rw| rw.iter().any(|v| v.as_str() == Some(id)))
+}
+
+/// The owner removed the immediate grant and the daemon is down: the ssh
+/// check restarts the daemon but must not put the grant back; the sync
+/// stops with the refusal's hint and is not retried.
+#[test]
+fn fallback_after_grant_removed_does_not_regrant() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let id = client_id(w.client.path());
+    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
+    assert!(out.status.success(), "{out:?}");
+    w.kill_daemon();
+    let other = w.server.path().join("other");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", other.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("checking it over ssh"), "{err}");
+    assert!(
+        err.contains("the daemon rejected this client's key"),
+        "{err}"
+    );
+    assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
+    assert!(!other.exists());
+}
+
 #[test]
 fn alias_without_ssh_does_not_fall_back() {
     let w = World::new();

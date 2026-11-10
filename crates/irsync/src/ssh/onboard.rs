@@ -30,19 +30,22 @@ pub struct Onboarded {
     pub client: EndpointId,
 }
 
-/// Sets up `dest` (an ssh destination, also the alias) for `client`:
-/// probe, install this build, run `ssh-setup`, then save the alias with
-/// `ssh = dest`.
+/// Sets up `dest` (an ssh destination) for `client`: probe, install this
+/// build, run `ssh-setup`, then save `alias` with `ssh = dest`. A first
+/// run passes the same text for both. `recheck`: `alias` is a saved host
+/// being checked, so `ssh-setup` must not add back a removed grant.
 pub fn onboard(
     paths: &Paths,
     rsh: &Rsh,
+    alias: &str,
     dest: &str,
     client: EndpointId,
+    recheck: bool,
 ) -> anyhow::Result<Onboarded> {
-    check(paths, dest)?;
+    check(paths, alias)?;
     let p = probe(rsh, dest)?;
     let install = ensure_installed(rsh, dest, &p)?;
-    let report = run_setup(rsh, dest, client)?;
+    let report = run_setup(rsh, dest, client, recheck)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let flags = HostFlags {
@@ -51,13 +54,13 @@ pub fn onboard(
     };
     let alias_existed = doc
         .get("hosts")
-        .and_then(|h| h.get(dest))
+        .and_then(|h| h.get(alias))
         .is_some_and(toml_edit::Item::is_table_like);
-    let previous_id = manage::hosts::host_add(&mut doc, dest, report.endpoint_id, &flags)
-        .with_context(|| format!("saving host alias {dest}"))?;
+    let previous_id = manage::hosts::host_add(&mut doc, alias, report.endpoint_id, &flags)
+        .with_context(|| format!("saving host alias {alias}"))?;
     lock.save(&doc)?;
     Ok(Onboarded {
-        alias: dest.to_string(),
+        alias: alias.to_string(),
         endpoint_id: report.endpoint_id,
         previous_id,
         alias_existed,
@@ -108,6 +111,11 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             short(&o.client)
         )),
         GrantOutcome::Already => {}
+        GrantOutcome::Missing => out.push(format!(
+            "  this client ({}) has no immediate grant on {dest} any more; \
+             left it that way",
+            short(&o.client)
+        )),
         GrantOutcome::ImmediateOff => out.push(format!(
             "  immediate mode is off on {dest}: only exports granted to this client are reachable"
         )),

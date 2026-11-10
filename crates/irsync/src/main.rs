@@ -65,9 +65,11 @@ fn main() {
             passphrase_file,
             files,
         }) => std::process::exit(run_show(files, passphrase_file.clone())),
-        Some(Command::SshSetup { client, files }) => {
-            std::process::exit(run_ssh_setup(client, files))
-        }
+        Some(Command::SshSetup {
+            client,
+            recheck,
+            files,
+        }) => std::process::exit(run_ssh_setup(client, *recheck, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -436,15 +438,14 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         log.eprintln(&format!(
             "irsync: {host} is not a saved alias; setting it up over ssh"
         ));
-        let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, secret.public()).with_context(
-            || {
+        let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, host, secret.public(), false)
+            .with_context(|| {
                 format!(
                     "{host:?} is not an alias in {} and not an EndpointId; \
                      setting it up over ssh failed",
                     config.hosts.path.display()
                 )
-            },
-        )?;
+            })?;
         report_onboarded(log, &o);
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
@@ -533,11 +534,14 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
 
 /// A saved host with `ssh` that never answered: set it up over ssh again
 /// (it restarts a dead daemon and updates the alias if the id changed).
-/// `Ok(false)`: not an ssh host, nothing done.
+/// `Ok(false)`: not an ssh host, nothing done. When the owner removed this
+/// client's immediate grant, it is not added back and the result is the
+/// daemon's refusal hint for `remote` (the operand as typed).
 fn recheck_over_ssh(
     host: &str,
     entry: Option<&irsync::config::hosts::HostEntry>,
     client: iroh::EndpointId,
+    remote: &str,
     opts: &SyncOptions,
     log: &LogWriter,
 ) -> anyhow::Result<bool> {
@@ -549,9 +553,12 @@ fn recheck_over_ssh(
     ));
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let o = irsync::ssh::onboard::onboard(&paths, &rsh, dest, client)
+    let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true)
         .with_context(|| format!("{host} did not answer, and checking it over ssh failed"))?;
     report_onboarded(log, &o);
+    if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
+        bail!(irsync::session::reconnect::no_access_hint(remote, &client));
+    }
     Ok(true)
 }
 
@@ -808,7 +815,8 @@ async fn sync(
                 Err(e) if !rechecked && e.downcast_ref::<NeverReached>().is_some() => {
                     rechecked = true;
                     let client = conn.endpoint.id();
-                    match recheck_over_ssh(host, conn.host_entry.as_ref(), client, cli_opts, log) {
+                    let entry = conn.host_entry.as_ref();
+                    match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
                         Ok(true) => {}
                         Ok(false) => break Err(e),
                         Err(ssh) => break Err(ssh),
@@ -1249,10 +1257,10 @@ fn file_paths(f: &FilesArgs) -> Paths {
 }
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
-fn run_ssh_setup(client: &str, files: &FilesArgs) -> i32 {
+fn run_ssh_setup(client: &str, recheck: bool, files: &FilesArgs) -> i32 {
     let result = parse_endpoint_id(client)
         .with_context(|| format!("--client {client:?}"))
-        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id));
+        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck));
     match result {
         Ok(report) => {
             print!("{}", report.to_lines());

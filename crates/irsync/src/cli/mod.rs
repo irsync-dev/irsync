@@ -198,6 +198,11 @@ pub enum Command {
         /// The client's EndpointId.
         #[arg(long)]
         client: String,
+        /// A client checking a saved host: do not add back an immediate
+        /// grant the owner removed (only a freshly generated daemon
+        /// identity gets one).
+        #[arg(long)]
+        recheck: bool,
         #[command(flatten)]
         files: FilesArgs,
     },

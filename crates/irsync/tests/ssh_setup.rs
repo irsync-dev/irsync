@@ -44,7 +44,14 @@ impl Home {
     }
 
     fn setup(&self, client: &EndpointId) -> SetupReport {
-        let out = irsync_bin(self.path(), &["ssh-setup", "--client", &client.to_string()]);
+        self.setup_with(client, &[])
+    }
+
+    fn setup_with(&self, client: &EndpointId, extra: &[&str]) -> SetupReport {
+        let id = client.to_string();
+        let mut args = vec!["ssh-setup", "--client", &id];
+        args.extend_from_slice(extra);
+        let out = irsync_bin(self.path(), &args);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -96,6 +103,7 @@ fn report_roundtrips() {
         GrantOutcome::Added,
         GrantOutcome::Already,
         GrantOutcome::ImmediateOff,
+        GrantOutcome::Missing,
     ];
     let ids = [Created::Existing, Created::Generated];
     for d in &daemons {
@@ -159,6 +167,42 @@ fn immediate_off_reports_and_does_not_grant() {
     let r = home.setup(&client_id());
     assert_eq!(r.grant, GrantOutcome::ImmediateOff);
     assert!(!read_config(&home).contains_key("immediate"));
+}
+
+/// `--recheck` (the client's fallback for a saved host) never puts back an
+/// immediate grant the owner removed; it adds one only when the daemon
+/// identity was just generated (a rebuilt server).
+#[test]
+fn recheck_does_not_regrant() {
+    let home = Home::new("");
+    let client = client_id();
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
+    let out = irsync_bin(
+        home.path(),
+        &["grant", "remove", "immediate", &client.to_string()],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let bytes = std::fs::read(home.config()).unwrap();
+    let r = home.setup_with(&client, &["--recheck"]);
+    assert_eq!(r.grant, GrantOutcome::Missing);
+    assert_eq!(r.identity, Created::Existing);
+    assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
+    // Still granted: nothing to say.
+    let other = client_id();
+    let out = irsync_bin(
+        home.path(),
+        &["grant", "add", "immediate", &other.to_string()],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        home.setup_with(&other, &["--recheck"]).grant,
+        GrantOutcome::Already
+    );
+    // A rebuilt server (fresh identity) gets the grant again.
+    let fresh = Home::new("");
+    let r = fresh.setup_with(&client, &["--recheck"]);
+    assert_eq!(r.identity, Created::Generated);
+    assert_eq!(r.grant, GrantOutcome::Added);
 }
 
 /// A child holding `daemon.lock` with a made-up record, as a daemon would.

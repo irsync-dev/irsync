@@ -187,7 +187,7 @@ fn classify(err: &anyhow::Error, conn: Option<&Connection>) -> Next {
 /// What to do about a key the daemon will not let use `remote` (`HOST:PATH`
 /// as typed). The daemon cannot say which export is missing a grant, or
 /// whether the path is exported at all, so the hint names both remedies.
-fn no_access_hint(remote: &str, client: &EndpointId) -> String {
+pub fn no_access_hint(remote: &str, client: &EndpointId) -> String {
     format!(
         "the daemon rejected this client's key: no access to {remote}. On the daemon's \
          machine, irsync grant list {client} shows what this key may reach; \
