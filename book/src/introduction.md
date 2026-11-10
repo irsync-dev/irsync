@@ -15,6 +15,23 @@ re-comparing the whole tree. Many files are in flight at once, scanning runs
 alongside the transfer, and a persistent index makes repeat runs over a large,
 mostly unchanged tree cheap.
 
+## Quick start
+
+If `ssh myserver` logs you in to the server, irsync needs to be installed on
+the client only. Push to any path your account there can reach:
+
+```sh
+irsync -av ~/Photos/ myserver:/srv/photos/
+```
+
+The first run sets the server up over ssh: it installs irsync there, grants
+this client access to any path (*immediate mode*), starts the daemon and saves
+`myserver` as a host alias. Later runs connect over iroh without ssh.
+
+To share only named directories instead, set the server up by hand: export a
+directory, grant the client access to it and start the daemon.
+[Your first sync](tutorial/first-sync.md) walks through both ways.
+
 ## Who this book is for
 
 People who copy large directory trees between a client and a server, both

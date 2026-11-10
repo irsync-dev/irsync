@@ -64,9 +64,20 @@ pub struct Args {
 const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
                              {usage-heading} {usage}\n\n{all-args}{after-help}";
 
-/// A first sync, from nothing to a push and a pull.
+/// A first sync, from nothing to a push and a pull: over ssh, or by hand.
 const AFTER_HELP: &str = "\
-Getting started:
+Quick start over ssh (irsync installed on the client only):
+  If `ssh myserver` logs you in, push to any path your account there can reach:
+    irsync -av ~/Photos/ myserver:/srv/photos/
+  The first run installs irsync on the server (same OS and CPU), grants this
+  client access to any path (immediate mode), starts the daemon and saves
+  `myserver` as a host alias. Later runs go over iroh without ssh:
+    irsync -av myserver:/srv/photos/ ~/Photos/  # pull them back
+    irsync -av --ssh ~/Photos/ myserver:/srv/photos/   # update the server first
+  To share only named directories instead of any path, set the server up by
+  hand as below.
+
+Getting started by hand (irsync installed on both sides):
   On the client, print its id (the second line):
     irsync id show
 
