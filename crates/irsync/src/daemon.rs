@@ -21,7 +21,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
-use crate::autoexport::auto_root;
+use crate::autoexport::{auto_root, check_root, AutoRootError};
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
@@ -505,7 +505,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
     let fresh: Snapshot;
     let validated = match validate(&snap, &grants, shared.home.as_deref(), &hello) {
         Ok(Some(v)) => Ok(v),
-        Ok(None) if grants.immediate => match serve_immediate(&shared, &snap, id, &hello) {
+        Ok(None) if grants.immediate => match serve_immediate(&shared, &snap, id, &hello).await {
             Ok((s, abs)) => {
                 fresh = s;
                 let grants = fresh.grants(&id);
@@ -643,9 +643,10 @@ fn validate<'a>(
 /// contains: adds an automatic export for the path ([`auto_root`]) and
 /// returns a snapshot that has it, with the path made canonical to resolve
 /// against it. Such a key can reach the server over SSH anyway, so a
-/// missing path is reported as such.
-fn serve_immediate(
-    shared: &Shared,
+/// missing path is reported as such. The filesystem and config work runs
+/// off the async runtime: it may wait for the config lock.
+async fn serve_immediate(
+    shared: &Arc<Shared>,
     snap: &Snapshot,
     id: iroh::EndpointId,
     hello: &Hello,
@@ -660,14 +661,32 @@ fn serve_immediate(
         Ok(None) => return Err(no_access(hello)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
-    let missing = || {
-        (
+    let (shared, path) = (shared.clone(), hello.path.clone());
+    tokio::task::spawn_blocking(move || add_immediate(&shared, abs, push, id, &path))
+        .await
+        .unwrap_or_else(|e| Err((Code::Internal, format!("adding the export failed: {e}"))))
+}
+
+/// The blocking part of [`serve_immediate`] for `abs`, the resolved form
+/// of `path` (as typed, for messages).
+fn add_immediate(
+    shared: &Shared,
+    abs: PathBuf,
+    push: bool,
+    id: iroh::EndpointId,
+    path: &[u8],
+) -> Result<(Snapshot, PathBuf), (Code, String)> {
+    let refuse = |e: AutoRootError| match e {
+        AutoRootError::NotFound => (
             Code::BadPath,
-            format!("no such file or directory: {}", escape_path(&hello.path)),
-        )
+            format!("no such file or directory: {}", escape_path(path)),
+        ),
+        e => (Code::BadPath, e.to_string()),
     };
-    let root = auto_root(&abs, push).map_err(|_| missing())?;
-    let canonical = std::fs::canonicalize(&root).map_err(|_| missing())?;
+    let root = auto_root(&abs, push).map_err(refuse)?;
+    // A symlink may lead to `/` or to a name that is not UTF-8.
+    let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoRootError::NotFound))?;
+    check_root(&canonical).map_err(refuse)?;
     let abs = match abs.strip_prefix(&root) {
         Ok(rest) if !rest.as_os_str().is_empty() => canonical.join(rest),
         _ => canonical.clone(),

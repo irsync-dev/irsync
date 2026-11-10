@@ -674,6 +674,54 @@ async fn immediate_off_rejects_unexported_path() {
 }
 
 #[tokio::test]
+async fn immediate_push_to_missing_dir_creates_and_exports_it() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let new = tmp.path().join("new");
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    let r = exchange_against(&d, &client, hello(&bytes(&new), Direction::ClientSends)).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    assert!(new.is_dir());
+    let snap = authz.snapshot().unwrap();
+    let paths: Vec<_> = snap.exports.values().map(|e| e.path.clone()).collect();
+    assert_eq!(paths, vec![new]);
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn immediate_refuses_root_and_non_utf8_roots() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut bad = bytes(tmp.path());
+    bad.extend_from_slice(b"/caf\xe9");
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    let cases = [
+        (
+            &b"/"[..],
+            Direction::DaemonSends,
+            "cannot export / automatically; add an export by hand",
+        ),
+        (
+            &bad,
+            Direction::ClientSends,
+            "automatic exports need a UTF-8 path",
+        ),
+    ];
+    for (path, dir, message) in cases {
+        let e = reply(exchange_against(&d, &client, hello(path, dir)).await);
+        assert_eq!(e, (Code::BadPath as i32, message.to_string()), "{path:?}");
+    }
+    assert!(authz.snapshot().unwrap().exports.is_empty());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
 async fn immediate_missing_path_is_bad_path() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();

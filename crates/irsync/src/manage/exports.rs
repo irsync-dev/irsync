@@ -52,7 +52,7 @@ pub fn add_export(
 
 /// The auto export name for `path`: `auto-` and the components joined by
 /// `-`, every byte outside `[A-Za-z0-9._-]` as `_`; `/` is `auto-root`.
-pub(crate) fn auto_name(path: &Path) -> String {
+fn auto_name(path: &Path) -> String {
     let parts: Vec<String> = path
         .components()
         .filter_map(|c| match c {
@@ -78,6 +78,19 @@ pub(crate) fn auto_name(path: &Path) -> String {
     }
 }
 
+/// The auto export name for `path` that `taken` does not hold yet: the
+/// plain name, else it with `-2`, `-3`, ...
+pub(crate) fn unique_auto_name(path: &Path, taken: impl Fn(&str) -> bool) -> String {
+    let base = auto_name(path);
+    let mut name = base.clone();
+    let mut n = 2;
+    while taken(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    name
+}
+
 /// Add an automatic export of `path`, read-write for `peer`; the name it
 /// got (`-2`, `-3`, ... when the name is taken).
 pub fn add_auto_export(
@@ -86,13 +99,7 @@ pub fn add_auto_export(
     peer: EndpointId,
 ) -> Result<String, ManageError> {
     let exports = exports_table(doc)?;
-    let base = auto_name(path);
-    let mut name = base.clone();
-    let mut n = 2;
-    while exports.contains_key(&name) {
-        name = format!("{base}-{n}");
-        n += 1;
-    }
+    let name = unique_auto_name(path, |n| exports.contains_key(n));
     let mut t = Table::new();
     t["path"] = toml_edit::value(path.to_string_lossy().into_owned());
     t["auto"] = toml_edit::value(true);

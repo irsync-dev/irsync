@@ -148,6 +148,11 @@ pub trait Authorizer: Send + Sync {
     fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError>;
 }
 
+/// How long [`FileAuthorizer::add_auto_export`] waits for a config lock
+/// someone else holds (another connection adding its export, or an
+/// `irsync export` command).
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// True when an export `peer` may use in `snap` already contains `root`.
 fn covered(snap: &Snapshot, root: &Path, peer: &EndpointId) -> bool {
     crate::resolve::containing(root, &snap.exports, &snap.grants(peer), None).is_some()
@@ -178,11 +183,20 @@ impl Authorizer for FileAuthorizer {
     /// Edits the config file under its lock, so that two connections (or
     /// an `irsync export` command) cannot lose each other's change; the
     /// check for an export that already covers `root` is made under the
-    /// same lock.
+    /// same lock. A lock held by someone else is waited for, up to
+    /// [`LOCK_WAIT`]. Blocks: call it off the async runtime.
     fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
         use crate::manage::{ensure_editable, exports, lock_config, Table};
         ensure_editable(&self.paths, Table::Exports)?;
-        let lock = lock_config(&self.paths.config)?;
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        let lock = loop {
+            match lock_config(&self.paths.config) {
+                Err(ManageError::Locked { .. }) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => break r?,
+            }
+        };
         if covered(&self.snapshot()?, root, &peer) {
             return Ok(());
         }
@@ -249,13 +263,7 @@ impl Authorizer for MemoryAuthorizer {
         if covered(&snap, root, &peer) {
             return Ok(());
         }
-        let base = crate::manage::exports::auto_name(root);
-        let mut name = base.clone();
-        let mut n = 2;
-        while snap.exports.contains_key(&name) {
-            name = format!("{base}-{n}");
-            n += 1;
-        }
+        let name = crate::manage::exports::unique_auto_name(root, |n| snap.exports.contains_key(n));
         let export = Export {
             path: root.to_path_buf(),
             read_only: false,
