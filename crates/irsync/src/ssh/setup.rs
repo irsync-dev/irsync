@@ -15,11 +15,13 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
-use iroh::EndpointId;
+use iroh::{EndpointId, RelayUrl};
+use std::net::SocketAddr;
 
 use crate::build::LONG_VERSION;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
+use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
 use crate::manage::{self, PeerSpec};
@@ -31,6 +33,10 @@ pub const END: &str = "irsync-setup-end";
 
 /// How long to wait for a daemon to stop or to start.
 const DAEMON_WAIT: Duration = Duration::from_secs(10);
+
+/// How long to wait for a running daemon to know its address (its home
+/// relay, or with relays off a direct address).
+const ADDR_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Created {
@@ -89,6 +95,10 @@ pub struct SetupReport {
     pub daemon: DaemonOutcome,
     /// Where a daemon started by `ssh-setup` writes its output.
     pub log: PathBuf,
+    /// The daemon's home relay, as it reported it.
+    pub relay: Option<RelayUrl>,
+    /// The daemon's direct addresses, as it reported them.
+    pub addrs: Vec<SocketAddr>,
 }
 
 impl SetupReport {
@@ -138,6 +148,11 @@ impl SetupReport {
             }
         }
         lines.push(format!("log={}", self.log.display()));
+        if let Some(r) = &self.relay {
+            lines.push(format!("relay={r}"));
+        }
+        let addrs: Vec<String> = self.addrs.iter().map(|a| a.to_string()).collect();
+        lines.push(format!("addrs={}", addrs.join(",")));
         lines.push(END.to_string());
         lines.join("\n") + "\n"
     }
@@ -211,6 +226,17 @@ impl SetupReport {
             dht,
             daemon,
             log: PathBuf::from(get("log")?),
+            relay: match fields.get("relay") {
+                Some(v) => Some(v.parse().map_err(|e| format!("relay: {e}"))?),
+                None => None,
+            },
+            addrs: match fields.get("addrs") {
+                Some(v) if !v.is_empty() => v
+                    .split(',')
+                    .map(|a| a.parse().map_err(|e| format!("addrs: {a:?}: {e}")))
+                    .collect::<Result<_, String>>()?,
+                _ => Vec::new(),
+            },
         })
     }
 }
@@ -319,6 +345,14 @@ pub fn run(
         Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
     };
 
+    // 5. Where the daemon can be reached: a daemon that just started has
+    // published nothing yet, so the client dials this first.
+    let want_relay = settings.daemon.relay_mode != RelayMode::Disabled;
+    let reached = probe(state)
+        .filter(|i| i.pid != 0)
+        .and_then(|i| crate::daemon_addr::wait_for(state, i.pid, want_relay, ADDR_WAIT))
+        .unwrap_or_default();
+
     Ok(SetupReport {
         version: LONG_VERSION.clone(),
         endpoint_id: secret.public(),
@@ -327,6 +361,8 @@ pub fn run(
         dht,
         daemon,
         log,
+        relay: reached.relay,
+        addrs: reached.addrs,
     })
 }
 

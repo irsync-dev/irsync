@@ -32,6 +32,20 @@ pub struct Onboarded {
     pub client: EndpointId,
 }
 
+impl Onboarded {
+    /// Where the daemon said it can be reached, to dial alongside the
+    /// lookups: a daemon that just started has published nothing yet.
+    pub fn hints(&self) -> Vec<iroh::TransportAddr> {
+        let r = &self.report;
+        r.relay
+            .iter()
+            .cloned()
+            .map(iroh::TransportAddr::Relay)
+            .chain(r.addrs.iter().copied().map(iroh::TransportAddr::Ip))
+            .collect()
+    }
+}
+
 /// Sets up `dest` (an ssh destination) for `client`: probe, install this
 /// build, run `ssh-setup`, then save `alias` with `ssh = dest`. A first
 /// run passes the same text for both. `recheck`: `alias` is a saved host
@@ -330,6 +344,8 @@ mod tests {
                 dht: Dht::On,
                 daemon,
                 log: PathBuf::from("/s/daemon.log"),
+                relay: None,
+                addrs: Vec::new(),
             },
             install,
             os,

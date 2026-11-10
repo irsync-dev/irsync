@@ -829,7 +829,10 @@ pub async fn run_from_settings(
     let endpoint = endpoint_from_settings(&settings, pass).await?;
     // Printed only once startup can no longer fail (and again after every
     // reload): a parent process that reads these lines may dial at once.
+    // `daemon.addr` follows each endpoint's address for `ssh-setup`.
+    let state = settings.state_dir.clone();
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
+        crate::daemon_addr::spawn_writer(state.clone(), ep.clone());
         println!("endpoint id: {}", ep.id());
         for addr in listen_addrs(ep) {
             println!("listening on: {addr}");

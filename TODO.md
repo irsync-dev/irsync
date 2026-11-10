@@ -80,6 +80,9 @@ landed. Items the final review's fix wave closed are not listed.
 - [ ] Setup reports "started" once the daemon holds `daemon.lock`, which is
       before the endpoint is bound; a bind failure then looks like a dead
       daemon. Write the lock record (or wait for "endpoint id:") after binding.
+      Since 2026-11-10 setup waits up to 10 s for `daemon.addr`, which is
+      written after binding, but it still says "started" when the daemon
+      dies in that time.
 - [ ] Two `ssh-setup` runs at once: a probe can read the lock record as
       "owner unknown" (pid 0, reported as foreign), and the second run can
       fail with "daemon exited before it was ready". Re-probe briefly; treat a

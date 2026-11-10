@@ -431,7 +431,14 @@ struct Connected {
 
 /// Resolves `host`, the direct addresses, the client identity and the
 /// endpoint, the same way for a sync and for a listing.
-async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<Connected> {
+/// `hints`: where a host just checked over ssh said its daemon is, dialled
+/// alongside the lookups.
+async fn connect_for(
+    host: &str,
+    opts: &SyncOptions,
+    log: &LogWriter,
+    mut hints: Vec<TransportAddr>,
+) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref());
     let mut config = Config::load(&paths)?;
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
@@ -484,6 +491,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
             }
         })?;
         report_onboarded(log, &o);
+        hints = o.hints();
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
     }
@@ -545,7 +553,13 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         &addresses,
     )?;
     let endpoint = build_endpoint(endpoint_opts).await?;
-    let target = EndpointAddr::from_parts(target, dial_addrs(resolved)?);
+    // Direct addresses replace everything; else the daemon's own report,
+    // when there is one, goes along with the lookups.
+    let target = if addresses.is_empty() {
+        EndpointAddr::from_parts(target, hints)
+    } else {
+        EndpointAddr::from_parts(target, dial_addrs(resolved)?)
+    };
     Ok(Connected {
         endpoint,
         target,
@@ -575,8 +589,8 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
 enum Recheck {
     /// The host has no `ssh`: nothing was done.
     NotSsh,
-    /// Set up again: dial it afresh.
-    Done,
+    /// Set up again: dial it afresh, with where the daemon said it is.
+    Done(Vec<TransportAddr>),
     /// The owner removed this client's immediate grant; it was not added
     /// back. The daemon's refusal hint, final.
     GrantRemoved(anyhow::Error),
@@ -613,7 +627,7 @@ fn recheck_over_ssh(
         let hint = irsync::session::reconnect::no_access_hint(remote, &client);
         return Recheck::GrantRemoved(anyhow::anyhow!(hint));
     }
-    Recheck::Done
+    Recheck::Done(o.hints())
 }
 
 /// The client identity for a sync, with a stderr notice when it was generated.
@@ -714,7 +728,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
     let Location::Remote { host, .. } = Location::parse(operand)? else {
         bail!("internal: a listing takes a remote operand");
     };
-    let c = connect_for(&host, opts, log).await?;
+    let c = connect_for(&host, opts, log, Vec::new()).await?;
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         direction: hello::Direction::ListExports as i32,
@@ -767,7 +781,7 @@ async fn sync(
         Direction::DaemonSends => args.sync.src()[0].clone(),
     };
 
-    let mut conn = connect_for(host, opts, log).await?;
+    let mut conn = connect_for(host, opts, log, Vec::new()).await?;
     // `--ssh` and `--no-remote-dht` are done with once the first connect
     // went through ssh: a reconnect after a recheck must not go again.
     let cli_opts = &SyncOptions {
@@ -881,9 +895,9 @@ async fn sync(
                     let client = conn.endpoint.id();
                     let entry = conn.host_entry.as_ref();
                     match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
-                        Recheck::Done => {
+                        Recheck::Done(hints) => {
                             conn.endpoint.close().await;
-                            conn = connect_for(host, cli_opts, log).await?;
+                            conn = connect_for(host, cli_opts, log, hints).await?;
                         }
                         Recheck::NotSsh => break Err(e),
                         Recheck::GrantRemoved(refused) => break Err(refused),

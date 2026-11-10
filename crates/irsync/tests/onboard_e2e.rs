@@ -84,9 +84,16 @@ impl World {
     /// (a dial to a dead daemon takes the 60 s handshake timeout).
     fn irsync(&self, args: &[&str]) -> Output {
         let addr = format!("127.0.0.1:{}", self.port);
+        let mut all = args.to_vec();
+        all.extend(["--address", &addr]);
+        self.irsync_bare(&all)
+    }
+
+    /// As [`World::irsync`], without `--address`: the client dials what it
+    /// learns from the setup and from its lookups.
+    fn irsync_bare(&self, args: &[&str]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
         cmd.args(args)
-            .args(["--address", &addr])
             .env("HOME", self.client.path())
             .env("XDG_STATE_HOME", self.client.path().join("xdg"))
             .env("IRSYNC_RSH", fake_ssh())
@@ -617,4 +624,23 @@ fn no_remote_dht_turns_server_publishing_off() {
     );
     let doc: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+}
+
+/// A first push with no `--address` and every client lookup off: the only
+/// way to the new daemon is the address `ssh-setup` hands back. Without it
+/// the client finds no address (the daemon has published nothing yet).
+#[test]
+fn first_push_dials_the_address_setup_reports() {
+    let w = World::new();
+    let cfg = w.client.path().join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("irsync.toml"),
+        "[client]\ndht = false\nmdns = false\nrelay_mode = \"disabled\"\ndial_retries = 0\n",
+    )
+    .unwrap();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync_bare(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    ok(&o);
+    same_tree(w.src.path(), &dest);
 }

@@ -119,6 +119,17 @@ fn report_roundtrips() {
                     dht: dht.clone(),
                     daemon: d.clone(),
                     log: PathBuf::from("/home/u/.local/state/irsync/daemon.log"),
+                    relay: g
+                        .eq(&GrantOutcome::Added)
+                        .then(|| "https://relay.example.net./".parse().unwrap()),
+                    addrs: if *i == Created::Generated {
+                        vec![
+                            "192.0.2.1:7000".parse().unwrap(),
+                            "[::1]:7000".parse().unwrap(),
+                        ]
+                    } else {
+                        Vec::new()
+                    },
                 };
                 let text = r.to_lines();
                 assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");
@@ -146,6 +157,13 @@ fn fresh_home_generates_grants_starts() {
     assert_eq!(rw[0].as_str().unwrap(), client.to_string());
     let info = probe(&home.state()).expect("daemon running");
     assert_ne!(info.pid, 0);
+    // Relays are off in this config: the direct address is the report's.
+    assert!(r.relay.is_none());
+    assert!(
+        r.addrs.iter().any(|a| a.ip().is_loopback()),
+        "{:?}",
+        r.addrs
+    );
 }
 
 #[test]
