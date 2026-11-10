@@ -26,7 +26,13 @@ fn second_daemon_refuses() {
     let out = irsync_bin(home.path(), &["daemon", "--listen", "127.0.0.1:0"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("already running"), "stderr: {err}");
+    let want = format!(
+        "another irsync daemon (pid {}, {}) is already running for {}",
+        _d.pid(),
+        env!("CARGO_BIN_EXE_irsync"),
+        home.path().join("xdg/irsync").display()
+    );
+    assert!(err.contains(&want), "stderr: {err}\nwanted: {want}");
 }
 
 #[test]
@@ -39,9 +45,14 @@ fn probe_none_after_sigterm() {
         .unwrap();
     assert!(st.success());
     let deadline = Instant::now() + Duration::from_secs(10);
-    while d.guard.0.try_wait().unwrap().is_none() {
+    let status = loop {
+        if let Some(s) = d.guard.0.try_wait().unwrap() {
+            break s;
+        }
         assert!(Instant::now() < deadline, "daemon did not exit on SIGTERM");
         std::thread::sleep(Duration::from_millis(20));
-    }
+    };
+    // A clean exit (not killed by the signal) shows the shutdown path ran.
+    assert!(status.success(), "daemon exit status: {status:?}");
     assert!(probe(&home.path().join("xdg/irsync")).is_none());
 }

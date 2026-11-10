@@ -5,12 +5,14 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::build::LONG_VERSION;
 
 const LOCK_NAME: &str = "daemon.lock";
 
-/// Who holds the lock, as the holder wrote it.
+/// Who holds the lock, as the holder wrote it. `pid` 0 means the record
+/// could not be read: held, owner unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockInfo {
     pub pid: u32,
@@ -21,11 +23,12 @@ pub struct LockInfo {
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     #[error(
-        "another irsync daemon (pid {}, {}) is already running",
-        .0.pid,
-        .0.exe.display()
+        "another irsync daemon (pid {}, {}) is already running for {}",
+        .info.pid,
+        .info.exe.display(),
+        .state_dir.display()
     )]
-    Held(LockInfo),
+    Held { info: LockInfo, state_dir: PathBuf },
     #[error("daemon lock {}: {source}", .path.display())]
     Io {
         path: PathBuf,
@@ -79,27 +82,40 @@ pub fn acquire(state_dir: &Path) -> Result<DaemonLock, LockError> {
         .truncate(false)
         .open(&path)
         .map_err(io)?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Err(LockError::Held(read_info(&mut file))),
-        Err(TryLockError::Error(e)) => return Err(io(e)),
+    // A concurrent `probe` holds the lock for a moment, so a busy lock is
+    // retried for about a second before it counts as another daemon.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(LockError::Held {
+                    info: read_info(&mut file),
+                    state_dir: state_dir.to_path_buf(),
+                });
+            }
+            Err(TryLockError::Error(e)) => return Err(io(e)),
+        }
     }
     let exe = std::env::current_exe().map_err(io)?;
-    file.set_len(0).map_err(io)?;
-    file.rewind().map_err(io)?;
-    write!(
-        file,
+    let record = format!(
         "pid={}\nexe={}\nversion={}\n",
         std::process::id(),
         exe.display(),
         *LONG_VERSION
-    )
-    .map_err(io)?;
-    file.flush().map_err(io)?;
+    );
+    file.set_len(0).map_err(io)?;
+    file.rewind().map_err(io)?;
+    file.write_all(record.as_bytes()).map_err(io)?;
     Ok(DaemonLock { _file: file })
 }
 
-/// `Some` when a live daemon holds the lock in `state_dir`.
+/// `Some` when a live daemon holds the lock in `state_dir`. If the holder's
+/// record is empty or unparseable (it is being written), the result is
+/// `LockInfo { pid: 0, .. }`: held, owner unknown.
 pub fn probe(state_dir: &Path) -> Option<LockInfo> {
     let mut file = OpenOptions::new()
         .read(true)
