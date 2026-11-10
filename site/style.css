@@ -190,6 +190,112 @@ button:focus-visible,
   background: var(--ir-surface-raised);
 }
 
+/* Alpha notice, above the headline */
+
+.alpha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ir-space-1) var(--ir-space-3);
+  align-items: baseline;
+  max-width: 100%;
+  margin-bottom: var(--ir-space-6);
+  padding: var(--ir-space-2) var(--ir-space-3);
+  background: var(--ir-warn-soft);
+  border: 1px solid var(--ir-warn);
+  border-radius: var(--ir-radius-md);
+  font-size: var(--ir-code-size);
+  line-height: var(--ir-code-line);
+}
+
+.alpha strong {
+  color: var(--ir-warn);
+  font-family: var(--ir-font-mono);
+  font-weight: var(--ir-heading-weight);
+}
+
+.alpha span {
+  flex: 1 1 20em;
+}
+
+/* What you need */
+
+.needs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ir-space-1) var(--ir-space-6);
+  margin-bottom: var(--ir-space-6);
+  padding: 0;
+  list-style: none;
+  color: var(--ir-ink-muted);
+  font-size: var(--ir-code-size);
+  line-height: var(--ir-code-line);
+}
+
+.needs li::before {
+  content: "✓ ";
+  color: var(--ir-accent);
+}
+
+/* Setup tabs: radio inputs and their labels, no script. The inputs stay
+   focusable (visually hidden), so arrow keys switch tabs. */
+
+.tabset {
+  margin-top: var(--ir-space-6);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--ir-line);
+  font-family: var(--ir-font-mono);
+  font-size: var(--ir-code-size);
+  line-height: var(--ir-code-line);
+}
+
+.tabs label {
+  padding: var(--ir-space-2) var(--ir-space-4);
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--ir-radius-sm) var(--ir-radius-sm) 0 0;
+  color: var(--ir-ink-muted);
+  cursor: pointer;
+}
+
+.tabs label:hover {
+  color: var(--ir-ink);
+}
+
+#setup-ssh:checked ~ .tabs label[for="setup-ssh"],
+#setup-manual:checked ~ .tabs label[for="setup-manual"] {
+  color: var(--ir-ink);
+  border-bottom-color: var(--ir-accent);
+}
+
+#setup-ssh:focus-visible ~ .tabs label[for="setup-ssh"],
+#setup-manual:focus-visible ~ .tabs label[for="setup-manual"] {
+  box-shadow: var(--ir-focus-ring);
+}
+
+.pane {
+  display: none;
+  margin-top: var(--ir-space-3);
+}
+
+#setup-ssh:checked ~ .pane-ssh,
+#setup-manual:checked ~ .pane-manual {
+  display: block;
+}
+
+.pane-lede {
+  color: var(--ir-ink-muted);
+  margin-bottom: var(--ir-space-2);
+}
+
+.pane .terminal {
+  font-size: var(--ir-code-small-size);
+  line-height: var(--ir-code-small-line);
+}
+
 /* Terminal frames scroll inside themselves. */
 
 .terminal {

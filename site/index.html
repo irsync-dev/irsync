@@ -25,41 +25,118 @@
     </header>
 
     <main>
+      <p class="alpha" role="note">
+        <strong>Alpha</strong>
+        <span>
+          irsync is alpha software. The command line and the network protocol
+          may change before the beta, and versions may then not talk to each
+          other. Keep another copy of anything you sync with it.
+        </span>
+      </p>
+
       <section class="hero" aria-labelledby="headline">
-        <h1 id="headline">irsync - resilient file synchronization</h1>
+        <h1 id="headline">irsync — resilient file synchronization</h1>
         <p class="lede">
           irsync is a one-way directory synchroniser in the mould of rsync,
-          rebuilt for today's networks.
+          rebuilt for today's networks. It takes rsync's flags and its
+          trailing-slash rule.
+        </p>
+        <p class="lede-last">
+          It connects through <a href="https://iroh.computer">iroh</a>, so it
+          gets through NATs and firewalls without port forwarding or dynamic
+          DNS. A transfer outlives the network connection: after a drop, a
+          closed laptop or Ctrl-C, the same command carries on where it
+          stopped.
         </p>
 
-        <p class="lede-last">
-          Using <a href="https://iroh.computer">iroh</a> as network transport,
-          irsync can transfer data traversing NATs and firewalls without port
-          forwarding, dynamic DNS or SSH tunnels. In addition, irsync sessions
-          are using multiplexed over QUIC, ensuring that transfers are resilient
-          to temporary network outages.
-        </p>
+        <ul class="needs" aria-label="What you need">
+          <li>Linux or macOS on both ends</li>
+          <li>Rust, to build it</li>
+          <li>ssh access to the server (optional)</li>
+        </ul>
+
         <p class="actions">
           <a class="button primary" href="#install">Install irsync</a>
-          <a class="button quiet" href="book/">Read the documentation</a>
+          <a class="button quiet" href="book/tutorial/first-sync.html"
+            >Your first sync</a
+          >
         </p>
+
+        <div class="tabset">
+          <input
+            type="radio"
+            name="setup"
+            id="setup-ssh"
+            class="visually-hidden"
+            checked
+          />
+          <input
+            type="radio"
+            name="setup"
+            id="setup-manual"
+            class="visually-hidden"
+          />
+          <div class="tabs" role="group" aria-label="Two ways to set up">
+            <label for="setup-ssh">With ssh</label>
+            <label for="setup-manual">Without ssh</label>
+          </div>
+
+          <figure class="pane pane-ssh">
+            <p class="pane-lede">
+              If <code>ssh myserver</code> logs you in, install irsync on the
+              client only. The first sync sets the server up.
+            </p>
+            <pre
+              class="terminal"
+              tabindex="0"
+              role="region"
+              aria-label="Terminal session: the first push sets the server up over ssh"
+            ><span class="prompt">client$</span> irsync -av ~/Photos/ myserver:/srv/photos/
+<span class="dim">irsync: myserver is not a saved alias; setting it up over ssh
+irsync: set up myserver over ssh:
+irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
+irsync:   generated the daemon identity
+irsync:   granted this client (a3e4753e5e) access to any path
+irsync:   started the daemon (log: /home/you/.local/state/irsync/daemon.log)
+irsync:   saved host alias myserver -&gt; 4a29f16a4f</span>
+2021/07/IMG_4466.heic
+2021/07/IMG_4467.heic</pre>
+            <figcaption>
+              Later runs go over iroh and don't use ssh.
+            </figcaption>
+          </figure>
+
+          <figure class="pane pane-manual">
+            <p class="pane-lede">
+              Without ssh, or to share only named folders: install irsync on
+              both machines and exchange two IDs once.
+            </p>
+            <pre
+              class="terminal"
+              tabindex="0"
+              role="region"
+              aria-label="Terminal session: set the server up by hand, then push"
+            ><span class="prompt">client$</span> irsync id show                         <span class="dim"># last line: the client's id</span>
+<span class="prompt">server$</span> irsync export add photos:/srv/photos  <span class="dim"># prints the server's (daemon's) id</span>
+<span class="prompt">server$</span> irsync grant add photos &lt;client-id&gt;
+<span class="prompt">server$</span> irsync daemon
+<span class="prompt">client$</span> irsync host add myserver &lt;server-id&gt;
+<span class="prompt">client$</span> irsync -av ~/Photos/ myserver:photos/
+2021/07/IMG_4466.heic
+2021/07/IMG_4467.heic</pre>
+            <figcaption>
+              Nothing goes through ssh; the two IDs are the whole trust setup.
+            </figcaption>
+          </figure>
+        </div>
 
         <figure class="session">
           <pre
             class="terminal"
             tabindex="0"
             role="region"
-            aria-label="Terminal session: name the daemon, list its exports, push a photo library"
-          ><span class="prompt">$</span> irsync host add myserver 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
-myserver: 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
-            <span class="prompt">$</span> irsync myserver:
-backup /backup rw
-photos /srv/photos rw
-            <span class="prompt">$</span> irsync -av ~/Photos/ myserver:photos/
-2021/07/IMG_4466.heic
-2021/07/IMG_4467.heic
-2021/07/IMG_4468.heic
-            <span class="dim">──────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+            aria-label="The live progress block of a push"
+          ><span class="dim">──────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
 list      31,204 entries  walking 2021/08/  peer 29,877 entries  walking 2021/07/
 transfer  <span class="flow">[████████████░░░░░░░░░░░░░░░░░░]</span>   40%  74.31G/183.62G  112.40MB/s  0:11:17  32 in flight  [direct]
             <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
@@ -72,13 +149,10 @@ transfer  <span class="flow">[████████████░░░░�
             <span class="flow">[█░░░░░░░░░░░░░░░░░░░]</span>    7%  2021/07/IMG_4471.heic  3.87M  1.10MB/s
   … and 24 more</pre>
           <figcaption>
-            The commands from
-            <a href="book/tutorial/first-sync.html">Your first sync</a>. Below
-            the files that <code>-v</code> lists, irsync draws a live block on a
-            terminal: the listing on both sides, the transfer, and one row per
-            file that is being hashed or has a data stream open.
-            <code>32 in flight</code> counts those files. Shown here at one
-            moment.
+            Either way, the push looks like this. Below the files that
+            <code>-v</code> lists, irsync draws a live block on a terminal: the
+            listing on both sides, the transfer, and one row per file that is
+            being hashed or has a data stream open. Shown here at one moment.
           </figcaption>
         </figure>
       </section>
@@ -235,15 +309,26 @@ transfer  <span class="flow">[████████████░░░░�
 
       <section id="install" aria-labelledby="install-heading">
         <h2 id="install-heading">Install</h2>
+        <p>
+          irsync builds from source with Rust's <code>cargo</code>. If you have
+          no Rust yet, get it from <a href="https://rustup.rs">rustup.rs</a>
+          first. The build takes a few minutes.
+        </p>
         <pre
           class="terminal"
           tabindex="0"
           role="region"
-          aria-label="Install command"
-        ><span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync irsync</pre>
+          aria-label="Install commands"
+        ><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   <span class="dim"># only if you have no Rust</span>
+<span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync irsync</pre>
         <p>
-          Linux and macOS, x86_64 and aarch64, as client and as daemon. Install
-          it on both machines.
+          Release binaries will be provided once the beta starts.
+        </p>
+        <p>
+          Linux and macOS, x86_64 and aarch64, as client and as daemon. With
+          ssh, the client is enough: the first sync copies irsync to the server
+          when both run the same OS and CPU. When they differ, install irsync on
+          both machines and use the setup under “Without ssh”.
         </p>
         <p>
           Optional: <code>fileset</code>, an independent tool that records the
@@ -267,8 +352,8 @@ transfer  <span class="flow">[████████████░░░░�
           <li>
             <h3><a href="book/tutorial/first-sync.html">Tutorial</a></h3>
             <p>
-              Push a photo library to a server, interrupt and resume the push,
-              pull the library back.
+              Set a server up over ssh with one command, or by hand; push,
+              resume and pull a photo library.
             </p>
           </li>
           <li>
