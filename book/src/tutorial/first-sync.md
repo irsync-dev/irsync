@@ -162,9 +162,10 @@ step 5.
 
 This is the ID clients connect to. `irsync id show --daemon` prints it again
 later. Plain `irsync id show` on the server prints the server's *client*
-identity, which is a different key: a client given that one waits for a
-daemon that is not there, then gives up with
-`if you copied this host's ID by hand, it must be the daemon's EndpointId`.
+identity, which is a different key: nothing answers to it, so a client given
+that one waits, then gives up with a message that points at
+`irsync id show --daemon`
+(see [Troubleshoot a first sync](../how-to/troubleshooting.md#a-host-added-by-hand-never-answers)).
 
 ### 3. Grant the client access
 

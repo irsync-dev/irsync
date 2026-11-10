@@ -63,21 +63,21 @@
         </p>
 
         <div class="tabset">
-          <input
-            type="radio"
-            name="setup"
-            id="setup-ssh"
-            class="visually-hidden"
-            checked
-          />
-          <input
-            type="radio"
-            name="setup"
-            id="setup-manual"
-            class="visually-hidden"
-          />
-          <div class="tabs" role="group" aria-label="Two ways to set up">
+          <div class="tabs" role="radiogroup" aria-label="Two ways to set up">
+            <input
+              type="radio"
+              name="setup"
+              id="setup-ssh"
+              class="visually-hidden"
+              checked
+            />
             <label for="setup-ssh">With ssh</label>
+            <input
+              type="radio"
+              name="setup"
+              id="setup-manual"
+              class="visually-hidden"
+            />
             <label for="setup-manual">Without ssh</label>
           </div>
 

@@ -236,8 +236,9 @@ button:focus-visible,
   color: var(--ir-accent);
 }
 
-/* Setup tabs: radio inputs and their labels, no script. The inputs stay
-   focusable (visually hidden), so arrow keys switch tabs. */
+/* Setup tabs: radio inputs and their labels in one named group, no script.
+   The inputs stay focusable (visually hidden), so arrow keys switch tabs.
+   Browsers without :has() show both panes. */
 
 .tabset {
   margin-top: var(--ir-space-6);
@@ -265,25 +266,24 @@ button:focus-visible,
   color: var(--ir-ink);
 }
 
-#setup-ssh:checked ~ .tabs label[for="setup-ssh"],
-#setup-manual:checked ~ .tabs label[for="setup-manual"] {
+.tabs input:checked + label {
   color: var(--ir-ink);
   border-bottom-color: var(--ir-accent);
 }
 
-#setup-ssh:focus-visible ~ .tabs label[for="setup-ssh"],
-#setup-manual:focus-visible ~ .tabs label[for="setup-manual"] {
+.tabs input:focus-visible + label {
   box-shadow: var(--ir-focus-ring);
 }
 
 .pane {
-  display: none;
   margin-top: var(--ir-space-3);
 }
 
-#setup-ssh:checked ~ .pane-ssh,
-#setup-manual:checked ~ .pane-manual {
-  display: block;
+@supports selector(:has(*)) {
+  .tabset:has(#setup-ssh:checked) .pane-manual,
+  .tabset:has(#setup-manual:checked) .pane-ssh {
+    display: none;
+  }
 }
 
 .pane-lede {
