@@ -25,6 +25,9 @@ stopped syncing a directory for good.
   reported, and the walk carries on.
 
 A partial file is kept as long as a stored session still plans to write it.
+An export that holds another export (such as a whole home exported
+automatically) leaves that inner export's tree to its own collection; `irsync
+gc` does the same for indexes whose roots lie inside one another.
 
 ## Collect by hand
 

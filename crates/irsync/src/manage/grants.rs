@@ -251,39 +251,45 @@ fn block(name: &str, rw: &[String], ro: &[String], hosts: &Hosts) -> String {
     out
 }
 
-/// Every grant: the `all:` block, then one block per export in name order.
+/// Every grant: the `all:` block, the `immediate:` block, then one block
+/// per export in name order.
 pub fn list_all(exports: &Exports, hosts: &Hosts) -> String {
     let mut out = block("all", &exports.rw, &exports.ro, hosts);
+    out.push_str(&block("immediate", &exports.immediate_rw, &[], hosts));
     for (name, e) in &exports.exports {
         out.push_str(&block(name, &e.rw, &e.ro, hosts));
     }
     out
 }
 
-/// The block of one export, or of `all`; `None` when no such export.
+/// The block of one export, of `all` or of `immediate`; `None` when no
+/// such export.
 pub fn list_export(exports: &Exports, hosts: &Hosts, name: &str) -> Option<String> {
-    if name == "all" {
-        return Some(block("all", &exports.rw, &exports.ro, hosts));
+    match name {
+        "all" => return Some(block("all", &exports.rw, &exports.ro, hosts)),
+        "immediate" => return Some(block("immediate", &exports.immediate_rw, &[], hosts)),
+        _ => {}
     }
     let e = exports.exports.get(name)?;
     Some(block(name, &e.rw, &e.ro, hosts))
 }
 
-/// `{label}:` then one `    NAME: rw|ro` line per export `id` may reach:
-/// ` (all)` when the access comes from `[all]` rather than the export's
-/// own entry, ` (read_only export)` when a read-write grant is capped by
-/// the export's `read_only` flag.
+/// `{label}:`, `    immediate: rw` when `id` is in `[immediate]`, then
+/// one `    NAME: rw|ro` line per export `id` may reach: ` (all)` when the
+/// access comes from `[all]` rather than the export's own entry,
+/// ` (read_only export)` when a read-write grant is capped by the export's
+/// `read_only` flag.
 pub fn list_peer(exports: &Exports, hosts: &Hosts, label: &str, id: &EndpointId) -> String {
     let grants = Snapshot::from_files(hosts, exports, true).grants(id);
     let mut out = format!("{label}:\n");
+    if grants.immediate {
+        out.push_str("    immediate: rw\n");
+    }
     for (name, e) in &exports.exports {
-        let (access, inherited) = match grants.exports.get(name) {
-            Some(a) => (*a, false),
-            None => match grants.all {
-                Some(a) => (a, true),
-                None => continue,
-            },
+        let Some(access) = grants.access_to(name, e) else {
+            continue;
         };
+        let inherited = !grants.exports.contains_key(name);
         let capped = e.read_only && access == Access::ReadWrite;
         let mode = if capped || access == Access::ReadOnly {
             "ro"

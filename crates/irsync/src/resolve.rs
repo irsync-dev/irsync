@@ -86,7 +86,7 @@ pub fn resolve_path<'a>(
 
 /// Component-wise, with `.` and empty components dropped (an export path
 /// may be written `/srv/photos/`).
-fn parts_of(p: &Path) -> Vec<&[u8]> {
+pub(crate) fn parts_of(p: &Path) -> Vec<&[u8]> {
     p.as_os_str()
         .as_bytes()
         .split(|&b| b == b'/')

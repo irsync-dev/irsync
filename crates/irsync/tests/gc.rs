@@ -659,3 +659,48 @@ fn irsync_gc_end_to_end() {
     );
     assert_eq!(gc(&["-q"]), "");
 }
+
+/// An export whose tree holds another export's root (the home, exported
+/// automatically, around `/home/u/photos`) leaves that subtree to the
+/// inner export's own GC: its parts and their records stay.
+#[tokio::test]
+async fn outer_gc_leaves_a_nested_export_alone() {
+    use irsync::config::exports::Export;
+    use irsync::daemon::{gc_skipping, nested_roots};
+    let f = fixture();
+    let r = f.root.path();
+    std::fs::create_dir_all(r.join("photos/sub")).unwrap();
+    for p in ["photos/sub/.irsync.a.part", "photos/.irsync.b.part"] {
+        std::fs::write(r.join(p), b"x").unwrap();
+        touch_ago(&r.join(p), 9);
+    }
+    f.ix.lock()
+        .unwrap()
+        .put_partial(&rel("photos/b"), &partial(now() - 9 * DAY as i64))
+        .unwrap();
+    let export = |path: &Path| Export {
+        path: path.to_path_buf(),
+        read_only: false,
+        warm_index: false,
+        fsync: false,
+        auto: false,
+        rw: Vec::new(),
+        ro: Vec::new(),
+    };
+    let exports = [
+        export(r),
+        export(&r.join("photos/")),
+        export(Path::new("/elsewhere")),
+        export(r.parent().unwrap()),
+    ];
+    let skip = nested_roots(r, exports.iter().map(|e| e.path.as_path()));
+    assert_eq!(skip, vec![rel("photos")]);
+    let rep = gc_skipping(f.ix.clone(), r, Duration::from_secs(7 * DAY), false, &skip)
+        .await
+        .unwrap();
+    assert_eq!(rep.parts_removed, vec![rel("d/.irsync.old.part")]);
+    assert!(r.join("photos/sub/.irsync.a.part").exists());
+    assert!(r.join("photos/.irsync.b.part").exists());
+    let ix = f.ix.lock().unwrap();
+    assert!(ix.partial_paths().unwrap().contains(&rel("photos/b")));
+}

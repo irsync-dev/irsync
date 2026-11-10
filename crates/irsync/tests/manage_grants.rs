@@ -196,7 +196,7 @@ fn list_all_names_every_export_and_the_all_table() {
     assert_eq!(
         s,
         format!(
-            "all:\n    rw: laptop ({l})\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
+            "all:\n    rw: laptop ({l})\nimmediate:\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
             l = id(1),
             o = id(2)
         )
@@ -210,6 +210,43 @@ fn list_all_names_every_export_and_the_all_table() {
         format!("all:\n    rw: laptop ({})\n", id(1))
     );
     assert!(list_export(&e, &h, "nope").is_none());
+}
+
+/// `[immediate]` grants show up in every form of `grant list`; `[all]`
+/// is not shown as reaching an automatic export.
+#[test]
+fn grant_list_shows_immediate_grants() {
+    let h = Hosts::parse(
+        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+        Path::new("h"),
+    )
+    .unwrap();
+    let e = Exports::parse(
+        &format!(
+            "[all]\nrw = [\"{o}\"]\n[immediate]\nrw = [\"laptop\"]\n\
+             [exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"laptop\"]\n",
+            o = id(2)
+        ),
+        Path::new("e"),
+    )
+    .unwrap();
+    assert_eq!(
+        list_all(&e, &h),
+        format!(
+            "all:\n    rw: {o}\nimmediate:\n    rw: laptop ({l})\nauto-h:\n    rw: laptop ({l})\n",
+            l = id(1),
+            o = id(2)
+        )
+    );
+    assert_eq!(
+        list_export(&e, &h, "immediate").unwrap(),
+        format!("immediate:\n    rw: laptop ({})\n", id(1))
+    );
+    assert_eq!(
+        list_peer(&e, &h, "laptop", &id(1)),
+        "laptop:\n    immediate: rw\n    auto-h: rw\n"
+    );
+    assert_eq!(list_peer(&e, &h, "o", &id(2)), "o:\n");
 }
 
 #[test]

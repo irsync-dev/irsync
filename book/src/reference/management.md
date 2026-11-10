@@ -69,9 +69,9 @@ everyone; `--warm-index` sets `warm_index`.
 | `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` everywhere; `irsync grant remove EXPORT all` empties an export's grants. |
 | `irsync grant add immediate WHO` | Let `WHO` reach any path this account can, read-write (there is no `--ro` here). The daemon makes an automatic export for each new path `WHO` uses. See [Immediate grants](configuration.md#immediate-grants). |
 | `irsync grant remove immediate WHO` | Take `WHO` out of `[immediate]`. The automatic exports already made for it stay in the file, but `WHO` can no longer use them. |
-| `irsync grant list` | Every grant: an `all:` block, then one block per export. |
-| `irsync grant list EXPORT` | One export's grants; `all` lists those that apply to every export. |
-| `irsync grant list WHO` | What one peer may reach, one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |
+| `irsync grant list` | Every grant: an `all:` block, an `immediate:` block, then one block per export. |
+| `irsync grant list EXPORT` | One export's grants; `all` lists those that apply to every export, `immediate` the peers that may reach any path. |
+| `irsync grant list WHO` | What one peer may reach: `immediate: rw` first when it is in `[immediate]`, then one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |
 
 `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
 line, or the path of a `.pub` file holding one. A key's comment is kept as a

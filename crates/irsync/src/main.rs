@@ -306,15 +306,18 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 .filter(|p| p.extension().is_some_and(|x| x == "sqlite"))
                 .collect();
             files.sort();
+            let mut roots = Vec::new();
             for file in files {
-                let root = match Index::root_of_file(&file) {
-                    Ok(Some(r)) => r,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        eprintln!("irsync: {}: {e}", file.display());
-                        continue;
-                    }
-                };
+                match Index::root_of_file(&file) {
+                    Ok(Some(r)) => roots.push(r),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                }
+            }
+            for root in &roots {
+                // A root inside this one has its own index: leave it to that.
+                let skip = irsync::daemon::nested_roots(root, roots.iter().map(PathBuf::as_path));
+                let root = root.clone();
                 let index = match Index::open(&dir, &root) {
                     Ok(i) => i.into_handle(),
                     Err(e) => {
@@ -322,7 +325,8 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         continue;
                     }
                 };
-                match irsync::daemon::gc(index, &root, CLIENT_GC_AGE, dry_run).await {
+                match irsync::daemon::gc_skipping(index, &root, CLIENT_GC_AGE, dry_run, &skip).await
+                {
                     Ok(r) => {
                         for p in &r.parts_removed {
                             if !log.quiet {

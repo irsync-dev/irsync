@@ -433,7 +433,16 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
             // Walks the export only when a day has passed or
             // partial records have become collectable (dormant) since.
             let dormant = shared.dormant();
-            match gc_if_due(gc_index.clone(), &root, dormant, dormant).await {
+            // Other exports inside this one collect their own state. An
+            // unreadable config skips this round: it may hide one.
+            let skip = match shared.authz.snapshot() {
+                Ok(snap) => nested_roots(&root, snap.exports.values().map(|e| e.path.as_path())),
+                Err(e) => {
+                    tracing::warn!(export = %name, "gc skipped: {e:#}");
+                    continue;
+                }
+            };
+            match gc_if_due_skipping(gc_index.clone(), &root, dormant, dormant, &skip).await {
                 Ok(Some(r)) => tracing::info!(
                     export = %name,
                     parts_removed = r.parts_removed.len(),
@@ -950,6 +959,32 @@ fn unix_now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// The `others` (export or index roots) strictly inside `root`, relative
+/// to it, sorted. An export's GC leaves those subtrees to their own index
+/// (the home exported automatically holds every export below it).
+pub fn nested_roots<'a>(root: &Path, others: impl IntoIterator<Item = &'a Path>) -> Vec<RelPath> {
+    let outer = crate::resolve::parts_of(root);
+    let mut out: Vec<RelPath> = others
+        .into_iter()
+        .filter_map(|p| {
+            let inner = crate::resolve::parts_of(p);
+            if inner.len() <= outer.len() || inner[..outer.len()] != outer[..] {
+                return None;
+            }
+            RelPath::new(&inner[outer.len()..].join(&b'/')).ok()
+        })
+        .collect();
+    out.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    out.dedup();
+    out
+}
+
+/// `rel` is `top` or below it.
+fn is_under(rel: &RelPath, top: &RelPath) -> bool {
+    let (r, t) = (rel.as_bytes(), top.as_bytes());
+    r == t || (r.len() > t.len() && r.starts_with(t) && r[t.len()] == b'/')
+}
+
 /// Garbage-collects resume state under `root`: abandoned `.part` files and
 /// their `partials` rows, then dormant sessions, all older than `older_than`.
 /// A part is only removed when no session plan references its path and its
@@ -962,6 +997,21 @@ pub async fn gc(
     older_than: Duration,
     dry_run: bool,
 ) -> io::Result<GcReport> {
+    gc_skipping(index, root, older_than, dry_run, &[]).await
+}
+
+/// [`gc`], leaving alone everything at or below the paths in `skip`
+/// (relative to `root`): the roots of other exports ([`nested_roots`]).
+/// No part, record or index entry there is removed.
+pub async fn gc_skipping(
+    index: IndexHandle,
+    root: &Path,
+    older_than: Duration,
+    dry_run: bool,
+    skip: &[RelPath],
+) -> io::Result<GcReport> {
+    let skip = skip.to_vec();
+    let skipped = move |p: &RelPath| skip.iter().any(|s| is_under(p, s));
     let cutoff = unix_now().saturating_sub(older_than.as_secs().min(i64::MAX as u64) as i64);
 
     // Orphan candidates: stale `.part` files on disk (the walk never follows symlinks).
@@ -983,6 +1033,9 @@ pub async fn gc(
         let crate::scan::ScanEvent::Entry(item) = ev else {
             continue;
         };
+        if skipped(&item.path) {
+            continue;
+        }
         let is_reg = item.entry.kind() == irsync_proto::v1::file_entry::Kind::Regular;
         let named = item.path.components().last().is_some_and(is_part_name);
         if is_reg && named && item.entry.mtime_sec <= cutoff {
@@ -1031,6 +1084,9 @@ pub async fn gc(
         // Stale records, with their part files. The index lock is held, so a
         // live receiver cannot refresh a record between check and removal.
         for dest in ix.partials_older_than(older_than).map_err(io_err)? {
+            if skipped(&dest) {
+                continue;
+            }
             if is_ref(&dest) {
                 report.parts_kept += 1;
                 continue;
@@ -1087,7 +1143,8 @@ pub async fn gc(
                 .map_err(io_err)?
                 .len() as u32
         };
-        report.entries_removed = prune_entries(&mut ix, &root, &seen, &walk_errors, dry_run)?;
+        report.entries_removed =
+            prune_entries(&mut ix, &root, &seen, &walk_errors, &skipped, dry_run)?;
         report.errors.extend(walk_errors);
         if !dry_run {
             ix.set_last_gc_at(unix_now()).map_err(io_err)?;
@@ -1111,6 +1168,7 @@ fn prune_entries(
     root: &Path,
     seen: &std::collections::HashMap<RelPath, (u64, u64)>,
     errors: &[(RelPath, String)],
+    skipped: &dyn Fn(&RelPath) -> bool,
     dry_run: bool,
 ) -> io::Result<usize> {
     use std::os::unix::fs::MetadataExt;
@@ -1126,7 +1184,11 @@ fn prune_entries(
     };
     let mut removed = 0;
     for (path, kind, inode, size) in ix.entry_identities().map_err(io_err)? {
-        if kind != regular || seen.get(&path) == Some(&(inode, size)) || unreadable(&path) {
+        if kind != regular
+            || seen.get(&path) == Some(&(inode, size))
+            || unreadable(&path)
+            || skipped(&path)
+        {
             continue;
         }
         let here = std::fs::symlink_metadata(root.join(path.to_os()))
@@ -1162,6 +1224,17 @@ pub async fn gc_if_due(
     older_than: Duration,
     stale_after: Duration,
 ) -> io::Result<Option<GcReport>> {
+    gc_if_due_skipping(index, root, older_than, stale_after, &[]).await
+}
+
+/// [`gc_if_due`] with [`gc_skipping`]'s `skip`.
+pub async fn gc_if_due_skipping(
+    index: IndexHandle,
+    root: &Path,
+    older_than: Duration,
+    stale_after: Duration,
+    skip: &[RelPath],
+) -> io::Result<Option<GcReport>> {
     let ix = index.clone();
     let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
         let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
@@ -1188,5 +1261,7 @@ pub async fn gc_if_due(
     if !due {
         return Ok(None);
     }
-    gc(index, root, older_than, false).await.map(Some)
+    gc_skipping(index, root, older_than, false, skip)
+        .await
+        .map(Some)
 }
