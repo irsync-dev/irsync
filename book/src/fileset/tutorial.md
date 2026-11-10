@@ -15,13 +15,16 @@ mkdir -p ~/fileset-demo/2026/01
 printf 'first photo\n'  > ~/fileset-demo/2026/01/IMG_0001.jpg
 printf 'second photo\n' > ~/fileset-demo/2026/01/IMG_0002.jpg
 printf 'third photo\n'  > ~/fileset-demo/IMG_0003.jpg
-find ~/fileset-demo -exec touch -d '2026-01-15 12:00' {} +
+find ~/fileset-demo -exec touch -d '2026-01-15T12:00:00Z' {} +
 fileset init ~/fileset-demo
 ```
 
 The `touch` gives every item an old modification time, as a real tree would
-have. (Without it, `rsync` can set the times of the new directories a moment
-differently and the check in step 3 shows noise.) `fileset init` hashes every
+have. (Without it, the directories' times and the copy's would fall in the
+same second, and `rsync` does not copy a directory's time when only the
+fraction of a second differs. The check in step 3 would then show `CHG` lines
+for the directories. See [the same-second note](verify-other-tools.md#directory-times-in-the-same-second).)
+`fileset init` hashes every
 regular file and writes `~/fileset-demo/.fileset.sqlite`. It prints a summary
 on stderr:
 

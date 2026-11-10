@@ -59,8 +59,9 @@ pass.
 - **ACLs on macOS.** Access control lists are not recorded.
 - **Anything it did not look at.** Mount points are not crossed unless you
   pass `--cross-mount-points`. A tree with btrfs subvolumes is cut short by
-  default. `check` reports what lies below as `unverified`, which counts as a
-  difference.
+  default. A warning names the directory. `check` reports what lies below as
+  `unverified`, which counts as a difference. `update` drops it from the
+  manifest.
 - **Timestamp precision.** Modification times are compared to the nanosecond.
   A file system with coarser timestamps shows `mtime=` changes on every file.
   Use `--ignore mtime` or `--relaxed`.

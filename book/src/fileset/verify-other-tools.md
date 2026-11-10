@@ -96,6 +96,25 @@ Content is still compared in every tier, so a changed byte still shows. Add
 back what you can trust, such as `--relaxed --require size`. The tiers are
 explained in [How fileset works](how-it-works.md#comparison-tiers).
 
+## Directory times in the same second
+
+`rsync` compares a directory's time only to the whole second. If the copy's
+directory was changed in the same second as the source's, `rsync` treats them
+as equal and never sets the time. This happens when you build a tree and copy
+it right away. Files are not affected: their times are compared exactly.
+
+The check then shows lines like this, where both times share the same second:
+
+```text
+CHG 2026/01 mtime=2026-11-10T21:10:56.123456789Z→2026-11-10T21:10:56.987654321Z
+```
+
+This is harmless: no content differs. Running `rsync -a` again does not fix
+it. Either leave the time out with `--ignore mtime` on that check, or give the
+source directories an older time before you copy, for example with
+`touch -d '2026-01-15T12:00:00Z'`. Write the time with the `Z` so that GNU,
+macOS and uutils `touch` all read it the same way.
+
 ## When the copy is not on a local disk
 
 `fileset` reads a local path. It cannot check an `rclone` copy that lives in
