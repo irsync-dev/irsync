@@ -82,9 +82,9 @@ refused as `WHO` in `grant add`.
 
 | Command | Effect |
 | --- | --- |
-| `irsync id show [--passphrase-file PATH]` | Print the client's public key line and `EndpointId`, generating the key if no key serves. |
-| `irsync id show --daemon` | The same for the daemon. Never generates the daemon's key: without one it fails and says how to make one. |
-| `irsync id show -a` | Both, labelled `client:` and `daemon:`. |
+| `irsync id show [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
+| `irsync id show --daemon` | The same for the daemon, under `daemon:`. Never generates the daemon's key: without one it fails and says how to make one. |
+| `irsync id show -a` | Both, each under its label. |
 | `irsync id generate [--daemon \| --out PATH] [-f]` | Write a new Ed25519 key pair at the client's path (default), the daemon's path, or `PATH`, with the public key beside it as `.pub`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. |
 
 The client's key is found the way ssh picks one; see

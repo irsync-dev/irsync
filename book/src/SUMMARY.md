@@ -9,6 +9,7 @@
 # How-to guides
 
 - [Run the daemon](how-to/run-the-daemon.md)
+- [Set a server up over ssh](how-to/ssh-setup.md)
 - [Change exports and settings](how-to/change-exports.md)
 - [Connect directly or through a relay](how-to/direct-and-relay.md)
 - [Seed the index](how-to/seed-the-index.md)

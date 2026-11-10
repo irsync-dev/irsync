@@ -19,7 +19,7 @@ daemon run system-wide is given `--config` (see
 
 Generated private keys are written with mode 0600, in OpenSSH format. The
 `.pub` file beside each holds the public key line. `irsync id show` prints the
-`EndpointId` of either key; see [Management commands](management.md#id).
+`EndpointId` of either key, under a `client:` or `daemon:` label; see [Management commands](management.md#id).
 
 ## State directory
 
