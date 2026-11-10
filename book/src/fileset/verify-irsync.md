@@ -1,7 +1,8 @@
-# Verify a transfer with fileset
+# Verify an irsync transfer
 
 Use this when you want proof, from a tool that shares no code with `irsync`,
-that a tree arrived intact. You record a manifest of the tree on the client,
+that a tree arrived intact. (For `rsync`, `rclone` and other tools, see
+[Verify an rsync or rclone transfer](verify-other-tools.md).) You record a manifest of the tree on the client,
 let `irsync` carry the tree and the manifest to the daemon, and check the copy
 against the manifest there. The same manifest later tells you whether either
 copy has rotted on disk.
@@ -9,11 +10,12 @@ copy has rotted on disk.
 The examples use the setup from [Your first sync](../tutorial/first-sync.md):
 the client has `~/Photos`, and the server runs the daemon, known on the
 client as `myserver`, with the export `photos` at `/srv/photos`. Every
-option is listed in the [fileset reference](../reference/fileset.md).
+option is listed in the [fileset reference](reference.md).
 
 ## Install fileset
 
-Install `fileset` on both machines:
+Install `fileset` on both machines (see
+[Introduction](introduction.md#install)):
 
 ```sh
 cargo install --git https://github.com/irsync-dev/irsync fileset
@@ -103,16 +105,9 @@ permissions differ between the two systems. Leave them out:
 fileset check --ignore mode /srv/photos
 ```
 
-## Check a disk for bitrot later
+## Repair a damaged copy
 
-Months later, run `check` again on either machine, with no sync in between:
-
-```sh
-fileset check /srv/photos
-```
-
-A file whose bytes changed while its size and modification time stayed the
-same shows up as `CHG <path> blake3=…→…`. `fileset` reports; it repairs
+If a later [bitrot check](bitrot.md) finds a damaged file, `fileset` repairs
 nothing. A normal sync does not repair such a file either, because it compares
 size and modification time. Copy the good version from the other machine with
 `-c`, which compares content. If the server's copy is damaged, push again:
@@ -127,17 +122,5 @@ If the client's copy is damaged, pull instead:
 irsync -avc myserver:photos/ ~/Photos/
 ```
 
-Check the other copy first, so that you do not spread the damage.
-
-Run `check` before `update` on a tree you suspect. `update` keeps the stored
-hash of a file whose size, modification time and inode are unchanged, so the
-damage stays visible to the next `check`. `update --rehash` records the
-current content as correct.
-
-To check a read-only backup or a snapshot, copy its manifest somewhere
-writable and point `--manifest` at the copy:
-
-```sh
-cp /mnt/snapshot/photos/.fileset.sqlite /tmp/photos.fileset.sqlite
-fileset check --manifest /tmp/photos.fileset.sqlite /mnt/snapshot/photos
-```
+Check the other copy first, so that you do not spread the damage. To find
+damage in the first place, see [Check data for bitrot](bitrot.md).

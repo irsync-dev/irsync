@@ -104,7 +104,7 @@ Windows is not supported, extended attributes and ACLs are not copied, and
 relayed connections are much slower than direct ones.
 
 `fileset` shares no code with irsync; see
-its [reference](https://irsync.org/book/reference/fileset.html).
+its [reference](https://irsync.org/book/fileset/reference.html).
 
 ## Getting help
 

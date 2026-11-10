@@ -1,13 +1,11 @@
 # fileset
 
 `fileset` records the state of a directory tree in a manifest and later
-verifies the tree against it. It has two uses: archival integrity, where you
-run `init` once and `check` months later to learn whether a file was lost, a
-byte flipped or metadata drifted; and independent validation of `irsync`,
-where you run `init` on the client's tree, let `irsync` carry the tree and its
-manifest to the daemon, and run `check` there. `fileset` lives in
-`crates/fileset` and shares no code with `irsync`. For a walkthrough, see
-[Verify a transfer with fileset](../how-to/verify-with-fileset.md).
+verifies the tree against it. It lives in `crates/fileset` and shares no code
+with `irsync`. For an introduction, see [Introduction to fileset](introduction.md).
+The how-to pages are [Verify an rsync or rclone transfer](verify-other-tools.md),
+[Verify an irsync transfer](verify-irsync.md), [Check data for bitrot](bitrot.md)
+and [Keep a manifest current](keep-current.md).
 
 Install it with:
 
@@ -236,9 +234,7 @@ already has a manifest, lies inside a fileset or contains a nested one;
 
 ## Read-only media
 
-To check a read-only mounted backup or a snapshot, copy the manifest off it
-and point `--manifest` at the copy. `check` with the manifest inside a
-read-only tree may fail with exit 2 and a message suggesting `--manifest`.
+See [Check data for bitrot](bitrot.md#read-only-media-and-snapshots).
 
 ## Known limitations
 

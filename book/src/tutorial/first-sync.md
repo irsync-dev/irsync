@@ -279,3 +279,5 @@ The alias is optional: the raw `EndpointId` works in its place, as in
   holds a copy that `irsync` did not make.
 - [Run the daemon](../how-to/run-the-daemon.md): under systemd or launchd,
   as its own account.
+
+To check that the copy arrived intact, see [Verify an irsync transfer](../fileset/verify-irsync.md).

@@ -16,7 +16,6 @@
 - [Seed the index](how-to/seed-the-index.md)
 - [Clean up state](how-to/clean-up.md)
 - [Watch a transfer with telemetry](how-to/telemetry.md)
-- [Verify a transfer with fileset](how-to/verify-with-fileset.md)
 
 # Reference
 
@@ -27,7 +26,6 @@
 - [Files and state](reference/files-and-state.md)
 - [Metrics](reference/metrics.md)
 - [Protocol](reference/protocol.md)
-- [fileset](reference/fileset.md)
 - [Known limitations](reference/limitations.md)
 
 # Explanation
@@ -37,6 +35,17 @@
 - [Connections](explanation/connections.md)
 - [The transfer algorithm](explanation/transfer-algorithm.md)
 - [Receiving a changed file](explanation/receiving-a-changed-file.md)
+
+# fileset
+
+- [Introduction to fileset](fileset/introduction.md)
+- [Tutorial: check a copy made with rsync](fileset/tutorial.md)
+- [Verify an rsync or rclone transfer](fileset/verify-other-tools.md)
+- [Verify an irsync transfer](fileset/verify-irsync.md)
+- [Check data for bitrot](fileset/bitrot.md)
+- [Keep a manifest current](fileset/keep-current.md)
+- [fileset reference](fileset/reference.md)
+- [How fileset works](fileset/how-it-works.md)
 
 # Contributing
 

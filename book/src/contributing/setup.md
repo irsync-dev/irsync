@@ -11,7 +11,7 @@ cargo build --workspace
 ```
 
 The workspace holds irsync itself and the tools that test it: `fileset`
-([reference](../reference/fileset.md)), `filegen`
+([reference](../fileset/reference.md)), `filegen`
 ([Generating test trees](filegen.md)), `irsync-stress`
 ([Stress testing](stress.md)) and `irsync-netstress`
 ([Network stress](netstress.md)).

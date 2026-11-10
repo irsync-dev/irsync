@@ -79,7 +79,11 @@ The pages come in four kinds, and each kind answers a different question.
 - **Explanation.** Why irsync behaves as it does: sessions and resume,
   identity and trust, connections, and the transfer algorithm.
 
-A fifth part, **Contributing**, is for people who work on irsync itself:
+A separate part, **fileset**, covers a companion tool that shares no code with
+irsync. It checks a copy against a recorded manifest, whichever tool made the
+copy, and finds bitrot. Start at [Introduction to fileset](fileset/introduction.md).
+
+A last part, **Contributing**, is for people who work on irsync itself:
 setting up a checkout, running the tests, the stress and network-stress
 tools, and how this website is built.
 
