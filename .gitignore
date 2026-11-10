@@ -4,3 +4,5 @@
 # fileset manifests from manual runs of the tool, anywhere in the tree
 .fileset*
 /book/theme/tokens.css
+# mdbook output of a plain `mdbook build book`; site/build.sh builds elsewhere
+/book/book
