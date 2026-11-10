@@ -150,14 +150,29 @@ fn first_push_sets_up_and_syncs() {
     let err = ok(&o);
     same_tree(w.src.path(), &dest);
     for want in [
-        "set up myserver over ssh:",
-        "installed irsync",
-        "started the daemon",
-        "saved host alias myserver",
-        "user service",
+        "irsync: myserver is not a saved alias; setting it up over ssh",
+        "irsync: set up myserver over ssh:",
+        "irsync:   installed irsync",
+        "irsync:   started the daemon",
+        "irsync:   saved host alias myserver",
     ] {
         assert!(err.contains(want), "missing {want:?} in stderr:\n{err}");
     }
+    // The notice comes before the report; the how-to is unprefixed so it
+    // pastes.
+    assert!(err.find("not a saved alias") < err.find("set up myserver"));
+    let lines: Vec<&str> = err.lines().collect();
+    for want in [
+        "To keep the daemon running after a reboot, make it a user service.",
+        "[Service]",
+        "  systemctl --user enable --now irsync",
+    ] {
+        assert!(lines.contains(&want), "no line {want:?} in stderr:\n{err}");
+    }
+    assert!(
+        lines.iter().any(|l| l.starts_with("  kill \"$(sed -n")),
+        "{err}"
+    );
     let cfg = w.client_config();
     assert!(cfg.contains("[hosts.myserver]"), "{cfg}");
     assert!(cfg.contains("ssh = \"myserver\""), "{cfg}");
@@ -247,4 +262,26 @@ fn other_platform_changes_nothing() {
     assert!(!w.server.path().join(".config/irsync").exists());
     assert!(!w.server.path().join(".local").exists());
     assert!(!w.server.path().join("xdg").exists());
+}
+
+#[test]
+fn unsavable_alias_stops_before_ssh() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    // `all` means every peer: it can never be an alias.
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("all:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(!err.contains("over ssh"), "{err}");
+    // A split hosts.toml can't take the alias either.
+    let cfg = w.client.path().join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("hosts.toml"), "{err}");
+    assert!(!err.contains("over ssh"), "{err}");
+    assert_eq!(w.ssh_calls(), 0);
+    assert!(!w.server.path().join(".local").exists());
 }

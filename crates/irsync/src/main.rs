@@ -429,8 +429,13 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     // An unknown host is an ssh destination: set it up and save the alias.
     let mut onboarded_with = None;
     if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
+        // No ssh call yet: these errors need no "over ssh failed" context.
+        irsync::ssh::onboard::check(&paths, host)?;
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
+        log.eprintln(&format!(
+            "irsync: {host} is not a saved alias; setting it up over ssh"
+        ));
         let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, secret.public()).with_context(
             || {
                 format!(
@@ -442,6 +447,10 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         )?;
         for line in irsync::ssh::onboard::summary(&o) {
             log.eprintln(&format!("irsync: {line}"));
+        }
+        // Raw, so the unit file and commands can be pasted.
+        for line in irsync::ssh::onboard::howto(&o) {
+            log.eprintln(&line);
         }
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
