@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>irsync home mockup</title>
+<link rel="stylesheet" href="../../../../target/site/tokens.css">
+<link rel="stylesheet" href="../../../../target/site/style.css">
+<style>
+  body { max-width: 1040px; }
+  .note { font-family: var(--ir-font-mono); font-size: 11px; color: var(--ir-warn); border: 1px dashed var(--ir-warn); padding: 2px 6px; border-radius: 4px; display: inline-block; margin: 4px 0 8px; }
+  .alpha { display: flex; gap: 10px; align-items: baseline; background: var(--ir-warn-soft); border: 1px solid var(--ir-warn); border-radius: var(--ir-radius-md); padding: 8px 12px; margin-bottom: 24px; font-size: 13px; line-height: 20px; }
+  .alpha b { color: var(--ir-warn); font-family: var(--ir-font-mono); }
+  .needs { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 20px; padding: 0; list-style: none; font-size: 13px; color: var(--ir-ink-muted); }
+  .needs li::before { content: "✓ "; color: var(--ir-accent); }
+  .pair { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 24px; }
+  @media (min-width: 760px) { .pair { grid-template-columns: 1fr 1fr; } }
+  .pair figure { min-width: 0; display: flex; flex-direction: column; }
+  .pair h3 { margin-bottom: 2px; }
+  .pair .sub { color: var(--ir-ink-muted); font-size: 13px; margin-bottom: 8px; }
+  .pair .terminal { font-size: 12px; line-height: 18px; flex: 1; }
+  .who { color: var(--ir-accent); }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--ir-line); margin-top: 16px; font-family: var(--ir-font-mono); font-size: 13px; }
+  .tabs span { padding: 6px 14px; color: var(--ir-ink-muted); }
+  .tabs span.on { color: var(--ir-ink); border-bottom: 2px solid var(--ir-accent); }
+  .alt { margin-top: 48px; padding-top: 24px; border-top: 3px double var(--ir-line-strong); }
+  .choice { cursor: pointer; border: 1px solid var(--ir-line); border-radius: 8px; padding: 12px; margin-top: 12px; }
+  .choice.selected { border-color: var(--ir-accent); box-shadow: 0 0 0 1px var(--ir-accent); }
+  .tabset { margin-top: 24px; }
+  .tabset input { position: absolute; opacity: 0; pointer-events: none; }
+  .tabset .tabs { margin-top: 0; }
+  .tabset label { padding: 6px 14px; color: var(--ir-ink-muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  #ex-ssh:checked ~ .tabs label[for=ex-ssh], #ex-manual:checked ~ .tabs label[for=ex-manual] { color: var(--ir-ink); border-bottom-color: var(--ir-accent); }
+  #ex-ssh:focus-visible ~ .tabs label[for=ex-ssh], #ex-manual:focus-visible ~ .tabs label[for=ex-manual] { box-shadow: var(--ir-focus-ring); }
+  .pane { display: none; margin-top: 12px; }
+  #ex-ssh:checked ~ .pane-ssh, #ex-manual:checked ~ .pane-manual { display: block; }
+  .pane .terminal { font-size: 12px; line-height: 18px; }
+</style>
+</head>
+<body>
+<header class="top"><nav aria-label="Site"><a class="name" href="#">irsync</a>
+<ul><li><a href="#">documentation</a></li><li><a href="#">source</a></li><li><a href="#">install</a></li></ul></nav></header>
+
+<main>
+<p class="note">mockup · v2: tabs (pure CSS, no JavaScript) · click the tabs</p>
+
+<div class="alpha"><b>alpha</b><span>irsync is early software. The command line and the network protocol may change before the beta, and old and new versions may not talk to each other. Keep another copy of anything you sync with it.</span></div>
+
+<section class="hero">
+  <h1>irsync — resilient file synchronization</h1>
+  <p class="lede">A one-way directory synchroniser in the mould of rsync, rebuilt for today's networks. Same flags, same trailing-slash rule.</p>
+  <p class="lede-last">It connects through <a href="#">iroh</a>, so it gets through NATs and firewalls without port forwarding or dynamic DNS. A transfer outlives the network connection: after a drop, a closed laptop or Ctrl-C, the same command picks up where it stopped.</p>
+
+  <ul class="needs">
+    <li>Linux or macOS on both ends</li>
+    <li>Rust, to build it</li>
+    <li>ssh access to the server (optional)</li>
+  </ul>
+
+  <p class="actions"><a class="button primary" href="#">Install irsync</a> <a class="button quiet" href="#">Your first sync</a></p>
+
+  <div class="tabset">
+    <input type="radio" name="ex" id="ex-ssh" checked>
+    <input type="radio" name="ex" id="ex-manual">
+    <div class="tabs" role="tablist"><label for="ex-ssh">With ssh</label><label for="ex-manual">Without ssh</label></div>
+    <figure class="pane pane-ssh">
+      <p class="sub">If <code>ssh myserver</code> logs you in, install on the client only. The first sync sets the server up.</p>
+<pre class="terminal"><span class="prompt">client$</span> irsync -av ~/Photos/ myserver:/srv/photos/
+<span class="dim">irsync: myserver is not a saved alias; setting it up over ssh
+irsync: set up myserver over ssh:
+irsync:   installed irsync 0.1.0 at ~/.local/share/irsync/bin/irsync
+irsync:   granted this client (a3e4753e5e) access to any path
+irsync:   started the daemon
+irsync:   saved host alias myserver -> 4a29f16a4f</span>
+2021/07/IMG_4466.heic
+2021/07/IMG_4467.heic</pre>
+      <figcaption>Later runs go over iroh and don't use ssh.</figcaption>
+    </figure>
+    <figure class="pane pane-manual">
+      <p class="sub">Without ssh, or to share only named folders: install on both machines and exchange two IDs once.</p>
+<pre class="terminal"><span class="prompt">client$</span> irsync id show          <span class="dim"># second line: the client's id</span>
+<span class="prompt">server$</span> irsync export add photos:/srv/photos   <span class="dim"># prints the server's id</span>
+<span class="prompt">server$</span> irsync grant add photos &lt;client-id&gt;
+<span class="prompt">server$</span> irsync daemon
+<span class="prompt">client$</span> irsync host add myserver &lt;server-id&gt;
+<span class="prompt">client$</span> irsync -av ~/Photos/ myserver:photos/
+2021/07/IMG_4466.heic
+2021/07/IMG_4467.heic</pre>
+      <figcaption>Nothing goes through ssh; the two IDs are the whole trust setup.</figcaption>
+    </figure>
+  </div>
+
+  <figure class="session">
+<pre class="terminal"><span class="dim">───────────────────────────────────────────────────────────────────────────────────────────</span>
+list      31,204 entries  walking 2021/08/  peer 29,877 entries  walking 2021/07/
+transfer  <span class="flow">[████████████░░░░░░░░░░░░░░░░░░]</span>   40%  74.31G/183.62G  112.40MB/s  0:11:17  32 in flight  [direct]
+            <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
+            <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   25%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
+  hashing                       2021/08/VID_20210815_101230.mov  640.55M
+  … and 29 more</pre>
+    <figcaption>Either way, the push looks the same: a live block under the file list, one row per file in flight.</figcaption>
+  </figure>
+</section>
+
+<section id="install" style="margin-top:32px;padding-top:24px;border-top:1px solid var(--ir-line)">
+  <h2>Install</h2>
+  <p>irsync builds from source with Rust's <code>cargo</code>. No Rust yet? Get it from <a href="#">rustup.rs</a> first. The build takes a few minutes.</p>
+<pre class="terminal" style="margin-top:12px"><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   <span class="dim"># only if you have no Rust</span>
+<span class="prompt">$</span> cargo install --git https://github.com/irsync-dev/irsync irsync</pre>
+  <p>Release binaries will be provided once the beta starts; until then, cargo is the way in.</p>
+  <p>Linux and macOS, x86_64 and aarch64. With ssh, the client is enough: the first sync copies irsync to the server when both run the same OS and CPU.</p>
+</section>
+
+<p class="dim" style="margin-top:24px;color:var(--ir-ink-muted);font-size:13px">… then the three cards, "If you know rsync", the book map, as today.</p>
+
+
+</main>
+</body>
+</html>
