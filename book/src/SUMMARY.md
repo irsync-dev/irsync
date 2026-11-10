@@ -8,6 +8,7 @@
 
 # How-to guides
 
+- [Troubleshoot a first sync](how-to/troubleshooting.md)
 - [Run the daemon](how-to/run-the-daemon.md)
 - [Set a server up over ssh](how-to/ssh-setup.md)
 - [Change exports and settings](how-to/change-exports.md)
