@@ -71,6 +71,8 @@ fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
         .args(args)
         .env("HOME", tmp.join("home"))
         .env("XDG_STATE_HOME", tmp.join("xdg"))
+        // An unknown host is tried as an ssh destination; never reach out.
+        .env("IRSYNC_RSH", "false")
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -416,7 +418,7 @@ fn unknown_alias_error_names_hosts_file() {
     assert!(
         err.contains("\"home\" is not an alias in")
             && err.contains("irsync.toml")
-            && err.contains("no such file"),
+            && err.contains("over ssh failed"),
         "{err}"
     );
 }

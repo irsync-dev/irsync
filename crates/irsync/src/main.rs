@@ -422,11 +422,33 @@ struct Connected {
 
 /// Resolves `host`, the direct addresses, the client identity and the
 /// endpoint, the same way for a sync and for a listing.
-async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected> {
+async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref());
+    let mut config = Config::load(&paths)?;
+    let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
+    // An unknown host is an ssh destination: set it up and save the alias.
+    let mut onboarded_with = None;
+    if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
+        let secret = load_client_key(opts, &config.settings, &pass)?;
+        let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
+        let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, secret.public()).with_context(
+            || {
+                format!(
+                    "{host:?} is not an alias in {} and not an EndpointId; \
+                     setting it up over ssh failed",
+                    config.hosts.path.display()
+                )
+            },
+        )?;
+        for line in irsync::ssh::onboard::summary(&o) {
+            log.eprintln(&format!("irsync: {line}"));
+        }
+        config = Config::load(&paths)?;
+        onboarded_with = Some(secret);
+    }
     let Config {
         settings, hosts, ..
-    } = Config::load(&paths)?;
+    } = config;
     let host_entry = hosts.get(host).cloned();
     let target = resolve_target(&hosts, host)?;
     // Precedence: command line, then the host entry, then the client
@@ -461,13 +483,10 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
         }
         resolved.extend(addrs);
     }
-    let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
-    let (secret, source) = client_identity(opts.identity.as_deref(), &settings, &pass)?;
-    if let KeySource::Generated(path) = &source {
-        eprintln!("generated identity {}", path.display());
-        eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
-        eprintln!("{}", secret.public());
-    }
+    let secret = match onboarded_with {
+        Some(s) => s,
+        None => load_client_key(&opts, &settings, &pass)?,
+    };
     if !addresses.is_empty() {
         tracing::info!(
             addresses = ?resolved,
@@ -492,6 +511,21 @@ async fn connect_for(host: &str, opts: &SyncOptions) -> anyhow::Result<Connected
         host_entry,
         opts,
     })
+}
+
+/// The client identity for a sync, with a stderr notice when it was generated.
+fn load_client_key(
+    opts: &SyncOptions,
+    settings: &Settings,
+    pass: &PassphraseSource,
+) -> anyhow::Result<iroh::SecretKey> {
+    let (secret, source) = client_identity(opts.identity.as_deref(), settings, pass)?;
+    if let KeySource::Generated(path) = &source {
+        eprintln!("generated identity {}", path.display());
+        eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
+        eprintln!("{}", secret.public());
+    }
+    Ok(secret)
 }
 
 /// The transport addresses to dial: the fault layer's custom ones when it is on.
@@ -564,7 +598,7 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
-    match rt.block_on(list_exports_of(&operand, opts)) {
+    match rt.block_on(list_exports_of(&operand, opts, &log)) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("irsync: {e:#}");
@@ -573,11 +607,11 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
     }
 }
 
-async fn list_exports_of(operand: &str, opts: &SyncOptions) -> anyhow::Result<()> {
+async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<()> {
     let Location::Remote { host, .. } = Location::parse(operand)? else {
         bail!("internal: a listing takes a remote operand");
     };
-    let c = connect_for(&host, opts).await?;
+    let c = connect_for(&host, opts, log).await?;
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         direction: hello::Direction::ListExports as i32,
@@ -636,7 +670,7 @@ async fn sync(
         settings,
         host_entry,
         opts,
-    } = connect_for(host, opts).await?;
+    } = connect_for(host, opts, log).await?;
     let (opts, host_entry) = (&opts, host_entry.as_ref());
     let filters = Arc::new(FilterSet::from_rules(&opts.filters).context("reading filter rules")?);
 

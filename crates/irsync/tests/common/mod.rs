@@ -662,6 +662,8 @@ pub fn irsync_bin(home: &std::path::Path, args: &[&str]) -> std::process::Output
         .args(args)
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("xdg"))
+        // An unknown host is tried as an ssh destination; never reach out.
+        .env("IRSYNC_RSH", "false")
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
