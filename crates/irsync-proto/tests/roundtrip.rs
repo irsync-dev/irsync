@@ -152,10 +152,14 @@ fn control_oneof_roundtrips() {
             code: 7,
             message: "boom".into(),
         }),
-        Msg::MayPlace(MayPlace { file_id: 1 << 40 }),
+        Msg::MayPlace(MayPlace {
+            file_id: 1 << 40,
+            gen: 3,
+        }),
         Msg::PlaceVerdict(PlaceVerdict {
             file_id: 9,
             changed: true,
+            gen: 3,
         }),
     ];
     for m in msgs {

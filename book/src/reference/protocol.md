@@ -142,8 +142,8 @@ export.
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
-| `MayPlace` | receiver to sender | The file is verified; may it be placed? |
-| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for `SOURCE_ERROR`. |
+| `MayPlace` | receiver to sender | The file is verified against chunk list number `gen`; may it be placed? |
+| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for `SOURCE_ERROR`. A `MayPlace` about a list older than the sender's latest is always answered `changed`. |
 | `FileAck` | either | From the receiver: `DONE`, `HASH_MISMATCH`, `WRITE_ERROR`. From the sender: `SOURCE_ERROR`, it cannot read the file. `DONE` carries the bytes the receiver did not take from the sender. |
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |

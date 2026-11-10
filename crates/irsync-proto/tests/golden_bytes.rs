@@ -37,19 +37,23 @@ fn control_list_room_golden_bytes() {
 
 #[test]
 fn control_may_place_golden_bytes() {
-    // may_place = 15, file_id = 1 (varint 300)
-    let m = enc(Msg::MayPlace(MayPlace { file_id: 300 }));
-    assert_eq!(m, [0x7A, 0x03, 0x08, 0xAC, 0x02]);
+    // may_place = 15, file_id = 1 (varint 300), gen = 2
+    let m = enc(Msg::MayPlace(MayPlace {
+        file_id: 300,
+        gen: 2,
+    }));
+    assert_eq!(m, [0x7A, 0x05, 0x08, 0xAC, 0x02, 0x10, 0x02]);
 }
 
 #[test]
 fn control_place_verdict_golden_bytes() {
-    // place_verdict = 16 (two-byte tag), file_id = 1, changed = 2
+    // place_verdict = 16 (two-byte tag), file_id = 1, changed = 2, gen = 3
     let v = enc(Msg::PlaceVerdict(PlaceVerdict {
         file_id: 7,
         changed: true,
+        gen: 4,
     }));
-    assert_eq!(v, [0x82, 0x01, 0x04, 0x08, 0x07, 0x10, 0x01]);
+    assert_eq!(v, [0x82, 0x01, 0x06, 0x08, 0x07, 0x10, 0x01, 0x18, 0x04]);
 }
 
 #[test]

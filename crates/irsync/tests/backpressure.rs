@@ -1141,6 +1141,43 @@ async fn repeated_needs_do_not_multiply_sends() {
     .await;
 }
 
+/// Repeated requests for multi-chunk files: some duplicate data streams
+/// are still being written when the receiver has verified the file and
+/// stops them (code 0, "not receiving this now"). That is no failure: the
+/// files are placed, with no errors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_streams_stopped_mid_write_are_not_failures() {
+    within120(async {
+        let flow = Flow::Pull;
+        // A stream window far below a file's size: a duplicate stream is
+        // still being written when the receiver stops it.
+        let h = with_stream_window(128 * 1024, Harness::new()).await;
+        for i in 0..8 {
+            fs::write(
+                h.src(flow).join(format!("f{i}.bin")),
+                data(4 * MIB, 300 + i),
+            )
+            .unwrap();
+        }
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
+            (StreamKind::Control, Msg::Need(n)) if !n.chunk_idx.is_empty() => {
+                vec![Msg::Need(n); 20]
+            }
+            (_, m) => vec![m],
+        }));
+        let opts = archive_opts();
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(out.exit_code(), 0);
+        assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
 /// A listing whose paths go backwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_out_of_order_listing_fails_the_session() {

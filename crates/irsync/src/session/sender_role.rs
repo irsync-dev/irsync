@@ -154,6 +154,11 @@ struct SFile {
     /// The receiver was told it may place the file (`PlaceVerdict`): it
     /// has verified every chunk, and only its ack is left.
     placing: bool,
+    /// Chunk lists sent for the file on this connection (counted as the
+    /// receiver counts them, see `MayPlace.gen`): the number of the last.
+    lists_sent: u32,
+    /// The generation (`gen`) whose list went out last.
+    listed_gen: Option<u32>,
     /// Bases the receiver offered for chunks it is about to request, by
     /// chunk index, with their size against the basis budget; each is used
     /// for one request and dropped.
@@ -541,6 +546,8 @@ impl SenderRole {
                 digest: None,
                 hash_stat: None,
                 placing: false,
+                lists_sent: 0,
+                listed_gen: None,
                 bases: HashMap::new(),
                 bases_held: 0,
                 requested: HashSet::new(),
@@ -639,6 +646,14 @@ impl SenderRole {
     /// They are bounded already, by the room granted.
     fn pump_lists(&mut self) {
         for p in self.lists.ready() {
+            // A list's first part (never the empty one withdrawing a list,
+            // which does not come this way): counted as the receiver does.
+            if p.first == 0 && (p.total > 0 || p.last) {
+                if let Some(f) = self.files.get_mut(&p.file_id) {
+                    f.lists_sent += 1;
+                    f.listed_gen = Some(f.gen);
+                }
+            }
             self.out.send(Msg::ChunkListPart(p));
             #[cfg(feature = "test-hooks")]
             if let Some(h) = &self.ctx.hooks.drop_after_parts {
@@ -913,15 +928,33 @@ impl SenderRole {
                 return Ok(());
             }
         }
-        let answer = |changed| Msg::PlaceVerdict(PlaceVerdict { file_id, changed });
+        let gen = m.gen;
+        let answer = |changed| {
+            Msg::PlaceVerdict(PlaceVerdict {
+                file_id,
+                changed,
+                gen,
+            })
+        };
         match self.files.get(&file_id) {
             // Given up: our SOURCE_ERROR is on its way, or there already.
             None => {
                 self.out.send(answer(true));
                 return Ok(());
             }
-            // Re-digesting (a retry under way): its new list follows.
-            Some(f) if f.hash_stat.is_none() => {
+            Some(f) if gen > f.lists_sent => bail!(
+                "protocol error: MayPlace for chunk list {gen} of file id {file_id}, \
+                 which has had {} lists",
+                f.lists_sent
+            ),
+            // Not about the latest digest: a list older than the last sent,
+            // or the last sent while a retry is under way (re-digesting, or
+            // its new list waiting for room). The receiver holds a stale
+            // file; `changed` makes it drop it (it would otherwise wait for
+            // a verdict), and the retry already under way needs no other.
+            Some(f)
+                if gen != f.lists_sent || f.listed_gen != Some(f.gen) || f.hash_stat.is_none() =>
+            {
                 self.out.send(answer(true));
                 return Ok(());
             }
@@ -1506,6 +1539,8 @@ mod tests {
             digest: digest.map(Arc::new),
             hash_stat: None,
             placing: false,
+            lists_sent: 0,
+            listed_gen: None,
             bases: HashMap::new(),
             bases_held: 0,
             requested: HashSet::new(),
@@ -1589,6 +1624,43 @@ mod tests {
         assert_eq!(s.files[&1].bases_held, 0);
         assert!(s.files[&1].bases.is_empty());
         assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
+    /// A `MayPlace` is about one chunk list. One about a list older than
+    /// the file's latest digest (a retry under way) never lets the
+    /// receiver place the file, even with the source unchanged since that
+    /// newer digest; one about the latest list does.
+    #[tokio::test]
+    async fn a_stale_may_place_never_sets_placing() {
+        let (mut s, _t) = role().await;
+        let rel = RelPath::new(b"a").unwrap();
+        let key = s.ctx.key(&rel);
+        std::fs::write(s.ctx.full_key(&key), b"content").unwrap();
+        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base, &key).unwrap();
+        let mut f = in_flight("a", None);
+        // Retried once: generation 1 is digested (its stat is the source's
+        // now), and its list waits for room; list 1 (generation 0) went out.
+        f.gen = 1;
+        f.retries = 1;
+        f.hash_stat = Some(Freshness::of_entry(&entry, ctime));
+        f.lists_sent = 1;
+        f.listed_gen = Some(0);
+        s.seen.insert(1);
+        s.files.insert(1, f);
+        s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
+        assert!(!s.files[&1].placing, "placed on a verdict for an old list");
+        assert_eq!(s.files[&1].gen, 1, "a stale MayPlace started a retry");
+        // Generation 1's list goes out as list 2: list 1 is stale still.
+        let f = s.files.get_mut(&1).unwrap();
+        f.lists_sent = 2;
+        f.listed_gen = Some(1);
+        s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
+        assert!(!s.files[&1].placing, "placed on a verdict for an old list");
+        // List 2 is the latest: unchanged source, placed.
+        s.on_may_place(MayPlace { file_id: 1, gen: 2 }).unwrap();
+        assert!(s.files[&1].placing);
+        // A list never sent is a protocol error.
+        assert!(s.on_may_place(MayPlace { file_id: 1, gen: 3 }).is_err());
     }
 
     /// Files that come and go, each leaving a task that would never end on

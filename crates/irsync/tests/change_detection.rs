@@ -395,3 +395,40 @@ async fn inplace_change_after_hash_retries_then_fails() {
     })
     .await;
 }
+
+/// Plain `--append` (the tail goes to a `.part`, its prefix trusted): a
+/// source that changes after every hash is retried once and given up, never
+/// reported placed, and the destination keeps its old content.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn append_change_after_hash_retries_then_fails() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let old = data(4 * MIB, 51);
+        let dst = h.dst(flow).join("x.bin");
+        fs::write(&dst, &old).unwrap();
+        let mut new = old.clone();
+        new.extend_from_slice(&data(MIB, 52));
+        fs::write(h.src(flow).join("x.bin"), &new).unwrap();
+        let asked = Arc::new(AtomicU32::new(0));
+        let local = changing_before_may_place(&h, flow, asked.clone());
+        let args =
+            irsync::cli::Args::try_parse_from(["irsync", "-a", "--append", "src/", "host:m/"])
+                .unwrap();
+        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let out = h.run_side(&opts, flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(out.files_transferred, 0);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"x.bin");
+        assert!(
+            msg.contains("changed after it was hashed (after retry)"),
+            "{msg}"
+        );
+        assert!(fs::read(&dst).unwrap() == old, "the destination changed");
+        assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+    })
+    .await;
+}

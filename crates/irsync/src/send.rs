@@ -502,10 +502,16 @@ impl Inner {
                 &mut send, file_id, &file, name, rel, digest, &r, first, bases, sent,
             )
             .await;
-        if res.is_err() {
-            let _ = send.reset(VarInt::from_u32(1));
+        match res {
+            // Stopped with code 0 while still writing: the receiver is not
+            // receiving the file now (see `write_range`); no failure.
+            Err(e) if stopped_not_receiving(&e) => Ok(()),
+            Err(e) => {
+                let _ = send.reset(VarInt::from_u32(1));
+                Err(e)
+            }
+            Ok(()) => Ok(()),
         }
-        res
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -607,6 +613,16 @@ impl Inner {
             Err(e) => Err(io::Error::other(e)),
         }
     }
+}
+
+/// Whether a write failed because the receiver stopped the stream with
+/// code 0: it is not receiving the file now (it has every chunk and is
+/// placing it, or it dropped the file), and asks again for anything it
+/// still lacks.
+fn stopped_not_receiving(e: &io::Error) -> bool {
+    e.get_ref()
+        .and_then(|i| i.downcast_ref::<iroh::endpoint::WriteError>())
+        .is_some_and(|w| matches!(w, iroh::endpoint::WriteError::Stopped(c) if c.into_inner() == 0))
 }
 
 /// The frame for chunk `idx` given the receiver's basis for it: the

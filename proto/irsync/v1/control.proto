@@ -76,8 +76,13 @@ message ListRoom {
 // receiver -> sender: every chunk of the file is verified; may it be placed?
 // The receiver renames the file into place (or settles it in place) only
 // after a PlaceVerdict that says the source is unchanged.
+// `gen`: the number of the chunk list the file was verified against, counted
+// per file and connection from 1: every first part (`first` 0) except the
+// empty, unfinished one that withdraws a list. The sender answers a MayPlace
+// for a list that is not its latest with `changed`, and never places it.
 message MayPlace {
   uint64 file_id = 1;
+  uint32 gen = 2;
 }
 // sender -> receiver: the answer to MayPlace. `changed`: the source differs
 // from the stat its chunk list was hashed under; the receiver drops what it
@@ -85,6 +90,7 @@ message MayPlace {
 message PlaceVerdict {
   uint64 file_id = 1;
   bool changed = 2;
+  uint32 gen = 3; // the MayPlace's
 }
 message NeedChunks {
   uint64 file_id = 1;

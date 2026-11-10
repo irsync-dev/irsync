@@ -182,7 +182,14 @@ struct RFile {
     /// When the file was requested; for the transfer histogram.
     started: Option<std::time::Instant>,
     /// A chunk list that arrived while the `.part` was busy (opening or finalizing).
-    pending: Option<Arc<FileDigest>>,
+    pending: Option<(Arc<FileDigest>, u32)>,
+    /// Chunk lists the sender has started for this file on this connection
+    /// (first parts, not counting the empty part that withdraws a list):
+    /// the number of the latest. The sender counts the same.
+    lists: u32,
+    /// The number (see `lists`) of the list the current writer was opened
+    /// for; `MayPlace` and `PlaceVerdict` carry it.
+    list: u32,
     /// A chunk list arriving in parts, until its last part.
     assembly: Option<Assembly>,
     /// In [`St::Confirming`]: what to place on the sender's verdict.
@@ -375,6 +382,8 @@ impl Receiver {
                 st: St::Requested,
                 started: super::wait_start(&self.ctx.meter),
                 pending: None,
+                lists: 0,
+                list: 0,
                 assembly: None,
                 held: None,
                 digest: None,
@@ -561,8 +570,12 @@ impl Receiver {
             return Ok(());
         };
         self.ctx.hooks.event("part", &f.path);
+        if p.first == 0 && (p.total > 0 || p.last) {
+            f.lists += 1;
+        }
+        let n = f.lists;
         match assemble(&mut f.assembly, p) {
-            Ok(Some(d)) => self.on_chunk_list(file_id, Arc::new(d)).await,
+            Ok(Some(d)) => self.on_chunk_list(file_id, Arc::new(d), n).await,
             Ok(None) => {}
             Err(e) => {
                 let msg = format!("chunk list in parts: {e}");
@@ -572,7 +585,8 @@ impl Receiver {
         Ok(())
     }
 
-    async fn on_chunk_list(&mut self, file_id: u64, digest: Arc<FileDigest>) {
+    /// The complete chunk list number `n` (see `RFile::lists`).
+    async fn on_chunk_list(&mut self, file_id: u64, digest: Arc<FileDigest>, n: u32) {
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "chunk list for a file not in flight");
             return;
@@ -580,12 +594,13 @@ impl Receiver {
         f.assembly = None;
         match f.st {
             St::Opening | St::Finalizing | St::Confirming => {
-                f.pending = Some(digest);
+                f.pending = Some((digest, n));
                 return;
             }
             St::Requested | St::Receiving => {}
         }
         f.gen += 1;
+        f.list = n;
         f.st = St::Opening;
         self.ctx.hooks.event("chunklist", &f.path);
         let (gen, path, action) = (f.gen, f.path.clone(), f.action);
@@ -774,11 +789,11 @@ impl Receiver {
         if f.gen != gen || f.st != St::Opening {
             return;
         }
-        if let Some(cl) = f.pending.take() {
+        if let Some((cl, n)) = f.pending.take() {
             // Superseded while opening: drop this writer, open the newer list.
             drop(result);
             f.st = St::Requested;
-            self.on_chunk_list(file_id, cl).await;
+            self.on_chunk_list(file_id, cl, n).await;
             return;
         }
         let o = match result {
@@ -943,7 +958,10 @@ impl Receiver {
         f.st = St::Confirming;
         f.held = Some(held);
         self.ctx.hooks.event("mayplace", &f.path);
-        self.out.send(Msg::MayPlace(MayPlace { file_id }));
+        self.out.send(Msg::MayPlace(MayPlace {
+            file_id,
+            gen: f.list,
+        }));
     }
 
     /// Drops what a file held for placing (its source changed, or a newer
@@ -959,8 +977,8 @@ impl Receiver {
             return;
         };
         f.st = St::Requested;
-        if let Some(cl) = f.pending.take() {
-            self.on_chunk_list(file_id, cl).await;
+        if let Some((cl, n)) = f.pending.take() {
+            self.on_chunk_list(file_id, cl, n).await;
         }
     }
 
@@ -999,9 +1017,9 @@ impl Receiver {
                 if mismatches >= MAX_MISMATCHES {
                     let msg = "whole-file hash mismatch after retry".to_string();
                     self.fail(file_id, None, msg).await;
-                } else if let Some(cl) = pending {
+                } else if let Some((cl, n)) = pending {
                     // The partial stays; the fresh chunk list adopts it.
-                    self.on_chunk_list(file_id, cl).await;
+                    self.on_chunk_list(file_id, cl, n).await;
                 }
             }
             Err(e) => {
@@ -1022,7 +1040,7 @@ impl Receiver {
             tracing::debug!(file_id, "place verdict for a file not in flight");
             return;
         };
-        if f.st != St::Confirming {
+        if f.st != St::Confirming || v.gen != f.list {
             tracing::debug!(file_id, "place verdict for a file not waiting for one");
             return;
         }
