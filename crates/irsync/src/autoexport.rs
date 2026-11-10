@@ -3,11 +3,15 @@
 
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AutoRootError {
     /// Neither the path nor (for a push) its parent is there to export.
     #[error("no such file or directory")]
     NotFound,
+    /// A push's missing directory could not be made; `error` is the OS's
+    /// reason, as text.
+    #[error("cannot create {}: {error}", path.display())]
+    Create { path: PathBuf, error: String },
     /// The root would be `/`: the whole filesystem is never exported
     /// automatically.
     #[error("cannot export / automatically; add an export by hand")]
@@ -46,7 +50,10 @@ pub fn auto_root(abs: &Path, push: bool) -> Result<PathBuf, AutoRootError> {
                 Ok(()) => Ok(abs.to_path_buf()),
                 // Created meanwhile by another connection.
                 Err(_) if abs.is_dir() => Ok(abs.to_path_buf()),
-                Err(_) => Err(AutoRootError::NotFound),
+                Err(e) => Err(AutoRootError::Create {
+                    path: abs.to_path_buf(),
+                    error: e.to_string(),
+                }),
             }
         }
         Err(_) => Err(AutoRootError::NotFound),

@@ -26,8 +26,10 @@ waits at most 15 seconds (`--dial-retries` sets how often it retries first).
 When the daemon does not answer, `irsync` checks the server over ssh once,
 starts the daemon again or updates the alias, and retries with the usual
 `--dial-retries` and `--reconnect` settings. That check never adds back an
-immediate grant removed on the server. A daemon that answers and refuses the
-client is never handled over ssh. See
+immediate grant removed on the server. When ssh itself fails, `irsync` says
+so and tries the daemon once more with the usual settings; if that fails too,
+it reports both errors. A daemon that answers and refuses the client is never
+handled over ssh. See
 [the quick way](../tutorial/first-sync.md#the-quick-way-over-ssh).
 
 - A `:` before the first `/` makes an operand remote, as in rsync. To name a

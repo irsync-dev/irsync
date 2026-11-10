@@ -859,3 +859,38 @@ async fn immediate_relative_path_does_not_take_another_clients_export() {
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
+
+/// A push to a new directory whose parent this account may not write
+/// says why it failed, as the OS put it, not "no such file".
+#[tokio::test]
+async fn immediate_push_under_unwritable_parent_says_why() {
+    use irsync::authz::Authorizer;
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipped: root may write anywhere");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("srv");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let new = parent.join("photos");
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    let e = reply(exchange_against(&d, &client, hello(&bytes(&new), Direction::ClientSends)).await);
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        e,
+        (
+            Code::BadPath as i32,
+            format!(
+                "cannot create {}: Permission denied (os error 13)",
+                new.display()
+            )
+        )
+    );
+    assert!(authz.snapshot().unwrap().exports.is_empty());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}

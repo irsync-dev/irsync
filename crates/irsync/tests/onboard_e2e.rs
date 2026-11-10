@@ -446,6 +446,87 @@ fn fallback_after_grant_removed_does_not_regrant() {
     assert!(!other.exists());
 }
 
+/// ssh itself fails (here: `--rsh false`): the client says so, tries the
+/// daemon once more with the usual settings, and reports both failures.
+#[test]
+fn ssh_failure_tries_the_daemon_again() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.kill_daemon();
+    let o = w.irsync(&[
+        "-a",
+        "--rsh",
+        "false",
+        "--dial-retries",
+        "0",
+        &w.src_arg(),
+        &target,
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("irsync: checking myserver over ssh failed: ")
+            && err.contains("; trying the daemon again"),
+        "{err}"
+    );
+    let last = err.lines().last().unwrap_or_default();
+    assert!(last.contains("cannot reach myserver over false"), "{err}");
+    assert!(last.contains("gave up after 1 attempt"), "{err}");
+}
+
+/// A host set up in this run that then does not answer is not checked
+/// over ssh again straight away: the setup just did that.
+#[test]
+fn no_second_ssh_round_right_after_setup() {
+    let mut w = World::new();
+    // The daemon listens on the old port; the client dials another.
+    w.port = free_port();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&[
+        "-a",
+        "--dial-retries",
+        "0",
+        &w.src_arg(),
+        &format!("myserver:{}", dest.display()),
+    ]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("saved host alias myserver"), "{err}");
+    assert!(!err.contains("checking it over ssh"), "{err}");
+    assert_eq!(w.ssh_calls(), 3, "{err}");
+}
+
+/// An alias whose name is not its ssh destination: the check goes to the
+/// destination and updates that alias, not one named after the
+/// destination.
+#[test]
+fn fallback_updates_the_alias_not_its_ssh_name() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let path = w.client.path().join(".config/irsync/irsync.toml");
+    let cfg = w.client_config().replace("[hosts.myserver]", "[hosts.nas]");
+    std::fs::write(&path, cfg).unwrap();
+    let before = w.saved_id("nas");
+    w.kill_daemon();
+    for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
+        let p = entry.unwrap().path();
+        if p.file_name().unwrap().to_string_lossy().starts_with("daemon_ed25519") {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("nas:{}", dest.display())]));
+    assert!(err.contains("nas did not answer; checking it over ssh"), "{err}");
+    assert!(err.contains("updated host alias nas:"), "{err}");
+    assert_ne!(w.saved_id("nas"), before);
+    let cfg = w.client_config();
+    assert!(!cfg.contains("[hosts.myserver]"), "{cfg}");
+    assert!(cfg.contains("ssh = \"myserver\""), "{cfg}");
+    same_tree(w.src.path(), &dest);
+}
+
 #[test]
 fn alias_without_ssh_does_not_fall_back() {
     let w = World::new();

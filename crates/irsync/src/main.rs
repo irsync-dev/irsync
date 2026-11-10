@@ -424,6 +424,8 @@ struct Connected {
     host_entry: Option<irsync::config::hosts::HostEntry>,
     /// `opts` with the per-host and settings defaults filled in.
     opts: SyncOptions,
+    /// The host was set up over ssh just now, by this call.
+    onboarded: bool,
 }
 
 /// Resolves `host`, the direct addresses, the client identity and the
@@ -491,6 +493,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         }
         resolved.extend(addrs);
     }
+    let onboarded = onboarded_with.is_some();
     let secret = match onboarded_with {
         Some(s) => s,
         None => load_client_key(&opts, &settings, &pass)?,
@@ -518,6 +521,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         settings,
         host_entry,
         opts,
+        onboarded,
     })
 }
 
@@ -536,11 +540,22 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     }
 }
 
+/// What checking a silent host over ssh came to.
+enum Recheck {
+    /// The host has no `ssh`: nothing was done.
+    NotSsh,
+    /// Set up again: dial it afresh.
+    Done,
+    /// The owner removed this client's immediate grant; it was not added
+    /// back. The daemon's refusal hint, final.
+    GrantRemoved(anyhow::Error),
+    /// The ssh step itself failed.
+    Failed(anyhow::Error),
+}
+
 /// A saved host with `ssh` that never answered: set it up over ssh again
-/// (it restarts a dead daemon and updates the alias if the id changed).
-/// `Ok(false)`: not an ssh host, nothing done. When the owner removed this
-/// client's immediate grant, it is not added back and the result is the
-/// daemon's refusal hint for `remote` (the operand as typed).
+/// (it restarts a dead daemon and updates the alias `host` if the id
+/// changed). `remote` is the operand as typed, for the refusal hint.
 fn recheck_over_ssh(
     host: &str,
     entry: Option<&irsync::config::hosts::HostEntry>,
@@ -548,22 +563,25 @@ fn recheck_over_ssh(
     remote: &str,
     opts: &SyncOptions,
     log: &LogWriter,
-) -> anyhow::Result<bool> {
+) -> Recheck {
     let Some(dest) = entry.and_then(|h| h.ssh.as_deref()) else {
-        return Ok(false);
+        return Recheck::NotSsh;
     };
     log.eprintln(&format!(
         "irsync: {host} did not answer; checking it over ssh"
     ));
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true)
-        .with_context(|| format!("{host} did not answer, and checking it over ssh failed"))?;
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true) {
+        Ok(o) => o,
+        Err(e) => return Recheck::Failed(e),
+    };
     report_onboarded(log, &o);
     if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
-        bail!(irsync::session::reconnect::no_access_hint(remote, &client));
+        let hint = irsync::session::reconnect::no_access_hint(remote, &client);
+        return Recheck::GrantRemoved(anyhow::anyhow!(hint));
     }
-    Ok(true)
+    Recheck::Done
 }
 
 /// The client identity for a sync, with a stderr notice when it was generated.
@@ -719,8 +737,9 @@ async fn sync(
 
     let cli_opts = opts;
     let mut conn = connect_for(host, cli_opts, log).await?;
-    // A saved ssh host that never answers is checked over ssh once per run.
-    let mut rechecked = false;
+    // A saved ssh host that never answers is checked over ssh once per run;
+    // a host set up over ssh just now counts as checked.
+    let mut rechecked = conn.onboarded;
     let filters =
         Arc::new(FilterSet::from_rules(&conn.opts.filters).context("reading filter rules")?);
 
@@ -786,6 +805,9 @@ async fn sync(
         let started = Instant::now();
         let operand_from = args.sync.src()[index].clone();
         let operand_to = args.sync.dest().unwrap_or_default().to_string();
+        // Why checking the host over ssh failed, while the daemon is tried
+        // once more.
+        let mut ssh_failed: Option<anyhow::Error> = None;
         let result = loop {
             // A host set up over ssh gets one short dial first: if it does
             // not answer, checking it over ssh is quicker than waiting out
@@ -821,13 +843,31 @@ async fn sync(
                     let client = conn.endpoint.id();
                     let entry = conn.host_entry.as_ref();
                     match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
-                        Ok(true) => {}
-                        Ok(false) => break Err(e),
-                        Err(ssh) => break Err(ssh),
+                        Recheck::Done => {
+                            conn.endpoint.close().await;
+                            conn = connect_for(host, cli_opts, log).await?;
+                        }
+                        Recheck::NotSsh => break Err(e),
+                        Recheck::GrantRemoved(refused) => break Err(refused),
+                        // The daemon may only have been slow: one more
+                        // try, with the usual settings.
+                        Recheck::Failed(ssh) => {
+                            log.eprintln(&format!(
+                                "irsync: checking {host} over ssh failed: {ssh:#}; \
+                                 trying the daemon again"
+                            ));
+                            ssh_failed = Some(ssh);
+                        }
                     }
-                    conn.endpoint.close().await;
-                    conn = connect_for(host, cli_opts, log).await?;
                 }
+                Err(e) => match ssh_failed.take() {
+                    Some(ssh) => {
+                        break Err(anyhow::anyhow!(
+                            "{e:#}; checking {host} over ssh had failed too: {ssh:#}"
+                        ))
+                    }
+                    None => break Err(e),
+                },
                 res => break res,
             }
         };
