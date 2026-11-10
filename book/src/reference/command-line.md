@@ -124,7 +124,7 @@ These have no rsync counterpart.
 | Flag | Meaning |
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the host entry, else from `[client]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
-| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `<N>[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the host entry, else from `[client]`, else 24h. |
+| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `<N>[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the host entry, else from `[client]`, else 24h. This window applies only once the server has answered: a server that has never answered gets 4 retries, after waits of about 1, 2, 4 and 8 seconds, and then the run gives up. |
 | `--relay URL` | Use this relay server instead of the host entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the host entry, else from `[client]`. |
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |

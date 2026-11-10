@@ -514,3 +514,51 @@ async fn sender_fault_counts_bytes_on_the_wire_not_finished_sends() {
     })
     .await;
 }
+
+/// A server that never answers is not redialled for the whole reconnect
+/// window: after `dial_retries` retries with growing waits the client gives
+/// up (the default, none at all, and a custom count).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreachable_server_gives_up_after_dial_retries() {
+    use irsync::session::reconnect::{run_with_reconnect, ConnState};
+    within60(async {
+        let h = Harness::new().await;
+        // Nobody holds this key and the client has no way to look it up.
+        let nobody = iroh::SecretKey::from_bytes(&[42; 32]).public();
+        for (dial_retries, gave_up) in [
+            (
+                ReconnectOpts::default().dial_retries,
+                "gave up after 5 attempts",
+            ),
+            (0, "gave up after 1 attempt:"),
+            (2, "gave up after 3 attempts"),
+        ] {
+            let ropts = ReconnectOpts {
+                backoff_min: Duration::from_millis(10),
+                dial_retries,
+                ..ReconnectOpts::default()
+            };
+            let mut retries = 0;
+            let res = run_with_reconnect(
+                &h.client,
+                nobody,
+                "nobody:m/",
+                |_| Harness::hello(Flow::Push),
+                h.local_side(),
+                &archive_opts(),
+                ropts,
+                |s| {
+                    if matches!(s, ConnState::Reconnecting { .. }) {
+                        retries += 1;
+                    }
+                },
+            )
+            .await;
+            let err = format!("{:#}", res.expect_err("an unreachable server must fail"));
+            assert_eq!(retries, dial_retries, "{err}");
+            assert!(err.contains(gave_up), "{dial_retries}: {err}");
+            assert!(err.contains("irsync id show --daemon"), "{err}");
+        }
+    })
+    .await;
+}

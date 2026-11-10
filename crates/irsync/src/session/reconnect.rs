@@ -31,6 +31,11 @@ pub struct ReconnectOpts {
     /// The first wait; it doubles per attempt up to `backoff_max`, jittered.
     pub backoff_min: Duration,
     pub backoff_max: Duration,
+    /// Retries for a server that has not answered yet in this run: after
+    /// this many failed redials the run gives up, rather than redialling a
+    /// wrong ID or a host that is down for the whole `max` window. Once a
+    /// connection has been made, a dropped one is redialled until `max`.
+    pub dial_retries: u32,
     /// Which source of the command line this session is (for its trace).
     pub source_index: usize,
 }
@@ -41,6 +46,7 @@ impl Default for ReconnectOpts {
             max: Duration::from_secs(24 * 3600),
             backoff_min: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
+            dial_retries: 4,
             source_index: 0,
         }
     }
@@ -407,6 +413,8 @@ async fn attempts(
     let role = role_of(Side::Client, hello_for(None).direction);
     let mut outage = Outage::new(Instant::now());
     let mut attempt = 0u32;
+    // Set by the first dial that succeeds; until then retries are few.
+    let mut reached = false;
     loop {
         on_state(match attempt {
             0 => ConnState::Connecting,
@@ -422,6 +430,7 @@ async fn attempts(
         *connecting.lock().unwrap() = Some(connect);
         let (res, conn) = match dialled {
             Ok(conn) => {
+                reached = true;
                 let run = run_client_inner(
                     conn.clone(),
                     hello_for(session),
@@ -491,6 +500,11 @@ async fn attempts(
         if outage.expired(now, opts.max) {
             return Err(err);
         }
+        if !reached && attempt >= opts.dial_retries {
+            let tries = attempt + 1;
+            let plural = if tries == 1 { "" } else { "s" };
+            return Err(err.context(format!("gave up after {tries} attempt{plural}")));
+        }
         attempt += 1;
         // Kept current on the `session` span, so a session that fails in the
         // end still says how often it reconnected.
@@ -499,12 +513,22 @@ async fn attempts(
         let wait = opts
             .delay(outage.failures)
             .min(outage.remaining(now, opts.max));
-        tracing::warn!(
-            error = %format!("{err:#}"),
-            attempt,
-            wait_ms = wait.as_millis() as u64,
-            "connection lost; reconnecting"
-        );
+        if reached {
+            tracing::warn!(
+                error = %format!("{err:#}"),
+                attempt,
+                wait_ms = wait.as_millis() as u64,
+                "connection lost; reconnecting"
+            );
+        } else {
+            tracing::warn!(
+                error = %format!("{err:#}"),
+                attempt,
+                of = opts.dial_retries,
+                wait_ms = wait.as_millis() as u64,
+                "could not connect; retrying"
+            );
+        }
         if crate::telemetry::enabled() {
             let mut labels = crate::telemetry::labels(Side::Client, role, None);
             labels.push(metrics::Label::from_static_parts("reason", reason));

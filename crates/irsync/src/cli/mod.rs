@@ -691,7 +691,8 @@ pub struct SyncArgs {
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
-    /// from the host entry or the client settings, else 24h).
+    /// from the host entry or the client settings, else 24h). A server that
+    /// has never answered gets only 4 retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
     /// Use this relay server instead of the host entry's, the client
