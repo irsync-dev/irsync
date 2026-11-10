@@ -190,6 +190,17 @@ pub enum Command {
         #[command(flatten)]
         files: FilesArgs,
     },
+    /// The server side of SSH onboarding, run by the client over ssh:
+    /// makes sure the daemon identity exists, grants the client immediate
+    /// access, gets this copy's daemon running and prints a report.
+    #[command(hide = true)]
+    SshSetup {
+        /// The client's EndpointId.
+        #[arg(long)]
+        client: String,
+        #[command(flatten)]
+        files: FilesArgs,
+    },
 }
 
 #[derive(Debug, clap::Args)]

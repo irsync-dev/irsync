@@ -28,7 +28,7 @@ otel = [
 
 [dependencies]
 irsync-proto = { path = "../irsync-proto" }
-nix = { workspace = true, features = ["dir", "fs", "resource", "user", "time"] }
+nix = { workspace = true, features = ["dir", "fs", "resource", "user", "time", "signal", "process"] }
 iroh = { workspace = true }
 # Only for CustomAddr, which iroh does not re-export. Used by netsim.
 iroh-base = { workspace = true, optional = true }

@@ -65,6 +65,9 @@ fn main() {
             passphrase_file,
             files,
         }) => std::process::exit(run_show(files, passphrase_file.clone())),
+        Some(Command::SshSetup { client, files }) => {
+            std::process::exit(run_ssh_setup(client, files))
+        }
         None => {
             let opts = SyncOptions::from_args(&args);
             std::process::exit(run_sync(&args, &opts));
@@ -1139,6 +1142,23 @@ fn finish(cmd: &str, r: anyhow::Result<()>) -> i32 {
 
 fn file_paths(f: &FilesArgs) -> Paths {
     Paths::resolve(f.config.as_deref())
+}
+
+/// `irsync ssh-setup`: the report between its marker lines on stdout.
+fn run_ssh_setup(client: &str, files: &FilesArgs) -> i32 {
+    let result = parse_endpoint_id(client)
+        .with_context(|| format!("--client {client:?}"))
+        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id));
+    match result {
+        Ok(report) => {
+            print!("{}", report.to_lines());
+            0
+        }
+        Err(e) => {
+            eprintln!("irsync: {e:#}");
+            1
+        }
+    }
 }
 
 fn run_export(e: &ExportArgs) -> i32 {
