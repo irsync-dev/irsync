@@ -881,7 +881,8 @@ fn grant_list_lines_appear_verbatim_in_show() {
         .copied()
         .skip_while(|l| *l != "all:")
         .collect();
-    let all_block: Vec<&str> = list.lines().take_while(|l| !l.starts_with("p:")).collect();
+    // `grant list` puts the `immediate:` block right after it.
+    let all_block: Vec<&str> = list.lines().take_while(|l| *l != "immediate:").collect();
     assert_eq!(tail, all_block, "{show}");
 }
 
