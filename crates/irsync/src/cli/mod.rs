@@ -745,6 +745,10 @@ pub struct SyncArgs {
     /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
     #[arg(long, value_name = "PATH")]
     pub passphrase_file: Option<PathBuf>,
+    /// The remote shell for SSH onboarding (default: IRSYNC_RSH, else `ssh`);
+    /// split on whitespace like rsync's `-e`.
+    #[arg(long, value_name = "CMD")]
+    pub rsh: Option<String>,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -876,6 +880,7 @@ pub struct SyncOptions {
     pub state_dir: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
+    pub rsh: Option<String>,
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub inplace: bool,
@@ -941,6 +946,7 @@ impl SyncOptions {
             state_dir: None,
             identity: a.identity.clone(),
             passphrase_file: a.passphrase_file.clone(),
+            rsh: a.rsh.clone(),
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,

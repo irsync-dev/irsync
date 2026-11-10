@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stands in for ssh in tests: runs the remote command locally under a fake HOME.
+# Env: FAKE_SSH_HOME, FAKE_SSH_LOG, FAKE_SSH_UNAME (optional).
+echo "$1" >> "$FAKE_SSH_LOG"
+shift
+cmd="$*"
+if [ -n "$FAKE_SSH_UNAME" ]; then
+    cmd="uname() { echo \"\$FAKE_SSH_UNAME\"; }; $cmd"
+fi
+HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" exec sh -c "$cmd"
