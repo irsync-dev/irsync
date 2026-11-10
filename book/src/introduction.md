@@ -15,6 +15,28 @@ re-comparing the whole tree. Many files are in flight at once, scanning runs
 alongside the transfer, and a persistent index makes repeat runs over a large,
 mostly unchanged tree cheap.
 
+> **Alpha.** irsync is alpha software. The command line and the network
+> protocol may change before the beta, and versions may then not talk to each
+> other. Keep another copy of anything you sync with it.
+
+## Install
+
+irsync builds from source with Rust's `cargo`. If you have no Rust yet, get it
+from [rustup.rs](https://rustup.rs) first. The build takes a few minutes.
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # only if you have no Rust
+cargo install --git https://github.com/irsync-dev/irsync irsync
+```
+
+Release binaries will be provided once the beta starts.
+
+Linux and macOS (x86_64 and aarch64) are supported, as client and as daemon.
+With ssh, the client is enough: the first sync copies irsync to the server when
+both run the same OS and CPU. When they differ, install irsync on both machines
+and set the server up by hand
+([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
+
 ## Quick start
 
 If `ssh myserver` logs you in to the server, irsync needs to be installed on
@@ -49,8 +71,9 @@ The pages come in four kinds, and each kind answers a different question.
 - **Tutorial.** One guided run from nothing to a first transfer, for someone
   who has not used irsync before.
 - **How-to guides.** Short recipes for a task you already have in mind:
-  running the daemon, changing exports, choosing a connection path, cleaning
-  up, measuring a transfer.
+  troubleshooting a first sync, setting a server up over ssh, running the
+  daemon, changing exports, choosing a connection path, cleaning up,
+  measuring a transfer.
 - **Reference.** Every flag, command, configuration key, file and metric, and
   the wire protocol, stated as the code has it.
 - **Explanation.** Why irsync behaves as it does: sessions and resume,
