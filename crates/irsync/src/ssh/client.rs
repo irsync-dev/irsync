@@ -63,12 +63,24 @@ impl Rsh {
     /// errors show live; `probe` and `run_setup` capture stdout; `run_setup`
     /// also captures stderr; `ensure_installed` feeds the binary on stdin.
     /// `remote_cmd` is fixed text built by irsync, plus
-    /// an EndpointId; it never contains user input.
+    /// an EndpointId; it never contains user input. It is sh syntax, and
+    /// the login shell may be fish or tcsh, so it is handed to `/bin/sh`
+    /// whole: `exec /bin/sh -c '…'` reads the same in all of them.
     fn command(&self, dest: &str, remote_cmd: &str) -> Command {
         let mut c = Command::new(&self.argv[0]);
-        c.args(&self.argv[1..]).arg(dest).arg(remote_cmd);
+        c.args(&self.argv[1..])
+            .arg(dest)
+            .arg(format!("exec /bin/sh -c {}", sh_quote(remote_cmd)));
         c
     }
+}
+
+/// `s` in single quotes for sh. fish and tcsh read it the same as long as
+/// it holds no `\` or `'` (fish treats `\\` and `\'` specially inside
+/// quotes, and irsync's remote commands use neither).
+fn sh_quote(s: &str) -> String {
+    debug_assert!(!s.contains(['\\', '\'']), "{s}");
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +89,8 @@ pub struct Probe {
     pub arch: Option<&'static str>,
     /// First line of `~/REMOTE_BIN --version`, if any.
     pub installed: Option<String>,
+    /// The ssh user is root (`id -u` is 0).
+    pub root: bool,
 }
 
 /// Map `uname -sm` output to the names `std::env::consts` uses.
@@ -99,7 +113,7 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
 pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     // The marker lets us skip any banner a noisy login shell prints first.
     let cmd = format!(
-        "echo {PROBE_MARKER}; uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
+        "echo {PROBE_MARKER}; id -u; uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
     );
     let out = rsh
         .command(dest, &cmd)
@@ -119,6 +133,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
         );
     };
     let mut lines = all[at + 1..].iter().copied();
+    let root = lines.next().map(str::trim) == Some("0");
     let (os, arch) = parse_uname(lines.next().unwrap_or(""));
     let installed = lines
         .next()
@@ -129,6 +144,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
         os,
         arch,
         installed,
+        root,
     })
 }
 

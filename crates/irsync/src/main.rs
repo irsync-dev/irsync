@@ -438,7 +438,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     let mut onboarded_with = None;
     if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
         // No ssh call yet: these errors need no "over ssh failed" context.
-        irsync::ssh::onboard::check(&paths, host)?;
+        irsync::ssh::onboard::check(&paths, host, host)?;
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
         log.eprintln(&format!(

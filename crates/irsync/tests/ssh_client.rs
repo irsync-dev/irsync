@@ -154,6 +154,60 @@ fn probe_ignores_a_login_banner() {
     assert_eq!(p.arch, Some("x86_64"));
 }
 
+/// A login shell that is not sh (fish, tcsh) cannot run the remote
+/// commands as written, so each one is handed to `/bin/sh` whole. The
+/// stand-in refuses anything else, the way such a shell would choke.
+#[test]
+fn remote_commands_run_under_sh() {
+    let f = fake(Some("Linux riscv64"));
+    let wrapper = script(
+        &f,
+        "fish-ssh",
+        &format!(
+            "case \"$2\" in \"exec /bin/sh -c '\"*\"'\") ;; \
+             *) echo \"fish: unsupported syntax\" >&2; exit 127 ;; esac; exec {} \"$@\"",
+            fake_ssh().display()
+        ),
+    );
+    let p = probe(&wrapper, "myserver").unwrap();
+    // FAKE_SSH_UNAME still reaches the inner sh.
+    assert_eq!((p.os, p.arch), (Some("linux"), None));
+    // SAFETY: serialized by ENV, held in `f`.
+    unsafe { std::env::remove_var("FAKE_SSH_UNAME") };
+    let p = probe(&wrapper, "myserver").unwrap();
+    let r = ensure_installed(&wrapper, "myserver", &p).unwrap();
+    assert_eq!(r, Install::Copied { replaced: None });
+    let p = probe(&wrapper, "myserver").unwrap();
+    assert_eq!(
+        ensure_installed(&wrapper, "myserver", &p).unwrap(),
+        Install::Current
+    );
+}
+
+/// The probe says whether the ssh user is root (`id -u` is 0).
+#[test]
+fn probe_sees_root() {
+    let f = fake(None);
+    assert!(!probe(&f.rsh, "myserver").unwrap().root || nix::unistd::geteuid().is_root());
+    let bin = f.home.path().join("fake-bin");
+    std::fs::create_dir(&bin).unwrap();
+    let id = bin.join("id");
+    std::fs::write(&id, "#!/bin/sh\necho 0\n").unwrap();
+    std::fs::set_permissions(&id, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let wrapper = script(
+        &f,
+        "root-ssh",
+        &format!(
+            "PATH={}:$PATH exec {} \"$@\"",
+            bin.display(),
+            fake_ssh().display()
+        ),
+    );
+    let p = probe(&wrapper, "myserver").unwrap();
+    assert!(p.root);
+    assert_eq!(p.os, Some("linux"));
+}
+
 #[test]
 fn install_removes_a_short_upload() {
     let f = fake(None);

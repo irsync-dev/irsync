@@ -171,7 +171,7 @@ fn first_push_sets_up_and_syncs() {
         assert!(lines.contains(&want), "no line {want:?} in stderr:\n{err}");
     }
     assert!(
-        lines.iter().any(|l| l.starts_with("  kill \"$(sed -n")),
+        lines.iter().any(|l| l.starts_with("  pid=\"$(sed -n")),
         "{err}"
     );
     let cfg = w.client_config();
@@ -513,12 +513,19 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
     w.kill_daemon();
     for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
         let p = entry.unwrap().path();
-        if p.file_name().unwrap().to_string_lossy().starts_with("daemon_ed25519") {
+        if p.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("daemon_ed25519")
+        {
             std::fs::remove_file(p).unwrap();
         }
     }
     let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("nas:{}", dest.display())]));
-    assert!(err.contains("nas did not answer; checking it over ssh"), "{err}");
+    assert!(
+        err.contains("nas did not answer; checking it over ssh"),
+        "{err}"
+    );
     assert!(err.contains("updated host alias nas:"), "{err}");
     assert_ne!(w.saved_id("nas"), before);
     let cfg = w.client_config();

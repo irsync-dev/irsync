@@ -82,13 +82,18 @@ other users, and device nodes in it. Run the daemon as an unprivileged account
 that owns the export trees. Ownership is then applied only where that account
 may change it, to its own groups, as rsync does without privilege.
 
+The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) warns when
+you sign in as root: the daemon it starts then runs as root, and the client's
+immediate grant reaches every path on the server.
+
 ## Keep a daemon started over ssh running
 
 When the [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) starts
 the daemon, it runs in the background under your account until the server
 reboots. When a later sync gets no answer within about 15 seconds, it starts
-the daemon again over ssh, but only when you sync. To keep it running all the time, make it a user service. The
-setup prints these steps for the server's system; they are the same here.
+the daemon again over ssh, but only when you sync. To keep it running all the
+time, make it a user service. The setup prints these steps for the server's
+system; they are the same here.
 
 On Linux, put this in `~/.config/systemd/user/irsync.service`:
 
@@ -105,7 +110,9 @@ WantedBy=default.target
 Then stop the daemon irsync started and let the service take over:
 
 ```sh
-kill "$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+pid="$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+kill "$pid"
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 systemctl --user enable --now irsync
 loginctl enable-linger $USER
 ```
@@ -130,14 +137,17 @@ your home directory for `$HOME`:
 Then stop the daemon irsync started and let the service take over:
 
 ```sh
-kill "$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+pid="$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)"
+kill "$pid"
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 launchctl load -w ~/Library/LaunchAgents/org.irsync.daemon.plist
 ```
 
 If the state directory is not the default one, the setup prints the path of
 `daemon.lock` to use instead. The kill is needed because the lock lets only
 one daemon run at a time: the service cannot start while the first daemon
-holds it.
+holds it, so the loop waits until that daemon has exited. These lines are sh
+syntax; from fish or tcsh, run them under `sh`.
 
 ## Under systemd
 

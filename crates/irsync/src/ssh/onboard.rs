@@ -26,6 +26,8 @@ pub struct Onboarded {
     pub install: Install,
     /// The server's OS (`std::env::consts::OS` names), from the probe.
     pub os: Option<&'static str>,
+    /// The ssh user, and so the daemon it started, is root.
+    pub root: bool,
     /// This client's EndpointId, the one `ssh-setup` granted.
     pub client: EndpointId,
 }
@@ -42,7 +44,7 @@ pub fn onboard(
     client: EndpointId,
     recheck: bool,
 ) -> anyhow::Result<Onboarded> {
-    check(paths, alias)?;
+    check(paths, alias, dest)?;
     let p = probe(rsh, dest)?;
     let install = ensure_installed(rsh, dest, &p)?;
     let report = run_setup(rsh, dest, client, recheck)?;
@@ -66,16 +68,21 @@ pub fn onboard(
         alias_existed,
         install,
         os: p.os,
+        root: p.root,
         client,
         report,
     })
 }
 
-/// Whether `dest` can be saved as an alias here. Checked before any ssh
-/// call, so the server is never changed for an alias that can't be saved.
-pub fn check(paths: &Paths, dest: &str) -> anyhow::Result<()> {
-    if !valid_alias(dest) {
-        return Err(manage::ManageError::BadAlias(dest.to_string()).into());
+/// Whether `alias` can be saved here and `dest` is a host name ssh will
+/// not take for an option. Checked before any ssh call, so the server is
+/// never changed for an alias that can't be saved.
+pub fn check(paths: &Paths, alias: &str, dest: &str) -> anyhow::Result<()> {
+    if dest.starts_with('-') {
+        anyhow::bail!("{dest:?} is not a host name");
+    }
+    if !valid_alias(alias) {
+        return Err(manage::ManageError::BadAlias(alias.to_string()).into());
     }
     // A split hosts file can't take the alias.
     manage::ensure_editable(paths, manage::Table::Hosts)?;
@@ -119,6 +126,11 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         GrantOutcome::ImmediateOff => out.push(format!(
             "  immediate mode is off on {dest}: only exports granted to this client are reachable"
         )),
+    }
+    if o.root && matches!(r.grant, GrantOutcome::Added | GrantOutcome::Already) {
+        out.push(format!(
+            "  warning: the daemon runs as root and this client can reach every path on {dest}"
+        ));
     }
     match &r.daemon {
         DaemonOutcome::Running => {}
@@ -173,10 +185,15 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
     // The daemon irsync started holds this lock (beside its log); the
     // service can't start until that daemon is stopped.
     let lock = o.report.log.with_file_name("daemon.lock");
-    let kill = format!(
-        "  kill \"$(sed -n 's/^pid=//p' {})\"",
-        shell_path(&lock.to_string_lossy())
-    );
+    // The service starts only once the old daemon has let go of the lock.
+    let stop = [
+        format!(
+            "  pid=\"$(sed -n 's/^pid=//p' {})\"",
+            shell_path(&lock.to_string_lossy())
+        ),
+        "  kill \"$pid\"".to_string(),
+        "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done".to_string(),
+    ];
     let (file, body, start): (&str, &[&str], &[&str]) = match o.os {
         Some("macos") => (
             "~/Library/LaunchAgents/org.irsync.daemon.plist (with your home directory for $HOME)",
@@ -215,7 +232,7 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
     ];
     out.extend(body.iter().map(|l| l.to_string()));
     out.push("Then stop the daemon irsync started and let the service take over:".into());
-    out.push(kill);
+    out.extend(stop);
     out.extend(start.iter().map(|l| l.to_string()));
     out
 }
@@ -247,6 +264,48 @@ mod tests {
         iroh::SecretKey::from_bytes(&[b; 32]).public()
     }
 
+    /// As root, the immediate grant reaches every path on the server: the
+    /// summary warns, unless nothing was granted.
+    #[test]
+    fn root_daemon_gets_a_warning() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Running, Some("linux"));
+        o.root = true;
+        let warning =
+            "  warning: the daemon runs as root and this client can reach every path on myserver";
+        for grant in [GrantOutcome::Added, GrantOutcome::Already] {
+            o.report.grant = grant;
+            assert!(
+                summary(&o).iter().any(|l| l == warning),
+                "{:#?}",
+                summary(&o)
+            );
+        }
+        for grant in [GrantOutcome::ImmediateOff, GrantOutcome::Missing] {
+            o.report.grant = grant;
+            assert!(
+                !summary(&o).join("\n").contains("root"),
+                "{:#?}",
+                summary(&o)
+            );
+        }
+        o.report.grant = GrantOutcome::Added;
+        o.root = false;
+        assert!(!summary(&o).join("\n").contains("root"));
+    }
+
+    /// ssh would read `-oProxyCommand=…` as an option: such a destination
+    /// is refused before any ssh call, as alias or as `ssh` value.
+    #[test]
+    fn dash_destination_is_not_a_host_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::resolve(Some(&dir.path().join("irsync.toml")));
+        for (alias, dest) in [("-oProxyCommand=x", "-oProxyCommand=x"), ("nas", "-x")] {
+            let e = check(&paths, alias, dest).unwrap_err();
+            assert_eq!(e.to_string(), format!("{dest:?} is not a host name"));
+        }
+        check(&paths, "nas", "me@myserver").unwrap();
+    }
+
     fn onboarded(install: Install, daemon: DaemonOutcome, os: Option<&'static str>) -> Onboarded {
         Onboarded {
             alias: "myserver".into(),
@@ -263,6 +322,7 @@ mod tests {
             },
             install,
             os,
+            root: false,
             client: id(1),
         }
     }
@@ -299,9 +359,12 @@ mod tests {
         assert!(!text.contains("systemctl"));
         // The plist body starts at column 0 so it can be pasted as a file.
         assert!(h.iter().any(|l| l.starts_with("<?xml ")));
-        let kill = at(&h, "  kill \"$(sed -n 's/^pid=//p' /s/daemon.lock)\"");
+        let pid = at(&h, "  pid=\"$(sed -n 's/^pid=//p' /s/daemon.lock)\"");
+        let wait = at(&h, "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done");
+        assert!(at(&h, "  kill \"$pid\"") < wait);
+        assert!(pid < wait);
         assert!(
-            kill < at(
+            wait < at(
                 &h,
                 "  launchctl load -w ~/Library/LaunchAgents/org.irsync.daemon.plist"
             )
@@ -328,19 +391,21 @@ mod tests {
         assert_eq!(h[1], "Put this in ~/.config/systemd/user/irsync.service:");
         at(&h, "ExecStart=%h/.local/share/irsync/bin/irsync daemon");
         at(&h, "Restart=on-failure");
-        let kill = at(
+        let pid = at(
             &h,
-            "  kill \"$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)\"",
+            "  pid=\"$(sed -n 's/^pid=//p' ~/.local/state/irsync/daemon.lock)\"",
         );
+        let wait = at(&h, "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done");
+        assert!(at(&h, "  kill \"$pid\"") < wait);
         let enable = at(&h, "  systemctl --user enable --now irsync");
-        assert!(kill < enable);
+        assert!(pid < wait && wait < enable);
         assert!(enable < at(&h, "  loginctl enable-linger $USER"));
         assert!(!h.join("\n").contains("launchctl"));
         // Odd paths are quoted for the shell.
         o.report.log = PathBuf::from("/srv/my state/daemon.log");
         at(
             &howto(&o),
-            "  kill \"$(sed -n 's/^pid=//p' '/srv/my state/daemon.lock')\"",
+            "  pid=\"$(sed -n 's/^pid=//p' '/srv/my state/daemon.lock')\"",
         );
     }
 

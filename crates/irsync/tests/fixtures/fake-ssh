@@ -5,6 +5,13 @@ echo "$1" >> "$FAKE_SSH_LOG"
 shift
 cmd="$*"
 if [ -n "$FAKE_SSH_UNAME" ]; then
-    cmd="uname() { echo \"\$FAKE_SSH_UNAME\"; }; $cmd"
+    # A `uname` first on PATH, so a nested `/bin/sh -c` sees it too.
+    bin=$(mktemp -d)
+    printf '#!/bin/sh\necho "%s"\n' "$FAKE_SSH_UNAME" > "$bin/uname"
+    chmod 755 "$bin/uname"
+    HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" PATH="$bin:$PATH" sh -c "$cmd"
+    status=$?
+    rm -rf "$bin"
+    exit $status
 fi
 HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" exec sh -c "$cmd"
