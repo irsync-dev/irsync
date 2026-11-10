@@ -20,7 +20,8 @@ use irsync_proto::PROTOCOL_VERSION;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::authz::{Access, Authorizer, FileAuthorizer, Grants, Snapshot};
+use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
+use crate::autoexport::auto_root;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
@@ -32,7 +33,7 @@ use crate::index::{Index, IndexHandle};
 use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
-use crate::resolve::{resolve, ResolveError, Resolved};
+use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{serve_daemon, Place};
 #[cfg(feature = "test-hooks")]
@@ -499,7 +500,26 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         return Ok(());
     }
 
-    match validate(&snap, &grants, shared.home.as_deref(), &hello) {
+    // The snapshot taken after adding an automatic export; the session's
+    // `Resolved` borrows from it.
+    let fresh: Snapshot;
+    let validated = match validate(&snap, &grants, shared.home.as_deref(), &hello) {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) if grants.immediate => match serve_immediate(&shared, &snap, id, &hello) {
+            Ok((s, abs)) => {
+                fresh = s;
+                let grants = fresh.grants(&id);
+                match containing(&abs, &fresh.exports, &grants, None) {
+                    Some(resolved) => admit(resolved, &hello),
+                    None => Err(no_access(&hello)),
+                }
+            }
+            Err(e) => Err(e),
+        },
+        Ok(None) => Err(no_access(&hello)),
+        Err(e) => Err(e),
+    };
+    match validated {
         Ok((resolved, rel)) => {
             let root = resolved.export.path.clone();
             let name = resolved.name.to_string();
@@ -588,31 +608,88 @@ fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
     Ok(())
 }
 
+/// The reply for a path this key may not use. It is the same whether the
+/// path is outside every export, inside an export the key has no grant
+/// for, or missing: a key must not be able to probe the daemon's layout.
+fn no_access(hello: &Hello) -> (Code, String) {
+    (
+        Code::Unauthorized,
+        format!("no access to {}", escape_path(&hello.path)),
+    )
+}
+
+/// `Ok(None)` when no export the key may use contains the path: the caller
+/// replies [`no_access`], or, for a key with the immediate grant, adds an
+/// automatic export ([`serve_immediate`]).
 fn validate<'a>(
     snap: &'a Snapshot,
     grants: &Grants,
     home: Option<&Path>,
     hello: &Hello,
-) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
+) -> Result<Option<(Resolved<'a>, RelPath)>, (Code, String)> {
     version_check(hello)?;
     // The path is resolved (export name, home, absolute) and the export
-    // containing it chosen before anything is said about it. The reply for
-    // a path this key may not use is the same whether the path is outside
-    // every export, inside an export the key has no grant for, or missing:
-    // a key must not be able to probe the daemon's layout. Only a key that
-    // may use the containing export learns that the path is invalid or
-    // that the export is read-only.
-    let no_access = || {
+    // containing it chosen before anything is said about it. Only a key
+    // that may use the containing export learns that the path is invalid
+    // or that the export is read-only.
+    match resolve(&hello.path, home, &snap.exports, grants) {
+        Err(ResolveError::BadPath) => Err((Code::BadPath, "invalid path".into())),
+        Ok(None) => Ok(None),
+        Ok(Some(r)) => admit(r, hello).map(Some),
+    }
+}
+
+/// For a key with the immediate grant, whose path no export it may use
+/// contains: adds an automatic export for the path ([`auto_root`]) and
+/// returns a snapshot that has it, with the path made canonical to resolve
+/// against it. Such a key can reach the server over SSH anyway, so a
+/// missing path is reported as such.
+fn serve_immediate(
+    shared: &Shared,
+    snap: &Snapshot,
+    id: iroh::EndpointId,
+    hello: &Hello,
+) -> Result<(Snapshot, PathBuf), (Code, String)> {
+    let push = match Direction::try_from(hello.direction) {
+        Ok(Direction::ClientSends) => true,
+        Ok(Direction::DaemonSends) => false,
+        _ => return Err((Code::Unknown, "bad direction".into())),
+    };
+    let abs = match resolve_path(&hello.path, shared.home.as_deref(), &snap.exports) {
+        Ok(Some((abs, _))) => abs,
+        Ok(None) => return Err(no_access(hello)),
+        Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
+    };
+    let missing = || {
         (
-            Code::Unauthorized,
-            format!("no access to {}", escape_path(&hello.path)),
+            Code::BadPath,
+            format!("no such file or directory: {}", escape_path(&hello.path)),
         )
     };
-    let resolved = match resolve(&hello.path, home, &snap.exports, grants) {
-        Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
-        Ok(None) => return Err(no_access()),
-        Ok(Some(r)) => r,
+    let root = auto_root(&abs, push).map_err(|_| missing())?;
+    let canonical = std::fs::canonicalize(&root).map_err(|_| missing())?;
+    let abs = match abs.strip_prefix(&root) {
+        Ok(rest) if !rest.as_os_str().is_empty() => canonical.join(rest),
+        _ => canonical.clone(),
     };
+    let internal = |e: AuthzError| {
+        tracing::warn!(peer = %id.fmt_short(), path = %canonical.display(), "{e:#}");
+        (Code::Internal, format!("{e:#}"))
+    };
+    shared
+        .authz
+        .add_auto_export(&canonical, id)
+        .map_err(internal)?;
+    let fresh = shared.authz.snapshot().map_err(internal)?;
+    Ok((fresh, abs))
+}
+
+/// The session `resolved` stands for, when `hello` may have it: the name
+/// joined below the path, and no push into a read-only export.
+fn admit<'a>(
+    resolved: Resolved<'a>,
+    hello: &Hello,
+) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
     let rel = if hello.name.is_empty() {
         resolved.rel.clone()
     } else {
@@ -692,16 +769,20 @@ pub async fn run_from_settings(
     reload: Arc<Notify>,
     debug: Option<SocketAddr>,
 ) -> Result<()> {
-    let mut settings = Config::load(paths)?.settings;
+    let Config {
+        mut settings,
+        exports,
+        ..
+    } = Config::load(paths)?;
     if !listen.is_empty() {
         settings.daemon.listen = listen.clone();
     }
     let authz = Arc::new(FileAuthorizer::new(paths.clone()));
-    let snap = authz.snapshot()?;
-    if snap.exports.is_empty() {
+    // `[immediate]` keys get their exports added as they connect.
+    if exports.exports.is_empty() && exports.immediate_rw.is_empty() {
         tracing::warn!(
             "no exports defined in {}; run irsync export add",
-            snap.exports_file.display()
+            exports.path.display()
         );
     }
     let endpoint = endpoint_from_settings(&settings, pass).await?;

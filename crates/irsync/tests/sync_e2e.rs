@@ -674,3 +674,51 @@ async fn a_source_rewritten_after_its_listing_arrives_as_it_is_now() {
     assert_eq!(fs::read(h.export.path().join("f")).unwrap(), new);
     assert_eq!(out.files_hashed, 1, "the retry re-read the file");
 }
+
+/// A key in `[immediate]` pushes to an absolute path no export names; the
+/// daemon adds an automatic export there, and a second, unchanged push
+/// finds the files in that export's index instead of hashing them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn immediate_push_then_resume_uses_index() {
+    within30(async {
+        let opts = archive_opts();
+        let client = common::client_endpoint().await;
+        let config_dir = tempfile::tempdir().unwrap();
+        let config = config_dir.path().join("irsync.toml");
+        fs::write(
+            &config,
+            format!("[immediate]\nrw = [\"{}\"]\n", client.id()),
+        )
+        .unwrap();
+        let paths = irsync::config::paths::Paths::resolve(Some(&config));
+        let authz = Arc::new(irsync::authz::FileAuthorizer::new(paths));
+        let h = Harness {
+            daemon: common::spawn_daemon_with(authz).await,
+            client,
+            export: tempfile::tempdir().unwrap(),
+            local: tempfile::tempdir().unwrap(),
+            client_state: tempfile::tempdir().unwrap(),
+        };
+        mixed_tree(h.local.path());
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = h.export.path().as_os_str().as_bytes().to_vec();
+
+        let first = h
+            .run_hello(&opts, hello.clone(), h.local_side())
+            .await
+            .unwrap();
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_trees_equal(h.local.path(), h.export.path(), &opts.preserve);
+        let written = fs::read_to_string(&config).unwrap();
+        assert!(written.contains("auto = true"), "{written}");
+        let hashed = h.daemon_files_hashed();
+
+        let second = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert_eq!(second.files_transferred, 0);
+        assert_eq!(h.daemon_files_hashed(), hashed, "daemon hashed files");
+        let again = fs::read_to_string(&config).unwrap();
+        assert_eq!(again, written, "the second push added another export");
+    })
+    .await;
+}

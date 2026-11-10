@@ -5,8 +5,11 @@ use crate::config::file::Config;
 use crate::config::hosts::Hosts;
 use crate::config::paths::Paths;
 use crate::config::ConfigError;
+use crate::manage::ManageError;
 use iroh::EndpointId;
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -52,6 +55,20 @@ impl Grants {
 pub enum AuthzError {
     #[error(transparent)]
     Config(#[from] ConfigError),
+    /// Another irsync is editing the config file right now.
+    #[error("cannot add an automatic export, the config is locked: {0}")]
+    Locked(ManageError),
+    #[error("cannot add an automatic export: {0}")]
+    Manage(ManageError),
+}
+
+impl From<ManageError> for AuthzError {
+    fn from(e: ManageError) -> Self {
+        match e {
+            ManageError::Locked { .. } => AuthzError::Locked(e),
+            e => AuthzError::Manage(e),
+        }
+    }
 }
 
 /// Who may use which export, as of one read of the config and any split
@@ -123,6 +140,17 @@ impl Snapshot {
 pub trait Authorizer: Send + Sync {
     /// The current exports and grants. Errors fail closed.
     fn snapshot(&self) -> Result<Snapshot, AuthzError>;
+
+    /// Makes sure an export `peer` may use contains `root` (a canonical
+    /// absolute directory): when none does, adds an automatic export of
+    /// `root`, read-write for `peer`, seen by the next
+    /// [`Authorizer::snapshot`].
+    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError>;
+}
+
+/// True when an export `peer` may use in `snap` already contains `root`.
+fn covered(snap: &Snapshot, root: &Path, peer: &EndpointId) -> bool {
+    crate::resolve::containing(root, &snap.exports, &snap.grants(peer), None).is_some()
 }
 
 /// Reads the config (and any split file beside it) afresh on every
@@ -146,38 +174,100 @@ impl Authorizer for FileAuthorizer {
             config.settings.daemon.immediate,
         ))
     }
+
+    /// Edits the config file under its lock, so that two connections (or
+    /// an `irsync export` command) cannot lose each other's change; the
+    /// check for an export that already covers `root` is made under the
+    /// same lock.
+    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
+        use crate::manage::{ensure_editable, exports, lock_config, Table};
+        ensure_editable(&self.paths, Table::Exports)?;
+        let lock = lock_config(&self.paths.config)?;
+        if covered(&self.snapshot()?, root, &peer) {
+            return Ok(());
+        }
+        let mut doc = lock.load()?;
+        let name = exports::add_auto_export(&mut doc, root, peer)?;
+        lock.save(&doc)?;
+        tracing::info!(
+            export = %name,
+            path = %root.display(),
+            peer = %peer.fmt_short(),
+            "added automatic export"
+        );
+        Ok(())
+    }
 }
 
-/// A fixed set of exports and grants, for tests.
+/// A set of exports and grants held in memory, for tests; automatic
+/// exports are added to it.
 pub struct MemoryAuthorizer {
-    snapshot: Snapshot,
+    snapshot: Mutex<Snapshot>,
 }
 
 impl MemoryAuthorizer {
     pub fn single(id: EndpointId, grants: Grants) -> Self {
         Self {
-            snapshot: Snapshot {
+            snapshot: Mutex::new(Snapshot {
                 grants: HashMap::from([(id, grants)]),
                 ..Snapshot::default()
-            },
+            }),
         }
+    }
+
+    fn inner(&mut self) -> &mut Snapshot {
+        self.snapshot
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Adds (or replaces) the grants of one more key.
     pub fn with(mut self, id: EndpointId, grants: Grants) -> Self {
-        self.snapshot.grants.insert(id, grants);
+        self.inner().grants.insert(id, grants);
         self
     }
 
     /// Replaces the exports served.
     pub fn with_exports(mut self, exports: BTreeMap<String, Export>) -> Self {
-        self.snapshot.exports = exports;
+        self.inner().exports = exports;
         self
     }
 }
 
 impl Authorizer for MemoryAuthorizer {
     fn snapshot(&self) -> Result<Snapshot, AuthzError> {
-        Ok(self.snapshot.clone())
+        Ok(self
+            .snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone())
+    }
+
+    /// Named as the config file would name it.
+    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
+        let mut snap = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        if covered(&snap, root, &peer) {
+            return Ok(());
+        }
+        let base = crate::manage::exports::auto_name(root);
+        let mut name = base.clone();
+        let mut n = 2;
+        while snap.exports.contains_key(&name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        let export = Export {
+            path: root.to_path_buf(),
+            read_only: false,
+            warm_index: false,
+            fsync: false,
+            auto: true,
+            rw: vec![peer.to_string()],
+            ro: Vec::new(),
+        };
+        snap.exports.insert(name.clone(), export);
+        let grants = snap.grants.entry(peer).or_default();
+        grants.exports.insert(name, Access::ReadWrite);
+        Ok(())
     }
 }

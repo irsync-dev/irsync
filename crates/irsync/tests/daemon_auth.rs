@@ -4,8 +4,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use common::{
-    client_endpoint, spawn_daemon, spawn_daemon_home, spawn_daemon_with, spawn_daemon_with_state,
-    within, DaemonHandle,
+    client_endpoint, spawn_daemon, spawn_daemon_full, spawn_daemon_home, spawn_daemon_with,
+    spawn_daemon_with_state, within, DaemonHandle,
 };
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
@@ -567,6 +567,132 @@ async fn list_exports_names_only_what_the_key_may_use() {
     // No grants at all: closed before Hello, as for a sync.
     let d = spawn(Grants::default()).await;
     assert!(list_against(&d, &client).await.is_err());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+fn immediate() -> Grants {
+    Grants {
+        immediate: true,
+        ..Grants::default()
+    }
+}
+
+fn bytes(p: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    p.as_os_str().as_bytes().to_vec()
+}
+
+/// A daemon with no home whose exports and grants are `authz`'s, kept
+/// so the test can look at what the daemon added.
+async fn spawn_memory(authz: &Arc<MemoryAuthorizer>) -> DaemonHandle {
+    spawn_daemon_full(authz.clone(), tempfile::tempdir().unwrap(), None).await
+}
+
+#[tokio::test]
+async fn immediate_push_creates_auto_export() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    let r = exchange_against(&d, &client, hello(&bytes(&dest), Direction::ClientSends)).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    let snap = authz.snapshot().unwrap();
+    assert_eq!(snap.exports.len(), 1, "{:?}", snap.exports);
+    let (name, e) = snap.exports.iter().next().unwrap();
+    assert!(e.auto);
+    assert_eq!(e.path, dest);
+    assert_eq!(e.rw, vec![client.id().to_string()]);
+    assert_eq!(
+        snap.grants(&client.id()).access(name),
+        Some(Access::ReadWrite)
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn immediate_reuses_containing_auto_export() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir(&dest).unwrap();
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    for path in [dest.clone(), dest.join("sub")] {
+        let r = exchange_against(&d, &client, hello(&bytes(&path), Direction::ClientSends)).await;
+        assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)), "{path:?}");
+    }
+    let snap = authz.snapshot().unwrap();
+    assert_eq!(snap.exports.len(), 1, "{:?}", snap.exports);
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn immediate_off_rejects_unexported_path() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let (exported, elsewhere) = (tmp.path().join("exported"), tmp.path().join("elsewhere"));
+    std::fs::create_dir(&exported).unwrap();
+    std::fs::create_dir(&elsewhere).unwrap();
+    let client = client_endpoint().await;
+    let g = Grants {
+        exports: [("other".to_string(), Access::ReadWrite)].into(),
+        all: None,
+        immediate: false,
+    };
+    let export = irsync::config::exports::Export {
+        path: exported,
+        read_only: false,
+        warm_index: false,
+        fsync: false,
+        auto: false,
+        rw: Vec::new(),
+        ro: Vec::new(),
+    };
+    let authz = Arc::new(
+        MemoryAuthorizer::single(client.id(), g)
+            .with_exports([("other".to_string(), export)].into()),
+    );
+    let d = spawn_memory(&authz).await;
+    let path = bytes(&elsewhere);
+    let e = reply(exchange_against(&d, &client, hello(&path, Direction::ClientSends)).await);
+    assert_eq!(e, (Code::Unauthorized as i32, no_access(&path)));
+    let snap = authz.snapshot().unwrap();
+    assert_eq!(
+        snap.exports.keys().collect::<Vec<_>>(),
+        vec!["other"],
+        "an export was added"
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn immediate_missing_path_is_bad_path() {
+    use irsync::authz::Authorizer;
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_endpoint().await;
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let d = spawn_memory(&authz).await;
+    let path = bytes(&tmp.path().join("nope"));
+    let e = reply(exchange_against(&d, &client, hello(&path, Direction::DaemonSends)).await);
+    assert_eq!(
+        e,
+        (
+            Code::BadPath as i32,
+            format!(
+                "no such file or directory: {}",
+                irsync::fs::paths::escape_path(&path)
+            )
+        )
+    );
+    assert!(authz.snapshot().unwrap().exports.is_empty());
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }

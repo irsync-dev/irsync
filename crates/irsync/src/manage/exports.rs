@@ -52,7 +52,7 @@ pub fn add_export(
 
 /// The auto export name for `path`: `auto-` and the components joined by
 /// `-`, every byte outside `[A-Za-z0-9._-]` as `_`; `/` is `auto-root`.
-fn auto_name(path: &Path) -> String {
+pub(crate) fn auto_name(path: &Path) -> String {
     let parts: Vec<String> = path
         .components()
         .filter_map(|c| match c {
