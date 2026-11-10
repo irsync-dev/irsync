@@ -15,6 +15,9 @@ re-comparing the whole tree. Many files are in flight at once, scanning runs
 alongside the transfer, and a persistent index makes repeat runs over a large,
 mostly unchanged tree cheap.
 
+Correctness comes first. [How we know irsync is correct](explanation/correctness.md)
+states what a completed sync promises, and how you can check it yourself.
+
 > **Alpha.** irsync is alpha software. The command line and the network
 > protocol may change before the beta, and versions may then not talk to each
 > other. Keep another copy of anything you sync with it.
@@ -76,8 +79,9 @@ The pages come in four kinds, and each kind answers a different question.
   measuring a transfer.
 - **Reference.** Every flag, command, configuration key, file and metric, and
   the wire protocol, stated as the code has it.
-- **Explanation.** Why irsync behaves as it does: sessions and resume,
-  identity and trust, connections, and the transfer algorithm.
+- **Explanation.** Why irsync behaves as it does: how we know it is correct,
+  sessions and resume, identity and trust, connections, and the transfer
+  algorithm.
 
 A separate part, **fileset**, covers a companion tool that shares no code with
 irsync. It checks a copy against a recorded manifest, whichever tool made the
