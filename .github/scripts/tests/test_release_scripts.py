@@ -12,6 +12,7 @@ SCRIPTS = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(SCRIPTS))
 CHECK = os.path.join(SCRIPTS, "check-release-tag.sh")
 NOTES = os.path.join(SCRIPTS, "release-notes.sh")
+RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 HEADING = "## What's changed"
 
 
@@ -170,6 +171,59 @@ class NotesTests(FakeGh):
     def test_no_release_fails(self):
         r = self.run_script(NOTES, "v0.2.0")
         self.assertNotEqual(r.returncode, 0)
+
+
+class ResumeTests(FakeGh):
+    def resume(self, tag, dry_run, release=None):
+        releases = {tag: release} if release else {}
+        self.set_state(releases=releases, tags=[tag], generated="x")
+        return self.run_script(RESUME, tag, "true" if dry_run else "false")
+
+    def out(self, r):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return dict(l.split("=", 1) for l in r.stdout.splitlines())
+
+    PUBLISHED = {"body": "", "isDraft": False, "isPrerelease": False}
+    PRE = {"body": "", "isDraft": False, "isPrerelease": True}
+
+    def test_stable(self):
+        self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED)),
+                         {"packages": "true", "notes": "true"})
+
+    def test_prerelease_tag_gets_notes_only(self):
+        self.assertEqual(self.out(self.resume("v1.2.3-beta.1", False, self.PRE)),
+                         {"packages": "false", "notes": "true"})
+
+    def test_stable_tag_marked_prerelease_gets_no_packages(self):
+        self.assertEqual(self.out(self.resume("v1.2.3", False, self.PRE)),
+                         {"packages": "false", "notes": "true"})
+
+    def test_dry_run_on_alpha(self):
+        self.assertEqual(self.out(self.resume("v0.1.0-alpha.1", True, self.PRE)),
+                         {"packages": "true", "notes": "false"})
+
+    def test_dry_run_on_stable(self):
+        self.assertEqual(self.out(self.resume("v1.2.3", True, self.PUBLISHED)),
+                         {"packages": "true", "notes": "false"})
+
+    def test_draft_fails(self):
+        r = self.resume("v1.2.3", False, {"body": "", "isDraft": True, "isPrerelease": False})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("draft", r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_missing_release_fails(self):
+        for dry in (False, True):
+            r = self.resume("v1.2.3", dry)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no GitHub Release", r.stderr)
+            self.assertEqual(r.stdout, "")
+
+    def test_bad_tag_fails_before_gh(self):
+        r = self.resume("v1.2.3;id", True, self.PUBLISHED)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(self.state().get("calls", []), [])
 
 
 if __name__ == "__main__":
