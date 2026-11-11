@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use common::{Flow, Harness};
+use irsync::fs::clone::Clones;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
 use irsync::session::{EventLog, PartsFault};
@@ -84,15 +85,19 @@ fn private_tempdir_in(dir: &Path) -> tempfile::TempDir {
     t
 }
 
-/// Whether `dir`'s filesystem clones files.
+/// Whether irsync can clone files in `dir`: one clone made the way
+/// `--paranoid` makes them (`fclonefileat` on macOS, `FICLONE` elsewhere;
+/// `recv::reflink` alone says no on macOS). Dropping the clones removes
+/// their folder.
 fn reflinks(dir: &Path) -> bool {
-    // Readable: the clone's source must be.
-    fs::write(dir.join(".probe-a"), b"probe").unwrap();
-    let a = fs::File::open(dir.join(".probe-a")).unwrap();
-    let b = fs::File::create(dir.join(".probe-b")).unwrap();
-    let ok = irsync::recv::reflink(&a, &b).is_ok();
-    let _ = fs::remove_file(dir.join(".probe-a"));
-    let _ = fs::remove_file(dir.join(".probe-b"));
+    let probe = dir.join(".probe");
+    fs::write(&probe, b"probe").unwrap();
+    let ok = {
+        let clones = Clones::new("probe").within(dir.to_path_buf());
+        let cloned = clones.clone_file(&probe).ok().flatten();
+        cloned.is_some()
+    };
+    let _ = fs::remove_file(&probe);
     ok
 }
 

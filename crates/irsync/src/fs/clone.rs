@@ -345,7 +345,7 @@ fn make_clone(src: &File, dir: &OwnedFd, name: &OsStr) -> io::Result<File> {
 }
 
 /// macOS: `fclonefileat` clones the file open as `src` into the open
-/// directory `dir`. Not tested here (no macOS runner).
+/// directory `dir`. `tests/paranoid_clone.rs` covers it on macOS.
 #[cfg(target_os = "macos")]
 fn make_clone(src: &File, dir: &OwnedFd, name: &OsStr) -> io::Result<File> {
     use std::ffi::CString;
@@ -728,7 +728,9 @@ mod tests {
         let c = clones.clone_file(&src).unwrap();
         assert!(!stale.exists(), "the stale session was not swept");
         if let Some(c) = &c {
-            assert!(c.path.starts_with(root.join("me")));
+            // Clones go under the resolved folder (macOS: /var is /private/var).
+            let real = std::fs::canonicalize(&root).unwrap();
+            assert!(c.path.starts_with(real.join("me")), "{:?}", c.path);
         }
         // Our own lock is held: a sweep keeps it.
         if root.join("me").exists() {
