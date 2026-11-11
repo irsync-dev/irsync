@@ -92,6 +92,7 @@ impl Receiver {
             created: 0,
             max_id,
             regular: HashSet::new(),
+            kept_links: Default::default(),
         });
         self.regular = regular;
         self.peer_listing_done = true;

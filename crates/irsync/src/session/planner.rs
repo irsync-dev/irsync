@@ -153,6 +153,11 @@ pub(super) struct PlannerReport {
     /// Source regular files planned under a verified parent: the only
     /// paths the sender's final re-check may plan again (`Replan`).
     pub regular: HashSet<RelPath>,
+    /// `-H` with the final re-check (`--paranoid`): per target, the other
+    /// names of its link group the destination already shared with it and
+    /// kept. A target sent again by the re-check is placed as a new inode,
+    /// so these are linked to it again (see `Receiver::on_replan`).
+    pub kept_links: HashMap<RelPath, Vec<(RelPath, FileEntry)>>,
 }
 
 /// What an earlier connection of a resumed session already planned: its file
@@ -564,6 +569,18 @@ impl Planner {
                     });
                 } else if matches!(entry.kind(), Kind::Regular | Kind::Hardlink) {
                     self.note_skipped(&path, entry.size);
+                    if entry.kind() == Kind::Hardlink
+                        && self.popts.preserve.hard_links
+                        && self.ctx.opts.settle
+                    {
+                        if let Ok(target) = RelPath::new(&entry.link_target) {
+                            self.report
+                                .kept_links
+                                .entry(target)
+                                .or_default()
+                                .push((path, entry));
+                        }
+                    }
                 }
                 return;
             }
@@ -837,17 +854,29 @@ pub(super) struct Replanned {
     pub itemize: Option<String>,
 }
 
+/// Why [`replan`] refuses a file: its destination shares its inode with
+/// other names, and a resumed session does not know which of them are the
+/// source's links, so it cannot link them again to the new file.
+const SHARED_UNKNOWN: &str = "changed during the sync, not sent again: its destination has \
+     other names (hard links) this resumed session cannot link to the new file";
+
 /// Plans a file again that the sender found changed at its final re-check
 /// (`--paranoid`), with `entry` as it is now, against what the destination
 /// holds now: as the planner plans a listed file, except that size and
 /// mtime prove nothing (the sender saw the file change, perhaps with its
 /// mtime set back), so the contents are compared as with `--checksum`.
 /// `path` was planned as a regular file under a verified parent already.
-/// A metadata-only change is applied here.
+/// A metadata-only change is applied here, never to a destination that
+/// shares its inode with other names (it is rebuilt, as the planner does).
+/// `-H`: `links_known` says whether the caller knows the destination's
+/// other names of the file (kept at planning) and links them again; if it
+/// does not, a destination with other names is refused.
 pub(super) async fn replan(
     ctx: &Arc<Ctx>,
+    names: &mut crate::fs::ids::IdNames,
     path: &RelPath,
     entry: &FileEntry,
+    links_known: bool,
 ) -> io::Result<Replanned> {
     let (root, rel) = (ctx.root.clone(), path.clone());
     let dst = blocking(
@@ -863,7 +892,11 @@ pub(super) async fn replan(
         digest: None,
     });
     if let Some(d) = &mut dst {
-        crate::fs::ids::IdNames::new().attach(&mut d.entry);
+        names.attach(&mut d.entry);
+    }
+    let shared = dst.as_ref().is_some_and(shares_inode);
+    if shared && ctx.opts.preserve.hard_links && !links_known {
+        return Err(io::Error::other(SHARED_UNKNOWN));
     }
     let src = Side {
         entry: entry.clone(),
@@ -877,7 +910,11 @@ pub(super) async fn replan(
         preserve: o.preserve,
         append: o.append,
     };
-    let decision = decide(Some(&src), dst.as_ref(), &popts);
+    let mut decision = decide(Some(&src), dst.as_ref(), &popts);
+    if decision == Decision::MetaOnly && shared {
+        // Applied in place, it would reach every other name of the inode.
+        decision = Decision::Delta;
+    }
     let itemize = (decision != Decision::Skip)
         .then(|| itemize(&decision, Some(&src), dst.as_ref(), '>', &popts.preserve));
     let created = dst.is_none();
@@ -1006,6 +1043,9 @@ async fn plan_listings(
     p.report.deletes = p.deletes.take();
     p.report.max_id = p.next_id;
     p.report.regular = std::mem::take(&mut p.regular_ok);
+    // Only names of a target the plan kept as a regular file.
+    let regular = &p.report.regular;
+    p.report.kept_links.retain(|t, _| regular.contains(t));
     #[cfg(feature = "test-hooks")]
     for t in std::mem::take(&mut p.delayed) {
         let _ = t.await;

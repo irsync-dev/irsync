@@ -984,6 +984,8 @@ pub struct Outcome {
     /// regular files) at the final re-check. A pulling client gets only
     /// the first of them from the daemon, capped as `deleted` is.
     pub vanished: Vec<RelPath>,
+    /// Vanished paths the daemon left out of `vanished`.
+    pub vanished_omitted: u64,
     /// What this side spent its time and bytes on.
     pub usage: Usage,
     /// Times the client dialled again after losing the connection.
@@ -1014,12 +1016,18 @@ impl Outcome {
         self.would_delete_omitted += o.would_delete_omitted;
         self.max_delete_reached |= o.max_delete_reached;
         self.vanished.extend(o.vanished);
+        self.vanished_omitted += o.vanished_omitted;
         self.usage.add(&o.usage);
     }
 
     /// Every path the receiver deleted, listed or not.
     pub fn deleted_count(&self) -> u64 {
         self.deleted.len() as u64 + self.deleted_omitted
+    }
+
+    /// `--paranoid`: every listed source file that vanished, listed or not.
+    pub fn vanished_count(&self) -> u64 {
+        self.vanished.len() as u64 + self.vanished_omitted
     }
 
     /// `--dry-run`: every path the receiver would have deleted.
@@ -1035,7 +1043,7 @@ impl Outcome {
             25
         } else if !self.errors.is_empty() {
             23
-        } else if !self.vanished.is_empty() {
+        } else if self.vanished_count() > 0 {
             24
         } else {
             0

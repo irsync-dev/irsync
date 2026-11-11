@@ -1938,6 +1938,8 @@ pub(super) async fn run(
         would_delete_omitted: s.would_delete_omitted,
         max_delete_reached: s.max_delete_reached,
         vanished: s.vanished,
+        // This side knows every vanished path.
+        vanished_omitted: 0,
         usage: Default::default(),
         reconnects: 0,
         conn: None,

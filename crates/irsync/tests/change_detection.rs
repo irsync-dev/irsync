@@ -909,3 +909,194 @@ async fn paranoid_resumed_session_settles() {
     })
     .await;
 }
+
+/// Counts the control frames of the kinds `count` names that a side sends.
+fn frame_counter(count: fn(&Msg) -> bool, n: Arc<AtomicU32>) -> FrameHook {
+    Arc::new(move |kind, m| {
+        if kind == StreamKind::Control && count(&m) {
+            n.fetch_add(1, Ordering::SeqCst);
+        }
+        vec![m]
+    })
+}
+
+/// `-H --paranoid`: `m.txt` and `n.txt` are one file at both ends, up to
+/// date, and kept at planning. During the run the source's file is
+/// rewritten in place (both names): the re-check sends `m.txt` again, as a
+/// new inode at the destination, and `n.txt` must be linked to it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_relinks_hard_links() {
+    use std::os::unix::fs::MetadataExt;
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("x.bin"), data(SIZE, 83)).unwrap();
+        for dir in [h.src(flow), h.dst(flow)] {
+            let m = dir.join("m.txt");
+            fs::write(&m, Y_OLD).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&m)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_005))
+                .unwrap();
+            fs::hard_link(&m, dir.join("n.txt")).unwrap();
+        }
+        let fired = Arc::new(AtomicU32::new(0));
+        let hook: FirstChunkHook = {
+            let (m, fired) = (h.src(flow).join("m.txt"), fired.clone());
+            Arc::new(move |p: &RelPath| {
+                let hit = p.as_bytes() == b"x.bin";
+                let (m, fired) = (m.clone(), fired.clone());
+                Box::pin(async move {
+                    if hit && fired.fetch_add(1, Ordering::SeqCst) == 0 {
+                        // In place: both names see it.
+                        fs::write(&m, Y_NEW).unwrap();
+                        fs::File::options()
+                            .write(true)
+                            .open(&m)
+                            .unwrap()
+                            .set_modified(
+                                SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_050),
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+        };
+        let mut local = h.local_side();
+        local.hooks.on_first_chunk_sent = Some(hook);
+        let out = h
+            .run_side(&opts_with(&["-H", "--paranoid"]), flow, local)
+            .await
+            .unwrap();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the hook did not fire once"
+        );
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        let (m, n) = (h.dst(flow).join("m.txt"), h.dst(flow).join("n.txt"));
+        assert_eq!(fs::read(&m).unwrap(), Y_NEW);
+        assert_eq!(fs::read(&n).unwrap(), Y_NEW);
+        assert_eq!(
+            fs::metadata(&m).unwrap().ino(),
+            fs::metadata(&n).unwrap().ino(),
+            "the hard link is lost"
+        );
+    })
+    .await;
+}
+
+/// `--paranoid` on a tree nothing writes to: the re-check finds nothing
+/// to send again (no `Replan`) and settles once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_unchanged_tree_sends_no_replan() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        for i in 0..5u32 {
+            fs::write(h.src(flow).join(format!("s{i}")), data(1000, i)).unwrap();
+        }
+        // Up to date already: listed, never planned, re-checked all the same.
+        fs::write(h.src(flow).join("same"), Y_OLD).unwrap();
+        fs::write(h.dst(flow).join("same"), Y_OLD).unwrap();
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_005);
+        for dir in [h.src(flow), h.dst(flow)] {
+            fs::File::options()
+                .write(true)
+                .open(dir.join("same"))
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        }
+        let (replans, settled) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let mut local = h.local_side();
+        let (r, s) = (replans.clone(), settled.clone());
+        local.hooks.tamper_frames = Some(Arc::new(move |kind, m| {
+            if kind == StreamKind::Control {
+                match m {
+                    Msg::Replan(_) => r.fetch_add(1, Ordering::SeqCst),
+                    Msg::Settled(_) => s.fetch_add(1, Ordering::SeqCst),
+                    _ => 0,
+                };
+            }
+            vec![m]
+        }));
+        let opts = opts_with(&["--paranoid"]);
+        let out = h.run_side(&opts, flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(replans.load(Ordering::SeqCst), 0);
+        assert_eq!(settled.load(Ordering::SeqCst), 1);
+        common::assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+    })
+    .await;
+}
+
+/// `--paranoid --dry-run` changes nothing, so there is no final re-check:
+/// the receiver never asks for one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_dry_run_sends_no_settle() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        fs::write(h.src(flow).join("a"), data(1000, 1)).unwrap();
+        let settles = Arc::new(AtomicU32::new(0));
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(frame_counter(
+            |m| matches!(m, Msg::Settle(_)),
+            settles.clone(),
+        ));
+        let out = h
+            .run_side(
+                &opts_with(&["--paranoid", "--dry-run"]),
+                flow,
+                h.local_side(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(settles.load(Ordering::SeqCst), 0);
+        assert!(!h.dst(flow).join("a").exists());
+    })
+    .await;
+}
+
+/// `--paranoid --delete`: the deletions after the transfers wait for the
+/// files the re-check sends again. `z.old` (destination only) still exists
+/// when the re-sent `y.txt` asks to be placed, and is gone at the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_delete_runs_after_the_replanned_files() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (local, fired) = seed_late(&h, flow, Late::Rewrite);
+        let z = h.dst(flow).join("z.old");
+        fs::write(&z, b"extraneous").unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook: FrameHook = {
+            let (z, seen) = (z.clone(), seen.clone());
+            Arc::new(move |kind, m| {
+                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+                    seen.lock().unwrap().push(z.exists());
+                }
+                vec![m]
+            })
+        };
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(hook);
+        let out = h
+            .run_side(&opts_with(&["--paranoid", "--delete"]), flow, local)
+            .await
+            .unwrap();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the hook did not fire once"
+        );
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        // `x.bin`, then `y.txt` sent again.
+        assert_eq!(*seen.lock().unwrap(), vec![true, true]);
+        assert!(!z.exists(), "z.old was not deleted");
+        assert_eq!(fs::read(h.dst(flow).join("y.txt")).unwrap(), Y_NEW);
+    })
+    .await;
+}

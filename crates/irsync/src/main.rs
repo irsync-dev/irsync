@@ -221,6 +221,12 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
                     path.to_os().to_string_lossy()
                 );
             }
+            if outcome.vanished_omitted > 0 {
+                eprintln!(
+                    "irsync: and {} more files vanished during the sync",
+                    outcome.vanished_omitted
+                );
+            }
             for (path, msg) in &outcome.errors {
                 eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
             }
@@ -285,7 +291,7 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
         25
     } else if failed > 0 || outcomes.iter().any(|o| !o.errors.is_empty()) {
         23
-    } else if outcomes.iter().any(|o| !o.vanished.is_empty()) {
+    } else if outcomes.iter().any(|o| o.vanished_count() > 0) {
         24
     } else {
         0
@@ -1862,6 +1868,13 @@ mod tests {
             24
         );
         assert_eq!(combine_exit_codes(&[vanished(false, 0)], 1, 3), 23);
+        // Only counted: a daemon left the paths out of `vanished`.
+        let omitted = Outcome {
+            vanished_omitted: 3,
+            ..out(false, 0)
+        };
+        assert_eq!(omitted.exit_code(), 24);
+        assert_eq!(combine_exit_codes(&[omitted], 0, 1), 24);
         // Several sources: one failed, the rest synced.
         assert_eq!(combine_exit_codes(&[out(false, 0)], 1, 3), 23);
         assert_eq!(combine_exit_codes(&[out(true, 0)], 1, 3), 25);

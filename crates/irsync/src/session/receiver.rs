@@ -306,6 +306,15 @@ struct Receiver {
     replanned: HashSet<RelPath>,
     /// Listed source files the sender's final re-check found gone.
     vanished: Vec<RelPath>,
+    /// ... and how many more it found than it listed (see `Settled`).
+    vanished_omitted: u64,
+    /// `-H`: the destination's names kept linked to each target at
+    /// planning (see `PlannerReport::kept_links`), to link again to a
+    /// target the final re-check sends again. `None` when the plan was not
+    /// made on this connection (resumed from the stored plan): unknown.
+    kept_links: Option<HashMap<RelPath, Vec<(RelPath, FileEntry)>>>,
+    /// Owner and group names for the destination entries `replan` reads.
+    names: crate::fs::ids::IdNames,
 }
 
 impl Receiver {
@@ -349,9 +358,6 @@ impl Receiver {
         let Some(mut entry) = r.entry.filter(|e| e.kind() == Kind::Regular) else {
             anyhow::bail!("protocol error: Replan without a regular file's entry");
         };
-        if !self.replanned.insert(path.clone()) {
-            anyhow::bail!("protocol error: a second Replan for one path");
-        }
         if !self.regular.contains(&path) || self.failed.contains(&path) {
             tracing::debug!(
                 ?path,
@@ -359,8 +365,13 @@ impl Receiver {
             );
             return Ok(());
         }
+        // Bounded by `regular`: only paths checked above get in.
+        if !self.replanned.insert(path.clone()) {
+            anyhow::bail!("protocol error: a second Replan for one path");
+        }
         entry.path = path.as_bytes().to_vec();
-        let again = match replan(&self.ctx, &path, &entry).await {
+        let links_known = self.kept_links.is_some();
+        let again = match replan(&self.ctx, &mut self.names, &path, &entry, links_known).await {
             Ok(a) => a,
             Err(e) => {
                 let msg = format!("re-planning: {e}");
@@ -413,6 +424,22 @@ impl Receiver {
                 meta: None,
             }),
         };
+        // `-H`: names the destination shares with it are linked to the new
+        // file in the link pass, which runs once it is placed.
+        let kept = self
+            .kept_links
+            .as_mut()
+            .and_then(|k| k.remove(&path))
+            .unwrap_or_default();
+        for (name, link) in kept {
+            self.max_id += 1;
+            self.on_linked(Linked {
+                file_id: self.max_id,
+                path: name,
+                entry: link,
+                target: path.clone(),
+            });
+        }
         self.queued
             .push_back((file_id, path, entry, action, append_from, deferred));
         Ok(())
@@ -429,8 +456,9 @@ impl Receiver {
             .iter()
             .filter_map(|p| RelPath::new(p).ok())
             .collect();
+        self.vanished_omitted = s.vanished_omitted;
         if s.vanished_omitted > 0 {
-            tracing::warn!(
+            tracing::info!(
                 omitted = s.vanished_omitted,
                 "the sender reported more vanished files than listed"
             );
@@ -880,6 +908,7 @@ impl Receiver {
             Done::PlannerFinished(mut r) => {
                 self.max_id = self.max_id.max(r.max_id);
                 self.regular = std::mem::take(&mut r.regular);
+                self.kept_links = Some(std::mem::take(&mut r.kept_links));
                 self.report = Some(*r);
                 self.maybe_mark_complete().await;
             }
@@ -1469,6 +1498,9 @@ pub(super) async fn run(
         regular: HashSet::new(),
         replanned: HashSet::new(),
         vanished: Vec::new(),
+        vanished_omitted: 0,
+        kept_links: None,
+        names: crate::fs::ids::IdNames::new(),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores
@@ -1675,6 +1707,7 @@ pub(super) async fn run(
         would_delete_omitted: 0,
         max_delete_reached: r.max_delete_reached,
         vanished: r.vanished,
+        vanished_omitted: r.vanished_omitted,
         usage: Default::default(),
         reconnects: 0,
         conn: None,
