@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow calls this as its test gate. dist passes its plan.
+  workflow_call:
+    inputs:
+      plan:
+        type: string
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,18 +17,31 @@ env:
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }}${{ matrix.target && format(' {0}', matrix.target) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # In a called workflow github.event_name is the caller's event, so
+        # `inputs.plan` tells a release run (it is set) from a normal one.
+        include: ${{ fromJSON(inputs.plan && '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""},{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""}]') }}
+    env:
+      TARGET_FLAG: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - name: Install musl-tools and aim cargo at the target
+        if: matrix.target != ''
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          # Also makes the netstress tests' nested fault build use the target.
+          echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Install rsync (reference implementation for the comparison test)
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -37,8 +56,8 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
       - name: Clippy without OpenTelemetry
-        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features --no-fail-fast -- --include-ignored
+        run: cargo test --workspace --all-features --no-fail-fast $TARGET_FLAG -- --include-ignored

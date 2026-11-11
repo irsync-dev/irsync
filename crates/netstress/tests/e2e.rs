@@ -26,7 +26,8 @@ fn workspace() -> PathBuf {
 }
 
 /// Builds the fault binaries once per test binary and returns their
-/// directory, `target/netsim/debug`.
+/// directory, `target/netsim/debug` (`target/netsim/<triple>/debug` when
+/// `CARGO_BUILD_TARGET` is set, as the release test gate does for musl).
 fn netsim_bin_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -41,7 +42,11 @@ fn netsim_bin_dir() -> &'static Path {
             .status()
             .unwrap();
         assert!(status.success(), "fault build failed: {status}");
-        target.join("debug")
+        // The nested build reads `CARGO_BUILD_TARGET` itself; follow it here.
+        match std::env::var("CARGO_BUILD_TARGET") {
+            Ok(triple) if !triple.is_empty() => target.join(triple).join("debug"),
+            _ => target.join("debug"),
+        }
     })
 }
 

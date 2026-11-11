@@ -98,7 +98,7 @@ pub fn set_mtime(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let ts = jiff::Timestamp::new(secs, nanos).expect("within jiff's range");
     let path = ctx.model.abs_path(ctx.root, id);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
-        let spec = TimeSpec::new(secs as libc::time_t, nanos.into());
+        let spec = TimeSpec::new(secs as _, nanos.into());
         utimensat(
             AT_FDCWD,
             &path,

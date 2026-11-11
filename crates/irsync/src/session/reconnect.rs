@@ -278,7 +278,8 @@ fn describe_refusal(r: &SessionRefused, remote: &str, client: &EndpointId) -> Op
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`.
 fn local_time(secs: i64) -> String {
-    let t = secs as nix::libc::time_t;
+    // `time_t`, inferred: naming the alias is deprecated on musl.
+    let t = secs as _;
     // SAFETY: an all-zero `tm` is a valid value; `localtime_r` only writes
     // into the `tm` it is given and reads `t`.
     let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
