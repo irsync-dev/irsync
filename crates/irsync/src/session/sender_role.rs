@@ -397,8 +397,8 @@ impl SenderRole {
                         let since = super::wait_start(&ctx.meter);
                         let digest = match append_from {
                             Some(from) => {
-                                let (p, k) = (c.path.clone(), key.clone());
-                                blocking(move || tail_digest(&p, &k, from))
+                                let (f, k) = (c.file.try_clone()?, key.clone());
+                                blocking(move || tail_digest_of(f, &k, from))
                                     .await
                                     .map(|h| h.digest)
                             }
@@ -1115,17 +1115,13 @@ impl SenderRole {
         let (Some(hashed), Some(digest)) = (f.hash_stat, f.digest.clone()) else {
             return Verdict::Changed("not hashed".into());
         };
-        if f.cloned.is_some() {
-            // The clone cannot have changed: placed as sent. Whether the
-            // source moved on since is only worth a note.
-            note_outdated_clone(self.ctx.clone(), f.path.clone(), hashed);
-            return Verdict::Place;
-        }
         #[cfg(feature = "test-hooks")]
         let compare_stat = !self.ctx.hooks.skip_place_stat;
         #[cfg(not(feature = "test-hooks"))]
         let compare_stat = true;
         let check = PlaceCheck {
+            path: f.path.clone(),
+            cloned: f.cloned.is_some(),
             key: self.ctx.key(&f.path),
             hashed,
             digest,
@@ -1259,6 +1255,11 @@ fn is_current(f: &SFile, list: u32) -> bool {
 /// The checks before the receiver may place a file (see
 /// [`SenderRole::verdict`]).
 struct PlaceCheck {
+    /// The file, for messages.
+    path: RelPath,
+    /// Sent from a clone (`--paranoid`), which cannot have changed: placed
+    /// whatever the source did since, which is only worth a note.
+    cloned: bool,
     key: RelPath,
     /// The stat the digest was taken under.
     hashed: Freshness,
@@ -1272,15 +1273,36 @@ struct PlaceCheck {
 }
 
 impl PlaceCheck {
+    /// The source of a file sent from its clone changed since it was
+    /// cloned. Not an error: the clone is a state the source really held.
+    fn note_outdated(&self, ctx: &Ctx) {
+        tracing::info!(
+            "{}: source changed after it was cloned; sent the clone",
+            crate::fs::paths::escape_path(self.path.as_bytes())
+        );
+        ctx.hooks.event("clone-outdated", &self.path);
+    }
+
     async fn run(self, ctx: &Ctx) -> Verdict {
         let (base, rel) = (ctx.base.clone(), self.key.clone());
         let (entry, ctime) = match blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
             Ok(s) => s,
+            Err(e) if self.cloned => {
+                tracing::debug!(path = ?self.key, error = %e, "source not found before placing");
+                self.note_outdated(ctx);
+                return Verdict::Place;
+            }
             Err(e) => {
                 tracing::debug!(path = ?self.key, error = %e, "source not found before placing");
                 return Verdict::Changed("changed after it was hashed".into());
             }
         };
+        if self.cloned {
+            if Freshness::of_entry(&entry, ctime) != self.hashed {
+                self.note_outdated(ctx);
+            }
+            return Verdict::Place;
+        }
         if self.compare_stat && Freshness::of_entry(&entry, ctime) != self.hashed {
             return Verdict::Changed("changed after it was hashed".into());
         }
@@ -1325,9 +1347,25 @@ impl PlaceCheck {
 /// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
 /// file changes while it is read.
 fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<Hashed> {
-    use std::io::{Read, Seek, SeekFrom};
     // The open's type check already took the file's stat.
-    let (mut file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+    let (file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+    tail_digest_at(file, st, key, from)
+}
+
+/// [`tail_digest`] of the open `file` (a clone, `--paranoid`).
+fn tail_digest_of(file: std::fs::File, key: &RelPath, from: u64) -> io::Result<Hashed> {
+    let st = nix::sys::stat::fstat(&file).map_err(crate::fs::safe::errno)?;
+    tail_digest_at(file, st, key, from)
+}
+
+/// [`tail_digest`] of the open `file`, whose stat is `st`.
+fn tail_digest_at(
+    mut file: std::fs::File,
+    st: nix::sys::stat::FileStat,
+    key: &RelPath,
+    from: u64,
+) -> io::Result<Hashed> {
+    use std::io::{Read, Seek, SeekFrom};
     let (entry, ctime) = crate::fs::meta::stat_entry_with_ctime(st, key);
     let opened = Freshness::of_entry(&entry, ctime);
     let size = opened.size;
@@ -1386,26 +1424,6 @@ async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Opti
             None
         }
     }
-}
-
-/// Notes, at info level, if the source of a file sent from its clone has
-/// changed since it was cloned (`at_clone`). Not an error: the clone is a
-/// state the source really held. Off the main loop, answering nothing.
-fn note_outdated_clone(ctx: Arc<Ctx>, path: RelPath, at_clone: Freshness) {
-    tokio::spawn(async move {
-        let (base, key) = (ctx.base.clone(), ctx.key(&path));
-        let now = blocking(move || lstat_entry_with_ctime(&base, &key))
-            .await
-            .ok()
-            .map(|(e, ctime)| Freshness::of_entry(&e, ctime));
-        if now != Some(at_clone) {
-            tracing::info!(
-                "{}: source changed after it was cloned; sent the clone",
-                crate::fs::paths::escape_path(path.as_bytes())
-            );
-            ctx.hooks.event("clone-outdated", &path);
-        }
-    });
 }
 
 /// Whether the walk (from `root`, with `filters`) would list `path` as a

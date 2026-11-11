@@ -71,6 +71,19 @@ fn clone_dir(base: &Path) -> PathBuf {
     base.join(format!(".irsync-clones-{}", uid()))
 }
 
+/// A temporary folder only we can write to: `tempfile` follows the umask,
+/// and a group-writable folder is no place for clones (others could swap
+/// the clone folder for a symlink).
+fn private_tempdir_in(dir: &Path) -> tempfile::TempDir {
+    let t = tempfile::tempdir_in(dir).unwrap();
+    fs::set_permissions(
+        t.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    t
+}
+
 /// Whether `dir`'s filesystem clones files.
 fn reflinks(dir: &Path) -> bool {
     // Readable: the clone's source must be.
@@ -88,7 +101,7 @@ fn reflinks(dir: &Path) -> bool {
 async fn reflink_harness() -> Option<(tempfile::TempDir, Harness)> {
     let target = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(target).unwrap();
-    let base = tempfile::tempdir_in(target).unwrap();
+    let base = private_tempdir_in(target);
     if !reflinks(base.path()) {
         eprintln!("skipping: {} does not support reflinks", target.display());
         return None;
@@ -384,7 +397,7 @@ async fn clones_are_removed_after_an_interrupted_run() {
 async fn paranoid_without_reflink_falls_back() {
     within30(async {
         let flow = Flow::Push;
-        let base = tempfile::tempdir().unwrap();
+        let base = private_tempdir_in(&std::env::temp_dir());
         if reflinks(base.path()) {
             eprintln!(
                 "skipping: {} supports reflinks",
