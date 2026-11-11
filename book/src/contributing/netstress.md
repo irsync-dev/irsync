@@ -313,13 +313,12 @@ Rules that keep a profile useful:
 ### Testing the rig
 
 ```sh
-cargo test -p netstress -- --include-ignored                 # the rig: unit and end-to-end tests
-cargo test -p irsync --features netsim -- --include-ignored  # irsync, including the fault layer's own tests
+cargo test -p netstress -- --include-ignored  # the rig: unit and end-to-end tests
+cargo test -p irsync --features netsim        # irsync, including the fault layer's own tests
 ```
 
-Without `--include-ignored`, the slow tests are skipped: the rig's
-end-to-end tests and the two end-to-end syncs in
-`crates/irsync/tests/netsim.rs`. The end-to-end tests run the real rig
+Without `--include-ignored`, the rig's slow end-to-end tests are skipped.
+They run the real rig
 under `test-blackout` (and one short `dsl-video` pull). The first time,
 they build the fault binaries into `target/netsim/debug` themselves, which
 takes a few minutes.
@@ -328,9 +327,11 @@ The fault layer's own tests:
 
 - `crates/irsync/src/net/netsim/*.rs`: the link model, outages, seeds and
   addresses.
-- `crates/irsync/tests/netsim.rs`: a real client and daemon sync a 4 MiB
-  file through a dead zone and resume; without the variable nothing
-  changes.
+- `crates/irsync/tests/netsim.rs`: client and daemon in one process, on
+  tokio's paused clock and an in-memory network, sync a 4 MiB file
+  through a dead zone and resume, and push 3 MiB over `test-slow` in over
+  a minute of network time; each takes about a second. With the real
+  binaries and no `IRSYNC_NETSIM`, nothing changes.
 - `crates/irsync/tests/netsim_endpoint.rs`: an endpoint with the fault
   layer on offers no ordinary IP or relay address, so no packet can go
   around it.
@@ -472,7 +473,7 @@ A clean 256 kbit/s uplink with a 64 KiB queue, an unlimited downlink, no
 loss, no delay, no outages. irsync's test
 `a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything`
 (in `crates/irsync/tests/netsim.rs`) uses it to push data that takes over
-a minute. `irsync-netstress` does not offer it.
+a minute of network time, on tokio's paused clock. `irsync-netstress` does not offer it.
 
 #### `test-wan`: for measurements
 

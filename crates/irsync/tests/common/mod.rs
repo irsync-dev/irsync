@@ -69,6 +69,80 @@ pub async fn with_stream_window<F: std::future::Future>(window: u32, f: F) -> F:
     STREAM_WINDOW.scope(window, f).await
 }
 
+/// The fault layer every endpoint bound inside [`with_netsim`] goes through.
+#[cfg(feature = "netsim")]
+#[derive(Clone)]
+pub struct Netsim {
+    pub board: std::sync::Arc<irsync::net::netsim::Switchboard>,
+    pub profile: irsync::net::netsim::ProfileName,
+    pub seed: u64,
+}
+
+#[cfg(feature = "netsim")]
+tokio::task_local! {
+    static NETSIM: Netsim;
+}
+
+/// Runs `f` with every endpoint it binds (a [`Harness`]'s daemon and
+/// clients among them) on one in-process switchboard, through `profile`'s
+/// faults. Under `#[tokio::test(start_paused = true)]` the run then skips
+/// ahead whenever every task waits on a timer, so a sync that needs minutes
+/// of network time takes seconds.
+#[cfg(feature = "netsim")]
+pub async fn with_netsim<F: std::future::Future>(
+    profile: irsync::net::netsim::ProfileName,
+    seed: u64,
+    f: F,
+) -> F::Output {
+    let n = Netsim {
+        board: irsync::net::netsim::Switchboard::new(),
+        profile,
+        seed,
+    };
+    NETSIM.scope(n, f).await
+}
+
+/// One offline endpoint for `side`: on the [`with_netsim`] switchboard when
+/// inside one, else on loopback.
+async fn endpoint_for(side: EndpointSide) -> Endpoint {
+    #[cfg(feature = "netsim")]
+    if let Ok(n) = NETSIM.try_with(Netsim::clone) {
+        use irsync::net::netsim::{Side, Spec, WireChoice};
+        // Each client endpoint gets its own fault stream.
+        static STREAMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let (side, stream) = match side {
+            EndpointSide::Daemon => (Side::Daemon, 0),
+            EndpointSide::Client => (
+                Side::Client,
+                STREAMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ),
+        };
+        let spec = Spec {
+            profile: n.profile,
+            side,
+            seed: n.seed,
+            stream,
+            acks: None,
+        };
+        return irsync::net::build_netsim_endpoint(
+            offline_opts(),
+            &spec,
+            WireChoice::Memory(n.board),
+        )
+        .await
+        .expect("bind netsim endpoint");
+    }
+    let _ = side;
+    loopback_endpoint().await
+}
+
+/// Which end an endpoint is, for [`endpoint_for`].
+#[derive(Clone, Copy)]
+enum EndpointSide {
+    Client,
+    Daemon,
+}
+
 /// Binds one offline endpoint on loopback.
 pub async fn loopback_endpoint() -> Endpoint {
     match STREAM_WINDOW.try_with(|w| *w) {
@@ -81,6 +155,18 @@ pub async fn loopback_endpoint() -> Endpoint {
 /// Binds two offline endpoints on loopback. Dial one from the other with [`addr_of`].
 pub async fn loopback_pair() -> (Endpoint, Endpoint) {
     (loopback_endpoint().await, loopback_endpoint().await)
+}
+
+/// [`addr_of`], or on a [`with_netsim`] switchboard the address of `ep`,
+/// plugged in last.
+fn dial_addr(ep: &Endpoint) -> EndpointAddr {
+    #[cfg(feature = "netsim")]
+    if let Ok(n) = NETSIM.try_with(Netsim::clone) {
+        let port = n.board.last_port().expect("a port on the switchboard");
+        let custom = irsync::net::netsim::custom_addr(port);
+        return EndpointAddr::new(ep.id()).with_addrs([iroh::TransportAddr::Custom(custom)]);
+    }
+    addr_of(ep)
 }
 
 /// The endpoint's id plus its direct (loopback) addresses: enough to dial it offline.
@@ -280,8 +366,8 @@ pub async fn spawn_daemon_full(
         state_dir: state.path().to_path_buf(),
         ..Settings::default()
     };
-    let ep = loopback_endpoint().await;
-    let (addr, id) = (addr_of(&ep), ep.id());
+    let ep = endpoint_for(EndpointSide::Daemon).await;
+    let (addr, id) = (dial_addr(&ep), ep.id());
     let daemon = irsync::daemon::Daemon::with_home(&settings, authz, ep, home).expect("daemon");
     let hellos = daemon.hello_counter();
     let (sessions, hashed) = daemon.session_counters();
@@ -315,7 +401,7 @@ pub async fn spawn_daemon_full(
 
 /// A client endpoint with its own fresh identity, offline on loopback.
 pub async fn client_endpoint() -> Endpoint {
-    loopback_endpoint().await
+    endpoint_for(EndpointSide::Client).await
 }
 
 // ---------------------------------------------------------------------------

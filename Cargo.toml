@@ -62,3 +62,13 @@ rand_xoshiro = "0.6"
 serde_yaml_ng = "0.10"
 unicode-normalization = "0.1"
 libc = "0.2"
+
+# iroh 1.3.0 plus one fix: noq reads tokio's clock, so tests on tokio's
+# paused clock can skip ahead (n0-computer/iroh#4676). Drop this once a
+# release has it. The other crates come from the same commit so that each
+# has one source.
+[patch.crates-io]
+iroh = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }

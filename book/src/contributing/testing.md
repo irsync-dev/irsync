@@ -54,18 +54,33 @@ For everyday work, run the suite with the features CI uses:
 cargo test -q --workspace --all-features --no-fail-fast
 ```
 
-This skips six slow network-fault tests (marked `#[ignore]`): the two
-end-to-end syncs in `crates/irsync/tests/netsim.rs` and four in
-`crates/netstress/tests/e2e.rs`. Together they take several minutes, and
-the first run also builds the fault binaries. The full regression, which
+This skips four slow network-fault tests (marked `#[ignore]`) in
+`crates/netstress/tests/e2e.rs`. They run the real fault binaries on real
+time, take a few minutes together, and the first run also builds those
+binaries. The full regression, which
 CI and [Before pushing](setup.md#before-pushing) use, runs them too:
 
 ```sh
 cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 ```
 
-No other test is ignored, so `--include-ignored` adds exactly these six.
-Mark any new test that runs a sync through the fault layer the same way.
+No other test is ignored, so `--include-ignored` adds exactly these four.
+
+The syncs through the fault layer in `crates/irsync/tests/netsim.rs` are
+not ignored, though they need minutes of network time: they run client
+and daemon in one process on tokio's paused clock, over an in-memory
+network (`with_netsim` in `crates/irsync/tests/common`). Whenever every
+task waits on a timer, the clock jumps to the next one, so they finish in
+about a second. Write a new test of irsync through the fault layer that
+way. A test that runs the real fault binaries is ignored like the four.
+
+That relies on everything with a deadline reading tokio's clock
+(`tokio::time::Instant`), not `std::time::Instant`. irsync's reconnect,
+`--bwlimit` and persistence timers do; telemetry and loops in blocking
+threads keep the real clock, since paused time stands still there. iroh
+1.3.0 had QUIC read the real clock; the workspace `Cargo.toml` patches in
+the fix from [n0-computer/iroh#4676](https://github.com/n0-computer/iroh/issues/4676)
+until a release has it.
 [Before pushing](setup.md#before-pushing) lists the other checks.
 
 ## Cargo features

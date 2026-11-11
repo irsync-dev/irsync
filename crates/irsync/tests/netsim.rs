@@ -1,7 +1,9 @@
-//! The fault layer end to end: a real daemon and a real client with
-//! `IRSYNC_NETSIM` set, syncing through the `test-blackout` profile's dead
-//! zone and the `test-slow` profile's slow uplink. Those two are slow and
-//! ignored by default; `-- --include-ignored` runs them.
+//! The fault layer end to end. A dead zone and a slow uplink run client and
+//! daemon in this process on tokio's paused clock, over an in-memory
+//! switchboard: the minutes of network time they need pass in about a
+//! second. A plain sync with the real binaries checks that without
+//! `IRSYNC_NETSIM` nothing changes. The binaries' real UDP fault path is
+//! exercised by the netstress tests.
 #![cfg(feature = "netsim")]
 
 mod common;
@@ -10,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use common::{irsync_bin, spawn_daemon_binary_env, BinaryDaemon};
-
-const DAEMON_NETSIM: &str = "profile=test-blackout,side=daemon,seed=1,stream=0";
-const CLIENT_NETSIM: &str = "profile=test-blackout,side=client,seed=1,stream=1";
+use common::{
+    archive_opts, irsync_bin, spawn_daemon_binary_env, with_netsim, BinaryDaemon, Flow, Harness,
+};
+use irsync::net::netsim::ProfileName;
+use irsync::session::reconnect::ReconnectOpts;
 
 /// A daemon exporting `m` (read-write for the client) and a local directory.
 struct Rig {
@@ -65,16 +68,7 @@ fn rig(daemon_env: &[(&str, &str)]) -> Rig {
 /// Runs the client with `env`, bounded to 60 s; returns its output and its
 /// stderr without colour codes.
 fn client(rig: &Rig, env: &[(&str, &str)], args: &[&str]) -> (Output, String) {
-    client_within(rig, env, args, Duration::from_secs(60))
-}
-
-/// [`client`], bounded to `limit`.
-fn client_within(
-    rig: &Rig,
-    env: &[(&str, &str)],
-    args: &[&str],
-    limit: Duration,
-) -> (Output, String) {
+    let limit = Duration::from_secs(60);
     let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(args)
         .env("HOME", &rig.client)
@@ -130,81 +124,6 @@ fn noise(n: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Syncs a 4 MiB file through the blackout; returns the client's output and
-/// log, the source and destination directories, and the rig that holds them.
-fn sync_through_blackout(direction: &str) -> (Output, String, PathBuf, PathBuf, Rig) {
-    let rig = rig(&[("IRSYNC_NETSIM", DAEMON_NETSIM), ("RUST_LOG", "info")]);
-    let (src, dst) = match direction {
-        "push" => (rig.local.clone(), rig.export.clone()),
-        _ => (rig.export.clone(), rig.local.clone()),
-    };
-    std::fs::write(src.join("big"), noise(4 << 20)).unwrap();
-    let remote = format!("{}:m/", rig.daemon.id);
-    let local = format!("{}/", rig.local.display());
-    let (from, to) = match direction {
-        "push" => (local.as_str(), remote.as_str()),
-        _ => (remote.as_str(), local.as_str()),
-    };
-    let address = rig.daemon.listen.to_string();
-    let (out, log) = client(
-        &rig,
-        &[("IRSYNC_NETSIM", CLIENT_NETSIM), ("RUST_LOG", "info")],
-        &[
-            "-a",
-            "--address",
-            &address,
-            "--timeout",
-            "2",
-            "--reconnect",
-            "1m",
-            from,
-            to,
-        ],
-    );
-    (out, log, src, dst, rig)
-}
-
-/// The event's own fields in the first `session started` line; the span
-/// fields before the message carry their own `resumed`.
-fn session_started(log: &str) -> Option<&str> {
-    let line = log.lines().find(|l| l.contains("session started"))?;
-    Some(&line[line.find("session started").unwrap()..])
-}
-
-/// The id from the first `session started` line.
-fn session_of(log: &str) -> String {
-    let event = session_started(log).unwrap_or_else(|| panic!("no session started: {log}"));
-    let rest = &event[event.find(" session=").expect("a session field") + " session=".len()..];
-    rest.split_whitespace().next().unwrap().to_string()
-}
-
-#[test]
-#[ignore = "slow: netsim; run with --include-ignored"]
-fn a_dead_zone_forces_a_reconnect_and_the_session_resumes() {
-    for direction in ["push", "pull"] {
-        let (out, log, src, dst, _rig) = sync_through_blackout(direction);
-        assert!(out.status.success(), "{direction}: {log}");
-        assert!(log.contains("netsim active"), "{log}");
-        let open = log
-            .find("netsim: dead zone open")
-            .expect("dead zone opened");
-        assert!(
-            log[open..].contains("connection lost; reconnecting"),
-            "{log}"
-        );
-        let first = session_of(&log[..open]);
-        let resumed = session_started(&log[open..]).expect("redialled");
-        assert!(
-            resumed.contains("resumed=true") && resumed.contains(&format!("session={first}")),
-            "{resumed}"
-        );
-        assert_eq!(
-            std::fs::read(src.join("big")).unwrap(),
-            std::fs::read(dst.join("big")).unwrap()
-        );
-    }
-}
-
 /// The same binaries without `IRSYNC_NETSIM`: a plain loopback sync.
 fn plain_sync() -> (Output, String) {
     let rig = rig(&[("RUST_LOG", "info")]);
@@ -237,59 +156,91 @@ fn without_the_variable_nothing_changes() {
     assert!(!log.contains("netsim"), "{log}");
 }
 
+/// One sync through `profile`, on the [`Harness`] in `with_netsim`: its
+/// result, how often it reconnected, how many sessions the daemon hosted,
+/// and the network time it took.
+async fn sync_through(
+    h: &Harness,
+    flow: Flow,
+    opts: &irsync::cli::SyncOptions,
+) -> (
+    anyhow::Result<irsync::session::Outcome>,
+    u32,
+    usize,
+    Duration,
+) {
+    let ropts = ReconnectOpts {
+        max: Duration::from_secs(60),
+        ..ReconnectOpts::default()
+    };
+    let start = tokio::time::Instant::now();
+    let (out, reconnects) = h.run_reconnect(opts, flow, ropts, h.local_side()).await;
+    (
+        out,
+        reconnects,
+        h.daemon.session_ids().len(),
+        start.elapsed(),
+    )
+}
+
+/// `test-blackout`: the client's link goes dead for a few seconds once
+/// 256 KiB have crossed it. With `--timeout 2` the client gives up on the
+/// connection, redials, and resumes the same session, in both directions.
+#[tokio::test(start_paused = true)]
+async fn a_dead_zone_forces_a_reconnect_and_the_session_resumes() {
+    for flow in [Flow::Push, Flow::Pull] {
+        with_netsim(ProfileName::TestBlackout, 1, async {
+            let h = Harness::new().await;
+            std::fs::write(h.src(flow).join("big"), noise(4 << 20)).unwrap();
+            let mut opts = archive_opts();
+            opts.timeout = Some(Duration::from_secs(2));
+            let (out, reconnects, sessions, _) = sync_through(&h, flow, &opts).await;
+            out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert!(
+                reconnects >= 1,
+                "{flow:?}: the dead zone forced no reconnect"
+            );
+            assert_eq!(sessions, 1, "{flow:?}: the redial started a new session");
+            assert_eq!(
+                std::fs::read(h.src(flow).join("big")).unwrap(),
+                std::fs::read(h.dst(flow).join("big")).unwrap(),
+                "{flow:?}"
+            );
+        })
+        .await;
+    }
+}
+
 /// A push over a slow but healthy uplink (`test-slow`, 256 kbit/s) that takes
 /// well over a minute: the data streams share the link, so every range is
 /// confirmed late. None may give up while the link is still carrying data
-/// (the sender once allowed each range 60 s from the moment it was queued).
-#[test]
-#[ignore = "slow: netsim; run with --include-ignored"]
-fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything() {
-    let rig = rig(&[
-        (
-            "IRSYNC_NETSIM",
-            "profile=test-slow,side=daemon,seed=1,stream=0",
-        ),
-        ("RUST_LOG", "info"),
-    ]);
-    // 3 MiB: about 100 s at 32 KB/s.
-    let names: Vec<String> = (0..12).map(|i| format!("f{i:02}")).collect();
-    for (i, name) in names.iter().enumerate() {
-        let mut bytes = noise(256 << 10);
-        bytes[0] = i as u8;
-        std::fs::write(rig.local.join(name), bytes).unwrap();
-    }
-    let address = rig.daemon.listen.to_string();
-    let start = Instant::now();
-    let (out, log) = client_within(
-        &rig,
-        &[
-            (
-                "IRSYNC_NETSIM",
-                "profile=test-slow,side=client,seed=1,stream=1",
-            ),
-            ("RUST_LOG", "info"),
-        ],
-        &[
-            "-a",
-            "--address",
-            &address,
-            &format!("{}/", rig.local.display()),
-            &format!("{}:m/", rig.daemon.id),
-        ],
-        Duration::from_secs(300),
-    );
-    let took = start.elapsed();
-    assert!(out.status.success(), "{log}");
-    assert!(!log.contains("did not take the range"), "{log}");
-    assert!(
-        took > Duration::from_secs(60),
-        "the sync took only {took:?}, so it no longer tests a wait over a minute"
-    );
-    for name in &names {
-        assert_eq!(
-            std::fs::read(rig.local.join(name)).unwrap(),
-            std::fs::read(rig.export.join(name)).unwrap(),
-            "{name}"
+/// (the sender once allowed each range 60 s from the moment it was queued,
+/// and the push failed).
+#[tokio::test(start_paused = true)]
+async fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything() {
+    with_netsim(ProfileName::TestSlow, 1, async {
+        let h = Harness::new().await;
+        // 3 MiB: about 100 s at 32 KB/s.
+        let names: Vec<String> = (0..12).map(|i| format!("f{i:02}")).collect();
+        for (i, name) in names.iter().enumerate() {
+            let mut bytes = noise(256 << 10);
+            bytes[0] = i as u8;
+            std::fs::write(h.local.path().join(name), bytes).unwrap();
+        }
+        let (out, reconnects, _, took) = sync_through(&h, Flow::Push, &archive_opts()).await;
+        out.expect("push over the slow uplink");
+        assert_eq!(reconnects, 0, "the healthy link was given up on");
+        assert!(
+            took > Duration::from_secs(60),
+            "the sync took only {took:?}, so it no longer tests a wait over a minute"
         );
-    }
+        for name in &names {
+            assert_eq!(
+                std::fs::read(h.local.path().join(name)).unwrap(),
+                std::fs::read(h.export.path().join(name)).unwrap(),
+                "{name}"
+            );
+        }
+    })
+    .await;
 }

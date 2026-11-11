@@ -14,6 +14,8 @@ pub mod outage;
 pub mod profile;
 pub mod transport;
 
+pub use transport::{Switchboard, WireChoice};
+
 /// The environment variable that switches the rig on.
 pub const ENV: &str = "IRSYNC_NETSIM";
 
@@ -203,11 +205,11 @@ pub fn active() -> anyhow::Result<Option<&'static Spec>> {
     }
 }
 
-/// The fault-injecting transport for `spec`, its socket bound on `bind`.
-pub fn transport(spec: &Spec, bind: SocketAddrV4) -> Arc<dyn CustomTransport> {
+/// The fault-injecting transport for `spec`, carried by `wire`.
+pub fn transport(spec: &Spec, wire: WireChoice) -> Arc<dyn CustomTransport> {
     Arc::new(transport::NetsimTransport {
         spec: spec.clone(),
-        bind,
+        wire,
     })
 }
 

@@ -1,10 +1,12 @@
-//! The iroh custom transport: a real loopback UDP socket with every datagram
-//! run through the link model, and on the client also through the outages.
+//! The iroh custom transport: every datagram run through the link model, and
+//! on the client also through the outages, then carried by a [`Wire`]: a real
+//! loopback UDP socket, or an in-process [`Switchboard`] that a test on
+//! tokio's paused clock can fast-forward through.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 use std::io;
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
@@ -30,7 +32,97 @@ pub(super) static BOUND: Mutex<Option<SocketAddrV4>> = Mutex::new(None);
 #[derive(Debug)]
 pub struct NetsimTransport {
     pub spec: Spec,
-    pub bind: SocketAddrV4,
+    pub wire: WireChoice,
+}
+
+/// What carries the datagrams that survive the models.
+#[derive(Clone, Debug)]
+pub enum WireChoice {
+    /// A UDP socket bound on this address.
+    Udp(SocketAddrV4),
+    /// A port on this switchboard.
+    Memory(Arc<Switchboard>),
+}
+
+/// An in-process network: each bound transport gets a port, and a datagram
+/// sent to a port's address lands in its queue at once. Nothing in it waits
+/// on the operating system, so on tokio's paused clock the run jumps ahead
+/// whenever every task is waiting for a timer.
+#[derive(Debug, Default)]
+pub struct Switchboard {
+    ports: Mutex<Ports>,
+    next_port: AtomicU64,
+}
+
+impl Switchboard {
+    pub fn new() -> Arc<Switchboard> {
+        Arc::default()
+    }
+
+    /// The address of the port plugged in last, as [`super::bound_addr`]
+    /// gives the UDP socket's: iroh does not list a custom transport's
+    /// addresses among the endpoint's own.
+    pub fn last_port(&self) -> Option<SocketAddrV4> {
+        match self.next_port.load(Relaxed) {
+            0 => None,
+            n => Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, n as u16)),
+        }
+    }
+
+    fn plug(self: &Arc<Self>) -> Port {
+        let n = 1 + self.next_port.fetch_add(1, Relaxed);
+        let port = u16::try_from(n).expect("fewer than 65535 ports");
+        let local = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.lock().insert(local, tx);
+        Port {
+            board: self.clone(),
+            local,
+            rx,
+        }
+    }
+
+    /// Hands `bytes` to the port at `dst`; false when nothing is plugged in there.
+    fn carry(&self, from: SocketAddrV4, dst: SocketAddrV4, bytes: Vec<u8>) -> bool {
+        self.lock()
+            .get(&dst)
+            .is_some_and(|tx| tx.send((from, bytes)).is_ok())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Ports> {
+        self.ports.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Each plugged-in port's queue: datagrams with the address they came from.
+type Ports = HashMap<SocketAddrV4, mpsc::UnboundedSender<(SocketAddrV4, Vec<u8>)>>;
+
+/// One transport's place on a [`Switchboard`]; unplugged when dropped.
+#[derive(Debug)]
+struct Port {
+    board: Arc<Switchboard>,
+    local: SocketAddrV4,
+    rx: mpsc::UnboundedReceiver<(SocketAddrV4, Vec<u8>)>,
+}
+
+impl Drop for Port {
+    fn drop(&mut self) {
+        self.board.lock().remove(&self.local);
+    }
+}
+
+/// The sending half of a wire, shared with the delivery task.
+#[derive(Debug)]
+enum Outlet {
+    Udp(Arc<UdpSocket>),
+    Memory(Arc<Switchboard>),
+}
+
+/// The receiving half of a wire, owned by the endpoint.
+#[derive(Debug)]
+enum Inlet {
+    Udp(Arc<UdpSocket>),
+    Memory(Port),
 }
 
 /// How often the counts are logged while traffic flows.
@@ -41,7 +133,6 @@ type Delivery = Reverse<(Instant, u64, SocketAddr, Vec<u8>)>;
 
 /// What the endpoint and its senders share.
 struct Shared {
-    socket: Arc<UdpSocket>,
     local: SocketAddrV4,
     /// The models' time origin.
     start: Instant,
@@ -62,7 +153,7 @@ struct Counts {
     sent: AtomicU64,
     /// Sent or received while an outage was open (client only).
     outage_drops: AtomicU64,
-    /// Refused by the socket.
+    /// Refused by the socket, or sent to no port on the switchboard.
     send_errors: AtomicU64,
     /// Received but larger than iroh's buffer, and dropped.
     truncated: AtomicU64,
@@ -186,13 +277,26 @@ impl CustomTransport for NetsimTransport {
 
 impl NetsimTransport {
     fn open(&self) -> io::Result<NetsimEndpoint> {
-        let std_socket = std::net::UdpSocket::bind(self.bind)?;
-        std_socket.set_nonblocking(true)?;
-        let socket = Arc::new(UdpSocket::from_std(std_socket)?);
-        let SocketAddr::V4(local) = socket.local_addr()? else {
-            return Err(io::Error::other("netsim socket is not IPv4"));
+        let (local, outlet, inlet) = match &self.wire {
+            WireChoice::Udp(bind) => {
+                let std_socket = std::net::UdpSocket::bind(bind)?;
+                std_socket.set_nonblocking(true)?;
+                let socket = Arc::new(UdpSocket::from_std(std_socket)?);
+                let SocketAddr::V4(local) = socket.local_addr()? else {
+                    return Err(io::Error::other("netsim socket is not IPv4"));
+                };
+                *BOUND.lock().expect("bound poisoned") = Some(local);
+                (local, Outlet::Udp(socket.clone()), Inlet::Udp(socket))
+            }
+            WireChoice::Memory(board) => {
+                let port = board.plug();
+                (
+                    port.local,
+                    Outlet::Memory(board.clone()),
+                    Inlet::Memory(port),
+                )
+            }
         };
-        *BOUND.lock().expect("bound poisoned") = Some(local);
 
         let Spec {
             profile,
@@ -216,9 +320,8 @@ impl NetsimTransport {
         };
         let (queue, rx) = mpsc::unbounded_channel();
         let counts = Arc::new(Counts::default());
-        tokio::spawn(deliver(socket.clone(), rx, counts.clone()));
+        tokio::spawn(deliver(outlet, local, rx, counts.clone()));
         let shared = Arc::new(Shared {
-            socket,
             local,
             start: Instant::now(),
             link: Mutex::new(Link::new(
@@ -232,6 +335,7 @@ impl NetsimTransport {
         });
         Ok(NetsimEndpoint {
             local_addrs: n0_watcher::Watchable::new(vec![custom_addr(local)]),
+            inlet,
             shared,
             scratch: Vec::new(),
         })
@@ -240,7 +344,8 @@ impl NetsimTransport {
 
 /// Sends each queued datagram at its delivery time; ends when every sender is gone.
 async fn deliver(
-    socket: Arc<UdpSocket>,
+    outlet: Outlet,
+    local: SocketAddrV4,
     mut rx: mpsc::UnboundedReceiver<(Instant, SocketAddr, Vec<u8>)>,
     counts: Arc<Counts>,
 ) {
@@ -264,7 +369,14 @@ async fn deliver(
                         break;
                     }
                     let Reverse((_, _, dst, bytes)) = heap.pop().expect("peeked");
-                    if let Err(e) = socket.send_to(&bytes, dst).await {
+                    let res = match &outlet {
+                        Outlet::Udp(socket) => socket.send_to(&bytes, dst).await.map(drop),
+                        Outlet::Memory(board) => match dst {
+                            SocketAddr::V4(dst) if board.carry(local, dst, bytes) => Ok(()),
+                            _ => Err(io::Error::other("no port there")),
+                        },
+                    };
+                    if let Err(e) = res {
                         if counts.send_errors.fetch_add(1, Relaxed) == 0 {
                             tracing::warn!(%dst, "netsim: send failed: {e}");
                         } else {
@@ -280,6 +392,7 @@ async fn deliver(
 #[derive(Debug)]
 struct NetsimEndpoint {
     local_addrs: n0_watcher::Watchable<Vec<CustomAddr>>,
+    inlet: Inlet,
     shared: Arc<Shared>,
     /// Receives one byte more than iroh's buffer holds, to see truncation.
     scratch: Vec<u8>,
@@ -306,21 +419,35 @@ impl CustomEndpoint for NetsimEndpoint {
         while filled < bufs.len() {
             let slot = bufs[filled].len();
             self.scratch.resize(slot + 1, 0);
-            let mut buf = ReadBuf::new(&mut self.scratch);
-            let from = match self.shared.socket.poll_recv_from(cx, &mut buf) {
-                Poll::Pending => break,
-                Poll::Ready(Err(e)) if filled == 0 => return Poll::Ready(Err(e)),
-                Poll::Ready(Err(_)) => break,
-                Poll::Ready(Ok(from)) => from,
+            let (from, len) = match &mut self.inlet {
+                Inlet::Udp(socket) => {
+                    let mut buf = ReadBuf::new(&mut self.scratch);
+                    let from = match socket.poll_recv_from(cx, &mut buf) {
+                        Poll::Pending => break,
+                        Poll::Ready(Err(e)) if filled == 0 => return Poll::Ready(Err(e)),
+                        Poll::Ready(Err(_)) => break,
+                        Poll::Ready(Ok(from)) => from,
+                    };
+                    let SocketAddr::V4(from) = from else {
+                        continue;
+                    };
+                    (from, buf.filled().len())
+                }
+                Inlet::Memory(port) => match port.rx.poll_recv(cx) {
+                    Poll::Pending | Poll::Ready(None) => break,
+                    Poll::Ready(Some((from, bytes))) => {
+                        let len = bytes.len();
+                        if len <= slot {
+                            self.scratch[..len].copy_from_slice(&bytes);
+                        }
+                        (from, len)
+                    }
+                },
             };
-            let len = buf.filled().len();
             if len > slot {
                 self.shared.counts.truncated.fetch_add(1, Relaxed);
                 continue;
             }
-            let SocketAddr::V4(from) = from else {
-                continue;
-            };
             if !self.shared.link_up(len) {
                 self.shared.counts.outage_drops.fetch_add(1, Relaxed);
                 continue;
@@ -383,7 +510,7 @@ mod tests {
                 stream: 1,
                 acks: None,
             },
-            bind: "127.0.0.1:0".parse().unwrap(),
+            wire: WireChoice::Udp("127.0.0.1:0".parse().unwrap()),
         }
         .open()
         .unwrap()

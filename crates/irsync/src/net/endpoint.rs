@@ -133,12 +133,16 @@ const STREAM_WINDOW: u32 = 8 * MIB;
 /// windows, the congestion controller `congestion`, and immediate ACKs
 /// asked of the peer (see [`immediate_acks`]).
 pub fn transport_config(congestion: Congestion) -> QuicTransportConfig {
-    transport_config_with(STREAM_WINDOW, congestion)
+    transport_config_with(STREAM_WINDOW, congestion, ack_frequency())
 }
 
 /// [`transport_config`] with each stream's receive window `stream_window`
-/// bytes.
-fn transport_config_with(stream_window: u32, congestion: Congestion) -> QuicTransportConfig {
+/// bytes and the ACKs `acks` asked of the peer.
+fn transport_config_with(
+    stream_window: u32,
+    congestion: Congestion,
+    acks: Option<AckFrequencyConfig>,
+) -> QuicTransportConfig {
     let controller: Arc<dyn ControllerFactory + Send + Sync> = match congestion {
         Congestion::Bbr => Arc::new(Bbr3Config::default()),
         Congestion::Cubic => Arc::new(CubicConfig::default()),
@@ -154,7 +158,7 @@ fn transport_config_with(stream_window: u32, congestion: Congestion) -> QuicTran
         .max_concurrent_uni_streams(VarInt::from_u32(256))
         .max_concurrent_bidi_streams(VarInt::from_u32(8))
         .congestion_controller_factory(controller)
-        .ack_frequency_config(ack_frequency())
+        .ack_frequency_config(acks)
         .build()
 }
 
@@ -257,8 +261,44 @@ pub fn daemon_endpoint_opts(
 
 /// Builds and binds the endpoint speaking [`irsync_proto::ALPN`].
 pub async fn build_endpoint(opts: EndpointOpts) -> Result<Endpoint, NetError> {
+    #[cfg(feature = "netsim")]
+    if let Some(spec) = crate::net::netsim::active().map_err(NetError::NetSim)? {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        crate::net::netsim::log_active(spec);
+        let bind = opts
+            .bind_addrs
+            .iter()
+            .find_map(|a| match a {
+                SocketAddr::V4(a) => Some(*a),
+                SocketAddr::V6(_) => None,
+            })
+            .unwrap_or(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+        let wire = crate::net::netsim::WireChoice::Udp(bind);
+        return build_netsim_endpoint(opts, spec, wire).await;
+    }
     let transport = transport_config(opts.congestion);
-    build(opts, transport).await
+    build(
+        opts,
+        transport,
+        #[cfg(feature = "netsim")]
+        None,
+    )
+    .await
+}
+
+/// [`build_endpoint`] with every packet going through the fault layer for
+/// `spec`, carried by `wire`, whatever `IRSYNC_NETSIM` says: no IP socket,
+/// no relay.
+#[cfg(feature = "netsim")]
+pub async fn build_netsim_endpoint(
+    opts: EndpointOpts,
+    spec: &crate::net::netsim::Spec,
+    wire: crate::net::netsim::WireChoice,
+) -> Result<Endpoint, NetError> {
+    let acks = ack_frequency_for(spec.acks);
+    let transport = transport_config_with(STREAM_WINDOW, opts.congestion, acks);
+    let custom = crate::net::netsim::transport(spec, wire);
+    build(opts, transport, Some(custom)).await
 }
 
 /// Test hook: [`build_endpoint`] with each stream's receive window
@@ -269,11 +309,22 @@ pub async fn build_endpoint_with_stream_window(
     opts: EndpointOpts,
     stream_window: u32,
 ) -> Result<Endpoint, NetError> {
-    let transport = transport_config_with(stream_window, opts.congestion);
-    build(opts, transport).await
+    let transport = transport_config_with(stream_window, opts.congestion, ack_frequency());
+    build(
+        opts,
+        transport,
+        #[cfg(feature = "netsim")]
+        None,
+    )
+    .await
 }
 
-async fn build(opts: EndpointOpts, transport: QuicTransportConfig) -> Result<Endpoint, NetError> {
+/// Binds the endpoint; with `netsim`, on that transport alone.
+async fn build(
+    opts: EndpointOpts,
+    transport: QuicTransportConfig,
+    #[cfg(feature = "netsim")] netsim: Option<Arc<dyn iroh::endpoint::transports::CustomTransport>>,
+) -> Result<Endpoint, NetError> {
     let builder = match &opts.relay {
         RelayChoice::N0Default => Endpoint::builder(presets::N0),
         RelayChoice::Custom(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
@@ -313,22 +364,12 @@ async fn build(opts: EndpointOpts, transport: QuicTransportConfig) -> Result<End
         builder = builder.address_lookup(MdnsAddressLookup::builder().advertise(opts.publish));
     }
     #[cfg(feature = "netsim")]
-    if let Some(spec) = crate::net::netsim::active().map_err(NetError::NetSim)? {
-        use std::net::{Ipv4Addr, SocketAddrV4};
-        crate::net::netsim::log_active(spec);
-        let bind = opts
-            .bind_addrs
-            .iter()
-            .find_map(|a| match a {
-                SocketAddr::V4(a) => Some(*a),
-                SocketAddr::V6(_) => None,
-            })
-            .unwrap_or(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+    if let Some(custom) = netsim {
         // Every packet goes through the fault layer: no IP socket, no relay.
         builder = builder
             .clear_ip_transports()
             .clear_relay_transports()
-            .add_custom_transport(crate::net::netsim::transport(spec, bind));
+            .add_custom_transport(custom);
         if !opts.portmap {
             builder = builder.portmapper_config(PortmapperConfig::Disabled);
         }

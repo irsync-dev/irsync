@@ -8,6 +8,8 @@ pub mod netsim;
 
 #[cfg(feature = "test-hooks")]
 pub use endpoint::build_endpoint_with_stream_window;
+#[cfg(feature = "netsim")]
+pub use endpoint::build_netsim_endpoint;
 pub use endpoint::{
     build_endpoint, client_endpoint_opts, daemon_endpoint_opts, transport_config, EndpointOpts,
     NetError, RelayChoice,
