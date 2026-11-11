@@ -35,8 +35,9 @@ mostly unchanged tree cheap.
 
 ## Install
 
-irsync builds from source with Rust's `cargo`. If you have no Rust yet, get it
-from [rustup.rs](https://rustup.rs) first. The build takes a few minutes.
+irsync builds from source with Rust's `cargo` and needs Rust 1.96 or newer.
+If you have no Rust yet, or an older one, get it from
+[rustup.rs](https://rustup.rs) first. The build takes a few minutes.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # only if you have no Rust
@@ -86,7 +87,8 @@ irsync -av ~/Photos/ <server-id>:photos/   # client: push
 
 ## Documentation
 
-The book is at https://irsync.org/book/. Start with
+The project's website is [irsync.org](https://irsync.org), and the book is at
+https://irsync.org/book/. Start with
 [Your first sync](https://irsync.org/book/tutorial/first-sync.html), look up
 flags in the [command-line reference](https://irsync.org/book/reference/command-line.html),
 and see [Contributing](https://irsync.org/book/contributing/setup.html) to work
