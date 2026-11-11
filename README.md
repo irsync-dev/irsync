@@ -48,24 +48,27 @@ curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
 ```
 
 It installs the newest stable release. To try a beta, add `--beta` straight
-after `sh -s --`:
+after `sh -s --`. `--alpha` takes the newest release of any kind:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta
 ```
 
+The first stable release will be v0.1.0. Until it is out, there are only
+alphas and betas, so add `--alpha`.
+
 The script also writes a small receipt file,
 `~/.config/irsync/irsync-receipt.json`. It only records what was installed.
 It is harmless, and you can delete it.
 
-Homebrew (Linux and macOS):
+Homebrew (Linux and macOS), from v0.1.0 on:
 
 ```sh
 brew install irsync-dev/tap/irsync
 ```
 
-Debian, Ubuntu, Fedora and RHEL: the apt and dnf setup commands are on
-[dist.irsync.org](https://dist.irsync.org).
+Debian, Ubuntu, Fedora and RHEL, from v0.1.0 on: the apt and dnf setup
+commands are on [dist.irsync.org](https://dist.irsync.org).
 
 You can also download a tarball from the
 [GitHub Releases page](https://github.com/irsync-dev/irsync/releases).

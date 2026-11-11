@@ -38,11 +38,14 @@ irsync installs it too. The quickest is the install script:
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
 ```
 
-Homebrew (`brew install irsync-dev/tap/irsync`), apt and dnf
-([dist.irsync.org](https://dist.irsync.org)) and the tarballs on the
+Until the first stable release, v0.1.0, is out, there are only alphas and
+betas, so add `--alpha` straight after `sh -s --`.
+
+Homebrew (`brew install irsync-dev/tap/irsync`) and apt and dnf
+([dist.irsync.org](https://dist.irsync.org)) work the same way from v0.1.0
+on. The tarballs on the
 [GitHub Releases page](https://github.com/irsync-dev/irsync/releases) work
-the same way. All of them cover Linux on x86_64 and arm64 and macOS on Apple
-Silicon.
+too. All of them cover Linux on x86_64 and arm64 and macOS on Apple Silicon.
 
 On other machines, build `fileset` from source. This needs Rust; get it from
 <https://rustup.rs>.
