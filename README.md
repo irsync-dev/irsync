@@ -6,6 +6,20 @@ today's networks. It runs on both ends of a transfer and connects through
 NATs and firewalls without port forwarding, dynamic DNS or SSH tunnels. The
 daemon side is reached by its iroh identity, not by an address.
 
+irsync takes rsync's common flags, but it is not a drop-in replacement: it
+has its own protocol, so both ends must run irsync, and some rsync options,
+such as `-X`, `-A` and `-z`, are missing. See
+[Known limitations](https://irsync.org/book/reference/limitations.html).
+
+Traffic is encrypted end to end, and each side is known by its key. The client
+only connects to the daemon key it was given, and the daemon only lets in
+client keys it has granted; see
+[Identity and trust](https://irsync.org/book/explanation/identity-and-trust.html).
+When no direct path can be found, traffic goes through a relay, by default one
+of the public relays run by n0, the developers of iroh. A relay cannot read
+the data. You can run your own, or refuse relays with `--no-relay`; see
+[Connect directly or through a relay](https://irsync.org/book/how-to/direct-and-relay.html).
+
 > **Alpha.** irsync is alpha software. The command line and the network
 > protocol may change before the beta, and versions may then not talk to each
 > other. Keep another copy of anything you sync with it.
@@ -78,6 +92,10 @@ flags in the [command-line reference](https://irsync.org/book/reference/command-
 and see [Contributing](https://irsync.org/book/contributing/setup.html) to work
 on irsync itself. If a first sync goes wrong, see
 [Troubleshoot a first sync](https://irsync.org/book/how-to/troubleshooting.html).
+Before relying on it, read the
+[Known limitations](https://irsync.org/book/reference/limitations.html):
+Windows is not supported, extended attributes and ACLs are not copied, and
+relayed connections are much slower than direct ones.
 
 `fileset` shares no code with irsync; see
 its [reference](https://irsync.org/book/reference/fileset.html).
