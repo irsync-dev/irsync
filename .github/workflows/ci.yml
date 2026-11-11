@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The release workflow calls this as its test gate. dist passes its plan.
+  # The release gate (release-gate.yml) calls this as its test gate on a tag push.
   workflow_call:
     inputs:
       plan:

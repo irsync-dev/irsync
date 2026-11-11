@@ -1,0 +1,147 @@
+# Builds the .deb and .rpm packages for a stable release, attaches them to the
+# GitHub Release, and adds them to the signed apt/dnf repo (irsync-dev/packages,
+# served at https://dist.irsync.org). Release-gate.yml calls this after the
+# release succeeded; it is never started on its own, and never for pre-releases.
+
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+    secrets:
+      PACKAGES_REPO_TOKEN:
+        required: true
+      PACKAGES_GPG_PRIVATE_KEY:
+        required: true
+      PACKAGES_GPG_PASSPHRASE:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Only one job at a time may update the packages repo.
+    concurrency:
+      group: packages-repo
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      NFPM_VERSION: 2.48.0
+      NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Work out the version
+        run: |
+          set -euo pipefail
+          # Only stable tags get packages.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' is not a stable release tag (vX.Y.Z). No packages."
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download the Linux archives from the release
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archives"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/archives" \
+            --pattern 'irsync-x86_64-unknown-linux-musl.tar.xz' \
+            --pattern 'irsync-aarch64-unknown-linux-musl.tar.xz'
+
+      - name: Install the packaging tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c rpm gnupg
+          url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.tar.gz" "$url"
+          echo "$NFPM_SHA256  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum --check -
+          mkdir -p "$RUNNER_TEMP/nfpm"
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP/nfpm" nfpm
+          echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+
+      - name: Test the packaging scripts
+        run: PACKAGING_TESTS_REQUIRED=1 python3 -m unittest discover -s packaging/tests
+
+      - name: Build the packages
+        run: packaging/build-packages.sh "$RUNNER_TEMP/archives" "$VERSION" "$RUNNER_TEMP/packages"
+
+      - name: Attach the packages to the release
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/packages/*.deb "$RUNNER_TEMP"/packages/*.rpm)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No packages were built."
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+      - name: Import the signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          # A private keyring, outside the checkout, removed again at the end.
+          mkdir "$RUNNER_TEMP/gnupg"
+          printf '%s\n' "$GPG_PRIVATE_KEY" | GNUPGHOME="$RUNNER_TEMP/gnupg" gpg --batch --import
+          fpr=$(GNUPGHOME="$RUNNER_TEMP/gnupg" gpg --batch --list-secret-keys --with-colons |
+            awk -F: '$1 == "fpr" { print $10; exit }')
+          if [ -z "$fpr" ]; then
+            echo "::error::No secret key was imported."
+            exit 1
+          fi
+          echo "GNUPGHOME=$RUNNER_TEMP/gnupg" >> "$GITHUB_ENV"
+          echo "GPG_KEY_ID=$fpr" >> "$GITHUB_ENV"
+
+      # The token is saved in this checkout's git config, and only here. It is
+      # scoped to the packages repo.
+      - name: Check out the packages repo
+        uses: actions/checkout@v4
+        with:
+          repository: irsync-dev/packages
+          token: ${{ secrets.PACKAGES_REPO_TOKEN }}
+          path: packages-repo
+          persist-credentials: true
+
+      - name: Update the repo and sign it
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          packaging/update-repo.sh packages-repo "$RUNNER_TEMP/packages" 3
+
+      - name: Commit and push
+        working-directory: packages-repo
+        run: |
+          set -euo pipefail
+          git add -A
+          # A re-run with the same packages changes nothing.
+          if git diff --cached --quiet; then
+            echo "The packages repo is already up to date."
+            exit 0
+          fi
+          git -c user.name='irsync releases' -c user.email='releases@irsync.org' \
+            commit -m "irsync $VERSION"
+          git push
+
+      - name: Remove the signing key
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/gnupg" ]; then
+            GNUPGHOME="$RUNNER_TEMP/gnupg" gpgconf --kill gpg-agent || true
+            rm -rf "$RUNNER_TEMP/gnupg"
+          fi
