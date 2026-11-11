@@ -60,4 +60,5 @@
   - [How netstress works](contributing/netstress-internals.md)
 - [Performance](contributing/performance.md)
 - [Design records](contributing/design-records.md)
+- [Releasing](contributing/releasing.md)
 - [This website](contributing/website.md)

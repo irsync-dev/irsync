@@ -31,11 +31,27 @@ check itself.
 
 ## Install
 
+`fileset` comes in the same packages as irsync, so every way of installing
+irsync installs it too. The quickest is the install script:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
+```
+
+Homebrew (`brew install irsync-dev/tap/irsync`), apt and dnf
+([dist.irsync.org](https://dist.irsync.org)) and the tarballs on the
+[GitHub Releases page](https://github.com/irsync-dev/irsync/releases) work
+the same way. All of them cover Linux on x86_64 and arm64 and macOS on Apple
+Silicon.
+
+On other machines, build `fileset` from source. This needs Rust; get it from
+<https://rustup.rs>.
+
 ```sh
 cargo install --git https://github.com/irsync-dev/irsync fileset
 ```
 
-This needs Rust; get it from <https://rustup.rs>. Install it on every machine where you want to run a check.
+Install it on every machine where you want to run a check.
 
 ## Where to go next
 

@@ -1,7 +1,8 @@
 # Working on irsync
 
 The contributor guide is the book under `book/src/contributing/`. Start with
-`setup.md` and `testing.md`. This file only lists the commands.
+`setup.md` and `testing.md`. This file only lists the commands. Releases:
+`book/src/contributing/releasing.md`.
 
 ## Tests
 

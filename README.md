@@ -39,8 +39,39 @@ mostly unchanged tree cheap.
 
 ## Install
 
-irsync builds from source with Rust's `cargo` and needs Rust 1.96 or newer.
-If you have no Rust yet, or an older one, get it from
+Pick one way. Every package contains both `irsync` and `fileset`.
+
+The install script puts both in `~/.local/bin`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
+```
+
+It installs the newest stable release. To try a beta, add `--beta` straight
+after `sh -s --`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta
+```
+
+The script also writes a small receipt file,
+`~/.config/irsync/irsync-receipt.json`. It only records what was installed.
+It is harmless, and you can delete it.
+
+Homebrew (Linux and macOS):
+
+```sh
+brew install irsync-dev/tap/irsync
+```
+
+Debian, Ubuntu, Fedora and RHEL: the apt and dnf setup commands are on
+[dist.irsync.org](https://dist.irsync.org).
+
+You can also download a tarball from the
+[GitHub Releases page](https://github.com/irsync-dev/irsync/releases).
+
+For anything else, build from source with Rust's `cargo`. You need Rust 1.96
+or newer. If you have no Rust yet, or an older one, get it from
 [rustup.rs](https://rustup.rs) first. The build takes a few minutes.
 
 ```sh
@@ -48,16 +79,18 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # only if you h
 cargo install --git https://github.com/irsync-dev/irsync irsync
 ```
 
-Release binaries will be provided once the beta starts.
+Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
+Other Linux and macOS machines can build from source. All of these are
+supported, as client and as daemon.
 
-Linux and macOS (x86_64 and aarch64) are supported, as client and as daemon.
 With ssh, the client is enough: the first sync copies irsync to the server when
 both run the same OS and CPU. When they differ, install irsync on both machines
 and set the server up by hand.
 
 The workspace also holds `fileset`, an independent tool that records the
 checksums and metadata of a directory tree and later verifies the tree against
-them, for example after a transfer or to find bitrot:
+them, for example after a transfer or to find bitrot. The packages above
+already include it. To build only `fileset` from source:
 
 ```sh
 cargo install --git https://github.com/irsync-dev/irsync fileset
