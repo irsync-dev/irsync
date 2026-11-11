@@ -1,0 +1,7 @@
+[irsync]
+name=irsync
+baseurl=https://dist.irsync.org/rpm/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://dist.irsync.org/irsync.asc

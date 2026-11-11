@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>irsync package repository</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  pre { background: #f2f2f2; padding: 0.8rem; overflow-x: auto; }
+  @media (prefers-color-scheme: dark) { body { background: #151515; color: #ddd; } pre { background: #252525; } }
+</style>
+</head>
+<body>
+<h1>irsync package repository</h1>
+<p>Signed packages for <a href="https://irsync.org">irsync</a>, for Debian and Ubuntu (apt) and Fedora and RHEL (dnf). Stable releases only.</p>
+
+<h2>Debian, Ubuntu</h2>
+<pre>sudo install -d /etc/apt/keyrings
+sudo curl -fsSL https://dist.irsync.org/irsync.gpg -o /etc/apt/keyrings/irsync.gpg
+echo "deb [signed-by=/etc/apt/keyrings/irsync.gpg] https://dist.irsync.org/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/irsync.list
+sudo apt update
+sudo apt install irsync</pre>
+
+<h2>Fedora, RHEL</h2>
+<pre>sudo curl -fsSL https://dist.irsync.org/irsync.repo -o /etc/yum.repos.d/irsync.repo
+sudo dnf install irsync</pre>
+
+<p>Both install <code>/usr/bin/irsync</code> and <code>/usr/bin/fileset</code>. The signing key is
+<a href="irsync.asc">irsync.asc</a> (key owner: irsync releases &lt;releases@irsync.org&gt;).</p>
+</body>
+</html>

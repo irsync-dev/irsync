@@ -1,0 +1,31 @@
+# Used by build-packages.sh, which sets these environment variables:
+#   IRSYNC_VERSION  e.g. 0.2.0
+#   IRSYNC_ARCH     amd64 or arm64
+#   IRSYNC_RELEASE  "1" for rpm, empty for deb (so the deb version is exactly the version)
+#   IRSYNC_BIN_DIR  directory holding the irsync and fileset binaries
+name: irsync
+version: ${IRSYNC_VERSION}
+release: ${IRSYNC_RELEASE}
+arch: ${IRSYNC_ARCH}
+platform: linux
+section: utils
+priority: optional
+maintainer: irsync releases <releases@irsync.org>
+homepage: https://irsync.org
+license: MIT
+description: |
+  One-way directory synchroniser in the mould of rsync, rebuilt for today's
+  networks. It runs on both ends of a transfer and connects through iroh, so
+  two machines find each other and traverse NATs and firewalls without port
+  forwarding, dynamic DNS or SSH tunnels.
+contents:
+  - src: ${IRSYNC_BIN_DIR}/irsync
+    dst: /usr/bin/irsync
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${IRSYNC_BIN_DIR}/fileset
+    dst: /usr/bin/fileset
+    expand: true
+    file_info:
+      mode: 0755
