@@ -1,5 +1,9 @@
 # irsync
 
+[![CI](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+
 irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for
 today's networks. It runs on both ends of a transfer and connects through
 [iroh](https://iroh.computer), so two machines find each other and traverse
@@ -91,8 +95,8 @@ The project's website is [irsync.org](https://irsync.org), and the book is at
 https://irsync.org/book/. Start with
 [Your first sync](https://irsync.org/book/tutorial/first-sync.html), look up
 flags in the [command-line reference](https://irsync.org/book/reference/command-line.html),
-and see [Contributing](https://irsync.org/book/contributing/setup.html) to work
-on irsync itself. If a first sync goes wrong, see
+and see [CONTRIBUTING.md](CONTRIBUTING.md) to work on irsync itself. If a
+first sync goes wrong, see
 [Troubleshoot a first sync](https://irsync.org/book/how-to/troubleshooting.html).
 Before relying on it, read the
 [Known limitations](https://irsync.org/book/reference/limitations.html):
