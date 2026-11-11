@@ -18,11 +18,6 @@ tap = "irsync-dev/homebrew-tap"
 formula = "irsync"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
-# The release gate: the full test suite (.github/workflows/ci.yml) runs as
-# a host job on the tagged commit. dist 0.34 does not wire host jobs in front
-# of `host` and renders their `uses:` path as `$/...`, so release.yml is
-# hand-patched (see allow-dirty below and book/src/contributing/releasing.md).
-host-jobs = ["./ci"]
 # Whether to publish prereleases to package managers
 publish-prereleases = false
 # Target platforms to build apps for (Rust target-triple syntax)
@@ -33,14 +28,10 @@ install-path = "~/.local/bin"
 install-updater = false
 # Don't run the release workflow on pull requests; PR CI stays as it was
 pr-run-mode = "skip"
-# release.yml is hand-patched after `dist generate` so that nothing is
-# uploaded or published unless the ci gate passed. Re-apply the patch after
-# every `dist generate`.
-allow-dirty = ["ci"]
-
-# The test gate only reads the repository
-[dist.github-custom-job-permissions]
-ci = { contents = "read" }
+# release.yml only starts via workflow_dispatch. .github/workflows/release-gate.yml
+# launches it after the full test suite passed on the tagged commit. Never
+# launch release.yml by hand.
+dispatch-releases = true
 
 [dist.github-custom-runners]
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
