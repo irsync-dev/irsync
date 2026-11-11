@@ -162,6 +162,11 @@ the chunks. Here is what happens when a file changes along the way.
 
 These checks compare size, modification time, change time and inode. Programs
 can reset the modification time, but nothing can set the change time back.
+Because they compare the change time, a change to a file's metadata alone
+during the sync counts as a change, even though its content is the same:
+`chmod` or `chown`, extended attributes set by an indexer or a virus
+scanner, or a new hard link made by a snapshot tool. The file is retried,
+and the run exits 23 if it happens again.
 
 #### With `--paranoid`
 
@@ -177,8 +182,10 @@ can reset the modification time, but nothing can set the change time back.
   `.irsync-clones-<uid>/<session>/`, mode 0700, in the highest directory on
   the file's filesystem that you can write to. Directories that group or
   others can write to, without the sticky bit, are skipped. irsync removes
-  the clones when the run ends, and the next run removes those a crash left.
-  The scan skips these folders.
+  the clones when the run ends. Clones a crash left are removed by a later
+  `--paranoid` run that clones on that filesystem. The scan skips these
+  folders. Each file in flight keeps its clone open; if irsync runs out of
+  file descriptors, that file is hashed a second time instead of cloned.
 - **Without clones.** Where the filesystem cannot clone, irsync hashes the
   file a second time before the receiver places it and compares the whole
   digests. A difference gives "changed after it was sent".
@@ -231,6 +238,11 @@ though its content is unchanged.
 - **A re-sent file has no retry left.** A file sent again by the final
   re-check starts with its retry used, so a transient mismatch fails it at
   once. Its hard-link names at the destination are linked to the new copy.
+- **Hard-link names, with `-H`.** The final re-check stats only the main
+  name of each group of hard-linked files. If another name is replaced or
+  deleted at the source before the re-check, it is not noticed: the run can
+  exit 0 instead of 24, or not send that name again. The destination still
+  holds states the source held.
 - **Bind mounts** share one device number, and cloning across them fails
   with `EXDEV`, so that filesystem falls back to the second hash.
 - **A umask of 002** makes new directories group-writable, which may leave

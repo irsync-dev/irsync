@@ -100,8 +100,10 @@ message Hello {
   // --fsync: a receiving daemon flushes each file to disk before renaming
   // it into place. Off (rsync's default): nothing is flushed explicitly.
   bool fsync = 29;
-  // --paranoid: a sending daemon (a pull) hashes each sent file again
-  // before the client places it.
+  // --paranoid: both roles take part in the final re-check (Settle,
+  // Replan, Settled), which the receiver asks for with Settle. Only the
+  // sending side sends each file from a reflink clone or hashes it again
+  // before the receiver places it; a receiving daemon (a push) does neither.
   bool paranoid = 30;
 }
 // One export the asking key may use.

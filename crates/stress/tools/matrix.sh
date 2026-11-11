@@ -19,6 +19,9 @@
 # Rows missing on purpose: --max-delete (the harness counts client exit 25
 # as its own error), xattrs (irsync has no -X). The checksum row reuses
 # seeds 1 to 20, the default sweep's, so a difference points at -c.
+# The paranoid row runs --paranoid on a tree nothing writes to during the
+# sync (the harness mutates only between syncs): it tests that the clone,
+# second-hash and re-check paths sync correctly, not that they catch changes.
 set -u
 TOOLS=$(cd "$(dirname "$0")" && pwd)
 BIN=${BIN:-$(cd "$TOOLS/../../.." && pwd)/target/release}

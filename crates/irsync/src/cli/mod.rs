@@ -802,8 +802,10 @@ pub struct SyncArgs {
     pub fsync: bool,
     /// Send each file from a reflink clone where the filesystem can make
     /// one, else hash it again before the receiver places it; at the end,
-    /// re-check every listed file. This catches writers that change a file
-    /// without updating its times (memory-mapped databases).
+    /// re-check every listed file. This is meant to catch writers that
+    /// change a file without updating its times (memory-mapped databases);
+    /// only ZFS 2.4 clones have been shown to include such writes, and the
+    /// second hash has not been tested against them.
     #[arg(long)]
     pub paranoid: bool,
     /// Extend a destination file that is shorter than the source by the

@@ -93,7 +93,10 @@ accepts every row's settings. Each passing run is checked with
 `fileset check --paranoid` of the final destination against the source
 manifest, link counts included) and then asserts that no `.irsync.*.part`
 is left in either tree. All rows take about three hours on a 16-core Mac.
-The `paranoid` row passes `--paranoid`. Binaries built by `cargo test
+The `paranoid` row passes `--paranoid`. The harness changes the source only
+between syncs, so this row checks that the `--paranoid` code paths sync a
+quiet tree correctly; it does not test catching a file that changes during
+the sync. Binaries built by `cargo test
 --workspace` have the `test-hooks` feature, and there `--paranoid` never
 clones, so the row tests the second-hash path; `cargo build --release`
 binaries clone where the filesystem can.

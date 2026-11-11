@@ -192,3 +192,12 @@ landed. Items the final review's fix wave closed are not listed.
       `docs/superpowers/specs/2026-11-10-source-change-detection-design.md`.
       Limits (memory-mapped writers without `--paranoid`, coarse timestamps)
       are documented in the correctness page.
+
+- [ ] A stress mode that runs filegen against the source while irsync syncs
+      it. The stress loop mutates and syncs one after the other
+      (`crates/stress/src/run.rs`), so the `paranoid` matrix row only runs
+      `--paranoid` on a tree nothing writes to during the sync, and no
+      long-run test exercises the source change checks. The mode would accept
+      exit 23 and 24 and check that each destination file is a state the
+      source held at some point (for example, by recording each state's hash
+      as filegen writes it).
