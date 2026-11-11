@@ -17,13 +17,14 @@ use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iroh::endpoint::{Connection, VarInt};
 use irsync_proto::chunk::{ChunkRecord, FileDigest};
 use irsync_proto::v1::{DataChunk, DataStreamHeader};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 use crate::delta::{encode, encoded_len, Basis, Op};
 use crate::fs::clone::Cloned;

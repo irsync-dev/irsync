@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iroh::endpoint::{RecvStream, SendStream};
 use irsync_proto::chunk::FileDigest;
@@ -18,6 +18,7 @@ use irsync_proto::v1::{
 use prost::Message as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::Instrument;
 
 use super::engine::{Ctx, PeerEvents};

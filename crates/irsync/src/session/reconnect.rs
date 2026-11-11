@@ -5,13 +5,14 @@
 //! on start unless `--no-resume` was given.
 
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::StreamExt;
 use iroh::endpoint::{ConnectError, ConnectWithOptsError, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use irsync_proto::v1::{error::Code, Hello};
 use rand_core::{OsRng, RngCore};
+use tokio::time::Instant;
 use tracing::Instrument;
 
 use super::engine::{

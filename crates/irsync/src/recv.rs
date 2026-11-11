@@ -86,7 +86,7 @@ pub struct FileWriter {
     verified: Vec<bool>,
     index: IndexHandle,
     chunks_since_persist: u32,
-    last_persist: Instant,
+    last_persist: tokio::time::Instant,
     /// Set once the record must no longer be written back (after finalize).
     done: bool,
     /// Bytes of the chunks written from the sender's data (not local copies).
@@ -681,7 +681,7 @@ impl FileWriter {
             chunks,
             index,
             chunks_since_persist: 0,
-            last_persist: Instant::now(),
+            last_persist: tokio::time::Instant::now(),
             done: false,
             received: 0,
             recorded: false,
@@ -1003,7 +1003,7 @@ impl FileWriter {
             self.verified[idx as usize] = true;
             self.tree.add(c.offset, &data);
             if self.chunks_since_persist == 0 {
-                self.last_persist = Instant::now();
+                self.last_persist = tokio::time::Instant::now();
             }
             self.chunks_since_persist += 1;
             if remote {
@@ -1036,7 +1036,7 @@ impl FileWriter {
             .put_partial(&self.rel, &rec)
             .map_err(index_err)?;
         self.chunks_since_persist = 0;
-        self.last_persist = Instant::now();
+        self.last_persist = tokio::time::Instant::now();
         self.recorded = true;
         Ok(())
     }
@@ -1054,7 +1054,7 @@ impl FileWriter {
         .await
         .map_err(io::Error::other)??;
         self.chunks_since_persist = 0;
-        self.last_persist = Instant::now();
+        self.last_persist = tokio::time::Instant::now();
         self.recorded = true;
         Ok(())
     }
