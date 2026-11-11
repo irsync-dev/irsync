@@ -107,6 +107,7 @@ impl SessionKey {
         .fold(0u16, |acc, (i, &b)| acc | ((b as u16) << i));
         field(&mut h, b"preserve", &bits.to_le_bytes());
         field(&mut h, b"checksum", &[opts.checksum as u8]);
+        field(&mut h, b"paranoid", &[opts.paranoid as u8]);
         field(&mut h, b"update", &[opts.update_only as u8]);
         field(&mut h, b"inplace", &[opts.inplace as u8]);
         field(&mut h, b"append", &[opts.append as u8]);
@@ -167,6 +168,7 @@ impl SessionKey {
                 hello.append as u8,
             ],
         );
+        field(&mut h, b"sender", &[hello.paranoid as u8]);
         SessionKey(h.finalize().as_bytes().to_vec())
     }
 
@@ -460,6 +462,7 @@ pub struct DaemonHooks {
     pub inject_listing: Option<ListingHook>,
     pub during_hash: Option<crate::hasher::HashHook>,
     pub on_first_chunk_sent: Option<FirstChunkHook>,
+    pub skip_place_stat: bool,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -734,6 +737,11 @@ pub struct SideHooks {
     /// drops at the first one).
     #[cfg(feature = "test-hooks")]
     pub drop_before_verdict: Option<Arc<PartsFault>>,
+    /// Sender: answer a `MayPlace` without comparing the source's stat with
+    /// its hash stat (only `--paranoid`'s second hash is left to see a
+    /// change).
+    #[cfg(feature = "test-hooks")]
+    pub skip_place_stat: bool,
     /// Sender: queue only this many listing frames, then none, not even
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]

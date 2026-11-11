@@ -800,6 +800,11 @@ pub struct SyncArgs {
     /// the right size and time but not its content.
     #[arg(long)]
     pub fsync: bool,
+    /// Hash each sent file again before the receiver places it, and give
+    /// it up if it no longer matches: this catches writers that change a
+    /// file without updating its times (memory-mapped databases).
+    #[arg(long)]
+    pub paranoid: bool,
     /// Extend a destination file that is shorter than the source by the
     /// source's tail, trusting what is already there; a destination that
     /// is not shorter is skipped (rsync's rule).
@@ -919,6 +924,9 @@ pub struct SyncOptions {
     pub no_rename_detection: bool,
     pub inplace: bool,
     pub fsync: bool,
+    /// `--paranoid`: the sending side hashes each sent file again before
+    /// it is placed.
+    pub paranoid: bool,
     pub append: Append,
     pub debug_addr: Option<SocketAddr>,
     pub debug_no_wait: bool,
@@ -987,6 +995,7 @@ impl SyncOptions {
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,
             fsync: a.fsync,
+            paranoid: a.paranoid,
             append: if a.append {
                 Append::Append
             } else if a.append_verify {

@@ -100,6 +100,9 @@ message Hello {
   // --fsync: a receiving daemon flushes each file to disk before renaming
   // it into place. Off (rsync's default): nothing is flushed explicitly.
   bool fsync = 29;
+  // --paranoid: a sending daemon (a pull) hashes each sent file again
+  // before the client places it.
+  bool paranoid = 30;
 }
 // One export the asking key may use.
 message ExportEntry {

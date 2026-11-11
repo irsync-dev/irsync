@@ -68,6 +68,15 @@ pub(super) enum Done {
         /// Bytes sent on success.
         result: io::Result<u64>,
     },
+    /// The checks before placing (see [`SenderRole::verdict`]) are done.
+    Verdict {
+        file_id: u64,
+        /// The file's generation the checks ran for.
+        gen: u32,
+        /// The chunk list the receiver asked about (`MayPlace.gen`).
+        list: u32,
+        verdict: Verdict,
+    },
 }
 
 /// The send tasks running. A file has at most one (see `SFile::pending`),
@@ -116,16 +125,13 @@ impl SendTasks {
 }
 
 /// The answer to a receiver's `MayPlace` (see [`SenderRole::verdict`]).
-enum Verdict {
+pub(super) enum Verdict {
     /// The source is as it was hashed: the receiver may place the file.
     Place,
     /// The source changed since (why): the receiver drops the file, and
     /// it is retried.
     Changed(String),
-    /// The answer needs work off the main loop; it is sent once done.
-    // Constructed once the second hash (`--paranoid`) answers off the main
-    // loop (Task 4 of the source change detection plan).
-    #[allow(dead_code)]
+    /// The answer needs work off the main loop (`Done::Verdict`).
     Later,
 }
 
@@ -178,6 +184,10 @@ struct SFile {
     /// The file's digest task, while it runs: aborted with the file (see
     /// `remove_file`), or when a retry starts another.
     digesting: Option<tokio::task::AbortHandle>,
+    /// The checks before placing, while they run, and the chunk list the
+    /// receiver asked about. Its `MayPlace` is answered exactly once: by
+    /// the checks, or (they are aborted) by a retry or the file's removal.
+    verdicting: Option<(tokio::task::AbortHandle, u32)>,
     /// Chunks requested while the send task runs, sent once it is done.
     pending: Option<Pending>,
     /// When the receiver first asked for data; for the transfer histogram.
@@ -418,6 +428,7 @@ impl SenderRole {
         if let Some(task) = f.digesting.take() {
             task.abort();
         }
+        self.cancel_verdict(file_id, f.verdicting.take());
         self.lists.cancel(file_id);
         Some(f)
     }
@@ -444,6 +455,12 @@ impl SenderRole {
     /// Offers the file again with a fresh stat and a forced re-read, or gives
     /// up once the retry is spent.
     fn retry(&mut self, file_id: u64, why: String) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
+        // A verdict still being worked out is moot now.
+        let checks = f.verdicting.take();
+        self.cancel_verdict(file_id, checks);
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -554,6 +571,7 @@ impl SenderRole {
                 streams: 0,
                 task: None,
                 digesting: None,
+                verdicting: None,
                 pending: None,
                 started: None,
                 #[cfg(feature = "test-hooks")]
@@ -954,15 +972,33 @@ impl SenderRole {
             // its new list waiting for room). The receiver holds a stale
             // file; `changed` makes it drop it (it would otherwise wait for
             // a verdict), and the retry already under way needs no other.
-            Some(f)
-                if gen != f.lists_sent || f.listed_gen != Some(f.gen) || f.hash_stat.is_none() =>
-            {
+            Some(f) if !is_current(f, gen) => {
                 self.out.send(answer(true));
                 return Ok(());
             }
+            // The receiver asks once per list.
+            Some(f) if f.verdicting.is_some() => {
+                bail!("protocol error: a second MayPlace for chunk list {gen} of file id {file_id}")
+            }
             Some(_) => {}
         }
-        match self.verdict(file_id) {
+        let verdict = self.verdict(file_id, gen);
+        self.give_verdict(file_id, gen, verdict);
+        Ok(())
+    }
+
+    /// Answers the receiver's `MayPlace` about chunk list `list` (the file
+    /// is in flight and the list its latest), unless the answer comes
+    /// later.
+    fn give_verdict(&mut self, file_id: u64, list: u32, verdict: Verdict) {
+        let answer = |changed| {
+            Msg::PlaceVerdict(PlaceVerdict {
+                file_id,
+                changed,
+                gen: list,
+            })
+        };
+        match verdict {
             Verdict::Place => {
                 if let Some(f) = self.files.get_mut(&file_id) {
                     f.placing = true;
@@ -977,28 +1013,86 @@ impl SenderRole {
             }
             Verdict::Later => {}
         }
-        Ok(())
+    }
+
+    /// The checks before placing are done (see [`SenderRole::verdict`]).
+    fn on_verdict(&mut self, file_id: u64, gen: u32, list: u32, verdict: Verdict) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return; // Removed meanwhile, and answered then.
+        };
+        match f.verdicting {
+            Some((_, l)) if l == list => f.verdicting = None,
+            // Answered already, by a retry.
+            _ => return,
+        }
+        // Checked for an older digest than the latest: answered as a stale
+        // `MayPlace` is, with no retry (one is under way already).
+        if f.gen != gen || !is_current(f, list) {
+            self.out.send(Msg::PlaceVerdict(PlaceVerdict {
+                file_id,
+                changed: true,
+                gen: list,
+            }));
+            return;
+        }
+        self.give_verdict(file_id, list, verdict);
+    }
+
+    /// Aborts a file's checks before placing (taken from its `verdicting`),
+    /// if they ran, and answers the `MayPlace` they were for: the file is
+    /// retried or given up.
+    fn cancel_verdict(&self, file_id: u64, checks: Option<(tokio::task::AbortHandle, u32)>) {
+        if let Some((task, list)) = checks {
+            task.abort();
+            self.out.send(Msg::PlaceVerdict(PlaceVerdict {
+                file_id,
+                changed: true,
+                gen: list,
+            }));
+        }
     }
 
     /// Whether the receiver may place the file (which is in flight, with a
-    /// hash stat): its source must still be as it was hashed. Stats the
-    /// source again and compares it with the hash stat.
-    fn verdict(&mut self, file_id: u64) -> Verdict {
-        let Some(f) = self.files.get(&file_id) else {
+    /// hash stat), about chunk list `list`: its source must still be as it
+    /// was hashed. The checks run off the main loop (a slow filesystem must
+    /// not stall it) and answer through `Done::Verdict`: they stat the
+    /// source again and compare it with the hash stat, and with
+    /// `--paranoid` hash it again and compare that with the digest sent.
+    fn verdict(&mut self, file_id: u64, list: u32) -> Verdict {
+        let Some(f) = self.files.get_mut(&file_id) else {
             return Verdict::Changed("given up".into());
         };
-        let Some(hashed) = f.hash_stat else {
+        let (Some(hashed), Some(digest)) = (f.hash_stat, f.digest.clone()) else {
             return Verdict::Changed("not hashed".into());
         };
-        let changed = || Verdict::Changed("changed after it was hashed".into());
-        match lstat_entry_with_ctime(&self.ctx.base, &self.ctx.key(&f.path)) {
-            Ok((entry, ctime)) if Freshness::of_entry(&entry, ctime) == hashed => Verdict::Place,
-            Ok(_) => changed(),
-            Err(e) => {
-                tracing::debug!(path = ?f.path, error = %e, "source not found before placing");
-                changed()
+        #[cfg(feature = "test-hooks")]
+        let compare_stat = !self.ctx.hooks.skip_place_stat;
+        #[cfg(not(feature = "test-hooks"))]
+        let compare_stat = true;
+        let check = PlaceCheck {
+            key: self.ctx.key(&f.path),
+            hashed,
+            digest,
+            append_from: f.append_from,
+            compare_stat,
+            rehash: self.ctx.opts.paranoid,
+        };
+        let (ctx, events, gen) = (self.ctx.clone(), self.events.clone(), f.gen);
+        let span = tracing::debug_span!(parent: &f.span, "verdict");
+        let task = tokio::spawn(
+            async move {
+                let verdict = check.run(&ctx).await;
+                let _ = events.send(Ev::Send(Done::Verdict {
+                    file_id,
+                    gen,
+                    list,
+                    verdict,
+                }));
             }
-        }
+            .instrument(span),
+        );
+        f.verdicting = Some((task.abort_handle(), list));
+        Verdict::Later
     }
 
     fn on_ack(&mut self, a: FileAck) {
@@ -1103,6 +1197,74 @@ fn drop_bases(basis_held: &mut usize, f: &mut SFile) {
 /// tail): chunked from that offset, records at absolute offsets, no
 /// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
 /// file changes while it is read.
+/// Whether a `MayPlace` about chunk list `list` is about the file's
+/// latest digest: the list is the last sent, it went out for the current
+/// generation, and that generation is hashed (no retry under way).
+fn is_current(f: &SFile, list: u32) -> bool {
+    list == f.lists_sent && f.listed_gen == Some(f.gen) && f.hash_stat.is_some()
+}
+
+/// The checks before the receiver may place a file (see
+/// [`SenderRole::verdict`]).
+struct PlaceCheck {
+    key: RelPath,
+    /// The stat the digest was taken under.
+    hashed: Freshness,
+    /// The digest whose chunk list was sent.
+    digest: Arc<FileDigest>,
+    append_from: Option<u64>,
+    /// Compare the source's stat with `hashed` (off only in tests).
+    compare_stat: bool,
+    /// `--paranoid`: hash the source again and compare it with `digest`.
+    rehash: bool,
+}
+
+impl PlaceCheck {
+    async fn run(self, ctx: &Ctx) -> Verdict {
+        let (base, rel) = (ctx.base.clone(), self.key.clone());
+        let (entry, ctime) = match blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(path = ?self.key, error = %e, "source not found before placing");
+                return Verdict::Changed("changed after it was hashed".into());
+            }
+        };
+        if self.compare_stat && Freshness::of_entry(&entry, ctime) != self.hashed {
+            return Verdict::Changed("changed after it was hashed".into());
+        }
+        if !self.rehash {
+            return Verdict::Place;
+        }
+        // A second, full read: the hash index is not asked (`forced`).
+        let again = if entry.kind() != Kind::Regular {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no longer a regular file",
+            ))
+        } else if let Some(from) = self.append_from {
+            let (full, key) = (ctx.full_key(&self.key), self.key.clone());
+            blocking(move || tail_digest(&full, &key, from)).await
+        } else {
+            let item = ScanItem {
+                path: self.key.clone(),
+                entry,
+                ctime,
+            };
+            ctx.forced.digest(&item).await
+        };
+        match again {
+            Ok(h) if h.digest.hash == self.digest.hash && h.digest.size == self.digest.size => {
+                Verdict::Place
+            }
+            Ok(_) => Verdict::Changed("changed after it was sent".into()),
+            Err(e) => {
+                tracing::debug!(path = ?self.key, error = %e, "second hash before placing failed");
+                Verdict::Changed("changed after it was sent".into())
+            }
+        }
+    }
+}
+
 fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<Hashed> {
     use std::io::{Read, Seek, SeekFrom};
     // The open's type check already took the file's stat.
@@ -1298,6 +1460,15 @@ pub(super) async fn run(
                 s.on_sent(file_id, gen, task, result);
                 Ok(())
             }
+            Ev::Send(Done::Verdict {
+                file_id,
+                gen,
+                list,
+                verdict,
+            }) => {
+                s.on_verdict(file_id, gen, list, verdict);
+                Ok(())
+            }
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
             Ev::Ctrl(Msg::Itemized(i)) => {
                 s.on_itemized(i);
@@ -1486,10 +1657,20 @@ mod tests {
     /// A sender role over a loopback connection, resumed from a plan (no
     /// listing), and what keeps it alive.
     async fn role() -> (SenderRole, crate::session::engine::TestCtx) {
+        let (s, t, _) = role_with_events().await;
+        (s, t)
+    }
+
+    /// [`role`], with the channel its tasks report back on.
+    async fn role_with_events() -> (
+        SenderRole,
+        crate::session::engine::TestCtx,
+        mpsc::UnboundedReceiver<Ev>,
+    ) {
         let t = crate::session::engine::test_ctx().await;
         let ctx = t.ctx.clone();
         let (send, _) = ctx.conn.open_bi().await.unwrap();
-        let (events, _) = mpsc::unbounded_channel();
+        let (events, done) = mpsc::unbounded_channel();
         let (out, _) =
             crate::session::control::spawn_writer(send, events.clone(), &ctx.hooks, usize::MAX);
         let sender = Arc::new(Sender::new(
@@ -1528,7 +1709,24 @@ mod tests {
             would_delete_omitted: 0,
             max_delete_reached: false,
         };
-        (s, t)
+        (s, t, done)
+    }
+
+    /// Waits for the file's checks before placing and hands their result
+    /// to the role.
+    async fn settle(s: &mut SenderRole, done: &mut mpsc::UnboundedReceiver<Ev>) {
+        loop {
+            match done.recv().await {
+                Some(Ev::Send(Done::Verdict {
+                    file_id,
+                    gen,
+                    list,
+                    verdict,
+                })) => return s.on_verdict(file_id, gen, list, verdict),
+                Some(_) => {}
+                None => panic!("the events channel closed"),
+            }
+        }
     }
 
     /// A file in flight at `path`, with `digest` as its chunk list sent.
@@ -1549,6 +1747,7 @@ mod tests {
             streams: 0,
             task: None,
             digesting: None,
+            verdicting: None,
             pending: None,
             started: None,
             #[cfg(feature = "test-hooks")]
@@ -1634,12 +1833,12 @@ mod tests {
     /// newer digest; one about the latest list does.
     #[tokio::test]
     async fn a_stale_may_place_never_sets_placing() {
-        let (mut s, _t) = role().await;
+        let (mut s, _t, mut done) = role_with_events().await;
         let rel = RelPath::new(b"a").unwrap();
         let key = s.ctx.key(&rel);
         std::fs::write(s.ctx.full_key(&key), b"content").unwrap();
         let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base, &key).unwrap();
-        let mut f = in_flight("a", None);
+        let mut f = in_flight("a", Some(empty_digest()));
         // Retried once: generation 1 is digested (its stat is the source's
         // now), and its list waits for room; list 1 (generation 0) went out.
         f.gen = 1;
@@ -1658,11 +1857,119 @@ mod tests {
         f.listed_gen = Some(1);
         s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
         assert!(!s.files[&1].placing, "placed on a verdict for an old list");
-        // List 2 is the latest: unchanged source, placed.
+        // List 2 is the latest: unchanged source, placed (once the stat,
+        // off the main loop, is done).
         s.on_may_place(MayPlace { file_id: 1, gen: 2 }).unwrap();
+        assert!(!s.files[&1].placing, "placed before the source was checked");
+        settle(&mut s, &mut done).await;
         assert!(s.files[&1].placing);
         // A list never sent is a protocol error.
         assert!(s.on_may_place(MayPlace { file_id: 1, gen: 3 }).is_err());
+    }
+
+    /// The digest of an empty file.
+    fn empty_digest() -> FileDigest {
+        FileDigest {
+            size: 0,
+            hash: [0; 32],
+            chunks: Vec::new(),
+        }
+    }
+
+    /// A file in flight at `path` (a regular file under the role's base),
+    /// hashed under its current stat, with list 1 of generation 0 sent.
+    fn listed(s: &SenderRole, path: &str) -> SFile {
+        let rel = RelPath::new(path.as_bytes()).unwrap();
+        let key = s.ctx.key(&rel);
+        std::fs::write(s.ctx.full_key(&key), b"content").unwrap();
+        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base, &key).unwrap();
+        let mut f = in_flight(path, Some(empty_digest()));
+        f.hash_stat = Some(Freshness::of_entry(&entry, ctime));
+        f.lists_sent = 1;
+        f.listed_gen = Some(0);
+        f
+    }
+
+    /// The checks of an older list report back after a retry answered
+    /// their `MayPlace` and a new list went out: the result changes
+    /// nothing, neither placing the file nor starting another retry.
+    #[tokio::test]
+    async fn a_verdict_overtaken_by_a_retry_is_dropped() {
+        let (mut s, _t, mut done) = role_with_events().await;
+        let f = listed(&s, "a");
+        s.seen.insert(1);
+        s.files.insert(1, f);
+        s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
+        assert!(s.files[&1].verdicting.is_some());
+        // A retry meanwhile (e.g. a send task saw the file change).
+        s.retry(1, "changed".into());
+        assert!(s.files[&1].verdicting.is_none(), "the checks still run");
+        assert_eq!(s.files[&1].gen, 1);
+        // Generation 1 is digested (its own digest task is not under test)
+        // and its list goes out; the old checks' result arrives late.
+        let stat = listed(&s, "a").hash_stat;
+        let f = s.files.get_mut(&1).unwrap();
+        if let Some(task) = f.digesting.take() {
+            task.abort();
+        }
+        f.digest = Some(Arc::new(empty_digest()));
+        f.hash_stat = stat;
+        f.lists_sent = 2;
+        f.listed_gen = Some(1);
+        s.on_verdict(1, 0, 1, Verdict::Place);
+        assert!(!s.files[&1].placing, "placed on an old list's verdict");
+        s.on_verdict(1, 0, 1, Verdict::Changed("changed".into()));
+        assert_eq!(s.files[&1].retries, 1, "a late verdict retried again");
+        // The new list's own checks still place it.
+        s.on_may_place(MayPlace { file_id: 1, gen: 2 }).unwrap();
+        settle(&mut s, &mut done).await;
+        assert!(s.files[&1].placing);
+    }
+
+    /// A file given up while its checks before placing run takes them with
+    /// it; a second `MayPlace` for a list being checked is refused.
+    #[tokio::test]
+    async fn a_file_given_up_takes_its_verdict_task_with_it() {
+        let (mut s, _t, _done) = role_with_events().await;
+        let f = listed(&s, "a");
+        s.seen.insert(1);
+        s.files.insert(1, f);
+        s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
+        assert!(s.on_may_place(MayPlace { file_id: 1, gen: 1 }).is_err());
+        let (ended, started) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let task = tokio::spawn({
+            let (e, s) = (ended.clone(), started.clone());
+            async move {
+                let _ended = Ended(e);
+                s.notify_one();
+                std::future::pending::<()>().await;
+            }
+        });
+        started.notified().await;
+        if let Some((old, _)) = s
+            .files
+            .get_mut(&1)
+            .unwrap()
+            .verdicting
+            .replace((task.abort_handle(), 1))
+        {
+            old.abort();
+        }
+        s.source_error(1, "gone".into());
+        assert!(s.files.is_empty());
+        for _ in 0..100 {
+            if ended.load(SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(ended.load(SeqCst), "the verdict task still runs");
+        // A result that got out before the abort changes nothing.
+        s.on_verdict(1, 0, 1, Verdict::Place);
+        assert!(s.files.is_empty());
     }
 
     /// Files that come and go, each leaving a task that would never end on

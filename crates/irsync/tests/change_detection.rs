@@ -476,3 +476,48 @@ async fn retry_places_the_hashed_mtime() {
     })
     .await;
 }
+
+/// `--paranoid` hashes a sent file again before it is placed. The stat
+/// compare is skipped (`skip_place_stat`), so only the second hash can see
+/// the change: the receiver rewrites the source's first 256 KiB (a range
+/// it copies from its own old copy) before every `MayPlace`. The tree is
+/// under the system temporary folder, so no clones are made.
+async fn paranoid_second_hash_for(flow: Flow) {
+    let h = Harness::new().await;
+    let before = seed_delta(&h, flow);
+    let asked = Arc::new(AtomicU32::new(0));
+    let mut local = changing_before_may_place(&h, flow, asked.clone());
+    match flow {
+        Flow::Push => local.hooks.skip_place_stat = true,
+        Flow::Pull => h.daemon.hooks.lock().unwrap().skip_place_stat = true,
+    }
+    let args = irsync::cli::Args::try_parse_from(["irsync", "-a", "--paranoid", "src/", "host:m/"])
+        .unwrap();
+    let opts = irsync::cli::SyncOptions::from_args(&args);
+    let out = h.run_side(&opts, flow, local).await.unwrap();
+    assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert_eq!(out.files_transferred, 0);
+    assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+    let (path, msg) = &out.errors[0];
+    assert_eq!(path.as_bytes(), b"x.bin");
+    assert!(
+        msg.contains("changed after it was sent (after retry)"),
+        "{msg}"
+    );
+    assert!(
+        fs::read(h.dst(flow).join("x.bin")).unwrap() == before,
+        "the destination changed"
+    );
+    assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_second_hash_catches_a_change_the_stat_misses() {
+    within30(paranoid_second_hash_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_reaches_the_daemon_on_pull() {
+    within30(paranoid_second_hash_for(Flow::Pull)).await;
+}

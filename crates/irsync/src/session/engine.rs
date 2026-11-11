@@ -125,6 +125,9 @@ pub(super) struct RoleOpts {
     pub numeric_ids: bool,
     /// Receiver only: `--append` / `--append-verify`.
     pub append: Append,
+    /// Sender only: `--paranoid`, hash each sent file again before the
+    /// receiver may place it.
+    pub paranoid: bool,
 }
 
 impl RoleOpts {
@@ -147,6 +150,7 @@ impl RoleOpts {
             fsync: o.fsync,
             numeric_ids: o.numeric_ids,
             append: o.append,
+            paranoid: o.paranoid,
         }
     }
 
@@ -217,6 +221,8 @@ impl RoleOpts {
                 WireAppend::Append => Append::Append,
                 WireAppend::AppendVerify => Append::Verify,
             },
+            // The sending side's check: honoured when the daemon sends.
+            paranoid: !receives && hello.paranoid,
         }
     }
 }
@@ -273,6 +279,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
     hello.checksum = o.checksum;
     hello.inplace = o.inplace;
     hello.fsync = o.fsync;
+    hello.paranoid = o.paranoid;
     hello.append = match o.append {
         Append::Off => WireAppend::AppendOff,
         Append::Append => WireAppend::Append,
@@ -1170,6 +1177,7 @@ async fn serve_daemon_inner(
                 h.inject_listing = p.inject_listing;
                 h.during_hash = p.during_hash;
                 h.on_first_chunk_sent = p.on_first_chunk_sent;
+                h.skip_place_stat = p.skip_place_stat;
             }
             h
         },
@@ -1679,6 +1687,7 @@ pub(super) async fn test_ctx() -> TestCtx {
             fsync: false,
             numeric_ids: false,
             append: Append::Off,
+            paranoid: false,
         },
         privs: Privs::current(),
         hooks: SideHooks::default(),
