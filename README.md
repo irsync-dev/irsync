@@ -115,3 +115,7 @@ problems privately to security@irsync.org instead; see [SECURITY.md](SECURITY.md
 ## License
 
 irsync is licensed under the MIT License; see [LICENSE](LICENSE).
+
+## Authors
+
+- Michael Wildpaner ([@lambdanature](https://github.com/lambdanature))
