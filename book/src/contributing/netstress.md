@@ -311,13 +311,16 @@ Rules that keep a profile useful:
 ### Testing the rig
 
 ```sh
-cargo test -p netstress                       # the rig: unit and end-to-end tests
-cargo test -p irsync --features netsim        # irsync, including the fault layer's own tests
+cargo test -p netstress -- --include-ignored                 # the rig: unit and end-to-end tests
+cargo test -p irsync --features netsim -- --include-ignored  # irsync, including the fault layer's own tests
 ```
 
-The end-to-end tests run the real rig under `test-blackout` (and one short
-`dsl-video` pull). The first time, they build the fault binaries into
-`target/netsim/debug` themselves, which takes a few minutes.
+Without `--include-ignored`, the slow tests are skipped: the rig's
+end-to-end tests and the two end-to-end syncs in
+`crates/irsync/tests/netsim.rs`. The end-to-end tests run the real rig
+under `test-blackout` (and one short `dsl-video` pull). The first time,
+they build the fault binaries into `target/netsim/debug` themselves, which
+takes a few minutes.
 
 The fault layer's own tests:
 

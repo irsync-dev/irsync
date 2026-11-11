@@ -1,11 +1,23 @@
 # Testing
 
-Run the whole suite with the features CI uses:
+For everyday work, run the suite with the features CI uses:
 
 ```sh
 cargo test -q --workspace --all-features --no-fail-fast
 ```
 
+This skips six slow network-fault tests (marked `#[ignore]`): the two
+end-to-end syncs in `crates/irsync/tests/netsim.rs` and four in
+`crates/netstress/tests/e2e.rs`. Together they take several minutes, and
+the first run also builds the fault binaries. The full regression, which
+CI and [Before pushing](setup.md#before-pushing) use, runs them too:
+
+```sh
+cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
+```
+
+No other test is ignored, so `--include-ignored` adds exactly these six.
+Mark any new test that runs a sync through the fault layer the same way.
 [Before pushing](setup.md#before-pushing) lists the other checks.
 
 ## Cargo features
@@ -68,8 +80,9 @@ the `stress` crate's library.
 The end-to-end tests of `stress` and `netstress` run the real binaries.
 `cargo test -p stress` does not build the other binaries it needs: run
 `cargo build --workspace` first, or use `cargo test --workspace`. The
-`netstress` end-to-end tests build the fault binaries into
-`target/netsim/debug` themselves the first time, which takes a few minutes.
+`netstress` end-to-end tests run only with `-- --include-ignored`; they
+build the fault binaries into `target/netsim/debug` themselves the first
+time, which takes a few minutes.
 
 ## Receiving a changed file
 

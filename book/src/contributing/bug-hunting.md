@@ -216,7 +216,8 @@ under `crates/stress/tools/` and extend it with each new signature.
 
 ## Cadence
 
-- **Every change to irsync:** CI runs `cargo test --workspace`, which
+- **Every change to irsync:** CI runs the full regression
+  (`cargo test --workspace --all-features -- --include-ignored`), which
   includes the harness's end-to-end test.
 - **Nightly:** a breadth sweep in both directions with the matrix row of the
   week, 50 seeds, 20 iterations, small cap.

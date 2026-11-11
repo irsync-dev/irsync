@@ -37,11 +37,13 @@ runs, in this order:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-cargo test --workspace --all-features --no-fail-fast
+cargo test --workspace --all-features --no-fail-fast -- --include-ignored
 ```
 
-The second clippy run keeps the build without the `otel` feature compiling
-(see [Cargo features](testing.md#cargo-features)).
+`--include-ignored` adds the slow network-fault tests that an everyday
+`cargo test` skips ([Testing](testing.md)). The second clippy run keeps the
+build without the `otel` feature compiling (see
+[Cargo features](testing.md#cargo-features)).
 
 ## The pre-push hook
 
@@ -61,7 +63,7 @@ Clippy and the tests are not part of the hook. Run them yourself:
 
 ```sh
 touch crates/irsync/build.rs    # re-runs the build script, which bakes in the git commit
-cargo test -q --workspace --all-features --no-fail-fast
+cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings

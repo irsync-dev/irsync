@@ -1,5 +1,6 @@
 //! End-to-end: the built rig against fault builds of `irsync`, `filegen`
-//! and `fileset`. The dead zones are real time, so these take about a minute.
+//! and `fileset`. The dead zones are real time, so these take about a minute
+//! and are ignored by default; `-- --include-ignored` runs them.
 
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
@@ -183,6 +184,7 @@ fn normal_irsync(dir: &Path) -> PathBuf {
 }
 
 #[test]
+#[ignore = "slow: builds the fault binaries; run with --include-ignored"]
 fn test_blackout_push_survives_its_dead_zones_over_three_iterations() {
     let (o, root) = run_rig(&[
         "--profile",
@@ -209,6 +211,7 @@ fn test_blackout_push_survives_its_dead_zones_over_three_iterations() {
 }
 
 #[test]
+#[ignore = "slow: builds the fault binaries; run with --include-ignored"]
 fn test_blackout_pull_passes() {
     let (o, _root) = run_rig(&[
         "--profile",
@@ -224,6 +227,7 @@ fn test_blackout_pull_passes() {
 }
 
 #[test]
+#[ignore = "slow: builds the fault binaries; run with --include-ignored"]
 fn too_little_traffic_means_faults_did_not_bite() {
     let (o, _root) = run_rig(&[
         "--profile",
@@ -243,6 +247,7 @@ fn too_little_traffic_means_faults_did_not_bite() {
 }
 
 #[test]
+#[ignore = "slow: builds the fault binaries; run with --include-ignored"]
 fn dsl_video_pull_passes_without_reconnects() {
     let (o, _root) = run_rig(&[
         "--profile",

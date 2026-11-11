@@ -41,4 +41,4 @@ jobs:
       - name: Clippy without OpenTelemetry
         run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features --no-fail-fast
+        run: cargo test --workspace --all-features --no-fail-fast -- --include-ignored

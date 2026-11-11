@@ -1,6 +1,7 @@
 //! The fault layer end to end: a real daemon and a real client with
 //! `IRSYNC_NETSIM` set, syncing through the `test-blackout` profile's dead
-//! zone and the `test-slow` profile's slow uplink.
+//! zone and the `test-slow` profile's slow uplink. Those two are slow and
+//! ignored by default; `-- --include-ignored` runs them.
 #![cfg(feature = "netsim")]
 
 mod common;
@@ -178,6 +179,7 @@ fn session_of(log: &str) -> String {
 }
 
 #[test]
+#[ignore = "slow: netsim; run with --include-ignored"]
 fn a_dead_zone_forces_a_reconnect_and_the_session_resumes() {
     for direction in ["push", "pull"] {
         let (out, log, src, dst, _rig) = sync_through_blackout(direction);
@@ -240,6 +242,7 @@ fn without_the_variable_nothing_changes() {
 /// confirmed late. None may give up while the link is still carrying data
 /// (the sender once allowed each range 60 s from the moment it was queued).
 #[test]
+#[ignore = "slow: netsim; run with --include-ignored"]
 fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything() {
     let rig = rig(&[
         (
