@@ -1,0 +1,3 @@
+# Binaries copied here by build.sh for cargo dist to package.
+/irsync
+/fileset

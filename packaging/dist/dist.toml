@@ -1,0 +1,16 @@
+# The one package cargo dist releases: a generic (non-Cargo) package whose
+# build script builds the `irsync` and `fileset` crates, so both binaries ship
+# together without either crate depending on the other.
+#
+# Keep `version` equal to `[workspace.package] version` in the root Cargo.toml
+# (crates/irsync/tests/release_version.rs checks this).
+
+[package]
+name = "irsync"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/irsync-dev/irsync"
+homepage = "https://irsync.org"
+description = "irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for today's networks."
+binaries = ["irsync", "fileset"]
+build-command = ["./build.sh"]

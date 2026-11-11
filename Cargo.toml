@@ -78,3 +78,13 @@ opt-level = "s"
 strip = true
 lto = "fat"
 codegen-units = 1
+
+# The profile that 'dist' will build with: the release settings above.
+[profile.dist]
+inherits = "release"
+
+# No Cargo crate is released on its own. The one cargo dist package is the
+# generic one in packaging/dist, which builds irsync and fileset together
+# (see dist-workspace.toml).
+[workspace.metadata.dist]
+dist = false
