@@ -134,42 +134,109 @@ irsync first lists the source, then reads each file that needs sending to
 compute its hash (a checksum of each chunk and of the whole file), then sends
 the chunks. Here is what happens when a file changes along the way.
 
-- **A change, after hashing, in a chunk irsync sends.** Before a chunk leaves
-  the sender, irsync reads it again and checks it against the hash. A chunk
-  that changed, or that the file got too short to hold, fails this check, and
-  the file is sent again once. If it keeps changing, the file fails and the
-  run ends with exit 23.
-- **Other changes after hashing.** A change only in chunks the destination
-  takes from its own copy is not seen, and neither is data appended after the
-  hash. The destination gets the file as it was when hashed, with the
-  modification time irsync listed. The next run sees the newer time and usually
-  sends the file again.
+- **A change while irsync hashes the file.** When the pass is done, the
+  sender checks the open file again: its size, modification time, change
+  time and inode must be what they were when the pass began. If not, the hash
+  may describe a mix of old and new content, so the file is hashed again.
+  The error text is "changed while it was hashed".
+- **A change after hashing.** Before the receiver puts a verified file in
+  place, it asks the sender. The sender looks at the source again and
+  compares it with the stat its hash was taken under. A difference gives
+  "changed after it was hashed". This also catches a change only in chunks
+  the destination takes from its own copy, which the sender never reads
+  again.
+- **A change in a chunk irsync sends.** Before a chunk leaves the sender,
+  irsync reads it again and checks it against the hash.
+- **One retry, then exit 23.** Every check above shares one retry per file.
+  If the file changes again, it is given up with an error that ends in
+  "(after retry)", the other files carry on, and the run exits 23. The
+  destination keeps its old copy. With `--inplace` and `--append` there is
+  no old copy to keep: they write into the destination file itself, so it
+  already holds the written data when the change is found. The run still
+  exits 23.
 - **Deleted after it was listed.** If irsync still had to read it, the file
   fails, the run ends with exit 23, and the destination keeps its old copy.
   Otherwise it is not noticed in this run; the next run with `--delete`
   removes it.
 - **Created after the listing.** It is not sent in this run.
 
-**Known limit: a file written while irsync is still hashing it can arrive as
-a mix of old and new content, with exit 0 and no warning.** The hash is taken
-in one pass. If a program writes to the start of the file after the pass has
-read it, and to the end before the pass gets there, the hash describes a mix
-that never existed on disk. The destination can then build exactly that mix:
-it reuses the old start from its own copy and receives the new end. Every
-check passes, because every check compares against that hash.
+These checks compare size, modification time, change time and inode. Programs
+can reset the modification time, but nothing can set the change time back.
 
-The next run usually repairs it. The destination keeps the modification time
-irsync listed, and the source's time has moved on since, so the next run
-sees a difference and sends the file again. It does not when the last write
-falls in the same timestamp tick as the listing, or when the writing program
-resets the modification time. rsync has the same weakness.
+#### With `--paranoid`
+
+`--paranoid` closes the gaps the checks above leave.
+
+- **Clones.** Before hashing a file, irsync makes a reflink clone of it: a
+  copy that shares the file's disk blocks and never changes afterwards. It
+  hashes and sends the clone. The destination then gets a state the source
+  really held, whatever the source does meanwhile. A clone is accepted even
+  if the source changes after it was made; irsync logs a note. Cloning works
+  on btrfs, xfs, ZFS 2.2 and newer with block cloning, and bcachefs on Linux,
+  and on APFS on macOS (not yet tested). Clones live in
+  `.irsync-clones-<uid>/<session>/`, mode 0700, in the highest directory on
+  the file's filesystem that you can write to. Directories that group or
+  others can write to, without the sticky bit, are skipped. irsync removes
+  the clones when the run ends, and the next run removes those a crash left.
+  The scan skips these folders.
+- **Without clones.** Where the filesystem cannot clone, irsync hashes the
+  file a second time before the receiver places it and compares the whole
+  digests. A difference gives "changed after it was sent".
+- **A final re-check.** At the end of the run, irsync looks at every file it
+  listed once more. A file that changed is sent again, from a clone where
+  possible. A file that is gone, or no longer a regular file, does not fail
+  the run, but it ends with exit 24, "some source files vanished". A file
+  irsync cannot read gives exit 23. When several codes apply, 1 wins over
+  25, 25 over 23, and 23 over 24.
+- **On a pull**, `--paranoid` travels to the daemon, which does the sending
+  and so runs all of this.
+
+Memory-mapped writers: a program can write into a file through a memory
+mapping, and the file's times do not change until the system writes the pages
+out. In a test on ZFS 2.4 (`clone_includes_unflushed_mmap_writes`), a clone
+made right after such a write held the new bytes. So on that filesystem a
+clone includes memory-mapped writes that have not reached the disk. Other
+filesystems have not been tested. Where irsync cannot clone, the second hash
+reads the file as the system holds it, which should include them; that is
+not tested.
+
+**Costs.** On a filesystem that clones, `--paranoid` makes one clone and
+deletes one per sent file. Elsewhere it reads each sent file one more time.
+At the end it makes one `stat` per listed file. It also creates and removes
+the clone folder, which changes the modification time of the directory that
+holds it, on each run. Under `--paranoid`, a file whose only change is its
+mode or modification time is sent again by a full delta, which reads both
+sides.
+
+#### Limits
+
+- **Memory-mapped writers, without `--paranoid`.** The checks cannot see a
+  write through a mapping before its times change. Use `--paranoid`.
+- **Coarse timestamps.** On Linux before 6.13, on network filesystems and on
+  FAT, a write in the same timestamp tick as the first stat can slip through
+  the stat checks.
+- **Files that change after the listing but are not sent.** Without
+  `--paranoid`, irsync does not look at them again. The destination keeps
+  the version from the time of the listing, a state the source really held.
+  The next run sends the new one.
+- **Resumed `--paranoid` runs.** A resumed run re-checks only the files it
+  sent itself. If the connection drops after the re-check and before the
+  session ends, the list of vanished files can be lost, and the resumed run
+  can exit 0 where the first would have exited 24.
+- **A re-sent file has no retry left.** A file sent again by the final
+  re-check starts with its retry used, so a transient mismatch fails it at
+  once. Its hard-link names at the destination are linked to the new copy.
+- **Bind mounts** share one device number, and cloning across them fails
+  with `EXDEV`, so that filesystem falls back to the second hash.
+- **A umask of 002** makes new directories group-writable, which may leave
+  no safe place for the clone folder. irsync then uses the second hash.
 
 What to do:
 
-- Do not sync files that are being written. Stop the program, or sync from
-  a snapshot.
-- If you must, run the sync again once the writes have stopped, or run it
-  with `-c`, which compares contents instead of size and time.
+- Where the source is written while you sync, use `--paranoid`.
+- Better still, sync from a snapshot.
+- Run the sync again once the writes have stopped, or run it with `-c`,
+  which compares contents instead of size and time.
 - Check the result with fileset.
 
 ### What the tests cannot see

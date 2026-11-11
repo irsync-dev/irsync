@@ -103,6 +103,8 @@ The client sends `Hello` on the control stream:
   as every version did before it, while an export's `fsync = true` flushes
   whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
+- `paranoid` (field 30): `--paranoid`. The sending side runs every check, so
+  a daemon that sends (a pull) honours it; a receiving daemon ignores it;
 - `traceparent` and `tracestate`, the client's W3C trace context (empty: no
   trace). A daemon that exports traces makes its `session` span a child of it;
 - `build`: the client's `BuildInfo` (package version, short git commit, dirty

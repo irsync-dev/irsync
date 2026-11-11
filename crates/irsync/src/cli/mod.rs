@@ -800,9 +800,10 @@ pub struct SyncArgs {
     /// the right size and time but not its content.
     #[arg(long)]
     pub fsync: bool,
-    /// Hash each sent file again before the receiver places it, and give
-    /// it up if it no longer matches: this catches writers that change a
-    /// file without updating its times (memory-mapped databases).
+    /// Send each file from a reflink clone where the filesystem can make
+    /// one, else hash it again before the receiver places it; at the end,
+    /// re-check every listed file. This catches writers that change a file
+    /// without updating its times (memory-mapped databases).
     #[arg(long)]
     pub paranoid: bool,
     /// Extend a destination file that is shorter than the source by the

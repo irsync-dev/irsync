@@ -6,7 +6,7 @@
 #   crates/stress/tools/matrix.sh [ROW...]     (default: every row, in order)
 #
 # Rows: hardlink rename rename-off sparse metadata timestamps symlinks deletion
-#   listing longnames parallel1 parallel512 checksum minimal bigfile
+#   listing longnames parallel1 parallel512 checksum minimal bigfile paranoid
 #
 # Environment (defaults in brackets):
 #   BIN   directory holding irsync-stress and the tools  [target/release]
@@ -47,13 +47,14 @@ row() {
     parallel1)   echo "CLIENT='--timeout 300 --parallel 1'|" ;;
     parallel512) echo "CLIENT='--timeout 300 --parallel 512' ITER=10 STEPS=5000 FILE=8M|--filegen-set size_distribution.small.weight=0.95" ;;
     checksum)    echo "CLIENT='--timeout 300 -c' SEEDS='1 20'|" ;;
+    paranoid)    echo "CLIENT='--timeout 300 --paranoid'|" ;;
     minimal)     echo "ITER=200 STEPS=1 SEEDS='101 108'|" ;;
     bigfile)     echo "CLIENT='-c --timeout 10' ITER=5 STEPS=20 TOTAL=16G FILE=8G SEEDS='101 104' JOBS=4|--filegen-set size_distribution.large_weight=1" ;;
     *) echo "unknown row: $1" >&2; return 1 ;;
   esac
 }
 ALL="hardlink rename rename-off sparse metadata timestamps symlinks deletion listing longnames
-  parallel1 parallel512 checksum minimal bigfile"
+  parallel1 parallel512 checksum minimal bigfile paranoid"
 ROWS=${*:-$ALL}
 
 # A one-step dry run per row: a typo in a setting fails here, not mid-campaign.

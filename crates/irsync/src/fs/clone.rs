@@ -859,4 +859,59 @@ mod tests {
         drop(c);
         assert!(!path.exists());
     }
+
+    /// A write through a shared writable mapping, never flushed (no
+    /// `msync`), is in the page cache but perhaps not on disk. Does a
+    /// clone made right after include it? The docs claim what this shows.
+    #[test]
+    fn clone_includes_unflushed_mmap_writes() {
+        use std::os::fd::AsRawFd;
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+        std::fs::create_dir_all(&target).unwrap();
+        let t = private_tempdir_in(&target);
+        let src = t.path().join("f");
+        let len = 8192usize;
+        std::fs::write(&src, vec![b'a'; len]).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&src)
+            .unwrap();
+        // SAFETY: a fresh shared mapping of `len` bytes of a file of that
+        // size; the writes stay inside it and it is unmapped below.
+        let map = unsafe {
+            nix::libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                nix::libc::PROT_READ | nix::libc::PROT_WRITE,
+                nix::libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, nix::libc::MAP_FAILED, "mmap failed");
+        // SAFETY: `map` is valid for `len` bytes.
+        unsafe {
+            std::ptr::write_bytes(map as *mut u8, b'z', 100);
+            std::ptr::write_bytes((map as *mut u8).add(len - 100), b'y', 100);
+        }
+        let clones = Clones::new("me").within(t.path().to_path_buf());
+        let cloned = clones.clone_file(&src).unwrap();
+        let Some(c) = cloned else {
+            // SAFETY: unmapping what was mapped above.
+            unsafe { nix::libc::munmap(map, len) };
+            eprintln!("skipping: {} cannot clone", target.display());
+            return;
+        };
+        let got = std::fs::read(&c.path).unwrap();
+        // SAFETY: unmapping what was mapped above.
+        unsafe { nix::libc::munmap(map, len) };
+        assert_eq!(&got[..100], &[b'z'; 100][..], "clone misses mmap writes");
+        assert_eq!(
+            &got[len - 100..],
+            &[b'y'; 100][..],
+            "clone misses mmap writes"
+        );
+        assert_eq!(&got[100..len - 100], &vec![b'a'; len - 200][..]);
+    }
 }

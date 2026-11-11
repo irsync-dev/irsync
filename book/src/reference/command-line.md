@@ -89,6 +89,7 @@ and a different meaning follow in
 | `--append` | Extend a destination file that is shorter than the source with the source's tail, trusting what is already there. A destination that is not shorter is skipped. |
 | `--append-verify` | Like `--append`, but the existing prefix is verified too. |
 | `--fsync` | Flush each received file to disk before renaming it into place, on whichever side receives (the daemon, on a push). Off by default, as in rsync: a power loss or kernel crash in the seconds after a run can then leave a file at its name with the right size and time but not its content, which the next run's quick check does not notice (`-c` does). An export's `fsync = true` turns it on for every push into it. |
+| `--paranoid` | Guard against source files that change during the sync, including writers that leave the times alone (memory-mapped databases). The sending side (on a pull, the daemon) sends each file from a reflink clone where the filesystem can make one (btrfs, xfs, ZFS 2.2 and newer with block cloning, bcachefs, APFS), and otherwise hashes the file a second time before the receiver places it. At the end it checks every listed file again and sends those that changed. Files that vanished give exit 24. Cost: one clone and one delete per sent file where cloning works; an extra full read per sent file elsewhere; one `stat` per listed file at the end. Clones live in `.irsync-clones-<uid>` in a writable directory on the file's filesystem. See [Files that change during a sync](../explanation/correctness.md#files-that-change-during-a-sync). |
 | `--ignore-errors` | Run the deletion pass even when a listing was cut short by I/O errors. |
 | `--stats` | Print a block of transfer statistics at the end. |
 | `-i`, `--itemize-changes` | Print rsync's per-file change summary, the itemize codes. |
@@ -234,12 +235,13 @@ irsync gc [-n] [-v|-q] [--config PATH]
 | 1 | Nothing got through: a configuration, identity or connection error; an operand pair `irsync` rejects (both sides local, both remote, several sources on a pull); or every source failed. |
 | 2 | The command line could not be parsed: an unknown flag, a bad value, a missing operand. |
 | 23 | Partial transfer: some files could not be transferred, or some sources of a push failed while others synced. |
+| 24 | Some source files vanished. Only `--paranoid`, in its final re-check, gives this. |
 | 25 | Deletions stopped at `--max-delete`. |
 
-Of these, 23 and 25 have rsync's meaning; 1 and 2 do not (rsync uses 1 for a
+Of these, 23, 24 and 25 have rsync's meaning; 1 and 2 do not (rsync uses 1 for a
 syntax or usage error and 2 for a protocol incompatibility).
 
-When several apply, 25 wins over 23. A file listing, `irsync HOST:PATH`, is a
+When several apply, 1 wins over 25, 25 over 23, and 23 over 24. A file listing, `irsync HOST:PATH`, is a
 dry-run pull and uses the same codes; the export listing, `irsync HOST:`,
 exits 0 or 1.
 

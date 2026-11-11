@@ -132,7 +132,7 @@ landed. Items the final review's fix wave closed are not listed.
 
 # Torn file when the source changes during hashing, 2026-11-10
 
-- [ ] A source file written while the sender is still hashing it can land at
+- [x] A source file written while the sender is still hashing it can land at
       the destination as a mix of old and new content that the source never
       held, with no error, no warning and exit 0.
 
@@ -183,3 +183,12 @@ landed. Items the final review's fix wave closed are not listed.
       fixed: the "Files that change during a sync" section of
       `book/src/explanation/correctness.md`, and the "Change during transfer"
       row and Integrity bullet of `book/src/explanation/transfer-algorithm.md`.
+
+      **Closed 2026-11-11.** Fixed on the `source-change-detection` branch
+      (commits 97f253b to 1f80dd3): the sender stats the file after hashing,
+      and the receiver asks before placing; one retry, then exit 23. New
+      `--paranoid` sends from reflink clones or hashes again, and re-checks
+      every listed file at the end (exit 24 if files vanished). Design:
+      `docs/superpowers/specs/2026-11-10-source-change-detection-design.md`.
+      Limits (memory-mapped writers without `--paranoid`, coarse timestamps)
+      are documented in the correctness page.

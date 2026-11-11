@@ -86,13 +86,17 @@ needs up to twice `TOTAL` on disk while it runs.
 matrix](bug-hunting.md#the-campaign-matrix), one breadth sweep per row. The
 rows are `hardlink`, `rename`, `rename-off`, `sparse`, `metadata`,
 `timestamps`, `symlinks`, `deletion`, `listing`, `longnames`, `parallel1`,
-`parallel512`, `checksum`, `minimal` and `bigfile`. `matrix.sh hardlink
+`parallel512`, `checksum`, `minimal`, `bigfile` and `paranoid`. `matrix.sh hardlink
 rename` runs only those rows; with `DRY=1` it only checks that filegen
 accepts every row's settings. Each passing run is checked with
 `tools/clean-check.sh`, which runs `tools/paranoid-check.sh` (a
 `fileset check --paranoid` of the final destination against the source
 manifest, link counts included) and then asserts that no `.irsync.*.part`
 is left in either tree. All rows take about three hours on a 16-core Mac.
+The `paranoid` row passes `--paranoid`. Binaries built by `cargo test
+--workspace` have the `test-hooks` feature, and there `--paranoid` never
+clones, so the row tests the second-hash path; `cargo build --release`
+binaries clone where the filesystem can.
 
 ## Reference
 
