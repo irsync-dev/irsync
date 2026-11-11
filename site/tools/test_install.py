@@ -90,6 +90,28 @@ class InstallTest(unittest.TestCase):
 
 
 class ShellTest(unittest.TestCase):
+    def test_truncated_script_does_nothing(self):
+        lines = SCRIPT.read_text().rstrip("\n").split("\n")
+        self.assertEqual(lines[-1], 'main "$@"')
+        with tempfile.TemporaryDirectory() as tmp:
+            releases = Path(tmp) / "releases.json"
+            releases.write_text(json.dumps([{"tag_name": "v0.2.1"}]))
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "IRSYNC_INSTALL_RELEASES_FILE": str(releases),
+                "IRSYNC_INSTALL_DRY_RUN": "1",
+            }
+            # Cut at every line boundary and mid-line before the last line.
+            for n in range(1, len(lines)):
+                part = "\n".join(lines[:n]) + "\n"
+                r = subprocess.run(
+                    ["sh", "-s", "--", "--no-modify-path"],
+                    input=part, env=env, capture_output=True, text=True,
+                )
+                # A syntax error on stderr is fine; installing anything is not.
+                self.assertEqual(r.stdout, "", f"cut after line {n}")
+                self.assertNotIn("installing", r.stderr, f"cut after line {n}")
+
     def test_posix_sh(self):
         subprocess.run(["sh", "-n", str(SCRIPT)], check=True)
         dash = shutil.which("dash")
