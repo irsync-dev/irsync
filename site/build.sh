@@ -38,11 +38,11 @@ mdbook build "$root/book" -d "$out/book"
 rm -rf "$out/book/fonts"
 python3 "$root/site/tools/strip_font_link.py" "$out/book"
 
-# Landing page files; the tools, the token source, the scripts and the deploy
-# settings stay behind.
+# Landing page files and install.sh; the tools, the token source, the site
+# scripts and the deploy settings stay behind.
 for f in "$root"/site/*; do
   case $f in
-    "$root"/site/tools | "$root"/site/tokens.json | "$root"/site/*.sh | "$root"/site/wrangler.jsonc) ;;
+    "$root"/site/tools | "$root"/site/tokens.json | "$root"/site/build.sh | "$root"/site/serve.sh | "$root"/site/deploy.sh | "$root"/site/wrangler.jsonc) ;;
     *) cp -R "$f" "$out/" ;;
   esac
 done

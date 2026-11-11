@@ -89,6 +89,13 @@ class HeadersTest(unittest.TestCase):
         self.assertEqual(everywhere.get("X-Content-Type-Options"), "nosniff")
         self.assertEqual(everywhere.get("Referrer-Policy"), "strict-origin-when-cross-origin")
 
+    def test_install_script_is_plain_text(self):
+        served = {}
+        for pattern, headers in self.rules.items():
+            if pattern_matches(pattern, "https://irsync.org/install.sh"):
+                served.update(headers)
+        self.assertEqual(served.get("Content-Type"), "text/plain; charset=utf-8")
+
 
 if __name__ == "__main__":
     unittest.main()
