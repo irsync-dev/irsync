@@ -62,25 +62,7 @@ pub struct CloneSource<'a> {
     pub digest: &'a FileDigest,
 }
 
-/// Makes `dst` share `src`'s extents (`FICLONE`): constant time, no new
-/// space. Fails where the filesystem, or a cross-device pair, cannot.
-#[cfg(target_os = "linux")]
-pub fn reflink(src: &File, dst: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    // SAFETY: FICLONE takes the source descriptor as its integer argument
-    // and touches no memory of ours.
-    let r = unsafe { nix::libc::ioctl(dst.as_raw_fd(), nix::libc::FICLONE, src.as_raw_fd()) };
-    if r == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn reflink(_src: &File, _dst: &File) -> io::Result<()> {
-    Err(io::Error::from(io::ErrorKind::Unsupported))
-}
+pub use crate::fs::clone::reflink;
 
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {

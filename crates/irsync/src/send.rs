@@ -26,6 +26,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::delta::{encode, encoded_len, Basis, Op};
+use crate::fs::clone::Cloned;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed, Hasher};
 use crate::net::frame::write_msg;
@@ -272,13 +273,15 @@ impl Sender {
         bases: HashMap<u32, Basis>,
     ) -> io::Result<u64> {
         let sent = Arc::new(AtomicU64::new(0));
-        self.send_chunks_counted(file_id, path, digest, idxs, bases, &sent)
+        self.send_chunks_counted(file_id, path, digest, idxs, bases, &sent, None)
             .await
     }
 
     /// [`Sender::send_chunks_against`], adding the bytes to `sent` as they
     /// go on the wire, so a caller that cancels the send still knows what
-    /// went. Returns the bytes this call sent.
+    /// went. Returns the bytes this call sent. With `clone`, the chunks are
+    /// read from that clone of the file (`--paranoid`), not from the file.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_chunks_counted(
         &self,
         file_id: u64,
@@ -287,6 +290,7 @@ impl Sender {
         idxs: &[u32],
         bases: HashMap<u32, Basis>,
         sent: &Arc<AtomicU64>,
+        clone: Option<Arc<Cloned>>,
     ) -> io::Result<u64> {
         let before = sent.load(Ordering::SeqCst);
         let mut sorted: Vec<usize> = idxs.iter().map(|&i| i as usize).collect();
@@ -335,9 +339,10 @@ impl Sender {
                 }
             }
             let inner = self.inner.clone();
-            let (digest, full, name, rel, cancelled, bases, sent) = (
+            let (digest, full, clone, name, rel, cancelled, bases, sent) = (
                 digest.clone(),
                 full.clone(),
+                clone.clone(),
                 name.clone(),
                 rel.clone(),
                 cancelled.clone(),
@@ -352,7 +357,17 @@ impl Sender {
                 let active = Counted::new(&inner.active);
                 inner.max_active.fetch_max(active.now, Ordering::SeqCst);
                 let res = inner
-                    .send_range(file_id, &full, &name, &rel, &digest, r, &bases, &sent)
+                    .send_range(
+                        file_id,
+                        &full,
+                        clone.as_deref(),
+                        &name,
+                        &rel,
+                        &digest,
+                        r,
+                        &bases,
+                        &sent,
+                    )
                     .await;
                 drop(active);
                 if res.is_err() {
@@ -476,6 +491,7 @@ impl Inner {
         &self,
         file_id: u64,
         full: &Path,
+        clone: Option<&Cloned>,
         name: &str,
         rel: &RelPath,
         digest: &FileDigest,
@@ -485,10 +501,11 @@ impl Inner {
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
         // Never follow a symlink swapped in since the file was listed.
-        let file = Arc::new(
-            crate::fs::safe::open_regular_nofollow(full)
-                .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?,
-        );
+        let file = match clone {
+            Some(c) => c.file.try_clone(),
+            None => crate::fs::safe::open_regular_nofollow(full),
+        };
+        let file = Arc::new(file.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?);
         // Verify the first chunk before opening a stream: the common
         // "file changed" case then never touches the wire.
         let first = read_chunk(&file, &chunks[0], name, r.first, self.meter.get()).await?;

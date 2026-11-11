@@ -38,6 +38,7 @@ use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};
+use crate::fs::clone::{Cloned, Clones};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
@@ -57,8 +58,9 @@ pub(super) enum Done {
     Digested {
         file_id: u64,
         gen: u32,
-        /// With the permits the digest took (see `ListCredit`).
-        result: io::Result<(Hashed, OwnedSemaphorePermit)>,
+        /// With the permits the digest took (see `ListCredit`), and the
+        /// clone hashed instead of the file, if one was (`--paranoid`).
+        result: io::Result<(Hashed, OwnedSemaphorePermit, Option<Arc<Cloned>>)>,
     },
     Sent {
         file_id: u64,
@@ -157,6 +159,11 @@ struct SFile {
     digest: Option<Arc<FileDigest>>,
     /// The stat of the source file `digest` was taken under.
     hash_stat: Option<Freshness>,
+    /// `--paranoid`: the clone `digest` was taken of, and chunks are read
+    /// from (`hash_stat` is the source's at cloning). It cannot change, so
+    /// it needs no checks before placing. Removed with the file, or when a
+    /// retry hashes again.
+    cloned: Option<Arc<Cloned>>,
     /// The receiver was told it may place the file (`PlaceVerdict`): it
     /// has verified every chunk, and only its ack is left.
     placing: bool,
@@ -227,6 +234,8 @@ struct SenderRole {
     /// Files in flight (no final ack yet, not given up). Leave through
     /// [`SenderRole::remove_file`].
     files: HashMap<u64, SFile>,
+    /// `--paranoid`: where the files sent are cloned, if anywhere.
+    clones: Option<Arc<Clones>>,
     /// Bytes of chunk bases held for all files (see `limits::BASIS_BUDGET`).
     basis_held: usize,
     /// More than this fails the session.
@@ -331,6 +340,7 @@ impl SenderRole {
         walked: Option<Freshness>,
     ) {
         let (ctx, sender, events) = (self.ctx.clone(), self.sender.clone(), self.events.clone());
+        let clones = self.clones.clone();
         let append_from = self.files.get(&file_id).and_then(|f| f.append_from);
         let (ahead, most) = self.lists.ahead();
         let hash = self.files.get(&file_id).map_or_else(
@@ -381,6 +391,30 @@ impl SenderRole {
                         .acquire_many_owned(records_at_most(size, most))
                         .await
                         .map_err(|_| io::Error::other("the session ended"))?;
+                    if let Some(c) = clone_of(clones, &ctx, &key).await {
+                        // Hash and send the clone: it holds the file as it
+                        // was at one moment, whatever happens to it after.
+                        let since = super::wait_start(&ctx.meter);
+                        let digest = match append_from {
+                            Some(from) => {
+                                let (p, k) = (c.path.clone(), key.clone());
+                                blocking(move || tail_digest(&p, &k, from))
+                                    .await
+                                    .map(|h| h.digest)
+                            }
+                            None => ctx.hasher.digest_file(&c.file, &key).await,
+                        };
+                        super::record_hash_wait(&ctx.meter, since);
+                        let stat = c.stat;
+                        return Ok((
+                            Hashed {
+                                digest: digest?,
+                                stat,
+                            },
+                            held,
+                            Some(c),
+                        ));
+                    }
                     let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
                         let full = ctx.full_key(&key);
@@ -396,7 +430,7 @@ impl SenderRole {
                         super::record_hash_wait(&ctx.meter, since);
                         digest
                     };
-                    Ok((digest?, held))
+                    Ok((digest?, held, None))
                 }
                 .await;
                 let _ = events.send(Ev::Send(Done::Digested {
@@ -421,6 +455,9 @@ impl SenderRole {
     fn remove_file(&mut self, file_id: u64) -> Option<SFile> {
         let mut f = self.files.remove(&file_id)?;
         drop_bases(&mut self.basis_held, &mut f);
+        // Placed, failed or given up: its clone goes (a send task still
+        // holding it lets go when aborted).
+        f.cloned = None;
         // Done with or given up: its tasks go too. What it sent counts.
         if let Some(task) = f.task.take() {
             self.bytes += self.tasks.abort(task);
@@ -473,6 +510,7 @@ impl SenderRole {
         f.gen += 1;
         let listed = f.digest.take().is_some();
         f.hash_stat = None;
+        f.cloned = None;
         f.placing = false;
         drop_bases(&mut self.basis_held, f);
         f.requested.clear();
@@ -562,6 +600,7 @@ impl SenderRole {
                 append_from,
                 digest: None,
                 hash_stat: None,
+                cloned: None,
                 placing: false,
                 lists_sent: 0,
                 listed_gen: None,
@@ -619,7 +658,7 @@ impl SenderRole {
         &mut self,
         file_id: u64,
         gen: u32,
-        result: io::Result<(Hashed, OwnedSemaphorePermit)>,
+        result: io::Result<(Hashed, OwnedSemaphorePermit, Option<Arc<Cloned>>)>,
     ) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
@@ -629,7 +668,7 @@ impl SenderRole {
         }
         f.digesting = None;
         match result {
-            Ok((h, _)) if h.digest.chunks.len() as u64 > self.list_budget => {
+            Ok((h, _, _)) if h.digest.chunks.len() as u64 > self.list_budget => {
                 let msg = format!(
                     "chunk list of {} chunks, beyond the session's room of {}",
                     h.digest.chunks.len(),
@@ -637,8 +676,9 @@ impl SenderRole {
                 );
                 self.source_error(file_id, msg);
             }
-            Ok((Hashed { digest: d, stat }, held)) => {
+            Ok((Hashed { digest: d, stat }, held, cloned)) => {
                 f.hash_stat = Some(stat);
+                f.cloned = cloned;
                 let with_hash = f.append_from.is_none();
                 // Sent once the receiver has room for it (`pump_lists`),
                 // with the mtime the file was hashed under (an `APPEND`
@@ -818,11 +858,12 @@ impl SenderRole {
             f.hooked = true;
             self.ctx.hooks.on_first_chunk_sent.clone()
         };
-        let (gen, key, sender, events) = (
+        let (gen, key, sender, events, clone) = (
             f.gen,
             self.ctx.key(&f.path),
             self.sender.clone(),
             self.events.clone(),
+            f.cloned.clone(),
         );
         #[cfg(feature = "test-hooks")]
         let path = f.path.clone();
@@ -836,7 +877,15 @@ impl SenderRole {
                         let first: HashMap<u32, Basis> =
                             bases.remove_entry(&idxs[0]).into_iter().collect();
                         match sender
-                            .send_chunks_counted(file_id, &key, &digest, &idxs[..1], first, &sent)
+                            .send_chunks_counted(
+                                file_id,
+                                &key,
+                                &digest,
+                                &idxs[..1],
+                                first,
+                                &sent,
+                                clone.clone(),
+                            )
                             .await
                         {
                             Ok(n) => {
@@ -849,6 +898,7 @@ impl SenderRole {
                                         &idxs[1..],
                                         bases,
                                         &sent,
+                                        clone,
                                     )
                                     .await
                                     .map(|m| n + m)
@@ -858,13 +908,13 @@ impl SenderRole {
                     }
                     _ => {
                         sender
-                            .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent)
+                            .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent, clone)
                             .await
                     }
                 };
                 #[cfg(not(feature = "test-hooks"))]
                 let result = sender
-                    .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent)
+                    .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent, clone)
                     .await;
                 let _ = events.send(Ev::Send(Done::Sent {
                     file_id,
@@ -1065,6 +1115,12 @@ impl SenderRole {
         let (Some(hashed), Some(digest)) = (f.hash_stat, f.digest.clone()) else {
             return Verdict::Changed("not hashed".into());
         };
+        if f.cloned.is_some() {
+            // The clone cannot have changed: placed as sent. Whether the
+            // source moved on since is only worth a note.
+            note_outdated_clone(self.ctx.clone(), f.path.clone(), hashed);
+            return Verdict::Place;
+        }
         #[cfg(feature = "test-hooks")]
         let compare_stat = !self.ctx.hooks.skip_place_stat;
         #[cfg(not(feature = "test-hooks"))]
@@ -1297,6 +1353,61 @@ fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<H
     })
 }
 
+/// `--paranoid`: the session's clones, named after it.
+fn clones_for(ctx: &Ctx) -> Option<Arc<Clones>> {
+    if !ctx.opts.paranoid {
+        return None;
+    }
+    let clones = Clones::new(&super::control::hex(&ctx.session_id));
+    // A test build makes clone folders only where a test allows them.
+    #[cfg(feature = "test-hooks")]
+    let clones = clones.within(ctx.hooks.clones_within.clone()?);
+    Some(Arc::new(clones))
+}
+
+/// Closes the session's clones when dropped.
+struct CloseClones(Arc<Clones>);
+
+impl Drop for CloseClones {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// A clone of the file at index key `key`, if `clones` can make one. Where
+/// none can be made the file itself is hashed (and, before placing, hashed
+/// again): never an error.
+async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Option<Arc<Cloned>> {
+    let (clones, full) = (clones?, ctx.full_key(key));
+    match blocking(move || clones.clone_file(&full)).await {
+        Ok(c) => c.map(Arc::new),
+        Err(e) => {
+            tracing::debug!(path = ?key, error = %e, "no clone; hashing the file itself");
+            None
+        }
+    }
+}
+
+/// Notes, at info level, if the source of a file sent from its clone has
+/// changed since it was cloned (`at_clone`). Not an error: the clone is a
+/// state the source really held. Off the main loop, answering nothing.
+fn note_outdated_clone(ctx: Arc<Ctx>, path: RelPath, at_clone: Freshness) {
+    tokio::spawn(async move {
+        let (base, key) = (ctx.base.clone(), ctx.key(&path));
+        let now = blocking(move || lstat_entry_with_ctime(&base, &key))
+            .await
+            .ok()
+            .map(|(e, ctime)| Freshness::of_entry(&e, ctime));
+        if now != Some(at_clone) {
+            tracing::info!(
+                "{}: source changed after it was cloned; sent the clone",
+                crate::fs::paths::escape_path(path.as_bytes())
+            );
+            ctx.hooks.event("clone-outdated", &path);
+        }
+    });
+}
+
 /// Whether the walk (from `root`, with `filters`) would list `path` as a
 /// regular file: no component is a symlink or excluded, the file is regular
 /// and is not one of irsync's own temporary files.
@@ -1319,7 +1430,11 @@ fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
         let Ok(md) = std::fs::symlink_metadata(&full) else {
             return false;
         };
-        let kind_ok = if last { md.is_file() } else { md.is_dir() };
+        let kind_ok = if last {
+            md.is_file()
+        } else {
+            md.is_dir() && !crate::scan::is_clone_dir(c)
+        };
         if !kind_ok || filters.matches(&r, !last) == FilterVerdict::Exclude {
             return false;
         }
@@ -1388,6 +1503,9 @@ pub(super) async fn run(
     if let Some(t) = ctx.hooks.truncate_streams.clone() {
         sender.set_truncate(t);
     }
+    let clones = clones_for(&ctx);
+    // However the session ends, its clones go with it.
+    let _clones = clones.clone().map(CloseClones);
     let mut s = SenderRole {
         ctx: ctx.clone(),
         out: out.clone(),
@@ -1396,6 +1514,7 @@ pub(super) async fn run(
         listed: Arc::default(),
         listing: Listing::Undecided(listing_out),
         files: HashMap::new(),
+        clones,
         basis_held: 0,
         basis_budget: basis_budget(&ctx.hooks),
         lists: ListCredit::new(list_budget(&ctx.hooks)),
@@ -1693,6 +1812,7 @@ mod tests {
             listed: Arc::default(),
             listing: Listing::FromPlan,
             files: HashMap::new(),
+            clones: None,
             basis_held: 0,
             basis_budget: 1 << 20,
             lists: ListCredit::new(1000),
@@ -1741,6 +1861,7 @@ mod tests {
             append_from: None,
             digest: digest.map(Arc::new),
             hash_stat: None,
+            cloned: None,
             placing: false,
             lists_sent: 0,
             listed_gen: None,

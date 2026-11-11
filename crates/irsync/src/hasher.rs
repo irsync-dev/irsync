@@ -123,6 +123,20 @@ impl<R: io::Read> io::Read for Ticking<'_, R> {
     }
 }
 
+/// Reads a file with `pread` from `pos` on, leaving its offset alone.
+struct At<'a> {
+    file: &'a std::fs::File,
+    pos: u64,
+}
+
+impl io::Read for At<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
 fn io_err(e: crate::index::IndexError) -> io::Error {
     io::Error::other(e)
 }
@@ -330,6 +344,58 @@ impl Hasher {
         let res = tokio::task::spawn_blocking(move || {
             let _slots = slots;
             read()
+        })
+        .await
+        .map_err(io::Error::other)?;
+        self.activity.fetch_add(1, Ordering::Relaxed);
+        res
+    }
+
+    /// The digest of the open `file` (a clone of the file at index key
+    /// `path`), read from its start, under this hasher's limits; the index
+    /// is neither asked nor told. `path` names the file to the progress
+    /// callback and the hook.
+    pub async fn digest_file(
+        &self,
+        file: &std::fs::File,
+        path: &RelPath,
+    ) -> io::Result<FileDigest> {
+        let file = file.try_clone()?;
+        let size = file.metadata()?.len();
+        let (permit, large) = self.slots(size).await?;
+        let stats = self.stats.clone();
+        let activity = self.activity.clone();
+        let progress = self.progress.clone();
+        let meter = self.meter.clone();
+        let hook = self.hash_hook.clone();
+        let path = path.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            let _permit = (permit, large);
+            if let Some(h) = &hook {
+                h(&path, 0);
+            }
+            if let Some(p) = &progress {
+                p(&path, HashEvent::Start { size });
+            }
+            let guard = meter.as_deref().map(|m| m.start(Activity::Hash));
+            // Positioned reads: the descriptor's offset is shared.
+            let reader = At {
+                file: &file,
+                pos: 0,
+            };
+            let d = digest_reader(Ticking::new(reader, &activity).with_hook(hook.as_ref(), &path));
+            drop(guard);
+            if let Some(p) = &progress {
+                p(&path, HashEvent::Done);
+            }
+            let d = d?;
+            stats.files_hashed.fetch_add(1, Ordering::Relaxed);
+            stats.bytes_hashed.fetch_add(d.size, Ordering::Relaxed);
+            if let Some(m) = &meter {
+                m.add(Counter::FilesHashed, 1);
+                m.add(Counter::BytesHashed, d.size);
+            }
+            Ok(d)
         })
         .await
         .map_err(io::Error::other)?;

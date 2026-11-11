@@ -463,6 +463,7 @@ pub struct DaemonHooks {
     pub during_hash: Option<crate::hasher::HashHook>,
     pub on_first_chunk_sent: Option<FirstChunkHook>,
     pub skip_place_stat: bool,
+    pub clones_within: Option<PathBuf>,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -742,6 +743,11 @@ pub struct SideHooks {
     /// change).
     #[cfg(feature = "test-hooks")]
     pub skip_place_stat: bool,
+    /// Sender, `--paranoid`: make clone folders no higher than this folder
+    /// (see [`crate::fs::clone::Clones::within`]). Unset, a test build makes
+    /// no clones, so no test leaves a folder outside its own.
+    #[cfg(feature = "test-hooks")]
+    pub clones_within: Option<PathBuf>,
     /// Sender: queue only this many listing frames, then none, not even
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]

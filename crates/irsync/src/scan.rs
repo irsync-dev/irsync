@@ -176,6 +176,12 @@ fn sort_children<T, E>(
     }
 }
 
+/// Whether a directory's name is that of a clone folder
+/// ([`crate::fs::clone::CLONE_DIR_PREFIX`]), never listed.
+pub fn is_clone_dir(name: &[u8]) -> bool {
+    name.starts_with(crate::fs::clone::CLONE_DIR_PREFIX.as_bytes())
+}
+
 fn run_walk(
     mut root: PathBuf,
     filters: Arc<FilterSet>,
@@ -252,7 +258,8 @@ fn run_walk(
                 if filters.matches(&rel, e.file_type().is_dir()) == Verdict::Exclude {
                     return false;
                 }
-                true
+                // `--paranoid`'s clone folders, with everything below them.
+                !(e.file_type().is_dir() && is_clone_dir(e.file_name().as_bytes()))
             });
         });
 
