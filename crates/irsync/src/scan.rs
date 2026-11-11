@@ -176,10 +176,12 @@ fn sort_children<T, E>(
     }
 }
 
-/// Whether a directory's name is that of a clone folder
-/// ([`crate::fs::clone::CLONE_DIR_PREFIX`]), never listed.
+/// Whether a directory's name is that of a clone folder, never listed:
+/// [`crate::fs::clone::CLONE_DIR_PREFIX`] and a uid (one or more ASCII
+/// digits). Any other name with that start is a user's and is synced.
 pub fn is_clone_dir(name: &[u8]) -> bool {
-    name.starts_with(crate::fs::clone::CLONE_DIR_PREFIX.as_bytes())
+    name.strip_prefix(crate::fs::clone::CLONE_DIR_PREFIX.as_bytes())
+        .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
 }
 
 fn run_walk(
@@ -310,6 +312,18 @@ fn run_walk(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// Only a clone folder's exact name form is pruned: the prefix and a
+    /// uid; a user's folder that merely starts the same way is synced.
+    #[test]
+    fn only_a_uid_after_the_prefix_is_a_clone_dir() {
+        assert!(is_clone_dir(b".irsync-clones-1000"));
+        assert!(is_clone_dir(b".irsync-clones-0"));
+        assert!(!is_clone_dir(b".irsync-clones-backup"));
+        assert!(!is_clone_dir(b".irsync-clones-"));
+        assert!(!is_clone_dir(b".irsync-clones-1000x"));
+        assert!(!is_clone_dir(b"irsync-clones-1000"));
+    }
 
     /// Every event of a walk of `root`, as (path, is_gap), in stream order.
     async fn events(root: &Path) -> (Vec<(String, bool)>, ScanSummary) {

@@ -78,6 +78,12 @@ long names with the same beginning still get different temporary files.
 Names that start with `.irsync.` and end in `.part` or `.tmp` are never
 listed, never accepted from a peer and never created as destinations.
 
+With `--paranoid`, the sending side keeps reflink clones in a folder named
+`.irsync-clones-<uid>` (the uid in decimal) in a writable directory on each
+file's filesystem. A directory named exactly `.irsync-clones-` followed by
+digits is never listed and so never synced or deleted; a name such as
+`.irsync-clones-backup` is an ordinary directory.
+
 Garbage collection removes `.part` files and their progress records once
 they have gone untouched for longer than `dormant_session_timeout` (7 days by
 default; the client always uses 7 days), unless a stored session still lists

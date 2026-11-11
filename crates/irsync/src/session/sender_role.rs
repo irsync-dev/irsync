@@ -202,6 +202,11 @@ struct SFile {
     /// receiver asked about. Its `MayPlace` is answered exactly once: by
     /// the checks, or (they are aborted) by a retry or the file's removal.
     verdicting: Option<(tokio::task::AbortHandle, u32)>,
+    /// The last chunk list whose `MayPlace` was taken up for checks (and so
+    /// answered, or about to be). The receiver asks once per list: a repeat
+    /// is a protocol error, not a second check (a re-hash under
+    /// `--paranoid`) or a retry of a file being placed.
+    answered: Option<u32>,
     /// Chunks requested while the send task runs, sent once it is done.
     pending: Option<Pending>,
     /// When the receiver first asked for data; for the transfer histogram.
@@ -644,6 +649,7 @@ impl SenderRole {
                 task: None,
                 digesting: None,
                 verdicting: None,
+                answered: None,
                 pending: None,
                 started: None,
                 #[cfg(feature = "test-hooks")]
@@ -1056,6 +1062,11 @@ impl SenderRole {
                  which has had {} lists",
                 f.lists_sent
             ),
+            // The receiver asks once per list, whether the verdict was
+            // given already or the checks still run.
+            Some(f) if f.answered == Some(gen) => {
+                bail!("protocol error: a second MayPlace for chunk list {gen} of file id {file_id}")
+            }
             // Not about the latest digest: a list older than the last sent,
             // or the last sent while a retry is under way (re-digesting, or
             // its new list waiting for room). The receiver holds a stale
@@ -1065,11 +1076,13 @@ impl SenderRole {
                 self.out.send(answer(true));
                 return Ok(());
             }
-            // The receiver asks once per list.
             Some(f) if f.verdicting.is_some() => {
                 bail!("protocol error: a second MayPlace for chunk list {gen} of file id {file_id}")
             }
             Some(_) => {}
+        }
+        if let Some(f) = self.files.get_mut(&file_id) {
+            f.answered = Some(gen);
         }
         let verdict = self.verdict(file_id, gen);
         self.give_verdict(file_id, gen, verdict);
@@ -2112,6 +2125,7 @@ mod tests {
             task: None,
             digesting: None,
             verdicting: None,
+            answered: None,
             pending: None,
             started: None,
             #[cfg(feature = "test-hooks")]
@@ -2229,6 +2243,24 @@ mod tests {
         assert!(s.files[&1].placing);
         // A list never sent is a protocol error.
         assert!(s.on_may_place(MayPlace { file_id: 1, gen: 3 }).is_err());
+    }
+
+    /// A `MayPlace` repeated after its verdict was given is a protocol
+    /// error: it neither checks the source again (a re-hash under
+    /// `--paranoid`) nor retries a file the receiver is placing.
+    #[tokio::test]
+    async fn a_repeated_may_place_after_its_verdict_is_refused() {
+        let (mut s, _t, mut done) = role_with_events().await;
+        let f = listed(&s, "a");
+        s.seen.insert(1);
+        s.files.insert(1, f);
+        s.on_may_place(MayPlace { file_id: 1, gen: 1 }).unwrap();
+        settle(&mut s, &mut done).await;
+        assert!(s.files[&1].placing);
+        assert!(s.on_may_place(MayPlace { file_id: 1, gen: 1 }).is_err());
+        assert!(s.files[&1].verdicting.is_none(), "a repeat started checks");
+        assert_eq!(s.files[&1].gen, 0, "a repeat started a retry");
+        assert!(s.files[&1].placing);
     }
 
     /// The digest of an empty file.

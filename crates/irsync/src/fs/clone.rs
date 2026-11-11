@@ -39,8 +39,9 @@ use crate::fs::paths::RelPath;
 use crate::fs::safe::errno;
 use crate::hasher::Freshness;
 
-/// The start of a clone folder's name; the walk prunes any directory whose
-/// name starts with it.
+/// The start of a clone folder's name, followed by the uid; the walk
+/// prunes a directory with exactly that form of name
+/// ([`crate::scan::is_clone_dir`]).
 pub const CLONE_DIR_PREFIX: &str = ".irsync-clones-";
 
 /// The file a session holds locked in its subfolder.
@@ -241,16 +242,23 @@ impl Clones {
         if let Some(a) = areas.get(&dev) {
             return a.clone();
         }
-        let made =
-            area_dir_below(full, dev, self.within.as_deref()).and_then(|top| {
-                match make_area(&top, &self.session) {
-                    Ok(a) => Some(Arc::new(a)),
-                    Err(e) => {
-                        tracing::debug!(dir = %top.display(), error = %e, "no clone folder");
-                        None
-                    }
-                }
-            });
+        let made = match area_dir_below(full, dev, self.within.as_deref())
+            .map(|top| (make_area(&top, &self.session), top))
+        {
+            None => None,
+            Some((Ok(a), _)) => Some(Arc::new(a)),
+            // Out of file descriptors (each file in flight holds its clone
+            // open): no clone for this file, but later ones may still get
+            // one, so the filesystem is not written off.
+            Some((Err(e), top)) if out_of_fds(&e) => {
+                tracing::debug!(dir = %top.display(), error = %e, "no clone folder for now");
+                return None;
+            }
+            Some((Err(e), top)) => {
+                tracing::debug!(dir = %top.display(), error = %e, "no clone folder");
+                None
+            }
+        };
         areas.insert(dev, made.clone());
         made
     }
@@ -303,6 +311,16 @@ fn clone_failure(e: &io::Error) -> CloneFailure {
         Some(c) if c == EINVAL || c == ENOTTY => CloneFailure::File,
         _ => CloneFailure::Error,
     }
+}
+
+/// Whether `e` says the process or system has no file descriptor left
+/// (`EMFILE`, `ENFILE`): a passing shortage, not a property of the
+/// filesystem.
+fn out_of_fds(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(nix::libc::EMFILE | nix::libc::ENFILE)
+    )
 }
 
 fn freshness(st: FileStat) -> Freshness {
@@ -593,7 +611,12 @@ fn sweep_at(root: &OwnedFd) -> io::Result<usize> {
             Ok(Some(l)) => l,
             Ok(None) => continue,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
+            // One folder whose lock cannot be had (e.g. its lock file is
+            // not ours to open) leaves the rest to be swept.
+            Err(e) => {
+                tracing::debug!(dir = ?name, error = %e, "cannot lock an old clone folder; skipping it");
+                continue;
+            }
         };
         // Still the folder we locked?
         if !still_linked(&dir, root, &name) {
@@ -651,6 +674,24 @@ mod tests {
         assert_eq!(sweep_stale(&root).unwrap(), 2);
         assert!(!stale.exists());
         assert!(!root.join("unlocked").exists());
+    }
+
+    /// A folder whose lock cannot be opened is skipped; the sweep goes on
+    /// with the others. (Root opens any lock file, so it skips the test.)
+    #[test]
+    fn an_unlockable_folder_does_not_stop_the_sweep() {
+        if nix::unistd::getuid().is_root() {
+            return;
+        }
+        let t = private_tempdir();
+        let root = clone_root(&t);
+        let bad = session(&root, "bad");
+        chmod(&bad.join(LOCK), 0o400);
+        // Several, so that some come after the bad one in directory order.
+        let stale: Vec<_> = (0..6).map(|i| session(&root, &format!("s{i}"))).collect();
+        assert_eq!(sweep_stale(&root).unwrap(), 6);
+        assert!(stale.iter().all(|d| !d.exists()), "a stale folder was left");
+        assert!(bad.join("0").exists(), "the unlockable folder went");
     }
 
     #[test]
@@ -812,6 +853,16 @@ mod tests {
             assert_eq!(clone_failure(&e(c)), CloneFailure::File, "{c}");
         }
         assert_eq!(clone_failure(&e(EIO)), CloneFailure::Error);
+    }
+
+    /// Running out of file descriptors is told apart from other errors.
+    #[test]
+    fn out_of_fds_is_told_apart() {
+        let e = io::Error::from_raw_os_error;
+        assert!(out_of_fds(&e(nix::libc::EMFILE)));
+        assert!(out_of_fds(&e(nix::libc::ENFILE)));
+        assert!(!out_of_fds(&e(nix::libc::EIO)));
+        assert!(!out_of_fds(&io::Error::from(io::ErrorKind::Unsupported)));
     }
 
     /// A sweep holding our fresh subfolder's lock for a moment does not
