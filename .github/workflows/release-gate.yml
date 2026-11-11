@@ -48,15 +48,45 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Only vX.Y.Z, vX.Y.Z-alpha.N and vX.Y.Z-beta.N are releases. This
+          # also keeps odd tag names out of release.yml, which puts the tag
+          # into shell commands.
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)\.[0-9]+)?$'
+          if ! [[ "$TAG" =~ $tag_re ]]; then
+            echo "::error::Tag '$TAG' is not a release tag. Use vX.Y.Z, vX.Y.Z-alpha.N or vX.Y.Z-beta.N."
+            exit 1
+          fi
+
           case "$TAG" in
             *-*) prerelease=true ;;
             *) prerelease=false ;;
           esac
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
+          # The tests ran on $GITHUB_SHA. Release only if the tag still points
+          # there (it could have been moved while the tests ran).
+          obj=$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          type=${obj%% *}
+          sha=${obj#* }
+          # An annotated tag points to a tag object; follow it to the commit.
+          while [ "$type" = tag ]; do
+            obj=$(gh api "repos/$GH_REPO/git/tags/$sha" --jq '.object.type + " " + .object.sha')
+            type=${obj%% *}
+            sha=${obj#* }
+          done
+          if [ "$type" != commit ] || [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::Tag $TAG now points to $type $sha, but the tests ran on commit $GITHUB_SHA. Not releasing."
+            exit 1
+          fi
+
+          # Runs of release.yml started for this tag. A run started on
+          # refs/tags/$TAG is listed with the tag name as its branch; the
+          # full ref is accepted too, to be safe.
           list_runs() {
             gh run list --workflow release.yml --event workflow_dispatch \
-              --branch "$TAG" --limit 50 --json databaseId,createdAt
+              --limit 100 --json databaseId,createdAt,headBranch,headSha |
+              jq -c --arg tag "$TAG" \
+                '[.[] | select(.headBranch == $tag or .headBranch == "refs/tags/" + $tag)]'
           }
 
           # Runs that already exist for this tag (from an earlier attempt) are
@@ -65,28 +95,36 @@ jobs:
           # Allow a little clock difference between this runner and GitHub.
           since=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%SZ)
 
-          gh workflow run release.yml --ref "$TAG" -f tag="$TAG"
+          # The full ref, so a branch with the same name can't be picked.
+          gh workflow run release.yml --ref "refs/tags/$TAG" -f tag="$TAG"
 
-          run_id=""
+          run=""
           for attempt in $(seq 1 20); do
             sleep 6
-            ids=$(list_runs | jq -r --argjson before "$before" --arg since "$since" \
+            new=$(list_runs | jq -c --argjson before "$before" --arg since "$since" \
               '[.[] | select(.createdAt >= $since)
-                    | select(.databaseId | IN($before[]) | not)
-                    | .databaseId] | .[]')
-            count=$(printf '%s' "$ids" | grep -c . || true)
+                    | select(.databaseId | IN($before[]) | not)]')
+            count=$(jq 'length' <<<"$new")
             if [ "$count" -eq 1 ]; then
-              run_id=$ids
+              run=$(jq -c '.[0]' <<<"$new")
               break
             elif [ "$count" -gt 1 ]; then
-              echo "::error::Found $count new release.yml runs for $TAG, expected one: $(echo $ids). Was release.yml launched by hand?"
+              echo "::error::Found $count new release.yml runs for $TAG, expected one: $(jq -r '[.[].databaseId] | join(" ")' <<<"$new"). Was release.yml launched by hand?"
               exit 1
             fi
             echo "Waiting for the release.yml run to show up (attempt $attempt)..."
           done
 
-          if [ -z "$run_id" ]; then
+          if [ -z "$run" ]; then
             echo "::error::Launched release.yml for $TAG, but no new run showed up within two minutes."
+            exit 1
+          fi
+
+          run_id=$(jq -r '.databaseId' <<<"$run")
+          run_sha=$(jq -r '.headSha' <<<"$run")
+          if [ "$run_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::release.yml run $run_id builds $run_sha, but the tests ran on $GITHUB_SHA. Cancelling it."
+            gh run cancel "$run_id" || true
             exit 1
           fi
 
