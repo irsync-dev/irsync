@@ -490,29 +490,39 @@ async fn sender_file_start_means_a_stream_opened_not_a_plan() {
             fs::write(h.src(Flow::Push).join(format!("f{i}")), b"x").unwrap();
         }
         let (_, events) = run(&h, &opts(&["--parallel", "2"]), Flow::Push).await;
-        // A file is in flight from its FileStart until its stream has closed
-        // (FileSent), or until the ack when that is handled first: in-flight
-        // is bounded by the streams, not by the plan.
-        let mut open = std::collections::BTreeSet::new();
+        // A file is in flight from its FileStart until its last bytes went
+        // out (FileBytes up to its size), or until the ack when that is
+        // handled first: in-flight is bounded by the streams, not by the plan.
+        // Both events come from the send task while it holds its stream
+        // permit, so a later file's FileStart always follows the bytes of
+        // the file whose permit it took, however slowly the machine runs.
+        // (FileSent comes from the sender's main loop and can trail by many
+        // files when that loop falls behind: 24 on a CI Mac.)
+        let mut open = std::collections::BTreeMap::new();
         let mut max_open = 0;
         for e in &events {
             match e {
-                Event::FileStart(p, _) => {
-                    open.insert(p.clone());
+                Event::FileStart(p, size) => {
+                    open.insert(p.clone(), *size);
                     max_open = max_open.max(open.len());
                 }
-                Event::FileSent(p) | Event::FileDone(p, _) => {
+                Event::FileBytes(p, n) => {
+                    if let Some(left) = open.get_mut(p) {
+                        *left = left.saturating_sub(*n);
+                        if *left == 0 {
+                            open.remove(p);
+                        }
+                    }
+                }
+                Event::FileDone(p, _) => {
                     open.remove(p);
                 }
                 _ => {}
             }
         }
-        // `--parallel 2` streams; FileSent trails the stream closing by a
-        // scheduling step, so allow some slack. (Closing on the ack alone
-        // measured the daemon's finalize latency instead, and reached 14
-        // under load.) Before this change every planned file started at
-        // once and this peaked at 50.
-        assert!(max_open <= 10, "in flight peaked at {max_open}: {events:?}");
+        // `--parallel 2` streams. Before this change every planned file
+        // started at once and this peaked at 50.
+        assert!(max_open <= 2, "in flight peaked at {max_open}: {events:?}");
         // `FileSent` sits between a file's `FileStart` and its `FileDone`.
         // (Not every file gets one: when the ack is handled before the
         // send's own completion, the file is already done.)

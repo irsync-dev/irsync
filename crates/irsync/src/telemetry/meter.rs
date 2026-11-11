@@ -514,27 +514,37 @@ mod tests {
     #[test]
     fn timed_guard_adds_busy_time() {
         let m = Meter::new(Side::Client, Role::Receiver, None, true);
+        // Upper bounds are what the test measured around the guard: a slow
+        // machine oversleeps (30 ms took over 100 ms on a CI Mac).
+        let t = Instant::now();
         {
             let _g = m.start(Activity::Hash);
             sleep(MS(20));
         }
+        let span = t.elapsed();
         let b = m.usage().busy(Activity::Hash);
-        assert!(b >= MS(20) && b < MS(200), "{b:?}");
+        assert!(b >= MS(20) && b <= span, "{b:?} of {span:?}");
     }
 
     #[test]
     fn idle_is_time_with_no_guard_active() {
+        let t = Instant::now();
         let m = Meter::new(Side::Daemon, Role::Receiver, None, true);
         sleep(MS(30));
-        {
+        // Measured inside the guard, so at most the time it was held.
+        let recv = {
             let _g = m.start(Activity::Recv);
+            let r = Instant::now();
             sleep(MS(30));
-        }
+            r.elapsed()
+        };
         m.finish();
+        let total = t.elapsed();
         let u = m.usage();
+        // The time under the guard is not idle.
         assert!(
-            u.peer_wait >= MS(25) && u.peer_wait < MS(100),
-            "{:?}",
+            u.peer_wait >= MS(25) && u.peer_wait <= total - recv,
+            "{:?} of {total:?}, {recv:?} under the guard",
             u.peer_wait
         );
         assert!(u.wall >= MS(60), "{:?}", u.wall);
@@ -567,6 +577,7 @@ mod tests {
     fn active_is_wall_time_with_the_activity_in_progress() {
         let m = Meter::new(Side::Client, Role::Receiver, None, true);
         let barrier = Barrier::new(2);
+        let t = Instant::now();
         std::thread::scope(|s| {
             for _ in 0..2 {
                 s.spawn(|| {
@@ -576,17 +587,27 @@ mod tests {
                 });
             }
         });
+        let place = t.elapsed();
+        let t = Instant::now();
         {
             let _g = m.start(Activity::Write);
             sleep(MS(10));
         }
+        let write = t.elapsed();
         m.finish();
         let u = m.usage();
         let (busy, active) = (u.busy(Activity::Place), u.active(Activity::Place));
         assert!(busy >= MS(60), "{busy:?}");
-        assert!(active >= MS(30) && active < MS(55), "{active:?}");
+        // After the barrier both threads hold their guard through the same
+        // 30 ms sleep, so the overlap, counted once in active and twice in
+        // busy, is at least 30 ms.
+        assert!(
+            active >= MS(30) && active <= place,
+            "{active:?} of {place:?}"
+        );
+        assert!(busy >= active + MS(25), "busy {busy:?}, active {active:?}");
         let w = u.active(Activity::Write);
-        assert!(w >= MS(10) && w < MS(30), "{w:?}");
+        assert!(w >= MS(10) && w <= write, "{w:?} of {write:?}");
         assert_eq!(u.active(Activity::Hash), Duration::ZERO);
     }
 
