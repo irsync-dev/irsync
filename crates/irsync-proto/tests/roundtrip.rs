@@ -102,6 +102,8 @@ fn control_oneof_roundtrips() {
             total: 2,
             first: 0,
             last: true,
+            mtime_sec: -5,
+            mtime_nsec: 999_999_999,
             chunks: vec![
                 ChunkRecord {
                     offset: 0,

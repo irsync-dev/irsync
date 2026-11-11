@@ -622,8 +622,10 @@ impl SenderRole {
             Ok((Hashed { digest: d, stat }, held)) => {
                 f.hash_stat = Some(stat);
                 let with_hash = f.append_from.is_none();
-                // Sent once the receiver has room for it (`pump_lists`).
-                let parts = split(file_id, &d, part_records(&self.ctx), with_hash);
+                // Sent once the receiver has room for it (`pump_lists`),
+                // with the mtime the file was hashed under (an `APPEND`
+                // tail's stat is the whole file's too).
+                let parts = split(file_id, &d, stat.mtime, part_records(&self.ctx), with_hash);
                 self.lists.push(file_id, parts, Some(held));
                 #[cfg(feature = "test-hooks")]
                 if let Some(p) = &self.ctx.hooks.lists_ahead_peak {

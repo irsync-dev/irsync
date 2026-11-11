@@ -5,6 +5,7 @@
 mod common;
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -429,6 +430,49 @@ async fn append_change_after_hash_retries_then_fails() {
         );
         assert!(fs::read(&dst).unwrap() == old, "the destination changed");
         assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
+    })
+    .await;
+}
+
+/// The file changes after the walk but before it is hashed. The retry
+/// hashes it as it is now, and it is placed with that size and mtime, not
+/// the walk's; a second run then has nothing to do.
+#[tokio::test]
+async fn retry_places_the_hashed_mtime() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        seed(&h, flow);
+        let src = h.src(flow).join("x.bin");
+        let new_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+        let first = Arc::new(AtomicBool::new(false));
+        let hook: HashHook = {
+            let src = src.clone();
+            Arc::new(move |p: &RelPath, bytes: u64| {
+                if p.as_bytes() == b"x.bin" && bytes == 0 && !first.swap(true, Ordering::SeqCst) {
+                    let f = fs::File::options().append(true).open(&src).unwrap();
+                    (&f).write_all(&data(KIB, 77)).unwrap();
+                    f.set_modified(new_mtime).unwrap();
+                }
+            })
+        };
+        let mut local = h.local_side();
+        local.hooks = SideHooks {
+            during_hash: Some(hook),
+            ..SideHooks::default()
+        };
+        let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        let dst = h.dst(flow).join("x.bin");
+        let (s, d) = (fs::metadata(&src).unwrap(), fs::metadata(&dst).unwrap());
+        assert_eq!(d.len(), SIZE as u64 + KIB as u64);
+        assert_eq!(d.len(), s.len());
+        assert_eq!(d.modified().unwrap(), s.modified().unwrap());
+        assert_eq!(d.modified().unwrap(), new_mtime);
+        assert!(fs::read(&dst).unwrap() == fs::read(&src).unwrap());
+        let again = h.run(&archive_opts(), flow).await.unwrap();
+        assert_eq!(again.exit_code(), 0, "{:?}", again.errors);
+        assert_eq!(again.files_transferred, 0);
     })
     .await;
 }

@@ -138,7 +138,7 @@ export.
 | Message | Direction | Meaning |
 | --- | --- | --- |
 | `PlanItem` | receiver to sender | Send this file: `WHOLE` (nothing to reuse at that path), `DELTA` (the receiver holds an old version) or `APPEND` (the receiver trusts its first `append_from` bytes). |
-| `ChunkListPart` | sender to receiver | Part of a file's chunk list. |
+| `ChunkListPart` | sender to receiver | Part of a file's chunk list. The first part also carries the mtime (`mtime_sec`, `mtime_nsec`) the file was hashed under; with the `size`, the receiver places the file with them instead of the walk's. |
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
@@ -162,7 +162,10 @@ order, the last one flagged `last`; an empty file's list is one empty last
 part. Every part repeats the file id, the size, the whole-file hash and the
 total record count. The receiver reassembles them and fails the file when a
 sequence skips, describes another file, or announces more records than 2^24 or
-than the size allows at the minimum chunk length.
+than the size allows at the minimum chunk length. The first part also holds the
+mtime the file was hashed under; the size and mtime of a list replace the
+walk's for the file. An `APPEND` tail's list carries the whole file's size and
+mtime.
 
 Lists travel in room the receiver grants. Each connection starts with room for
 2^24 records on both sides; a list's first part takes its whole `total` of it,

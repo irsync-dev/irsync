@@ -575,7 +575,13 @@ impl Receiver {
         }
         let n = f.lists;
         match assemble(&mut f.assembly, p) {
-            Ok(Some(d)) => self.on_chunk_list(file_id, Arc::new(d), n).await,
+            Ok(Some((d, mtime))) => {
+                // The file is placed with the size and mtime its list was
+                // hashed under, not the walk's.
+                f.entry.size = d.size;
+                (f.entry.mtime_sec, f.entry.mtime_nsec) = mtime;
+                self.on_chunk_list(file_id, Arc::new(d), n).await
+            }
             Ok(None) => {}
             Err(e) => {
                 let msg = format!("chunk list in parts: {e}");

@@ -406,6 +406,8 @@ mod tests {
             first: u32::MAX,
             chunks: vec![record.clone(); n],
             last: true,
+            mtime_sec: i64::MIN,
+            mtime_nsec: u32::MAX,
         };
         let header = len(Msg::ChunkListPart(part(0)));
         let full = len(Msg::ChunkListPart(part(super::super::parts::PART_RECORDS)));
