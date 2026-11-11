@@ -14,8 +14,13 @@ pub fn ssh_identity() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".ssh/id_ed25519"))
 }
 
+/// `$XDG_STATE_HOME/irsync` when that is an absolute path, else
+/// `~/.local/state/irsync`, on every platform (`dirs::state_dir()` honours
+/// the variable only on Linux).
 pub fn state_dir() -> PathBuf {
-    dirs::state_dir()
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("irsync")

@@ -117,7 +117,7 @@ rw = ["a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"]
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. |
-| `state_dir` | `~/.local/state/irsync`; on Linux `$XDG_STATE_HOME/irsync` when that is set | Where the client and the daemon keep their indexes, sessions and partial-file records. |
+| `state_dir` | `~/.local/state/irsync`; `$XDG_STATE_HOME/irsync` when that is set | Where the client and the daemon keep their indexes, sessions and partial-file records. |
 
 The client's key is looked up the way ssh picks one: `--identity`; else
 `identity` when the file sets it; else `~/.config/irsync/id_ed25519` when it

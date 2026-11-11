@@ -169,13 +169,18 @@ fn first_push_sets_up_and_syncs() {
     // The notice comes before the report; the how-to is unprefixed so it
     // pastes.
     assert!(err.find("not a saved alias") < err.find("set up myserver"));
+    // The fake server is this machine, so the how-to is for its platform.
     let lines: Vec<&str> = err.lines().collect();
-    for want in [
-        "To keep the daemon running after a reboot, make it a user service.",
-        "[Service]",
-        "  systemctl --user enable --now irsync",
-    ] {
-        assert!(lines.contains(&want), "no line {want:?} in stderr:\n{err}");
+    let service: &[&str] = if cfg!(target_os = "macos") {
+        &["  launchctl load -w ~/Library/LaunchAgents/org.irsync.daemon.plist"]
+    } else {
+        &["[Service]", "  systemctl --user enable --now irsync"]
+    };
+    for want in ["To keep the daemon running after a reboot, make it a user service."]
+        .iter()
+        .chain(service)
+    {
+        assert!(lines.contains(want), "no line {want:?} in stderr:\n{err}");
     }
     assert!(
         lines.iter().any(|l| l.starts_with("  pid=\"$(sed -n")),

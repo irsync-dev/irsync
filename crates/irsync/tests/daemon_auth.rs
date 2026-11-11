@@ -604,7 +604,8 @@ async fn immediate_push_creates_auto_export() {
     assert_eq!(snap.exports.len(), 1, "{:?}", snap.exports);
     let (name, e) = snap.exports.iter().next().unwrap();
     assert!(e.auto);
-    assert_eq!(e.path, dest);
+    // The daemon records the real path (macOS: /var is a link to /private/var).
+    assert_eq!(e.path, dest.canonicalize().unwrap());
     assert_eq!(e.rw, vec![client.id().to_string()]);
     assert_eq!(
         snap.grants(&client.id()).access(name),
@@ -686,7 +687,7 @@ async fn immediate_push_to_missing_dir_creates_and_exports_it() {
     assert!(new.is_dir());
     let snap = authz.snapshot().unwrap();
     let paths: Vec<_> = snap.exports.values().map(|e| e.path.clone()).collect();
-    assert_eq!(paths, vec![new]);
+    assert_eq!(paths, vec![new.canonicalize().unwrap()]);
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }

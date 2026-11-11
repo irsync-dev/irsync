@@ -23,8 +23,8 @@ Generated private keys are written with mode 0600, in OpenSSH format. The
 
 ## State directory
 
-`state_dir` defaults to `~/.local/state/irsync`, or `$XDG_STATE_HOME/irsync` on
-Linux when that is set. The client and the daemon use the same layout.
+`state_dir` defaults to `~/.local/state/irsync`, or `$XDG_STATE_HOME/irsync` when
+that is set. The client and the daemon use the same layout.
 
 | Path | Holds |
 | --- | --- |

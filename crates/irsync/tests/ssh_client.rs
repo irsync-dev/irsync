@@ -152,7 +152,7 @@ fn probe_failure_names_the_destination() {
 
 #[test]
 fn probe_ignores_a_login_banner() {
-    let f = fake(None);
+    let f = fake(Some("Darwin arm64"));
     let wrapper = script(
         &f,
         "noisy-ssh",
@@ -162,8 +162,9 @@ fn probe_ignores_a_login_banner() {
         ),
     );
     let p = probe(&wrapper, "myserver").unwrap();
-    assert_eq!(p.os, Some("linux"));
-    assert_eq!(p.arch, Some("x86_64"));
+    // The server's uname, not the banner's.
+    assert_eq!(p.os, Some("macos"));
+    assert_eq!(p.arch, Some("aarch64"));
 }
 
 /// A login shell that is not sh (fish, tcsh) cannot run the remote
@@ -199,7 +200,7 @@ fn remote_commands_run_under_sh() {
 /// The probe says whether the ssh user is root (`id -u` is 0).
 #[test]
 fn probe_sees_root() {
-    let f = fake(None);
+    let f = fake(Some("Linux x86_64"));
     assert!(!probe(&f.rsh, "myserver").unwrap().root || nix::unistd::geteuid().is_root());
     let bin = f.home.path().join("fake-bin");
     std::fs::create_dir(&bin).unwrap();
