@@ -72,3 +72,8 @@ iroh = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a5872
 iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
 iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
 iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
