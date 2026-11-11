@@ -74,6 +74,7 @@ iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a
 iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
 
 [profile.release]
+opt-level = "s"
 strip = true
 lto = "fat"
 codegen-units = 1
