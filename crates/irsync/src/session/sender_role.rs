@@ -1193,10 +1193,6 @@ fn drop_bases(basis_held: &mut usize, f: &mut SFile) {
     *basis_held -= std::mem::take(&mut f.bases_held);
 }
 
-/// The chunk list of `full` (index key `key`) from `from` on (an `APPEND`
-/// tail): chunked from that offset, records at absolute offsets, no
-/// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
-/// file changes while it is read.
 /// Whether a `MayPlace` about chunk list `list` is about the file's
 /// latest digest: the list is the last sent, it went out for the current
 /// generation, and that generation is hashed (no retry under way).
@@ -1235,7 +1231,8 @@ impl PlaceCheck {
         if !self.rehash {
             return Verdict::Place;
         }
-        // A second, full read: the hash index is not asked (`forced`).
+        // A second, full read on the verifying hasher's workers: the hash
+        // index is not asked (it always re-reads).
         let again = if entry.kind() != Kind::Regular {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1243,19 +1240,21 @@ impl PlaceCheck {
             ))
         } else if let Some(from) = self.append_from {
             let (full, key) = (ctx.full_key(&self.key), self.key.clone());
-            blocking(move || tail_digest(&full, &key, from)).await
+            ctx.verify
+                .bounded_read(entry.size, move || tail_digest(&full, &key, from))
+                .await
         } else {
             let item = ScanItem {
                 path: self.key.clone(),
                 entry,
                 ctime,
             };
-            ctx.forced.digest(&item).await
+            ctx.verify.digest(&item).await
         };
         match again {
-            Ok(h) if h.digest.hash == self.digest.hash && h.digest.size == self.digest.size => {
-                Verdict::Place
-            }
+            // The whole digest: an `APPEND` tail's has no whole-file hash,
+            // only its chunks' hashes.
+            Ok(h) if h.digest == *self.digest => Verdict::Place,
             Ok(_) => Verdict::Changed("changed after it was sent".into()),
             Err(e) => {
                 tracing::debug!(path = ?self.key, error = %e, "second hash before placing failed");
@@ -1265,6 +1264,10 @@ impl PlaceCheck {
     }
 }
 
+/// The chunk list of `full` (index key `key`) from `from` on (an `APPEND`
+/// tail): chunked from that offset, records at absolute offsets, no
+/// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
+/// file changes while it is read.
 fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<Hashed> {
     use std::io::{Read, Seek, SeekFrom};
     // The open's type check already took the file's stat.

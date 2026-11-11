@@ -362,6 +362,10 @@ pub(super) struct Ctx {
     pub hasher: Arc<Hasher>,
     /// A second hasher that always re-reads (used after a file changed).
     pub forced: Arc<Hasher>,
+    /// Sender, `--paranoid`: re-reads each sent file before it is placed.
+    /// Always re-reads, with workers of its own, so the checks neither
+    /// queue behind nor hold up retries on `forced`.
+    pub verify: Arc<Hasher>,
     /// Receiver: destination files its walk found without a fresh index
     /// row, hashed when a whole file of their size is about to be fetched.
     pub cold: Arc<crate::warm::Cold>,
@@ -430,6 +434,7 @@ impl Ctx {
         use std::sync::atomic::Ordering::Relaxed;
         self.hasher.stats().files_hashed.load(Relaxed)
             + self.forced.stats().files_hashed.load(Relaxed)
+            + self.verify.stats().files_hashed.load(Relaxed)
     }
 
     /// Which metadata to apply for `e` on this side.
@@ -720,15 +725,20 @@ pub(super) async fn run_client_inner(
         .with_activity(activity.clone())
         .with_progress(on_hash)
         .with_meter(meter.clone());
+    let verify = Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
+        .with_force(true)
+        .with_activity(activity.clone())
+        .with_meter(meter.clone());
     #[cfg(feature = "test-hooks")]
-    let (hasher, forced) = match &local.hooks.during_hash {
+    let (hasher, forced, verify) = match &local.hooks.during_hash {
         Some(h) => (
             hasher.with_hash_hook(h.clone()),
             forced.with_hash_hook(h.clone()),
+            verify.with_hash_hook(h.clone()),
         ),
-        None => (hasher, forced),
+        None => (hasher, forced, verify),
     };
-    let (hasher, forced) = (Arc::new(hasher), Arc::new(forced));
+    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
     let ctx = Ctx {
         conn,
         session_id,
@@ -750,6 +760,7 @@ pub(super) async fn run_client_inner(
         scope: IndexScope::new(index, RelPath::root()),
         hasher,
         forced,
+        verify,
         cold: Arc::default(),
         filters: local.filters,
         opts: RoleOpts::client(opts),
@@ -1096,12 +1107,20 @@ async fn serve_daemon_inner(
         .with_force(true)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
+    let verify = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
+        .with_force(true)
+        .with_activity(activity.clone())
+        .with_meter(meter.clone());
     #[cfg(feature = "test-hooks")]
-    let (hasher, forced) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
-        Some(h) => (hasher.with_hash_hook(h.clone()), forced.with_hash_hook(h)),
-        None => (hasher, forced),
+    let (hasher, forced, verify) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
+        Some(h) => (
+            hasher.with_hash_hook(h.clone()),
+            forced.with_hash_hook(h.clone()),
+            verify.with_hash_hook(h),
+        ),
+        None => (hasher, forced, verify),
     };
-    let (hasher, forced) = (Arc::new(hasher), Arc::new(forced));
+    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
     let ctx = Ctx {
         conn,
         session_id,
@@ -1124,6 +1143,7 @@ async fn serve_daemon_inner(
         scope: IndexScope::new(index, rel),
         hasher,
         forced,
+        verify,
         cold: Arc::default(),
         // The client's rules: a sending daemon walks with them, a receiving
         // one protects what they exclude from deletion.
@@ -1666,7 +1686,8 @@ pub(super) async fn test_ctx() -> TestCtx {
         base: root.path().to_path_buf(),
         scope: IndexScope::new(index, RelPath::root()),
         hasher: hasher.clone(),
-        forced: hasher,
+        forced: hasher.clone(),
+        verify: hasher,
         cold: Arc::default(),
         filters: Arc::new(FilterSet::new(vec![])),
         opts: RoleOpts {

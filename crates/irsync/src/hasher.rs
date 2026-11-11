@@ -17,7 +17,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Counters of work actually done (cache hits are not counted). Read the
 /// fields directly with `load`.
@@ -299,6 +299,44 @@ impl Hasher {
         self.digest_as(path, walked, None).await
     }
 
+    /// A worker slot for reading a file of `size` bytes, with a large slot
+    /// for a large one. Owned, to be moved into the blocking read: aborting
+    /// the waiting task must not free the worker while the read runs on. A
+    /// large file waits for its large slot first, so it holds no worker
+    /// other files could use.
+    async fn slots(
+        &self,
+        size: u64,
+    ) -> io::Result<(OwnedSemaphorePermit, Option<OwnedSemaphorePermit>)> {
+        let closed = |_| io::Error::other("hasher closed");
+        let large = if size >= LARGE_FILE {
+            Some(self.large.clone().acquire_owned().await.map_err(closed)?)
+        } else {
+            None
+        };
+        let permit = self.sem.clone().acquire_owned().await.map_err(closed)?;
+        Ok((permit, large))
+    }
+
+    /// Runs `read`, a blocking read of a file of `size` bytes that is not a
+    /// whole-file digest (an `APPEND` tail), under this hasher's limits on
+    /// concurrent reads.
+    pub async fn bounded_read<T: Send + 'static>(
+        &self,
+        size: u64,
+        read: impl FnOnce() -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let slots = self.slots(size).await?;
+        let res = tokio::task::spawn_blocking(move || {
+            let _slots = slots;
+            read()
+        })
+        .await
+        .map_err(io::Error::other)?;
+        self.activity.fetch_add(1, Ordering::Relaxed);
+        res
+    }
+
     /// The digest of `path` if the index has one matching `want`, else read.
     /// The stored row is `stat`, or the open file's when `None`.
     async fn digest_as(
@@ -311,27 +349,8 @@ impl Hasher {
             .meter
             .as_deref()
             .map(|m| m.hold("irsync_hash_queue_depth"));
-        // Owned and moved into the blocking read: aborting this task must not
-        // free the worker while the read runs on. A large file waits for its
-        // large slot first, so it holds no worker other files could use.
         // The walk's size decides: a cache hit takes the slot too, briefly.
-        let large = if want.size >= LARGE_FILE {
-            Some(
-                self.large
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| io::Error::other("hasher closed"))?,
-            )
-        } else {
-            None
-        };
-        let permit = self
-            .sem
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| io::Error::other("hasher closed"))?;
+        let (permit, large) = self.slots(want.size).await?;
         drop(queued);
         let index = self.index.clone();
         let stats = self.stats.clone();

@@ -521,3 +521,112 @@ async fn paranoid_second_hash_catches_a_change_the_stat_misses() {
 async fn paranoid_reaches_the_daemon_on_pull() {
     within30(paranoid_second_hash_for(Flow::Pull)).await;
 }
+
+/// `--append --paranoid`: the sent digest of an `APPEND` tail has no
+/// whole-file hash, so the second hash must compare its chunks. The
+/// receiver rewrites bytes inside the source's tail (same size) before
+/// every `MayPlace`, with the stat compare skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_append_catches_a_same_size_tail_rewrite() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let old = data(4 * MIB, 61);
+        let dst = h.dst(flow).join("x.bin");
+        fs::write(&dst, &old).unwrap();
+        let mut new = old.clone();
+        new.extend_from_slice(&data(MIB, 62));
+        let src = h.src(flow).join("x.bin");
+        fs::write(&src, &new).unwrap();
+        let asked = Arc::new(AtomicU32::new(0));
+        let hook: FrameHook = {
+            let (src, asked) = (src.clone(), asked.clone());
+            Arc::new(move |kind, m| {
+                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+                    let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
+                    let f = fs::File::options().write(true).open(&src).unwrap();
+                    f.write_all_at(&data(64 * KIB, 400 + n), (4 * MIB + 128 * KIB) as u64)
+                        .unwrap();
+                }
+                vec![m]
+            })
+        };
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(hook);
+        let mut local = h.local_side();
+        local.hooks.skip_place_stat = true;
+        let args = irsync::cli::Args::try_parse_from([
+            "irsync",
+            "-a",
+            "--append",
+            "--paranoid",
+            "src/",
+            "host:m/",
+        ])
+        .unwrap();
+        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let out = h.run_side(&opts, flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(out.files_transferred, 0);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"x.bin");
+        assert!(
+            msg.contains("changed after it was sent (after retry)"),
+            "{msg}"
+        );
+        assert!(fs::read(&dst).unwrap() == old, "the destination changed");
+    })
+    .await;
+}
+
+/// `--paranoid` on a tree nothing writes to: the second hash agrees with
+/// the first for new files (small and multi-chunk), a delta (not with
+/// `--append`) and a file the destination holds the start of, and
+/// everything is placed.
+async fn paranoid_unchanged_tree_for(flow: Flow, extra: &str) {
+    let h = Harness::new().await;
+    for i in 0..5u32 {
+        fs::write(
+            h.src(flow).join(format!("s{i}")),
+            data(1000 + i as usize, i),
+        )
+        .unwrap();
+    }
+    fs::write(h.src(flow).join("big.bin"), data(SIZE, 70)).unwrap();
+    // `--append` skips a destination that is not shorter: no delta then.
+    if extra != "--append" {
+        seed_delta(&h, flow);
+    }
+    let old = data(2 * MIB, 71);
+    fs::write(h.dst(flow).join("tail.bin"), &old).unwrap();
+    let mut new = old;
+    new.extend_from_slice(&data(MIB, 72));
+    fs::write(h.src(flow).join("tail.bin"), &new).unwrap();
+    let mut argv = vec!["irsync", "-a", "--paranoid"];
+    if !extra.is_empty() {
+        argv.push(extra);
+    }
+    argv.extend(["src/", "host:m/"]);
+    let opts =
+        irsync::cli::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap());
+    let out = h.run(&opts, flow).await.unwrap();
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    common::assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_unchanged_tree_places_everything() {
+    within30(paranoid_unchanged_tree_for(Flow::Push, "")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_unchanged_tree_places_everything_on_pull() {
+    within30(paranoid_unchanged_tree_for(Flow::Pull, "")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_unchanged_tree_with_append_places_everything() {
+    within30(paranoid_unchanged_tree_for(Flow::Push, "--append")).await;
+}
