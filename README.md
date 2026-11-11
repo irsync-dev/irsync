@@ -106,6 +106,12 @@ relayed connections are much slower than direct ones.
 `fileset` shares no code with irsync; see
 its [reference](https://irsync.org/book/reference/fileset.html).
 
+## Getting help
+
+Ask questions and report bugs in
+[GitHub Issues](https://github.com/irsync-dev/irsync/issues). Report security
+problems privately to security@irsync.org instead; see [SECURITY.md](SECURITY.md).
+
 ## License
 
 irsync is licensed under the MIT License; see [LICENSE](LICENSE).

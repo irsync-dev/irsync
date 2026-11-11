@@ -11,6 +11,9 @@ Open an issue at
 Say which irsync version (`irsync --version`) and which OS each end runs, give
 the command, and paste what it printed. A run with `-v` helps.
 
+For a security problem, email security@irsync.org instead of opening an
+issue; see [SECURITY.md](SECURITY.md).
+
 ## Set up a checkout
 
 ```sh
