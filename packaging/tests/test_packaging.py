@@ -105,6 +105,22 @@ class Base(unittest.TestCase):
     def rpms(self, repo, arch):
         return sorted(glob.glob(f"{repo}/rpm/{arch}/*.rpm"))
 
+    def check_rpm_sigs(self, repo, db):
+        for rpm_arch in ("x86_64", "aarch64"):
+            pkgs = self.rpms(repo, rpm_arch)
+            self.assertTrue(pkgs)
+            for pkg in pkgs:
+                out = run("rpm", "--dbpath", db, "-K", pkg).stdout
+                self.assertRegex(out, r"\bOK\b")
+                self.assertNotIn("NOT OK", out)
+                self.assertNotIn("NOKEY", out)
+
+    def import_key(self, repo):
+        db = os.path.join(self.root, "rpmdb-" + os.path.basename(repo))
+        os.makedirs(db, exist_ok=True)
+        run("rpm", "--dbpath", db, "--import", f"{repo}/irsync.asc")
+        return db
+
     def packages_versions(self, repo, deb_arch):
         p = f"{repo}/apt/dists/stable/main/binary-{deb_arch}/Packages"
         with open(p) as f:
@@ -156,11 +172,7 @@ class Tests(Base):
         db = os.path.join(self.root, "rpmdb-" + os.path.basename(repo))
         os.mkdir(db)
         run("rpm", "--dbpath", db, "--import", f"{repo}/irsync.asc")
-        pkg = self.rpms(repo, "x86_64")[0]
-        out = run("rpm", "--dbpath", db, "-K", pkg).stdout
-        self.assertRegex(out, r"\bOK\b")
-        self.assertNotIn("NOT OK", out)
-        self.assertNotIn("NOKEY", out)
+        self.check_rpm_sigs(repo, db)
 
     def test_prunes_by_version(self):
         repo = self.new_repo()
@@ -196,8 +208,32 @@ class Tests(Base):
         db = os.path.join(self.root, "rpmdb2-" + os.path.basename(repo))
         os.mkdir(db)
         run("rpm", "--dbpath", db, "--import", f"{repo}/irsync.asc")
-        out = run("rpm", "--dbpath", db, "-K", self.rpms(repo, "x86_64")[0]).stdout
-        self.assertNotIn("NOT OK", out)
+        self.check_rpm_sigs(repo, db)
+
+    def test_older_version_outside_window(self):
+        repo = self.new_repo()
+        self.update(repo, ["0.9.0", "0.10.0", "0.11.0", "0.8.1"], keep=3)
+        want = ["0.10.0", "0.11.0", "0.9.0"]
+        for deb_arch, rpm_arch in ARCHES.values():
+            self.assertEqual(sorted(self.packages_versions(repo, deb_arch)), want)
+            self.assertEqual(len(self.debs(repo, deb_arch)), 3)
+            self.assertEqual(len(self.rpms(repo, rpm_arch)), 3)
+            self.assertFalse(glob.glob(f"{repo}/rpm/{rpm_arch}/*0.8.1*"))
+        d = f"{repo}/apt/dists/stable"
+        run("gpg", "--verify", f"{d}/InRelease", env=self.env)
+        for rpm_arch in ARCHES.values():
+            run("gpg", "--verify", f"{repo}/rpm/{rpm_arch[1]}/repodata/repomd.xml.asc",
+                f"{repo}/rpm/{rpm_arch[1]}/repodata/repomd.xml", env=self.env)
+        self.check_rpm_sigs(repo, self.import_key(repo))
+
+    def test_empty_packages_dir_fails(self):
+        repo = self.new_repo()
+        empty = os.path.join(self.root, "empty-" + os.path.basename(repo))
+        os.mkdir(empty)
+        r = run(UPDATE, repo, empty, "3", env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no irsync", r.stderr)
+        self.assertFalse(os.path.exists(f"{repo}/apt/dists"))
 
     def test_static_files(self):
         repo = self.new_repo()
@@ -213,6 +249,37 @@ class Tests(Base):
         with open(f"{repo}/irsync.repo") as f:
             self.assertIn("repo_gpgcheck=1", f.read())
         self.assertTrue(os.path.isfile(f"{repo}/index.html"))
+
+
+class PassphraseTests(Base):
+    """Same flow with a passphrase-protected key and GPG_PASSPHRASE set."""
+
+    PASS = "correct horse battery staple"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Replace the key with a protected one in a fresh GNUPGHOME.
+        cls.gnupg = os.path.join(cls.root, "gnupg-pass")
+        os.mkdir(cls.gnupg, 0o700)
+        cls.env = dict(os.environ, GNUPGHOME=cls.gnupg, GPG_PASSPHRASE=cls.PASS)
+        run("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", cls.PASS,
+            "--quick-gen-key", UID, "rsa2048", "sign", "never", env=cls.env)
+        out = run("gpg", "--batch", "--with-colons", "--list-keys", UID, env=cls.env).stdout
+        cls.fpr = next(l.split(":")[9] for l in out.splitlines() if l.startswith("fpr:"))
+        cls.env["GPG_KEY_ID"] = cls.fpr
+        run("gpg-connect-agent", "reloadagent", "/bye", env=cls.env, check=False)
+
+    def test_signing_with_passphrase(self):
+        repo = self.new_repo()
+        self.update(repo, ["0.2.0"])
+        d = f"{repo}/apt/dists/stable"
+        run("gpg", "--verify", f"{d}/InRelease", env=self.env)
+        run("gpg", "--verify", f"{d}/Release.gpg", f"{d}/Release", env=self.env)
+        for rpm_arch in ("x86_64", "aarch64"):
+            run("gpg", "--verify", f"{repo}/rpm/{rpm_arch}/repodata/repomd.xml.asc",
+                f"{repo}/rpm/{rpm_arch}/repodata/repomd.xml", env=self.env)
+        self.check_rpm_sigs(repo, self.import_key(repo))
 
 
 if __name__ == "__main__":

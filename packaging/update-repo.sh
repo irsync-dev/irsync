@@ -49,17 +49,31 @@ prune() {
 }
 
 # ---- add packages ----
+shopt -s nullglob
+debs=("$pkgs"/irsync_*_{amd64,arm64}.deb)
+rpms=("$pkgs"/irsync-*-1.{x86_64,aarch64}.rpm)
+if [ $(( ${#debs[@]} + ${#rpms[@]} )) -eq 0 ]; then
+    echo "no irsync .deb or .rpm packages found in $pkgs" >&2
+    exit 1
+fi
+
+# Sign the rpms in a temp dir first, so an unsigned rpm never enters the repo
+# and pruning cannot remove a file we still have to sign.
+rpm_defs=(--define "_gpg_name $GPG_KEY_ID" --define "__gpg $tmp/gpg-wrapper")
+[ -n "${GNUPGHOME:-}" ] && rpm_defs+=(--define "_gpg_path $GNUPGHOME")
+mkdir "$tmp/rpms"
+for f in "${rpms[@]}"; do cp -f "$f" "$tmp/rpms/"; done
+signed=("$tmp"/rpms/*.rpm)
+if [ ${#signed[@]} -gt 0 ]; then
+    rpmsign "${rpm_defs[@]}" --addsign "${signed[@]}"
+fi
+
 pool="$repo/apt/pool/main/i/irsync"
 mkdir -p "$pool"
-shopt -s nullglob
-for f in "$pkgs"/irsync_*_{amd64,arm64}.deb; do cp -f "$f" "$pool/"; done
-new_rpms=()
+for f in "${debs[@]}"; do cp -f "$f" "$pool/"; done
 for arch in x86_64 aarch64; do
     mkdir -p "$repo/rpm/$arch"
-    for f in "$pkgs"/irsync-*-1."$arch".rpm; do
-        cp -f "$f" "$repo/rpm/$arch/"
-        new_rpms+=("$repo/rpm/$arch/$(basename "$f")")
-    done
+    for f in "$tmp"/rpms/irsync-*-1."$arch".rpm; do cp -f "$f" "$repo/rpm/$arch/"; done
 done
 
 # ---- prune ----
@@ -98,12 +112,7 @@ mv "$tmp/Release" "$dist/Release"
 gpg "${gpg_opts[@]}" --clearsign -o "$dist/InRelease" "$dist/Release"
 gpg "${gpg_opts[@]}" --armor --detach-sign -o "$dist/Release.gpg" "$dist/Release"
 
-# ---- rpm: sign packages, then the repo metadata ----
-rpm_defs=(--define "_gpg_name $GPG_KEY_ID" --define "__gpg $tmp/gpg-wrapper")
-[ -n "${GNUPGHOME:-}" ] && rpm_defs+=(--define "_gpg_path $GNUPGHOME")
-if [ ${#new_rpms[@]} -gt 0 ]; then
-    rpmsign "${rpm_defs[@]}" --addsign "${new_rpms[@]}"
-fi
+# ---- rpm repo metadata (packages are already signed) ----
 for arch in x86_64 aarch64; do
     d="$repo/rpm/$arch"
     rm -rf "$d/repodata"
