@@ -926,6 +926,9 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::ListRoom(_) => "ListRoom",
         Msg::MayPlace(_) => "MayPlace",
         Msg::PlaceVerdict(_) => "PlaceVerdict",
+        Msg::Replan(_) => "Replan",
+        Msg::Settle(_) => "Settle",
+        Msg::Settled(_) => "Settled",
     }
 }
 

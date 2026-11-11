@@ -148,6 +148,11 @@ pub(super) struct PlannerReport {
     /// The deletion candidates, for the receiver to delete after the
     /// transfers (`None` without a delete mode or once run before them).
     pub deletes: Option<DeletePass>,
+    /// The highest file id the plan used (an earlier connection's included).
+    pub max_id: u64,
+    /// Source regular files planned under a verified parent: the only
+    /// paths the sender's final re-check may plan again (`Replan`).
+    pub regular: HashSet<RelPath>,
 }
 
 /// What an earlier connection of a resumed session already planned: its file
@@ -821,6 +826,79 @@ impl Planner {
     }
 }
 
+/// What the receiver does with a file the sender's final re-check found
+/// changed (`Replan`), decided by [`replan`].
+pub(super) struct Replanned {
+    /// Request it again: none if nothing (or only metadata) needs sending.
+    pub request: Option<(Action, u64)>,
+    /// Nothing was at the path at the destination.
+    pub created: bool,
+    /// The itemize line, if anything is done.
+    pub itemize: Option<String>,
+}
+
+/// Plans a file again that the sender found changed at its final re-check
+/// (`--paranoid`), with `entry` as it is now, against what the destination
+/// holds now: as the planner plans a listed file, except that size and
+/// mtime prove nothing (the sender saw the file change, perhaps with its
+/// mtime set back), so the contents are compared as with `--checksum`.
+/// `path` was planned as a regular file under a verified parent already.
+/// A metadata-only change is applied here.
+pub(super) async fn replan(
+    ctx: &Arc<Ctx>,
+    path: &RelPath,
+    entry: &FileEntry,
+) -> io::Result<Replanned> {
+    let (root, rel) = (ctx.root.clone(), path.clone());
+    let dst = blocking(
+        move || match crate::fs::meta::lstat_entry_with_ctime(&root, &rel) {
+            Ok((entry, _)) => Ok(Some(entry)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        },
+    )
+    .await?;
+    let mut dst = dst.map(|entry| Side {
+        entry,
+        digest: None,
+    });
+    if let Some(d) = &mut dst {
+        crate::fs::ids::IdNames::new().attach(&mut d.entry);
+    }
+    let src = Side {
+        entry: entry.clone(),
+        digest: None,
+    };
+    let o = &ctx.opts;
+    let popts = PlanOpts {
+        checksum: true,
+        update_only: o.update_only,
+        delete: false,
+        preserve: o.preserve,
+        append: o.append,
+    };
+    let decision = decide(Some(&src), dst.as_ref(), &popts);
+    let itemize = (decision != Decision::Skip)
+        .then(|| itemize(&decision, Some(&src), dst.as_ref(), '>', &popts.preserve));
+    let created = dst.is_none();
+    let request = match decision {
+        Decision::Skip => None,
+        Decision::MetaOnly => {
+            let (full, entry, apply) = (ctx.full(path), entry.clone(), ctx.apply_opts(entry));
+            blocking(move || apply_metadata(&full, &entry, &apply)).await?;
+            None
+        }
+        Decision::Delta => Some((Action::Delta, 0)),
+        Decision::Append { from } => Some((Action::Append, from)),
+        _ => Some((Action::Whole, 0)),
+    };
+    Ok(Replanned {
+        request,
+        created,
+        itemize,
+    })
+}
+
 /// Merge-joins the listings and acts on every path; reports at the end.
 pub(super) async fn plan(
     ctx: Arc<Ctx>,
@@ -926,6 +1004,8 @@ async fn plan_listings(
         }
     }
     p.report.deletes = p.deletes.take();
+    p.report.max_id = p.next_id;
+    p.report.regular = std::mem::take(&mut p.regular_ok);
     #[cfg(feature = "test-hooks")]
     for t in std::mem::take(&mut p.delayed) {
         let _ = t.await;

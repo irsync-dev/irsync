@@ -21,9 +21,9 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, plan_item::Action, ChunkListPart, FileAck, FileEntry, Itemized,
-    ListRoom, ListingEnd, MayPlace, NeedChunks, PathError, PlaceVerdict, PlanEntry, PlanItem,
-    SessionDone,
+    control::Msg, file_ack::Status, file_entry::Kind, plan_item::Action, ChunkListPart, FileAck,
+    FileEntry, Itemized, ListRoom, ListingEnd, MayPlace, NeedChunks, PathError, PlaceVerdict,
+    PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -40,7 +40,7 @@ use super::limits::{
 use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly, ListBudget};
 use super::planner::{
-    inflight_cap, parent_of, plan, Deferred, Linked, Planned, PlannerReport, Prior,
+    inflight_cap, parent_of, plan, replan, Deferred, Itemize, Linked, Planned, PlannerReport, Prior,
 };
 use super::recv_io::{
     accept_streams, commit, copy_local_chunks, offer_bases, open_writer, sender_idx,
@@ -55,7 +55,7 @@ use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
-use recv_delete::capped_paths;
+pub(super) use recv_delete::capped_paths;
 
 #[path = "recv_delete.rs"]
 mod recv_delete;
@@ -147,6 +147,20 @@ enum St {
     /// Verified (or found identical); `MayPlace` sent, waiting for the
     /// sender's `PlaceVerdict`.
     Confirming,
+}
+
+/// Where the receiver stands with the sender's final re-check
+/// (`--paranoid`, see `Settle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settling {
+    /// No re-check this session.
+    Off,
+    /// Asked for once every path is planned and nothing is in flight.
+    Due,
+    /// `Settle` sent; the sender's `Replan`s and `Settled` are to come.
+    Asked,
+    /// `Settled` received: the session ends once the re-planned files are done.
+    Settled,
 }
 
 /// What a file in [`St::Confirming`] holds until the sender's verdict.
@@ -258,8 +272,9 @@ struct Receiver {
     links: Vec<Linked>,
     /// Files that failed this session (never linked to).
     failed: HashSet<RelPath>,
-    /// A resumed plan's files not yet requested (see `pump`).
-    queued: VecDeque<(u64, RelPath, FileEntry, Action, u64)>,
+    /// A resumed plan's files not yet requested (see `pump`), and files
+    /// the sender's final re-check re-planned (with their itemize line).
+    queued: VecDeque<(u64, RelPath, FileEntry, Action, u64, Deferred)>,
     /// At most this many files in flight.
     inflight_cap: usize,
     /// Bytes of chunk bases sent and not yet requested, across files (see
@@ -278,6 +293,19 @@ struct Receiver {
     /// Records of list room freed and not yet granted back: sent as one
     /// `ListRoom` after each main-loop event (see `grant_room`).
     freed: u64,
+    /// The sender's final re-check (`--paranoid`).
+    settling: Settling,
+    /// The highest file id the session has used: re-planned files take
+    /// new ones above it.
+    max_id: u64,
+    /// Source regular files planned under a verified parent (see
+    /// `PlannerReport::regular`), known once the plan is: the paths a
+    /// `Replan` may name.
+    regular: HashSet<RelPath>,
+    /// Paths the sender re-planned (each at most once).
+    replanned: HashSet<RelPath>,
+    /// Listed source files the sender's final re-check found gone.
+    vanished: Vec<RelPath>,
 }
 
 impl Receiver {
@@ -286,6 +314,132 @@ impl Receiver {
             && self.peer_listing_done
             && self.active == 0
             && self.queued.is_empty()
+    }
+
+    /// Whether the session is over: complete, and the sender's final
+    /// re-check (if any) settled. Asks for the re-check, once, the first
+    /// time the session is complete.
+    fn finished(&mut self) -> bool {
+        if !self.complete() {
+            return false;
+        }
+        match self.settling {
+            Settling::Off | Settling::Settled => true,
+            Settling::Due => {
+                tracing::debug!("asking the sender for its final re-check");
+                self.out.send(Msg::Settle(Settle {}));
+                self.settling = Settling::Asked;
+                false
+            }
+            Settling::Asked => false,
+        }
+    }
+
+    /// The sender found a listed file changed at its final re-check: plan
+    /// it again, under a new file id. A path this side did not plan as a
+    /// regular file (refused, failed, or of another kind here) is left
+    /// alone; the file placed earlier, if any, stays placed.
+    async fn on_replan(&mut self, r: Replan) -> anyhow::Result<()> {
+        if self.settling != Settling::Asked {
+            anyhow::bail!("protocol error: Replan outside the final re-check");
+        }
+        let Ok(path) = RelPath::new(&r.path) else {
+            anyhow::bail!("protocol error: Replan with an invalid path");
+        };
+        let Some(mut entry) = r.entry.filter(|e| e.kind() == Kind::Regular) else {
+            anyhow::bail!("protocol error: Replan without a regular file's entry");
+        };
+        if !self.replanned.insert(path.clone()) {
+            anyhow::bail!("protocol error: a second Replan for one path");
+        }
+        if !self.regular.contains(&path) || self.failed.contains(&path) {
+            tracing::debug!(
+                ?path,
+                "Replan for a path not planned as a regular file; ignored"
+            );
+            return Ok(());
+        }
+        entry.path = path.as_bytes().to_vec();
+        let again = match replan(&self.ctx, &path, &entry).await {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("re-planning: {e}");
+                tracing::info!(?path, error = %msg, "receiver");
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(super::Event::Failed(path.clone(), msg.clone()));
+                self.errors.push((path, msg));
+                return Ok(());
+            }
+        };
+        if let Some(report) = &mut self.report {
+            report.created += u64::from(again.created && again.request.is_some());
+            // Its directory's mtime moves: applied again in the directory pass.
+            report.touched.insert(parent_of(&path));
+        }
+        let Some((action, append_from)) = again.request else {
+            // A metadata change only (rare: `--append` with a destination
+            // not shorter). On the local bus only: a `Replan` costs the
+            // sender a paced frame, and this side must not answer each with
+            // a frame it cannot pace.
+            if let Some(code) = again.itemize {
+                self.ctx
+                    .hooks
+                    .bus
+                    .emit(super::Event::Itemized(path.clone(), code));
+            }
+            return Ok(());
+        };
+        tracing::info!(?path, "re-planned: changed during the sync");
+        self.max_id += 1;
+        let file_id = self.max_id;
+        self.persist.plan(PlanEntry {
+            file_id,
+            path: path.as_bytes().to_vec(),
+            action: action as i32,
+            size: entry.size,
+            whole_hash: entry.whole_hash.clone(),
+            entry: Some(entry.clone()),
+            append_from,
+        });
+        // Requested as the files of a resumed plan are, within the cap, and
+        // itemized once its chunk list is resolved (bounded by the files in
+        // flight, as the planner's deferred lines are).
+        let deferred = Deferred {
+            prehash: None,
+            itemize: again.itemize.map(|planned| Itemize {
+                planned,
+                meta: None,
+            }),
+        };
+        self.queued
+            .push_back((file_id, path, entry, action, append_from, deferred));
+        Ok(())
+    }
+
+    /// The sender's final re-check is over.
+    fn on_settled(&mut self, s: Settled) -> anyhow::Result<()> {
+        if self.settling != Settling::Asked {
+            anyhow::bail!("protocol error: Settled outside the final re-check");
+        }
+        self.settling = Settling::Settled;
+        self.vanished = s
+            .vanished
+            .iter()
+            .filter_map(|p| RelPath::new(p).ok())
+            .collect();
+        if s.vanished_omitted > 0 {
+            tracing::warn!(
+                omitted = s.vanished_omitted,
+                "the sender reported more vanished files than listed"
+            );
+        }
+        for e in s.errors {
+            let path = RelPath::new(&e.path).unwrap_or_default();
+            self.errors.push((path, format!("sender: {}", e.message)));
+        }
+        Ok(())
     }
 
     /// Once the sender's listing has ended and every path is planned, the
@@ -723,7 +877,9 @@ impl Receiver {
                     append_from: p.append_from,
                 }));
             }
-            Done::PlannerFinished(r) => {
+            Done::PlannerFinished(mut r) => {
+                self.max_id = self.max_id.max(r.max_id);
+                self.regular = std::mem::take(&mut r.regular);
                 self.report = Some(*r);
                 self.maybe_mark_complete().await;
             }
@@ -1135,6 +1291,8 @@ impl Receiver {
             Ev::Recv(d) => self.on_done(d).await,
             Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await?,
             Ev::Ctrl(Msg::PlaceVerdict(v)) => self.on_verdict(v).await,
+            Ev::Ctrl(Msg::Replan(r)) => self.on_replan(r).await?,
+            Ev::Ctrl(Msg::Settled(s)) => self.on_settled(s)?,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
@@ -1242,7 +1400,9 @@ fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
 
 /// Runs the receiver role to completion: `SessionDone` is sent once the
 /// sender's listing has ended, every path is planned and every requested
-/// file is acknowledged (DONE only for verified, placed files).
+/// file is acknowledged (DONE only for verified, placed files). With
+/// `--paranoid` the sender's final re-check comes first: `Settle` at that
+/// point, then the files it re-plans, until `Settled` and those are done.
 ///
 /// A resumed session whose stored plan is complete skips both listings and
 /// requests the files not yet placed; one with an incomplete plan lists and
@@ -1300,6 +1460,15 @@ pub(super) async fn run(
         lists: ListBudget::new(list_budget(&ctx.hooks)),
         planned: HashMap::new(),
         freed: 0,
+        settling: if ctx.opts.settle {
+            Settling::Due
+        } else {
+            Settling::Off
+        },
+        max_id: stored.entries.iter().map(|e| e.file_id).max().unwrap_or(0),
+        regular: HashSet::new(),
+        replanned: HashSet::new(),
+        vanished: Vec::new(),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores
@@ -1386,7 +1555,7 @@ pub(super) async fn run(
     drop(events_tx);
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     let res: anyhow::Result<()> = loop {
-        if r.complete() {
+        if r.finished() {
             break Ok(());
         }
         // Own completions before peer events (see `run_role`).
@@ -1505,6 +1674,7 @@ pub(super) async fn run(
         would_delete: r.would_delete,
         would_delete_omitted: 0,
         max_delete_reached: r.max_delete_reached,
+        vanished: r.vanished,
         usage: Default::default(),
         reconnects: 0,
         conn: None,

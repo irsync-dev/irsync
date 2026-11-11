@@ -97,6 +97,31 @@ message PlaceVerdict {
   bool changed = 2;
   uint32 gen = 3; // the MayPlace's
 }
+// `--paranoid` (the client's Hello), unless a dry run: the final re-check.
+// receiver -> sender, once, in place of SessionDone when the receiver has
+// planned every path and has no file in flight: the sender stats every
+// listed regular file again (a resumed session that reuses the stored plan
+// lists nothing: only the files sent on this connection).
+message Settle {}
+// sender -> receiver, after Settle: a listed regular file that differs from
+// the stat it was listed (or last hashed) under, with its entry as it is
+// now. The receiver plans it again as it plans a listed file, under a new
+// file id above every id the session used; a file already placed stays
+// placed. One per path at most; only before Settled.
+message Replan {
+  bytes path = 1;
+  FileEntry entry = 2;
+}
+// sender -> receiver, after its Replans: the re-check is over. `vanished`:
+// listed files gone, or no longer regular files (capped as
+// SessionDone.deleted is; `vanished_omitted` counts the rest). `errors`:
+// files the re-check could not stat. The receiver sends SessionDone once
+// the re-planned files are done.
+message Settled {
+  repeated bytes vanished = 1;
+  repeated PathError errors = 2;
+  uint64 vanished_omitted = 3;
+}
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -184,5 +209,8 @@ message Control {
     ListRoom list_room = 14;
     MayPlace may_place = 15;
     PlaceVerdict place_verdict = 16;
+    Replan replan = 17;
+    Settle settle = 18;
+    Settled settled = 19;
   }
 }

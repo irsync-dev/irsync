@@ -630,3 +630,282 @@ async fn paranoid_unchanged_tree_places_everything_on_pull() {
 async fn paranoid_unchanged_tree_with_append_places_everything() {
     within30(paranoid_unchanged_tree_for(Flow::Push, "--append")).await;
 }
+
+/// What happens to the source's `y.txt` once the first chunk of `x.bin`
+/// has gone out.
+#[derive(Clone, Copy)]
+enum Late {
+    Rewrite,
+    Delete,
+}
+
+const Y_OLD: &[u8] = b"y as it was at the walk\n";
+const Y_NEW: &[u8] = b"y as it is at the end of the run, longer than before\n";
+
+/// `x.bin` is new (sent in several chunks) and `y.txt` is identical on both
+/// sides (skipped at planning). After the first chunk of `x.bin` went out,
+/// `late` happens to the source's `y.txt`, with a distinct mtime.
+fn late_hook(src: PathBuf, late: Late, fired: Arc<AtomicU32>) -> FirstChunkHook {
+    Arc::new(move |p: &RelPath| {
+        let hit = p.as_bytes() == b"x.bin";
+        let (y, fired) = (src.join("y.txt"), fired.clone());
+        Box::pin(async move {
+            if hit && fired.fetch_add(1, Ordering::SeqCst) == 0 {
+                match late {
+                    Late::Rewrite => {
+                        fs::write(&y, Y_NEW).unwrap();
+                        fs::File::options()
+                            .write(true)
+                            .open(&y)
+                            .unwrap()
+                            .set_modified(
+                                SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_050),
+                            )
+                            .unwrap();
+                    }
+                    Late::Delete => fs::remove_file(&y).unwrap(),
+                }
+            }
+        })
+    })
+}
+
+/// Seeds `x.bin` (source only) and `y.txt` (both sides, same mtime) and
+/// puts `late_hook` on the sending side. Returns the local side and the
+/// hook's counter.
+fn seed_late(h: &Harness, flow: Flow, late: Late) -> (irsync::session::LocalSide, Arc<AtomicU32>) {
+    fs::write(h.src(flow).join("x.bin"), data(SIZE, 81)).unwrap();
+    for dir in [h.src(flow), h.dst(flow)] {
+        let y = dir.join("y.txt");
+        fs::write(&y, Y_OLD).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&y)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_005))
+            .unwrap();
+    }
+    let fired = Arc::new(AtomicU32::new(0));
+    let hook = late_hook(h.src(flow).to_path_buf(), late, fired.clone());
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => local.hooks.on_first_chunk_sent = Some(hook),
+        Flow::Pull => h.daemon.hooks.lock().unwrap().on_first_chunk_sent = Some(hook),
+    }
+    (local, fired)
+}
+
+fn opts_with(extra: &[&'static str]) -> irsync::cli::SyncOptions {
+    let mut argv = vec!["irsync", "-a"];
+    argv.extend_from_slice(extra);
+    argv.extend(["src/", "host:m/"]);
+    irsync::cli::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
+}
+
+async fn recheck_resends_for(flow: Flow) {
+    let h = Harness::new().await;
+    let (local, fired) = seed_late(&h, flow, Late::Rewrite);
+    let out = h
+        .run_side(&opts_with(&["--paranoid"]), flow, local)
+        .await
+        .unwrap();
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "the hook did not fire once"
+    );
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(out.vanished.is_empty(), "{:?}", out.vanished);
+    assert_eq!(fs::read(h.dst(flow).join("y.txt")).unwrap(), Y_NEW);
+    common::assert_trees_equal(h.src(flow), h.dst(flow), &archive_opts().preserve);
+}
+
+/// `--paranoid` stats every listed file again at the end: `y.txt`, which
+/// was up to date at the walk and changed during the run, is sent then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_resends_a_file_changed_after_the_walk() {
+    within30(recheck_resends_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_resends_a_file_changed_after_the_walk_on_pull() {
+    within30(recheck_resends_for(Flow::Pull)).await;
+}
+
+/// Without `--paranoid` there is no final re-check: the destination keeps
+/// `y.txt` as it was at the walk, a state the source really held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_recheck_without_paranoid() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (local, fired) = seed_late(&h, flow, Late::Rewrite);
+        let out = h.run_side(&opts_with(&[]), flow, local).await.unwrap();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the hook did not fire once"
+        );
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert!(out.vanished.is_empty(), "{:?}", out.vanished);
+        assert_eq!(fs::read(h.dst(flow).join("y.txt")).unwrap(), Y_OLD);
+    })
+    .await;
+}
+
+async fn recheck_vanished_for(flow: Flow) {
+    let h = Harness::new().await;
+    let (local, fired) = seed_late(&h, flow, Late::Delete);
+    let out = h
+        .run_side(&opts_with(&["--paranoid"]), flow, local)
+        .await
+        .unwrap();
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "the hook did not fire once"
+    );
+    assert_eq!(out.exit_code(), 24, "{:?} {:?}", out.errors, out.vanished);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(out.vanished, vec![RelPath::new(b"y.txt").unwrap()]);
+    assert_eq!(fs::read(h.dst(flow).join("y.txt")).unwrap(), Y_OLD);
+    assert_eq!(
+        fs::read(h.dst(flow).join("x.bin")).unwrap(),
+        fs::read(h.src(flow).join("x.bin")).unwrap()
+    );
+}
+
+/// A listed file gone by the end of a `--paranoid` run: exit 24, and the
+/// destination keeps its copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_vanished_file_exits_24() {
+    within30(recheck_vanished_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_vanished_file_exits_24_on_pull() {
+    within30(recheck_vanished_for(Flow::Pull)).await;
+}
+
+/// A vanished file and a file given up: 23 outranks 24.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vanished_and_failed_exits_23() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (local, fired) = seed_late(&h, flow, Late::Delete);
+        // Before every `MayPlace` of `x.bin`, its head changes: given up.
+        let asked = Arc::new(AtomicU32::new(0));
+        let src = h.src(flow).join("x.bin");
+        let hook: FrameHook = {
+            let asked = asked.clone();
+            Arc::new(move |kind, m| {
+                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+                    let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
+                    rewrite_head(&src, 500 + n, 20 + n);
+                }
+                vec![m]
+            })
+        };
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(hook);
+        let out = h
+            .run_side(&opts_with(&["--paranoid"]), flow, local)
+            .await
+            .unwrap();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "the hook did not fire once"
+        );
+        assert_eq!(out.exit_code(), 23, "{:?} {:?}", out.errors, out.vanished);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        assert_eq!(out.errors[0].0.as_bytes(), b"x.bin");
+        assert_eq!(out.vanished, vec![RelPath::new(b"y.txt").unwrap()]);
+    })
+    .await;
+}
+
+/// A file sent again by the final re-check has had its retry: the
+/// receiver rewrites the source's `y.txt` before every `MayPlace` (the
+/// first, for `x.bin`, makes the re-check send `y.txt`; the second, for
+/// `y.txt` itself, changes it again), and it is given up with exit 23.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_second_change_exits_23() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let (local, _) = seed_late(&h, flow, Late::Rewrite);
+        let asked = Arc::new(AtomicU32::new(0));
+        let y = h.src(flow).join("y.txt");
+        let hook: FrameHook = {
+            let asked = asked.clone();
+            Arc::new(move |kind, m| {
+                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+                    let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
+                    fs::write(&y, format!("y, rewrite {n} before a MayPlace\n")).unwrap();
+                    fs::File::options()
+                        .write(true)
+                        .open(&y)
+                        .unwrap()
+                        .set_modified(
+                            SystemTime::UNIX_EPOCH
+                                + Duration::from_secs(1_000_000_100 + u64::from(n)),
+                        )
+                        .unwrap();
+                }
+                vec![m]
+            })
+        };
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(hook);
+        // Only the frame hook changes `y.txt`.
+        let mut local = local;
+        local.hooks.on_first_chunk_sent = None;
+        let out = h
+            .run_side(&opts_with(&["--paranoid"]), flow, local)
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+        let (path, msg) = &out.errors[0];
+        assert_eq!(path.as_bytes(), b"y.txt");
+        assert!(
+            msg.contains("changed after it was hashed (after retry)"),
+            "{msg}"
+        );
+        assert_eq!(fs::read(h.dst(flow).join("y.txt")).unwrap(), Y_OLD);
+        assert!(out.vanished.is_empty(), "{:?}", out.vanished);
+    })
+    .await;
+}
+
+/// A `--paranoid` session that resumes from the receiver's stored plan
+/// (the sender lists nothing) still settles: the connection drops while
+/// a file waits for its verdict, and the next one places it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_resumed_session_settles() {
+    within30(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let content = data(4 * MIB, 91);
+        fs::write(h.src(flow).join("x.bin"), &content).unwrap();
+        let fault = PartsFault::after(1);
+        let mut local = h.local_side();
+        local.hooks.drop_before_verdict = Some(fault.clone());
+        let ropts = ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..ReconnectOpts::default()
+        };
+        let (out, reconnects) = h
+            .run_reconnect(&opts_with(&["--paranoid"]), flow, ropts, local)
+            .await;
+        let out = out.unwrap();
+        assert!(fault.fired(), "the fault never fired");
+        assert_eq!(reconnects, 1);
+        assert!(out.resumed, "the second connection did not resume");
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(fs::read(h.dst(flow).join("x.bin")).unwrap(), content);
+    })
+    .await;
+}

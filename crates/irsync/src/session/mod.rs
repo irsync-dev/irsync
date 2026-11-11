@@ -980,6 +980,10 @@ pub struct Outcome {
     pub would_delete_omitted: u64,
     /// Deletions stopped at `--max-delete` with candidates left.
     pub max_delete_reached: bool,
+    /// `--paranoid`: listed source files that were gone (or no longer
+    /// regular files) at the final re-check. A pulling client gets only
+    /// the first of them from the daemon, capped as `deleted` is.
+    pub vanished: Vec<RelPath>,
     /// What this side spent its time and bytes on.
     pub usage: Usage,
     /// Times the client dialled again after losing the connection.
@@ -1009,6 +1013,7 @@ impl Outcome {
         self.would_delete.extend(o.would_delete);
         self.would_delete_omitted += o.would_delete_omitted;
         self.max_delete_reached |= o.max_delete_reached;
+        self.vanished.extend(o.vanished);
         self.usage.add(&o.usage);
     }
 
@@ -1022,15 +1027,18 @@ impl Outcome {
         self.would_delete.len() as u64 + self.would_delete_omitted
     }
 
-    /// rsync's convention: 0 ok, 23 partial transfer due to error, 25
-    /// deletions stopped at `--max-delete` (which takes precedence).
+    /// rsync's convention: 0 ok, 23 partial transfer due to error, 24 some
+    /// source files vanished (`--paranoid`'s final re-check), 25 deletions
+    /// stopped at `--max-delete`. 25 outranks 23, which outranks 24.
     pub fn exit_code(&self) -> i32 {
         if self.max_delete_reached {
             25
-        } else if self.errors.is_empty() {
-            0
-        } else {
+        } else if !self.errors.is_empty() {
             23
+        } else if !self.vanished.is_empty() {
+            24
+        } else {
+            0
         }
     }
 }

@@ -128,6 +128,10 @@ pub(super) struct RoleOpts {
     /// Sender only: `--paranoid`, hash each sent file again before the
     /// receiver may place it.
     pub paranoid: bool,
+    /// Both roles: the run ends with the sender's final re-check (`Settle`,
+    /// `Replan`, `Settled`): `--paranoid`, unless a dry run. Both sides
+    /// derive it from the client's options, so they always agree.
+    pub settle: bool,
 }
 
 impl RoleOpts {
@@ -151,6 +155,7 @@ impl RoleOpts {
             numeric_ids: o.numeric_ids,
             append: o.append,
             paranoid: o.paranoid,
+            settle: o.paranoid && !o.dry_run,
         }
     }
 
@@ -223,6 +228,8 @@ impl RoleOpts {
             },
             // The sending side's check: honoured when the daemon sends.
             paranoid: !receives && hello.paranoid,
+            // In both directions: a receiving daemon asks for the re-check.
+            settle: hello.paranoid && !hello.dry_run,
         }
     }
 }
@@ -1710,6 +1717,7 @@ pub(super) async fn test_ctx() -> TestCtx {
             numeric_ids: false,
             append: Append::Off,
             paranoid: false,
+            settle: false,
         },
         privs: Privs::current(),
         hooks: SideHooks::default(),

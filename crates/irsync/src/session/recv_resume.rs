@@ -35,6 +35,10 @@ impl Receiver {
         .unwrap_or_default();
         self.errors.extend(mkdir_errors);
         let mut requested = 0usize;
+        let max_id = plan.entries.iter().map(|e| e.file_id).max().unwrap_or(0);
+        // The files sent on this connection: the only ones the sender's
+        // final re-check looks at again (it listed nothing).
+        let mut regular = HashSet::new();
         for e in plan.entries {
             if self.persist.is_done(e.file_id) {
                 continue;
@@ -50,8 +54,15 @@ impl Receiver {
                 continue;
             }
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
-            self.queued
-                .push_back((e.file_id, path, entry, action, e.append_from));
+            regular.insert(path.clone());
+            self.queued.push_back((
+                e.file_id,
+                path,
+                entry,
+                action,
+                e.append_from,
+                Deferred::default(),
+            ));
             requested += 1;
         }
         tracing::info!(requested, "resuming the stored plan");
@@ -79,7 +90,10 @@ impl Receiver {
             deletes: None,
             listed: Default::default(),
             created: 0,
+            max_id,
+            regular: HashSet::new(),
         });
+        self.regular = regular;
         self.peer_listing_done = true;
         self.peer_listing_incomplete = plan.peer_listing_incomplete;
         self.plan_complete = true;
@@ -89,17 +103,12 @@ impl Receiver {
     /// in-flight cap are in flight (the planner's bound, for this path).
     pub(super) fn pump(&mut self) {
         while self.active < self.inflight_cap {
-            let Some((file_id, path, entry, action, append_from)) = self.queued.pop_front() else {
+            let Some((file_id, path, entry, action, append_from, deferred)) =
+                self.queued.pop_front()
+            else {
                 return;
             };
-            self.register(
-                file_id,
-                path.clone(),
-                entry,
-                action,
-                Deferred::default(),
-                None,
-            );
+            self.register(file_id, path.clone(), entry, action, deferred, None);
             self.ctx.hooks.event("plan", &path);
             self.out.send(Msg::Plan(PlanItem {
                 file_id,

@@ -20,7 +20,7 @@ use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck, MayPlace,
-    NeedChunks, PlaceVerdict, PlanEntry, PlanItem, SessionDone,
+    NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settled,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -28,7 +28,8 @@ use tracing::Instrument;
 
 use super::control::msg_name;
 use super::control::{
-    is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out, Persister,
+    capped_errors, is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out,
+    Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::limits::{basis_budget, basis_wire_len, list_budget};
@@ -69,6 +70,12 @@ pub(super) enum Done {
         task: u64,
         /// Bytes sent on success.
         result: io::Result<u64>,
+    },
+    /// The final re-check (see [`recheck`]) is over; its `Settled` goes
+    /// out right after.
+    Rechecked {
+        vanished: Vec<RelPath>,
+        errors: Vec<(RelPath, String)>,
     },
     /// The checks before placing (see [`SenderRole::verdict`]) are done.
     Verdict {
@@ -260,6 +267,21 @@ struct SenderRole {
     would_delete: Vec<RelPath>,
     would_delete_omitted: u64,
     max_delete_reached: bool,
+    /// `--paranoid` (see `RoleOpts::settle`): per path, the stat to compare
+    /// at the final re-check. Every listed regular file's walk stat goes in
+    /// when it is planned (the rest of `listed` joins at the re-check), and
+    /// each send's hash stat overwrites it; a file given up leaves. Without
+    /// a listing (resumed from the receiver's plan) only the files sent.
+    final_stats: HashMap<RelPath, Freshness>,
+    /// Paths the final re-check sent a `Replan` for: each may be planned
+    /// once more, though no longer in `listed`.
+    replanned: Arc<std::sync::Mutex<HashSet<RelPath>>>,
+    /// The final re-check, while it runs.
+    rechecking: Option<JoinHandle<()>>,
+    /// The receiver asked for the final re-check.
+    settled: bool,
+    /// Listed files the final re-check found gone.
+    vanished: Vec<RelPath>,
 }
 
 /// Records per `ChunkListPart` (a test hook may shrink it).
@@ -476,6 +498,8 @@ impl SenderRole {
             return;
         };
         tracing::info!(path = ?f.path, error = %msg, "cannot send file");
+        // Given up and reported: not checked again at the end.
+        self.final_stats.remove(&f.path);
         self.ctx
             .hooks
             .bus
@@ -560,9 +584,18 @@ impl SenderRole {
         // path is checked as the walk would have admitted it, and one gone
         // since is an honest source error.
         // The root is never sent as a file, even when it is one and was listed.
+        // Planned again after the final re-check (`Replan`): no longer in
+        // `listed`, so re-stat'ed and checked as the walk would have
+        // admitted it. The re-check found it changed: that was its retry.
+        let again = self
+            .replanned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&path);
         let walked = match self.listing {
             _ if path.as_bytes().is_empty() => None,
             Listing::FromPlan => None,
+            _ if again => None,
             Listing::Running(_) | Listing::Undecided(_) => {
                 let walked = self
                     .listed
@@ -596,7 +629,7 @@ impl SenderRole {
             SFile {
                 path: path.clone(),
                 gen: 0,
-                retries: 0,
+                retries: if again { MAX_RETRIES } else { 0 },
                 append_from,
                 digest: None,
                 hash_stat: None,
@@ -624,6 +657,9 @@ impl SenderRole {
             action: p.action,
             ..PlanEntry::default()
         });
+        if let (true, Some(walked)) = (self.ctx.opts.settle, walked) {
+            self.final_stats.insert(path.clone(), walked);
+        }
         match walked {
             Some(walked) => self.spawn_digest(file_id, 0, path, false, false, Some(walked)),
             None if path.as_bytes().is_empty() => {
@@ -678,6 +714,9 @@ impl SenderRole {
             }
             Ok((Hashed { digest: d, stat }, held, cloned)) => {
                 f.hash_stat = Some(stat);
+                if self.ctx.opts.settle {
+                    self.final_stats.insert(f.path.clone(), stat);
+                }
                 f.cloned = cloned;
                 let with_hash = f.append_from.is_none();
                 // Sent once the receiver has room for it (`pump_lists`),
@@ -1177,6 +1216,7 @@ impl SenderRole {
             Ok(Status::HashMismatch) => self.retry(file_id, "whole-file hash mismatch".into()),
             Ok(Status::WriteError) => {
                 if let Some(f) = self.remove_file(file_id) {
+                    self.final_stats.remove(&f.path);
                     let msg = format!("receiver: {}", a.message);
                     tracing::info!(path = ?f.path, error = %msg, "file failed");
                     self.ctx
@@ -1190,6 +1230,54 @@ impl SenderRole {
                 tracing::warn!(file_id, status = a.status, "unexpected FileAck status");
             }
         }
+    }
+
+    /// The receiver has planned every path and has nothing in flight:
+    /// `--paranoid`'s final re-check (see [`recheck`]) starts.
+    fn on_settle(&mut self) -> anyhow::Result<()> {
+        if !self.ctx.opts.settle {
+            bail!("protocol error: Settle without --paranoid");
+        }
+        if std::mem::replace(&mut self.settled, true) {
+            bail!("protocol error: a second Settle");
+        }
+        let mut stats = std::mem::take(&mut self.final_stats);
+        // The walk is over (the receiver had our ListingEnd): what is left
+        // in `listed` was never planned, and is checked against its walk stat.
+        for (path, walked) in self
+            .listed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+        {
+            stats.entry(path).or_insert(walked);
+        }
+        let mut stats: Vec<(RelPath, Freshness)> = stats.into_iter().collect();
+        stats.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        tracing::debug!(files = stats.len(), "final re-check");
+        self.rechecking = Some(tokio::spawn(
+            recheck(
+                self.ctx.clone(),
+                self.out.clone(),
+                self.events.clone(),
+                stats,
+                self.replanned.clone(),
+            )
+            .instrument(tracing::Span::current()),
+        ));
+        Ok(())
+    }
+
+    /// The final re-check is over: what it found counts in the outcome.
+    fn on_rechecked(&mut self, vanished: Vec<RelPath>, errors: Vec<(RelPath, String)>) {
+        for (path, msg) in &errors {
+            self.ctx
+                .hooks
+                .bus
+                .emit(super::Event::Failed(path.clone(), msg.clone()));
+        }
+        self.errors.extend(errors);
+        self.vanished = vanished;
     }
 
     /// Folds the receiver's own per-path errors in (those not already known
@@ -1426,6 +1514,114 @@ async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Opti
     }
 }
 
+/// What the final re-check found for one listed file.
+enum Rechecked {
+    Same,
+    /// Changed: its entry as it is now.
+    Changed(Box<irsync_proto::v1::FileEntry>),
+    /// Gone, or no longer a regular file.
+    Vanished,
+    /// Could not be stat'ed.
+    Failed(String),
+}
+
+/// Paths the final re-check stats per blocking task.
+const RECHECK_BATCH: usize = 256;
+
+/// `--paranoid`'s final re-check: stats every path in `stats` again and
+/// compares it with the stat it was listed or last hashed under. A changed
+/// regular file goes to the receiver as a `Replan` (and into `replanned`,
+/// so its new `PlanItem` is admitted), then the receiver gets `Settled`
+/// with the files gone and those that could not be stat'ed. The frames are
+/// paced: their number is that of the files listed, not bounded by the
+/// files in flight.
+async fn recheck(
+    ctx: Arc<Ctx>,
+    out: Out,
+    events: mpsc::UnboundedSender<Ev>,
+    stats: Vec<(RelPath, Freshness)>,
+    replanned: Arc<std::sync::Mutex<HashSet<RelPath>>>,
+) {
+    let (mut vanished, mut errors) = (Vec::new(), Vec::new());
+    let mut names = crate::fs::ids::IdNames::new();
+    for batch in stats.chunks(RECHECK_BATCH) {
+        let (c, batch) = (ctx.clone(), batch.to_vec());
+        let found = blocking(move || {
+            Ok(batch
+                .into_iter()
+                .map(|(path, before)| {
+                    c.activity
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let found = match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                        Ok((entry, _)) if entry.kind() != Kind::Regular => Rechecked::Vanished,
+                        Ok((entry, ctime)) if Freshness::of_entry(&entry, ctime) == before => {
+                            Rechecked::Same
+                        }
+                        Ok((entry, _)) => Rechecked::Changed(Box::new(entry)),
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                            ) =>
+                        {
+                            Rechecked::Vanished
+                        }
+                        Err(e) => Rechecked::Failed(format!("final re-check: {e}")),
+                    };
+                    (path, found)
+                })
+                .collect::<Vec<_>>())
+        })
+        .await;
+        let found = match found {
+            Ok(f) => f,
+            Err(e) => {
+                errors.push((RelPath::root(), format!("final re-check: {e}")));
+                break;
+            }
+        };
+        for (path, found) in found {
+            match found {
+                Rechecked::Same => {}
+                Rechecked::Changed(mut entry) => {
+                    tracing::info!(?path, "changed during the sync; sending it again");
+                    entry.path = path.as_bytes().to_vec();
+                    names.attach(&mut entry);
+                    replanned
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path.clone());
+                    out.send_paced(Msg::Replan(Replan {
+                        path: path.as_bytes().to_vec(),
+                        entry: Some(*entry),
+                    }))
+                    .await;
+                }
+                Rechecked::Vanished => {
+                    tracing::info!(
+                        "{}: vanished during the sync",
+                        crate::fs::paths::escape_path(path.as_bytes())
+                    );
+                    vanished.push(path);
+                }
+                Rechecked::Failed(msg) => {
+                    tracing::info!(?path, error = %msg, "final re-check");
+                    errors.push((path, msg));
+                }
+            }
+        }
+    }
+    let (capped, vanished_omitted) = super::receiver::capped_paths(&vanished);
+    let settled = Settled {
+        vanished: capped,
+        errors: capped_errors(&errors),
+        vanished_omitted,
+    };
+    // Known to the main loop before the receiver can end the session.
+    let _ = events.send(Ev::Send(Done::Rechecked { vanished, errors }));
+    out.send_paced(Msg::Settled(settled)).await;
+}
+
 /// Whether the walk (from `root`, with `filters`) would list `path` as a
 /// regular file: no component is a symlink or excluded, the file is regular
 /// and is not one of irsync's own temporary files.
@@ -1551,6 +1747,11 @@ pub(super) async fn run(
         would_delete: Vec::new(),
         would_delete_omitted: 0,
         max_delete_reached: false,
+        final_stats: HashMap::new(),
+        replanned: Arc::default(),
+        rechecking: None,
+        settled: false,
+        vanished: Vec::new(),
     };
     if !ctx.resumed {
         s.decide(true);
@@ -1578,7 +1779,9 @@ pub(super) async fn run(
         if let Listing::Undecided(_) = s.listing {
             match &ev {
                 Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.decide(true),
-                Ev::Ctrl(Msg::Plan(_)) => s.decide(false),
+                // A resumed plan with nothing left to request asks for the
+                // final re-check first.
+                Ev::Ctrl(Msg::Plan(_) | Msg::Settle(_)) => s.decide(false),
                 _ => {}
             }
         }
@@ -1610,6 +1813,11 @@ pub(super) async fn run(
                 Ok(())
             }
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
+            Ev::Ctrl(Msg::Settle(_)) => s.on_settle(),
+            Ev::Send(Done::Rechecked { vanished, errors }) => {
+                s.on_rechecked(vanished, errors);
+                Ok(())
+            }
             Ev::Ctrl(Msg::Itemized(i)) => {
                 s.on_itemized(i);
                 Ok(())
@@ -1636,6 +1844,9 @@ pub(super) async fn run(
                 }
                 Ok(())
             }
+            Ev::Ctrl(Msg::Done(_)) if s.ctx.opts.settle && !s.settled => Err(anyhow::anyhow!(
+                "protocol error: SessionDone without the final re-check (--paranoid)"
+            )),
             Ev::Ctrl(Msg::Done(d)) => {
                 s.on_session_done(d);
                 break Ok(());
@@ -1660,6 +1871,9 @@ pub(super) async fn run(
         s.pump_lists();
     };
     s.transfer.end();
+    if let Some(t) = s.rechecking.take() {
+        t.abort();
+    }
     if res.is_ok() {
         // The receiver can finish before our last streams report back (it
         // has the data; we wait for the transport's acknowledgement): collect
@@ -1723,6 +1937,7 @@ pub(super) async fn run(
         would_delete: s.would_delete,
         would_delete_omitted: s.would_delete_omitted,
         max_delete_reached: s.max_delete_reached,
+        vanished: s.vanished,
         usage: Default::default(),
         reconnects: 0,
         conn: None,
@@ -1849,6 +2064,11 @@ mod tests {
             would_delete: Vec::new(),
             would_delete_omitted: 0,
             max_delete_reached: false,
+            final_stats: HashMap::new(),
+            replanned: Arc::default(),
+            rechecking: None,
+            settled: false,
+            vanished: Vec::new(),
         };
         (s, t, done)
     }

@@ -149,15 +149,15 @@ fn sender_events(h: &Harness, flow: Flow, local: &EventLog) -> Vec<String> {
 struct Seen {
     /// Passes over `x.bin`.
     passes: AtomicU32,
-    /// `x.bin` as it was before the first rewrite.
+    /// `x.bin` as it was before the latest rewrite (as its clone holds it).
     before: Mutex<Option<Vec<u8>>>,
     /// A session folder with a clone in it existed during a pass.
     clone_seen: AtomicBool,
 }
 
 /// A hook that, on every pass over `x.bin`, once 4 MiB are read, saves the
-/// source's content (first time only), checks a clone exists in `base`,
-/// and rewrites the source's first and last 256 KiB with a new mtime.
+/// source's content, checks a clone exists in `base`, and rewrites the
+/// source's first and last 256 KiB with a new mtime (1e9 + 100 + pass).
 fn rewriting_hook(src: PathBuf, base: PathBuf, seen: Arc<Seen>) -> HashHook {
     let torn = Arc::new(AtomicBool::new(false));
     Arc::new(move |p: &RelPath, bytes: u64| {
@@ -173,12 +173,7 @@ fn rewriting_hook(src: PathBuf, base: PathBuf, seen: Arc<Seen>) -> HashHook {
             return;
         }
         let path = src.join("x.bin");
-        {
-            let mut b = seen.before.lock().unwrap();
-            if b.is_none() {
-                *b = Some(fs::read(&path).unwrap());
-            }
-        }
+        *seen.before.lock().unwrap() = Some(fs::read(&path).unwrap());
         if any_clone_in(&base) {
             seen.clone_seen.store(true, Ordering::SeqCst);
         }
@@ -269,12 +264,15 @@ async fn sends_a_clone_for(flow: Flow) {
         seen.clone_seen.load(Ordering::SeqCst),
         "no clone existed while the file was hashed"
     );
-    // The clone is hashed once; no second hash of the source.
-    assert_eq!(seen.passes.load(Ordering::SeqCst), 1);
+    // Each clone is hashed once; no second hash of the source. The final
+    // re-check finds the source changed since the first clone and sends it
+    // again, from a second clone, which is accepted though the source
+    // changes again.
+    assert_eq!(seen.passes.load(Ordering::SeqCst), 2);
     let before = seen.before.lock().unwrap().clone().expect("hook ran");
     assert!(
         fs::read(h.dst(flow).join("x.bin")).unwrap() == before,
-        "the destination is not the source as it was cloned"
+        "the destination is not the source as it was last cloned"
     );
     assert!(
         events.iter().any(|e| e == "clone-outdated:x.bin"),
@@ -307,8 +305,11 @@ async fn paranoid_places_the_clone_time_stat() {
             T1,
             "the hook did not rewrite the source"
         );
+        // Placed with the stat of the last clone (sent again by the final
+        // re-check), taken after the first rewrite and before the second.
         let dst = fs::metadata(h.dst(flow).join("x.bin")).unwrap();
-        assert_eq!((dst.mtime() as u64, dst.mtime_nsec()), (T1, 0));
+        assert_eq!((dst.mtime() as u64, dst.mtime_nsec()), (1_000_000_101, 0));
+        assert_eq!(src.mtime() as u64, 1_000_000_102);
         assert_eq!(dst.len(), SIZE as u64);
     })
     .await;

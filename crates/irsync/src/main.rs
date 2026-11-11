@@ -125,8 +125,9 @@ fn early_settings(config: Option<&std::path::Path>) -> Settings {
 }
 
 /// Exit codes: 0 ok, 1 configuration, operand or connection errors, 23
-/// partial transfer, 25 deletions stopped at `--max-delete` (23 and 25 as in
-/// rsync; a command line clap cannot parse has already exited 2).
+/// partial transfer, 24 some source files vanished (`--paranoid`), 25
+/// deletions stopped at `--max-delete` (23, 24 and 25 as in rsync; a command
+/// line clap cannot parse has already exited 2).
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let log = LogWriter::new();
     let rt = match tokio::runtime::Runtime::new() {
@@ -214,6 +215,12 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             sessions,
             failed,
         }) => {
+            for path in &outcome.vanished {
+                eprintln!(
+                    "irsync: {}: vanished during the sync",
+                    path.to_os().to_string_lossy()
+                );
+            }
             for (path, msg) in &outcome.errors {
                 eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
             }
@@ -269,7 +276,8 @@ async fn wait_for_signal(signals: Option<ExitSignals>) {
 /// The process exit code for `total` sessions of which `failed` errored:
 /// all failed = 1 (nothing got through); otherwise 25 (deletions stopped at
 /// `--max-delete`) outranks 23 (partial transfer, per-file errors or some
-/// sources failed) outranks 0.
+/// sources failed) outranks 24 (source files vanished, `--paranoid`)
+/// outranks 0.
 fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 {
     if failed > 0 && failed >= total {
         1
@@ -277,6 +285,8 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
         25
     } else if failed > 0 || outcomes.iter().any(|o| !o.errors.is_empty()) {
         23
+    } else if outcomes.iter().any(|o| !o.vanished.is_empty()) {
+        24
     } else {
         0
     }
@@ -1830,11 +1840,28 @@ mod tests {
         }
     }
 
+    /// `out`, with a source file that vanished during the sync.
+    fn vanished(max_delete: bool, errors: usize) -> Outcome {
+        Outcome {
+            vanished: vec![irsync::fs::paths::RelPath::new(b"v").unwrap()],
+            ..out(max_delete, errors)
+        }
+    }
+
     #[test]
-    fn exit_codes_rank_25_over_23_over_1_over_0() {
+    fn exit_codes_rank_1_over_25_over_23_over_24_over_0() {
         assert_eq!(combine_exit_codes(&[out(false, 0)], 0, 1), 0);
+        assert_eq!(combine_exit_codes(&[vanished(false, 0)], 0, 1), 24);
         assert_eq!(combine_exit_codes(&[out(false, 2)], 0, 1), 23);
+        assert_eq!(combine_exit_codes(&[vanished(false, 2)], 0, 1), 23);
         assert_eq!(combine_exit_codes(&[out(true, 2)], 0, 1), 25);
+        assert_eq!(combine_exit_codes(&[vanished(true, 0)], 0, 1), 25);
+        // Several sources: one vanished a file, another synced cleanly.
+        assert_eq!(
+            combine_exit_codes(&[vanished(false, 0), out(false, 0)], 0, 2),
+            24
+        );
+        assert_eq!(combine_exit_codes(&[vanished(false, 0)], 1, 3), 23);
         // Several sources: one failed, the rest synced.
         assert_eq!(combine_exit_codes(&[out(false, 0)], 1, 3), 23);
         assert_eq!(combine_exit_codes(&[out(true, 0)], 1, 3), 25);

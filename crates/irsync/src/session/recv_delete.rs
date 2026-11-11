@@ -107,7 +107,7 @@ pub(super) const MAX_DONE_PATHS: usize = 1000;
 pub(super) const MAX_DONE_PATH_BYTES: usize = 64 * 1024;
 
 /// The first paths of `v` within both caps, and how many were left out.
-pub(super) fn capped_paths(v: &[RelPath]) -> (Vec<Vec<u8>>, u64) {
+pub(in crate::session) fn capped_paths(v: &[RelPath]) -> (Vec<Vec<u8>>, u64) {
     let mut bytes = 0;
     let kept: Vec<Vec<u8>> = v
         .iter()

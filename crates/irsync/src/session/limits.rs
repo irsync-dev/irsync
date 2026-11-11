@@ -86,7 +86,9 @@ const FILE_WIRE: usize = 16 * 1024;
 /// peer); each kind is bounded by the protocol instead:
 ///
 /// - Sender: chunk lists, sent only into the room the receiver granted
-///   (`list_budget` records, `RECORD_WIRE` each); per file in flight
+///   (`list_budget` records, `RECORD_WIRE` each); paced frames
+///   ([`OUT_BUDGET`]: the final re-check's `Replan`s, one per listed file
+///   that changed, and its `Settled`); per file in flight
 ///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`), the empty first
 ///   part that withdraws a retried file's list and a `PlaceVerdict` per
 ///   list (`FILE_WIRE`).
@@ -100,8 +102,8 @@ const FILE_WIRE: usize = 16 * 1024;
 ///   than the budget passes alone; `SessionDone`, `Error`), which also
 ///   covers heartbeats (two a second at most, a few dozen bytes each).
 ///
-/// With the defaults: a sender 2^24 × 55 B + 4096 × 16 KiB + 16 MiB ≈ 1.0
-/// GB (960 MiB, nearly all of it chunk lists), a receiver 4 MiB + 5 × 2^24
+/// With the defaults: a sender 4 MiB + 2^24 × 55 B + 4096 × 16 KiB + 16 MiB
+/// ≈ 1.0 GB (964 MiB, nearly all of it chunk lists), a receiver 4 MiB + 5 × 2^24
 /// × 4 B + 4096 × 16 KiB + 16 MiB ≈ 424 MB.
 ///
 /// [`MAX_INFLIGHT`]: super::planner::MAX_INFLIGHT
@@ -114,7 +116,7 @@ fn honest_out(list_budget: u64, sends: bool) -> usize {
     let records = usize::try_from(list_budget).unwrap_or(usize::MAX);
     let files = MAX_INFLIGHT.saturating_mul(FILE_WIRE);
     let frames = if sends {
-        records.saturating_mul(RECORD_WIRE)
+        OUT_BUDGET.saturating_add(records.saturating_mul(RECORD_WIRE))
     } else {
         let lists =
             (1 + super::sender_role::MAX_RETRIES + super::receiver::MAX_REREQUESTS) as usize;

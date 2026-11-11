@@ -147,6 +147,9 @@ export.
 | `FileAck` | either | From the receiver: `DONE`, `HASH_MISMATCH`, `WRITE_ERROR`. From the sender: `SOURCE_ERROR`, it cannot read the file. `DONE` carries the bytes the receiver did not take from the sender. |
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |
+| `Settle` | receiver to sender | With `--paranoid` (not on a dry run), once, in place of the first `SessionDone`: every path is planned and no file is in flight. The sender stats every file it listed again. |
+| `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed, with its entry as it is now. The receiver plans it again, under a new file id. |
+| `Settled` | sender to receiver | The re-check is over: the listed files that vanished, and those it could not stat. The receiver sends `SessionDone` once the re-planned files are done. |
 | `SessionDone` | receiver to sender | The session's totals, errors and deletions. |
 | `Error` | daemon to client | A refusal, as above. |
 
