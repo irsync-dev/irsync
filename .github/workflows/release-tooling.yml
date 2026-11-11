@@ -1,0 +1,95 @@
+# Checks the release tooling when it changes, so a mistake shows up in the pull
+# request and not at release time. It runs only for changes to the files
+# listed below (keep the two lists the same); ci.yml is not touched.
+
+name: Release tooling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packaging/**'
+      - 'dist-workspace.toml'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/packages.yml'
+      - '.github/scripts/**'
+      - 'site/install.sh'
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'dist-workspace.toml'
+      - '.github/workflows/release*.yml'
+      - '.github/workflows/packages.yml'
+      - '.github/scripts/**'
+      - 'site/install.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    name: Packaging and release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the packaging tools
+        run: .github/scripts/install-packaging-tools.sh
+
+      - name: Test the packaging scripts
+        run: PACKAGING_TESTS_REQUIRED=1 python3 -m unittest discover -s packaging/tests
+
+      - name: Test the release scripts
+        run: python3 -m unittest discover -s .github/scripts/tests
+
+      - name: Test the install script
+        run: python3 -m unittest discover -s site/tools -p 'test_install.py'
+
+  dist:
+    name: release.yml is up to date
+    runs-on: ubuntu-latest
+    env:
+      DIST_VERSION: 0.34.0
+      DIST_SHA256: 7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install dist
+        run: |
+          set -euo pipefail
+          name=cargo-dist-x86_64-unknown-linux-gnu
+          curl -fsSL -o "$RUNNER_TEMP/dist.tar.xz" \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/${name}.tar.xz"
+          echo "$DIST_SHA256  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
+          tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: Check release.yml matches dist-workspace.toml
+        run: dist generate --check
+
+  actionlint:
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+
+      # shellcheck is off: it would also lint the generated release.yml, which
+      # we cannot change.
+      - name: Lint the workflows
+        run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='
