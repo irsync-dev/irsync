@@ -38,9 +38,9 @@ cargo test -p netstress -- --include-ignored
 
 ## Things that trip people up
 
-- **CI does not run yet.** The repository is not hosted on GitHub, so
-  `.github/workflows/ci.yml` never fires. Run the full regression above
-  yourself.
+- **CI runs on GitHub** (`.github/workflows/ci.yml`, Linux and macOS) for
+  every push to `main` and every pull request, with the full regression.
+  Run it locally first anyway: a macOS-only failure is cheaper to find here.
 - **GNU rsync 3.1 or newer must be on `PATH`.** Without it,
   `crates/irsync/tests/rsync_compare.rs` passes without checking anything.
   macOS ships an older rsync: `brew install rsync`.
