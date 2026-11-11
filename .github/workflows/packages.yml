@@ -1,7 +1,15 @@
-# Builds the .deb and .rpm packages for a stable release, attaches them to the
-# GitHub Release, and adds them to the signed apt/dnf repo (irsync-dev/packages,
-# served at https://dist.irsync.org). Release-gate.yml calls this after the
-# release succeeded; it is never started on its own, and never for pre-releases.
+# Builds the .deb and .rpm packages for a stable release, adds them to the
+# signed apt/dnf repo (irsync-dev/packages, served at https://dist.irsync.org)
+# and attaches the same files to the GitHub Release. Release-gate.yml calls
+# this after the release succeeded, and release-resume.yml calls it to finish
+# a release whose gate failed later on. It is never started on its own.
+#
+# A re-run for a version the repo already has builds nothing and changes
+# nothing in the repo; it only attaches files the release is missing.
+#
+# A dry run (pre-release tags allowed) builds, signs and checks everything,
+# and checks that the token may push to the packages repo, but uploads
+# nothing to the release and pushes nothing. The result is a workflow artifact.
 
 name: Packages
 
@@ -11,6 +19,9 @@ on:
       tag:
         type: string
         required: true
+      dry-run:
+        type: boolean
+        default: false
     secrets:
       PACKAGES_REPO_TOKEN:
         required: true
@@ -35,8 +46,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag }}
-      NFPM_VERSION: 2.48.0
-      NFPM_SHA256: 6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+      DRY_RUN: ${{ inputs.dry-run }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,49 +55,19 @@ jobs:
       - name: Work out the version
         run: |
           set -euo pipefail
-          # Only stable tags get packages.
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          prerelease=$(.github/scripts/check-release-tag.sh "$TAG")
+          # Only stable tags get packages. A dry run may use a pre-release.
+          if [ "$prerelease" != prerelease=false ] && [ "$DRY_RUN" != true ]; then
             echo "::error::Tag '$TAG' is not a stable release tag (vX.Y.Z). No packages."
             exit 1
           fi
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
-      - name: Download the Linux archives from the release
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/archives"
-          gh release download "$TAG" --dir "$RUNNER_TEMP/archives" \
-            --pattern 'irsync-x86_64-unknown-linux-musl.tar.xz' \
-            --pattern 'irsync-aarch64-unknown-linux-musl.tar.xz'
-
       - name: Install the packaging tools
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c rpm gnupg
-          url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/nfpm.tar.gz" "$url"
-          echo "$NFPM_SHA256  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum --check -
-          mkdir -p "$RUNNER_TEMP/nfpm"
-          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP/nfpm" nfpm
-          echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+        run: .github/scripts/install-packaging-tools.sh
 
       - name: Test the packaging scripts
         run: PACKAGING_TESTS_REQUIRED=1 python3 -m unittest discover -s packaging/tests
-
-      - name: Build the packages
-        run: packaging/build-packages.sh "$RUNNER_TEMP/archives" "$VERSION" "$RUNNER_TEMP/packages"
-
-      - name: Attach the packages to the release
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=("$RUNNER_TEMP"/packages/*.deb "$RUNNER_TEMP"/packages/*.rpm)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::No packages were built."
-            exit 1
-          fi
-          gh release upload "$TAG" "${files[@]}" --clobber
 
       - name: Import the signing key
         env:
@@ -117,26 +97,93 @@ jobs:
           path: packages-repo
           persist-credentials: true
 
-      - name: Update the repo and sign it
-        env:
-          GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
+      - name: Check whether the repo has this version
+        id: repo
         run: |
           set -euo pipefail
-          packaging/update-repo.sh packages-repo "$RUNNER_TEMP/packages" 3
+          if packaging/repo-version.sh has packages-repo "$VERSION"; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the Linux archives from the release
+        if: steps.repo.outputs.have != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archives"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/archives" \
+            --pattern 'irsync-x86_64-unknown-linux-musl.tar.xz' \
+            --pattern 'irsync-aarch64-unknown-linux-musl.tar.xz'
+
+      - name: Build the packages
+        if: steps.repo.outputs.have != 'true'
+        run: packaging/build-packages.sh "$RUNNER_TEMP/archives" "$VERSION" "$RUNNER_TEMP/built"
+
+      - name: Add them to the repo and sign it
+        if: steps.repo.outputs.have != 'true'
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
+        run: packaging/update-repo.sh packages-repo "$RUNNER_TEMP/built" 3
+
+      # Taken from the repo, so the release gets the signed .rpm files.
+      - name: Collect this version's packages
+        run: packaging/repo-version.sh copy packages-repo "$VERSION" "$RUNNER_TEMP/packages"
 
       - name: Commit and push
         working-directory: packages-repo
         run: |
           set -euo pipefail
           git add -A
-          # A re-run with the same packages changes nothing.
           if git diff --cached --quiet; then
             echo "The packages repo is already up to date."
-            exit 0
+          else
+            git -c user.name='irsync releases' -c user.email='releases@irsync.org' \
+              commit -m "irsync $VERSION"
           fi
-          git -c user.name='irsync releases' -c user.email='releases@irsync.org' \
-            commit -m "irsync $VERSION"
-          git push
+          if [ "$DRY_RUN" = true ]; then
+            # Contacts the repo and checks the token may push, but pushes nothing.
+            git push --dry-run
+          else
+            git push
+          fi
+
+      # After the push, so the release and the repo always hold the same files.
+      - name: Attach the packages to the release
+        if: ${{ !inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          attached=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          files=()
+          for f in "$RUNNER_TEMP"/packages/*; do
+            name=${f##*/}
+            if grep -qxF "$name" <<<"$attached"; then
+              echo "$name is already attached."
+            else
+              files+=("$f")
+            fi
+          done
+          if [ "${#files[@]}" -gt 0 ]; then
+            gh release upload "$TAG" "${files[@]}"
+          fi
+
+      - name: Keep the packages (dry run)
+        if: ${{ inputs.dry-run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ inputs.tag }}
+          path: ${{ runner.temp }}/packages
+          if-no-files-found: error
+
+      - name: Keep the repo tree (dry run)
+        if: ${{ inputs.dry-run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-repo-${{ inputs.tag }}
+          path: |
+            packages-repo
+            !packages-repo/.git
+          if-no-files-found: error
 
       - name: Remove the signing key
         if: always()

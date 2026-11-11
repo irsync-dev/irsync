@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
 BUILD = os.path.join(PKG, "build-packages.sh")
 UPDATE = os.path.join(PKG, "update-repo.sh")
+REPO_VERSION = os.path.join(PKG, "repo-version.sh")
 UID = "irsync releases <releases@irsync.org>"
 TOOLS = ["nfpm", "apt-ftparchive", "createrepo_c", "rpm", "rpmsign", "gpg", "dpkg-deb"]
 ARCHES = {  # rust triple arch -> (deb arch, rpm arch)
@@ -110,10 +111,35 @@ class Base(unittest.TestCase):
             pkgs = self.rpms(repo, rpm_arch)
             self.assertTrue(pkgs)
             for pkg in pkgs:
-                out = run("rpm", "--dbpath", db, "-K", pkg).stdout
-                self.assertRegex(out, r"\bOK\b")
-                self.assertNotIn("NOT OK", out)
-                self.assertNotIn("NOKEY", out)
+                self.check_rpm_sig(pkg, db)
+
+    def check_rpm_sig(self, pkg, db):
+        out = run("rpm", "--dbpath", db, "-Kv", pkg).stdout
+        # Older rpm says "digests OK" for an unsigned package, so look for
+        # a signature line that checked out.
+        self.assertRegex(out, r"(?i)signature, key .*: OK")
+        self.assertNotIn("NOT OK", out)
+        self.assertNotIn("NOKEY", out)
+
+    def publish(self, repo, version, out):
+        """What packages.yml does. Builds and adds the version only if the
+        repo lacks it, then copies its files out. Returns True if it built."""
+        has = run(REPO_VERSION, "has", repo, version, env=self.env, check=False)
+        self.assertIn(has.returncode, (0, 1), has.stderr)
+        if has.returncode:
+            self.update(repo, [version])
+        run(REPO_VERSION, "copy", repo, version, out, env=self.env)
+        return has.returncode != 0
+
+    def snapshot(self, d):
+        """Every file under d with its bytes."""
+        files = {}
+        for top, _, names in os.walk(d):
+            for n in names:
+                p = os.path.join(top, n)
+                with open(p, "rb") as f:
+                    files[os.path.relpath(p, d)] = f.read()
+        return files
 
     def import_key(self, repo):
         db = os.path.join(self.root, "rpmdb-" + os.path.basename(repo))
@@ -249,6 +275,58 @@ class Tests(Base):
         with open(f"{repo}/irsync.repo") as f:
             self.assertIn("repo_gpgcheck=1", f.read())
         self.assertTrue(os.path.isfile(f"{repo}/index.html"))
+
+
+    def test_release_files_are_the_signed_repo_files(self):
+        repo = self.new_repo()
+        out = os.path.join(repo + "-out")
+        self.assertTrue(self.publish(repo, "0.2.0", out))
+        names = sorted(os.listdir(out))
+        self.assertEqual(names, [
+            "irsync-0.2.0-1.aarch64.rpm", "irsync-0.2.0-1.x86_64.rpm",
+            "irsync_0.2.0_amd64.deb", "irsync_0.2.0_arm64.deb"])
+        db = self.import_key(repo)
+        for _, rpm_arch in ARCHES.values():
+            name = f"irsync-0.2.0-1.{rpm_arch}.rpm"
+            self.check_rpm_sig(f"{out}/{name}", db)
+            with open(f"{out}/{name}", "rb") as a, open(f"{repo}/rpm/{rpm_arch}/{name}", "rb") as b:
+                self.assertEqual(a.read(), b.read())
+            # nfpm's own output is unsigned; the release must not get that.
+            with open(f"{out}/{name}", "rb") as a, open(f"{self.build('0.2.0')}/{name}", "rb") as b:
+                self.assertNotEqual(a.read(), b.read())
+        for deb_arch, _ in ARCHES.values():
+            name = f"irsync_0.2.0_{deb_arch}.deb"
+            with open(f"{out}/{name}", "rb") as a, open(f"{repo}/apt/pool/main/i/irsync/{name}", "rb") as b:
+                self.assertEqual(a.read(), b.read())
+
+    def test_rerun_for_published_version_changes_nothing(self):
+        repo = self.new_repo()
+        self.publish(repo, "0.2.0", repo + "-out1")
+        self.publish(repo, "0.3.0", repo + "-out1b")
+        before = self.snapshot(repo)
+        # False: nothing was built or added again.
+        self.assertFalse(self.publish(repo, "0.3.0", repo + "-out2"))
+        self.assertFalse(self.publish(repo, "0.2.0", repo + "-out3"))
+        self.assertEqual(self.snapshot(repo), before)
+        self.assertEqual(self.snapshot(repo + "-out2"), self.snapshot(repo + "-out1b"))
+        self.assertEqual(self.snapshot(repo + "-out3"), self.snapshot(repo + "-out1"))
+
+    def test_partly_published_version_is_rebuilt(self):
+        repo = self.new_repo()
+        self.publish(repo, "0.2.0", repo + "-out")
+        os.remove(f"{repo}/rpm/aarch64/irsync-0.2.0-1.aarch64.rpm")
+        r = run(REPO_VERSION, "has", repo, "0.2.0", check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("rpm/aarch64/irsync-0.2.0-1.aarch64.rpm", r.stdout)
+        self.assertTrue(self.publish(repo, "0.2.0", repo + "-out2"))
+        self.check_rpm_sigs(repo, self.import_key(repo))
+
+    def test_copy_fails_for_missing_version(self):
+        repo = self.new_repo()
+        self.publish(repo, "0.2.0", repo + "-out")
+        r = run(REPO_VERSION, "copy", repo, "0.9.9", repo + "-none", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("missing", r.stderr)
 
 
 class PassphraseTests(Base):
