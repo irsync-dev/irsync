@@ -197,24 +197,29 @@ out. In a test on ZFS 2.4 (`clone_includes_unflushed_mmap_writes`), a clone
 made right after such a write held the new bytes. So on that filesystem a
 clone includes memory-mapped writes that have not reached the disk. Other
 filesystems have not been tested. Where irsync cannot clone, the second hash
-reads the file as the system holds it, which should include them; that is
-not tested.
+reads the file as the system holds it. Whether that includes them has not
+been tested.
 
 **Costs.** On a filesystem that clones, `--paranoid` makes one clone and
 deletes one per sent file. Elsewhere it reads each sent file one more time.
 At the end it makes one `stat` per listed file. It also creates and removes
 the clone folder, which changes the modification time of the directory that
-holds it, on each run. Under `--paranoid`, a file whose only change is its
-mode or modification time is sent again by a full delta, which reads both
-sides.
+holds it, on each run. Under `--paranoid`, the final re-check treats a
+changed mode or modification time as a change, because the stat differs. The
+file is then sent again in full as a delta, which reads both sides, even
+though its content is unchanged.
 
 #### Limits
 
 - **Memory-mapped writers, without `--paranoid`.** The checks cannot see a
-  write through a mapping before its times change. Use `--paranoid`.
-- **Coarse timestamps.** On Linux before 6.13, on network filesystems and on
-  FAT, a write in the same timestamp tick as the first stat can slip through
-  the stat checks.
+  write through a mapping before its times change. `--paranoid` may help;
+  only clones on ZFS 2.4 are shown to include such writes (see the
+  memory-mapped note above).
+- **Coarse timestamps.** Fine-grained change times exist on ext4, xfs, btrfs
+  and tmpfs on Linux 6.13 and newer. Elsewhere (older kernels, other local
+  filesystems such as ZFS, network filesystems, FAT) assume coarse
+  timestamps: a write in the same tick as the first stat can slip through the
+  stat checks.
 - **Files that change after the listing but are not sent.** Without
   `--paranoid`, irsync does not look at them again. The destination keeps
   the version from the time of the listing, a state the source really held.
@@ -233,7 +238,8 @@ sides.
 
 What to do:
 
-- Where the source is written while you sync, use `--paranoid`.
+- Where the source is written while you sync, `--paranoid` helps, within
+  the tested limits above.
 - Better still, sync from a snapshot.
 - Run the sync again once the writes have stopped, or run it with `-c`,
   which compares contents instead of size and time.

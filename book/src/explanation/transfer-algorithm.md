@@ -184,8 +184,9 @@ The first hides the per-file round trips; the second fills the link.
   sender reads it, before stale bytes leave. A change while it is being
   hashed, or after it in chunks the receiver takes from its own copy, is
   caught by a stat of the source after hashing and before placing. Writers
-  that leave the times alone, such as memory-mapped databases, need
-  `--paranoid`. See
+  that leave the times alone, such as memory-mapped databases, are not
+  caught by these. `--paranoid` may help, but is tested on ZFS 2.4 clones
+  only. See
   [Files that change during a sync](correctness.md#files-that-change-during-a-sync).
 - **Sender CPU.** A changed or new file costs the sender BLAKE3 hashing
   only: one pass for its chunk list, and each requested chunk hashed again as

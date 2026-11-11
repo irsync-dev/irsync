@@ -86,8 +86,8 @@ needs up to twice `TOTAL` on disk while it runs.
 matrix](bug-hunting.md#the-campaign-matrix), one breadth sweep per row. The
 rows are `hardlink`, `rename`, `rename-off`, `sparse`, `metadata`,
 `timestamps`, `symlinks`, `deletion`, `listing`, `longnames`, `parallel1`,
-`parallel512`, `checksum`, `minimal`, `bigfile` and `paranoid`. `matrix.sh hardlink
-rename` runs only those rows; with `DRY=1` it only checks that filegen
+`parallel512`, `checksum`, `minimal`, `bigfile` and `paranoid`.
+`matrix.sh hardlink rename` runs only those rows; with `DRY=1` it only checks that filegen
 accepts every row's settings. Each passing run is checked with
 `tools/clean-check.sh`, which runs `tools/paranoid-check.sh` (a
 `fileset check --paranoid` of the final destination against the source
