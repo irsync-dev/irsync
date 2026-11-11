@@ -1,0 +1,33 @@
+# Adds GitHub's list of changes to a release's notes, under "## What's
+# changed" (see .github/scripts/release-notes.sh). Release-gate.yml and
+# release-resume.yml call this; it is never started on its own. Safe to run
+# again: it does nothing if the heading is already there.
+
+name: Release notes
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Add GitHub's change list to the release notes
+        run: .github/scripts/release-notes.sh "$TAG"
