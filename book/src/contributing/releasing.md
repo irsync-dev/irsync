@@ -173,10 +173,11 @@ it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
 "DNS only" (grey cloud), so GitHub can issue the HTTPS certificate.
 
 **Signing key.** Make a GPG key with the user ID
-`irsync releases <releases@irsync.org>`. Set up the `releases@irsync.org`
-mailbox too, so mail to that address reaches someone. The workflow uses the
-fingerprint of the key it imports as `GPG_KEY_ID`, so there is nothing else to
-set.
+`irsync releases <releases@irsync.org>`, step by step in
+[Making the signing key](#making-the-signing-key). Set up the
+`releases@irsync.org` mailbox too, so mail to that address reaches someone.
+The workflow uses the fingerprint of the key it imports as `GPG_KEY_ID`, so
+there is nothing else to set.
 
 **Token.** Make a token that can push to `homebrew-tap` and `packages` and
 nothing else. A fine-grained personal access token with "Contents: read and
@@ -187,8 +188,8 @@ and variables, Actions, add four secrets:
 
 | Secret | What it holds |
 | --- | --- |
-| `PACKAGES_GPG_PRIVATE_KEY` | The private signing key, exported with `gpg --armor --export-secret-keys` |
-| `PACKAGES_GPG_PASSPHRASE` | The key's passphrase |
+| `PACKAGES_GPG_PRIVATE_KEY` | The private signing key: `private-key.asc` from [Making the signing key](#making-the-signing-key) |
+| `PACKAGES_GPG_PASSPHRASE` | The key's passphrase: `passphrase.txt`, with no newline at the end |
 | `PACKAGES_REPO_TOKEN` | The token, for pushing to `irsync-dev/packages` |
 | `HOMEBREW_TAP_TOKEN` | The token, for pushing to `irsync-dev/homebrew-tap` (cargo dist uses this name) |
 
@@ -273,9 +274,174 @@ git push --force origin fresh:main
 
 If `main` is protected against force pushes, allow it for this push.
 
+## Making the signing key
+
+The key signs the apt and dnf repositories at `dist.irsync.org`. The steps
+below make it, test it the way the workflow uses it, and leave you with the
+files for the two GPG secrets. They take about ten minutes.
+
+The key is RSA 4096, can only sign, has no subkeys and never expires:
+
+- RSA works with every apt and rpm we care about, including older RHEL rpm
+  versions that can't check newer key types.
+- The workflow signs with the first secret key it finds, so one key with
+  no subkeys is all it needs.
+- apt users keep the public key in a file on their machine. If the key
+  expired, `apt update` would fail for everyone until they downloaded it
+  again. The revocation certificate covers a lost or leaked key instead.
+
+The passphrase is long and random. Nobody types it; it lives only in the
+secret and in your backup.
+
+**1. A separate keyring.** Use a machine you trust, and keep the key out of
+your everyday keyring. `GNUPGHOME` tells gpg which keyring to use, for this
+terminal only, so run every later step in the same terminal:
+
+```sh
+umask 077
+mkdir ~/irsync-signing-key
+cd ~/irsync-signing-key
+export GNUPGHOME="$PWD/gnupg"
+mkdir -m 700 "$GNUPGHOME"
+gpg --list-secret-keys    # prints nothing: the keyring is empty
+```
+
+**2. The passphrase.** 40 random characters, with no newline at the end.
+The workflow uses the secret byte for byte, so a trailing newline would
+become part of the passphrase and signing would fail:
+
+```sh
+gpg --gen-random --armor 1 30 | tr -d '\n' > passphrase.txt
+wc -c passphrase.txt      # 40
+```
+
+**3. The key.** `rsa4096` is the key type, `sign` means it can only sign,
+and `never` is the expiry date. `--pinentry-mode loopback` with
+`--passphrase-file` takes the passphrase from the file instead of a
+password prompt:
+
+```sh
+gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
+    --quick-generate-key 'irsync releases <releases@irsync.org>' rsa4096 sign never
+FPR=$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
+echo "$FPR"
+gpg --list-keys
+```
+
+`FPR` is the fingerprint, the key's 40-character ID. `gpg --list-keys`
+shows one `rsa4096` key with usage `[SC]`, no expiry, and the user ID
+`irsync releases <releases@irsync.org>`.
+
+**4. Export the files.**
+
+```sh
+gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
+    --armor --export-secret-keys "$FPR" > private-key.asc
+gpg --armor --export "$FPR" > public-key.asc
+cp "$GNUPGHOME/openpgp-revocs.d/$FPR.rev" revocation.rev
+head -1 private-key.asc   # -----BEGIN PGP PRIVATE KEY BLOCK-----
+```
+
+| File | What it is | Where it goes |
+| --- | --- | --- |
+| `private-key.asc` | The private key, still protected by the passphrase | `PACKAGES_GPG_PRIVATE_KEY`, and your backup |
+| `passphrase.txt` | The passphrase | `PACKAGES_GPG_PASSPHRASE`, and your backup |
+| `revocation.rev` | Declares the key dead, even without the private key | Your backup only |
+| `public-key.asc` | The public key | Your records; every stable release publishes it as `irsync.asc` and `irsync.gpg` |
+
+gpg made the revocation certificate together with the key. Anyone who has
+it can kill the key, so it never goes into GitHub.
+
+**5. Test the files the way the workflow uses them.** The workflow imports
+`private-key.asc` into an empty keyring, takes the first fingerprint it
+finds and signs with the passphrase. Do the same in a second empty keyring:
+
+```sh
+export GNUPGHOME="$PWD/ci-test"
+mkdir -m 700 "$GNUPGHOME"
+gpg --batch --import private-key.asc
+TEST_FPR=$(gpg --batch --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
+[ "$TEST_FPR" = "$FPR" ] && echo "fingerprint matches"
+echo test > test.txt
+gpg --batch --yes --pinentry-mode loopback --passphrase-file passphrase.txt \
+    --local-user "$TEST_FPR" --clearsign -o test.txt.asc test.txt
+gpg --verify test.txt.asc
+```
+
+You should see `fingerprint matches` and `Good signature from "irsync
+releases <releases@irsync.org>"`. A warning that the key is not certified
+with a trusted signature is normal. Then remove the test keyring:
+
+```sh
+gpgconf --kill gpg-agent
+rm -rf "$GNUPGHOME" test.txt test.txt.asc
+export GNUPGHOME="$PWD/gnupg"
+```
+
+**6. The secrets.** Reading from a file keeps the passphrase out of your
+shell history:
+
+```sh
+gh secret set PACKAGES_GPG_PRIVATE_KEY --repo irsync-dev/irsync < private-key.asc
+gh secret set PACKAGES_GPG_PASSPHRASE  --repo irsync-dev/irsync < passphrase.txt
+gh secret list --repo irsync-dev/irsync
+```
+
+In the browser instead, paste the whole of `private-key.asc`, including the
+`BEGIN` and `END` lines, and the 40 passphrase characters with nothing
+after them. GitHub never shows a secret again, so if you are unsure you
+pasted it right, set it again.
+
+**7. Back up, then clean up.** Keep `private-key.asc`, `passphrase.txt` and
+`revocation.rev` somewhere safe outside GitHub, such as a password manager
+that takes attachments or an encrypted USB stick. Write the fingerprint
+(`echo "$FPR"`) next to them: it is how anyone checks that a downloaded
+`irsync.asc` is the real key. Without the backup, losing the secret means a
+new key, and every user has to import it again.
+
+Once you have checked that you can open the backup, delete the working
+folder:
+
+```sh
+gpgconf --kill gpg-agent
+cd ~
+rm -rf ~/irsync-signing-key
+unset GNUPGHOME
+```
+
+**8. Check it on a real run.** An alpha doesn't sign anything, so the
+first real use of the key is the dry run in
+[The first release](#the-first-release), step 4. A wrong passphrase
+secret fails there. After the first stable release, check that the
+published key is yours:
+
+```sh
+curl -fsSL https://dist.irsync.org/irsync.asc | gpg --show-keys
+```
+
+The fingerprint it shows must match the one you wrote down.
+
+**If the key leaks,** mark it revoked where users fetch it, then rotate to
+a new key (below). In a throwaway keyring, import the public key and the
+revocation certificate, and export the result:
+
+```sh
+gpg --import public-key.asc revocation.rev
+gpg --armor --export "$FPR" > irsync.asc
+gpg --export "$FPR" > irsync.gpg
+```
+
+Commit these two files to the `packages` repository by hand. Anyone who
+fetches the key from then on gets it marked revoked, and the next stable
+release replaces both files with the new key. Users who already have the
+old key keep trusting it until they import the new one, so tell them
+(rotation step 4). **If the key is lost** with no backup, make a new key
+and rotate.
+
 ## Rotating the signing key
 
-1. Make the new key, with the same user ID.
+1. Make the new key, with the same user ID, as in
+   [Making the signing key](#making-the-signing-key).
 2. Put the new private key and passphrase into the `PACKAGES_GPG_PRIVATE_KEY`
    and `PACKAGES_GPG_PASSPHRASE` secrets.
 3. Cut a stable release. It signs the metadata with the new key and
