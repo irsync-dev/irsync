@@ -117,7 +117,9 @@ if have rustup; then
             have_v=$(rustup run "$channel" rustc --version | awk '{print $2}')
         fi
         if version_ge "$have_v" "$need"; then
-            ok "Rust $channel $have_v with rustfmt and clippy (needs $need)"
+            label="Rust $channel $have_v"
+            [ "$channel" = "$have_v" ] && label="Rust $have_v"
+            ok "$label with rustfmt and clippy (needs $need)"
             rust_ready=true
         else
             bad "Rust $need or newer, have $have_v: run rustup update $channel"
