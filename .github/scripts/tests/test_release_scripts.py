@@ -13,6 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(SCRIPTS))
 CHECK = os.path.join(SCRIPTS, "check-release-tag.sh")
 NOTES = os.path.join(SCRIPTS, "release-notes.sh")
 RESUME = os.path.join(SCRIPTS, "resume-check.sh")
+BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 HEADING = "## What's changed"
 
 
@@ -103,6 +104,85 @@ class CheckTagTests(unittest.TestCase):
             m = re.search(r'^\[workspace\.package\]\nversion = "([^"]+)"', f.read(), re.M)
         r = self.check("--versions", "v" + m.group(1), cwd=ROOT)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
+@unittest.skipUnless(shutil.which("cargo"), "needs cargo")
+class BumpVersionTests(unittest.TestCase):
+    """bump-version.sh, in a temporary git repo holding a tiny Cargo workspace."""
+
+    def setUp(self):
+        d = self.dir = tempfile.mkdtemp(prefix="bump-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
+                        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+                        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.write("Cargo.toml",
+                   '[workspace]\nmembers = ["a"]\nresolver = "2"\n\n'
+                   '[workspace.metadata.other]\nversion = "9.9.9"\n\n'
+                   '[workspace.package]\nedition = "2021"\nversion = "1.2.3"\n')
+        self.write("a/Cargo.toml",
+                   '[package]\nname = "a"\nversion.workspace = true\nedition.workspace = true\n')
+        self.write("a/src/lib.rs", "")
+        self.write("packaging/dist/dist.toml",
+                   '# Keep `version` equal to the workspace version.\n\n'
+                   '[package]\nname = "irsync"\nversion = "1.2.3"\nlicense = "MIT"\n')
+        self.run_ok("git", "init", "-q", "-b", "main")
+        self.run_ok("cargo", "generate-lockfile", "--quiet")
+        self.run_ok("git", "add", "-A")
+        self.run_ok("git", "commit", "-q", "-m", "start")
+
+    def write(self, path, text):
+        path = os.path.join(self.dir, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def read(self, path):
+        with open(os.path.join(self.dir, path)) as f:
+            return f.read()
+
+    def run_ok(self, *args):
+        r = subprocess.run(args, cwd=self.dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def bump(self, version):
+        return subprocess.run([BUMP, version], cwd=os.path.join(self.dir, "a"), env=self.env,
+                              capture_output=True, text=True)
+
+    def test_bumps_and_commits(self):
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        cargo = self.read("Cargo.toml")
+        self.assertIn('[workspace.package]\nedition = "2021"\nversion = "1.3.0-beta.1"\n', cargo)
+        self.assertIn('[workspace.metadata.other]\nversion = "9.9.9"\n', cargo)
+        dist = self.read("packaging/dist/dist.toml")
+        self.assertTrue(dist.startswith("# Keep `version` equal"), dist)
+        self.assertIn('version = "1.3.0-beta.1"\nlicense = "MIT"\n', dist)
+        self.assertIn('name = "a"\nversion = "1.3.0-beta.1"\n', self.read("Cargo.lock"))
+        self.assertEqual(self.run_ok("git", "log", "-1", "--format=%s"), "Release v1.3.0-beta.1\n")
+        self.assertEqual(self.run_ok("git", "status", "--porcelain"), "")
+        self.assertEqual(self.run_ok("git", "show", "--name-only", "--format=").split(),
+                         ["Cargo.lock", "Cargo.toml", "packaging/dist/dist.toml"])
+        self.assertIn("git tag -a v1.3.0-beta.1 -m \"irsync 1.3.0-beta.1\"", r.stdout)
+        self.run_ok(CHECK, "--versions", "v1.3.0-beta.1")
+
+    def assert_refused(self, r, message):
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(message, r.stderr)
+        self.assertEqual(self.run_ok("git", "log", "-1", "--format=%s"), "start\n")
+        self.assertIn('version = "1.2.3"', self.read("packaging/dist/dist.toml"))
+
+    def test_bad_versions(self):
+        for v in ["1.2", "v1.3.0", "1.3.0-rc.1", "1.3.0;id"]:
+            self.assert_refused(self.bump(v), "not a release tag")
+
+    def test_same_version(self):
+        self.assert_refused(self.bump("1.2.3"), "already 1.2.3")
+
+    def test_uncommitted_changes(self):
+        self.write("a/src/lib.rs", "// edit\n")
+        self.assert_refused(self.bump("1.3.0"), "uncommitted changes")
 
 
 class NotesTests(FakeGh):

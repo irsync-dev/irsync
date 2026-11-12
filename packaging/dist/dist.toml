@@ -4,6 +4,7 @@
 #
 # Keep `version` equal to `[workspace.package] version` in the root Cargo.toml
 # (crates/irsync/tests/release_version.rs checks this).
+# .github/scripts/bump-version.sh sets both.
 
 [package]
 name = "irsync"

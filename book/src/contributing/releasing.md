@@ -17,18 +17,18 @@ seconds, before the tests. Nothing is published.
 
 ## Cutting a release
 
-1. Set the new version in two places. They must match:
-   - `[workspace.package] version` in `Cargo.toml`
-   - `version` in `packaging/dist/dist.toml`
+1. On an up-to-date `main` with no uncommitted changes, run the bump script
+   with the new version, without the `v`:
 
-   A test fails if they differ, and the release stops at once if they don't
-   match the tag.
+   ```sh
+   .github/scripts/bump-version.sh 1.2.3
+   ```
 
-   Then run `cargo check` so Cargo writes the new version into `Cargo.lock`,
-   and commit `Cargo.lock` too. The release build uses `--locked` and fails
-   if the lock file is out of date. CI uses `--locked` as well, so it catches
-   a forgotten lock file before you tag.
-2. Commit, and push to `main`.
+   It sets the version in `Cargo.toml` (`[workspace.package]`) and
+   `packaging/dist/dist.toml`, updates `Cargo.lock` to match, and commits the
+   three files as `Release v1.2.3`. It doesn't push or tag. It prints the
+   commands for the next steps.
+2. Push to `main`: `git push origin main`.
 3. Wait for CI on `main` to go green.
 4. Tag the commit and push the tag. Use an annotated tag (`-a`):
 
@@ -37,9 +37,17 @@ seconds, before the tests. Nothing is published.
    git push origin v1.2.3
    ```
 
-For a pre-release, use a tag such as `v1.2.3-beta.1` or `v1.2.3-alpha.1`. The
-version in the two files is the same as for the tag, without the `v`:
-`1.2.3-beta.1`.
+For a pre-release, use a version such as `1.2.3-beta.1` or `1.2.3-alpha.1`,
+and the tag `v1.2.3-beta.1`.
+
+If you change the version by hand instead, keep all three files in step.
+These checks catch a mismatch:
+
+- A test (`crates/irsync/tests/release_version.rs`) fails if `Cargo.toml` and
+  `dist.toml` differ.
+- CI builds with `--locked`, so it fails if `Cargo.lock` is out of date. The
+  release build uses `--locked` too, and would fail later.
+- The release gate stops within seconds if the two files don't match the tag.
 
 ## What the workflow does
 
