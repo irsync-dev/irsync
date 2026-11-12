@@ -42,6 +42,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.151
       - name: Install rsync (reference implementation for the comparison test)
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -59,8 +63,13 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
       - name: Clippy without OpenTelemetry
         run: cargo clippy --locked --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
+      # nextest runs each test in its own process, tests from all files side
+      # by side, and kills a hung test (see .config/nextest.toml). It does
+      # not run doc tests, so cargo test runs those.
       - name: Test
-        run: cargo test --locked --workspace --all-features --no-fail-fast $TARGET_FLAG -- --include-ignored
+        run: cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all $TARGET_FLAG
+      - name: Doc tests
+        run: cargo test --locked --workspace --all-features --doc $TARGET_FLAG
 
   # Runs the release build itself (dist and packaging/dist/build.sh) for the
   # Linux targets, on the same runners as release.yml, so a broken release

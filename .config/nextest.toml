@@ -1,0 +1,12 @@
+# cargo-nextest settings. CI runs the tests with `cargo nextest run --profile ci`
+# (see .github/workflows/ci.yml); `cargo test` keeps working as before.
+
+[profile.ci]
+# Run every test, so one failure does not hide the others.
+fail-fast = false
+# Kill a test that runs longer than 5 minutes and name it, instead of letting
+# a hang run into GitHub's 6-hour job limit. The slowest tests take about
+# 3 minutes on the macOS runners.
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Print a failing test's output when it fails and again at the end.
+failure-output = "immediate-final"
