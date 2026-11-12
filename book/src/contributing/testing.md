@@ -44,7 +44,7 @@ There are four layers. They go from fast and narrow to slow and broad.
 
 A bug that stress or netstress finds should end as an engine test that fails
 before the fix and passes after it. The stress run found the bug; the engine
-test keeps it from coming back. CI runs the whole `cargo test` suite on every
+test keeps it from coming back. CI runs the whole test suite on every
 push, which includes the engine tests and a short end-to-end test of each
 rig. The long stress, netstress and campaign runs are done by hand.
 
@@ -114,6 +114,14 @@ name (APFS does); on Linux they always run. See R29 in
 [IRSYNC_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_DECISIONS.md).
 The rsync comparison test skips without GNU rsync 3.1 or newer, and fails
 instead when `CI` is set ([Requirements](setup.md#requirements)).
+
+The macOS CI job leaves out `crates/irsync/tests/backpressure.rs`,
+`crates/irsync/tests/blocking_pool.rs` and `crates/netstress/tests/e2e.rs`,
+through the `ci-macos` profile in `.config/nextest.toml`. The macOS runners
+are slow and have 3 cores, and these tests take over a third of the test
+time there, while the code they test works the same on every OS. Linux CI
+runs them on every push, and a local run on a Mac runs them too. A test that
+checks something macOS-specific belongs in none of these files.
 
 ## Workload and stress tools
 
