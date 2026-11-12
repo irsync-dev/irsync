@@ -14,6 +14,7 @@ fn pace_sleep_ends_on_signal() {
     let t = tempfile::TempDir::new().unwrap();
     let root = t.path().join("root");
     std::fs::create_dir(&root).unwrap();
+    let watched = root.clone();
     let flags = RunArgs {
         path: root.clone(),
         steps: 100,
@@ -52,15 +53,23 @@ fn pace_sleep_ends_on_signal() {
         verbose: false,
         pace: Pace::Steady { per_sec: 1 },
     };
-    // `run` installs its handlers on entry; signal well after that.
-    let sender = std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_millis(200));
+    // Signal only once the first step has written to the tree: by then `run` has installed its
+    // handlers (a SIGTERM before that would kill this process).
+    let sender = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while std::fs::read_dir(&watched).map_or(true, |mut d| d.next().is_none()) {
+            assert!(Instant::now() < deadline, "no file created within 30 s");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let sent = Instant::now();
         raise(Signal::SIGTERM).unwrap();
+        sent
     });
-    let started = Instant::now();
     let outcome = run(opts).unwrap();
-    let took = started.elapsed();
-    sender.join().unwrap();
+    let ended = Instant::now();
+    let sent = sender.join().unwrap();
     assert_eq!(outcome, Outcome::Interrupted(libc::SIGTERM));
-    assert!(took < Duration::from_millis(500), "{took:?}");
+    // The remaining steps would take ~100 s at one a second.
+    let took = ended.duration_since(sent);
+    assert!(took < Duration::from_secs(2), "{took:?}");
 }
