@@ -149,9 +149,7 @@ pub fn judge(
         }
         let mode_ok = ends.iter().any(|e| e.mode == d.mode);
         let owner_in = ends.iter().any(|e| owner_ok(e, d));
-        let after_pre = f.pre.as_ref().is_none_or(|p| p.mtime_ns <= d.mtime_ns);
-        let before_post = f.post.as_ref().is_none_or(|p| d.mtime_ns <= p.mtime_ns);
-        if mode_ok && owner_in && after_pre && before_post {
+        if mode_ok && owner_in && mtime_in_window(d.mtime_ns, f) {
             return Verdict::Held(format!("in flight: step {} ({})", f.step, f.op.name()));
         }
     }
@@ -160,9 +158,34 @@ pub fn judge(
     Verdict::NotHeld("no state the source held".into())
 }
 
+/// Rule 6's time check. An mtime equal to `pre`'s means no write landed
+/// yet. Otherwise it must be at most `post`'s, and at least `pre`'s only
+/// when `pre` is not later than `post`: after a `set_mtime` into the
+/// future, the next write moves the mtime backwards, so a `pre` later than
+/// `post` gives no lower bound. A missing end gives no bound.
+fn mtime_in_window(m: i128, f: &InFlight) -> bool {
+    let pre = f.pre.as_ref().map(|p| p.mtime_ns);
+    let post = f.post.as_ref().map(|p| p.mtime_ns);
+    if pre == Some(m) {
+        return true;
+    }
+    let before_post = post.is_none_or(|post| m <= post);
+    let after_pre = match (pre, post) {
+        (Some(pre), Some(post)) if pre <= post => pre <= m,
+        (Some(pre), None) => pre <= m,
+        _ => true,
+    };
+    before_post && after_pre
+}
+
 /// How `op` writes the file's bytes, from its logged `details` and the
-/// file's size before the step; `None` for a step a reader sees happen all
-/// at once (or whose range cannot be told).
+/// file's size before the step.
+///
+/// `None` means the step is atomic for a reader: only the old or the new
+/// file passes [`in_flight_content_ok`]. It is also `None` when the range
+/// cannot be told, so for `append` the caller must pass `old_size` (the
+/// file's size before the step): without it, every in-between state of an
+/// append would be rejected.
 pub fn write_of(
     op: OpKind,
     details: &BTreeMap<String, String>,
@@ -663,6 +686,50 @@ mod tests {
         };
         let early = file(b"BB", 0o600, 5);
         assert!(held(&judge(Some(&early), &states, &[created], false)));
+    }
+
+    #[test]
+    fn future_pre_mtime_does_not_reject_in_between() {
+        let sec: i128 = 1_000_000_000;
+        let now = 1_800_000_000 * sec;
+        let pre = file(b"AAAA", 0o644, now + 365 * 24 * 3600 * sec);
+        let post = file(b"BBBBBB", 0o644, now);
+        let states = [state(0, Some(pre.clone())), state(1, Some(post.clone()))];
+        let fl = InFlight {
+            step: 1,
+            op: OpKind::Rewrite,
+            pre: Some(pre.clone()),
+            post: Some(post),
+            content_ok: true,
+        };
+        let fl = std::slice::from_ref(&fl);
+        let dest = file(b"BBB", 0o644, now - sec);
+        assert!(held(&judge(Some(&dest), &states, fl, false)));
+        let dest = file(b"BBB", 0o644, now + sec);
+        assert!(!held(&judge(Some(&dest), &states, fl, false)));
+        // Still at pre's mtime: no write landed yet.
+        let dest = file(b"AAAA", 0o644, pre.mtime_ns);
+        assert!(held(&judge(Some(&dest), &states, fl, false)));
+    }
+
+    #[test]
+    fn content_and_times_rule_comes_before_in_flight() {
+        let pre = file(b"AAAAAA", 0o644, 100);
+        let post = file(b"BBBBBB", 0o644, 200);
+        let states = [state(0, Some(pre.clone())), state(1, Some(post.clone()))];
+        let fl = InFlight {
+            step: 1,
+            op: OpKind::OverwriteRange,
+            pre: Some(pre),
+            post: Some(post.clone()),
+            content_ok: true,
+        };
+        let mut dest = post.clone();
+        dest.hash = hash(b"BBBAAA");
+        match judge(Some(&dest), &states, &[fl], false) {
+            Verdict::NotHeld(why) => assert!(why.contains("content and times disagree"), "{why}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
