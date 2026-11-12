@@ -204,10 +204,10 @@ not in the [command-line reference](../reference/command-line.md).
 
 A failed round is kept as `ROOT/round-NNNN/`: `start/` (the source at the
 start of the round), `dest/` (the destination as judged, before the quiet
-sync repaired it) and filegen's state, beside `ROOT/logs`. The output names each failing path with its rule
-(the first 20), then `judge report:` (`logs/iter-NNNN.judge.txt`, one
-`path<TAB>rule` line per failure), `round kept in:` and `rerun:`. The rerun
-command uses a fresh root and `--replay-rounds ROOT/logs/rounds.tsv`, so
+sync repaired it) and filegen's state, beside `ROOT/logs`. The output names
+each failing path with its rule (the first 20), then `judge report:`
+(`logs/iter-NNNN.judge.txt`, one `path<TAB>rule` line per failure),
+`round kept in:` and `rerun:`. The rerun command uses a fresh root and `--replay-rounds ROOT/logs/rounds.tsv`, so
 every round starts from the same source tree with the same paces and step
 counts. `--keep-going` carries on past a failed round.
 
@@ -235,6 +235,8 @@ A checker that cannot fail is worth nothing. A `test-hooks` build of irsync
 has a switch, `IRSYNC_TEST_NO_CHANGE_CHECKS=1`, that turns all the change
 checks off. With it on, a concurrent run must produce a torn file and fail:
 
+Build the release tools first (`cargo build --release --workspace`), then:
+
 ```sh
 cargo build --release -p irsync --features test-hooks --target-dir target/selftest
 IRSYNC_TEST_NO_CHANGE_CHECKS=1 target/release/irsync-stress --concurrent \
@@ -243,6 +245,8 @@ IRSYNC_TEST_NO_CHANGE_CHECKS=1 target/release/irsync-stress --concurrent \
 
 It must exit 1. Look at the report: the failure that proves the checker
 bites is on a path that is not hard-linked and is not a mode-only mismatch.
+The two known bugs can fail a run without that proof, so try more seeds
+(`--seed`) until a torn file shows up.
 If the run passes, the checker is not catching what it should: stop and
 find out why. It depends on timing, so it is a manual step and not a
 `cargo test`; the checker's own rules have deterministic tests.

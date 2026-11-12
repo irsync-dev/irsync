@@ -139,7 +139,7 @@ fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// Copies `from` to `to` (created or truncated): a clone where the
+/// Copies `from` to `to` (replaced): a clone where the
 /// filesystem allows, else a plain copy. True means cloned. Mode and times
 /// are not carried over.
 pub fn clone_or_copy_file(from: &Path, to: &Path) -> Result<bool> {
@@ -151,6 +151,17 @@ pub fn clone_or_copy_file(from: &Path, to: &Path) -> Result<bool> {
         }
     }
     let mut src = File::open(from).with_context(|| format!("opening {}", from.display()))?;
+    // A fresh file, never the old one truncated. On ZFS, writing into a
+    // file again after an earlier clone or copy filled it (the replay
+    // reuses one `pre-step` file for every step) fails with EIO under load,
+    // on the write. Seen as a harness error in `--concurrent` runs with
+    // eight at once; unlinking first cured it in 72 runs.
+    match fs::remove_file(to) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("removing {}", to.display()));
+        }
+        _ => {}
+    }
     let mut dst = OpenOptions::new()
         .write(true)
         .create(true)
@@ -500,6 +511,26 @@ mod tests {
         if has_xattr {
             assert_eq!(xattr::get(dst.join("h"), "user.k").unwrap().unwrap(), b"v");
         }
+    }
+
+    #[test]
+    fn clone_or_copy_file_replaces_the_old_file() {
+        let t = tempfile::tempdir().unwrap();
+        let d = t.path();
+        fs::write(d.join("a"), b"new").unwrap();
+        fs::write(d.join("b"), b"a much longer old content").unwrap();
+        fs::hard_link(d.join("b"), d.join("b2")).unwrap();
+        clone_or_copy_file(&d.join("a"), &d.join("b")).unwrap();
+        assert_eq!(fs::read(d.join("b")).unwrap(), b"new");
+        // A new file, not the old one rewritten: the other link is untouched.
+        assert_eq!(
+            fs::read(d.join("b2")).unwrap(),
+            b"a much longer old content"
+        );
+        // A missing destination is fine too, and a missing source is an error.
+        clone_or_copy_file(&d.join("a"), &d.join("c")).unwrap();
+        assert!(clone_or_copy_file(&d.join("nope"), &d.join("b")).is_err());
+        assert_eq!(fs::read(d.join("b")).unwrap(), b"new");
     }
 
     #[test]

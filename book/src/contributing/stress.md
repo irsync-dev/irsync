@@ -98,7 +98,9 @@ accepts every row's settings. Each passing run is checked with
 `tools/clean-check.sh`, which runs `tools/paranoid-check.sh` (a
 `fileset check --paranoid` of the final destination against the source
 manifest, link counts included) and then asserts that no `.irsync.*.part`
-is left in either tree. All rows take about three hours on a 16-core Mac.
+is left in either tree. The rows before `concurrent` take about three hours
+on a 16-core Mac; each of the four concurrent rows is capped at one hour by
+`DURATION`.
 The `paranoid` row passes `--paranoid`. The harness changes the source only
 between syncs, so this row checks that the `--paranoid` code paths sync a
 quiet tree correctly; it does not test catching a file that changes during

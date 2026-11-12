@@ -22,7 +22,8 @@
 #            already going finish.                 [none: every seed runs]
 #
 # A run takes up to about 10 minutes. The exit is non-zero if any run's exit
-# was not 0 (1 failed iteration, 2 rig error, 3 faults did not bite).
+# was not 0 (1 failed iteration, 2 rig error, 3 faults did not bite, 4 with
+# --concurrent: no changed file was placed).
 # Extra arguments go to irsync-netstress before the root, e.g.
 #   sweep.sh --iterations 3
 # The concurrent mode (filegen writes to the source during each sync) is

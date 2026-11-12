@@ -67,8 +67,8 @@ row() {
     paranoid)    echo "CLIENT='--timeout 300 --paranoid'|" ;;
     concurrent)  echo "CLIENT='--timeout 300' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
     concurrent-paranoid) echo "CLIENT='--timeout 300 --paranoid' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
-    net-concurrent) echo "NET=1 DURATION=3600|--concurrent" ;;
-    net-concurrent-paranoid) echo "NET=1 CLIENT='--paranoid' DURATION=3600|--concurrent" ;;
+    net-concurrent) echo "NET=1 DURATION=3600 SEEDS='1 1000'|--concurrent" ;;
+    net-concurrent-paranoid) echo "NET=1 CLIENT='--paranoid' DURATION=3600 SEEDS='1 1000'|--concurrent" ;;
     minimal)     echo "ITER=200 STEPS=1 SEEDS='101 108'|" ;;
     bigfile)     echo "CLIENT='-c --timeout 10' ITER=5 STEPS=20 TOTAL=16G FILE=8G SEEDS='101 104' JOBS=4|--filegen-set size_distribution.large_weight=1" ;;
     *) echo "unknown row: $1" >&2; return 1 ;;
