@@ -40,7 +40,8 @@ jobs:
     concurrency: site-staging
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v6
         with:

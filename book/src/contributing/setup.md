@@ -18,8 +18,9 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 
 ## Requirements
 
-- **Rust.** `rust-toolchain.toml` pins the stable channel; rustup picks it
-  up.
+- **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
+  picks up; CI and releases use the same file. To move to a newer Rust, change
+  the version there and run the full regression.
 - **GNU rsync 3.1 or newer on `PATH`**, for `crates/irsync/tests/rsync_compare.rs`,
   which compares irsync's result with rsync's. Without it the test prints a
   line and passes, which `cargo test -q` hides, so it checks nothing. With

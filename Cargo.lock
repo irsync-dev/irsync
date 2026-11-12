@@ -1247,7 +1247,6 @@ dependencies = [
  "protox",
  "rusqlite",
  "tempfile",
- "thiserror 2.0.21",
  "xattr",
 ]
 
