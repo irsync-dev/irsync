@@ -34,7 +34,7 @@ use super::control::{
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::limits::{basis_budget, basis_wire_len, list_budget};
 use super::listing_stream::ListingOut;
-use super::parts::{records_at_most, split, ListCredit, PART_RECORDS};
+use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
@@ -278,6 +278,8 @@ struct SenderRole {
     /// each send's hash stat overwrites it; a file given up leaves. Without
     /// a listing (resumed from the receiver's plan) only the files sent.
     final_stats: HashMap<RelPath, Freshness>,
+    /// The names of the owners and groups chunk lists are sent with.
+    names: crate::fs::ids::IdNames,
     /// Paths the final re-check sent a `Replan` for: each may be planned
     /// once more, though no longer in `listed`.
     replanned: Arc<std::sync::Mutex<HashSet<RelPath>>>,
@@ -732,9 +734,18 @@ impl SenderRole {
                 f.cloned = cloned;
                 let with_hash = f.append_from.is_none();
                 // Sent once the receiver has room for it (`pump_lists`),
-                // with the mtime the file was hashed under (an `APPEND`
-                // tail's stat is the whole file's too).
-                let parts = split(file_id, &d, stat.mtime, part_records(&self.ctx), with_hash);
+                // with the stat the file was hashed under (an `APPEND`
+                // tail's stat is the whole file's too): the file is placed
+                // with its mtime, mode and ids, never the walk's.
+                let list_stat = ListStat {
+                    mtime: stat.mtime,
+                    mode: stat.mode,
+                    uid: stat.uid,
+                    gid: stat.gid,
+                    user: self.names.user(stat.uid).to_string(),
+                    group: self.names.group(stat.gid).to_string(),
+                };
+                let parts = split(file_id, &d, &list_stat, part_records(&self.ctx), with_hash);
                 self.lists.push(file_id, parts, Some(held));
                 #[cfg(feature = "test-hooks")]
                 if let Some(p) = &self.ctx.hooks.lists_ahead_peak {
@@ -1781,6 +1792,7 @@ pub(super) async fn run(
         would_delete_omitted: 0,
         max_delete_reached: false,
         final_stats: HashMap::new(),
+        names: crate::fs::ids::IdNames::new(),
         replanned: Arc::default(),
         rechecking: None,
         settled: false,
@@ -2100,6 +2112,7 @@ mod tests {
             would_delete_omitted: 0,
             max_delete_reached: false,
             final_stats: HashMap::new(),
+            names: crate::fs::ids::IdNames::new(),
             replanned: Arc::default(),
             rechecking: None,
             settled: false,

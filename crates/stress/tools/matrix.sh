@@ -32,8 +32,8 @@
 # pull as separate runs. The net-* rows run crates/netstress/tools/sweep.sh
 # instead of breadth.sh, on the fault build, and refuse to start without it:
 #   cargo build --release --workspace --features netsim --target-dir target/netsim
-# Until the two irsync findings in TODO.md (stale mode, hard links) are fixed,
-# these rows report failures of exactly those two kinds.
+# Until the irsync finding in TODO.md about hard links is fixed, these rows
+# report failures of that kind.
 set -u
 TOOLS=$(cd "$(dirname "$0")" && pwd)
 BIN=${BIN:-$(cd "$TOOLS/../../.." && pwd)/target/release}
