@@ -285,7 +285,7 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
         mknod(
             to,
             sflag,
-            Mode::from_bits_truncate(m.mode() & 0o7777),
+            Mode::from_bits_truncate((m.mode() & 0o7777) as _),
             m.rdev() as _,
         )
         .with_context(|| format!("mknod {}", to.display()))?;
