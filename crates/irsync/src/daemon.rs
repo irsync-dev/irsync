@@ -335,8 +335,10 @@ impl Daemon {
             );
         }
         self.shared.apply(&settings.daemon);
-        (r.announce)(&endpoint);
+        // Log first, announce last: the `listening on:` line tells a watcher
+        // the reload is done, so everything the reload logs must precede it.
         tracing::info!("settings reloaded");
+        (r.announce)(&endpoint);
         Ok(endpoint)
     }
 }
