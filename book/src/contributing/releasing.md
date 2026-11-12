@@ -90,7 +90,9 @@ hand from the Actions tab.** That skips the tests.
 
 **The check failed.** Nothing ran. Usually the version in the two files does
 not match the tag. Delete the tag (`git push origin --delete v1.2.3` and
-`git tag -d v1.2.3`), fix the version on `main`, and tag again.
+`git tag -d v1.2.3`), fix the version on `main`, and tag again. With
+[tag protection](#protecting-the-release-tags), only people on its bypass
+list can delete the tag.
 
 **The test step failed.** Nothing was published. If it was a flaky test,
 use "Re-run failed jobs" on the gate run: the tag and the commit stay the
@@ -196,7 +198,8 @@ and variables, Actions, add four secrets:
 You can use the same token for both token secrets.
 
 **Tag protection (recommended).** Add a rule that protects tags matching `v*`,
-so only maintainers can push or move release tags.
+so only maintainers can push or move release tags. Step by step in
+[Protecting the release tags](#protecting-the-release-tags).
 
 ## The first release
 
@@ -273,6 +276,98 @@ git push --force origin fresh:main
 ```
 
 If `main` is protected against force pushes, allow it for this push.
+
+## Protecting the release tags
+
+Pushing a `v*` tag starts a release, and the release workflow trusts the
+commit the tag points at. Without protection, anyone with write access can
+push a release tag, or move or delete one after the fact. A tag ruleset
+limits that to the people you choose. GitHub's older "tag protection rules"
+are gone; rulesets replace them.
+
+Nothing in the release workflows creates, moves or deletes tags, so the
+ruleset doesn't get in their way. They only read the tag you pushed.
+
+**1. Create the ruleset.** In `irsync-dev/irsync`, go to Settings, then
+Rules, then Rulesets. Click "New ruleset", then "New tag ruleset".
+
+**2. Name and enforcement.** Name it `Release tags`. Set "Enforcement
+status" to "Active". ("Evaluate" only logs what it would block, and is not
+available on every plan.)
+
+**3. Bypass list.** Click "Add bypass" and pick the "Repository admin"
+role. If someone should cut releases without being an admin, add the
+"Maintain" role too. Leave both on "Always allow". Only people with these
+roles can then push, move or delete release tags.
+
+**4. Target tags.** Under "Targets", click "Add target", then "Include by
+pattern", and enter `v*`. This matches every tag that starts with `v`,
+which covers both `v0.1.0` and `v0.1.0-alpha.1`.
+
+**5. Rules.** Tick these four:
+
+| Rule | What it stops |
+| --- | --- |
+| Restrict creations | Pushing a new `v*` tag, which would start a release |
+| Restrict updates | Moving an existing tag to another commit |
+| Restrict deletions | Deleting a tag |
+| Block force pushes | Overwriting a tag with `git push --force` |
+
+Leave the other rules off. Click "Create".
+
+**Or with the GitHub CLI.** This creates the same ruleset. The number 5 is
+GitHub's ID for the "Repository admin" role (4 is "Write", 2 is
+"Maintain"):
+
+```sh
+gh api --method POST repos/irsync-dev/irsync/rulesets --input - <<'JSON'
+{
+  "name": "Release tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [
+    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+  ],
+  "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+  "rules": [
+    { "type": "creation" },
+    { "type": "update" },
+    { "type": "deletion" },
+    { "type": "non_fast_forward" }
+  ]
+}
+JSON
+```
+
+Then open the ruleset in Settings, Rules, Rulesets, and check that the
+bypass list shows "Repository admin".
+
+**6. Check it.** List the rulesets:
+
+```sh
+gh api repos/irsync-dev/irsync/rulesets --jq '.[] | "\(.name): \(.target), \(.enforcement)"'
+```
+
+This should print `Release tags: tag, active`. Then push a tag that
+matches but is not a release version. The release gate starts on any tag
+starting with `v` followed by a digit, so the test tag has none:
+
+```sh
+git tag v-ruleset-check
+git push origin v-ruleset-check
+```
+
+As an admin you can still push. Look for `Bypassed rule violations for
+refs/tags/v-ruleset-check` in the output: it shows the rule is active and
+you are on the bypass list. Delete the tag again:
+
+```sh
+git push origin --delete v-ruleset-check
+git tag -d v-ruleset-check
+```
+
+Someone with only write access gets `Cannot create ref due to creations
+being restricted` for the same push.
 
 ## Making the signing key
 
