@@ -1,5 +1,5 @@
 //! SIGINT and SIGTERM handling: pass SIGINT on to the current foreground
-//! child and to the daemon, then exit 130.
+//! child and to the daemon, SIGTERM to a background filegen, then exit 130.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -15,9 +15,19 @@ static DAEMON_PID: OnceLock<Arc<AtomicI32>> = OnceLock::new();
 /// `process::status` or `process::output` is waiting for, 0 while none is.
 static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
+/// The background child slot: the pid of a filegen running alongside a
+/// sync (see `filegen::spawn`), 0 while none is.
+static BACKGROUND_PID: AtomicI32 = AtomicI32::new(0);
+
 /// The foreground child slot the handler reads (see `process::status`).
 pub fn child_slot() -> &'static AtomicI32 {
     &CHILD_PID
+}
+
+/// The background child slot the handler reads; it sends that child
+/// SIGTERM, which filegen takes as "finish the step, save, exit".
+pub fn background_slot() -> &'static AtomicI32 {
+    &BACKGROUND_PID
 }
 
 extern "C" fn handler(_sig: libc::c_int) {
@@ -27,6 +37,11 @@ extern "C" fn handler(_sig: libc::c_int) {
     if child != 0 {
         // SAFETY: `kill` is async-signal-safe.
         unsafe { libc::kill(child, libc::SIGINT) };
+    }
+    let background = BACKGROUND_PID.load(Ordering::SeqCst);
+    if background != 0 {
+        // SAFETY: `kill` is async-signal-safe.
+        unsafe { libc::kill(background, libc::SIGTERM) };
     }
     if let Some(slot) = DAEMON_PID.get() {
         let pid = slot.load(Ordering::SeqCst);

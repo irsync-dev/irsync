@@ -5,9 +5,12 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use ::filegen::pace::Pace;
+
 use crate::cli::Direction;
 use crate::client::{SyncExit, SyncResult};
 use crate::fileset::CheckOutcome;
+use crate::replay::RoundJudgement;
 
 pub struct Iteration {
     pub number: u64,
@@ -26,27 +29,40 @@ impl Iteration {
     }
 
     pub fn line(&self) -> String {
-        let exit = match self.sync.exit.code() {
-            -1 => "sig".to_string(),
-            code => code.to_string(),
-        };
-        let manifest = if self.manifest_ok { "ok" } else { "MISMATCH" };
-        let check = match &self.check {
-            CheckOutcome::Clean(_) => "ok".to_string(),
-            CheckOutcome::Differences(c) => format!(
-                "FAILED (added={} deleted={} changed={})",
-                c.added, c.deleted, c.changed
-            ),
-        };
         format!(
             "iter {:04}/{:04}  sync {:.1}s  exit {:<3}  manifest {}  check {}",
             self.number,
             self.total,
             self.sync.elapsed.as_secs_f64(),
-            exit,
-            manifest,
-            check
+            exit_text(self.sync.exit),
+            manifest_text(self.manifest_ok),
+            check_text(&self.check)
         )
+    }
+}
+
+fn exit_text(e: SyncExit) -> String {
+    match e.code() {
+        -1 => "sig".to_string(),
+        code => code.to_string(),
+    }
+}
+
+fn manifest_text(ok: bool) -> &'static str {
+    if ok {
+        "ok"
+    } else {
+        "MISMATCH"
+    }
+}
+
+fn check_text(c: &CheckOutcome) -> String {
+    match c {
+        CheckOutcome::Clean(_) => "ok".to_string(),
+        CheckOutcome::Differences(c) => format!(
+            "FAILED (added={} deleted={} changed={})",
+            c.added, c.deleted, c.changed
+        ),
     }
 }
 
@@ -57,6 +73,109 @@ pub fn exit_code(iterations: &[Iteration]) -> i32 {
     } else {
         1
     }
+}
+
+/// One round of the concurrent mode.
+pub struct ConcurrentRound {
+    pub number: u64,
+    pub total: u64,
+    pub pace: Pace,
+    /// filegen's steps during the sync.
+    pub steps: u64,
+    /// The concurrent sync.
+    pub sync: SyncResult,
+    /// `retried` lines in the client's and the daemon's reports.
+    pub retried: u64,
+    /// Every path the client gave up on, in report order.
+    pub gave_up: Vec<Vec<u8>>,
+    /// Those of `gave_up` filegen did not touch during the round (the
+    /// root path `""` never counts as touched).
+    pub gave_up_untouched: Vec<Vec<u8>>,
+    pub judgement: RoundJudgement,
+    /// The quiet sync after the round, with today's exact-match checks.
+    pub quiet: Iteration,
+}
+
+impl ConcurrentRound {
+    /// The concurrent sync exited 0 or 24, or 23 having given up only on
+    /// paths filegen touched (and on at least one: a 23 with no path is a
+    /// failed session); the judge found nothing; the quiet sync passed.
+    pub fn passed(&self) -> bool {
+        let sync_ok = match self.sync.exit {
+            SyncExit::Ok | SyncExit::Other(24) => true,
+            SyncExit::Partial => !self.gave_up.is_empty() && self.gave_up_untouched.is_empty(),
+            SyncExit::Other(_) => false,
+        };
+        sync_ok && self.judgement.failures.is_empty() && self.quiet.passed()
+    }
+
+    pub fn line(&self) -> String {
+        let judge = match self.judgement.failures.len() {
+            0 => "ok".to_string(),
+            n => format!("FAILED ({n})"),
+        };
+        let q = &self.quiet;
+        let quiet = format!(
+            "{:.1}s exit {}  manifest {}  check {}",
+            q.sync.elapsed.as_secs_f64(),
+            exit_text(q.sync.exit),
+            manifest_text(q.manifest_ok),
+            check_text(&q.check)
+        );
+        format!(
+            "iter {:04}/{:04}  pace {}  steps {}  sync {:.1}s  exit {:<3}  retried {}  gave-up {}/{}  touched {}  changed+held {}  judged {}  judge {}  quiet {}",
+            self.number,
+            self.total,
+            self.pace,
+            self.steps,
+            self.sync.elapsed.as_secs_f64(),
+            exit_text(self.sync.exit),
+            self.retried,
+            self.gave_up.len(),
+            self.gave_up_untouched.len(),
+            self.judgement.touched.len(),
+            self.judgement.changed_and_held,
+            self.judgement.judged,
+            judge,
+            quiet,
+        )
+    }
+}
+
+/// 1 if any round failed; else 4 if no file changed during a sync was
+/// placed in any round (the concurrent writes did not bite); else 0.
+pub fn concurrent_exit_code(rounds: &[ConcurrentRound]) -> i32 {
+    if !rounds.iter().all(ConcurrentRound::passed) {
+        1
+    } else if rounds
+        .iter()
+        .map(|r| r.judgement.changed_and_held)
+        .sum::<u64>()
+        == 0
+    {
+        4
+    } else {
+        0
+    }
+}
+
+/// The concurrent run's footer: passed and failed rounds, the counts
+/// summed over them, and the elapsed time.
+pub fn concurrent_footer(rounds: &[ConcurrentRound], total: Duration) -> String {
+    let passed = rounds.iter().filter(|r| r.passed()).count();
+    let sum = |f: fn(&ConcurrentRound) -> u64| rounds.iter().map(f).sum::<u64>();
+    format!(
+        "passed={} failed={} steps={} retried={} gave_up={} touched={} changed_and_held={} judged={} elapsed={:.1}s",
+        passed,
+        rounds.len() - passed,
+        sum(|r| r.steps),
+        sum(|r| r.retried),
+        sum(|r| r.gave_up.len() as u64),
+        sum(|r| r.judgement.touched.len() as u64),
+        sum(|r| r.judgement.changed_and_held),
+        sum(|r| r.judgement.judged),
+        total.as_secs_f64()
+    )
 }
 
 pub fn header(
@@ -186,6 +305,75 @@ mod tests {
             footer(&its, Duration::from_millis(1_250)),
             "passed=2 failed=0 elapsed=1.2s"
         );
+    }
+
+    fn concurrent(exit: SyncExit, gave_up: &[&[u8]], untouched: &[&[u8]]) -> ConcurrentRound {
+        ConcurrentRound {
+            number: 1,
+            total: 3,
+            pace: filegen::pace::Pace::Steady { per_sec: 40 },
+            steps: 12,
+            sync: sync(exit, 2_500),
+            retried: 2,
+            gave_up: gave_up.iter().map(|p| p.to_vec()).collect(),
+            gave_up_untouched: untouched.iter().map(|p| p.to_vec()).collect(),
+            judgement: RoundJudgement {
+                judged: 40,
+                changed_and_held: 3,
+                ..RoundJudgement::default()
+            },
+            quiet: iter(1, 3, SyncExit::Ok, true, CheckOutcome::Clean(zero())),
+        }
+    }
+
+    #[test]
+    fn partial_ok_only_for_touched_paths() {
+        assert!(!concurrent(SyncExit::Partial, &[b"x"], &[b"x"]).passed());
+        assert!(concurrent(SyncExit::Partial, &[b"x"], &[]).passed());
+        // 23 with nothing given up on is a failed session, not a race.
+        assert!(!concurrent(SyncExit::Partial, &[], &[]).passed());
+        assert!(concurrent(SyncExit::Ok, &[], &[]).passed());
+        assert!(concurrent(SyncExit::Other(24), &[], &[]).passed());
+        assert!(!concurrent(SyncExit::Other(1), &[], &[]).passed());
+    }
+
+    #[test]
+    fn a_judged_failure_or_a_failed_quiet_sync_fails_the_round() {
+        let mut r = concurrent(SyncExit::Ok, &[], &[]);
+        r.judgement.failures.push((b"a".to_vec(), "torn".into()));
+        assert!(!r.passed());
+        assert!(r.line().contains("judge FAILED (1)"), "{}", r.line());
+        let mut r = concurrent(SyncExit::Ok, &[], &[]);
+        r.quiet.manifest_ok = false;
+        assert!(!r.passed());
+    }
+
+    #[test]
+    fn concurrent_line_has_the_counts() {
+        assert_eq!(
+            concurrent(SyncExit::Partial, &[b"x"], &[]).line(),
+            "iter 0001/0003  pace steady:40  steps 12  sync 2.5s  exit 23   retried 2  \
+             gave-up 1/0  touched 0  changed+held 3  judged 40  judge ok  \
+             quiet 0.0s exit 0  manifest ok  check ok"
+        );
+    }
+
+    #[test]
+    fn concurrent_exit_codes() {
+        let ok = || concurrent(SyncExit::Ok, &[], &[]);
+        assert_eq!(concurrent_exit_code(&[ok(), ok()]), 0);
+        let mut bad = ok();
+        bad.quiet.manifest_ok = false;
+        assert_eq!(concurrent_exit_code(&[ok(), bad]), 1);
+        let mut idle = ok();
+        idle.judgement.changed_and_held = 0;
+        assert_eq!(concurrent_exit_code(&[idle]), 4);
+        let mut idle = ok();
+        idle.judgement.changed_and_held = 0;
+        let mut bad = ok();
+        bad.judgement.changed_and_held = 0;
+        bad.quiet.manifest_ok = false;
+        assert_eq!(concurrent_exit_code(&[idle, bad]), 1);
     }
 
     #[test]

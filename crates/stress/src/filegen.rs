@@ -2,12 +2,18 @@
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::os::unix::process::ExitStatusExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
-use crate::process;
+use crate::{process, signals};
 
 pub struct FilegenOpts<'a> {
     pub steps: u64,
@@ -84,6 +90,132 @@ pub fn run(filegen: &Path, args: &[OsString], stderr_log: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// How long a dropped `RunningFilegen` gets after SIGTERM before SIGKILL.
+const DROP_GRACE: Duration = Duration::from_secs(5);
+/// How long `stop` waits for filegen to exit.
+const STOP_WAIT: Duration = Duration::from_secs(60);
+const POLL: Duration = Duration::from_millis(10);
+
+/// A filegen running in the background. Its pid is in the signal
+/// handler's background slot while it runs. Dropping it (on every path,
+/// `Err` included) sends SIGTERM, waits up to 5 s, then SIGKILLs.
+pub struct RunningFilegen {
+    child: Option<Child>,
+    pid: u32,
+    stderr_log: PathBuf,
+}
+
+impl RunningFilegen {
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Clears the background slot if it still holds this child's pid.
+    fn clear_slot(&self) {
+        let _ = signals::background_slot().compare_exchange(
+            self.pid as i32,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
+    /// Waits up to `limit` for the child to exit; `None` if it has not.
+    fn wait_for(&mut self, limit: Duration) -> Result<Option<ExitStatus>> {
+        let child = self.child.as_mut().expect("a running filegen");
+        let deadline = Instant::now() + limit;
+        loop {
+            if let Some(status) = child.try_wait().context("waiting for filegen")? {
+                self.child = None;
+                self.clear_slot();
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(POLL);
+        }
+    }
+
+    fn terminate(&self) {
+        if let Some(c) = &self.child {
+            let _ = kill(Pid::from_raw(c.id() as i32), Signal::SIGTERM);
+        }
+    }
+}
+
+impl Drop for RunningFilegen {
+    fn drop(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+        self.terminate();
+        if !matches!(self.wait_for(DROP_GRACE), Ok(Some(_))) {
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            self.clear_slot();
+        }
+    }
+}
+
+/// Starts `<filegen> <args>` in the background, with stdin null, stdout
+/// discarded and stderr appended to `stderr_log`, and publishes its pid to
+/// the signal handler.
+pub fn spawn(filegen: &Path, args: &[OsString], stderr_log: &Path) -> Result<RunningFilegen> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_log)
+        .with_context(|| format!("opening {}", stderr_log.display()))?;
+    // Held from before the spawn until the pid is in the slot, so the
+    // handler never misses a filegen that exists.
+    let blocked = signals::block();
+    let child = process::spawn(
+        Command::new(filegen)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log)),
+    )
+    .with_context(|| format!("running {}", filegen.display()))?;
+    let pid = child.id();
+    signals::background_slot().store(pid as i32, Ordering::SeqCst);
+    let running = RunningFilegen {
+        child: Some(child),
+        pid,
+        stderr_log: stderr_log.to_path_buf(),
+    };
+    drop(blocked);
+    Ok(running)
+}
+
+/// Stops a background filegen: SIGTERM (filegen finishes the current step,
+/// saves its state and exits 143) unless `wait_only`, then waits at most
+/// 60 s. Exit 0 or 143 is fine, and so is death by our SIGTERM (filegen
+/// had not yet set up its handler, so it had taken no step); anything
+/// else, or no exit in time, is an error naming the stderr log.
+pub fn stop(mut f: RunningFilegen, wait_only: bool) -> Result<()> {
+    if !wait_only {
+        f.terminate();
+    }
+    let log = f.stderr_log.clone();
+    match f.wait_for(STOP_WAIT)? {
+        Some(status) if matches!(status.code(), Some(0) | Some(143)) => Ok(()),
+        Some(status) if !wait_only && status.signal() == Some(libc::SIGTERM) => Ok(()),
+        Some(status) => Err(anyhow!(
+            "background filegen failed ({status}); see {}",
+            log.display()
+        )),
+        // `f` drops here: SIGTERM, then SIGKILL.
+        None => Err(anyhow!(
+            "background filegen did not exit within {STOP_WAIT:?}; see {}",
+            log.display()
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +296,70 @@ mod tests {
                 "/r/SRC/data"
             ]
         );
+    }
+
+    /// Waits up to 10 s for `p` to exist.
+    fn wait_for(p: &Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !p.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} never appeared",
+                p.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn stop_waits_for_the_step_to_finish() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("filegen.stderr.log");
+        let ready = t.path().join("ready");
+        // The trap finishes the "step" (a 1 s sleep) and exits 143, as
+        // filegen does on SIGTERM; `ready` says the trap is set.
+        let f = fake(
+            t.path(),
+            "slow.sh",
+            "trap 'sleep 1; exit 143' TERM; : > \"$1\"; while :; do sleep 0.05; done",
+        );
+        let running = spawn(&f, &[ready.clone().into()], &log).unwrap();
+        wait_for(&ready);
+        let started = std::time::Instant::now();
+        stop(running, false).unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn stop_wait_only_lets_the_run_end_and_a_bad_exit_names_the_log() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("filegen.stderr.log");
+        let done = fake(t.path(), "done.sh", "sleep 0.2; exit 0");
+        stop(spawn(&done, &[], &log).unwrap(), true).unwrap();
+        let bad = fake(t.path(), "bad.sh", "echo broke >&2; exit 3");
+        let e = stop(spawn(&bad, &[], &log).unwrap(), true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(&log.display().to_string()), "{e}");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("broke"));
+    }
+
+    #[test]
+    fn dropping_a_running_filegen_terminates_it() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("filegen.stderr.log");
+        let ready = t.path().join("ready");
+        let f = fake(
+            t.path(),
+            "forever.sh",
+            ": > \"$1\"; while :; do sleep 0.05; done",
+        );
+        let running = spawn(&f, &[ready.clone().into()], &log).unwrap();
+        wait_for(&ready);
+        let pid = nix::unistd::Pid::from_raw(running.pid() as i32);
+        drop(running);
+        // Reaped by the drop, so the pid no longer exists.
+        assert!(nix::sys::signal::kill(pid, None).is_err());
     }
 
     #[test]

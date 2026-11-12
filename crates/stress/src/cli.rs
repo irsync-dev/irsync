@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use ::filegen::pace::Pace;
 use clap::{Parser, ValueEnum};
 
 /// Which way the irsync client moves data.
@@ -44,6 +45,17 @@ pub struct Cli {
     pub filegen: Option<PathBuf>,
     #[arg(long)]
     pub fileset: Option<PathBuf>,
+    /// Run filegen against the source while each sync runs, then judge
+    /// the destination against every state the source held.
+    #[arg(long)]
+    pub concurrent: bool,
+    /// filegen's pace for every round (fast, steady:N or bursts:ON:OFF);
+    /// drawn from the seed per round when not given.
+    #[arg(long, value_name = "PACE", requires = "concurrent")]
+    pub pace: Option<Pace>,
+    /// A run's `logs/rounds.tsv`: replay its paces and step counts.
+    #[arg(long, value_name = "FILE", requires = "concurrent")]
+    pub replay_rounds: Option<PathBuf>,
     /// Extra arguments for the irsync client, after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub client_args: Vec<OsString>,
@@ -71,6 +83,33 @@ mod tests {
         assert_eq!(c.log_level, "debug");
         assert!(c.seed.is_none() && c.max_total_size.is_none() && !c.keep_going);
         assert_eq!(c.client_args, ["--parallel", "4", "--stats"]);
+    }
+
+    #[test]
+    fn concurrent_flags_need_concurrent() {
+        let base = ["irsync-stress", "--direction", "push"];
+        let parse = |extra: &[&str]| {
+            let mut a = base.to_vec();
+            a.extend(extra);
+            a.push("/r");
+            Cli::try_parse_from(a)
+        };
+        assert!(parse(&["--pace", "fast"]).is_err());
+        assert!(parse(&["--replay-rounds", "/x/rounds.tsv"]).is_err());
+        let c = parse(&["--concurrent"]).unwrap();
+        assert!(c.concurrent && c.pace.is_none() && c.replay_rounds.is_none());
+        let c = parse(&[
+            "--concurrent",
+            "--pace",
+            "bursts:100:200",
+            "--replay-rounds",
+            "/x/rounds.tsv",
+        ])
+        .unwrap();
+        assert_eq!(c.pace.unwrap().to_string(), "bursts:100:200");
+        assert_eq!(c.replay_rounds.unwrap(), PathBuf::from("/x/rounds.tsv"));
+        assert!(parse(&["--concurrent", "--pace", "slow"]).is_err());
+        assert!(!parse(&[]).unwrap().concurrent);
     }
 
     #[test]

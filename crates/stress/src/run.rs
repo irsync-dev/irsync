@@ -62,7 +62,7 @@ impl Drop for RunningDaemon {
 }
 
 /// What every sync of the run shares.
-struct Syncer<'a> {
+pub(crate) struct Syncer<'a> {
     cli: &'a Cli,
     layout: &'a Layout,
     tools: &'a Tools,
@@ -80,12 +80,31 @@ impl Syncer<'_> {
             log,
         )
     }
+
+    /// `run` with extra environment variables for the client.
+    pub(crate) fn run_with_env(
+        &self,
+        log: &std::path::Path,
+        env: &[(OsString, OsString)],
+    ) -> Result<client::SyncResult> {
+        client::run_sync_with_env(
+            &self.tools.irsync.path,
+            &self.args,
+            &self.setup,
+            &self.cli.log_level,
+            log,
+            env,
+        )
+    }
 }
 
 /// The whole sequence of the spec's "Sequence" section. Returns the process
 /// exit code (0 or 1); `Err` means exit 2. The daemon is stopped on every
 /// path (explicitly, or by its `Drop`); the root is never deleted.
 pub fn run(cli: &Cli) -> Result<i32> {
+    if cli.concurrent {
+        return crate::concurrent::run(cli);
+    }
     let start = Instant::now();
     // Tools first: a missing tool must leave no directories behind.
     let tools = Tools::locate(
@@ -100,7 +119,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
     run_file.write(&layout.run_file)?;
 
     let pid_slot = signals::install();
-    let (mut daemon, sync) = start_daemon(cli, &layout, &tools, pid_slot, &mut run_file)?;
+    let (mut daemon, sync) = start_daemon(cli, &layout, &tools, pid_slot, &mut run_file, &[])?;
     println!(
         "{}",
         report::header(
@@ -192,19 +211,26 @@ pub fn new_run_file(cli: &Cli, tools: &Tools, seed: u64, started: &str) -> RunFi
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect(),
+        concurrent: cli.concurrent,
+        pace: cli.pace.map(|p| p.to_string()),
+        replay_rounds: cli
+            .replay_rounds
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
         tools: tools.versions(),
         daemon: None,
     }
 }
 
-/// Client key, daemon config, daemon start; publishes the pid to the
-/// signal handler and to `run.toml`.
-fn start_daemon<'a>(
+/// Client key, daemon config, daemon start with `env` added to its
+/// environment; publishes the pid to the signal handler and to `run.toml`.
+pub(crate) fn start_daemon<'a>(
     cli: &'a Cli,
     layout: &'a Layout,
     tools: &'a Tools,
     pid_slot: Arc<AtomicI32>,
     run_file: &mut RunFile,
+    env: &[(OsString, OsString)],
 ) -> Result<(RunningDaemon, Syncer<'a>)> {
     let (client_config, _) = layout.client_side(cli.direction);
     let (daemon_config, daemon_data) = layout.daemon_side(cli.direction);
@@ -221,12 +247,13 @@ fn start_daemon<'a>(
     // reach the daemon: hold SIGINT and SIGTERM pending meanwhile. If the
     // start fails, `Daemon::start` has already killed the child.
     let blocked = signals::block();
-    let daemon = Daemon::start(
+    let daemon = Daemon::start_with_env(
         &tools.irsync.path,
         &files,
         log,
         &cli.log_level,
         STARTUP_TIMEOUT,
+        env,
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);

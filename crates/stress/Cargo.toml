@@ -17,6 +17,8 @@ blake3 = { workspace = true }
 nix = { workspace = true, features = ["signal", "process", "fs", "time"] }
 libc = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde_json = "1"
 jiff = { workspace = true }
 anyhow = { workspace = true }
 filegen = { path = "../filegen" }

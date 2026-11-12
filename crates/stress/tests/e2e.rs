@@ -370,3 +370,111 @@ fn sigint_terminates_the_daemon() {
     assert!(wait_until_gone(pid, Duration::from_secs(5)));
     assert!(root.exists()); // never deleted
 }
+
+/// A `--concurrent` run of three rounds, seed 7, in `direction`, with
+/// `extra` flags before the root.
+///
+/// The pace is a gentle steady:20, a few steps per sync: these tests check
+/// the harness, not irsync. At full speed the judge finds real races
+/// (see the campaigns in `bug-hunting.md`), which would make them flaky.
+fn run_concurrent(direction: &str, root: &Path, extra: &[&OsStr]) -> Output {
+    let mut cmd = Command::new(bin());
+    cmd.args([
+        "--direction",
+        direction,
+        "--concurrent",
+        "--pace",
+        "steady:20",
+        "--iterations",
+        "3",
+        "--steps",
+        "50",
+        "--seed",
+        "7",
+        "--max-total-size",
+        "8M",
+        // filegen refuses a file cap (default 256M) above the total cap.
+        "--max-file-size",
+        "1M",
+    ])
+    .args(extra)
+    .arg(root)
+    .env_remove("IRSYNC_PASSPHRASE");
+    // Generous: replaying a fast round on a loaded machine takes a while.
+    output_within(cmd, Duration::from_secs(900))
+}
+
+/// Asserts a three-round concurrent run ended 0 or 4 and left its
+/// per-round artefacts.
+fn assert_concurrent_run(o: &Output, root: &Path) {
+    assert!(matches!(o.status.code(), Some(0) | Some(4)), "{}", show(o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("  clones:   "), "{}", show(o));
+    for i in 1..=3 {
+        assert!(out.contains(&format!("iter {i:04}/0003")), "{}", show(o));
+        for f in [
+            format!("logs/iter-{i:04}.judge.txt"),
+            format!("logs/iter-{i:04}.client.log"),
+            format!("logs/iter-{i:04}.quiet.client.log"),
+        ] {
+            assert!(root.join(&f).exists(), "{f} missing\n{}", show(o));
+        }
+    }
+    let rounds = std::fs::read_to_string(root.join("logs/rounds.tsv")).unwrap();
+    assert_eq!(rounds.lines().count(), 3, "{rounds}");
+    if o.status.code() == Some(4) {
+        assert!(
+            out.contains("concurrent writes did not bite"),
+            "{}",
+            show(o)
+        );
+    }
+    let run = std::fs::read_to_string(root.join("run.toml")).unwrap();
+    assert!(run.contains("concurrent = true"), "run.toml:\n{run}");
+}
+
+#[test]
+fn concurrent_push_and_pull_run() {
+    require_tools();
+    for direction in ["push", "pull"] {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("run");
+        let o = run_concurrent(direction, &root, &[]);
+        assert_concurrent_run(&o, &root);
+    }
+}
+
+/// What a step did: op, path, to, bytes.
+type Step = (String, Vec<u8>, Option<Vec<u8>>, u64);
+
+/// Every step line in filegen's log under `root`.
+fn step_lines(root: &Path) -> Vec<Step> {
+    std::fs::read_to_string(root.join("filegen/filegen-7.log"))
+        .unwrap()
+        .lines()
+        .filter_map(filegen::log::parse_step_line)
+        .map(|s| (s.op.name().to_string(), s.path, s.to, s.bytes))
+        .collect()
+}
+
+#[test]
+fn replay_rounds_reproduces_steps() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let first = t.path().join("first");
+    let o = run_concurrent("push", &first, &[]);
+    assert_concurrent_run(&o, &first);
+    let rounds = first.join("logs/rounds.tsv");
+    let again = t.path().join("again");
+    let o = run_concurrent(
+        "push",
+        &again,
+        &[OsStr::new("--replay-rounds"), rounds.as_os_str()],
+    );
+    assert_concurrent_run(&o, &again);
+    assert_eq!(
+        std::fs::read_to_string(&rounds).unwrap(),
+        std::fs::read_to_string(again.join("logs/rounds.tsv")).unwrap()
+    );
+    assert_eq!(step_lines(&first), step_lines(&again));
+}

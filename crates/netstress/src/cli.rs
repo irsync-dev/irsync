@@ -125,6 +125,9 @@ impl Cli {
             irsync: self.irsync.clone(),
             filegen: self.filegen.clone(),
             fileset: self.fileset.clone(),
+            concurrent: false,
+            pace: None,
+            replay_rounds: None,
             client_args: self.client_args.clone(),
         }
     }

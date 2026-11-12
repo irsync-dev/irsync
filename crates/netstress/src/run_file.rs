@@ -58,6 +58,9 @@ mod tests {
                 log_level: "debug".into(),
                 keep_going: false,
                 client_args: vec!["--stats".into()],
+                concurrent: false,
+                pace: None,
+                replay_rounds: None,
                 tools: ToolVersions {
                     irsync: tool("irsync"),
                     filegen: tool("filegen"),

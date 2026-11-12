@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod client;
+pub mod concurrent;
 pub mod daemon;
 pub mod filegen;
 pub mod fileset;

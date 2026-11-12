@@ -42,6 +42,15 @@ pub struct RunFile {
     pub keep_going: bool,
     /// Lossy UTF-8 of the OsStrings.
     pub client_args: Vec<String>,
+    /// `--concurrent`: filegen writes to the source during each sync.
+    #[serde(default)]
+    pub concurrent: bool,
+    /// `--pace`, when one pace is fixed for the whole run.
+    #[serde(default)]
+    pub pace: Option<String>,
+    /// `--replay-rounds`: the rounds file this run replays.
+    #[serde(default)]
+    pub replay_rounds: Option<String>,
     pub tools: ToolVersions,
     /// Filled in once the daemon is known.
     pub daemon: Option<DaemonInfo>,
@@ -100,6 +109,9 @@ mod tests {
             log_level: "debug".into(),
             keep_going: true,
             client_args: vec!["--x".into(), "y z".into()],
+            concurrent: true,
+            pace: Some("steady:40".into()),
+            replay_rounds: Some("/r/logs/rounds.tsv".into()),
             tools: ToolVersions {
                 irsync: tool("irsync"),
                 filegen: tool("filegen"),
@@ -128,6 +140,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let mut r = sample();
         r.daemon = None;
+        r.concurrent = false;
+        r.pace = None;
+        r.replay_rounds = None;
         let p = t.path().join("run.toml");
         r.write(&p).unwrap();
         assert_eq!(RunFile::read(&p).unwrap(), r);

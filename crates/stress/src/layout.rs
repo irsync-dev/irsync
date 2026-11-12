@@ -90,6 +90,39 @@ impl Layout {
         self.logs.join(format!("iter-{iter:04}.manifest.blake3"))
     }
 
+    /// The concurrent mode's per-round scratch: `start/` (the source at
+    /// round start), `work/` and `replay/` (the replay's tree and its
+    /// filegen dir) and `state.yaml` (filegen's state at round start).
+    pub fn round_dir(&self) -> PathBuf {
+        self.root.join("round")
+    }
+
+    /// One `round\tpace\tsteps` line per concurrent round.
+    pub fn rounds_file(&self) -> PathBuf {
+        self.logs.join("rounds.tsv")
+    }
+
+    /// The client's file report (`IRSYNC_FILE_REPORT`) of a concurrent sync.
+    pub fn client_report(&self, iter: u64) -> PathBuf {
+        self.logs
+            .join(format!("iter-{iter:04}.client.report.jsonl"))
+    }
+
+    /// The daemon's file report, appended to for the whole run.
+    pub fn daemon_report(&self) -> PathBuf {
+        self.logs.join("daemon.report.jsonl")
+    }
+
+    /// The client log of the quiet sync after a concurrent round.
+    pub fn quiet_client_log(&self, iter: u64) -> PathBuf {
+        self.logs.join(format!("iter-{iter:04}.quiet.client.log"))
+    }
+
+    /// The judge's failures for a concurrent round.
+    pub fn judge_report(&self, iter: u64) -> PathBuf {
+        self.logs.join(format!("iter-{iter:04}.judge.txt"))
+    }
+
     pub fn ping_file(&self) -> PathBuf {
         self.src_data.join(".irsync-stress-ping")
     }
@@ -185,5 +218,15 @@ mod tests {
         assert!(l.ping_client_log().ends_with("logs/ping.client.log"));
         assert!(l.filegen_stderr_log().ends_with("logs/filegen.stderr.log"));
         assert!(l.filegen_log(42).ends_with("filegen/filegen-42.log"));
+        assert_eq!(l.round_dir(), l.root.join("round"));
+        assert!(l.rounds_file().ends_with("logs/rounds.tsv"));
+        assert!(l
+            .client_report(2)
+            .ends_with("logs/iter-0002.client.report.jsonl"));
+        assert!(l.daemon_report().ends_with("logs/daemon.report.jsonl"));
+        assert!(l
+            .quiet_client_log(3)
+            .ends_with("logs/iter-0003.quiet.client.log"));
+        assert!(l.judge_report(4).ends_with("logs/iter-0004.judge.txt"));
     }
 }
