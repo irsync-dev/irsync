@@ -1,2 +1,5 @@
+# The Rust version for local builds, CI and releases. Raise it on purpose
+# (and run the full regression), not whenever a new stable comes out.
 [toolchain]
-channel = "stable"
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
