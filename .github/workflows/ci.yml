@@ -61,3 +61,56 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
       - name: Test
         run: cargo test --locked --workspace --all-features --no-fail-fast $TARGET_FLAG -- --include-ignored
+
+  # Runs the release build itself (dist and packaging/dist/build.sh) for the
+  # Linux targets, on the same runners as release.yml, so a broken release
+  # build shows up here and not after the tag is pushed. The release gate
+  # skips it: release.yml runs the same build there anyway.
+  release-build:
+    name: release build ${{ matrix.target }}
+    if: ${{ !inputs.plan }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            dist: cargo-dist-x86_64-unknown-linux-gnu
+            dist_sha256: 7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            dist: cargo-dist-aarch64-unknown-linux-gnu
+            dist_sha256: 58efb33edf01342875bfd0c3ce2befa9d73075579ca1b3e5dd75b98c88f92e83
+    env:
+      # Keep equal to cargo-dist-version in dist-workspace.toml.
+      DIST_VERSION: 0.34.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-build-${{ matrix.target }}
+      - name: Install dist
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/dist.tar.xz" \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/${{ matrix.dist }}.tar.xz"
+          echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
+          tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
+      - name: Build the release artifacts
+        run: dist build --artifacts=local --target=${{ matrix.target }}
+      - name: Check the tarball holds both binaries
+        run: |
+          set -euo pipefail
+          tar -tJf target/distrib/irsync-${{ matrix.target }}.tar.xz > contents.txt
+          cat contents.txt
+          grep -qx "irsync-${{ matrix.target }}/irsync" contents.txt
+          grep -qx "irsync-${{ matrix.target }}/fileset" contents.txt

@@ -35,10 +35,18 @@ runs, in this order:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-cargo test --workspace --all-features --no-fail-fast -- --include-ignored
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings
+cargo test --locked --workspace --all-features --no-fail-fast -- --include-ignored
 ```
+
+`--locked` makes the run fail if `Cargo.lock` is out of date, as the release
+build would.
+
+A second job, `release build`, runs the release build itself for the two
+Linux targets (x86_64 and arm64 musl): `dist build`, which runs
+`packaging/dist/build.sh`, on the same runners as a release. A change that
+would break a release fails here, before anyone tags it.
 
 `--include-ignored` adds the slow network-fault tests that an everyday
 `cargo test` skips ([Testing](testing.md)). The second clippy run keeps the

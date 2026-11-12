@@ -29,7 +29,8 @@ seconds, before the tests. Nothing is published.
    three files as `Release v1.2.3`. It doesn't push or tag. It prints the
    commands for the next steps.
 2. Push to `main`: `git push origin main`.
-3. Wait for CI on `main` to go green.
+3. Wait for CI on `main` to go green. That includes the `release build` jobs,
+   which run the Linux release build the way the release will.
 4. Tag the commit and push the tag. Use an annotated tag (`-a`):
 
    ```sh
