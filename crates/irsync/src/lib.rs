@@ -8,6 +8,7 @@ pub mod daemon_addr;
 pub mod daemon_lock;
 pub mod delete;
 pub mod delta;
+pub mod file_report;
 pub mod filter;
 pub mod fs;
 pub mod hasher;

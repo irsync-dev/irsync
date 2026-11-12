@@ -215,6 +215,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             sessions,
             failed,
         }) => {
+            irsync::file_report::record_outcome(&outcome);
             for path in &outcome.vanished {
                 eprintln!(
                     "irsync: {}: vanished during the sync",

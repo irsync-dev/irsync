@@ -1204,6 +1204,7 @@ async fn serve_daemon_inner(
                 h.inject_listing = p.inject_listing;
                 h.during_hash = p.during_hash;
                 h.on_first_chunk_sent = p.on_first_chunk_sent;
+                h.file_report = p.file_report;
                 h.skip_place_stat = p.skip_place_stat;
                 h.clones_within = p.clones_within;
             }

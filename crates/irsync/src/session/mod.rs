@@ -462,6 +462,7 @@ pub struct DaemonHooks {
     pub inject_listing: Option<ListingHook>,
     pub during_hash: Option<crate::hasher::HashHook>,
     pub on_first_chunk_sent: Option<FirstChunkHook>,
+    pub file_report: Option<PathBuf>,
     pub skip_place_stat: bool,
     pub clones_within: Option<PathBuf>,
 }
@@ -622,6 +623,10 @@ pub struct SideHooks {
     pub bus: EventBus,
     #[cfg(feature = "test-hooks")]
     pub on_first_chunk_sent: Option<FirstChunkHook>,
+    /// Where this side writes its file report, in preference to the
+    /// `IRSYNC_FILE_REPORT` variable (see [`crate::file_report`]).
+    #[cfg(feature = "test-hooks")]
+    pub file_report: Option<PathBuf>,
     /// Cuts data streams short (see [`crate::send::TruncateHook`]).
     #[cfg(feature = "test-hooks")]
     pub truncate_streams: Option<Arc<crate::send::TruncateHook>>,
@@ -867,6 +872,17 @@ impl SideHooks {
             #[cfg(feature = "test-hooks")]
             hook: self.tamper_frames.clone(),
         }
+    }
+
+    /// Writes one line of the file report: to this side's test sink if it
+    /// has one, else to the `IRSYNC_FILE_REPORT` file.
+    pub(crate) fn report(&self, event: crate::file_report::ReportEvent, path: &RelPath, why: &str) {
+        #[cfg(feature = "test-hooks")]
+        if let Some(sink) = &self.file_report {
+            crate::file_report::record_to(sink, event, path, why);
+            return;
+        }
+        crate::file_report::record(event, path, why);
     }
 
     /// Records one receiver event (test hook; a no-op otherwise).

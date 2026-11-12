@@ -535,6 +535,11 @@ impl SenderRole {
             return;
         }
         tracing::info!(path = ?f.path, reason = %why, "re-sending file");
+        self.ctx.hooks.report(
+            super::super::file_report::ReportEvent::Retried,
+            &f.path,
+            &why,
+        );
         f.retries += 1;
         f.gen += 1;
         let listed = f.digest.take().is_some();
