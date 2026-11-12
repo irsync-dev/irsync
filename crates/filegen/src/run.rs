@@ -1,7 +1,9 @@
 //! The run loop: start or resume, step the chain, checkpoint, finish.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -15,7 +17,7 @@ use crate::cli::{self, RunArgs};
 use crate::config::{self, Config, ConfigError};
 use crate::escape::{escape, unescape};
 use crate::kind::OpKind;
-use crate::log::{Footer, Header, LogWriter, Stats, Timing};
+use crate::log::{Footer, Header, LogWriter, Post, PostStat, Stats, Timing};
 use crate::model::{Model, NodeId};
 use crate::ops::file::create_file;
 use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
@@ -44,6 +46,35 @@ pub struct RunOpts {
     pub quiet: bool,
     pub verbose: bool,
     pub pace: Pace,
+}
+
+/// Resolves parsed `filegen run` arguments into run options. The error is
+/// the message `filegen` prints for a bad `--set`.
+pub fn opts_from_args(args: RunArgs) -> Result<RunOpts, String> {
+    let sets = args
+        .set
+        .iter()
+        .map(|s| cli::parse_set(s))
+        .collect::<Result<_, _>>()
+        .map_err(|msg| format!("filegen: --set: {msg}"))?;
+    let start = match (args.seed, &args.resume) {
+        (Some(seed), _) => Start::Seed(seed),
+        (None, Some(state)) => Start::Resume(state.clone()),
+        (None, None) => unreachable!("clap requires --seed or --resume"),
+    };
+    Ok(RunOpts {
+        root: args.path.clone(),
+        steps: args.steps,
+        start,
+        config_file: args.config.clone(),
+        sets,
+        dry_run: args.dry_run,
+        force: args.force,
+        quiet: args.quiet,
+        verbose: args.verbose,
+        pace: args.pace,
+        flags: args,
+    })
 }
 
 /// How a run ended.
@@ -346,6 +377,14 @@ impl Runner {
     fn commit(&mut self, pressure: f64, kind: OpKind, a: Applied) -> io::Result<StepResult> {
         self.steps_done += 1;
         let step = self.steps_done;
+        // Stat right after the step, before anything else can change it.
+        let post = (!self.dry).then(|| {
+            let at = |b: &[u8]| PostStat::lstat(&self.root.join(OsStr::from_bytes(b)));
+            Post {
+                path: at(&a.rec.path),
+                to: a.rec.to.as_deref().map(at),
+            }
+        });
         self.log.step(
             step,
             jiff::Timestamp::now(),
@@ -356,6 +395,7 @@ impl Runner {
             },
             self.dry,
             pressure,
+            post.as_ref(),
         )?;
         self.stats.record(kind, a.rec.bytes, a.dur, a.gen);
         self.bytes_written += a.rec.bytes;
@@ -669,7 +709,8 @@ mod tests {
         panic!("unterminated {key} value in {line:?}");
     }
 
-    /// The step lines of a log without their timestamps and durations.
+    /// The step lines of a log without their timestamps, durations and
+    /// post-step mtimes.
     fn step_lines(log: &str) -> Vec<String> {
         log.lines()
             .filter(|l| !l.starts_with('#'))
@@ -677,10 +718,20 @@ mod tests {
                 let (head, rest) = l.split_once(" ts=").expect("a step line has ts=");
                 let rest = rest.split_once(' ').map_or("", |(_, r)| r);
                 let line = format!("{head} {rest}");
-                match line.rsplit_once(" dur_us=") {
+                let line = match line.rsplit_once(" dur_us=") {
                     Some((keep, _)) => keep.to_string(),
                     None => line,
-                }
+                };
+                // post stats keep kind, size and mode; the mtime is wall clock
+                line.split(' ')
+                    .map(
+                        |w| match w.starts_with("post=") || w.starts_with("post_to=") {
+                            true => w.rsplit_once(':').map_or(w, |(keep, _)| keep),
+                            false => w,
+                        },
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" ")
             })
             .collect()
     }
@@ -1219,5 +1270,50 @@ mod tests {
         let o = opts_with(&root, &out, 1, Start::Seed(23), &[("max_path_len", "4096")]);
         let msg = usage(run(o));
         assert!(msg.contains("max_path_len"), "{msg}");
+    }
+
+    #[test]
+    fn step_lines_carry_post_stats() {
+        use crate::log::{parse_step_line, PostStat};
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let (t, root) = base();
+        let out = t.path().join("out");
+        let mut r = Runner::new(opts(&root, &out, 20, Start::Seed(40))).unwrap();
+        let log_path = out.join("filegen-40.log");
+        let mut deleted = 0;
+        for _ in 0..20 {
+            r.step().unwrap();
+            let (p, q) = {
+                r.log.flush().unwrap();
+                let log = text(&log_path);
+                let l = parse_step_line(log.lines().last().unwrap()).unwrap();
+                let at = |b: &[u8]| PostStat::lstat(&root.join(OsStr::from_bytes(b)));
+                (l.clone(), (at(&l.path), l.to.as_deref().map(at)))
+            };
+            assert_eq!(p.post, Some(q.0), "step {}", p.step);
+            assert_eq!(p.post_to, q.1, "step {}", p.step);
+            if p.op == OpKind::DeleteFile {
+                assert_eq!(p.post, Some(None));
+                deleted += 1;
+            }
+        }
+        assert!(deleted > 0, "seed should delete a file");
+    }
+
+    #[test]
+    fn opts_from_args_matches_main() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "filegen", "run", "--seed", "7", "--steps", "3", "--pace", "steady:5", "/t",
+        ])
+        .unwrap();
+        let Command::Run(a) = cli.command;
+        let o = opts_from_args(a).unwrap();
+        assert_eq!(o.steps, 3);
+        assert!(matches!(o.start, Start::Seed(7)));
+        assert_eq!(o.pace, Pace::Steady { per_sec: 5 });
+        assert_eq!(o.root, PathBuf::from("/t"));
     }
 }

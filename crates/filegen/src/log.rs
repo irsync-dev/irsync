@@ -1,7 +1,7 @@
 //! Operation log: one parseable text line per step, plus run header/footer
 //! and per-kind statistics.
 
-use crate::escape::escape;
+use crate::escape::{escape, unescape};
 use crate::kind::OpKind;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,6 +19,88 @@ pub struct OpRecord {
     pub to: Option<Vec<u8>>,
     pub bytes: u64,
     pub details: Vec<(&'static str, String)>,
+}
+
+/// The state of one path right after a step: kind, size, permission bits
+/// and mtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostStat {
+    /// `f` file, `d` dir, `l` symlink, `p` fifo, `c` char dev, `b` block
+    /// dev, `s` socket, `?` anything else.
+    pub kind: char,
+    pub size: u64,
+    /// Permission bits (`mode & 0o7777`).
+    pub mode: u32,
+    pub mtime_ns: i128,
+}
+
+impl PostStat {
+    pub fn of(m: &std::fs::Metadata) -> PostStat {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let t = m.file_type();
+        let kind = if t.is_file() {
+            'f'
+        } else if t.is_dir() {
+            'd'
+        } else if t.is_symlink() {
+            'l'
+        } else if t.is_fifo() {
+            'p'
+        } else if t.is_char_device() {
+            'c'
+        } else if t.is_block_device() {
+            'b'
+        } else if t.is_socket() {
+            's'
+        } else {
+            '?'
+        };
+        PostStat {
+            kind,
+            size: m.size(),
+            mode: m.mode() & 0o7777,
+            mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
+        }
+    }
+
+    /// `lstat` of `p`; `None` if it is absent (or cannot be read).
+    pub fn lstat(p: &Path) -> Option<PostStat> {
+        std::fs::symlink_metadata(p).ok().map(|m| PostStat::of(&m))
+    }
+
+    fn fmt(p: &Option<PostStat>) -> String {
+        match p {
+            None => "-".to_string(),
+            Some(p) => format!("{}:{}:{:o}:{}", p.kind, p.size, p.mode, p.mtime_ns),
+        }
+    }
+
+    fn parse(s: &str) -> Option<Option<PostStat>> {
+        if s == "-" {
+            return Some(None);
+        }
+        let mut it = s.splitn(4, ':');
+        let kind = it.next()?;
+        let mut cs = kind.chars();
+        let kind = cs.next()?;
+        if cs.next().is_some() {
+            return None;
+        }
+        Some(Some(PostStat {
+            kind,
+            size: it.next()?.parse().ok()?,
+            mode: u32::from_str_radix(it.next()?, 8).ok()?,
+            mtime_ns: it.next()?.parse().ok()?,
+        }))
+    }
+}
+
+/// Stats of the touched paths after a step; `None` for a path that was
+/// absent. `to` is `Some` only when the record has a `to`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Post {
+    pub path: Option<PostStat>,
+    pub to: Option<Option<PostStat>>,
 }
 
 /// How long a step took, as the operation measured it.
@@ -183,6 +265,7 @@ impl LogWriter {
         self.line(&s)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         step: u64,
@@ -191,6 +274,7 @@ impl LogWriter {
         timing: Timing,
         dry: bool,
         pressure: f64,
+        post: Option<&Post>,
     ) -> io::Result<()> {
         let mut s = format!(
             "step={step} ts={} op={} path={}",
@@ -209,6 +293,12 @@ impl LogWriter {
         }
         for (k, v) in &rec.details {
             s.push_str(&format!(" {k}={}", detail_value(v)));
+        }
+        if let Some(p) = post {
+            s.push_str(&format!(" post={}", PostStat::fmt(&p.path)));
+            if let Some(t) = &p.to {
+                s.push_str(&format!(" post_to={}", PostStat::fmt(t)));
+            }
         }
         if pressure > 0.0 {
             s.push_str(&format!(" pressure={pressure:.2}"));
@@ -275,6 +365,105 @@ impl LogWriter {
     }
 }
 
+/// A successful step line read back from the log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepLine {
+    pub step: u64,
+    pub op: OpKind,
+    pub path: Vec<u8>,
+    pub to: Option<Vec<u8>>,
+    pub bytes: u64,
+    pub details: BTreeMap<String, String>,
+    /// Outer `None`: not logged (dry run). `Some(None)`: absent after the
+    /// step.
+    pub post: Option<Option<PostStat>>,
+    pub post_to: Option<Option<PostStat>>,
+}
+
+/// Splits a line into `key=value` fields; a value is a quoted, escaped
+/// string (returned unescaped) or a bare word.
+fn fields(line: &str) -> Option<Vec<(&str, Vec<u8>)>> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b' ' {
+            i += 1;
+            continue;
+        }
+        let eq = i + line[i..].find('=')?;
+        let key = &line[i..eq];
+        if key.contains(' ') {
+            return None;
+        }
+        i = eq + 1;
+        if b.get(i) == Some(&b'"') {
+            let start = i + 1;
+            let mut j = start;
+            loop {
+                match b.get(j)? {
+                    b'\\' => j += 2,
+                    b'"' => break,
+                    _ => j += 1,
+                }
+            }
+            out.push((key, unescape(line.get(start..j)?).ok()?));
+            i = j + 1;
+        } else {
+            let end = line[i..].find(' ').map_or(b.len(), |n| i + n);
+            out.push((key, line.as_bytes()[i..end].to_vec()));
+            i = end;
+        }
+    }
+    Some(out)
+}
+
+/// Parses a step line written by [`LogWriter::step`]. `None` for `#` lines,
+/// failure lines and anything malformed.
+pub fn parse_step_line(line: &str) -> Option<StepLine> {
+    if line.starts_with('#') {
+        return None;
+    }
+    let mut step = None;
+    let mut op = None;
+    let mut path = None;
+    let mut to = None;
+    let mut bytes = 0;
+    let mut details = BTreeMap::new();
+    let mut post = None;
+    let mut post_to = None;
+    for (k, v) in fields(line)? {
+        let text = || String::from_utf8_lossy(&v).into_owned();
+        match k {
+            "error" => return None,
+            "step" => step = text().parse().ok(),
+            "op" => {
+                let name = text();
+                op = OpKind::ALL.iter().copied().find(|o| o.name() == name);
+            }
+            "path" => path = Some(v.clone()),
+            "to" => to = Some(v.clone()),
+            "bytes" => bytes = text().parse().ok()?,
+            "post" => post = Some(PostStat::parse(&text())?),
+            "post_to" => post_to = Some(PostStat::parse(&text())?),
+            "ts" | "dry" | "pressure" | "dur_us" | "gen_us" => {}
+            _ => {
+                details.insert(k.to_string(), text());
+            }
+        }
+    }
+    Some(StepLine {
+        step: step?,
+        op: op?,
+        path: path?,
+        to,
+        bytes,
+        details,
+        post,
+        post_to,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +503,7 @@ mod tests {
             },
             false,
             0.0,
+            None,
         )
         .unwrap();
         w.flush().unwrap();
@@ -344,6 +534,7 @@ mod tests {
             },
             true,
             0.25,
+            None,
         )
         .unwrap();
         w.flush().unwrap();
@@ -408,6 +599,7 @@ mod tests {
             },
             false,
             0.0,
+            None,
         )
         .unwrap();
         let mut st = Stats::default();
@@ -459,6 +651,7 @@ mod tests {
             },
             false,
             0.0,
+            None,
         )
         .unwrap();
         w.flush().unwrap();
@@ -514,5 +707,48 @@ mod tests {
         s.record(OpKind::CreateFile, 0, Duration::from_micros(1), None);
         let kinds: Vec<_> = s.summary().iter().map(|k| k.kind).collect();
         assert_eq!(kinds, vec![OpKind::CreateFile, OpKind::Rename]);
+    }
+
+    #[test]
+    fn step_line_round_trips_awkward_names() {
+        let (_d, p) = tmp_path("x.log");
+        let mut w = LogWriter::open_append(&p, false).unwrap();
+        let rec = OpRecord {
+            kind: OpKind::Rename,
+            path: b"a\tb\xff\n".to_vec(),
+            to: Some(b"c d".to_vec()),
+            bytes: 9,
+            details: vec![("size", "12".into()), ("note", "has \"space\"".into())],
+        };
+        let post = Post {
+            path: None,
+            to: Some(Some(PostStat {
+                kind: 'f',
+                size: 3,
+                mode: 0o644,
+                mtime_ns: -5,
+            })),
+        };
+        let timing = Timing {
+            dur: Duration::from_micros(1),
+            gen: None,
+        };
+        w.step(4, ts(), &rec, timing, false, 0.5, Some(&post))
+            .unwrap();
+        w.flush().unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        let l = parse_step_line(text.trim_end_matches('\n')).unwrap();
+        assert_eq!(l.step, 4);
+        assert_eq!(l.op, OpKind::Rename);
+        assert_eq!(l.path, b"a\tb\xff\n");
+        assert_eq!(l.to.as_deref(), Some(&b"c d"[..]));
+        assert_eq!(l.bytes, 9);
+        assert_eq!(l.details["size"], "12");
+        assert_eq!(l.details["note"], "has \"space\"");
+        assert_eq!(l.details.len(), 2);
+        assert_eq!(l.post, Some(None));
+        assert_eq!(l.post_to, post.to);
+        assert!(parse_step_line("# run seed=1").is_none());
+        assert!(parse_step_line("step=1 ts=x op=mkdir path=\"a\" error=\"boom\"").is_none());
     }
 }
