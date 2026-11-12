@@ -167,24 +167,3 @@ fn report_paths_are_bytes() {
     assert!(text.contains("\"event\":\"vanished\""));
     assert!(text.contains(r#""reason":"say \"hi\"\n""#), "{text:?}");
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn report_off_writes_nothing() {
-    assert!(std::env::var_os(irsync::file_report::ENV).is_none());
-    let h = Harness::new().await;
-    seed(&h, Flow::Push);
-    fs::write(h.src(Flow::Push).join("x.bin"), data(1000, 3)).unwrap();
-    let local = h.local_side();
-    let out = within30(h.run_side(&archive_opts(), Flow::Push, local))
-        .await
-        .unwrap();
-    assert_eq!(out.exit_code(), 0);
-    irsync::file_report::record_outcome(&out);
-    irsync::file_report::record(
-        ReportEvent::GaveUp,
-        &RelPath::new(b"x.bin").unwrap(),
-        "never written",
-    );
-    // No sink was configured, so no report file exists anywhere we put one.
-    assert!(!Path::new("IRSYNC_FILE_REPORT").exists());
-}

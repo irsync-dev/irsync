@@ -38,9 +38,27 @@ fn env_sink() -> Option<&'static Mutex<File>> {
     static SINK: OnceLock<Option<Mutex<File>>> = OnceLock::new();
     SINK.get_or_init(|| {
         let p = std::env::var_os(ENV)?;
-        open(Path::new(&p)).ok().map(Mutex::new)
+        match open(Path::new(&p)) {
+            Ok(f) => Some(Mutex::new(f)),
+            Err(e) => {
+                eprintln!(
+                    "irsync: cannot open the file report {}: {e}",
+                    Path::new(&p).display()
+                );
+                None
+            }
+        }
     })
     .as_ref()
+}
+
+/// Says on stderr, once per process, that a report line could not be
+/// written. The sync itself carries on.
+fn warn_write(e: &std::io::Error) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("irsync: cannot write the file report: {e}");
+    }
 }
 
 fn open(p: &Path) -> std::io::Result<File> {
@@ -76,21 +94,28 @@ fn line(event: ReportEvent, path: &RelPath, reason: &str) -> String {
 }
 
 /// Appends one line to the file `IRSYNC_FILE_REPORT` names; does nothing
-/// when it is unset. Errors writing are ignored: the report must not change
-/// a sync.
+/// when it is unset. A failure to open or write it is reported once on
+/// stderr; the report must not change a sync.
 pub fn record(event: ReportEvent, path: &RelPath, reason: &str) {
     if let Some(sink) = env_sink() {
         let l = line(event, path, reason);
         let mut f = sink.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = f.write_all(l.as_bytes());
+        if let Err(e) = f.write_all(l.as_bytes()) {
+            warn_write(&e);
+        }
     }
 }
 
 /// Like [`record`], to the file at `sink` (opened for each line); for tests
 /// that give each side its own file.
 pub fn record_to(sink: &Path, event: ReportEvent, path: &RelPath, reason: &str) {
-    if let Ok(mut f) = open(sink) {
-        let _ = f.write_all(line(event, path, reason).as_bytes());
+    match open(sink) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(line(event, path, reason).as_bytes()) {
+                warn_write(&e);
+            }
+        }
+        Err(e) => warn_write(&e),
     }
 }
 

@@ -66,8 +66,14 @@ fn expect_line(rx: &mpsc::Receiver<String>, what: &str, pred: impl Fn(&str) -> b
 /// Runs the client with a clean environment and a wall-clock bound: a hung
 /// run is killed and fails the test instead of blocking it.
 fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
+    run_client_env(args, tmp, &[])
+}
+
+/// [`run_client`] with extra environment variables.
+fn run_client_env(args: &[&str], tmp: &Path, env: &[(&str, &Path)]) -> std::process::Output {
     use std::io::Read;
     let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .envs(env.iter().copied())
         .args(args)
         .env("HOME", tmp.join("home"))
         .env("XDG_STATE_HOME", tmp.join("xdg"))
@@ -596,4 +602,100 @@ fn verbose_prints_a_summary_for_a_failed_session() {
         "{out}"
     );
     assert!(flat.contains(" wall "), "{out}");
+}
+
+/// Pushes `src/` (a readable file and one with mode 000, which the sender
+/// must give up on) through a real daemon, with the file report on or off.
+/// Returns the client's output.
+fn push_unreadable(tmp: &Path, report: Option<&Path>) -> std::process::Output {
+    for d in ["src", "dst", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("src/ok.txt"), b"fine").unwrap();
+    let bad = tmp.join("src/bad.bin");
+    std::fs::write(&bad, bytes(4096)).unwrap();
+    std::fs::set_permissions(&bad, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let d = start_daemon(tmp);
+    let address = format!("localhost:{}", d.listen.port());
+    let src = format!("{}/", tmp.join("src").display());
+    let dest = format!("{}:m/", d.id);
+    let config = tmp.join("irsync.toml");
+    let args = [
+        "-a",
+        "--reconnect",
+        "0",
+        "--address",
+        &address,
+        "--config",
+        config.to_str().unwrap(),
+        &src,
+        &dest,
+    ];
+    let env: Vec<(&str, &Path)> = report
+        .map(|p| vec![(irsync::file_report::ENV, p)])
+        .unwrap_or_default();
+    run_client_env(&args, tmp, &env)
+}
+
+fn running_as_root() -> bool {
+    // Mode 000 does not stop root from reading.
+    nix::unistd::geteuid().is_root()
+}
+
+#[test]
+fn file_report_lists_a_given_up_file_when_the_variable_is_set() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let report = dir.path().join("report.jsonl");
+    assert_eq!(
+        push_unreadable(dir.path(), Some(&report)).status.code(),
+        Some(23)
+    );
+    let text = std::fs::read_to_string(&report).expect("the report file exists");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    assert!(lines[0].contains("\"event\":\"gave_up\""), "{text}");
+    // "bad.bin" in hex.
+    assert!(
+        lines[0].contains("\"path_hex\":\"6261642e62696e\""),
+        "{text}"
+    );
+    assert!(lines[0].contains("\"path\":\"bad.bin\""), "{text}");
+}
+
+#[test]
+fn file_report_is_not_written_when_the_variable_is_unset() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(push_unreadable(dir.path(), None).status.code(), Some(23));
+    // No file named like a report appeared anywhere under the test's tree.
+    let mut stack = vec![dir.path().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            assert!(!name.contains("report"), "unexpected file {p:?}");
+            if e.file_type().unwrap().is_dir() {
+                stack.push(p);
+            }
+        }
+    }
+}
+
+#[test]
+fn file_report_that_cannot_be_opened_is_said_on_stderr_and_the_sync_goes_on() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let report = dir.path().join("no/such/dir/report.jsonl");
+    let o = push_unreadable(dir.path(), Some(&report));
+    assert_eq!(o.status.code(), Some(23));
+    assert!(!report.exists());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("cannot open the file report"), "{err}");
 }
