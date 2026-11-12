@@ -143,7 +143,7 @@ filegen refuses to start (exit 2) when:
 One line per step, `key=value` pairs in a fixed order:
 
 ```
-step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [pressure=<0.xx>] [post=<stat>] [post_to=<stat>] dur_us=<n> [gen_us=<n>]
+step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [post=<stat>] [post_to=<stat>] [pressure=<0.xx>] dur_us=<n> [gen_us=<n>]
 ```
 
 `step` counts across resumes. Paths are relative to the root, quoted and
