@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use crate::pace::Pace;
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -81,6 +82,9 @@ pub struct RunArgs {
     /// Steps between checkpoints
     #[arg(long)]
     pub checkpoint_steps: Option<u64>,
+    /// Step timing: fast, steady:<N> (steps per second) or bursts:<ON_MS>:<OFF_MS>
+    #[arg(long, default_value = "fast")]
+    pub pace: Pace,
 }
 
 /// A byte count that parses from and displays as `123`, `4K`, `256M`, `25G`, `1T`.

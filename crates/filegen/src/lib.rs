@@ -8,6 +8,7 @@ pub mod log;
 pub mod model;
 pub mod names;
 pub mod ops;
+pub mod pace;
 pub mod pick;
 pub mod run;
 pub mod signals;

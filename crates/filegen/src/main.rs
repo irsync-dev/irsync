@@ -46,6 +46,7 @@ fn run_command(args: RunArgs) -> i32 {
         force: args.force,
         quiet: args.quiet,
         verbose: args.verbose,
+        pace: args.pace,
         flags: args,
     };
     match run(opts) {

@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use indicatif::{HumanBytes, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rand::SeedableRng;
@@ -19,6 +19,7 @@ use crate::log::{Footer, Header, LogWriter, Stats, Timing};
 use crate::model::{Model, NodeId};
 use crate::ops::file::create_file;
 use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
+use crate::pace::Pace;
 use crate::pick::anchor_of;
 use crate::signals;
 use crate::state::{self, ChainState, LastRun, State, StateError, TreeInfo, FORMAT_VERSION};
@@ -42,6 +43,7 @@ pub struct RunOpts {
     pub force: bool,
     pub quiet: bool,
     pub verbose: bool,
+    pub pace: Pace,
 }
 
 /// How a run ended.
@@ -481,6 +483,9 @@ fn lenient_canonical(p: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// The longest a paced wait sleeps before checking for a signal again.
+const PACE_SLICE: Duration = Duration::from_millis(50);
+
 /// Runs `opts.steps` steps (a step that could do nothing counts too),
 /// checking for SIGINT and SIGTERM between steps, with a progress line on
 /// stderr unless quiet (or verbose, whose echoed log lines would garble
@@ -489,6 +494,7 @@ fn lenient_canonical(p: &Path) -> io::Result<PathBuf> {
 /// step found nothing to do, one warning says so on stderr unless quiet.
 pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
     let steps = opts.steps;
+    let pace = opts.pace;
     let quiet = opts.quiet;
     let bar = if opts.quiet || opts.verbose {
         ProgressBar::hidden()
@@ -503,6 +509,7 @@ pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
     let mut runner = Runner::new(opts)?;
     let signal = signals::install();
     let mut done = 0;
+    let started = Instant::now();
     let outcome = loop {
         let sig = signal.load(Ordering::SeqCst);
         if sig != 0 {
@@ -510,6 +517,14 @@ pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
         }
         if done == steps {
             break Outcome::Ok;
+        }
+        if done > 0 {
+            // Wait in short slices so a signal is noticed promptly.
+            let delay = pace.delay(done, started.elapsed());
+            if !delay.is_zero() {
+                std::thread::sleep(delay.min(PACE_SLICE));
+                continue;
+            }
         }
         match runner.step() {
             Ok(_) => {
@@ -574,6 +589,7 @@ mod tests {
             remove_tree_max_entries: None,
             fsync: None,
             checkpoint_steps: None,
+            pace: Pace::Fast,
         }
     }
 
@@ -601,6 +617,7 @@ mod tests {
             force: false,
             quiet: true,
             verbose: false,
+            pace: Pace::Fast,
         }
     }
 
@@ -666,6 +683,35 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn steady_pace_spaces_steps() {
+        let (t, root) = base();
+        let mut o = opts(&root, &t.path().join("out"), 10, Start::Seed(30));
+        o.pace = Pace::Steady { per_sec: 100 };
+        let started = Instant::now();
+        run_ok(o);
+        assert!(started.elapsed() >= Duration::from_millis(90));
+    }
+
+    #[test]
+    fn pace_does_not_change_the_tree() {
+        let (t, root) = base();
+        let mut lines = Vec::new();
+        for (i, pace) in [Pace::Fast, Pace::Steady { per_sec: 1000 }]
+            .into_iter()
+            .enumerate()
+        {
+            reset(&root);
+            let out = t.path().join(format!("out{i}"));
+            let mut o = opts(&root, &out, 40, Start::Seed(31));
+            o.pace = pace;
+            run_ok(o);
+            lines.push(step_lines(&text(&out.join("filegen-31.log"))));
+        }
+        assert_eq!(lines[0].len(), 40);
+        assert_eq!(lines[0], lines[1]);
     }
 
     #[test]
