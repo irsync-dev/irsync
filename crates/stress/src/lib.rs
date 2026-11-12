@@ -6,6 +6,7 @@ pub mod fileset;
 pub mod judge;
 pub mod layout;
 pub mod process;
+pub mod replay;
 pub mod report;
 pub mod run;
 pub mod run_file;

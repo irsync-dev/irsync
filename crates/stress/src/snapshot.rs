@@ -1,7 +1,7 @@
 //! A tree snapshot for the replay: `walk_meta` records every entry's
 //! metadata, `copy_tree` makes a cheap copy that keeps everything filegen's
 //! walk and ops read (names, types, content, modes, mtimes, symlink targets,
-//! fifos, hard-link groups, `user.*` xattrs).
+//! fifos, hard-link groups, `user.*` xattrs), and owners when run as root.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
@@ -178,6 +178,16 @@ fn set_times(path: &Path, m: &fs::Metadata) -> Result<()> {
     .with_context(|| format!("setting times of {}", path.display()))
 }
 
+/// As root, gives `to` `m`'s owner; before any chmod, since a chown
+/// clears set-id bits. Others cannot, and keep their own.
+fn copy_owner(to: &Path, m: &fs::Metadata) -> Result<()> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Ok(());
+    }
+    std::os::unix::fs::lchown(to, Some(m.uid()), Some(m.gid()))
+        .with_context(|| format!("chown {}", to.display()))
+}
+
 fn copy_xattrs(from: &Path, to: &Path) -> Result<()> {
     let names = match xattr::list(from) {
         Ok(n) => n,
@@ -216,6 +226,7 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists && to.is_dir() => {}
             Err(e) => return Err(e).with_context(|| format!("creating {}", to.display())),
         }
+        copy_owner(to, &m)?;
         // Writable for now, whatever the source's mode.
         fs::set_permissions(to, fs::Permissions::from_mode(0o700))?;
         copy_xattrs(from, to)?;
@@ -243,13 +254,16 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
             st.all_cloned = false;
         }
         copy_xattrs(from, to)?;
+        copy_owner(to, &m)?;
         fs::set_permissions(to, fs::Permissions::from_mode(m.mode() & 0o7777))?;
     } else if ft.is_symlink() {
         let target = fs::read_link(from)?;
         symlink(&target, to).with_context(|| format!("symlink {}", to.display()))?;
+        copy_owner(to, &m)?;
     } else if ft.is_fifo() {
         mkfifo(to, Mode::from_bits_truncate(0o600))
             .with_context(|| format!("mkfifo {}", to.display()))?;
+        copy_owner(to, &m)?;
         fs::set_permissions(to, fs::Permissions::from_mode(m.mode() & 0o7777))?;
     } else if (ft.is_block_device() || ft.is_char_device()) && unsafe { libc::geteuid() } == 0 {
         let sflag = if ft.is_block_device() {
@@ -264,6 +278,7 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
             m.rdev() as _,
         )
         .with_context(|| format!("mknod {}", to.display()))?;
+        copy_owner(to, &m)?;
     } else {
         bail!(
             "cannot copy {}: a device node or socket (device nodes need root)",

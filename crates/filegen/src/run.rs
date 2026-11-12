@@ -105,6 +105,15 @@ pub enum StepResult {
     Retry,
 }
 
+/// What the last completed step did, as its log line records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastStep {
+    pub kind: OpKind,
+    pub path: Vec<u8>,
+    pub to: Option<Vec<u8>>,
+    pub bytes: u64,
+}
+
 /// How many times a step redraws from the same row when the drawn kind
 /// has no target, before falling back to `create_file` in the root.
 const REDRAWS: usize = 16;
@@ -134,6 +143,7 @@ pub struct Runner {
     bytes_written: u64,
     /// Steps of this invocation that found nothing to do.
     skipped: u64,
+    last: Option<LastStep>,
 }
 
 impl Runner {
@@ -308,6 +318,7 @@ impl Runner {
             clock: Instant::now(),
             bytes_written: 0,
             skipped: 0,
+            last: None,
         })
     }
 
@@ -401,6 +412,12 @@ impl Runner {
         self.bytes_written += a.rec.bytes;
         self.last_kind = kind;
         self.anchor = a.anchor;
+        self.last = Some(LastStep {
+            kind,
+            path: a.rec.path,
+            to: a.rec.to,
+            bytes: a.rec.bytes,
+        });
         if step.is_multiple_of(self.cfg.checkpoint_steps) {
             state::write_atomic(&self.state_path, &self.state("running"))?;
             self.log.flush()?;
@@ -415,6 +432,12 @@ impl Runner {
 
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// The last step of this invocation that completed, whose line the log
+    /// may not hold yet (it is buffered until a checkpoint).
+    pub fn last_step(&self) -> Option<&LastStep> {
+        self.last.as_ref()
     }
 
     /// Steps of this invocation that found nothing to do.
@@ -993,6 +1016,33 @@ mod tests {
         o.dry_run = true;
         let msg = usage(run(o));
         assert!(msg.contains("--dry-run"), "{msg}");
+    }
+
+    #[test]
+    fn last_step_matches_the_log_line() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        let mut r = Runner::new(opts(&root, &out, 200, Start::Seed(23))).unwrap();
+        assert_eq!(r.last_step(), None);
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            if let StepResult::Done { .. } = r.step().unwrap() {
+                seen.push(r.last_step().unwrap().clone());
+            }
+        }
+        r.finish(Outcome::Ok).unwrap();
+        let logged: Vec<LastStep> = text(&out.join("filegen-23.log"))
+            .lines()
+            .filter_map(crate::log::parse_step_line)
+            .map(|l| LastStep {
+                kind: l.op,
+                path: l.path,
+                to: l.to,
+                bytes: l.bytes,
+            })
+            .collect();
+        assert!(seen.len() > 100);
+        assert_eq!(seen, logged);
     }
 
     #[test]
