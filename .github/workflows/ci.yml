@@ -56,8 +56,8 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
       - name: Clippy without OpenTelemetry
-        run: cargo clippy --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
       - name: Test
-        run: cargo test --workspace --all-features --no-fail-fast $TARGET_FLAG -- --include-ignored
+        run: cargo test --locked --workspace --all-features --no-fail-fast $TARGET_FLAG -- --include-ignored

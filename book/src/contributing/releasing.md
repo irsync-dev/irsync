@@ -23,6 +23,11 @@ seconds, before the tests. Nothing is published.
 
    A test fails if they differ, and the release stops at once if they don't
    match the tag.
+
+   Then run `cargo check` so Cargo writes the new version into `Cargo.lock`,
+   and commit `Cargo.lock` too. The release build uses `--locked` and fails
+   if the lock file is out of date. CI uses `--locked` as well, so it catches
+   a forgotten lock file before you tag.
 2. Commit, and push to `main`.
 3. Wait for CI on `main` to go green.
 4. Tag the commit and push the tag. Use an annotated tag (`-a`):
