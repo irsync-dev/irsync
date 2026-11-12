@@ -465,6 +465,7 @@ pub struct DaemonHooks {
     pub file_report: Option<PathBuf>,
     pub skip_place_stat: bool,
     pub clones_within: Option<PathBuf>,
+    pub no_change_checks: bool,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and
@@ -753,6 +754,13 @@ pub struct SideHooks {
     /// no clones, so no test leaves a folder outside its own.
     #[cfg(feature = "test-hooks")]
     pub clones_within: Option<PathBuf>,
+    /// Sender: turn off every check for a source that changed (the stat
+    /// after hashing, the stat and the second hash before placing,
+    /// `--paranoid`'s clones and final re-check), which brings back the
+    /// bug of a torn file landing with exit 0. Set from
+    /// `IRSYNC_TEST_NO_CHANGE_CHECKS` by the binary.
+    #[cfg(feature = "test-hooks")]
+    pub no_change_checks: bool,
     /// Sender: queue only this many listing frames, then none, not even
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]
@@ -865,7 +873,23 @@ impl Tamper {
 pub type ListingHook =
     Arc<dyn Fn(&irsync_proto::v1::FileEntry) -> Vec<irsync_proto::v1::FileEntry> + Send + Sync>;
 
+/// Whether `IRSYNC_TEST_NO_CHANGE_CHECKS=1` is set (see
+/// [`SideHooks::no_change_checks`]); only a test-hooks build reads it.
+#[cfg(feature = "test-hooks")]
+pub fn no_change_checks_from_env() -> bool {
+    std::env::var_os("IRSYNC_TEST_NO_CHANGE_CHECKS").is_some_and(|v| v == "1")
+}
+
 impl SideHooks {
+    /// Whether a test turned the change checks off (always false in a
+    /// normal build).
+    pub(crate) fn no_change_checks(&self) -> bool {
+        #[cfg(feature = "test-hooks")]
+        return self.no_change_checks;
+        #[cfg(not(feature = "test-hooks"))]
+        false
+    }
+
     /// The `tamper_frames` hook for the stream writers.
     pub(crate) fn tamper(&self) -> Tamper {
         Tamper {

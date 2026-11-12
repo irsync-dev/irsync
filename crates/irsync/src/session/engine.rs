@@ -737,6 +737,16 @@ pub(super) async fn run_client_inner(
         .with_activity(activity.clone())
         .with_meter(meter.clone());
     #[cfg(feature = "test-hooks")]
+    let (hasher, forced, verify) = if local.hooks.no_change_checks {
+        (
+            hasher.without_change_check(),
+            forced.without_change_check(),
+            verify.without_change_check(),
+        )
+    } else {
+        (hasher, forced, verify)
+    };
+    #[cfg(feature = "test-hooks")]
     let (hasher, forced, verify) = match &local.hooks.during_hash {
         Some(h) => (
             hasher.with_hash_hook(h.clone()),
@@ -1119,6 +1129,16 @@ async fn serve_daemon_inner(
         .with_activity(activity.clone())
         .with_meter(meter.clone());
     #[cfg(feature = "test-hooks")]
+    let (hasher, forced, verify) = if shared.daemon_hooks.lock().unwrap().no_change_checks {
+        (
+            hasher.without_change_check(),
+            forced.without_change_check(),
+            verify.without_change_check(),
+        )
+    } else {
+        (hasher, forced, verify)
+    };
+    #[cfg(feature = "test-hooks")]
     let (hasher, forced, verify) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
         Some(h) => (
             hasher.with_hash_hook(h.clone()),
@@ -1207,6 +1227,7 @@ async fn serve_daemon_inner(
                 h.file_report = p.file_report;
                 h.skip_place_stat = p.skip_place_stat;
                 h.clones_within = p.clones_within;
+                h.no_change_checks = p.no_change_checks;
             }
             h
         },

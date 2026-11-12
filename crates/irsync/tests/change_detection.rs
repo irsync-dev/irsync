@@ -102,6 +102,7 @@ async fn run_torn(
     flow: Flow,
     every_pass: bool,
     passes: Arc<AtomicU32>,
+    no_checks: bool,
 ) -> irsync::session::Outcome {
     let hook = tearing_hook(h.src(flow).to_path_buf(), every_pass, passes);
     let mut local = h.local_side();
@@ -109,10 +110,15 @@ async fn run_torn(
         Flow::Push => {
             local.hooks = SideHooks {
                 during_hash: Some(hook),
+                no_change_checks: no_checks,
                 ..SideHooks::default()
             }
         }
-        Flow::Pull => h.daemon.hooks.lock().unwrap().during_hash = Some(hook),
+        Flow::Pull => {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.during_hash = Some(hook);
+            d.no_change_checks = no_checks;
+        }
     }
     h.run_side(&archive_opts(), flow, local).await.unwrap()
 }
@@ -121,7 +127,7 @@ async fn torn_hash_is_retried_for(flow: Flow) {
     let h = Harness::new().await;
     seed(&h, flow);
     let passes = Arc::new(AtomicU32::new(0));
-    let out = run_torn(&h, flow, false, passes.clone()).await;
+    let out = run_torn(&h, flow, false, passes.clone(), false).await;
     assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     assert!(
@@ -136,7 +142,7 @@ async fn torn_hash_twice_fails_for(flow: Flow) {
     let h = Harness::new().await;
     let before = seed(&h, flow);
     let passes = Arc::new(AtomicU32::new(0));
-    let out = run_torn(&h, flow, true, passes.clone()).await;
+    let out = run_torn(&h, flow, true, passes.clone(), false).await;
     assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
     assert_eq!(passes.load(Ordering::SeqCst), 2);
     assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
@@ -170,6 +176,34 @@ async fn torn_hash_is_retried_on_pull() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn torn_hash_twice_fails_with_23_on_pull() {
     within30(torn_hash_twice_fails_for(Flow::Pull)).await;
+}
+
+/// With the change checks off, the torn hash of the original bug lands:
+/// exit 0, and the destination holds neither the old nor the new content.
+async fn torn_hash_lands_torn_for(flow: Flow) {
+    let h = Harness::new().await;
+    let before = seed(&h, flow);
+    let passes = Arc::new(AtomicU32::new(0));
+    let out = run_torn(&h, flow, false, passes.clone(), true).await;
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(passes.load(Ordering::SeqCst), 1, "no retry expected");
+    let landed = fs::read(h.dst(flow).join("x.bin")).unwrap();
+    assert!(landed != before, "the destination holds the old content");
+    assert!(
+        landed != fs::read(h.src(flow).join("x.bin")).unwrap(),
+        "the destination holds the new content"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn torn_hash_lands_torn_with_checks_off() {
+    within30(torn_hash_lands_torn_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn torn_hash_lands_torn_with_checks_off_on_pull() {
+    within30(torn_hash_lands_torn_for(Flow::Pull)).await;
 }
 
 /// Source and destination hold `x.bin`, the destination's with other data
@@ -786,6 +820,52 @@ async fn paranoid_recheck_vanished_file_exits_24() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paranoid_recheck_vanished_file_exits_24_on_pull() {
     within30(recheck_vanished_for(Flow::Pull)).await;
+}
+
+/// `--paranoid` with the change checks off makes no clones and runs no
+/// final re-check: a file deleted after the walk gives exit 0, not 24.
+async fn paranoid_checks_off_for(flow: Flow) {
+    let h = Harness::new().await;
+    let (mut local, fired) = seed_late(&h, flow, Late::Delete);
+    let base = tempfile::tempdir().unwrap();
+    match flow {
+        Flow::Push => {
+            local.hooks.no_change_checks = true;
+            local.hooks.clones_within = Some(base.path().to_path_buf());
+        }
+        Flow::Pull => {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.no_change_checks = true;
+            d.clones_within = Some(base.path().to_path_buf());
+        }
+    }
+    let out = h
+        .run_side(&opts_with(&["--paranoid"]), flow, local)
+        .await
+        .unwrap();
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "the hook did not fire once"
+    );
+    assert_eq!(out.exit_code(), 0, "{:?} {:?}", out.errors, out.vanished);
+    assert!(out.vanished.is_empty(), "{:?}", out.vanished);
+    let clones: Vec<_> = fs::read_dir(base.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert!(clones.is_empty(), "clone folders made: {clones:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_checks_off_skips_clone_and_recheck() {
+    within30(paranoid_checks_off_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_checks_off_skips_clone_and_recheck_on_pull() {
+    within30(paranoid_checks_off_for(Flow::Pull)).await;
 }
 
 /// A vanished file and a file given up: 23 outranks 24.

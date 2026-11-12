@@ -1045,6 +1045,10 @@ async fn session(
     }
     let mut side = LocalSide::new(root, local_contents_only, index, filters.clone());
     side.hooks.bus = bus.clone();
+    #[cfg(feature = "test-hooks")]
+    {
+        side.hooks.no_change_checks = irsync::session::no_change_checks_from_env();
+    }
     let hello_for = |id: Option<[u8; 16]>| Hello {
         session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
         ..hello.clone()

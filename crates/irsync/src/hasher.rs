@@ -57,6 +57,9 @@ pub struct Hasher {
     /// Told the bytes read so far during each read of a file (a test
     /// changes the file mid-pass).
     hash_hook: Option<HashHook>,
+    /// Skip the stat after a read (a test brings back the bug it catches).
+    #[cfg(feature = "test-hooks")]
+    no_change_check: bool,
 }
 
 /// What a hasher reports about a file it reads.
@@ -226,7 +229,16 @@ impl Hasher {
             progress: None,
             meter: None,
             hash_hook: None,
+            #[cfg(feature = "test-hooks")]
+            no_change_check: false,
         }
+    }
+
+    /// Do not stat a file after reading it (test only).
+    #[cfg(feature = "test-hooks")]
+    pub fn without_change_check(mut self) -> Self {
+        self.no_change_check = true;
+        self
     }
 
     /// Tell `hook` about every pass that reads a file (see [`HashHook`]).
@@ -426,6 +438,8 @@ impl Hasher {
         let progress = self.progress.clone();
         let meter = self.meter.clone();
         let hook = self.hash_hook.clone();
+        #[cfg(feature = "test-hooks")]
+        let skip_check = self.no_change_check;
         let res = tokio::task::spawn_blocking(move || {
             let _permit = (permit, large);
             if !force {
@@ -459,7 +473,13 @@ impl Hasher {
             }
             // A write during the pass may have given a digest of a state
             // the file never had: report it, and store no row.
-            check_unchanged(&file, &path, opened)?;
+            #[cfg(feature = "test-hooks")]
+            let check = !skip_check;
+            #[cfg(not(feature = "test-hooks"))]
+            let check = true;
+            if check {
+                check_unchanged(&file, &path, opened)?;
+            }
             entry.whole_hash = Some(Hash {
                 bytes: d.hash.to_vec(),
             });

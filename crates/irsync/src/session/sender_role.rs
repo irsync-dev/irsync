@@ -445,7 +445,8 @@ impl SenderRole {
                     let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
                         let full = ctx.full_key(&key);
-                        blocking(move || tail_digest(&full, &key, from)).await
+                        let check = !ctx.hooks.no_change_checks();
+                        blocking(move || tail_digest(&full, &key, from, check)).await
                     } else {
                         let since = super::wait_start(&ctx.meter);
                         let digest = match (walked, item) {
@@ -1271,6 +1272,9 @@ impl SenderRole {
             stats.entry(path).or_insert(walked);
         }
         let mut stats: Vec<(RelPath, Freshness)> = stats.into_iter().collect();
+        if self.ctx.hooks.no_change_checks() {
+            stats.clear();
+        }
         stats.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         tracing::debug!(files = stats.len(), "final re-check");
         self.rechecking = Some(tokio::spawn(
@@ -1390,6 +1394,9 @@ impl PlaceCheck {
     }
 
     async fn run(self, ctx: &Ctx) -> Verdict {
+        if ctx.hooks.no_change_checks() {
+            return Verdict::Place;
+        }
         let (base, rel) = (ctx.base.clone(), self.key.clone());
         let (entry, ctime) = match blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
             Ok(s) => s,
@@ -1425,7 +1432,7 @@ impl PlaceCheck {
         } else if let Some(from) = self.append_from {
             let (full, key) = (ctx.full_key(&self.key), self.key.clone());
             ctx.verify
-                .bounded_read(entry.size, move || tail_digest(&full, &key, from))
+                .bounded_read(entry.size, move || tail_digest(&full, &key, from, true))
                 .await
         } else {
             let item = ScanItem {
@@ -1452,16 +1459,21 @@ impl PlaceCheck {
 /// tail): chunked from that offset, records at absolute offsets, no
 /// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
 /// file changes while it is read.
-fn tail_digest(full: &std::path::Path, key: &RelPath, from: u64) -> io::Result<Hashed> {
+fn tail_digest(
+    full: &std::path::Path,
+    key: &RelPath,
+    from: u64,
+    check: bool,
+) -> io::Result<Hashed> {
     // The open's type check already took the file's stat.
     let (file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
-    tail_digest_at(file, st, key, from)
+    tail_digest_at(file, st, key, from, check)
 }
 
 /// [`tail_digest`] of the open `file` (a clone, `--paranoid`).
 fn tail_digest_of(file: std::fs::File, key: &RelPath, from: u64) -> io::Result<Hashed> {
     let st = nix::sys::stat::fstat(&file).map_err(crate::fs::safe::errno)?;
-    tail_digest_at(file, st, key, from)
+    tail_digest_at(file, st, key, from, true)
 }
 
 /// [`tail_digest`] of the open `file`, whose stat is `st`.
@@ -1470,6 +1482,7 @@ fn tail_digest_at(
     st: nix::sys::stat::FileStat,
     key: &RelPath,
     from: u64,
+    check: bool,
 ) -> io::Result<Hashed> {
     use std::io::{Read, Seek, SeekFrom};
     let (entry, ctime) = crate::fs::meta::stat_entry_with_ctime(st, key);
@@ -1483,7 +1496,9 @@ fn tail_digest_at(
     }
     file.seek(SeekFrom::Start(from))?;
     let mut tail = irsync_proto::chunk::digest_reader((&mut file).take(size - from))?;
-    crate::hasher::check_unchanged(&file, key, opened)?;
+    if check {
+        crate::hasher::check_unchanged(&file, key, opened)?;
+    }
     for c in &mut tail.chunks {
         c.offset += from;
     }
@@ -1499,7 +1514,7 @@ fn tail_digest_at(
 
 /// `--paranoid`: the session's clones, named after it.
 fn clones_for(ctx: &Ctx) -> Option<Arc<Clones>> {
-    if !ctx.opts.paranoid {
+    if !ctx.opts.paranoid || ctx.hooks.no_change_checks() {
         return None;
     }
     let clones = Clones::new(&super::control::hex(&ctx.session_id));

@@ -848,6 +848,11 @@ pub async fn run_from_settings(
         notify: reload,
         announce: announce.clone(),
     });
+    #[cfg(feature = "test-hooks")]
+    {
+        daemon.daemon_hooks().lock().unwrap().no_change_checks =
+            crate::session::no_change_checks_from_env();
+    }
     announce(daemon.endpoint());
     daemon.run(shutdown).await
 }
