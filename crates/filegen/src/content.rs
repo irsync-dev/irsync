@@ -6,7 +6,7 @@
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 

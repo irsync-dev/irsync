@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::profile::OutageParams;
@@ -110,7 +110,7 @@ impl Outages {
 }
 
 fn draw(rng: &mut ChaCha8Rng, (lo, hi): (u64, u64)) -> u64 {
-    rng.gen_range(lo..=hi)
+    rng.random_range(lo..=hi)
 }
 
 fn draw_ms(rng: &mut ChaCha8Rng, range: (u64, u64)) -> Duration {

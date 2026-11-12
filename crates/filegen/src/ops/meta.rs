@@ -9,8 +9,8 @@ use nix::fcntl::{AtFlags, AT_FDCWD};
 use nix::sys::stat::{utimensat, Mode, SFlag, UtimensatFlags};
 use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, geteuid, Gid, Uid};
-use rand::distributions::{Distribution, WeightedIndex};
-use rand::{Rng, RngCore};
+use rand::distr::{weighted::WeightedIndex, Distribution};
+use rand::{Rng, RngExt};
 
 use crate::kind::OpKind;
 use crate::model::{NodeId, NodeKind};
@@ -50,9 +50,9 @@ pub fn chmod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let modes = &ctx.cfg.chmod.modes;
-    let mut mode = modes[ctx.rng.gen_range(0..modes.len())].0 & 0o7777;
-    if ctx.rng.gen::<f64>() < ctx.cfg.chmod.special_weight {
-        mode |= SPECIAL_BITS[ctx.rng.gen_range(0..SPECIAL_BITS.len())];
+    let mut mode = modes[ctx.rng.random_range(0..modes.len())].0 & 0o7777;
+    if ctx.rng.random::<f64>() < ctx.cfg.chmod.special_weight {
+        mode |= SPECIAL_BITS[ctx.rng.random_range(0..SPECIAL_BITS.len())];
     }
     if ctx.model.node(id).kind == NodeKind::Dir {
         mode |= 0o700;
@@ -92,8 +92,8 @@ pub fn set_mtime(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         1 => ("distant", i64::from(m.distant_years) * YEAR, -1),
         _ => ("future", i64::from(m.future_years) * YEAR, 1),
     };
-    let offset = ctx.rng.gen_range(0..=span);
-    let nanos: i32 = ctx.rng.gen_range(0..1_000_000_000);
+    let offset = ctx.rng.random_range(0..=span);
+    let nanos: i32 = ctx.rng.random_range(0..1_000_000_000);
     let secs = (MTIME_REFERENCE.as_second() + sign * offset).max(0);
     let ts = jiff::Timestamp::new(secs, nanos).expect("within jiff's range");
     let path = ctx.model.abs_path(ctx.root, id);
@@ -128,10 +128,10 @@ pub fn set_xattr(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(id) = pick_any(ctx, &[NodeKind::File, NodeKind::Dir]) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let drawn = ["set", "replace", "remove"][ctx.rng.gen_range(0..3)];
+    let drawn = ["set", "replace", "remove"][ctx.rng.random_range(0..3)];
     let names = &ctx.cfg.xattr.names;
-    let name = names[ctx.rng.gen_range(0..names.len())].clone();
-    let len = ctx.rng.gen_range(0..=ctx.cfg.xattr.max_value.0) as usize;
+    let name = names[ctx.rng.random_range(0..names.len())].clone();
+    let len = ctx.rng.random_range(0..=ctx.cfg.xattr.max_value.0) as usize;
     let mut value = vec![0u8; len];
     ctx.rng.fill_bytes(&mut value);
     let path = ctx.model.abs_path(ctx.root, id);
@@ -180,8 +180,8 @@ pub fn chown(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let (uids, gids) = (&ctx.cfg.chown.uids, &ctx.cfg.chown.gids);
-    let uid = (!uids.is_empty()).then(|| uids[ctx.rng.gen_range(0..uids.len())]);
-    let gid = (!gids.is_empty()).then(|| gids[ctx.rng.gen_range(0..gids.len())]);
+    let uid = (!uids.is_empty()).then(|| uids[ctx.rng.random_range(0..uids.len())]);
+    let gid = (!gids.is_empty()).then(|| gids[ctx.rng.random_range(0..gids.len())]);
     let path = ctx.model.abs_path(ctx.root, id);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
         fchownat(
@@ -207,9 +207,9 @@ pub fn mknod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let char_dev = ctx.rng.gen::<f64>() < ctx.cfg.mknod.char_fraction;
-    let major: u32 = ctx.rng.gen_range(1..256);
-    let minor: u32 = ctx.rng.gen_range(0..256);
+    let char_dev = ctx.rng.random::<f64>() < ctx.cfg.mknod.char_fraction;
+    let major: u32 = ctx.rng.random_range(1..256);
+    let minor: u32 = ctx.rng.random_range(0..256);
     if !geteuid().is_root() {
         return Ok(OpOutcome::NoTarget);
     }
@@ -244,7 +244,7 @@ mod tests {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use std::path::Path;
 
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use tempfile::TempDir;
 

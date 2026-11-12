@@ -35,7 +35,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::Config;
@@ -281,7 +281,7 @@ pub(crate) fn draw_kind(ctx: &mut OpCtx, kinds: &[NodeKind]) -> Option<NodeKind>
     if total == 0 {
         return None;
     }
-    let mut r = ctx.rng.gen_range(0..total);
+    let mut r = ctx.rng.random_range(0..total);
     let mut chosen = 0;
     while r >= weights[chosen] {
         r -= weights[chosen];

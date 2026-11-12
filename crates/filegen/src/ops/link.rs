@@ -6,8 +6,8 @@ use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs as unix_fs;
 
-use rand::distributions::{Distribution, WeightedIndex};
-use rand::Rng;
+use rand::distr::{weighted::WeightedIndex, Distribution};
+use rand::RngExt;
 
 use crate::kind::OpKind;
 use crate::model::{Model, NodeId, NodeKind};
@@ -100,7 +100,7 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
     let class = WeightedIndex::new([s.file, s.dir, s.dangling])
         .map(|d| d.sample(ctx.rng))
         .unwrap_or(2);
-    let absolute = ctx.rng.gen::<f64>() < s.absolute;
+    let absolute = ctx.rng.random::<f64>() < s.absolute;
     let kind = [Some(NodeKind::File), Some(NodeKind::Dir), None][class];
     let existing = kind.and_then(|k| pick(ctx.rng, ctx.model, &ctx.cfg.locality, dir, k));
     let (rel, label) = match existing {
@@ -137,7 +137,7 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
 /// below `base`: its first component is redrawn while `base` holds an
 /// entry folding to it.
 fn dangling(ctx: &mut OpCtx, base: NodeId) -> Vec<u8> {
-    let n = ctx.rng.gen_range(1..=3);
+    let n = ctx.rng.random_range(1..=3);
     let mut first = component(ctx);
     for _ in 0..DANGLING_TRIES {
         let taken = std::str::from_utf8(&first)
@@ -156,9 +156,9 @@ fn dangling(ctx: &mut OpCtx, base: NodeId) -> Vec<u8> {
 }
 
 fn component(ctx: &mut OpCtx) -> Vec<u8> {
-    let len = ctx.rng.gen_range(1..=12);
+    let len = ctx.rng.random_range(1..=12);
     (0..len)
-        .map(|_| DANGLING_CHARS[ctx.rng.gen_range(0..DANGLING_CHARS.len())])
+        .map(|_| DANGLING_CHARS[ctx.rng.random_range(0..DANGLING_CHARS.len())])
         .collect()
 }
 

@@ -5,7 +5,7 @@ use std::io;
 use std::time::Duration;
 
 use nix::sys::stat::Mode;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::kind::OpKind;
 use crate::log::OpRecord;
@@ -126,7 +126,7 @@ pub fn rename(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let is_dir = kind == NodeKind::Dir;
-    let new_dir = if ctx.rng.gen::<f64>() < RENAME_IN_PLACE {
+    let new_dir = if ctx.rng.random::<f64>() < RENAME_IN_PLACE {
         ctx.model.node(id).parent.expect("a live node has a parent")
     } else {
         let not_inside = is_dir.then_some(id);
@@ -255,7 +255,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use tempfile::TempDir;
 

@@ -1,7 +1,7 @@
 //! The Markov chain over operation kinds and the size-cap pressure curve.
 
-use rand::distributions::WeightedIndex;
-use rand::Rng;
+use rand::distr::weighted::WeightedIndex;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::{ConfigError, Weights};

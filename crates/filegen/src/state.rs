@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct State {
@@ -52,7 +52,7 @@ pub enum StateError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Yaml(#[from] serde_yaml_ng::Error),
-    #[error("state file format_version {found} is not supported (expected 2)")]
+    #[error("state file format_version {found} is not supported (expected 3)")]
     Version { found: u32 },
 }
 
@@ -95,7 +95,7 @@ pub fn write_atomic(path: &Path, s: &State) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{RngCore, SeedableRng};
+    use rand::{Rng, SeedableRng};
     use std::fs;
     use tempfile::TempDir;
 
@@ -148,11 +148,12 @@ mod tests {
     #[test]
     fn state_rejects_other_version() {
         let (mut s, _) = sample();
-        s.format_version = 3;
+        // A file from before rand 0.10, whose seeds no longer reproduce.
+        s.format_version = 2;
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("s.yaml");
         write_atomic(&p, &s).unwrap();
-        assert!(matches!(read(&p), Err(StateError::Version { found: 3 })));
+        assert!(matches!(read(&p), Err(StateError::Version { found: 2 })));
         fs::write(&p, "seed: 1\n").unwrap();
         assert!(matches!(read(&p), Err(StateError::Version { found: 0 })));
     }
@@ -169,7 +170,7 @@ mod tests {
         ] {
             assert!(y.contains(want), "missing {want} in:\n{y}");
         }
-        assert!(y.starts_with("format_version: 2\nseed: 42\n"));
+        assert!(y.starts_with("format_version: 3\nseed: 42\n"));
     }
 
     #[test]

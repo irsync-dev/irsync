@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use super::profile::{CrossTraffic, LinkParams};
@@ -56,7 +56,7 @@ impl Link {
     pub fn new(params: LinkParams, seed: u64) -> Link {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let (lo, hi) = params.rate_bps;
-        let rate = rng.gen_range(lo..=hi);
+        let rate = rng.random_range(lo..=hi);
         let next_rate_change = (lo != hi).then(|| draw_ms(&mut rng, params.rate_change_ms));
         let cross = params.cross.map(|c| Cross {
             params: c,
@@ -65,7 +65,7 @@ impl Link {
             next_edge: draw_ms(&mut rng, c.every_ms),
         });
         let j = jitter_amplitude_ns(&params);
-        let jitter_ns = if j > 0 { rng.gen_range(-j..=j) } else { 0 };
+        let jitter_ns = if j > 0 { rng.random_range(-j..=j) } else { 0 };
         Link {
             params,
             rng,
@@ -98,16 +98,16 @@ impl Link {
 
         let ge = self.params.loss;
         self.bad = if self.bad {
-            !self.rng.gen_bool(ge.to_good)
+            !self.rng.random_bool(ge.to_good)
         } else {
-            self.rng.gen_bool(ge.to_bad)
+            self.rng.random_bool(ge.to_bad)
         };
         let lost = self
             .rng
-            .gen_bool(if self.bad { ge.loss_bad } else { ge.loss_good });
-        let reordered = self.rng.gen_bool(self.params.reorder);
-        let extra = self.rng.gen_range(5..=30);
-        let duplicated = self.rng.gen_bool(self.params.duplicate);
+            .random_bool(if self.bad { ge.loss_bad } else { ge.loss_good });
+        let reordered = self.rng.random_bool(self.params.reorder);
+        let extra = self.rng.random_range(5..=30);
+        let duplicated = self.rng.random_bool(self.params.duplicate);
         if lost {
             self.drops.loss += 1;
             return Vec::new();
@@ -177,7 +177,7 @@ impl Link {
 
             if self.next_rate_change == Some(until) {
                 let (lo, hi) = self.params.rate_bps;
-                self.rate = self.rng.gen_range(lo..=hi);
+                self.rate = self.rng.random_range(lo..=hi);
                 self.next_rate_change =
                     Some(until + draw_ms(&mut self.rng, self.params.rate_change_ms));
             }
@@ -204,7 +204,8 @@ impl Link {
         while self.next_jitter_step <= now {
             if j > 0 {
                 let step = j / 4;
-                self.jitter_ns = (self.jitter_ns + self.rng.gen_range(-step..=step)).clamp(-j, j);
+                self.jitter_ns =
+                    (self.jitter_ns + self.rng.random_range(-step..=step)).clamp(-j, j);
             }
             self.next_jitter_step += JITTER_STEP;
         }
@@ -212,7 +213,7 @@ impl Link {
 }
 
 fn draw_ms(rng: &mut ChaCha8Rng, (lo, hi): (u64, u64)) -> Duration {
-    Duration::from_millis(rng.gen_range(lo..=hi))
+    Duration::from_millis(rng.random_range(lo..=hi))
 }
 
 fn jitter_amplitude_ns(p: &LinkParams) -> i64 {

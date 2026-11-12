@@ -1,7 +1,7 @@
 //! Name generation: weighted name classes, NFC, fold-unique per directory.
 
-use rand::distributions::WeightedIndex;
-use rand::Rng;
+use rand::distr::weighted::WeightedIndex;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use unicode_normalization::UnicodeNormalization;
 
@@ -96,17 +96,17 @@ fn build(rng: &mut ChaCha8Rng, cfg: &NamesConfig, class: NameClass, limit: usize
     match class {
         NameClass::Plain => plain(rng, cfg),
         NameClass::Spaces => {
-            let n = rng.gen_range(2..=3);
+            let n = rng.random_range(2..=3);
             let words: Vec<String> = (0..n).map(|_| word(rng)).collect();
             words.join(" ") + &extension(rng, cfg)
         }
         NameClass::Dotfile => format!(".{}", plain(rng, cfg)),
         NameClass::Unicode => {
-            let n = rng.gen_range(1..=12);
+            let n = rng.random_range(1..=12);
             (0..n)
                 .map(|_| {
-                    let alphabet = [LATIN, CJK, EMOJI][rng.gen_range(0..3)];
-                    alphabet[rng.gen_range(0..alphabet.len())]
+                    let alphabet = [LATIN, CJK, EMOJI][rng.random_range(0..3)];
+                    alphabet[rng.random_range(0..alphabet.len())]
                 })
                 .collect()
         }
@@ -115,12 +115,12 @@ fn build(rng: &mut ChaCha8Rng, cfg: &NamesConfig, class: NameClass, limit: usize
             let target = if limit < 200 {
                 limit
             } else {
-                rng.gen_range(200..=limit.min(255))
+                rng.random_range(200..=limit.min(255))
             };
             let mut base = word(rng);
             let ext = extension(rng, cfg);
             while base.len() + ext.len() < target {
-                base.push(LOWER[rng.gen_range(0..LOWER.len())] as char);
+                base.push(LOWER[rng.random_range(0..LOWER.len())] as char);
             }
             let mut name = base + &ext;
             // The extension may be multi-byte; cut on a char boundary.
@@ -129,14 +129,14 @@ fn build(rng: &mut ChaCha8Rng, cfg: &NamesConfig, class: NameClass, limit: usize
             }
             name
         }
-        NameClass::Awkward => match rng.gen_range(0..4) {
+        NameClass::Awkward => match rng.random_range(0..4) {
             0 => format!("-{}", plain(rng, cfg)),
             1 => format!("{} ", plain(rng, cfg)),
             2 => format!("{}.", plain(rng, cfg)),
             _ => {
                 let mut w = word(rng);
-                let c = SHELL[rng.gen_range(0..SHELL.len())];
-                w.insert(rng.gen_range(0..=w.len()), c);
+                let c = SHELL[rng.random_range(0..SHELL.len())];
+                w.insert(rng.random_range(0..=w.len()), c);
                 w + &extension(rng, cfg)
             }
         },
@@ -150,9 +150,9 @@ fn plain(rng: &mut ChaCha8Rng, cfg: &NamesConfig) -> String {
 
 /// 1-24 characters of `[a-z0-9_-]`.
 fn word(rng: &mut ChaCha8Rng) -> String {
-    let n = rng.gen_range(1..=24);
+    let n = rng.random_range(1..=24);
     (0..n)
-        .map(|_| PLAIN[rng.gen_range(0..PLAIN.len())] as char)
+        .map(|_| PLAIN[rng.random_range(0..PLAIN.len())] as char)
         .collect()
 }
 
@@ -161,7 +161,7 @@ fn extension(rng: &mut ChaCha8Rng, cfg: &NamesConfig) -> String {
     if cfg.extensions.is_empty() {
         return String::new();
     }
-    match cfg.extensions[rng.gen_range(0..cfg.extensions.len())].as_str() {
+    match cfg.extensions[rng.random_range(0..cfg.extensions.len())].as_str() {
         "" => String::new(),
         e => format!(".{e}"),
     }

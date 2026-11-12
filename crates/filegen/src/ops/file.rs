@@ -7,7 +7,7 @@ use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 
 use crate::content::Content;
 use crate::kind::OpKind;
@@ -197,7 +197,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let path = ctx.model.abs_path(ctx.root, id);
-    if ctx.rng.gen::<f64>() < EXTEND_PROBABILITY {
+    if ctx.rng.random::<f64>() < EXTEND_PROBABILITY {
         let budget = budget(ctx) / links(ctx, id);
         let extend = draw_delta(
             ctx.rng,
@@ -708,7 +708,7 @@ mod tests {
 
     /// Runs 60 operations cycling through all seven kinds, real or dry.
     fn run(tmp: &TempDir, cfg: &Config, seed: u64, dry: bool) -> Run {
-        use rand::RngCore;
+        use rand::Rng;
         let (mut m, mut rng) = ctx_in(tmp, cfg, seed);
         let kinds = [
             OpKind::CreateFile,

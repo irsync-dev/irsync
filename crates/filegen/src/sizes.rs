@@ -4,7 +4,7 @@
 //! the outcome (band, caps, zero budget), so runs that differ only in what
 //! the caps allow stay in step on the rng stream.
 
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::SizeDistribution;
@@ -39,8 +39,8 @@ pub fn draw_delta(
 /// log-uniform in `[1, len]`, offset uniform in `[0, len - length]`.
 /// `(0, 0)` for an empty file. Two rng draws.
 pub fn draw_range(rng: &mut ChaCha8Rng, len: u64) -> (u64, u64) {
-    let u_len: f64 = rng.gen();
-    let u_off: f64 = rng.gen();
+    let u_len: f64 = rng.random();
+    let u_off: f64 = rng.random();
     if len == 0 {
         return (0, 0);
     }
@@ -52,8 +52,8 @@ pub fn draw_range(rng: &mut ChaCha8Rng, len: u64) -> (u64, u64) {
 /// Draw a truncation target strictly below `len` (0 for `len == 0`):
 /// 0 with probability 0.1, else uniform in `[0, len)`. Two rng draws.
 pub fn draw_truncate(rng: &mut ChaCha8Rng, len: u64) -> u64 {
-    let to_zero: f64 = rng.gen();
-    let u: f64 = rng.gen();
+    let to_zero: f64 = rng.random();
+    let u: f64 = rng.random();
     if len == 0 || to_zero < 0.1 {
         return 0;
     }
@@ -69,8 +69,8 @@ fn draw_banded(rng: &mut ChaCha8Rng, dist: &SizeDistribution, large_max: u64) ->
         dist.medium.weight,
         dist.large_weight,
     ];
-    let band = pick_weighted(&weights, rng.gen());
-    let u: f64 = rng.gen();
+    let band = pick_weighted(&weights, rng.random());
+    let u: f64 = rng.random();
     let small_max = dist.small.max.0;
     let medium_max = dist.medium.max.0;
     match band {

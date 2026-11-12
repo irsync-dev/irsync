@@ -4,8 +4,8 @@
 //! `children` and per-node `counts`, so the same seed over the same model
 //! yields the same picks.
 
-use rand::distributions::{Distribution, WeightedIndex};
-use rand::Rng;
+use rand::distr::{weighted::WeightedIndex, Distribution};
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 
 use crate::config::LocalityConfig;
@@ -45,7 +45,7 @@ pub fn descend(
         let child = model.node(id);
         if child.kind == kind {
             let deeper = below(child, k);
-            if deeper == 0 || rng.gen_range(0..=deeper) == 0 {
+            if deeper == 0 || rng.random_range(0..=deeper) == 0 {
                 return Some(id);
             }
         }
@@ -86,7 +86,7 @@ pub fn pick_dir_or_root(
     let first = draw_scope(rng, cfg);
     if first == 0 {
         let deeper = below(model.node(anchor), NodeKind::Dir.index());
-        if deeper == 0 || rng.gen_range(0..=deeper) == 0 {
+        if deeper == 0 || rng.random_range(0..=deeper) == 0 {
             return anchor;
         }
     }
