@@ -13,13 +13,25 @@ fn fake_ssh() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ssh")
 }
 
-/// A free loopback UDP port (iroh listens on UDP).
+/// A free loopback UDP port (iroh listens on UDP) for a daemon that binds
+/// it later. Taken below the ports the OS hands out for `:0` (from 49152 on
+/// macOS, 32768 on Linux): such a port, released here, could go to another
+/// test's socket before the daemon binds it. A counter keeps this process's
+/// tests apart, the pid other processes.
 fn free_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    use std::sync::atomic::{AtomicU16, Ordering};
+    const BASE: u16 = 20_000;
+    const SPAN: u16 = 12_000;
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let start = (std::process::id() % u32::from(SPAN)) as u16;
+    for _ in 0..SPAN {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = BASE + (start + n % SPAN) % SPAN;
+        if std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free UDP port in {BASE}..{}", BASE + SPAN);
 }
 
 /// A client HOME, a fake server HOME and the ssh log; kills the daemon
