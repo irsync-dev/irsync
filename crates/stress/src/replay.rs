@@ -745,11 +745,16 @@ mod tests {
         content: Option<Vec<u8>>,
         /// `path`'s hard-link group right after the step.
         group: Vec<Vec<u8>>,
+        /// The step's `path` just before it, if a regular file; recorded
+        /// only when `drive` is asked to.
+        pre_content: Option<Vec<u8>>,
     }
 
     /// Runs `filegen <argv>` in-process, step by step, pausing a little
     /// between steps so mtimes differ, and records each completed step.
-    fn drive(argv: &[OsString], root: &Path) -> Vec<Cap> {
+    /// With `keep_pre`, each step's `pre_content` too (which reads every
+    /// file before every step).
+    fn drive(argv: &[OsString], root: &Path, keep_pre: bool) -> Vec<Cap> {
         let Command::Run(a) = Cli::try_parse_from(argv).unwrap().command;
         let o = opts_from_args(a).unwrap();
         let steps = o.steps;
@@ -757,8 +762,17 @@ mod tests {
         let mut caps = Vec::new();
         for _ in 0..steps {
             let pre = walk_meta(root).unwrap();
+            let pre_files: BTreeMap<Vec<u8>, Vec<u8>> = if keep_pre {
+                pre.iter()
+                    .filter(|(_, m)| m.kind == EntryKind::File)
+                    .map(|(rel, _)| (rel.clone(), fs::read(root.join(p(rel))).unwrap()))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
             if let StepResult::Done { .. } = r.step().unwrap() {
                 let l = r.last_step().unwrap();
+                let pre_content = pre_files.get(&l.path).cloned();
                 let p = root.join(OsStr::from_bytes(&l.path));
                 let content = fs::symlink_metadata(&p)
                     .ok()
@@ -773,6 +787,7 @@ mod tests {
                     pre,
                     content,
                     group,
+                    pre_content,
                 });
             }
             std::thread::sleep(Duration::from_millis(3));
@@ -810,6 +825,11 @@ mod tests {
     /// A filled tree (`fill` steps), its round-start copy and state, then
     /// a live run of `steps` steps on it; `sets` apply to both runs.
     fn fixture(fill: u64, steps: u64, sets: &[String]) -> Fixture {
+        fixture_with(fill, steps, sets, false)
+    }
+
+    /// [`fixture`], with each live step's `pre_content` when `keep_pre`.
+    fn fixture_with(fill: u64, steps: u64, sets: &[String], keep_pre: bool) -> Fixture {
         let t = TempDir::new().unwrap();
         let base = t.path().to_path_buf();
         let src = base.join("src");
@@ -824,7 +844,7 @@ mod tests {
         argv.push(base.join("fill").into());
         argv.extend(flags.iter().cloned());
         argv.push(src.clone().into());
-        drive(&argv, &src);
+        drive(&argv, &src, false);
 
         let start_meta = walk_meta(&src).unwrap();
         let start_copy = base.join("start");
@@ -842,7 +862,7 @@ mod tests {
         args.push(steps.to_string().into());
         args.extend(flags);
         args.push(src.clone().into());
-        let caps = drive(&args, &src);
+        let caps = drive(&args, &src, keep_pre);
         let live: Vec<StepLine> = fs::read_to_string(live_dir.join("filegen-7.log"))
             .unwrap()
             .lines()
@@ -1000,6 +1020,183 @@ mod tests {
         let j = f.judge(&dest);
         assert_eq!(j.failures.len(), 1, "{:?}", j.failures);
         assert_eq!(j.failures[0].0, lb.path);
+    }
+
+    /// A file caught part way through one real write step: the bytes of
+    /// the step's write pattern with the first `k` new bytes written.
+    struct MidStep {
+        path: Vec<u8>,
+        step: u64,
+        op: OpKind,
+        k: u64,
+        bytes: Vec<u8>,
+        mode: u32,
+        mtime_ns: i128,
+    }
+
+    /// `base` with `new[offset, offset + k)` written over it at `offset`
+    /// (zeros fill any gap past `base`'s end).
+    fn written(base: &[u8], new: &[u8], offset: u64, k: u64) -> Vec<u8> {
+        let (o, k) = (offset as usize, k as usize);
+        let mut out = base.to_vec();
+        if k > 0 && out.len() < o + k {
+            out.resize(o + k, 0);
+        }
+        out[o..o + k].copy_from_slice(&new[o..o + k]);
+        out
+    }
+
+    /// An mtime in (`pre`, `post`] (at most `post` with no `pre`), near
+    /// the middle, that no recorded state has: on a coarse clock another
+    /// state of the path can share a tick inside the window, and a file
+    /// with that state's size and mtime but other bytes is rule 5's
+    /// `content and times disagree` (the documented coarse-timestamp
+    /// limit), not a mid-step state. `None` if every candidate is taken.
+    fn free_mtime(pre: Option<i128>, post: i128, taken: &BTreeSet<i128>) -> Option<i128> {
+        let lo = pre.map_or(i128::MIN, |p| p + 1);
+        if lo > post {
+            return None;
+        }
+        let mid = match pre {
+            Some(pre) => pre + ((post - pre) / 2).max(1),
+            None => post - 1,
+        };
+        (0..1000i128)
+            .flat_map(|d| [mid + d, mid - d])
+            .find(|m| (lo..=post).contains(m) && !taken.contains(m))
+    }
+
+    /// Every mid-step state of `f`'s live append, rewrite,
+    /// overwrite_range and create_file steps on files that are not hard
+    /// linked: `k` = 0, len/3 and len-1 new bytes written; with the pre-
+    /// and the post-step mode each (only the post one for a create); an
+    /// mtime from [`free_mtime`] (a step with no such mtime is skipped, as
+    /// is a path whose parent the end tree lacks or which is a directory
+    /// there).
+    fn mid_step_states(f: &Fixture) -> Vec<MidStep> {
+        let end = walk_meta(&f.src).unwrap();
+        // Every mtime a state of the round had.
+        let taken: BTreeSet<i128> = f
+            .start_meta
+            .values()
+            .map(|m| m.mtime_ns)
+            .chain(
+                f.live
+                    .iter()
+                    .flat_map(|l| [l.post, l.post_to])
+                    .flatten()
+                    .flatten()
+                    .map(|ps| ps.mtime_ns),
+            )
+            .collect();
+        let writes = [
+            OpKind::Append,
+            OpKind::Rewrite,
+            OpKind::OverwriteRange,
+            OpKind::CreateFile,
+        ];
+        let mut out = Vec::new();
+        for (l, cap) in f.live.iter().zip(&f.caps) {
+            if !writes.contains(&l.op) || cap.group.len() > 1 {
+                continue;
+            }
+            let parent = match l.path.iter().rposition(|&b| b == b'/') {
+                Some(i) => end.get(&l.path[..i]).map(|m| m.kind),
+                None => Some(EntryKind::Dir),
+            };
+            if parent != Some(EntryKind::Dir)
+                || end.get(&l.path).is_some_and(|m| m.kind == EntryKind::Dir)
+            {
+                continue;
+            }
+            let post = l.post.unwrap().unwrap();
+            let pre = cap.pre.get(&l.path);
+            let new = cap.content.as_ref().unwrap();
+            let w = write_of(l.op, &l.details, pre.map(|m| m.size)).unwrap();
+            let Some(mtime_ns) = free_mtime(pre.map(|m| m.mtime_ns), post.mtime_ns, &taken) else {
+                continue;
+            };
+            let old = cap.pre_content.as_deref().unwrap_or_default();
+            let base: &[u8] = if w.truncate_first { &[] } else { old };
+            let mut ks = vec![0, w.len / 3, w.len.saturating_sub(1)];
+            ks.dedup();
+            let modes: Vec<u32> = match pre {
+                Some(pre) if pre.mode != post.mode => vec![pre.mode, post.mode],
+                _ => vec![post.mode],
+            };
+            for &k in &ks {
+                for &mode in &modes {
+                    out.push(MidStep {
+                        path: l.path.clone(),
+                        step: l.step,
+                        op: l.op,
+                        k,
+                        bytes: written(base, new, w.offset, k),
+                        mode,
+                        mtime_ns,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn replay_accepts_real_mid_step_states() {
+        let mut sets = every_row("append", 30);
+        sets.extend(every_row("rewrite", 30));
+        sets.extend(every_row("overwrite_range", 30));
+        sets.extend(every_row("create_file", 15));
+        let f = fixture_with(80, 120, &sets, true);
+        let states = mid_step_states(&f);
+        for op in [
+            OpKind::Append,
+            OpKind::Rewrite,
+            OpKind::OverwriteRange,
+            OpKind::CreateFile,
+        ] {
+            let n = states.iter().filter(|s| s.op == op).count();
+            assert!(n >= 6, "only {n} mid-step states for {}", op.name());
+        }
+        // Waves: each destination holds at most one planted state per
+        // path, every other path at its end state.
+        let mut by_path: BTreeMap<&[u8], Vec<&MidStep>> = BTreeMap::new();
+        for s in &states {
+            by_path.entry(&s.path).or_default().push(s);
+        }
+        let waves = by_path.values().map(Vec::len).max().unwrap();
+        for wave in 0..waves {
+            let dest = f.dest(&format!("dest-{wave}"), &f.src);
+            let planted: Vec<&MidStep> = by_path
+                .values()
+                .filter_map(|v| v.get(wave).copied())
+                .collect();
+            for s in &planted {
+                plant(&dest, &s.path, &s.bytes, s.mode, s.mtime_ns);
+            }
+            let j = f.judge(&dest);
+            let shown: Vec<String> = j
+                .failures
+                .iter()
+                .map(|(path, why)| {
+                    let s = planted.iter().find(|s| &s.path == path);
+                    format!(
+                        "{}: {why}; planted: {}",
+                        String::from_utf8_lossy(path),
+                        s.map_or("nothing".into(), |s| format!(
+                            "step {} {} k={} len={} mode={:o} mtime={}",
+                            s.step,
+                            s.op.name(),
+                            s.k,
+                            s.bytes.len(),
+                            s.mode,
+                            s.mtime_ns
+                        ))
+                    )
+                })
+                .collect();
+            assert!(shown.is_empty(), "wave {wave}: {shown:#?}");
+        }
     }
 
     #[test]
