@@ -155,7 +155,8 @@ pub fn clone_or_copy_file(from: &Path, to: &Path) -> Result<bool> {
     // file again after an earlier clone or copy filled it (the replay
     // reuses one `pre-step` file for every step) fails with EIO under load,
     // on the write. Seen as a harness error in `--concurrent` runs with
-    // eight at once; unlinking first cured it in 72 runs.
+    // eight at once, in about 3 of 8 parallel runs; after unlinking first,
+    // 0 of 48 parallel runs hit it.
     match fs::remove_file(to) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
             return Err(e).with_context(|| format!("removing {}", to.display()));
