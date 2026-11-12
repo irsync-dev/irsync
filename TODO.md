@@ -193,7 +193,7 @@ landed. Items the final review's fix wave closed are not listed.
       Limits (memory-mapped writers without `--paranoid`, coarse timestamps)
       are documented in the correctness page.
 
-- [ ] A stress mode that runs filegen against the source while irsync syncs
+- [x] A stress mode that runs filegen against the source while irsync syncs
       it. The stress loop mutates and syncs one after the other
       (`crates/stress/src/run.rs`), so the `paranoid` matrix row only runs
       `--paranoid` on a tree nothing writes to during the sync, and no
@@ -201,3 +201,41 @@ landed. Items the final review's fix wave closed are not listed.
       exit 23 and 24 and check that each destination file is a state the
       source held at some point (for example, by recording each state's hash
       as filegen writes it).
+
+      **Closed 2026-11-12.** Done on the `concurrent-stress` branch:
+      `--concurrent` on `irsync-stress` and `irsync-netstress`, four new
+      `matrix.sh` rows (`concurrent`, `concurrent-paranoid`, `net-concurrent`,
+      `net-concurrent-paranoid`) with a time budget, and a self-test that
+      proves the checker catches torn files. Design:
+      `docs/superpowers/specs/2026-11-12-concurrent-write-stress-design.md`.
+      How to run it: the "Writing during the sync" section of
+      `book/src/contributing/bug-hunting.md`. The first full-pace runs found
+      the two irsync bugs in the next two items.
+
+- [ ] A file whose mode (or owner or group) changes, or that is renamed over,
+      between the directory walk and the hash can end up with the old mode.
+      The receiver takes only size and mtime from the hash stat
+      (`session/receiver.rs:760-764`). Mode, uid and gid stay as the walk saw
+      them and are applied in `fs/meta.rs:206-231` (`apply_metadata_fd_owned`).
+      The freshness check (`hasher.rs:149-154`) and `ChunkListPart`
+      (`control.proto:60-73`) carry no mode. So the new file becomes the
+      baseline, the place check passes, and the old mode is applied to the
+      new content. The retry does not refresh it (`sender_role.rs:530-560`,
+      `735`). The same holds for owner and group under `-o` and `-g`. Idea
+      for a fix: carry mode, uid and gid with the hash stat, or retry when
+      the hash stat's mode or inode differs from the walk's. Until it is
+      fixed, the concurrent campaign rows report failures of this kind
+      (content and times match a source state, mode from an earlier one).
+
+- [ ] With `-H`, a hard link can show content its path never held. Link groups
+      are fixed at walk time (`session/control.rs:581-592`). Names after the
+      first are `Kind::Hardlink`: they are never requested and never checked
+      (`planner.rs:587-598`, `recv_links.rs:15-26`). `link_pass`
+      (`recv_links.rs:51-96`, called at `receiver.rs:1635`) links them to the
+      first name's final copy after it is placed. The only guard is "the first
+      name failed". A name that was renamed away, or whose inode was replaced
+      after the walk, still gets linked. Idea for a fix: at link time, lstat
+      each extra name and require the same inode as the first name's hash
+      stat; otherwise skip it or retry. Until it is fixed, the concurrent
+      campaign rows report failures of this kind (a failing path that is a
+      hard link).

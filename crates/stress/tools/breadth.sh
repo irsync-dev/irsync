@@ -17,6 +17,9 @@
 #         tools/paranoid-check.sh compares the final trees with every field
 #         fileset records, link counts included, which the harness's own
 #         check does not.                                   [none]
+#   DURATION  a time budget in seconds. Once it has passed, no new run
+#         starts and the skipped runs get no line in summary.txt. Runs
+#         already going finish. [none: every seed runs]
 #
 # Each run needs up to 2 x TOTAL on disk while it runs; JOBS runs at once.
 # Extra arguments go to irsync-stress before the root, e.g.
@@ -34,11 +37,16 @@ done
 mkdir -p "$OUT"
 export BIN OUT ITER STEPS TOTAL FILE CLIENT
 export CHECK=${CHECK:-}
+DEADLINE=
+[ -n "${DURATION:-}" ] && DEADLINE=$(( $(date +%s) + DURATION ))
+export DEADLINE
 # Not an array: macOS's bash 3.2 calls an empty one unbound under `set -u`.
 export EXTRA_ARGS="$*"
 
 run() {
   dir=$1; seed=$2; root=$OUT/$dir-$seed
+  # Out of time: start nothing and leave no line for this run.
+  if [ -n "$DEADLINE" ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then return 0; fi
   # shellcheck disable=SC2086  # EXTRA_ARGS and CLIENT are word lists by design
   "$BIN/irsync-stress" --direction "$dir" --seed "$seed" --iterations "$ITER" --steps "$STEPS" \
     --max-total-size "$TOTAL" --max-file-size "$FILE" --keep-going $EXTRA_ARGS "$root" \

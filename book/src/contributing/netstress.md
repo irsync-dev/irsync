@@ -115,8 +115,14 @@ JOBS=2 crates/netstress/tools/sweep.sh --iterations 3
 | `SEEDS` | Seeds to run, as arguments to `seq`: `"1 10"` is 1 to 10, `"5 5"` is just 5. | `1 10` |
 | `JOBS` | Runs at the same time. | `4` |
 | `PROFILES` | Profiles to run, separated by spaces. | `4g-vehicle dsl-video` |
+| `CLIENT` | Arguments for the irsync client, after `--`. | none |
+| `DURATION` | A time budget in seconds. Once it has passed, no new run starts, and the runs not started get no line in `summary.txt`. Runs already going finish. | none |
 
 Any arguments go to every `irsync-netstress` run, before the root.
+`sweep.sh --concurrent` runs the [concurrent mode](bug-hunting.md#writing-during-the-sync---concurrent):
+filegen writes to the source during each sync. `matrix.sh` has two rows for
+it, `net-concurrent` and `net-concurrent-paranoid`, each with a one-hour
+budget.
 
 It refuses to start without a fault build. For each run it writes
 `OUT/<profile>-<direction>-<seed>.out` (the rig's output) and adds one line
@@ -622,6 +628,7 @@ The possible reasons on the extra line:
 | `1` | At least one iteration failed (file checks or network checks), or a partial file was left behind. |
 | `2` | The rig could not do its job: bad arguments, a root that is not empty, a missing tool, an irsync without the fault layer, the daemon did not start or died, the ping round failed, a tool failed, or the client exited with something other than 0 or 23. |
 | `3` | The profile has dead zones but none opened in the whole run, so the reconnect path was never tested. This is not a pass. Usually the trees were too small; raise `--max-total-size`. |
+| `4` | `--concurrent` only: no file changed during a sync was ever placed, so the run tested nothing. |
 | `130` | Interrupted (Ctrl-C or SIGTERM). The daemon and any running client are stopped first. |
 
 ### Files a run leaves behind

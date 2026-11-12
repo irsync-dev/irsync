@@ -16,11 +16,17 @@
 #   SEEDS    seeds to run, a seq(1) expression                  [1 10]
 #   JOBS     runs at a time                                     [4]
 #   PROFILES profiles to run, a space-separated list    [4g-vehicle dsl-video]
+#   CLIENT   arguments for the irsync client, after `--`  [none]
+#   DURATION a time budget in seconds. Once it has passed, no new run
+#            starts and the skipped runs get no line in summary.txt. Runs
+#            already going finish.                 [none: every seed runs]
 #
 # A run takes up to about 10 minutes. The exit is non-zero if any run's exit
 # was not 0 (1 failed iteration, 2 rig error, 3 faults did not bite).
 # Extra arguments go to irsync-netstress before the root, e.g.
 #   sweep.sh --iterations 3
+# The concurrent mode (filegen writes to the source during each sync) is
+#   sweep.sh --concurrent
 set -u
 BIN=${BIN:-$(cd "$(dirname "$0")/../../.." && pwd)/target/netsim/release}
 OUT=${OUT:-$HOME/work/irsync-netstress-$(date +%Y-%m-%d)}
@@ -36,14 +42,20 @@ case $("$BIN/irsync" --version) in
 esac
 mkdir -p "$OUT"
 export BIN OUT
+CLIENT=${CLIENT:-}
+DEADLINE=
+[ -n "${DURATION:-}" ] && DEADLINE=$(( $(date +%s) + DURATION ))
+export CLIENT DEADLINE
 # Not an array: macOS's bash 3.2 calls an empty one unbound under `set -u`.
 export EXTRA_ARGS="$*"
 
 run() {
   profile=$1; dir=$2; seed=$3; root=$OUT/$profile-$dir-$seed
-  # shellcheck disable=SC2086  # EXTRA_ARGS is a word list by design
+  # Out of time: start nothing and leave no line for this run.
+  if [ -n "$DEADLINE" ] && [ "$(date +%s)" -ge "$DEADLINE" ]; then return 0; fi
+  # shellcheck disable=SC2086  # EXTRA_ARGS and CLIENT are word lists by design
   "$BIN/irsync-netstress" --profile "$profile" --direction "$dir" --seed "$seed" \
-    --keep-going $EXTRA_ARGS "$root" > "$OUT/$profile-$dir-$seed.out" 2>&1
+    --keep-going $EXTRA_ARGS "$root" ${CLIENT:+-- $CLIENT} > "$OUT/$profile-$dir-$seed.out" 2>&1
   rc=$?
   echo "$profile $dir $seed exit=$rc $(tail -1 "$OUT/$profile-$dir-$seed.out")" >> "$OUT/summary.txt"
   [ $rc -eq 0 ] && rm -rf "$root"

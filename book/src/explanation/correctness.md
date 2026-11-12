@@ -96,6 +96,15 @@ every packet passing through a simulated link: limited speed, delay, bursts
 of loss, and dead zones that cut the link and force a reconnect and resume.
 See [Network stress with netstress](../contributing/netstress.md).
 
+**Writing to the source during the sync.** Both stress tools have a
+`--concurrent` mode in which the generator keeps changing the source while
+irsync syncs it. Each destination file is then judged against every state
+the source held, content and metadata, and a second sync with nothing
+writing must leave an exact copy. The aim: no destination file is ever a
+state the source never held. A self-test with the change checks switched off
+proves the judge catches torn files. See
+[Writing during the sync](../contributing/bug-hunting.md#writing-during-the-sync---concurrent).
+
 **Campaigns.** Long runs over many random seeds, each aimed at one area:
 hard links, renames, sparse files, metadata, timestamps, symlinks,
 deletion, long names, and more. After a run the destination is also

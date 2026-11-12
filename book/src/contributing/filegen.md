@@ -81,6 +81,11 @@ filegen run [OPTIONS] --steps <N> (--seed <S> | --resume <STATEFILE>) <PATH>
   `filegen-<seed>`; must not be empty, `.`, `..`, or contain `/`
 - `--set <KEY=VALUE>`: set any configuration key by its dotted path, value
   parsed as YAML (repeatable), e.g. `--set content.pattern_fraction=0.2`
+- `--pace <PACE>`: when each step starts. `fast` (the default) never waits;
+  `steady:<N>` starts at most N steps a second; `bursts:<ON_MS>:<OFF_MS>`
+  runs flat out for ON_MS milliseconds, then waits OFF_MS, and repeats. Pace
+  only decides when a step starts, never which one, so it does not change
+  the tree a seed makes. irsync-stress uses it for `--concurrent`.
 - `--dry-run`: draw and log every step, update the model, but touch nothing
 - `--force`: with `--seed`, truncate an existing log and state file for this
   prefix instead of refusing
@@ -138,7 +143,7 @@ filegen refuses to start (exit 2) when:
 One line per step, `key=value` pairs in a fixed order:
 
 ```
-step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [pressure=<0.xx>] dur_us=<n> [gen_us=<n>]
+step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [pressure=<0.xx>] [post=<stat>] [post_to=<stat>] dur_us=<n> [gen_us=<n>]
 ```
 
 `step` counts across resumes. Paths are relative to the root, quoted and
@@ -148,6 +153,14 @@ include `size`, `content` (`random`, `zeros`, `repeat_byte`,
 `repeat_block`), `offset`/`len`, `mode`, `mtime`/`class`, `target`,
 `target_kind`, `absolute`, `entries` and `emulated=1` (a hole written as
 zeros). `pressure` appears while the total-size reweighting is in effect.
+`post` is the stat of `path` right after the step, as
+`kind:size:mode_octal:mtime_ns`: `f` file, `d` directory, `l` symlink,
+`p` fifo, `c` or `b` device (and `s` for a socket); the size in bytes, the
+mode bits in octal, the modification time in nanoseconds since the
+epoch. It is `-` when the path is absent after the step (a delete or a
+rename away). `post_to` is the same for `to`, and appears only for steps
+that have a `to`. Neither appears in a dry run, which touches nothing.
+The stress harness reads them to rebuild what the source held.
 `dur_us` times the filesystem syscalls only (including `fsync` if enabled),
 not the choice of operation. An operation that writes drawn content
 (`create_file`, `append`, `overwrite_range`, `rewrite`) generates the bytes
@@ -158,11 +171,12 @@ generator costs. A failed step is logged as
 naming the path the failing call acted on (for a create, the new entry;
 `to` for a rename or hard link).
 
-From a real run (paths shortened):
+From a real run (paths shortened; `post` is `f:44002:664:...`, a 44002-byte
+file with mode 0664 whose mtime is 2026-10-20T14:24:51.571Z):
 
 ```
 # run seed=42 start_step=0 steps=1000 log="/tmp/fg/filegen-42.log" state="/tmp/fg/filegen-42.state.yaml" config="-" dry_run=0 started=2026-10-20T14:24:51.569059Z
-step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl66u7pmc1e.bin" bytes=30165 size=44002 content=random dur_us=1208 gen_us=12
+step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl66u7pmc1e.bin" bytes=30165 size=44002 content=random post=f:44002:664:1792506291571000000 dur_us=1208 gen_us=12
 ...
 # end steps_done=1000 outcome=ok elapsed_ms=7638
 # stat op=create_file count=219 bytes=117340131 p50_us=109 p99_us=156217 max_us=156975 gen_total_us=48112

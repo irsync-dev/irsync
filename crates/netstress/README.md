@@ -10,3 +10,8 @@ a separate build, `cargo build --release --workspace --features netsim
 [Network stress with netstress](https://irsync.org/book/contributing/netstress.html),
 the inside of the fault layer in
 [How netstress works](https://irsync.org/book/contributing/netstress-internals.html).
+
+`--concurrent` runs the same loop with filegen writing to the source during
+each sync, and judges every destination file against the states the source
+held. See
+[Writing during the sync](https://irsync.org/book/contributing/bug-hunting.html#writing-during-the-sync---concurrent).

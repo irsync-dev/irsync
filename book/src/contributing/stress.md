@@ -78,6 +78,7 @@ variables, with their defaults:
 | `ITER`, `STEPS`, `TOTAL`, `FILE` | Iterations, filegen steps, `--max-total-size` and `--max-file-size` of each run. | `20`, `200`, `4G`, `256M` |
 | `CLIENT` | Arguments for the irsync client, after `--`. | `--timeout 300` |
 | `CHECK` | A command run as `$CHECK <root>` after each passing run; if it fails, the run counts as failed (`exit=3`) and its root is kept. | none |
+| `DURATION` | A time budget in seconds. Once it has passed, no new run starts, and the runs not started get no line in `summary.txt`. Runs already going finish. | none |
 
 Extra arguments go to every `irsync-stress` run, before the root. Each run
 needs up to twice `TOTAL` on disk while it runs.
@@ -86,7 +87,12 @@ needs up to twice `TOTAL` on disk while it runs.
 matrix](bug-hunting.md#the-campaign-matrix), one breadth sweep per row. The
 rows are `hardlink`, `rename`, `rename-off`, `sparse`, `metadata`,
 `timestamps`, `symlinks`, `deletion`, `listing`, `longnames`, `parallel1`,
-`parallel512`, `checksum`, `minimal`, `bigfile` and `paranoid`.
+`parallel512`, `checksum`, `minimal`, `bigfile`, `paranoid`, `concurrent`,
+`concurrent-paranoid`, `net-concurrent` and `net-concurrent-paranoid`. The
+last four write to the source during the sync and take an hour each; see
+[Writing during the sync](bug-hunting.md#writing-during-the-sync---concurrent).
+The two `net-*` rows run `netstress/tools/sweep.sh` and need the fault build
+(`NETBIN` names its directory).
 `matrix.sh hardlink rename` runs only those rows; with `DRY=1` it only checks that filegen
 accepts every row's settings. Each passing run is checked with
 `tools/clean-check.sh`, which runs `tools/paranoid-check.sh` (a
@@ -186,6 +192,9 @@ ROOT/
 | `1` | At least one iteration failed: client exit 23, manifests differ, or `fileset check` found differences. |
 | `2` | The harness could not do its job: bad arguments, a root that is not empty, a missing tool, a daemon that did not start, a tool failing, or the client exiting with anything other than 0 or 23. |
 | `130` | Interrupted by SIGINT or SIGTERM. The client, filegen or fileset run in progress, and the daemon, are sent SIGINT first. |
+
+With `--concurrent` the rules and exit codes differ; see
+[Writing during the sync](bug-hunting.md#writing-during-the-sync---concurrent).
 
 A client exit of 23 (partial transfer) is a failed iteration, not a harness
 error; the manifest comparison and the check still run for it. Any other
