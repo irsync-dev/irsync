@@ -141,8 +141,11 @@ fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Copies `from` to `to` (replaced): a clone where the
 /// filesystem allows, else a plain copy. True means cloned. Mode and times
-/// are not carried over.
+/// are not carried over. A missing source is an error that leaves `to` as
+/// it was.
 pub fn clone_or_copy_file(from: &Path, to: &Path) -> Result<bool> {
+    // Open the source before touching `to`, so a failure leaves it alone.
+    let mut src = File::open(from).with_context(|| format!("opening {}", from.display()))?;
     #[cfg(target_os = "macos")]
     {
         let _ = fs::remove_file(to);
@@ -150,7 +153,6 @@ pub fn clone_or_copy_file(from: &Path, to: &Path) -> Result<bool> {
             return Ok(true);
         }
     }
-    let mut src = File::open(from).with_context(|| format!("opening {}", from.display()))?;
     // A fresh file, never the old one truncated. On ZFS, writing into a
     // file again after an earlier clone or copy filled it (the replay
     // reuses one `pre-step` file for every step) fails with EIO under load,
