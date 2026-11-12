@@ -170,9 +170,11 @@ part. Every part repeats the file id, the size, the whole-file hash and the
 total record count. The receiver reassembles them and fails the file when a
 sequence skips, describes another file, or announces more records than 2^24 or
 than the size allows at the minimum chunk length. The first part also holds the
-mtime the file was hashed under; the size and mtime of a list replace the
-walk's for the file. An `APPEND` tail's list carries the whole file's size and
-mtime.
+stat the file was hashed under: mtime, mode, uid and gid, with the names of the
+uid and gid on the sender. These and the list's size replace the walk's for the
+file, and the names are mapped to the receiver's ids as for a listing entry
+(not with `--numeric-ids`). An `APPEND` tail's list carries the whole file's
+stat.
 
 Lists travel in room the receiver grants. Each connection starts with room for
 2^24 records on both sides; a list's first part takes its whole `total` of it,

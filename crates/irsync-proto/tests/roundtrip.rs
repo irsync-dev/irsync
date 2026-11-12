@@ -105,6 +105,11 @@ fn control_oneof_roundtrips() {
             last: true,
             mtime_sec: -5,
             mtime_nsec: 999_999_999,
+            mode: 0o100644,
+            uid: 1000,
+            gid: 100,
+            user: "alice".into(),
+            group: "users".into(),
             chunks: vec![
                 ChunkRecord {
                     offset: 0,

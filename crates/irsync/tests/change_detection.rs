@@ -1180,3 +1180,148 @@ async fn paranoid_delete_runs_after_the_replanned_files() {
     })
     .await;
 }
+
+/// How a hook changes `x.bin` between the walk and the hash pass.
+#[derive(Clone, Copy)]
+enum ModeChange {
+    /// A new file with mode 600 renamed over it (a save-by-rename).
+    RenameOver,
+    /// `chmod 600`, content untouched.
+    Chmod,
+}
+
+/// The source's mode changes after the walk and before the hash pass (on
+/// the first pass only). The file is placed with the mode it had when it
+/// was hashed, not the walk's: the source never held its new content (or
+/// its current state) with the old mode.
+async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::new().await;
+    seed(&h, flow);
+    let src = h.src(flow).join("x.bin");
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
+    let first = Arc::new(AtomicBool::new(false));
+    let hook: HashHook = {
+        let (src, first) = (src.clone(), first.clone());
+        Arc::new(move |p: &RelPath, bytes: u64| {
+            if p.as_bytes() != b"x.bin" || bytes != 0 || first.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            match change {
+                ModeChange::RenameOver => {
+                    let tmp = src.with_file_name("x.bin.new");
+                    fs::write(&tmp, data(SIZE, 8)).unwrap();
+                    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).unwrap();
+                    fs::rename(&tmp, &src).unwrap();
+                }
+                ModeChange::Chmod => {
+                    fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+            }
+        })
+    };
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => {
+            local.hooks = SideHooks {
+                during_hash: Some(hook),
+                ..SideHooks::default()
+            }
+        }
+        Flow::Pull => h.daemon.hooks.lock().unwrap().during_hash = Some(hook),
+    }
+    let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
+    assert!(first.load(Ordering::SeqCst), "the hook never fired");
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    let dst = h.dst(flow).join("x.bin");
+    assert!(fs::read(&dst).unwrap() == fs::read(&src).unwrap());
+    let mode = fs::metadata(&dst).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o600, "placed with mode {mode:o}");
+    let again = h.run(&archive_opts(), flow).await.unwrap();
+    assert_eq!(again.exit_code(), 0, "{:?}", again.errors);
+    assert_eq!(again.files_transferred, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_over_before_hash_places_the_new_mode() {
+    within30(hashed_mode_is_placed_for(
+        Flow::Push,
+        ModeChange::RenameOver,
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rename_over_before_hash_places_the_new_mode_on_pull() {
+    within30(hashed_mode_is_placed_for(
+        Flow::Pull,
+        ModeChange::RenameOver,
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chmod_before_hash_places_the_new_mode() {
+    within30(hashed_mode_is_placed_for(Flow::Push, ModeChange::Chmod)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chmod_before_hash_places_the_new_mode_on_pull() {
+    within30(hashed_mode_is_placed_for(Flow::Pull, ModeChange::Chmod)).await;
+}
+
+/// A group of ours other than the effective one, if any: an owner may move
+/// a file to it without root.
+fn other_group() -> Option<u32> {
+    let egid = nix::unistd::getegid().as_raw();
+    irsync::fs::meta::supplementary_groups()
+        .into_iter()
+        .find(|&g| g != egid)
+}
+
+/// The source's group changes after the walk and before the hash pass:
+/// the file is placed with the group it had when it was hashed.
+async fn hashed_group_is_placed_for(flow: Flow) {
+    use std::os::unix::fs::MetadataExt;
+    let Some(g2) = other_group() else {
+        eprintln!("skipped: this user is in only one group");
+        return;
+    };
+    let h = Harness::new().await;
+    seed(&h, flow);
+    let src = h.src(flow).join("x.bin");
+    let first = Arc::new(AtomicBool::new(false));
+    let hook: HashHook = {
+        let (src, first) = (src.clone(), first.clone());
+        Arc::new(move |p: &RelPath, bytes: u64| {
+            if p.as_bytes() == b"x.bin" && bytes == 0 && !first.swap(true, Ordering::SeqCst) {
+                std::os::unix::fs::chown(&src, None, Some(g2)).unwrap();
+            }
+        })
+    };
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => {
+            local.hooks = SideHooks {
+                during_hash: Some(hook),
+                ..SideHooks::default()
+            }
+        }
+        Flow::Pull => h.daemon.hooks.lock().unwrap().during_hash = Some(hook),
+    }
+    let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
+    assert!(first.load(Ordering::SeqCst), "the hook never fired");
+    assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+    let gid = fs::metadata(h.dst(flow).join("x.bin")).unwrap().gid();
+    assert_eq!(gid, g2, "placed with the walk's group");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chgrp_before_hash_places_the_new_group() {
+    within30(hashed_group_is_placed_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chgrp_before_hash_places_the_new_group_on_pull() {
+    within30(hashed_group_is_placed_for(Flow::Pull)).await;
+}

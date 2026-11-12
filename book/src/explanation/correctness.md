@@ -169,8 +169,15 @@ the chunks. Here is what happens when a file changes along the way.
   removes it.
 - **Created after the listing.** It is not sent in this run.
 
-These checks compare size, modification time, change time and inode. Programs
-can reset the modification time, but nothing can set the change time back.
+These checks compare size, modification time, change time, inode,
+permissions, owner and group. Programs can reset the modification time, but
+nothing can set the change time back.
+
+A sent file is placed with the size, modification time, permissions, owner
+and group it had when its hash was taken, not the ones the listing saw. So a
+`chmod`, or another file saved over it, between the listing and the hash
+cannot leave new content with old permissions: content and metadata always
+come from the same moment.
 Because they compare the change time, a change to a file's metadata alone
 during the sync counts as a change, even though its content is the same:
 `chmod` or `chown`, extended attributes set by an indexer or a virus

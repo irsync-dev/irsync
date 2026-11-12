@@ -315,6 +315,10 @@ struct Receiver {
     kept_links: Option<HashMap<RelPath, Vec<(RelPath, FileEntry)>>>,
     /// Owner and group names for the destination entries `replan` reads.
     names: crate::fs::ids::IdNames,
+    /// This side's ids for the owner and group names the sender sends with
+    /// a chunk list or a `Replan` (none with `--numeric-ids`), as for the
+    /// listing's entries.
+    ids: Option<crate::fs::ids::IdMap>,
 }
 
 impl Receiver {
@@ -370,6 +374,10 @@ impl Receiver {
             anyhow::bail!("protocol error: a second Replan for one path");
         }
         entry.path = path.as_bytes().to_vec();
+        // The sender's owner and group names become this side's ids.
+        if let Some(map) = self.ids.as_mut() {
+            map.localize(&mut entry);
+        }
         let links_known = self.kept_links.is_some();
         let again = match replan(&self.ctx, &mut self.names, &path, &entry, links_known).await {
             Ok(a) => a,
@@ -757,11 +765,18 @@ impl Receiver {
         }
         let n = f.lists;
         match assemble(&mut f.assembly, p) {
-            Ok(Some((d, mtime))) => {
-                // The file is placed with the size and mtime its list was
-                // hashed under, not the walk's.
+            Ok(Some((d, stat))) => {
+                // The file is placed with the size, mtime, mode and ids its
+                // list was hashed under, not the walk's: a change between
+                // the walk and the hash (a `chmod`, or a file renamed over
+                // it) must not leave new content with old metadata.
                 f.entry.size = d.size;
-                (f.entry.mtime_sec, f.entry.mtime_nsec) = mtime;
+                (f.entry.mtime_sec, f.entry.mtime_nsec) = stat.mtime;
+                (f.entry.mode, f.entry.uid, f.entry.gid) = (stat.mode, stat.uid, stat.gid);
+                (f.entry.user, f.entry.group) = (stat.user, stat.group);
+                if let Some(map) = self.ids.as_mut() {
+                    map.localize(&mut f.entry);
+                }
                 self.on_chunk_list(file_id, Arc::new(d), n).await
             }
             Ok(None) => {}
@@ -1501,6 +1516,7 @@ pub(super) async fn run(
         vanished_omitted: 0,
         kept_links: None,
         names: crate::fs::ids::IdNames::new(),
+        ids: (!ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
     };
     let mut planner_abort = None;
     // A stored plan holds no deletion candidates, and a dry run stores

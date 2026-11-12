@@ -335,15 +335,22 @@ mod tests {
     use super::*;
     use crate::filegen::{self as fg, FilegenOpts};
 
+    /// The workspace's `filegen`, in the nearest folder above this test
+    /// binary that holds one: the profile folder (`target/debug`), however
+    /// deep Cargo puts test binaries below it (`deps/`, or `build/<pkg>/<hash>/`
+    /// since Rust 1.100).
     fn filegen_bin() -> PathBuf {
         let exe = std::env::current_exe().unwrap();
-        let p = exe.parent().unwrap().parent().unwrap().join("filegen");
-        assert!(
-            p.exists(),
-            "{} missing: run `cargo build --workspace` first",
-            p.display()
-        );
-        p
+        exe.ancestors()
+            .skip(1)
+            .map(|d| d.join("filegen"))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no filegen above {}: run `cargo build --workspace` first",
+                    exe.display()
+                )
+            })
     }
 
     fn opts(steps: u64) -> FilegenOpts<'static> {

@@ -212,7 +212,7 @@ landed. Items the final review's fix wave closed are not listed.
       `book/src/contributing/bug-hunting.md`. The first full-pace runs found
       the two irsync bugs in the next two items.
 
-- [ ] A file whose mode (or owner or group) changes, or that is renamed over,
+- [x] A file whose mode (or owner or group) changes, or that is renamed over,
       between the directory walk and the hash can end up with the old mode.
       The receiver takes only size and mtime from the hash stat
       (`session/receiver.rs:760-764`). Mode, uid and gid stay as the walk saw
@@ -226,6 +226,15 @@ landed. Items the final review's fix wave closed are not listed.
       the hash stat's mode or inode differs from the walk's. Until it is
       fixed, the concurrent campaign rows report failures of this kind
       (content and times match a source state, mode from an earlier one).
+
+      **Closed 2026-11-12.** The hash stat now carries mode, uid and gid,
+      and the first `ChunkListPart` sends them with the owner and group
+      names; the receiver places the file with them, mapping the names as
+      for a listing entry. The `--paranoid` `Replan` entry's names are now
+      mapped too (they were not). Tests: `*_before_hash_places_the_new_*`
+      in `crates/irsync/tests/change_detection.rs` and
+      `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` in
+      `crates/irsync/tests/ids_e2e.rs`.
 
 - [ ] With `-H`, a hard link can show content its path never held. Link groups
       are fixed at walk time (`session/control.rs:581-592`). Names after the

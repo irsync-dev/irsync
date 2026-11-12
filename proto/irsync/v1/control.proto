@@ -66,10 +66,17 @@ message ChunkListPart {
   repeated ChunkRecord chunks = 6;
   bool last = 7;
   // The stat the file was hashed under: the receiver places the file with
-  // this size (field 2) and mtime, not the walk's. Set on the part with
-  // `first` 0.
+  // this size (field 2), mtime, mode, owner and group, not the walk's, so
+  // content and metadata come from the same moment. Set on the part with
+  // `first` 0. `user` and `group` are the names of `uid` and `gid` on the
+  // sender (empty when it has none), mapped as a listing entry's are.
   int64 mtime_sec = 8;
   uint32 mtime_nsec = 9;
+  uint32 mode = 10;
+  uint32 uid = 11;
+  uint32 gid = 12;
+  string user = 13;
+  string group = 14;
 }
 // receiver -> sender: `records` chunk records of room freed (lists the
 // receiver dropped: placed, failed or replaced files). Each connection

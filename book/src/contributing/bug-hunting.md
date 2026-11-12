@@ -232,14 +232,15 @@ irsync-stress --direction pull --iterations 5 --seed 99 --steps 100 \
   ~/work/run.rerun -- --paranoid
 ```
 
-### Known failures while two irsync bugs are open
+### Known failures while an irsync bug is open
 
-The first full-pace runs found two real irsync bugs, listed in `TODO.md`:
-a mode (or owner) taken from the walk instead of the file that was hashed,
-and a hard link made to a name that was renamed away. Until they are fixed,
-the concurrent rows report failures of these two kinds: a path with the
-right content and times but a mode from an earlier state, and a path that is
-a hard link. Judge a campaign by failures of any other kind.
+The first full-pace runs found two real irsync bugs. The first, a mode (or
+owner) taken from the walk instead of the file that was hashed, is fixed.
+The second is open and listed in `TODO.md`: a hard link made to a name that
+was renamed away. Until it is fixed, the concurrent rows report failures of
+that kind: a path that is a hard link. Judge a campaign by failures of any
+other kind; a path with the right content and times but a mode from an
+earlier state is now a new failure.
 
 One more failure is a known limit, not a bug to chase: on a filesystem with
 coarse timestamps, two writes in the same clock tick can leave a file's
@@ -263,7 +264,7 @@ IRSYNC_TEST_NO_CHANGE_CHECKS=1 target/release/irsync-stress --concurrent \
 
 It must exit 1. Look at the report: the failure that proves the checker
 bites is on a path that is not hard-linked and is not a mode-only mismatch.
-The two known bugs can fail a run without that proof, so try more seeds
+The known bug can fail a run without that proof, so try more seeds
 (`--seed`) until a torn file shows up.
 If the run passes, the checker is not catching what it should: stop and
 find out why. It depends on timing, so it is a manual step and not a

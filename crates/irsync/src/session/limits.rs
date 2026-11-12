@@ -410,6 +410,11 @@ mod tests {
             last: true,
             mtime_sec: i64::MIN,
             mtime_nsec: u32::MAX,
+            mode: u32::MAX,
+            uid: u32::MAX,
+            gid: u32::MAX,
+            user: "u".repeat(256),
+            group: "g".repeat(256),
         };
         let header = len(Msg::ChunkListPart(part(0)));
         let full = len(Msg::ChunkListPart(part(super::super::parts::PART_RECORDS)));

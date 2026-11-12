@@ -22,14 +22,27 @@ pub(super) const PART_RECORDS: usize = 32 * 1024;
 /// for one file (about 800 MB of records; 4 TiB of typical data).
 pub(super) const MAX_LIST_CHUNKS: usize = 1 << 24;
 
+/// The metadata of the stat a file was hashed under, besides its size: the
+/// receiver places the file with these, not the walk's. `user` and `group`
+/// name `uid` and `gid` on the sender (empty when they have no name).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ListStat {
+    pub mtime: (i64, u32),
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub user: String,
+    pub group: String,
+}
+
 /// Cuts a digest into parts of at most `per_part` records, in order.
 /// `with_hash` false leaves the whole-file hash out (an `APPEND` tail).
-/// `mtime` is the modification time the file was hashed under; it rides on
-/// the first part, with the size.
+/// `stat` is what the file was hashed under; it rides on the first part,
+/// with the size.
 pub(super) fn split(
     file_id: u64,
     d: &FileDigest,
-    mtime: (i64, u32),
+    stat: &ListStat,
     per_part: usize,
     with_hash: bool,
 ) -> Vec<ChunkListPart> {
@@ -43,7 +56,7 @@ pub(super) fn split(
         .map(|k| {
             let first = k * per_part;
             let end = (first + per_part).min(d.chunks.len());
-            ChunkListPart {
+            let mut part = ChunkListPart {
                 file_id,
                 size: d.size,
                 whole_hash: hash.clone(),
@@ -51,25 +64,30 @@ pub(super) fn split(
                 first: first as u32,
                 chunks: d.chunks[first..end].iter().map(|&c| c.into()).collect(),
                 last: k + 1 == n,
-                mtime_sec: if k == 0 { mtime.0 } else { 0 },
-                mtime_nsec: if k == 0 { mtime.1 } else { 0 },
+                ..ChunkListPart::default()
+            };
+            if k == 0 {
+                (part.mtime_sec, part.mtime_nsec) = stat.mtime;
+                (part.mode, part.uid, part.gid) = (stat.mode, stat.uid, stat.gid);
+                (part.user, part.group) = (stat.user.clone(), stat.group.clone());
             }
+            part
         })
         .collect()
 }
 
-/// A complete chunk list, and the mtime the file was hashed under.
-pub(super) type Assembled = (FileDigest, (i64, u32));
+/// A complete chunk list, and the stat the file was hashed under.
+pub(super) type Assembled = (FileDigest, ListStat);
 
 /// A chunk list under assembly from its parts.
 pub(super) struct Assembly {
     digest: FileDigest,
-    mtime: (i64, u32),
+    stat: ListStat,
     total: usize,
 }
 
 /// Feeds one part into the file's assembly slot. `Ok(Some)` is the complete
-/// list with the mtime it was hashed under; `Ok(None)` means more parts are due; `Err` names what was wrong
+/// list with the stat it was hashed under; `Ok(None)` means more parts are due; `Err` names what was wrong
 /// with the sequence (the slot is then cleared).
 pub(super) fn assemble(
     slot: &mut Option<Assembly>,
@@ -84,7 +102,7 @@ pub(super) fn assemble(
     }
 }
 
-fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<Assembled>, String> {
+fn feed(slot: &mut Option<Assembly>, mut part: ChunkListPart) -> Result<Option<Assembled>, String> {
     let total = part.total as usize;
     // Absent for an `APPEND` tail (the receiver folds the hash itself);
     // zeros then, which no real file hashes to.
@@ -112,7 +130,14 @@ fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<Assem
             ));
         }
         *slot = Some(Assembly {
-            mtime: (part.mtime_sec, part.mtime_nsec),
+            stat: ListStat {
+                mtime: (part.mtime_sec, part.mtime_nsec),
+                mode: part.mode,
+                uid: part.uid,
+                gid: part.gid,
+                user: std::mem::take(&mut part.user),
+                group: std::mem::take(&mut part.group),
+            },
             digest: FileDigest {
                 size: part.size,
                 hash,
@@ -155,7 +180,7 @@ fn feed(slot: &mut Option<Assembly>, part: ChunkListPart) -> Result<Option<Assem
             a.total
         ));
     }
-    Ok(slot.take().map(|a| (a.digest, a.mtime)))
+    Ok(slot.take().map(|a| (a.digest, a.stat)))
 }
 
 /// Receiver: the chunk records held for all files' lists, against the
@@ -332,12 +357,21 @@ pub(super) fn list_total(parts: &[ChunkListPart]) -> u64 {
 mod tests {
     use super::*;
 
-    const MT: (i64, u32) = (1_700_000_000, 123_456_789);
+    fn st() -> ListStat {
+        ListStat {
+            mtime: (1_700_000_000, 123_456_789),
+            mode: 0o100640,
+            uid: 1001,
+            gid: 1002,
+            user: "alice".into(),
+            group: "staff".into(),
+        }
+    }
 
     #[test]
     fn a_tail_list_without_a_whole_hash_assembles_with_zeros() {
         let d = digest(3);
-        let mut parts = split(9, &d, MT, 4, false);
+        let mut parts = split(9, &d, &st(), 4, false);
         assert!(parts.iter().all(|p| p.whole_hash.is_none()));
         let mut slot = None;
         let (got, _) = assemble(&mut slot, parts.remove(0)).unwrap().unwrap();
@@ -346,16 +380,21 @@ mod tests {
     }
 
     #[test]
-    fn the_hashed_mtime_rides_on_the_first_part() {
+    fn the_hashed_stat_rides_on_the_first_part() {
         let d = digest(10);
-        let parts = split(42, &d, MT, 4, true);
-        assert_eq!((parts[0].mtime_sec, parts[0].mtime_nsec), MT);
-        assert!(parts[1..]
-            .iter()
-            .all(|p| p.mtime_sec == 0 && p.mtime_nsec == 0));
-        let (cl, mtime) = run_with_mtime(parts).unwrap().expect("complete");
+        let parts = split(42, &d, &st(), 4, true);
+        let p = &parts[0];
+        assert_eq!((p.mtime_sec, p.mtime_nsec), st().mtime);
+        assert_eq!((p.mode, p.uid, p.gid), (0o100640, 1001, 1002));
+        assert_eq!((p.user.as_str(), p.group.as_str()), ("alice", "staff"));
+        assert!(parts[1..].iter().all(|p| {
+            (p.mtime_sec, p.mtime_nsec, p.mode, p.uid, p.gid) == (0, 0, 0, 0, 0)
+                && p.user.is_empty()
+                && p.group.is_empty()
+        }));
+        let (cl, stat) = run_with_stat(parts).unwrap().expect("complete");
         assert_eq!(cl.size, d.size);
-        assert_eq!(mtime, MT);
+        assert_eq!(stat, st());
     }
 
     fn digest(n: usize) -> FileDigest {
@@ -375,7 +414,7 @@ mod tests {
         }
     }
 
-    fn run_with_mtime(parts: Vec<ChunkListPart>) -> Result<Option<Assembled>, String> {
+    fn run_with_stat(parts: Vec<ChunkListPart>) -> Result<Option<Assembled>, String> {
         let mut slot = None;
         let mut out = None;
         for p in parts {
@@ -385,7 +424,7 @@ mod tests {
     }
 
     fn run(parts: Vec<ChunkListPart>) -> Result<Option<FileDigest>, String> {
-        Ok(run_with_mtime(parts)?.map(|(d, _)| d))
+        Ok(run_with_stat(parts)?.map(|(d, _)| d))
     }
 
     #[test]
@@ -405,7 +444,7 @@ mod tests {
     #[test]
     fn split_cuts_contiguous_parts_with_the_last_one_flagged() {
         let d = digest(10);
-        let parts = split(42, &d, MT, 4, true);
+        let parts = split(42, &d, &st(), 4, true);
         assert_eq!(parts.len(), 3);
         let mut first = 0u32;
         for (k, p) in parts.iter().enumerate() {
@@ -432,7 +471,7 @@ mod tests {
 
     #[test]
     fn split_of_an_empty_digest_is_one_empty_last_part() {
-        let parts = split(1, &digest(0), MT, 4, true);
+        let parts = split(1, &digest(0), &st(), 4, true);
         assert_eq!(parts.len(), 1);
         assert!(parts[0].last);
         assert!(parts[0].chunks.is_empty());
@@ -442,7 +481,9 @@ mod tests {
     #[test]
     fn assemble_rebuilds_the_list_from_its_parts() {
         let d = digest(10);
-        let cl = run(split(42, &d, MT, 4, true)).unwrap().expect("complete");
+        let cl = run(split(42, &d, &st(), 4, true))
+            .unwrap()
+            .expect("complete");
         assert_eq!(cl.size, d.size);
         assert_eq!(cl.hash, d.hash);
         assert_eq!(cl.chunks, d.chunks);
@@ -450,7 +491,7 @@ mod tests {
 
     #[test]
     fn assemble_waits_for_the_last_part() {
-        let mut parts = split(42, &digest(10), MT, 4, true);
+        let mut parts = split(42, &digest(10), &st(), 4, true);
         parts.pop();
         assert_eq!(run(parts).unwrap(), None);
     }
@@ -458,7 +499,7 @@ mod tests {
     #[test]
     fn a_first_part_restarts_the_assembly() {
         let d = digest(10);
-        let mut parts = split(42, &d, MT, 4, true);
+        let mut parts = split(42, &d, &st(), 4, true);
         let restart = parts[0].clone();
         parts.insert(1, restart);
         let cl = run(parts).unwrap().expect("complete");
@@ -467,14 +508,14 @@ mod tests {
 
     #[test]
     fn a_part_that_skips_ahead_is_an_error() {
-        let mut parts = split(42, &digest(10), MT, 4, true);
+        let mut parts = split(42, &digest(10), &st(), 4, true);
         parts.remove(1);
         assert!(run(parts).unwrap_err().contains("continues at"));
     }
 
     #[test]
     fn a_continuation_without_a_start_is_an_error() {
-        let parts = split(42, &digest(10), MT, 4, true);
+        let parts = split(42, &digest(10), &st(), 4, true);
         assert!(run(parts[1..].to_vec())
             .unwrap_err()
             .contains("continues at"));
@@ -482,14 +523,14 @@ mod tests {
 
     #[test]
     fn a_part_with_another_hash_is_an_error() {
-        let mut parts = split(42, &digest(10), MT, 4, true);
+        let mut parts = split(42, &digest(10), &st(), 4, true);
         parts[1].whole_hash = Some(Hash { bytes: vec![1; 32] });
         assert!(run(parts).unwrap_err().contains("hash"));
     }
 
     #[test]
     fn a_last_part_short_of_the_total_is_an_error() {
-        let mut parts = split(42, &digest(10), MT, 4, true);
+        let mut parts = split(42, &digest(10), &st(), 4, true);
         parts.truncate(2);
         parts[1].last = true;
         assert!(run(parts).unwrap_err().contains("short"));
@@ -497,7 +538,7 @@ mod tests {
 
     #[test]
     fn more_records_than_announced_is_an_error() {
-        let mut parts = split(42, &digest(10), MT, 4, true);
+        let mut parts = split(42, &digest(10), &st(), 4, true);
         for p in &mut parts {
             p.total = 9;
         }
@@ -506,7 +547,7 @@ mod tests {
 
     #[test]
     fn a_total_above_the_cap_is_refused_before_anything_is_held() {
-        let mut parts = split(42, &digest(2), MT, 4, true);
+        let mut parts = split(42, &digest(2), &st(), 4, true);
         parts[0].total = (MAX_LIST_CHUNKS + 1) as u32;
         parts[0].size = u64::MAX;
         assert!(run(parts).unwrap_err().contains("cap"));
@@ -514,7 +555,7 @@ mod tests {
 
     #[test]
     fn a_total_impossible_for_the_size_is_refused() {
-        let mut parts = split(42, &digest(2), MT, 4, true);
+        let mut parts = split(42, &digest(2), &st(), 4, true);
         // 2 chunks of at least 64 KiB cannot describe a 10-byte file.
         parts[0].size = 10;
         assert!(run(parts).unwrap_err().contains("size"));
@@ -523,7 +564,7 @@ mod tests {
     #[test]
     fn an_empty_unfinished_first_part_withdraws_the_list() {
         let d = digest(10);
-        let mut parts = split(42, &d, MT, 4, true);
+        let mut parts = split(42, &d, &st(), 4, true);
         parts.insert(
             1,
             ChunkListPart {
@@ -537,7 +578,7 @@ mod tests {
         let mut slot = None;
         assert_eq!(assemble(&mut slot, parts[1].clone()), Ok(None));
         let mut got = None;
-        for p in split(42, &d, MT, 4, true) {
+        for p in split(42, &d, &st(), 4, true) {
             got = assemble(&mut slot, p).unwrap();
         }
         assert_eq!(got.expect("complete").0.chunks, d.chunks);
@@ -570,7 +611,7 @@ mod tests {
 
     /// Parts of a list of `n` records, one record per part.
     fn list(file_id: u64, n: usize) -> Vec<ChunkListPart> {
-        split(file_id, &digest(n), MT, 1, true)
+        split(file_id, &digest(n), &st(), 1, true)
     }
 
     fn ids(parts: &[ChunkListPart]) -> Vec<(u64, u32)> {
@@ -642,14 +683,14 @@ mod tests {
 
     #[test]
     fn a_malformed_hash_is_an_error_and_a_missing_one_is_zeros() {
-        let mut parts = split(42, &digest(2), MT, 4, true);
+        let mut parts = split(42, &digest(2), &st(), 4, true);
         parts[0].whole_hash = Some(Hash { bytes: vec![1; 31] });
         assert!(run(parts).unwrap_err().contains("hash"));
         // Absent on every part (an APPEND tail): assembled with zeros.
-        let parts = split(42, &digest(2), MT, 4, false);
+        let parts = split(42, &digest(2), &st(), 4, false);
         assert_eq!(run(parts).unwrap().unwrap().hash, [0; 32]);
         // Absent on one part only: the parts disagree about the file.
-        let mut parts = split(42, &digest(2), MT, 1, true);
+        let mut parts = split(42, &digest(2), &st(), 1, true);
         parts[1].whole_hash = None;
         assert!(run(parts).unwrap_err().contains("another file"));
     }

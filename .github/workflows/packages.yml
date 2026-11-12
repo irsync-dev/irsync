@@ -48,7 +48,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       DRY_RUN: ${{ inputs.dry-run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -90,7 +90,7 @@ jobs:
       # The token is saved in this checkout's git config, and only here. It is
       # scoped to the packages repo.
       - name: Check out the packages repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: irsync-dev/packages
           token: ${{ secrets.PACKAGES_REPO_TOKEN }}
@@ -169,7 +169,7 @@ jobs:
 
       - name: Keep the packages (dry run)
         if: ${{ inputs.dry-run }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages-${{ inputs.tag }}
           path: ${{ runner.temp }}/packages
@@ -177,7 +177,7 @@ jobs:
 
       - name: Keep the repo tree (dry run)
         if: ${{ inputs.dry-run }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages-repo-${{ inputs.tag }}
           path: |

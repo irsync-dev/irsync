@@ -76,3 +76,48 @@ async fn peer_ids_are_mapped_by_name_unless_numeric_ids() {
     .await
     .expect("test timed out after 30 s");
 }
+
+/// A chunk list carries the owner and group the file was hashed under,
+/// with their names: the receiver maps the names as for a listing entry.
+/// The client's list says a stranger's group number with the name of a
+/// group of ours: mapped by name, the copy gets our group; with
+/// `--numeric-ids` the stranger's number, which we may not set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunk_list_ids_are_mapped_by_name_unless_numeric_ids() {
+    use irsync::session::StreamKind;
+    use irsync_proto::v1::control::Msg;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let egid = getegid().as_raw();
+        let Some(g2) = irsync::fs::meta::supplementary_groups()
+            .into_iter()
+            .find(|&g| g != egid)
+        else {
+            eprintln!("skipped: this user is in only one group");
+            return;
+        };
+        let name = Group::from_gid(Gid::from_raw(g2)).unwrap().unwrap().name;
+        let stranger = g2.wrapping_add(100_000);
+        for (extra, mapped) in [(&[][..], true), (&["--numeric-ids"][..], false)] {
+            let h = Harness::new().await;
+            let src = h.src(Flow::Push).join("f");
+            fs::write(&src, b"content").unwrap();
+            std::os::unix::fs::chown(&src, None, Some(g2)).unwrap();
+            let mut local = h.local_side();
+            let name = name.clone();
+            local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
+                (StreamKind::Control, Msg::ChunkListPart(mut p)) if p.first == 0 => {
+                    assert_eq!((p.gid, p.group.as_str()), (g2, name.as_str()));
+                    p.gid = stranger;
+                    vec![Msg::ChunkListPart(p)]
+                }
+                (_, m) => vec![m],
+            }));
+            let out = h.run_side(&opts(extra), Flow::Push, local).await.unwrap();
+            assert!(out.errors.is_empty(), "{extra:?}: {:?}", out.errors);
+            let gid = fs::metadata(h.dst(Flow::Push).join("f")).unwrap().gid();
+            assert_eq!(gid == g2, mapped, "{extra:?}: group {gid}");
+        }
+    })
+    .await
+    .expect("test timed out after 30 s");
+}

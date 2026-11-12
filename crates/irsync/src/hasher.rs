@@ -144,13 +144,19 @@ fn io_err(e: crate::index::IndexError) -> io::Error {
     io::Error::other(e)
 }
 
-/// The stat fields a cached digest must match to be reused.
+/// A file's stat as the change checks compare it: the fields a cached
+/// digest must match to be reused (size, times, inode), plus the mode and
+/// ids the file is placed with. A change to any of these after the stat
+/// is a change to the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Freshness {
     pub size: u64,
     pub mtime: (i64, u32),
     pub ctime: (i64, u32),
     pub inode: u64,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl Freshness {
@@ -165,6 +171,9 @@ impl Freshness {
             mtime: (e.mtime_sec, e.mtime_nsec),
             ctime,
             inode: e.inode,
+            mode: e.mode,
+            uid: e.uid,
+            gid: e.gid,
         }
     }
 }
@@ -204,11 +213,14 @@ fn lookup(index: &IndexHandle, path: &RelPath, want: Freshness) -> io::Result<Op
     let found = index.read(|r| r.get_entry(path)).map_err(io_err)?;
     let Some(ie) = found else { return Ok(None) };
     let a = &ie.entry;
+    // The digest depends on the content only: mode and ids are not
+    // compared (a change to them moves the change time anyway).
     let have = Freshness {
         size: a.size,
         mtime: (a.mtime_sec, a.mtime_nsec),
         ctime: ie.ctime,
         inode: a.inode,
+        ..want
     };
     Ok(if have == want { ie.digest } else { None })
 }
