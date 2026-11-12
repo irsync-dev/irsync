@@ -196,15 +196,27 @@ not in the [command-line reference](../reference/command-line.md).
 | --- | --- |
 | `0` | Every round passed. |
 | `1` | A round failed. |
-| `2` | The harness could not do its job. |
+| `2` | The harness itself could not do its job: filegen failed, the replay did not match filegen's log, or a file could not be read or written. |
 | `3` | `irsync-netstress` only: the faults did not bite. |
 | `4` | The concurrent writes did not bite: no file changed during a sync was ever placed. The run tested nothing. |
+
+Exit 0, 23 and 24 from the sync during the writes are judged as above.
+Any other exit, a crash (a signal) or a hang (the client's `--timeout`)
+fails the round, as does a quiet sync that exits anything but 0. These are
+failed rounds, not harness errors: the run exits 1, the round is kept and
+the rerun printed, and `--keep-going` goes on to the next round. A daemon
+that dies fails its round too, but then ends the run (exit 1), since
+nothing can sync after it. In `irsync-netstress`, a client log without
+`netsim active` is still a harness error (exit 2).
 
 ### Files kept, and the rerun
 
 A failed round is kept as `ROOT/round-NNNN/`: `start/` (the source at the
-start of the round), `dest/` (the destination as judged, before the quiet
-sync repaired it) and filegen's state, beside `ROOT/logs`. The output names
+start of the round) and filegen's state, beside `ROOT/logs`. When the judge
+failed a path, it also holds `dest/`, the destination as judged, before the
+quiet sync repaired it. A round that failed for another reason has no
+`dest/`; after a dead daemon, `ROOT/DST/data` is the destination as the
+round left it. The output names
 each failing path with its rule (the first 20), then `judge report:`
 (`logs/iter-NNNN.judge.txt`, one `path<TAB>rule` line per failure),
 `round kept in:` and `rerun:`. The rerun command uses a fresh root and `--replay-rounds ROOT/logs/rounds.tsv`, so
@@ -228,6 +240,12 @@ and a hard link made to a name that was renamed away. Until they are fixed,
 the concurrent rows report failures of these two kinds: a path with the
 right content and times but a mode from an earlier state, and a path that is
 a hard link. Judge a campaign by failures of any other kind.
+
+One more failure is a known limit, not a bug to chase: on a filesystem with
+coarse timestamps, two writes in the same clock tick can leave a file's
+size and modification time unchanged, so irsync's checks cannot see the
+second one. The judge then reports `content and times disagree`. See
+[Coarse timestamps](../explanation/correctness.md#limits).
 
 ### The self-test: does the checker bite?
 

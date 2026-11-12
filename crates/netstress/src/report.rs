@@ -64,10 +64,15 @@ impl NetConcurrentRound {
     }
 }
 
-/// 1 if a round failed; else 3 if the profile has outages but none
+/// 1 if a round failed (`cut_short`, rounds a dead daemon ended
+/// unjudged, count as failed); else 3 if the profile has outages but none
 /// happened; else 4 if no changed file was placed; else 0.
-pub fn concurrent_exit_code(rounds: &[NetConcurrentRound], has_outages: bool) -> i32 {
-    if !rounds.iter().all(NetConcurrentRound::passed) {
+pub fn concurrent_exit_code(
+    rounds: &[NetConcurrentRound],
+    cut_short: usize,
+    has_outages: bool,
+) -> i32 {
+    if cut_short > 0 || !rounds.iter().all(NetConcurrentRound::passed) {
         1
     } else if has_outages && rounds.iter().all(|r| r.events.dead_zones == 0) {
         3
@@ -83,12 +88,16 @@ pub fn concurrent_exit_code(rounds: &[NetConcurrentRound], has_outages: bool) ->
 
 /// The concurrent footer, counting the network verdict too, plus the
 /// total number of outages.
-pub fn concurrent_footer(rounds: &[NetConcurrentRound], total: Duration) -> String {
+pub fn concurrent_footer(
+    rounds: &[NetConcurrentRound],
+    cut_short: usize,
+    total: Duration,
+) -> String {
     let passed = rounds.iter().filter(|r| r.passed()).count();
     let outages: u32 = rounds.iter().map(|r| r.events.dead_zones).sum();
     format!(
         "{} outages={outages}",
-        base::concurrent_footer_of(rounds.iter().map(|r| &r.base), passed, total)
+        base::concurrent_footer_of(rounds.iter().map(|r| &r.base), passed, cut_short, total)
     )
 }
 
@@ -220,15 +229,19 @@ mod tests {
 
     #[test]
     fn concurrent_exit_codes() {
-        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, None)], true), 0);
-        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, Some("x"))], true), 1);
-        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], true), 3);
-        assert_eq!(concurrent_exit_code(&[round(1, 0, 0, None)], false), 4);
-        assert_eq!(concurrent_exit_code(&[round(1, 1, 0, None)], true), 4);
-        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], false), 0);
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, None)], 0, true), 0);
+        assert_eq!(
+            concurrent_exit_code(&[round(1, 1, 2, Some("x"))], 0, true),
+            1
+        );
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], 0, true), 3);
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 0, None)], 0, false), 4);
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 0, None)], 0, true), 4);
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], 0, false), 0);
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, None)], 1, true), 1);
         let rs = [round(1, 1, 1, None), round(2, 2, 1, Some("bad"))];
         assert!(!rs[1].passed());
-        let f = concurrent_footer(&rs, Duration::from_millis(1_250));
+        let f = concurrent_footer(&rs, 0, Duration::from_millis(1_250));
         assert!(f.starts_with("passed=1 failed=1 "), "{f}");
         assert!(f.ends_with("elapsed=1.2s outages=3"), "{f}");
     }

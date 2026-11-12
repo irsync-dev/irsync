@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use stress::client::{self, ClientSetup, SyncExit};
 use stress::concurrent::{
-    clones_here, keep_failed_round, print_failure, quiet_check, read_rounds, rerun_command, round,
-    synced_with, RoundEnv, FILE_REPORT_ENV,
+    clones_here, keep_failed_round, print_daemon_died, print_failure, quiet_check, read_rounds,
+    rerun_command, round, synced_with, RoundEnd, RoundEnv, FILE_REPORT_ENV,
 };
 use stress::daemon::{self, Daemon, DaemonConfig, DaemonLog};
 use stress::filegen::{self, FilegenOpts};
@@ -505,6 +505,8 @@ impl Concurrent<'_> {
 
         let mut offset = 0;
         let mut results: Vec<NetConcurrentRound> = Vec::new();
+        // Rounds the daemon's death ended before they were judged.
+        let mut cut_short = 0;
         for i in 1..=cli.iterations {
             let report_env = [(
                 OsString::from(FILE_REPORT_ENV),
@@ -523,7 +525,14 @@ impl Concurrent<'_> {
                 })
             };
             let fixed_round = self.fixed.iter().find(|r| r.round == i);
-            let base = round(&env, i, fixed_round, &concurrent, &quiet, &mut offset)?;
+            let base = match round(&env, i, fixed_round, &concurrent, &quiet, &mut offset)? {
+                RoundEnd::Judged(r) => *r,
+                RoundEnd::DaemonDied(e) => {
+                    print_daemon_died(&env, i, &e)?;
+                    cut_short = 1;
+                    break;
+                }
+            };
             let log = layout.client_log(i);
             let text = std::fs::read_to_string(&log)
                 .with_context(|| format!("reading {}", log.display()))?;
@@ -562,8 +571,11 @@ impl Concurrent<'_> {
         }
 
         drop(daemon); // stops it, then clears the signal handler's pid slot
-        println!("{}", report::concurrent_footer(&results, start.elapsed()));
-        let code = report::concurrent_exit_code(&results, self.has_outages);
+        println!(
+            "{}",
+            report::concurrent_footer(&results, cut_short, start.elapsed())
+        );
+        let code = report::concurrent_exit_code(&results, cut_short, self.has_outages);
         match code {
             3 => println!("faults did not bite: no round had an outage"),
             4 => {

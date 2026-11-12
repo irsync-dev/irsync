@@ -235,9 +235,12 @@ pub struct RoundEnv<'a> {
 /// 6. the replay and judge, the failures written to `judge_report(i)`;
 /// 7. `fileset update`, then `quiet` and today's exact-match checks.
 ///
-/// A concurrent sync that exits other than 0, 23 or 24 is a harness
-/// error, as is anything `sync` or `quiet` returns as `Err` (a dead
-/// daemon, say). On `Err` the round's directory is left as it is.
+/// A concurrent or quiet sync that exits other than 0, 23 or 24 (a signal
+/// included) still goes through every step; [`ConcurrentRound::passed`]
+/// fails the round for it. A daemon that died (a [`DaemonDied`] error from
+/// `sync` or `quiet`) ends the round there, as [`RoundEnd::DaemonDied`].
+/// Anything else `sync` or `quiet` returns as `Err` is a harness error; on
+/// `Err` the round's directory is left as it is.
 pub fn round(
     env: &RoundEnv,
     i: u64,
@@ -245,7 +248,7 @@ pub fn round(
     sync: &dyn Fn(&Path) -> Result<SyncResult>,
     quiet: &dyn Fn(&Path) -> Result<SyncResult>,
     daemon_report_offset: &mut u64,
-) -> Result<ConcurrentRound> {
+) -> Result<RoundEnd> {
     let (cli, layout, seed) = (env.cli, env.layout, env.seed);
     let pace = match fixed {
         Some(r) => r.pace,
@@ -288,7 +291,7 @@ pub fn round(
     let synced = sync(&client_log);
     // Stopped before any error is returned, so its log is complete.
     let stopped = filegen::stop(running, fixed.is_some());
-    let result = (|| -> Result<ConcurrentRound> {
+    let result = (|| -> Result<RoundEnd> {
         // Recorded before anything can fail, so a harness error's rerun
         // command replays this round too.
         let ran = filegen_ran(&filegen_log, log_from);
@@ -308,16 +311,11 @@ pub fn round(
             }
             append_round(&layout.rounds_file(), &record)?;
         }
-        let r = synced?;
+        let r = match synced {
+            Err(e) if is_daemon_died(&e) => return Ok(RoundEnd::DaemonDied(e)),
+            r => r?,
+        };
         stopped.with_context(|| format!("filegen's own log is {}", filegen_log.display()))?;
-        if matches!(r.exit, SyncExit::Other(c) if c != 24) {
-            bail!(
-                "irsync client exited {} in iteration {i}; see {} and {}",
-                r.exit.code(),
-                client_log.display(),
-                layout.daemon_log().display()
-            );
-        }
         let ran = ran?;
         let steps = ran.lines;
 
@@ -376,8 +374,11 @@ pub fn round(
         }
 
         fileset::update(&env.tools.fileset.path, &layout.src_data)?;
-        let quiet = quiet_check(env, i, quiet)?;
-        Ok(ConcurrentRound {
+        let quiet = match quiet_check(env, i, quiet) {
+            Err(e) if is_daemon_died(&e) => return Ok(RoundEnd::DaemonDied(e)),
+            q => q?,
+        };
+        Ok(RoundEnd::Judged(Box::new(ConcurrentRound {
             number: i,
             total: cli.iterations,
             pace,
@@ -388,7 +389,7 @@ pub fn round(
             gave_up_untouched,
             judgement,
             quiet,
-        })
+        })))
     })();
     if result.is_err() {
         print_kept(env, &dir);
@@ -542,8 +543,8 @@ fn write_judge_report(path: &Path, i: u64, j: &RoundJudgement) -> Result<()> {
 }
 
 /// The quiet sync of iteration `i` and today's checks: manifest
-/// comparison and `fileset check`. An exit other than 0 or 23 is a harness
-/// error, as in today's loop.
+/// comparison and `fileset check`. Any exit but 0 fails the iteration
+/// ([`Iteration::passed`]); the checks run whatever the exit.
 pub fn quiet_check(
     env: &RoundEnv,
     i: u64,
@@ -552,13 +553,6 @@ pub fn quiet_check(
     let layout = env.layout;
     let log = layout.quiet_client_log(i);
     let r = quiet(&log)?;
-    if let SyncExit::Other(c) = r.exit {
-        bail!(
-            "the quiet irsync client exited {c} in iteration {i}; see {} and {}",
-            log.display(),
-            layout.daemon_log().display()
-        );
-    }
     let hashes = verify::compare_manifests(
         &layout.src_data,
         &layout.dst_data,
@@ -672,31 +666,73 @@ pub fn rerun_command(
         .join(" ")
 }
 
+/// How a round ended.
+pub enum RoundEnd {
+    /// Every step ran; the round passed or failed on its checks.
+    Judged(Box<ConcurrentRound>),
+    /// The daemon died during one of the round's syncs: the round failed,
+    /// and nothing more can sync. The error (a [`DaemonDied`] in its
+    /// chain) says which sync and holds the daemon's last lines.
+    DaemonDied(anyhow::Error),
+}
+
+/// The daemon was gone before or after a sync; in an error's chain.
+#[derive(Debug)]
+pub struct DaemonDied;
+
+impl std::fmt::Display for DaemonDied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the daemon is gone")
+    }
+}
+
+impl std::error::Error for DaemonDied {}
+
+/// Whether `e` says the daemon died.
+pub fn is_daemon_died(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<DaemonDied>())
+}
+
 /// One sync through the shared daemon, marked in its log as `marker`;
-/// a daemon that is gone before or after it is an error. `run` starts the
-/// client, with its output going to `log`.
+/// a daemon that is gone before or after it is an error with
+/// [`DaemonDied`] in its chain. `run` starts the client, with its output
+/// going to `log`.
 pub fn synced_with(
     daemon: &RefCell<RunningDaemon>,
     log: &Path,
     marker: &str,
     run: &dyn Fn() -> Result<SyncResult>,
 ) -> Result<SyncResult> {
+    let died = |e: anyhow::Error, when: &str, daemon_log: &Path| {
+        anyhow::Error::new(DaemonDied).context(format!(
+            "daemon died {when} the sync logged in {}; see {}: {e:#}",
+            log.display(),
+            daemon_log.display()
+        ))
+    };
     {
         let mut d = daemon.borrow_mut();
-        d.check_alive()?;
+        let daemon_log = d.log_path().to_path_buf();
+        d.check_alive()
+            .map_err(|e| died(e, "before", &daemon_log))?;
         d.marker(marker)?;
     }
     let r = run()?;
     let mut d = daemon.borrow_mut();
     let daemon_log = d.log_path().to_path_buf();
-    if let Err(e) = d.check_alive() {
-        return Err(e.context(format!(
-            "daemon died during the sync logged in {}; see {}",
-            log.display(),
-            daemon_log.display()
-        )));
-    }
+    d.check_alive()
+        .map_err(|e| died(e, "during", &daemon_log))?;
     Ok(r)
+}
+
+/// After round `i` ended with the daemon dead: the round kept as
+/// `round-NNNN`, why it failed, and the rerun command. The run ends.
+pub fn print_daemon_died(env: &RoundEnv, i: u64, e: &anyhow::Error) -> Result<()> {
+    let kept = keep_failed_round(env.layout, i)?;
+    println!("iter {i:04}/{:04}  FAILED: {e:#}", env.cli.iterations);
+    println!("  round kept in {}", kept.display());
+    println!("  rerun: {}", (env.rerun)());
+    Ok(())
 }
 
 /// [`synced_with`] through the plain `Syncer`.
@@ -726,10 +762,35 @@ pub fn keep_failed_round(layout: &Layout, i: u64) -> Result<std::path::PathBuf> 
     Ok(to)
 }
 
+/// "exited `c`", or "was killed by a signal" for -1.
+fn exit_words(c: i32) -> String {
+    if c == -1 {
+        "was killed by a signal".to_string()
+    } else {
+        format!("exited {c}")
+    }
+}
+
 /// Prints why round `r` failed: its failing paths with their rule (the
 /// first 20, then the count), the judge report and the rerun command.
 pub fn print_failure(r: &ConcurrentRound, layout: &Layout, rerun: &str, kept: &Path) {
     let i = r.number;
+    if let SyncExit::Other(c) = r.sync.exit {
+        if c != 24 {
+            println!(
+                "  the concurrent sync {}; see {}",
+                exit_words(c),
+                layout.client_log(i).display()
+            );
+        }
+    }
+    if let SyncExit::Other(c) = r.quiet.sync.exit {
+        println!(
+            "  the quiet sync {}; see {}",
+            exit_words(c),
+            layout.quiet_client_log(i).display()
+        );
+    }
     if r.sync.exit == SyncExit::Partial && r.gave_up.is_empty() {
         println!(
             "  exit 23 without a path given up on: a failed session; see {}",
@@ -852,6 +913,8 @@ pub fn run(cli: &Cli) -> Result<i32> {
 
     let mut offset = 0;
     let mut results = Vec::new();
+    // Rounds the daemon's death ended before they were judged.
+    let mut cut_short = 0;
     for i in 1..=cli.iterations {
         let report_env = [(
             OsString::from(FILE_REPORT_ENV),
@@ -862,7 +925,14 @@ pub fn run(cli: &Cli) -> Result<i32> {
         let sync = |log: &Path| synced(&daemon, &syncer, log, &report_env, &marker);
         let quiet = |log: &Path| synced(&daemon, &syncer, log, &[], &quiet_marker);
         let fixed_round = fixed.iter().find(|r| r.round == i);
-        let r = round(&env, i, fixed_round, &sync, &quiet, &mut offset)?;
+        let r = match round(&env, i, fixed_round, &sync, &quiet, &mut offset)? {
+            RoundEnd::Judged(r) => *r,
+            RoundEnd::DaemonDied(e) => {
+                print_daemon_died(&env, i, &e)?;
+                cut_short = 1;
+                break;
+            }
+        };
         println!("{}", r.line());
         let passed = r.passed();
         if !passed {
@@ -878,9 +948,9 @@ pub fn run(cli: &Cli) -> Result<i32> {
     drop(daemon); // stops it, then clears the signal handler's pid slot
     println!(
         "{}",
-        report::concurrent_footer(&results, started_at.elapsed())
+        report::concurrent_footer(&results, cut_short, started_at.elapsed())
     );
-    let code = report::concurrent_exit_code(&results);
+    let code = report::concurrent_exit_code(&results, cut_short);
     if code == 4 {
         println!("concurrent writes did not bite: no file changed during a sync was placed");
     }

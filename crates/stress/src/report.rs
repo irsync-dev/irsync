@@ -142,10 +142,12 @@ impl ConcurrentRound {
     }
 }
 
-/// 1 if any round failed; else 4 if no file changed during a sync was
-/// placed in any round (the concurrent writes did not bite); else 0.
-pub fn concurrent_exit_code(rounds: &[ConcurrentRound]) -> i32 {
-    if !rounds.iter().all(ConcurrentRound::passed) {
+/// 1 if any round failed, `cut_short` (rounds a dead daemon ended
+/// before they were judged) counting as failed; else 4 if no file changed
+/// during a sync was placed in any round (the concurrent writes did not
+/// bite); else 0.
+pub fn concurrent_exit_code(rounds: &[ConcurrentRound], cut_short: usize) -> i32 {
+    if cut_short > 0 || !rounds.iter().all(ConcurrentRound::passed) {
         1
     } else if rounds
         .iter()
@@ -159,11 +161,12 @@ pub fn concurrent_exit_code(rounds: &[ConcurrentRound]) -> i32 {
     }
 }
 
-/// The concurrent run's footer: passed and failed rounds, the counts
-/// summed over them, and the elapsed time.
-pub fn concurrent_footer(rounds: &[ConcurrentRound], total: Duration) -> String {
+/// The concurrent run's footer: passed and failed rounds (`cut_short`,
+/// the rounds a dead daemon ended unjudged, among the failed), the counts
+/// summed over the judged ones, and the elapsed time.
+pub fn concurrent_footer(rounds: &[ConcurrentRound], cut_short: usize, total: Duration) -> String {
     let passed = rounds.iter().filter(|r| r.passed()).count();
-    concurrent_footer_of(rounds.iter(), passed, total)
+    concurrent_footer_of(rounds.iter(), passed, cut_short, total)
 }
 
 /// [`concurrent_footer`] for rounds that may be held by something bigger,
@@ -171,9 +174,10 @@ pub fn concurrent_footer(rounds: &[ConcurrentRound], total: Duration) -> String 
 pub fn concurrent_footer_of<'a>(
     rounds: impl ExactSizeIterator<Item = &'a ConcurrentRound> + Clone,
     passed: usize,
+    cut_short: usize,
     total: Duration,
 ) -> String {
-    let count = rounds.len();
+    let count = rounds.len() + cut_short;
     let sum = |f: fn(&ConcurrentRound) -> u64| rounds.clone().map(f).sum::<u64>();
     format!(
         "passed={} failed={} steps={} retried={} gave_up={} touched={} changed_and_held={} judged={} elapsed={:.1}s",
@@ -372,19 +376,40 @@ mod tests {
     #[test]
     fn concurrent_exit_codes() {
         let ok = || concurrent(SyncExit::Ok, &[], &[]);
-        assert_eq!(concurrent_exit_code(&[ok(), ok()]), 0);
+        assert_eq!(concurrent_exit_code(&[ok(), ok()], 0), 0);
         let mut bad = ok();
         bad.quiet.manifest_ok = false;
-        assert_eq!(concurrent_exit_code(&[ok(), bad]), 1);
+        assert_eq!(concurrent_exit_code(&[ok(), bad], 0), 1);
         let mut idle = ok();
         idle.judgement.changed_and_held = 0;
-        assert_eq!(concurrent_exit_code(&[idle]), 4);
+        assert_eq!(concurrent_exit_code(&[idle], 0), 4);
         let mut idle = ok();
         idle.judgement.changed_and_held = 0;
         let mut bad = ok();
         bad.judgement.changed_and_held = 0;
         bad.quiet.manifest_ok = false;
-        assert_eq!(concurrent_exit_code(&[idle, bad]), 1);
+        assert_eq!(concurrent_exit_code(&[idle, bad], 0), 1);
+        // A round a dead daemon ended unjudged fails the run.
+        assert_eq!(concurrent_exit_code(&[ok()], 1), 1);
+        assert_eq!(concurrent_exit_code(&[], 1), 1);
+    }
+
+    #[test]
+    fn a_cut_short_round_counts_as_failed_in_the_footer() {
+        let f = concurrent_footer(
+            &[concurrent(SyncExit::Ok, &[], &[])],
+            1,
+            Duration::from_millis(1_000),
+        );
+        assert!(f.starts_with("passed=1 failed=1 "), "{f}");
+    }
+
+    #[test]
+    fn a_signal_or_odd_quiet_exit_fails_the_round() {
+        assert!(!concurrent(SyncExit::Other(-1), &[], &[]).passed());
+        let mut r = concurrent(SyncExit::Ok, &[], &[]);
+        r.quiet.sync.exit = SyncExit::Other(1);
+        assert!(!r.passed());
     }
 
     #[test]
