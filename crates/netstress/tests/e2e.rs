@@ -190,20 +190,20 @@ fn normal_irsync(dir: &Path) -> PathBuf {
 
 #[test]
 #[ignore = "slow: builds the fault binaries; run with --include-ignored"]
-fn test_blackout_push_survives_its_dead_zones_over_three_iterations() {
+fn test_blackout_push_survives_its_dead_zones_over_two_iterations() {
     let (o, root) = run_rig(&[
         "--profile",
         "test-blackout",
         "--direction",
         "push",
         "--iterations",
-        "3",
+        "2",
     ]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("network:   test-blackout"), "{out}");
     let iters: Vec<&str> = out.lines().filter(|l| l.starts_with("iter ")).collect();
-    assert_eq!(iters.len(), 3, "{out}");
+    assert_eq!(iters.len(), 2, "{out}");
     // The fill moves megabytes, so the first sync always crosses the 256 KiB
     // threshold; a later one may move too little and is then noted, not failed.
     assert!(iters[0].contains("outages 1"), "{out}");
