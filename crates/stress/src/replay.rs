@@ -735,8 +735,6 @@ mod tests {
     use super::*;
     use crate::snapshot::{copy_tree, walk_meta, EntryKind};
 
-    const STATE: &str = "filegen-7.state.yaml";
-
     /// What the live run saw around one completed step.
     struct Cap {
         /// The whole tree just before the step.
@@ -830,6 +828,17 @@ mod tests {
 
     /// [`fixture`], with each live step's `pre_content` when `keep_pre`.
     fn fixture_with(fill: u64, steps: u64, sets: &[String], keep_pre: bool) -> Fixture {
+        fixture_seeded(7, fill, steps, sets, keep_pre)
+    }
+
+    /// [`fixture_with`], with filegen's seed.
+    fn fixture_seeded(
+        seed: u64,
+        fill: u64,
+        steps: u64,
+        sets: &[String],
+        keep_pre: bool,
+    ) -> Fixture {
         let t = TempDir::new().unwrap();
         let base = t.path().to_path_buf();
         let src = base.join("src");
@@ -838,7 +847,9 @@ mod tests {
         for s in sets {
             flags.extend(os(&["--set", s]));
         }
-        let mut argv = os(&["filegen", "run", "--seed", "7", "--steps"]);
+        let state = format!("filegen-{seed}.state.yaml");
+        let seed_arg = seed.to_string();
+        let mut argv = os(&["filegen", "run", "--seed", &seed_arg, "--steps"]);
         argv.push(fill.to_string().into());
         argv.extend(os(&["--out-dir"]));
         argv.push(base.join("fill").into());
@@ -851,19 +862,19 @@ mod tests {
         copy_tree(&src, &start_copy).unwrap();
         let round = base.join("round");
         fs::create_dir(&round).unwrap();
-        fs::copy(base.join("fill").join(STATE), round.join(STATE)).unwrap();
+        fs::copy(base.join("fill").join(&state), round.join(&state)).unwrap();
         let live_dir = base.join("live");
         fs::create_dir(&live_dir).unwrap();
-        fs::copy(base.join("fill").join(STATE), live_dir.join(STATE)).unwrap();
+        fs::copy(base.join("fill").join(&state), live_dir.join(&state)).unwrap();
 
         let mut args = os(&["filegen", "run", "--resume"]);
-        args.push(live_dir.join(STATE).into());
+        args.push(live_dir.join(&state).into());
         args.push("--steps".into());
         args.push(steps.to_string().into());
         args.extend(flags);
         args.push(src.clone().into());
         let caps = drive(&args, &src, keep_pre);
-        let live: Vec<StepLine> = fs::read_to_string(live_dir.join("filegen-7.log"))
+        let live: Vec<StepLine> = fs::read_to_string(live_dir.join(format!("filegen-{seed}.log")))
             .unwrap()
             .lines()
             .filter_map(parse_step_line)
@@ -872,7 +883,7 @@ mod tests {
         Fixture {
             round,
             runs: Cell::new(0),
-            state: base.join("round").join(STATE),
+            state: base.join("round").join(&state),
             _t: t,
             base,
             src,
@@ -1273,42 +1284,46 @@ mod tests {
     fn replay_rejects_old_times_after_a_move() {
         let mut sets = every_row("rename", 15);
         sets.extend(every_row("rewrite", 10));
-        let f = fixture(300, 300, &sets);
-        let end = walk_meta(&f.src).unwrap();
         // A file written, then moved with its directory and left alone:
-        // its end path, with its mtime from before the write.
+        // its end path, with its mtime from before the write. Whether a run
+        // holds one depends on filegen's random stream, so try a few seeds.
         let mut found = None;
-        'outer: for (b, lb) in f.live.iter().enumerate() {
-            let Some(to) = &lb.to else { continue };
-            if lb.op != OpKind::Rename
-                || f.caps[b].pre.get(&lb.path).map(|m| m.kind) != Some(EntryKind::Dir)
-            {
-                continue;
-            }
-            for (a, la) in f.live[..b].iter().enumerate() {
-                let Some(rest) = la.path.strip_prefix(lb.path.as_slice()) else {
-                    continue;
-                };
-                let writes = [OpKind::Rewrite, OpKind::Append, OpKind::OverwriteRange];
-                if !writes.contains(&la.op) || !rest.starts_with(b"/") {
+        'seeds: for seed in 7..27 {
+            let f = fixture_seeded(seed, 300, 300, &sets, false);
+            let end = walk_meta(&f.src).unwrap();
+            for (b, lb) in f.live.iter().enumerate() {
+                let Some(to) = &lb.to else { continue };
+                if lb.op != OpKind::Rename
+                    || f.caps[b].pre.get(&lb.path).map(|m| m.kind) != Some(EntryKind::Dir)
+                {
                     continue;
                 }
-                let Some(old) = f.caps[a].pre.get(&la.path) else {
-                    continue;
-                };
-                let moved = f.caps[b].pre.get(&la.path);
-                let at_end = [to.as_slice(), rest].concat();
-                let Some(e) = end.get(&at_end) else { continue };
-                // Unchanged since the move, and the old mtime predates every
-                // state the end path held.
-                let unchanged = moved.is_some_and(|m| m.mtime_ns == e.mtime_ns);
-                if e.kind == EntryKind::File && unchanged && old.mtime_ns < e.mtime_ns {
-                    found = Some((at_end, old.mtime_ns, e.mode));
-                    break 'outer;
+                for (a, la) in f.live[..b].iter().enumerate() {
+                    let Some(rest) = la.path.strip_prefix(lb.path.as_slice()) else {
+                        continue;
+                    };
+                    let writes = [OpKind::Rewrite, OpKind::Append, OpKind::OverwriteRange];
+                    if !writes.contains(&la.op) || !rest.starts_with(b"/") {
+                        continue;
+                    }
+                    let Some(old) = f.caps[a].pre.get(&la.path) else {
+                        continue;
+                    };
+                    let moved = f.caps[b].pre.get(&la.path);
+                    let at_end = [to.as_slice(), rest].concat();
+                    let Some(e) = end.get(&at_end) else { continue };
+                    // Unchanged since the move, and the old mtime predates every
+                    // state the end path held.
+                    let unchanged = moved.is_some_and(|m| m.mtime_ns == e.mtime_ns);
+                    if e.kind == EntryKind::File && unchanged && old.mtime_ns < e.mtime_ns {
+                        let (old_mtime, mode) = (old.mtime_ns, e.mode);
+                        found = Some((f, at_end, old_mtime, mode));
+                        break 'seeds;
+                    }
                 }
             }
         }
-        let (at_end, old_mtime, mode) = found.expect("no file written, then moved");
+        let (f, at_end, old_mtime, mode) = found.expect("no file written, then moved");
         let dest = f.dest("dest", &f.src);
         let bytes = fs::read(f.src.join(p(&at_end))).unwrap();
         plant(&dest, &at_end, &bytes, mode, old_mtime);
