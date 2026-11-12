@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use ::filegen::pace::Pace;
 use clap::Parser;
 use stress::cli::Direction;
 
@@ -87,6 +88,17 @@ pub struct Cli {
     /// Unset: irsync's own (immediate).
     #[arg(long, value_enum)]
     pub acks: Option<Acks>,
+    /// Run filegen against the source while each sync runs, then judge
+    /// the destination against every state the source held.
+    #[arg(long)]
+    pub concurrent: bool,
+    /// filegen's pace for every round (fast, steady:N or bursts:ON:OFF);
+    /// drawn from the seed per round when not given.
+    #[arg(long, value_name = "PACE", requires = "concurrent")]
+    pub pace: Option<Pace>,
+    /// A run's `logs/rounds.tsv`: replay its paces and step counts.
+    #[arg(long, value_name = "FILE", requires = "concurrent")]
+    pub replay_rounds: Option<PathBuf>,
     #[arg(long)]
     pub irsync: Option<PathBuf>,
     #[arg(long)]
@@ -125,9 +137,9 @@ impl Cli {
             irsync: self.irsync.clone(),
             filegen: self.filegen.clone(),
             fileset: self.fileset.clone(),
-            concurrent: false,
-            pace: None,
-            replay_rounds: None,
+            concurrent: self.concurrent,
+            pace: self.pace,
+            replay_rounds: self.replay_rounds.clone(),
             client_args: self.client_args.clone(),
         }
     }
@@ -169,6 +181,37 @@ mod tests {
         assert_eq!(c.congestion, None);
         let c = Cli::try_parse_from(base.iter().chain(&["--congestion", "cubic", "/r"])).unwrap();
         assert_eq!(c.congestion, Some(Congestion::Cubic));
+    }
+
+    #[test]
+    fn concurrent_flags_map_and_need_concurrent() {
+        let parse = |extra: &[&str]| {
+            let mut a = vec![
+                "irsync-netstress",
+                "--profile",
+                "test-blackout",
+                "--direction",
+                "push",
+            ];
+            a.extend(extra);
+            a.push("/r");
+            Cli::try_parse_from(a)
+        };
+        assert!(parse(&["--pace", "fast"]).is_err());
+        assert!(parse(&["--replay-rounds", "/x/rounds.tsv"]).is_err());
+        let s = parse(&[
+            "--concurrent",
+            "--pace",
+            "steady:9",
+            "--replay-rounds",
+            "/x",
+        ])
+        .unwrap()
+        .to_stress();
+        assert!(s.concurrent);
+        assert_eq!(s.pace.unwrap().to_string(), "steady:9");
+        assert_eq!(s.replay_rounds.unwrap(), PathBuf::from("/x"));
+        assert!(!parse(&[]).unwrap().to_stress().concurrent);
     }
 
     #[test]

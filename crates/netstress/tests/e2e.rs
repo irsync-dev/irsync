@@ -285,3 +285,25 @@ fn a_normal_irsync_is_refused() {
         show(&o)
     );
 }
+
+#[test]
+#[ignore = "slow: netsim; run with --include-ignored"]
+fn concurrent_netstress_runs() {
+    let (o, root) = run_rig(&[
+        "--profile",
+        "test-blackout",
+        "--direction",
+        "push",
+        "--concurrent",
+        "--pace",
+        "steady:20",
+        "--iterations",
+        "2",
+    ]);
+    assert!(matches!(o.status.code(), Some(0 | 3 | 4)), "{}", show(&o));
+    let rounds = std::fs::read_to_string(root.path().join("logs/rounds.tsv")).unwrap();
+    assert_eq!(rounds.lines().count(), 2, "{rounds}");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("network:   test-blackout"), "{out}");
+    assert!(out.contains("iter 0002/0002"), "{out}");
+}

@@ -44,6 +44,54 @@ pub fn exit_code(
     }
 }
 
+/// A concurrent round with what the network did during its concurrent
+/// sync.
+pub struct NetConcurrentRound {
+    pub base: base::ConcurrentRound,
+    pub events: NetEvents,
+    /// Why the concurrent sync's client log fails the round, if it does.
+    pub verdict: Option<String>,
+}
+
+impl NetConcurrentRound {
+    /// The concurrent checks passed and the client log is fine.
+    pub fn passed(&self) -> bool {
+        self.base.passed() && self.verdict.is_none()
+    }
+
+    pub fn line(&self) -> String {
+        format!("{}  outages {}", self.base.line(), self.events.dead_zones)
+    }
+}
+
+/// 1 if a round failed; else 3 if the profile has outages but none
+/// happened; else 4 if no changed file was placed; else 0.
+pub fn concurrent_exit_code(rounds: &[NetConcurrentRound], has_outages: bool) -> i32 {
+    if !rounds.iter().all(NetConcurrentRound::passed) {
+        1
+    } else if has_outages && rounds.iter().all(|r| r.events.dead_zones == 0) {
+        3
+    } else if rounds
+        .iter()
+        .all(|r| r.base.judgement.changed_and_held == 0)
+    {
+        4
+    } else {
+        0
+    }
+}
+
+/// The concurrent footer, counting the network verdict too, plus the
+/// total number of outages.
+pub fn concurrent_footer(rounds: &[NetConcurrentRound], total: Duration) -> String {
+    let passed = rounds.iter().filter(|r| r.passed()).count();
+    let outages: u32 = rounds.iter().map(|r| r.events.dead_zones).sum();
+    format!(
+        "{} outages={outages}",
+        base::concurrent_footer_of(rounds.iter().map(|r| &r.base), passed, total)
+    )
+}
+
 pub fn header(
     root: &Path,
     seed: u64,
@@ -144,5 +192,44 @@ mod tests {
         assert!(h.starts_with("irsync-netstress\n"), "{h}");
         assert!(h.ends_with("\n  network:   dsl-video"), "{h}");
         assert!(h.contains("127.0.0.1:4000"), "{h}");
+    }
+
+    fn round(n: u64, dead_zones: u32, held: u64, verdict: Option<&str>) -> NetConcurrentRound {
+        let mut base = stress::report::ConcurrentRound {
+            number: n,
+            total: 2,
+            pace: filegen::pace::Pace::Fast,
+            steps: 1,
+            sync: SyncResult {
+                exit: SyncExit::Ok,
+                elapsed: Duration::from_millis(1_500),
+            },
+            retried: 0,
+            gave_up: vec![],
+            gave_up_untouched: vec![],
+            judgement: Default::default(),
+            quiet: it(n, 0, None).base,
+        };
+        base.judgement.changed_and_held = held;
+        NetConcurrentRound {
+            base,
+            events: it(n, dead_zones, None).events,
+            verdict: verdict.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn concurrent_exit_codes() {
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, None)], true), 0);
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 2, Some("x"))], true), 1);
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], true), 3);
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 0, None)], false), 4);
+        assert_eq!(concurrent_exit_code(&[round(1, 1, 0, None)], true), 4);
+        assert_eq!(concurrent_exit_code(&[round(1, 0, 2, None)], false), 0);
+        let rs = [round(1, 1, 1, None), round(2, 2, 1, Some("bad"))];
+        assert!(!rs[1].passed());
+        let f = concurrent_footer(&rs, Duration::from_millis(1_250));
+        assert!(f.starts_with("passed=1 failed=1 "), "{f}");
+        assert!(f.ends_with("elapsed=1.2s outages=3"), "{f}");
     }
 }

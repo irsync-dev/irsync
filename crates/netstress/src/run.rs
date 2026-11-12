@@ -2,6 +2,7 @@
 //! switched on in the daemon and every client, and each client log read
 //! for what the network did.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -11,6 +12,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use stress::client::{self, ClientSetup, SyncExit};
+use stress::concurrent::{
+    clones_here, keep_failed_round, print_failure, quiet_check, read_rounds, rerun_command, round,
+    synced_with, RoundEnv, FILE_REPORT_ENV,
+};
 use stress::daemon::{self, Daemon, DaemonConfig, DaemonLog};
 use stress::filegen::{self, FilegenOpts};
 use stress::fileset;
@@ -25,7 +30,7 @@ use stress::verify;
 use crate::cli::{Acks, Cli, Congestion};
 use crate::netlog;
 use crate::profile::Profile;
-use crate::report::{self, NetIteration};
+use crate::report::{self, NetConcurrentRound, NetIteration};
 use crate::run_file::{NetRunFile, Network};
 
 /// How long the daemon may take to print its startup lines, and then to
@@ -51,13 +56,25 @@ struct Syncer<'a> {
 impl Syncer<'_> {
     /// One client run with the fault layer on as stream `stream`.
     fn run(&self, log: &Path, stream: u64) -> Result<client::SyncResult> {
+        self.run_with_env(log, stream, &[])
+    }
+
+    /// `run` with `extra` environment variables for the client too.
+    fn run_with_env(
+        &self,
+        log: &Path,
+        stream: u64,
+        extra: &[(OsString, OsString)],
+    ) -> Result<client::SyncResult> {
+        let mut env = netsim_env(self.profile, self.acks, "client", self.seed, stream);
+        env.extend(extra.iter().cloned());
         client::run_sync_with_env(
             &self.tools.irsync.path,
             &self.args,
             &self.setup,
             &self.cli.log_level,
             log,
-            &netsim_env(self.profile, self.acks, "client", self.seed, stream),
+            &env,
         )
     }
 }
@@ -119,6 +136,10 @@ pub fn run(net: &Cli) -> Result<i32> {
             tools.irsync.path.display()
         );
     }
+    let fixed = match &cli.replay_rounds {
+        Some(p) => read_rounds(p)?,
+        None => Vec::new(),
+    };
     let layout = Layout::create(&cli.root)?;
     let seed = cli.seed.unwrap_or_else(rand::random);
     let started = jiff::Timestamp::now().to_string();
@@ -148,6 +169,18 @@ pub fn run(net: &Cli) -> Result<i32> {
     );
 
     ping(&daemon, &layout, seed, &started, |log| sync.run(log, 0))?;
+    if cli.concurrent {
+        let rounds = Concurrent {
+            net,
+            cli: &cli,
+            layout: &layout,
+            tools: &tools,
+            seed,
+            fixed: &fixed,
+            has_outages: defaults.has_outages,
+        };
+        return rounds.run(daemon, &sync, start);
+    }
 
     let opts = FilegenOpts {
         steps: cli.steps,
@@ -229,6 +262,13 @@ fn start_daemon<'a>(
         congestion: net.congestion.map(Congestion::name),
     })?;
     let log = DaemonLog::create(&layout.daemon_log())?;
+    let mut daemon_env = netsim_env(profile, net.acks, "daemon", seed, 0);
+    if cli.concurrent {
+        daemon_env.push((
+            OsString::from(FILE_REPORT_ENV),
+            layout.daemon_report().into_os_string(),
+        ));
+    }
     // From the spawn until the pid is in the slot the handler could not
     // reach the daemon: hold SIGINT and SIGTERM pending meanwhile.
     let blocked = signals::block();
@@ -238,7 +278,7 @@ fn start_daemon<'a>(
         log,
         &cli.log_level,
         STARTUP_TIMEOUT,
-        &netsim_env(profile, net.acks, "daemon", seed, 0),
+        &daemon_env,
     )?;
     let pid = daemon.pid();
     pid_slot.store(pid as i32, Ordering::SeqCst);
@@ -363,6 +403,164 @@ fn iteration(
         events,
         verdict,
     })
+}
+
+/// What the concurrent run shares, past the daemon and the syncer.
+struct Concurrent<'a> {
+    net: &'a Cli,
+    cli: &'a stress::cli::Cli,
+    layout: &'a Layout,
+    tools: &'a Tools,
+    seed: u64,
+    fixed: &'a [stress::concurrent::RoundRecord],
+    has_outages: bool,
+}
+
+/// Stream of the quiet sync of round `i`: out of the way of every
+/// concurrent sync's.
+fn quiet_stream(i: u64) -> u64 {
+    i + (1 << 32)
+}
+
+/// The command that reruns a concurrent netstress run: irsync-stress's
+/// rerun command with the tool name and the network settings changed.
+fn rerun(net: &Cli, cli: &stress::cli::Cli, seed: u64, rounds_file: &Path) -> String {
+    let base = rerun_command(cli, seed, rounds_file);
+    let rest = base
+        .strip_prefix("irsync-stress ")
+        .expect("the rerun command starts with the tool name");
+    let mut net_args = format!("--profile {}", net.profile.name());
+    if let Some(c) = net.congestion {
+        net_args.push_str(&format!(" --congestion {}", c.name()));
+    }
+    if let Some(a) = net.acks {
+        net_args.push_str(&format!(" --acks {}", a.name()));
+    }
+    format!("irsync-netstress {net_args} {rest}")
+}
+
+impl Concurrent<'_> {
+    /// The concurrent run after the sentinel round, as
+    /// `stress::concurrent::run` does it: fill, round 0, the rounds. The
+    /// syncs go through the fault layer; the verdict comes from each
+    /// concurrent sync's client log. Returns the exit code (0, 1, 3 or 4).
+    fn run(&self, daemon: RunningDaemon, sync: &Syncer, start: Instant) -> Result<i32> {
+        let (cli, layout, tools, seed) = (self.cli, self.layout, self.tools, self.seed);
+        println!(
+            "  clones:    {}",
+            if clones_here(layout)? { "yes" } else { "no" }
+        );
+        // As in irsync-stress: the judge ignores the ping file's name.
+        let ping_file = layout.ping_file();
+        std::fs::remove_file(&ping_file)
+            .with_context(|| format!("removing {}", ping_file.display()))?;
+        let rerun_cmd = || rerun(self.net, cli, seed, &layout.rounds_file());
+        let env = RoundEnv {
+            cli,
+            layout,
+            tools,
+            seed,
+            filegen_opts: FilegenOpts {
+                steps: cli.steps,
+                max_total_size: cli.max_total_size.as_deref(),
+                max_file_size: cli.max_file_size.as_deref(),
+                sets: &cli.filegen_set,
+            },
+            rerun: &rerun_cmd,
+        };
+        run_filegen(
+            tools,
+            layout,
+            seed,
+            &filegen::fill_args(
+                seed,
+                &layout.filegen_dir,
+                &layout.src_data,
+                &env.filegen_opts,
+            ),
+        )?;
+        fileset::init(&tools.fileset.path, &layout.src_data)?;
+
+        let daemon = RefCell::new(daemon);
+        let quiet0 = |log: &Path| {
+            synced_with(&daemon, log, "iteration 0 quiet", &|| {
+                sync.run(log, quiet_stream(0))
+            })
+        };
+        let first = quiet_check(&env, 0, &quiet0)?;
+        println!("{}", first.line());
+        if !first.passed() {
+            bail!(
+                "the quiet sync before the first round failed; see {} and {}",
+                layout.quiet_client_log(0).display(),
+                layout.check_report(0).display()
+            );
+        }
+
+        let mut offset = 0;
+        let mut results: Vec<NetConcurrentRound> = Vec::new();
+        for i in 1..=cli.iterations {
+            let report_env = [(
+                OsString::from(FILE_REPORT_ENV),
+                layout.client_report(i).into_os_string(),
+            )];
+            let marker = format!("iteration {i}");
+            let quiet_marker = format!("iteration {i} quiet");
+            let concurrent = |log: &Path| {
+                synced_with(&daemon, log, &marker, &|| {
+                    sync.run_with_env(log, i, &report_env)
+                })
+            };
+            let quiet = |log: &Path| {
+                synced_with(&daemon, log, &quiet_marker, &|| {
+                    sync.run(log, quiet_stream(i))
+                })
+            };
+            let fixed_round = self.fixed.iter().find(|r| r.round == i);
+            let base = round(&env, i, fixed_round, &concurrent, &quiet, &mut offset)?;
+            let log = layout.client_log(i);
+            let text = std::fs::read_to_string(&log)
+                .with_context(|| format!("reading {}", log.display()))?;
+            let events = netlog::read(&text);
+            if !events.active {
+                bail!(
+                    "the irsync client did not log `netsim active` in iteration {i}; see {}",
+                    log.display()
+                );
+            }
+            let verdict = events.verdict(self.has_outages);
+            let r = NetConcurrentRound {
+                base,
+                events,
+                verdict,
+            };
+            println!("{}", r.line());
+            if let Some(reason) = &r.verdict {
+                println!("  {reason}; see {}", log.display());
+            }
+            let passed = r.passed();
+            if !passed {
+                let kept = keep_failed_round(layout, i)?;
+                print_failure(&r.base, layout, &rerun_cmd(), &kept);
+            }
+            results.push(r);
+            if !passed && !cli.keep_going {
+                break;
+            }
+        }
+
+        drop(daemon); // stops it, then clears the signal handler's pid slot
+        println!("{}", report::concurrent_footer(&results, start.elapsed()));
+        let code = report::concurrent_exit_code(&results, self.has_outages);
+        match code {
+            3 => println!("faults did not bite: no round had an outage"),
+            4 => {
+                println!("concurrent writes did not bite: no file changed during a sync was placed")
+            }
+            _ => {}
+        }
+        Ok(code)
+    }
 }
 
 /// Every `.irsync.*.part` file under `trees`, sorted. Symlinks are not

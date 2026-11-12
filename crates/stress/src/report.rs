@@ -163,11 +163,22 @@ pub fn concurrent_exit_code(rounds: &[ConcurrentRound]) -> i32 {
 /// summed over them, and the elapsed time.
 pub fn concurrent_footer(rounds: &[ConcurrentRound], total: Duration) -> String {
     let passed = rounds.iter().filter(|r| r.passed()).count();
-    let sum = |f: fn(&ConcurrentRound) -> u64| rounds.iter().map(f).sum::<u64>();
+    concurrent_footer_of(rounds.iter(), passed, total)
+}
+
+/// [`concurrent_footer`] for rounds that may be held by something bigger,
+/// with the number of `passed` ones given by the caller.
+pub fn concurrent_footer_of<'a>(
+    rounds: impl ExactSizeIterator<Item = &'a ConcurrentRound> + Clone,
+    passed: usize,
+    total: Duration,
+) -> String {
+    let count = rounds.len();
+    let sum = |f: fn(&ConcurrentRound) -> u64| rounds.clone().map(f).sum::<u64>();
     format!(
         "passed={} failed={} steps={} retried={} gave_up={} touched={} changed_and_held={} judged={} elapsed={:.1}s",
         passed,
-        rounds.len() - passed,
+        count - passed,
         sum(|r| r.steps),
         sum(|r| r.retried),
         sum(|r| r.gave_up.len() as u64),

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 stress = { path = "../stress" }
+filegen = { path = "../filegen" }
 clap = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

@@ -216,6 +216,8 @@ pub struct RoundEnv<'a> {
     pub seed: u64,
     /// The run's filegen options; a round replaces the step count.
     pub filegen_opts: FilegenOpts<'a>,
+    /// The command that reruns the run, for what a failure prints.
+    pub rerun: &'a dyn Fn() -> String,
 }
 
 /// One concurrent round, `i`:
@@ -542,7 +544,7 @@ fn write_judge_report(path: &Path, i: u64, j: &RoundJudgement) -> Result<()> {
 /// The quiet sync of iteration `i` and today's checks: manifest
 /// comparison and `fileset check`. An exit other than 0 or 23 is a harness
 /// error, as in today's loop.
-fn quiet_check(
+pub fn quiet_check(
     env: &RoundEnv,
     i: u64,
     quiet: &dyn Fn(&Path) -> Result<SyncResult>,
@@ -578,7 +580,7 @@ fn quiet_check(
 
 /// Whether files on the run's filesystem can be cloned: a probe file in
 /// `round/` cloned next to itself.
-fn clones_here(layout: &Layout) -> Result<bool> {
+pub fn clones_here(layout: &Layout) -> Result<bool> {
     let dir = layout.round_dir();
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let (a, b) = (dir.join(".clone-probe"), dir.join(".clone-probe.copy"));
@@ -663,20 +665,20 @@ pub fn rerun_command(cli: &Cli, seed: u64, rounds_file: &Path) -> String {
 }
 
 /// One sync through the shared daemon, marked in its log as `marker`;
-/// a daemon that is gone before or after it is an error.
-fn synced(
+/// a daemon that is gone before or after it is an error. `run` starts the
+/// client, with its output going to `log`.
+pub fn synced_with(
     daemon: &RefCell<RunningDaemon>,
-    syncer: &Syncer,
     log: &Path,
-    env: &[(OsString, OsString)],
     marker: &str,
+    run: &dyn Fn() -> Result<SyncResult>,
 ) -> Result<SyncResult> {
     {
         let mut d = daemon.borrow_mut();
         d.check_alive()?;
         d.marker(marker)?;
     }
-    let r = syncer.run_with_env(log, env)?;
+    let r = run()?;
     let mut d = daemon.borrow_mut();
     let daemon_log = d.log_path().to_path_buf();
     if let Err(e) = d.check_alive() {
@@ -689,19 +691,27 @@ fn synced(
     Ok(r)
 }
 
+/// [`synced_with`] through the plain `Syncer`.
+fn synced(
+    daemon: &RefCell<RunningDaemon>,
+    syncer: &Syncer,
+    log: &Path,
+    env: &[(OsString, OsString)],
+    marker: &str,
+) -> Result<SyncResult> {
+    synced_with(daemon, log, marker, &|| syncer.run_with_env(log, env))
+}
+
 /// After a harness error in round `round_dir`: where the round is kept
 /// and the command that reruns the run.
 fn print_kept(env: &RoundEnv, round_dir: &Path) {
     println!("  round kept in {}", round_dir.display());
-    println!(
-        "  rerun: {}",
-        rerun_command(env.cli, env.seed, &env.layout.rounds_file())
-    );
+    println!("  rerun: {}", (env.rerun)());
 }
 
 /// Moves a failed round's `round/` to `round-NNNN/`, out of the next
 /// round's way, and returns the new path.
-fn keep_failed_round(layout: &Layout, i: u64) -> Result<std::path::PathBuf> {
+pub fn keep_failed_round(layout: &Layout, i: u64) -> Result<std::path::PathBuf> {
     let (from, to) = (layout.round_dir(), layout.failed_round_dir(i));
     fs::rename(&from, &to)
         .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
@@ -710,7 +720,7 @@ fn keep_failed_round(layout: &Layout, i: u64) -> Result<std::path::PathBuf> {
 
 /// Prints why round `r` failed: its failing paths with their rule (the
 /// first 20, then the count), the judge report and the rerun command.
-fn print_failure(r: &ConcurrentRound, cli: &Cli, layout: &Layout, seed: u64, kept: &Path) {
+pub fn print_failure(r: &ConcurrentRound, layout: &Layout, rerun: &str, kept: &Path) {
     let i = r.number;
     if r.sync.exit == SyncExit::Partial && r.gave_up.is_empty() {
         println!(
@@ -741,10 +751,7 @@ fn print_failure(r: &ConcurrentRound, cli: &Cli, layout: &Layout, seed: u64, kep
     if !r.quiet.passed() {
         println!("  quiet sync check: {}", layout.check_report(i).display());
     }
-    println!(
-        "  rerun: {}",
-        rerun_command(cli, seed, &layout.rounds_file())
-    );
+    println!("  rerun: {rerun}");
 }
 
 /// The whole concurrent run. Returns the process exit code: 0, 1, or 4
@@ -808,6 +815,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
             max_file_size: cli.max_file_size.as_deref(),
             sets: &cli.filegen_set,
         },
+        rerun: &|| rerun_command(cli, seed, &layout.rounds_file()),
     };
     run_filegen(
         &tools,
@@ -851,7 +859,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
         let passed = r.passed();
         if !passed {
             let kept = keep_failed_round(&layout, i)?;
-            print_failure(&r, cli, &layout, seed, &kept);
+            print_failure(&r, &layout, &(env.rerun)(), &kept);
         }
         results.push(r);
         if !passed && !cli.keep_going {
