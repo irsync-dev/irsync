@@ -22,7 +22,6 @@ xattr = { workspace = true }
 unicode-normalization = { workspace = true }
 jiff = { workspace = true, features = ["serde"] }
 indicatif = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
