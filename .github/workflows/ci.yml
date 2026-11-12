@@ -65,9 +65,12 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
       # nextest runs each test in its own process, tests from all files side
       # by side, and kills a hung test (see .config/nextest.toml). It does
-      # not run doc tests, so cargo test runs those.
+      # not run doc tests, so cargo test runs those. On macOS the ci-macos
+      # profile leaves out slow tests that Linux covers.
       - name: Test
-        run: cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all $TARGET_FLAG
+        env:
+          PROFILE: ${{ runner.os == 'macOS' && 'ci-macos' || 'ci' }}
+        run: cargo nextest run --locked --workspace --all-features --profile "$PROFILE" --run-ignored all $TARGET_FLAG
       - name: Doc tests
         run: cargo test --locked --workspace --all-features --doc $TARGET_FLAG
 
