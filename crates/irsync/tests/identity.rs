@@ -60,6 +60,73 @@ fn rsa_key_rejected() {
     assert!(endpoint_id_of_public_key(&pk).is_none());
 }
 
+/// Keys written before (by irsync, and by OpenSSH 10.5's ssh-keygen, plain
+/// and with a passphrase) load to the same EndpointId: a peer's identity
+/// must survive an ssh-key upgrade, not just still parse.
+#[test]
+fn keys_from_earlier_versions_keep_their_endpoint_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let pass = "fixture passphrase";
+    for (name, key, public, encrypted, id) in [
+        (
+            "ed25519_irsync",
+            include_str!("fixtures/ed25519_irsync"),
+            include_str!("fixtures/ed25519_irsync.pub"),
+            false,
+            "92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18",
+        ),
+        (
+            "ed25519_ssh_keygen",
+            include_str!("fixtures/ed25519_ssh_keygen"),
+            include_str!("fixtures/ed25519_ssh_keygen.pub"),
+            false,
+            "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
+        ),
+        (
+            "ed25519_ssh_keygen_pass",
+            include_str!("fixtures/ed25519_ssh_keygen_pass"),
+            include_str!("fixtures/ed25519_ssh_keygen_pass.pub"),
+            true,
+            "a35d848a3af131007b97b09bb866adce34f244db7816b4eb3f7a332ccf544b7c",
+        ),
+    ] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, key).unwrap();
+        let want = parse_endpoint_id(id).unwrap();
+        let src = PassphraseSource {
+            env: Some(pass.into()),
+            ..PassphraseSource::default()
+        };
+        assert_eq!(
+            load_identity_interactive(&path, &src).unwrap().public(),
+            want,
+            "{name}"
+        );
+        let pk = ssh_key::PublicKey::from_openssh(public).unwrap();
+        assert_eq!(endpoint_id_of_public_key(&pk), Some(want), "{name}");
+        if encrypted {
+            assert!(
+                matches!(
+                    load_secret_key(&path, None),
+                    Err(IdentityError::PassphraseRequired)
+                ),
+                "{name}"
+            );
+            let wrong = PassphraseSource {
+                env: Some("wrong".into()),
+                ..PassphraseSource::default()
+            };
+            assert!(
+                matches!(
+                    load_identity_interactive(&path, &wrong),
+                    Err(IdentityError::BadPassphrase(_))
+                ),
+                "{name}"
+            );
+        }
+    }
+}
+
 #[test]
 fn generate_refuses_existing_file() {
     let dir = tempfile::tempdir().unwrap();
