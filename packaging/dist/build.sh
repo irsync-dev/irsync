@@ -20,6 +20,13 @@ fi
 
 rustup target add "$CARGO_DIST_TARGET"
 
+# dist sets CC=gcc and CXX=g++ for a generic build. cc-rs, which compiles the
+# C code in our dependencies (bundled SQLite, ring), takes a plain CC for every
+# target, so for musl it would compile with glibc headers and the link would
+# fail. Without them cc-rs picks the compiler for the target (musl-gcc from
+# musl-tools), just as in CI.
+unset CC CXX
+
 # Run from the repo root, a real git checkout, so irsync's build.rs bakes in
 # the commit. Default features only: never netsim or test-hooks.
 cd "$repo_root"
