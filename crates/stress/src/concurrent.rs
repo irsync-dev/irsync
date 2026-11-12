@@ -606,11 +606,19 @@ fn shell_quote(s: &str) -> String {
 
 /// The command that runs this run again on a fresh root (the root with
 /// `.rerun` appended), with the same seed and the round records in
-/// `rounds_file`.
-pub fn rerun_command(cli: &Cli, seed: u64, rounds_file: &Path) -> String {
+/// `rounds_file`. `tool` is the command's name and `lead` the arguments
+/// that come right after it.
+pub fn rerun_command(
+    tool: &str,
+    lead: &[String],
+    cli: &Cli,
+    seed: u64,
+    rounds_file: &Path,
+) -> String {
     let lossy = |p: &Path| p.to_string_lossy().into_owned();
-    let mut a: Vec<String> = vec![
-        "irsync-stress".into(),
+    let mut a: Vec<String> = vec![tool.into()];
+    a.extend(lead.iter().cloned());
+    a.extend([
         "--direction".into(),
         direction_name(cli.direction).into(),
         "--iterations".into(),
@@ -619,7 +627,7 @@ pub fn rerun_command(cli: &Cli, seed: u64, rounds_file: &Path) -> String {
         seed.to_string(),
         "--steps".into(),
         cli.steps.to_string(),
-    ];
+    ]);
     if let Some(s) = &cli.max_total_size {
         a.extend(["--max-total-size".into(), s.clone()]);
     }
@@ -815,7 +823,7 @@ pub fn run(cli: &Cli) -> Result<i32> {
             max_file_size: cli.max_file_size.as_deref(),
             sets: &cli.filegen_set,
         },
-        rerun: &|| rerun_command(cli, seed, &layout.rounds_file()),
+        rerun: &|| rerun_command("irsync-stress", &[], cli, seed, &layout.rounds_file()),
     };
     run_filegen(
         &tools,
@@ -1154,7 +1162,13 @@ mod tests {
             "--paranoid",
         ])
         .unwrap();
-        let c = rerun_command(&cli, 99, Path::new("/r/run/logs/rounds.tsv"));
+        let c = rerun_command(
+            "irsync-stress",
+            &[],
+            &cli,
+            99,
+            Path::new("/r/run/logs/rounds.tsv"),
+        );
         assert_eq!(
             c,
             "irsync-stress --direction pull --iterations 5 --seed 99 --steps 100 \

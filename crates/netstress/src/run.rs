@@ -416,27 +416,33 @@ struct Concurrent<'a> {
     has_outages: bool,
 }
 
+/// The reason a round fails for the partial files left in the destination
+/// after its quiet sync, if any.
+fn part_verdict(parts: &[PathBuf]) -> Option<String> {
+    let first = parts.first()?;
+    Some(format!(
+        "{} partial file(s) left behind by the quiet sync, such as {}",
+        parts.len(),
+        first.display()
+    ))
+}
+
 /// Stream of the quiet sync of round `i`: out of the way of every
 /// concurrent sync's.
 fn quiet_stream(i: u64) -> u64 {
     i + (1 << 32)
 }
 
-/// The command that reruns a concurrent netstress run: irsync-stress's
-/// rerun command with the tool name and the network settings changed.
+/// The command that reruns a concurrent netstress run.
 fn rerun(net: &Cli, cli: &stress::cli::Cli, seed: u64, rounds_file: &Path) -> String {
-    let base = rerun_command(cli, seed, rounds_file);
-    let rest = base
-        .strip_prefix("irsync-stress ")
-        .expect("the rerun command starts with the tool name");
-    let mut net_args = format!("--profile {}", net.profile.name());
+    let mut lead = vec!["--profile".to_string(), net.profile.name().to_string()];
     if let Some(c) = net.congestion {
-        net_args.push_str(&format!(" --congestion {}", c.name()));
+        lead.extend(["--congestion".into(), c.name().into()]);
     }
     if let Some(a) = net.acks {
-        net_args.push_str(&format!(" --acks {}", a.name()));
+        lead.extend(["--acks".into(), a.name().into()]);
     }
-    format!("irsync-netstress {net_args} {rest}")
+    rerun_command("irsync-netstress", &lead, cli, seed, rounds_file)
 }
 
 impl Concurrent<'_> {
@@ -523,12 +529,18 @@ impl Concurrent<'_> {
                 .with_context(|| format!("reading {}", log.display()))?;
             let events = netlog::read(&text);
             if !events.active {
+                let kept = keep_failed_round(layout, i)?;
+                println!("  round kept in {}", kept.display());
+                println!("  rerun: {}", rerun_cmd());
                 bail!(
                     "the irsync client did not log `netsim active` in iteration {i}; see {}",
                     log.display()
                 );
             }
-            let verdict = events.verdict(self.has_outages);
+            let parts = leftover_parts(&[&layout.dst_data])?;
+            let verdict = events
+                .verdict(self.has_outages)
+                .or_else(|| part_verdict(&parts));
             let r = NetConcurrentRound {
                 base,
                 events,
@@ -608,6 +620,42 @@ mod tests {
         let mut want = vec![a.join("sub/.irsync.x.part"), b.join(".irsync.y.part")];
         want.sort();
         assert_eq!(leftover_parts(&[&a, &b]).unwrap(), want);
+    }
+
+    #[test]
+    fn rerun_names_netstress_and_the_profile() {
+        use clap::Parser;
+        let net = Cli::try_parse_from([
+            "irsync-netstress",
+            "--profile",
+            "test-blackout",
+            "--direction",
+            "push",
+            "--concurrent",
+            "/r/run",
+        ])
+        .unwrap();
+        let c = rerun(
+            &net,
+            &net.to_stress(),
+            7,
+            Path::new("/r/run/logs/rounds.tsv"),
+        );
+        assert!(
+            c.starts_with("irsync-netstress --profile test-blackout --direction push"),
+            "{c}"
+        );
+        assert!(
+            c.contains("--concurrent") && c.contains("--replay-rounds"),
+            "{c}"
+        );
+    }
+
+    #[test]
+    fn leftover_parts_fail_a_round() {
+        assert_eq!(part_verdict(&[]), None);
+        let v = part_verdict(&[PathBuf::from("/d/.irsync.x.part")]).unwrap();
+        assert!(v.contains("/d/.irsync.x.part"), "{v}");
     }
 
     #[test]
