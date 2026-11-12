@@ -26,7 +26,9 @@ use ::filegen::run::{opts_from_args, Outcome, Runner, Start, StepResult};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 
-use crate::judge::{in_flight_content_ok, judge, write_of, InFlight, State, StateEntry, Verdict};
+use crate::judge::{
+    in_flight_content_ok, judge, write_of, InFlight, State, StateEntry, Verdict, Write,
+};
 use crate::snapshot::{clone_or_copy_file, copy_tree, walk_meta, EntryKind, Meta};
 
 /// One round, as the harness kept it.
@@ -35,12 +37,14 @@ pub struct RoundInput<'a> {
     pub start_meta: &'a BTreeMap<Vec<u8>, Meta>,
     /// The copy of the source taken at round start.
     pub start_copy: &'a Path,
-    /// Where the replay runs: a missing or empty directory, outside the
-    /// round dir's `replay/`.
+    /// Where the replay runs: a missing or empty directory; anything else
+    /// is an error.
     pub work: &'a Path,
-    /// filegen's state file as of round start. Its directory is the round
-    /// dir: the replay reads this file and writes its own log and state to
-    /// `<round dir>/replay/` (emptied first), never next to the live ones.
+    /// Where the replay's filegen writes its log and state, and keeps its
+    /// pre-step clone: a missing or empty directory outside `work`, never
+    /// the live run's out dir; anything else is an error.
+    pub replay_dir: &'a Path,
+    /// filegen's state file as of round start. The replay only reads it.
     pub state: &'a Path,
     /// The live run's argv without `--pace`: `"filegen"`, `"run"`, then the
     /// mutate flags. It is parsed with `opts_from_args`, then the replay
@@ -89,20 +93,13 @@ const MAX_RETRIES: u32 = 100_000;
 /// harness error, including a replay that does not do what the live run
 /// did ("replay diverged ..."); a judged failure is in `failures`.
 pub fn replay_and_judge(input: &RoundInput) -> Result<RoundJudgement> {
+    let replay_dir = input.replay_dir;
+    must_be_empty(input.work, "the replay's work dir")?;
+    must_be_empty(replay_dir, "the replay dir")?;
     copy_tree(input.start_copy, input.work)
         .with_context(|| format!("copying the round start to {}", input.work.display()))?;
-    let round_dir = match input.state.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let replay_dir = round_dir.join("replay");
-    if replay_dir.exists() {
-        fs::remove_dir_all(&replay_dir)
-            .with_context(|| format!("removing {}", replay_dir.display()))?;
-    }
-    fs::create_dir_all(&replay_dir)
-        .with_context(|| format!("creating {}", replay_dir.display()))?;
-    let mut runner = runner_for(input, &replay_dir)?;
+    fs::create_dir_all(replay_dir).with_context(|| format!("creating {}", replay_dir.display()))?;
+    let mut runner = runner_for(input, replay_dir)?;
 
     let canon = |p: &Path| {
         fs::canonicalize(p)
@@ -139,6 +136,20 @@ pub fn replay_and_judge(input: &RoundInput) -> Result<RoundJudgement> {
         .map_err(|e| anyhow!("replay: filegen could not finish: {e}"))?;
     same_trees(input.work, input.live_src, reroot)?;
     Ok(h.judge_all(&dest, input.is_root))
+}
+
+/// `Err` unless `dir` is missing or an empty directory.
+fn must_be_empty(dir: &Path, what: &str) -> Result<()> {
+    match fs::read_dir(dir) {
+        Ok(mut it) => {
+            if it.next().is_some() {
+                bail!("{what} {} is not empty", dir.display());
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("reading {what} {}", dir.display())),
+    }
 }
 
 /// A `Runner` that replays the live run on `work`, writing only to
@@ -404,9 +415,10 @@ impl History {
         for p in std::iter::once(path).chain(to) {
             if !p.is_empty() {
                 touched.insert(p.to_vec());
-                touched.extend(below(&self.cur, p).cloned());
             }
         }
+        let path_was_dir =
+            !path.is_empty() && self.cur.get(path).is_some_and(|e| e.kind == EntryKind::Dir);
 
         // The step.
         let mut retries = 0;
@@ -465,9 +477,15 @@ impl History {
             post_of.insert(to.to_vec(), live.post_to);
         }
         touched.extend(post_of.keys().cloned());
+        // A directory removed or moved away takes its entries with it; no
+        // other step changes what lies below a directory.
+        let dir_left = path_was_dir && !matches!(live.post, Some(Some(ps)) if ps.kind == 'd');
+        if dir_left {
+            touched.extend(below(&self.cur, path).cloned());
+        }
         // Entries moved with a renamed directory.
         let mut carried: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
-        if let Some(to) = to.filter(|t| !t.is_empty()) {
+        if let Some(to) = to.filter(|t| !t.is_empty() && dir_left) {
             let dir = rel_path(ctx.work, to);
             if fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
                 for rest in walk_meta(&dir)?.into_keys() {
@@ -485,8 +503,9 @@ impl History {
 
         let mut changes = Vec::new();
         for p in &touched {
-            let disk = entry_on_disk(ctx.work, p, ctx.is_root, Some(ctx.reroot))?;
+            let exists = || fs::symlink_metadata(rel_path(ctx.work, p)).is_ok();
             let new = if let Some(post) = post_of.get(p) {
+                let disk = entry_on_disk(ctx.work, p, ctx.is_root, Some(ctx.reroot))?;
                 match (disk, post) {
                     (_, None) => bail!("live step {} has no post stat (a dry run?)", live.step),
                     (None, Some(None)) => None,
@@ -510,8 +529,9 @@ impl History {
                     }
                 }
             } else if let Some(old) = carried.get(p) {
-                match (&disk, self.cur.get(old)) {
-                    (Some(_), Some(prev)) => Some(prev.clone()),
+                // Moved, not changed: the previous entry, hash included.
+                match (exists(), self.cur.get(old)) {
+                    (true, Some(prev)) => Some(prev.clone()),
                     _ => {
                         return Err(diverged(format!(
                             "{:?} moved to {:?}, but one of them is missing",
@@ -520,18 +540,36 @@ impl History {
                         )))
                     }
                 }
+            } else if !exists() {
+                // Below a directory that was removed or moved away.
+                None
+            } else if let Some(prev) = self.cur.get(p) {
+                // A link member the step left alone.
+                Some(prev.clone())
             } else {
-                // Untouched by the step itself (a link member that stayed
-                // behind, or a path under a removed or moved directory).
-                disk.and_then(|d| self.cur.get(p).cloned().or(Some(d)))
+                return Err(diverged(format!(
+                    "{:?} appeared in the replay, but the step does not account for it",
+                    show(p)
+                )));
             };
             if new.as_ref() == self.cur.get(p) {
                 continue;
             }
-            let content_ok = self.content_ok(ctx, live, p, &new, clone, &pre_group)?;
-            changes.push((p.clone(), new, content_ok));
+            // Only a step that writes bytes in sequence has states in
+            // between; any other step goes from one complete state to the
+            // next.
+            let pre_size = self
+                .cur
+                .get(p)
+                .filter(|e| e.kind == EntryKind::File)
+                .map(|e| e.size);
+            let flight = match write_of(live.op, &live.details, pre_size) {
+                Some(w) => Some(self.content_ok(ctx, p, &new, clone, &pre_group, &w)?),
+                None => None,
+            };
+            changes.push((p.clone(), new, flight));
         }
-        for (p, new, content_ok) in changes {
+        for (p, new, flight) in changes {
             let pre = self.cur.get(&p).cloned();
             let states = self.states.entry(p.clone()).or_insert_with(|| {
                 vec![State {
@@ -543,13 +581,15 @@ impl History {
                 step: n,
                 entry: new.clone(),
             });
-            self.flights.entry(p.clone()).or_default().push(InFlight {
-                step: n,
-                op: live.op,
-                pre: pre.clone(),
-                post: new.clone(),
-                content_ok,
-            });
+            if let Some(content_ok) = flight {
+                self.flights.entry(p.clone()).or_default().push(InFlight {
+                    step: n,
+                    op: live.op,
+                    pre: pre.clone(),
+                    post: new.clone(),
+                    content_ok,
+                });
+            }
             match new {
                 Some(e) => self.cur.insert(p, e),
                 None => self.cur.remove(&p),
@@ -564,36 +604,24 @@ impl History {
     fn content_ok(
         &self,
         ctx: &StepCtx,
-        live: &StepLine,
         p: &[u8],
         new: &Option<StateEntry>,
         clone: Option<&Path>,
         pre_group: &[Vec<u8>],
+        w: &Write,
     ) -> Result<bool> {
-        let Some(d) = ctx.dest.get(p).filter(|d| d.kind == EntryKind::File) else {
+        if !ctx.dest.get(p).is_some_and(|d| d.kind == EntryKind::File) {
             return Ok(false);
-        };
+        }
         if new.as_ref().is_none_or(|n| n.kind != EntryKind::File) {
             return Ok(false);
         }
-        let pre_size = self
-            .cur
-            .get(p)
-            .filter(|e| e.kind == EntryKind::File)
-            .map(|e| e.size);
-        // Every in-between state of an append holds at least one new byte:
-        // the one with none is the complete state before, with its own
-        // mtime, and rule 5 judges that.
-        if live.op == OpKind::Append && pre_size == Some(d.size) {
-            return Ok(false);
-        }
         let old = clone.filter(|_| pre_group.iter().any(|m| m == p));
-        let w = write_of(live.op, &live.details, pre_size);
         in_flight_content_ok(
             &rel_path(ctx.dest_root, p),
             old,
             &rel_path(ctx.work, p),
-            w.as_ref(),
+            Some(w),
         )
         .with_context(|| format!("comparing {:?} with the replay", show(p)))
     }
@@ -686,6 +714,7 @@ fn same_trees(work: &Path, live: &Path, reroot: Reroot) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
@@ -770,8 +799,9 @@ mod tests {
         src: PathBuf,
         start_copy: PathBuf,
         start_meta: BTreeMap<Vec<u8>, Meta>,
+        round: PathBuf,
+        runs: Cell<u32>,
         state: PathBuf,
-        work: PathBuf,
         args: Vec<OsString>,
         live: Vec<StepLine>,
         caps: Vec<Cap>,
@@ -820,8 +850,9 @@ mod tests {
             .collect();
         assert_eq!(live.len(), caps.len());
         Fixture {
-            work: round.join("work"),
-            state: round.join(STATE),
+            round,
+            runs: Cell::new(0),
+            state: base.join("round").join(STATE),
             _t: t,
             base,
             src,
@@ -834,11 +865,27 @@ mod tests {
     }
 
     impl Fixture {
-        fn input<'a>(&'a self, dest: &'a Path, live: &'a [StepLine]) -> RoundInput<'a> {
+        /// A fresh work dir and replay dir for one replay.
+        fn fresh(&self) -> (PathBuf, PathBuf) {
+            let n = self.runs.get() + 1;
+            self.runs.set(n);
+            (
+                self.round.join(format!("work-{n}")),
+                self.round.join(format!("replay-{n}")),
+            )
+        }
+
+        fn input<'a>(
+            &'a self,
+            dest: &'a Path,
+            live: &'a [StepLine],
+            dirs: &'a (PathBuf, PathBuf),
+        ) -> RoundInput<'a> {
             RoundInput {
                 start_meta: &self.start_meta,
                 start_copy: &self.start_copy,
-                work: &self.work,
+                work: &dirs.0,
+                replay_dir: &dirs.1,
                 state: &self.state,
                 filegen_args: &self.args,
                 live_steps: live,
@@ -855,12 +902,10 @@ mod tests {
             d
         }
 
-        /// Judges `dest`, replaying into a fresh work dir each time.
+        /// Judges `dest`, replaying into fresh dirs each time.
         fn judge(&self, dest: &Path) -> RoundJudgement {
-            if self.work.exists() {
-                fs::remove_dir_all(&self.work).unwrap();
-            }
-            replay_and_judge(&self.input(dest, &self.live)).unwrap()
+            let dirs = self.fresh();
+            replay_and_judge(&self.input(dest, &self.live, &dirs)).unwrap()
         }
     }
 
@@ -963,7 +1008,8 @@ mod tests {
         let dest = f.dest("dest", &f.src);
         let mut live = f.live.clone();
         live[10].path = b"no-such-path".to_vec();
-        let e = replay_and_judge(&f.input(&dest, &live))
+        let dirs = f.fresh();
+        let e = replay_and_judge(&f.input(&dest, &live, &dirs))
             .unwrap_err()
             .to_string();
         assert!(e.contains("replay diverged at step"), "{e}");
@@ -979,7 +1025,8 @@ mod tests {
         assert_clean(&f.judge(&dest));
 
         // An append to a linked file, seen at another member that still
-        // exists at the end, whose times moved with the append.
+        // exists at the end: its size and times say "after the append",
+        // but the appended bytes are not the ones appended.
         let end = walk_meta(&f.src).unwrap();
         let (k, member) = f
             .live
@@ -987,11 +1034,6 @@ mod tests {
             .enumerate()
             .filter(|(_, l)| l.op == OpKind::Append && l.bytes > 0)
             .find_map(|(k, l)| {
-                let post = l.post.unwrap().unwrap();
-                let pre = f.caps[k].pre.get(&l.path)?;
-                if pre.mtime_ns == post.mtime_ns {
-                    return None;
-                }
                 let m = f.caps[k].group.iter().find(|m| {
                     **m != l.path && end.get(*m).is_some_and(|e| e.kind == EntryKind::File)
                 })?;
@@ -1000,10 +1042,13 @@ mod tests {
             .expect("no append to a linked file");
         let l = &f.live[k];
         let post = l.post.unwrap().unwrap();
-        let after = f.caps[k].content.as_ref().unwrap();
-        let before = &after[..after.len() - l.bytes as usize];
+        let mut garbled = f.caps[k].content.clone().unwrap();
+        let old_len = garbled.len() - l.bytes as usize;
+        for b in &mut garbled[old_len..] {
+            *b ^= 0xa5;
+        }
         let dest = f.dest("dest2", &f.src);
-        plant(&dest, &member, before, post.mode, post.mtime_ns);
+        plant(&dest, &member, &garbled, post.mode, post.mtime_ns);
         let j = f.judge(&dest);
         assert_eq!(j.failures.len(), 1, "{:?}", j.failures);
         assert_eq!(j.failures[0].0, member);
@@ -1025,5 +1070,72 @@ mod tests {
         assert_clean(&f.judge(&start));
         let end = f.dest("dest-end", &f.src);
         assert_clean(&f.judge(&end));
+    }
+
+    #[test]
+    fn replay_rejects_old_times_after_a_move() {
+        let mut sets = every_row("rename", 15);
+        sets.extend(every_row("rewrite", 10));
+        let f = fixture(300, 300, &sets);
+        let end = walk_meta(&f.src).unwrap();
+        // A file written, then moved with its directory and left alone:
+        // its end path, with its mtime from before the write.
+        let mut found = None;
+        'outer: for (b, lb) in f.live.iter().enumerate() {
+            let Some(to) = &lb.to else { continue };
+            if lb.op != OpKind::Rename
+                || f.caps[b].pre.get(&lb.path).map(|m| m.kind) != Some(EntryKind::Dir)
+            {
+                continue;
+            }
+            for (a, la) in f.live[..b].iter().enumerate() {
+                let Some(rest) = la.path.strip_prefix(lb.path.as_slice()) else {
+                    continue;
+                };
+                let writes = [OpKind::Rewrite, OpKind::Append, OpKind::OverwriteRange];
+                if !writes.contains(&la.op) || !rest.starts_with(b"/") {
+                    continue;
+                }
+                let Some(old) = f.caps[a].pre.get(&la.path) else {
+                    continue;
+                };
+                let moved = f.caps[b].pre.get(&la.path);
+                let at_end = [to.as_slice(), rest].concat();
+                let Some(e) = end.get(&at_end) else { continue };
+                // Unchanged since the move, and the old mtime predates every
+                // state the end path held.
+                let unchanged = moved.is_some_and(|m| m.mtime_ns == e.mtime_ns);
+                if e.kind == EntryKind::File && unchanged && old.mtime_ns < e.mtime_ns {
+                    found = Some((at_end, old.mtime_ns, e.mode));
+                    break 'outer;
+                }
+            }
+        }
+        let (at_end, old_mtime, mode) = found.expect("no file written, then moved");
+        let dest = f.dest("dest", &f.src);
+        let bytes = fs::read(f.src.join(p(&at_end))).unwrap();
+        plant(&dest, &at_end, &bytes, mode, old_mtime);
+        let j = f.judge(&dest);
+        assert_eq!(j.failures.len(), 1, "{:?}", j.failures);
+        assert_eq!(j.failures[0].0, at_end);
+    }
+
+    #[test]
+    fn replay_refuses_dirs_in_use() {
+        let f = fixture(50, 10, &[]);
+        let dest = f.dest("dest", &f.src);
+        let dirs = f.fresh();
+        fs::create_dir_all(dirs.0.join("stale")).unwrap();
+        let e = replay_and_judge(&f.input(&dest, &f.live, &dirs)).unwrap_err();
+        assert!(e.to_string().contains("not empty"), "{e}");
+        let dirs = f.fresh();
+        fs::create_dir_all(&dirs.1).unwrap();
+        fs::write(dirs.1.join("filegen-7.log"), b"live log\n").unwrap();
+        let e = replay_and_judge(&f.input(&dest, &f.live, &dirs)).unwrap_err();
+        assert!(e.to_string().contains("not empty"), "{e}");
+        assert_eq!(
+            fs::read(dirs.1.join("filegen-7.log")).unwrap(),
+            b"live log\n"
+        );
     }
 }
