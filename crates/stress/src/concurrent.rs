@@ -170,13 +170,17 @@ pub fn read_report(path: &Path, from: u64) -> Result<(Vec<ReportLine>, u64)> {
     Ok((out, from + complete as u64))
 }
 
-/// What irsync reports on the root path when another path's failure (a
-/// directory that vanished while it was walked, say) left a file listing
-/// incomplete: the listing itself, and the `--delete` it then skipped.
-const LISTING_CONSEQUENCES: [&str; 3] = [
-    "deletions skipped: a file listing was incomplete",
+/// The exact reasons irsync gives on the root path when another path's
+/// failure (a source directory that vanished while it was walked, say)
+/// left the source listing incomplete: the listing itself, and the
+/// `--delete` the receiver then skipped (`delete::DeleteRefused`). The
+/// client reports its own receiver's errors bare and the daemon
+/// receiver's with "receiver: " in front.
+const LISTING_CONSEQUENCES: [&str; 4] = [
+    "deletions skipped: a file listing was incomplete (--ignore-errors deletes anyway)",
+    "receiver: deletions skipped: a file listing was incomplete (--ignore-errors deletes anyway)",
     "the sender's listing is incomplete",
-    "the receiver's listing is incomplete",
+    "receiver: the sender's listing is incomplete",
 ];
 
 /// The `gave_up` paths of `lines`, and those of them not in `touched`. The
@@ -194,7 +198,7 @@ pub fn gave_up_split(
         .iter()
         .filter(|l| {
             if l.path.is_empty() {
-                !(another_path && LISTING_CONSEQUENCES.iter().any(|c| l.reason.contains(c)))
+                !(another_path && LISTING_CONSEQUENCES.contains(&l.reason.as_str()))
             } else {
                 !touched.contains(&l.path)
             }
@@ -282,101 +286,112 @@ pub fn round(
     let synced = sync(&client_log);
     // Stopped before any error is returned, so its log is complete.
     let stopped = filegen::stop(running, fixed.is_some());
-    let r = synced?;
-    stopped.with_context(|| format!("filegen's own log is {}", filegen_log.display()))?;
-    if matches!(r.exit, SyncExit::Other(c) if c != 24) {
-        bail!(
-            "irsync client exited {} in iteration {i}; see {} and {}",
-            r.exit.code(),
-            client_log.display(),
-            layout.daemon_log().display()
-        );
-    }
-
-    let steps = new_step_lines(&filegen_log, log_from)?;
-    let record = RoundRecord {
-        round: i,
-        pace,
-        steps: steps.len() as u64,
-    };
-    if let Some(f) = fixed {
-        if f.steps != record.steps {
-            println!(
-                "  note: filegen took {} steps where the replayed round took {}",
-                record.steps, f.steps
+    let result = (|| -> Result<ConcurrentRound> {
+        // Recorded before anything can fail, so a harness error's rerun
+        // command replays this round too.
+        let ran = filegen_ran(&filegen_log, log_from);
+        if let Ok(ran) = &ran {
+            let record = RoundRecord {
+                round: i,
+                pace,
+                steps: ran.steps,
+            };
+            if let Some(f) = fixed {
+                if f.steps != record.steps {
+                    println!(
+                        "  note: filegen took {} steps where the replayed round took {}",
+                        record.steps, f.steps
+                    );
+                }
+            }
+            append_round(&layout.rounds_file(), &record)?;
+        }
+        let r = synced?;
+        stopped.with_context(|| format!("filegen's own log is {}", filegen_log.display()))?;
+        if matches!(r.exit, SyncExit::Other(c) if c != 24) {
+            bail!(
+                "irsync client exited {} in iteration {i}; see {} and {}",
+                r.exit.code(),
+                client_log.display(),
+                layout.daemon_log().display()
             );
         }
-    }
-    append_round(&layout.rounds_file(), &record)?;
+        let ran = ran?;
+        let steps = ran.lines;
 
-    let (client_lines, _) = read_report(&layout.client_report(i), 0)?;
-    let (daemon_lines, offset) = read_report(&layout.daemon_report(), *daemon_report_offset)?;
-    *daemon_report_offset = offset;
+        let (client_lines, _) = read_report(&layout.client_report(i), 0)?;
+        let (daemon_lines, offset) = read_report(&layout.daemon_report(), *daemon_report_offset)?;
+        *daemon_report_offset = offset;
 
-    let mut filegen_args: Vec<OsString> = vec!["filegen".into()];
-    filegen_args.extend(mutate);
-    let judgement = replay_and_judge(&RoundInput {
-        start_meta: &start_meta,
-        start_copy: &start,
-        work: &work,
-        replay_dir: &replay,
-        state: &state,
-        filegen_args: &filegen_args,
-        live_steps: &steps,
-        live_src: &layout.src_data,
-        dest: &layout.dst_data,
-        is_root: nix::unistd::geteuid().is_root(),
-    })
-    .with_context(|| {
-        format!(
-            "judging iteration {i}; the round is kept in {}",
-            dir.display()
-        )
-    })?;
-    write_judge_report(&layout.judge_report(i), i, &judgement)?;
-    if !judgement.failures.is_empty() {
-        // The quiet sync repairs the destination: keep it as judged.
-        let kept = dir.join("dest");
-        copy_tree(&layout.dst_data, &kept)
-            .with_context(|| format!("keeping the judged destination in {}", kept.display()))?;
-    }
-    let (gave_up, gave_up_untouched) = gave_up_split(&client_lines, &judgement.touched);
-    let retried = client_lines
-        .iter()
-        .chain(&daemon_lines)
-        .filter(|l| l.event == "retried")
-        .count() as u64;
-
-    let orphans = remove_orphan_parts(&layout.src_data, &layout.dst_data, &gave_up)?;
-    if !orphans.is_empty() {
-        let mut f = OpenOptions::new()
-            .append(true)
-            .open(layout.judge_report(i))
-            .with_context(|| format!("opening {}", layout.judge_report(i).display()))?;
-        for p in &orphans {
-            writeln!(
-                f,
-                "# removed the partial file of a given-up path: {}",
-                escape(p)
+        let mut filegen_args: Vec<OsString> = vec!["filegen".into()];
+        filegen_args.extend(mutate);
+        let judgement = replay_and_judge(&RoundInput {
+            start_meta: &start_meta,
+            start_copy: &start,
+            work: &work,
+            replay_dir: &replay,
+            state: &state,
+            filegen_args: &filegen_args,
+            live_steps: &steps,
+            live_src: &layout.src_data,
+            dest: &layout.dst_data,
+            is_root: nix::unistd::geteuid().is_root(),
+        })
+        .with_context(|| {
+            format!(
+                "judging iteration {i}; the round is kept in {}",
+                dir.display()
             )
-            .with_context(|| format!("writing {}", layout.judge_report(i).display()))?;
+        })?;
+        write_judge_report(&layout.judge_report(i), i, &judgement)?;
+        if !judgement.failures.is_empty() {
+            // The quiet sync repairs the destination: keep it as judged.
+            let kept = dir.join("dest");
+            copy_tree(&layout.dst_data, &kept)
+                .with_context(|| format!("keeping the judged destination in {}", kept.display()))?;
         }
-    }
+        let (gave_up, gave_up_untouched) = gave_up_split(&client_lines, &judgement.touched);
+        let retried = client_lines
+            .iter()
+            .chain(&daemon_lines)
+            .filter(|l| l.event == "retried")
+            .count() as u64;
 
-    fileset::update(&env.tools.fileset.path, &layout.src_data)?;
-    let quiet = quiet_check(env, i, quiet)?;
-    Ok(ConcurrentRound {
-        number: i,
-        total: cli.iterations,
-        pace,
-        steps: record.steps,
-        sync: r,
-        retried,
-        gave_up,
-        gave_up_untouched,
-        judgement,
-        quiet,
-    })
+        let orphans = remove_orphan_parts(&layout.src_data, &layout.dst_data, &gave_up)?;
+        if !orphans.is_empty() {
+            let mut f = OpenOptions::new()
+                .append(true)
+                .open(layout.judge_report(i))
+                .with_context(|| format!("opening {}", layout.judge_report(i).display()))?;
+            for p in &orphans {
+                writeln!(
+                    f,
+                    "# removed the partial file of a given-up path: {}",
+                    escape(p)
+                )
+                .with_context(|| format!("writing {}", layout.judge_report(i).display()))?;
+            }
+        }
+
+        fileset::update(&env.tools.fileset.path, &layout.src_data)?;
+        let quiet = quiet_check(env, i, quiet)?;
+        Ok(ConcurrentRound {
+            number: i,
+            total: cli.iterations,
+            pace,
+            steps: ran.steps,
+            sync: r,
+            retried,
+            gave_up,
+            gave_up_untouched,
+            judgement,
+            quiet,
+        })
+    })();
+    if result.is_err() {
+        print_kept(env, &dir);
+    }
+    result
 }
 
 /// Removes the destination's `.irsync.<name>.part` of each given-up path
@@ -458,15 +473,54 @@ fn with_pace(args: &[OsString], pace: Pace) -> Vec<OsString> {
     out
 }
 
-/// The step lines filegen's log gained after byte `from`.
-fn new_step_lines(log: &Path, from: u64) -> Result<Vec<StepLine>> {
+/// What one background filegen run did, from its log.
+struct FilegenRan {
+    /// Its step lines.
+    lines: Vec<StepLine>,
+    /// The steps it took, as `--steps` counts them: the step lines plus
+    /// the steps that found nothing to do (`skipped=`), which log nothing.
+    steps: u64,
+}
+
+/// The value of `key=` among the space-separated fields of `line`.
+fn log_field(line: &str, key: &str) -> Option<u64> {
+    line.split(' ')
+        .find_map(|f| f.strip_prefix(key)?.strip_prefix('='))
+        .and_then(|v| v.parse().ok())
+}
+
+/// What the run whose log starts at byte `from` of `log` did. Its `# run`
+/// line gives `start_step`, its `# end` line `steps_done` and `skipped`. A
+/// run with neither line and no step (killed before it began) took 0
+/// steps.
+fn filegen_ran(log: &Path, from: u64) -> Result<FilegenRan> {
     let mut f = fs::File::open(log).with_context(|| format!("opening {}", log.display()))?;
     f.seek(SeekFrom::Start(from))
         .with_context(|| format!("reading {}", log.display()))?;
     let mut text = String::new();
     f.read_to_string(&mut text)
         .with_context(|| format!("reading {}", log.display()))?;
-    Ok(text.lines().filter_map(parse_step_line).collect())
+    let lines: Vec<StepLine> = text.lines().filter_map(parse_step_line).collect();
+    let start = text
+        .lines()
+        .find(|l| l.starts_with("# run "))
+        .and_then(|l| log_field(l, "start_step"));
+    let end = text.lines().find(|l| l.starts_with("# end "));
+    let steps = match (start, end) {
+        (Some(start), Some(end)) => {
+            let done = log_field(end, "steps_done")
+                .ok_or_else(|| anyhow!("{}: no steps_done in {end:?}", log.display()))?;
+            done.checked_sub(start)
+                .ok_or_else(|| anyhow!("{}: steps_done below start_step", log.display()))?
+                + log_field(end, "skipped").unwrap_or(0)
+        }
+        (_, None) if lines.is_empty() => 0,
+        _ => bail!(
+            "{}: the background filegen run has no complete # run and # end lines",
+            log.display()
+        ),
+    };
+    Ok(FilegenRan { lines, steps })
 }
 
 /// The judge's counts, then one `path<TAB>rule` line per failure (the
@@ -635,9 +689,28 @@ fn synced(
     Ok(r)
 }
 
+/// After a harness error in round `round_dir`: where the round is kept
+/// and the command that reruns the run.
+fn print_kept(env: &RoundEnv, round_dir: &Path) {
+    println!("  round kept in {}", round_dir.display());
+    println!(
+        "  rerun: {}",
+        rerun_command(env.cli, env.seed, &env.layout.rounds_file())
+    );
+}
+
+/// Moves a failed round's `round/` to `round-NNNN/`, out of the next
+/// round's way, and returns the new path.
+fn keep_failed_round(layout: &Layout, i: u64) -> Result<std::path::PathBuf> {
+    let (from, to) = (layout.round_dir(), layout.failed_round_dir(i));
+    fs::rename(&from, &to)
+        .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+    Ok(to)
+}
+
 /// Prints why round `r` failed: its failing paths with their rule (the
 /// first 20, then the count), the judge report and the rerun command.
-fn print_failure(r: &ConcurrentRound, cli: &Cli, layout: &Layout, seed: u64) {
+fn print_failure(r: &ConcurrentRound, cli: &Cli, layout: &Layout, seed: u64, kept: &Path) {
     let i = r.number;
     if r.sync.exit == SyncExit::Partial && r.gave_up.is_empty() {
         println!(
@@ -664,6 +737,7 @@ fn print_failure(r: &ConcurrentRound, cli: &Cli, layout: &Layout, seed: u64) {
         println!("  ... {} failing paths in all", failing.len());
     }
     println!("  judge report: {}", layout.judge_report(i).display());
+    println!("  round kept in {}", kept.display());
     if !r.quiet.passed() {
         println!("  quiet sync check: {}", layout.check_report(i).display());
     }
@@ -776,7 +850,8 @@ pub fn run(cli: &Cli) -> Result<i32> {
         println!("{}", r.line());
         let passed = r.passed();
         if !passed {
-            print_failure(&r, cli, &layout, seed);
+            let kept = keep_failed_round(&layout, i)?;
+            print_failure(&r, cli, &layout, seed, &kept);
         }
         results.push(r);
         if !passed && !cli.keep_going {
@@ -941,6 +1016,12 @@ mod tests {
             gave_up(b"", "the sender's listing is incomplete"),
         ];
         assert!(gave_up_split(&lines, &touched).1.is_empty());
+        // Only irsync's exact words count.
+        let lines = [
+            gave_up(b"d/f", "walk: gone"),
+            gave_up(b"", "deletions skipped: a file listing was incomplete"),
+        ];
+        assert_eq!(gave_up_split(&lines, &touched).1, [Vec::<u8>::new()]);
         // Any other root error fails.
         let lines = [gave_up(b"d/f", "walk: gone"), gave_up(b"", "session lost")];
         let (_, untouched) = gave_up_split(&lines, &touched);
@@ -972,6 +1053,56 @@ mod tests {
         assert!(!dest.join("d/.irsync.gone.part").exists());
         assert!(dest.join("d/.irsync.kept.part").exists());
         assert!(dest.join(".irsync.other.part").exists());
+    }
+
+    #[test]
+    fn a_failed_round_moves_out_of_the_next_rounds_way() {
+        let t = tempfile::tempdir().unwrap();
+        let layout = Layout::create(&t.path().join("r")).unwrap();
+        let round = layout.round_dir();
+        std::fs::create_dir_all(round.join("start")).unwrap();
+        std::fs::write(round.join("state.yaml"), b"state").unwrap();
+        let kept = keep_failed_round(&layout, 3).unwrap();
+        assert_eq!(kept, layout.root.join("round-0003"));
+        assert!(kept.join("start").is_dir());
+        assert_eq!(std::fs::read(kept.join("state.yaml")).unwrap(), b"state");
+        assert!(!round.exists());
+        // The next round starts afresh and leaves the kept one alone.
+        fresh_round_dir(&round).unwrap();
+        assert!(round.is_dir() && kept.join("state.yaml").exists());
+    }
+
+    #[test]
+    fn filegen_ran_counts_the_steps_that_did_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("filegen-7.log");
+        let earlier = "# end steps_done=40 outcome=ok elapsed_ms=3\n";
+        std::fs::write(
+            &log,
+            format!(
+                "{earlier}# run seed=7 start_step=40 steps=18446744073709551615 log=\"x\"\n\
+                 step=41 ts=2026-11-12T00:00:00Z op=create_file path=\"a\" bytes=1 size=1 content=random post=f:1:664:1\n\
+                 step=42 ts=2026-11-12T00:00:00Z op=create_file path=\"b\" bytes=1 size=1 content=random post=f:1:664:1\n\
+                 # end steps_done=42 outcome=\"interrupted: SIGTERM\" elapsed_ms=9 skipped=3\n\
+                 # stat op=mkdir count=2\n"
+            ),
+        )
+        .unwrap();
+        let ran = filegen_ran(&log, earlier.len() as u64).unwrap();
+        assert_eq!(ran.lines.len(), 2);
+        assert_eq!(ran.steps, 5);
+        // Killed before it began: nothing logged, no step.
+        let empty = std::fs::metadata(&log).unwrap().len();
+        let ran = filegen_ran(&log, empty).unwrap();
+        assert_eq!((ran.lines.len(), ran.steps), (0, 0));
+        // Steps without an end line: the count is unknown.
+        std::fs::write(
+            &log,
+            "# run seed=7 start_step=0 steps=5\n\
+             step=1 ts=2026-11-12T00:00:00Z op=create_file path=\"a\" bytes=1 size=1 content=random post=f:1:664:1\n",
+        )
+        .unwrap();
+        assert!(filegen_ran(&log, 0).is_err());
     }
 
     #[test]

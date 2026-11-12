@@ -478,3 +478,53 @@ fn replay_rounds_reproduces_steps() {
     );
     assert_eq!(step_lines(&first), step_lines(&again));
 }
+
+/// An `irsync` that runs the real one, but makes a concurrent client sync
+/// (the only client run with a file report) exit 1.
+fn irsync_failing_concurrent_syncs(dir: &Path) -> PathBuf {
+    let real = bin().parent().unwrap().join("irsync");
+    let p = dir.join("irsync");
+    std::fs::write(
+        &p,
+        format!(
+            "#!/bin/sh\n\
+             if [ -n \"$IRSYNC_FILE_REPORT\" ] && [ \"$1\" != daemon ]; then\n\
+             \"{}\" \"$@\"; exit 1\n\
+             fi\n\
+             exec \"{}\" \"$@\"\n",
+            real.display(),
+            real.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn a_harness_error_still_records_the_round_and_prints_the_rerun() {
+    require_tools();
+    let t = tempfile::tempdir().unwrap();
+    let irsync = irsync_failing_concurrent_syncs(t.path());
+    let root = t.path().join("run");
+    let o = run_concurrent("push", &root, &[OsStr::new("--irsync"), irsync.as_os_str()]);
+    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("irsync client exited 1 in iteration 1"),
+        "{}",
+        show(&o)
+    );
+    let out = String::from_utf8_lossy(&o.stdout);
+    let root = root.canonicalize().unwrap();
+    assert!(
+        out.contains(&format!("  round kept in {}", root.join("round").display()))
+            && out.contains("  rerun: irsync-stress ")
+            && out.contains("--replay-rounds"),
+        "{}",
+        show(&o)
+    );
+    let rounds = std::fs::read_to_string(root.join("logs/rounds.tsv")).unwrap();
+    assert_eq!(rounds.lines().count(), 1, "{rounds}");
+    assert!(rounds.starts_with("1\tsteady:20\t"), "{rounds}");
+}

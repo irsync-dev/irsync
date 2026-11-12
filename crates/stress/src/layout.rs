@@ -97,6 +97,11 @@ impl Layout {
         self.root.join("round")
     }
 
+    /// Where a failed round's `round/` is moved.
+    pub fn failed_round_dir(&self, iter: u64) -> PathBuf {
+        self.root.join(format!("round-{iter:04}"))
+    }
+
     /// One `round\tpace\tsteps` line per concurrent round.
     pub fn rounds_file(&self) -> PathBuf {
         self.logs.join("rounds.tsv")
@@ -219,6 +224,7 @@ mod tests {
         assert!(l.filegen_stderr_log().ends_with("logs/filegen.stderr.log"));
         assert!(l.filegen_log(42).ends_with("filegen/filegen-42.log"));
         assert_eq!(l.round_dir(), l.root.join("round"));
+        assert_eq!(l.failed_round_dir(7), l.root.join("round-0007"));
         assert!(l.rounds_file().ends_with("logs/rounds.tsv"));
         assert!(l
             .client_report(2)

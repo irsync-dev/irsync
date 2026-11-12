@@ -122,17 +122,18 @@ impl RunningFilegen {
         );
     }
 
-    /// Waits up to `limit` for the child to exit; `None` if it has not.
-    fn wait_for(&mut self, limit: Duration) -> Result<Option<ExitStatus>> {
+    /// Waits up to `limit` (`None`: for as long as it takes) for the
+    /// child to exit; `None` if it has not.
+    fn wait_for(&mut self, limit: Option<Duration>) -> Result<Option<ExitStatus>> {
         let child = self.child.as_mut().expect("a running filegen");
-        let deadline = Instant::now() + limit;
+        let deadline = limit.map(|l| Instant::now() + l);
         loop {
             if let Some(status) = child.try_wait().context("waiting for filegen")? {
                 self.child = None;
                 self.clear_slot();
                 return Ok(Some(status));
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(None);
             }
             thread::sleep(POLL);
@@ -152,7 +153,7 @@ impl Drop for RunningFilegen {
             return;
         }
         self.terminate();
-        if !matches!(self.wait_for(DROP_GRACE), Ok(Some(_))) {
+        if !matches!(self.wait_for(Some(DROP_GRACE)), Ok(Some(_))) {
             if let Some(mut c) = self.child.take() {
                 let _ = c.kill();
                 let _ = c.wait();
@@ -194,8 +195,10 @@ pub fn spawn(filegen: &Path, args: &[OsString], stderr_log: &Path) -> Result<Run
 }
 
 /// Stops a background filegen: SIGTERM (filegen finishes the current step,
-/// saves its state and exits 143) unless `wait_only`, then waits at most
-/// 60 s. Exit 0 or 143 is fine, and so is death by our SIGTERM (filegen
+/// saves its state and exits 143) and a wait of at most 60 s; or, with
+/// `wait_only`, a wait with no limit for the run to end by itself (a
+/// replayed round may be long; the signal handler still stops filegen and
+/// the harness on Ctrl-C). Exit 0 or 143 is fine, and so is death by our SIGTERM (filegen
 /// had not yet set up its handler, so it had taken no step); anything
 /// else, or no exit in time, is an error naming the stderr log.
 pub fn stop(mut f: RunningFilegen, wait_only: bool) -> Result<()> {
@@ -203,7 +206,7 @@ pub fn stop(mut f: RunningFilegen, wait_only: bool) -> Result<()> {
         f.terminate();
     }
     let log = f.stderr_log.clone();
-    match f.wait_for(STOP_WAIT)? {
+    match f.wait_for((!wait_only).then_some(STOP_WAIT))? {
         Some(status) if matches!(status.code(), Some(0) | Some(143)) => Ok(()),
         Some(status) if !wait_only && status.signal() == Some(libc::SIGTERM) => Ok(()),
         Some(status) => Err(anyhow!(
