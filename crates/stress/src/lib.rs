@@ -3,6 +3,7 @@ pub mod client;
 pub mod daemon;
 pub mod filegen;
 pub mod fileset;
+pub mod judge;
 pub mod layout;
 pub mod process;
 pub mod report;
