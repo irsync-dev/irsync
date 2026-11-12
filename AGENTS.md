@@ -4,6 +4,12 @@ The contributor guide is the book under `book/src/contributing/`. Start with
 `setup.md` and `testing.md`. This file only lists the commands. Releases:
 `book/src/contributing/releasing.md`.
 
+## Setup
+
+`tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain,
+cargo-nextest, dist, mdbook) and checks the system tools;
+`tools/dev-setup.sh --check` only reports.
+
 ## Tests
 
 Everyday run, while working on a change:

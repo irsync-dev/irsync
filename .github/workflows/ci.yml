@@ -60,6 +60,8 @@ jobs:
         run: rsync --version | head -1
       - name: Format
         run: cargo fmt --all --check
+      - name: Test the dev setup script
+        run: python3 -m unittest discover -s tools/tests
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
       - name: Clippy without OpenTelemetry

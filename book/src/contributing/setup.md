@@ -18,6 +18,14 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 
 ## Requirements
 
+`tools/dev-setup.sh` sets most of this up and checks the rest. It installs
+what rustup and cargo can install: rustup, the toolchain with rustfmt and
+clippy, the musl target on Linux, and cargo-nextest, dist and mdbook at the
+versions CI uses. It points git at the repo's hooks. System tools such as
+rsync, Python and a C compiler it only checks, naming the package to
+install. `tools/dev-setup.sh --check` reports without changing anything. Run
+it again whenever you like.
+
 - **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
   picks up; CI and releases use the same file. To move to a newer Rust, change
   the version there and run the full regression.
