@@ -4793,6 +4793,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
+ "filegen",
  "jiff",
  "libc",
  "nix",
@@ -4800,6 +4801,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "xattr",
 ]
 
 [[package]]

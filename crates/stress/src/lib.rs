@@ -9,5 +9,6 @@ pub mod report;
 pub mod run;
 pub mod run_file;
 pub mod signals;
+pub mod snapshot;
 pub mod tools;
 pub mod verify;

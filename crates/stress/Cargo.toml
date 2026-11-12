@@ -14,11 +14,13 @@ clap = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 blake3 = { workspace = true }
-nix = { workspace = true, features = ["signal", "process"] }
+nix = { workspace = true, features = ["signal", "process", "fs", "time"] }
 libc = { workspace = true }
 rand = { workspace = true }
 jiff = { workspace = true }
 anyhow = { workspace = true }
+filegen = { path = "../filegen" }
+xattr = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
