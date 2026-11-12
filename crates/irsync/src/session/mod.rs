@@ -877,7 +877,31 @@ pub type ListingHook =
 /// [`SideHooks::no_change_checks`]); only a test-hooks build reads it.
 #[cfg(feature = "test-hooks")]
 pub fn no_change_checks_from_env() -> bool {
-    std::env::var_os("IRSYNC_TEST_NO_CHANGE_CHECKS").is_some_and(|v| v == "1")
+    no_change_checks_value(
+        std::env::var("IRSYNC_TEST_NO_CHANGE_CHECKS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// The switch is on only for the value `1`.
+#[cfg(feature = "test-hooks")]
+fn no_change_checks_value(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
+#[cfg(all(test, feature = "test-hooks"))]
+mod no_change_checks_tests {
+    use super::no_change_checks_value;
+
+    #[test]
+    fn only_one_turns_the_switch_on() {
+        assert!(!no_change_checks_value(None));
+        assert!(no_change_checks_value(Some("1")));
+        for v in ["0", "", "yes", "true", " 1"] {
+            assert!(!no_change_checks_value(Some(v)), "{v:?}");
+        }
+    }
 }
 
 impl SideHooks {
