@@ -753,3 +753,86 @@ async fn single_pull_of_a_directory_or_nothing_is_refused() {
     })
     .await;
 }
+
+/// A stand-in daemon on loopback that answers each probe connection with
+/// what `reply` says for it (by its number, from 0): `None` drops the
+/// connection after reading the Hello, `Some(body)` sends `body` framed.
+fn fake_daemon(
+    server: iroh::Endpoint,
+    reply: impl Fn(usize) -> Option<Vec<u8>> + Send + 'static,
+) -> tokio::task::JoinHandle<usize> {
+    tokio::spawn(async move {
+        let mut n = 0;
+        while let Some(incoming) = server.accept().await {
+            let Ok(conn) = incoming.await else { continue };
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                continue;
+            };
+            let _ = recv.read_to_end(1 << 20).await;
+            match reply(n) {
+                None => conn.close(0u32.into(), b"gone"),
+                Some(body) => {
+                    let len = (body.len() as u32).to_be_bytes();
+                    send.write_all(&len).await.unwrap();
+                    send.write_all(&body).await.unwrap();
+                    send.finish().unwrap();
+                    conn.closed().await;
+                }
+            }
+            n += 1;
+            if n == 2 {
+                break;
+            }
+        }
+        n
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_retries_a_connection_lost_before_the_reply() {
+    use irsync::session::reconnect::{probe_path, ReconnectOpts};
+    use irsync_proto::v1::PathInfo;
+    use prost::Message;
+    within30(async {
+        let (client, server) = common::loopback_pair().await;
+        let addr = common::addr_of(&server);
+        let file = PathInfo {
+            kind: Some(Kind::File as i32),
+        }
+        .encode_to_vec();
+        let daemon = fake_daemon(server, move |n| (n > 0).then(|| file.clone()));
+        let opts = ReconnectOpts {
+            dial_retries: 3,
+            backoff_min: Duration::from_millis(10),
+            backoff_max: Duration::from_millis(10),
+            ..ReconnectOpts::default()
+        };
+        let kind = probe_path(&client, addr, b"m/f.iso", "host:m/f.iso", opts)
+            .await
+            .unwrap();
+        assert_eq!(kind, Kind::File);
+        assert_eq!(daemon.await.unwrap(), 2, "the lost probe was tried again");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_reports_an_empty_reply_as_malformed() {
+    within30(async {
+        let (client, server) = common::loopback_pair().await;
+        let addr = common::addr_of(&server);
+        let _daemon = fake_daemon(server, |_| Some(Vec::new()));
+        let conn = client.connect(addr, irsync_proto::ALPN).await.unwrap();
+        let err = irsync::session::single::probe(&conn, b"m/f.iso")
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("malformed reply"), "{err:#}");
+        assert!(
+            err.downcast_ref::<irsync::session::engine::SessionRefused>()
+                .is_none(),
+            "{err:#}"
+        );
+        conn.close(0u32.into(), b"done");
+    })
+    .await;
+}

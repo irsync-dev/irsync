@@ -158,6 +158,10 @@ pub async fn probe(conn: &Connection, path: &[u8]) -> anyhow::Result<path_info::
         return path_info::Kind::try_from(kind).context("unknown kind of path in the reply");
     }
     match Error::decode(&body[..]) {
+        // A daemon's refusal always says why.
+        Ok(e) if e.code == Code::Unknown as i32 && e.message.is_empty() => {
+            anyhow::bail!("malformed reply to Hello")
+        }
         Ok(e) => Err(SessionRefused {
             code: Code::try_from(e.code).unwrap_or(Code::Unknown),
             message: e.message,

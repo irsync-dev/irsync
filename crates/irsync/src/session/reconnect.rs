@@ -273,9 +273,10 @@ pub fn explain(
 /// What `path` is on the daemon ([`super::single::probe`]), asked before a
 /// pull picks its local root. Dials the way a session's first connection
 /// does: each dial bounded by `opts.first_dial_timeout`, up to
-/// `opts.dial_retries` retries with backoff within `opts.max`; a daemon that
-/// never answered gives [`NeverReached`]. A refusal or close is explained
-/// as for a session.
+/// `opts.dial_retries` retries with backoff within `opts.max`. A connection
+/// lost before the reply counts as a failed try too; a daemon that never
+/// answered gives [`NeverReached`]. A refusal or a final close is explained
+/// as for a session and not retried.
 pub async fn probe_path(
     endpoint: &Endpoint,
     target: EndpointAddr,
@@ -285,6 +286,8 @@ pub async fn probe_path(
 ) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
     let start = Instant::now();
     let mut attempt = 0u32;
+    // Set once a dial has gone through.
+    let mut reached = false;
     loop {
         let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
         let dialled = match opts.first_dial_timeout {
@@ -298,24 +301,30 @@ pub async fn probe_path(
             },
             None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
         };
-        let msg = match dialled {
+        let err = match dialled {
             Ok(conn) => {
-                let res = super::single::probe(&conn, path)
-                    .await
-                    .map_err(|e| explain(e, Some(&conn), remote, &endpoint.id()));
+                reached = true;
+                let res = super::single::probe(&conn, path).await;
                 conn.close(0u32.into(), b"done");
-                return res;
+                match res {
+                    Ok(kind) => return Ok(kind),
+                    // Lost underneath the probe: try again, as for a dial.
+                    Err(e) if matches!(classify(&e, Some(&conn)), Next::Retry) => e,
+                    Err(e) => return Err(explain(e, Some(&conn), remote, &endpoint.id())),
+                }
             }
-            Err(msg) => msg,
+            Err(msg) => anyhow::Error::new(TransportError(msg)),
         };
-        let err = anyhow::Error::new(TransportError(msg));
         let elapsed = start.elapsed();
         if attempt >= opts.dial_retries || elapsed >= opts.max {
             let tries = attempt + 1;
             let plural = if tries == 1 { "" } else { "s" };
-            return Err(err
-                .context(NeverReached)
-                .context(format!("gave up after {tries} attempt{plural}")));
+            let err = if reached {
+                err
+            } else {
+                err.context(NeverReached)
+            };
+            return Err(err.context(format!("gave up after {tries} attempt{plural}")));
         }
         attempt += 1;
         let wait = opts.delay(attempt).min(opts.max - elapsed);
