@@ -17,6 +17,18 @@ pub struct SingleFile {
     pub local: RelPath,
 }
 
+impl SingleFile {
+    /// This side's name for the listing path `rel`: the wire name maps to
+    /// the local one, any other path is itself.
+    pub fn local_of<'a>(&'a self, rel: &'a RelPath) -> &'a RelPath {
+        if *rel == self.wire {
+            &self.local
+        } else {
+            rel
+        }
+    }
+}
+
 /// Where a single file goes: the directory to use as the session root, and
 /// the file's name inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]

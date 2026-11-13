@@ -589,6 +589,28 @@ impl Harness {
         (out, reconnects)
     }
 
+    /// Pushes the one file `src_file` to `dest_path` on the daemon (with a
+    /// trailing `/` when `contents_only`): the session's root is the file's
+    /// directory, and the CLI's filters apply on the client.
+    pub async fn run_single_push(
+        &self,
+        opts: &irsync::cli::SyncOptions,
+        src_file: &std::path::Path,
+        dest_path: &[u8],
+        contents_only: bool,
+    ) -> anyhow::Result<irsync::session::Outcome> {
+        let (parent, name) = irsync::session::single::split_last(src_file);
+        let mut hello = Self::hello(Flow::Push);
+        hello.path = dest_path.to_vec();
+        hello.contents_only = contents_only;
+        hello.single_file = true;
+        hello.name = name.clone();
+        let mut local = Self::side_for(&parent, self.client_state.path()).with_single(name);
+        local.contents_only = false;
+        local.filters = std::sync::Arc::new(irsync::filter::FilterSet::from_rules(&opts.filters)?);
+        self.run_hello(opts, hello, local).await
+    }
+
     /// One complete session; waits until the daemon has finished its side too.
     pub async fn run(
         &self,

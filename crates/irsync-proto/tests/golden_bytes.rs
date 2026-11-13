@@ -9,7 +9,7 @@ use prost::Message;
 
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(irsync_proto::PROTOCOL_VERSION, 3);
+    assert_eq!(irsync_proto::PROTOCOL_VERSION, 4);
 }
 
 fn enc(m: Msg) -> Vec<u8> {

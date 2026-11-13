@@ -34,6 +34,7 @@ use tracing::Instrument;
 use super::control::{self, Ev};
 use super::limits::{out_ceiling, LISTING_QUEUE};
 use super::listing_stream::{self, ListingSink};
+use super::single::{is_one_component, SingleFile};
 use super::{
     receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
     SessionRecord, SideHooks, HASH_WORKERS,
@@ -383,6 +384,9 @@ pub(super) struct Ctx {
     /// row, hashed when a whole file of their size is about to be fetched.
     pub cold: Arc<crate::warm::Cold>,
     pub filters: Arc<FilterSet>,
+    /// A single-file session: the root holds the one listed file, named
+    /// `wire` in the listing and `local` on this side.
+    pub single: Option<SingleFile>,
     pub opts: RoleOpts,
     pub privs: Privs,
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
@@ -400,8 +404,18 @@ impl Ctx {
         )
     }
 
+    /// This side's name for the listing path `rel`: the same path, except
+    /// for a single file's wire name, which maps to its local name.
+    pub fn local<'a>(&'a self, rel: &'a RelPath) -> &'a RelPath {
+        match &self.single {
+            Some(s) => s.local_of(rel),
+            None => rel,
+        }
+    }
+
     /// Absolute path of `rel` under the session root.
     pub fn full(&self, rel: &RelPath) -> PathBuf {
+        let rel = self.local(rel);
         if rel.as_bytes().is_empty() {
             self.root.clone()
         } else {
@@ -411,7 +425,7 @@ impl Ctx {
 
     /// The index key of a session-relative path.
     pub fn key(&self, rel: &RelPath) -> RelPath {
-        self.scope.key(rel)
+        self.scope.key(self.local(rel))
     }
 
     /// `--partial-dir` for a file writer, which works from `base` with index
@@ -430,8 +444,17 @@ impl Ctx {
         })
     }
 
-    /// Absolute path of an index key.
+    /// Absolute path of an index key. A single file's key under its wire
+    /// name maps to the key of its local name.
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
+        let mapped;
+        let key = match &self.single {
+            Some(s) if *key == self.scope.key(&s.wire) => {
+                mapped = self.scope.key(&s.local);
+                &mapped
+            }
+            _ => key,
+        };
         if key.as_bytes().is_empty() {
             self.base.clone()
         } else {
@@ -574,11 +597,16 @@ pub async fn client_session_key(
         Direction::DaemonSends => (remote_loc, local_loc),
         Direction::ListExports => bail!("a listing has no session"),
     };
-    let o = opts.clone();
-    Ok(
-        tokio::task::spawn_blocking(move || SessionKey::new(daemon, &src, &dst, &o).into_bytes())
-            .await?,
-    )
+    let (o, single) = (opts.clone(), local.single.clone());
+    Ok(tokio::task::spawn_blocking(move || {
+        let key = SessionKey::new(daemon, &src, &dst, &o);
+        match single {
+            Some(name) => key.with_single(&name),
+            None => key,
+        }
+        .into_bytes()
+    })
+    .await?)
 }
 
 /// This side's stored record of session `id`, if it is there and belongs to `key`.
@@ -646,6 +674,9 @@ pub(super) async fn run_client_inner(
     let mut hello = hello;
     let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     check_options(direction, opts)?;
+    if hello.single_file != local.single.is_some() {
+        bail!("a single-file session needs both Hello.single_file and the local file name");
+    }
     set_hello_options(&mut hello, opts, &local.filters);
     // The daemon's `session` span joins this one's trace.
     (hello.traceparent, hello.tracestate) = telemetry::inject(session);
@@ -673,6 +704,7 @@ pub(super) async fn run_client_inner(
     };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
+    let single = client_single(direction, &local, &ack)?;
     let listing = listing_stream::open(&conn, &session_id)
         .await
         .map_err(|e| TransportError(format!("opening listing stream: {e}")))?;
@@ -786,11 +818,39 @@ pub(super) async fn run_client_inner(
         verify,
         cold: Arc::default(),
         filters: local.filters,
+        single,
         opts: RoleOpts::client(opts),
         privs: Privs::current(),
         hooks: local.hooks,
     };
     run_role(Arc::new(ctx), send, recv, listing, sends, Side::Client).await
+}
+
+/// The client's view of a single-file session: its own file name, and the
+/// name on the wire, which is always the receiver's. On a push the daemon
+/// chose it (`HelloAck.single_name`); on a pull it is this side's.
+fn client_single(
+    direction: Direction,
+    local: &LocalSide,
+    ack: &HelloAck,
+) -> anyhow::Result<Option<SingleFile>> {
+    let Some(name) = &local.single else {
+        return Ok(None);
+    };
+    let one = |n: &[u8]| -> anyhow::Result<RelPath> {
+        match RelPath::new(n) {
+            Ok(r) if is_one_component(n) => Ok(r),
+            _ => bail!("invalid file name {}", crate::fs::paths::escape_path(n)),
+        }
+    };
+    let local = one(name)?;
+    let wire = match direction {
+        Direction::ClientSends => {
+            one(&ack.single_name).context("the daemon's name for the file")?
+        }
+        _ => local.clone(),
+    };
+    Ok(Some(SingleFile { wire, local }))
 }
 
 /// What [`prepare_root`] does with missing components of the session root.
@@ -860,6 +920,9 @@ pub struct Place {
     /// The export's `fsync` setting: a push into it flushes every file,
     /// whatever the client asked for.
     pub fsync: bool,
+    /// A single-file session: `rel` is the directory that holds the file,
+    /// and this names the file in it.
+    pub single: Option<SingleFile>,
 }
 
 /// `HelloAck` and plays the role opposite to the client's.
@@ -983,6 +1046,7 @@ async fn serve_daemon_inner(
         export: export_name,
         rel,
         fsync: export_fsync,
+        single,
     } = place;
     let handshake = phase(
         PhaseKind::Handshake,
@@ -1019,7 +1083,8 @@ async fn serve_daemon_inner(
         }
     };
     let remote = conn.remote_id();
-    let key = SessionKey::for_daemon(remote, &export_name, &rel, &hello).into_bytes();
+    let key =
+        SessionKey::for_daemon(remote, &export_name, &rel, &hello, single.as_ref()).into_bytes();
     let (session_id, record, _claim) = if hello.session_id.is_empty() {
         let mut id = [0u8; 16];
         OsRng.fill_bytes(&mut id);
@@ -1054,6 +1119,10 @@ async fn serve_daemon_inner(
             resumed,
             protocol_version: PROTOCOL_VERSION,
             build: Some(BuildInfo::current().to_wire()),
+            single_name: single
+                .as_ref()
+                .map(|s| s.wire.as_bytes().to_vec())
+                .unwrap_or_default(),
         },
     )
     .await?;
@@ -1188,9 +1257,14 @@ async fn serve_daemon_inner(
                 .collect(),
         )),
         opts: {
-            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
             let mut o = RoleOpts::daemon(&hello, !sends);
             o.fsync |= export_fsync && !sends;
+            // One file: nothing else in its directory is ever deleted.
+            if single.is_some() {
+                o.delete = DeleteMode::Off;
+                o.delete_excluded = false;
+                o.max_delete = None;
+            }
             #[cfg(feature = "test-hooks")]
             if let Some(p) = std::num::NonZeroUsize::new(
                 shared
@@ -1201,6 +1275,7 @@ async fn serve_daemon_inner(
             }
             o
         },
+        single,
         privs: Privs::current(),
         hooks: {
             #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
@@ -1726,6 +1801,7 @@ pub(super) async fn test_ctx() -> TestCtx {
         verify: hasher,
         cold: Arc::default(),
         filters: Arc::new(FilterSet::new(vec![])),
+        single: None,
         opts: RoleOpts {
             preserve: Preserve::default(),
             checksum: false,

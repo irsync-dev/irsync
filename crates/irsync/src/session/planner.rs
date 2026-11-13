@@ -439,6 +439,12 @@ impl Planner {
                 self.failed_dirs.insert(path);
                 return;
             }
+            if self.ctx.single.is_some() {
+                // The directory that holds a single file: never planned, so
+                // its metadata is never applied.
+                self.ok_dirs.insert(path);
+                return;
+            }
         } else {
             let parent = parent_of(&path);
             if self.failed_dirs.contains(&parent) {

@@ -30,6 +30,7 @@ async fn two_local_endpoints_exchange_hello() {
             resumed: false,
             protocol_version: hello.protocol_version,
             build: None,
+            single_name: vec![],
         };
         write_msg(&mut send, &ack).await.unwrap();
         send.finish().unwrap();

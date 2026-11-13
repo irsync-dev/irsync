@@ -105,6 +105,7 @@ message Hello {
   // sending side sends each file from a reflink clone or hashes it again
   // before the receiver places it; a receiving daemon (a push) does neither.
   bool paranoid = 30;
+  bool single_file = 31; // name (21) is the source basename on a push and the receiver's file name on a pull
 }
 // One export the asking key may use.
 message ExportEntry {
@@ -125,6 +126,7 @@ message HelloAck {
   bool resumed = 2;
   uint32 protocol_version = 3;
   BuildInfo build = 4; // the daemon's build, logged by the client
+  bytes single_name = 5; // push: the daemon's name for the file (the wire name)
 }
 // What a peer was built from; absent from an older peer.
 message BuildInfo {

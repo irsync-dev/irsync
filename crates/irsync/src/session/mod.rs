@@ -145,6 +145,7 @@ impl SessionKey {
         export: &str,
         rel: &RelPath,
         hello: &Hello,
+        single: Option<&single::SingleFile>,
     ) -> SessionKey {
         let mut h = blake3::Hasher::new();
         field(&mut h, b"irsync-daemon-session-key", b"v1");
@@ -170,6 +171,17 @@ impl SessionKey {
             ],
         );
         field(&mut h, b"sender", &[hello.paranoid as u8]);
+        if let Some(s) = single {
+            field(&mut h, b"single", s.local.as_bytes());
+        }
+        SessionKey(h.finalize().as_bytes().to_vec())
+    }
+
+    /// This key for a session over one file of the root, named `name` here.
+    pub fn with_single(self, name: &[u8]) -> SessionKey {
+        let mut h = blake3::Hasher::new();
+        field(&mut h, b"irsync-session-key", &self.0);
+        field(&mut h, b"single", name);
         SessionKey(h.finalize().as_bytes().to_vec())
     }
 
@@ -966,6 +978,8 @@ pub struct LocalSide {
     pub hasher: Arc<Hasher>,
     pub filters: Arc<FilterSet>,
     pub hooks: SideHooks,
+    /// A single-file session: this side's name for the file, in `root`.
+    pub single: Option<Vec<u8>>,
 }
 
 impl LocalSide {
@@ -983,6 +997,15 @@ impl LocalSide {
             hasher,
             filters,
             hooks: SideHooks::default(),
+            single: None,
+        }
+    }
+
+    /// This side as the one file `name` in `root`.
+    pub fn with_single(self, name: Vec<u8>) -> LocalSide {
+        LocalSide {
+            single: Some(name),
+            ..self
         }
     }
 }
@@ -1204,12 +1227,12 @@ mod tests {
             ..Hello::default()
         };
         assert_eq!(
-            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024")),
-            SessionKey::for_daemon(c, "photos", &rel, &h(b"/srv/photos/2024"))
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024"), None),
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"/srv/photos/2024"), None)
         );
         assert_ne!(
-            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024")),
-            SessionKey::for_daemon(c, "srv", &rel, &h(b"photos/2024"))
+            SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024"), None),
+            SessionKey::for_daemon(c, "srv", &rel, &h(b"photos/2024"), None)
         );
     }
 

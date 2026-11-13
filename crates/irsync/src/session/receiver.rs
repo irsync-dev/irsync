@@ -1629,6 +1629,7 @@ pub(super) async fn run(
                     busy: Some(ctx.busy.clone()),
                     activity: Some(ctx.activity.clone()),
                     meter: Some(ctx.meter.clone()),
+                    single: ctx.single.clone(),
                     #[cfg(feature = "test-hooks")]
                     inject: ctx.hooks.inject_listing.clone(),
                     #[cfg(feature = "test-hooks")]

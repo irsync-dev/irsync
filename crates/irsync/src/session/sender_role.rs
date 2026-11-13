@@ -343,6 +343,7 @@ impl SenderRole {
                 busy: Some(self.ctx.busy.clone()),
                 activity: Some(self.ctx.activity.clone()),
                 meter: Some(self.ctx.meter.clone()),
+                single: self.ctx.single.clone(),
                 #[cfg(feature = "test-hooks")]
                 inject: self.ctx.hooks.inject_listing.clone(),
                 #[cfg(feature = "test-hooks")]
@@ -387,9 +388,9 @@ impl SenderRole {
             async move {
                 let result = async {
                     if check {
-                        let (root, p, filters) =
-                            (ctx.root.clone(), path.clone(), ctx.filters.clone());
-                        if !blocking(move || Ok(walk_admits(&root, &p, &filters))).await? {
+                        let c = ctx.clone();
+                        let p = path.clone();
+                        if !blocking(move || Ok(admits(&c, &p))).await? {
                             return Err(io::Error::new(
                                 io::ErrorKind::PermissionDenied,
                                 "not a listed regular file",
@@ -1753,7 +1754,7 @@ async fn check_links(
                     if c.hooks.no_change_checks() {
                         return None;
                     }
-                    if !walk_admits(&c.root, &path, &c.filters) {
+                    if !admits(&c, &path) {
                         return Some((path, None));
                     }
                     match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
@@ -1798,6 +1799,16 @@ async fn check_links(
         }
     }
     out.send_paced(Msg::LinksChecked(LinksChecked {})).await;
+}
+
+/// Whether this side's listing would hold `path` as a regular file: in a
+/// single-file session only the file's wire name, checked under its local
+/// name; else as [`walk_admits`] says.
+fn admits(ctx: &Ctx, path: &RelPath) -> bool {
+    if ctx.single.as_ref().is_some_and(|s| *path != s.wire) {
+        return false;
+    }
+    walk_admits(&ctx.root, ctx.local(path), &ctx.filters)
 }
 
 /// Whether the walk (from `root`, with `filters`) would list `path` as a

@@ -23,6 +23,7 @@ fn hello_roundtrips() {
         inplace: true,
         fsync: true,
         paranoid: true,
+        single_file: true,
         append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
         build: Some(irsync_proto::v1::BuildInfo {
             version: "0.1.0".into(),

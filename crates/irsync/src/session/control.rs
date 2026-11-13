@@ -24,8 +24,9 @@ use tracing::Instrument;
 use super::engine::{Ctx, PeerEvents};
 use super::limits::{Backlog, ByteBudget, OUT_BUDGET, PEER_EVENTS};
 use super::listing_stream::{ListingOut, PeerScan};
+use super::single::SingleFile;
 use super::{IndexScope, SessionRecord, StreamKind};
-use crate::filter::FilterSet;
+use crate::filter::{FilterSet, Verdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::index::IndexHandle;
@@ -470,6 +471,9 @@ pub(super) struct ListingSpec {
     pub activity: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Times the walk.
     pub meter: Option<Arc<crate::telemetry::meter::Meter>>,
+    /// A single-file session: list only the root and this one file (under
+    /// its wire name), never walk the root.
+    pub single: Option<SingleFile>,
     /// Test hook: extra entries to list right after an entry.
     #[cfg(feature = "test-hooks")]
     pub inject: Option<super::ListingHook>,
@@ -495,20 +499,34 @@ pub(super) fn spawn_listing(
     local: Option<mpsc::Sender<Listed>>,
     listed: Option<ListedFiles>,
 ) -> JoinHandle<ScanSummary> {
-    let (mut rx, summary) = walk(
-        spec.root.clone(),
-        spec.filters.clone(),
-        WalkOpts {
-            follow_root_symlink: true,
-            threads: WALK_THREADS,
-            max_depth: (!spec.recursive).then_some(1),
-        },
-        spec.meter.clone(),
-    );
+    // A single file is listed on the listing thread itself: at most two
+    // events, which the channel always has room for.
+    let mut single = None;
+    let (mut rx, summary) = match &spec.single {
+        Some(s) => {
+            let (tx, rx) = mpsc::channel(2);
+            let (stx, srx) = tokio::sync::oneshot::channel();
+            single = Some((s.clone(), tx, stx));
+            (rx, srx)
+        }
+        None => walk(
+            spec.root.clone(),
+            spec.filters.clone(),
+            WalkOpts {
+                follow_root_symlink: true,
+                threads: WALK_THREADS,
+                max_depth: (!spec.recursive).then_some(1),
+            },
+            spec.meter.clone(),
+        ),
+    };
     // Waits on `listing` and `local` for the whole walk: a thread of its
     // own, not one of the blocking pool's (see `scan::spawn_thread`).
     crate::scan::spawn_thread("irsync-listing", move || {
         let _in_list = spec.phase.span().clone().entered();
+        if let Some((s, tx, stx)) = single {
+            let _ = stx.send(list_single(spec.root.clone(), &s, &spec.filters, &tx));
+        }
         let under_skip = |p: &RelPath| {
             spec.skip.as_ref().is_some_and(|s| {
                 let (p, s) = (p.as_bytes(), s.as_bytes());
@@ -593,8 +611,13 @@ pub(super) fn spawn_listing(
                 }
             }
             let digest = if entry.kind() == Kind::Regular {
+                // The index knows a single file by this side's name.
+                let local_path = match &spec.single {
+                    Some(s) => s.local_of(&item.path),
+                    None => &item.path,
+                };
                 let keyed = ScanItem {
-                    path: spec.scope.key(&item.path),
+                    path: spec.scope.key(local_path),
                     ..item.clone()
                 };
                 let d = match spec.hasher.cached(&keyed) {
@@ -695,6 +718,63 @@ pub(super) fn spawn_listing(
         listing.finish();
         summary
     })
+}
+
+/// The listing of a single-file session, sent on `tx` (which has room for
+/// both events): the root, then the file `local` under its `wire` name when
+/// `filters` admit it. A missing file lists nothing; a file that cannot be
+/// stat'ed is a gap. As a walk does, a root that is a symlink to a
+/// directory is listed as that directory.
+fn list_single(
+    mut root: PathBuf,
+    single: &SingleFile,
+    filters: &FilterSet,
+    tx: &mpsc::Sender<ScanEvent>,
+) -> ScanSummary {
+    use crate::fs::meta::lstat_entry_with_ctime;
+    let mut sum = ScanSummary::default();
+    let gap = |sum: &mut ScanSummary, path: RelPath, message: String| {
+        sum.incomplete = true;
+        sum.errors.push((path.clone(), message.clone()));
+        let _ = tx.try_send(ScanEvent::Gap { path, message });
+    };
+    if std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
+        if let Ok(real) = std::fs::canonicalize(&root) {
+            root = real;
+        }
+    }
+    match lstat_entry_with_ctime(&root, &RelPath::root()) {
+        Ok((entry, ctime)) => {
+            sum.entries += 1;
+            let _ = tx.try_send(ScanEvent::Entry(ScanItem {
+                path: RelPath::root(),
+                entry,
+                ctime,
+            }));
+        }
+        Err(e) => {
+            gap(&mut sum, RelPath::root(), e.to_string());
+            return sum;
+        }
+    }
+    match lstat_entry_with_ctime(&root, &single.local) {
+        Ok((mut entry, ctime)) => {
+            let is_dir = entry.kind() == Kind::Directory;
+            if filters.matches(&single.local, is_dir) == Verdict::Exclude {
+                return sum;
+            }
+            entry.path = single.wire.as_bytes().to_vec();
+            sum.entries += 1;
+            let _ = tx.try_send(ScanEvent::Entry(ScanItem {
+                path: single.wire.clone(),
+                entry,
+                ctime,
+            }));
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => gap(&mut sum, single.wire.clone(), e.to_string()),
+    }
+    sum
 }
 
 fn now_secs() -> i64 {

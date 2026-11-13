@@ -36,6 +36,7 @@ use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{serve_daemon, Place};
+use crate::session::single::{is_one_component, place_file, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, HASH_WORKERS};
@@ -530,8 +531,19 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         Ok(None) => Err(no_access(&hello)),
         Err(e) => Err(e),
     };
+    let validated = match validated {
+        Ok((resolved, rel)) if hello.single_file => {
+            let (root, hello) = (resolved.export.path.clone(), hello.clone());
+            tokio::task::spawn_blocking(move || place_single(&root, &rel, &hello))
+                .await
+                .unwrap_or_else(|e| Err((Code::Internal, format!("placing the file failed: {e}"))))
+                .map(|(rel, single)| (resolved, rel, Some(single)))
+        }
+        Ok((resolved, rel)) => Ok((resolved, rel, None)),
+        Err(e) => Err(e),
+    };
     match validated {
-        Ok((resolved, rel)) => {
+        Ok((resolved, rel, single)) => {
             let root = resolved.export.path.clone();
             let name = resolved.name.to_string();
             let index = match index_for(&shared, &name, resolved.export) {
@@ -553,6 +565,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
                 export: name,
                 rel,
                 fsync: resolved.export.fsync,
+                single,
             };
             let res = serve_daemon(conn, send, recv, place, hello, index, hosting, &local_id).await;
             #[cfg(feature = "test-hooks")]
@@ -682,18 +695,21 @@ async fn serve_immediate(
         Ok(None) => return Err(no_access(hello)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
+    // A single file pushed to a name, not into a directory.
+    let file_dest = hello.single_file && push && !hello.contents_only;
     let (shared, path) = (shared.clone(), hello.path.clone());
-    tokio::task::spawn_blocking(move || add_immediate(&shared, abs, push, id, &path))
+    tokio::task::spawn_blocking(move || add_immediate(&shared, abs, push, file_dest, id, &path))
         .await
         .unwrap_or_else(|e| Err((Code::Internal, format!("adding the export failed: {e}"))))
 }
 
 /// The blocking part of [`serve_immediate`] for `abs`, the resolved form
-/// of `path` (as typed, for messages).
+/// of `path` (as typed, for messages). `file_dest`: see [`auto_root`].
 fn add_immediate(
     shared: &Shared,
     abs: PathBuf,
     push: bool,
+    file_dest: bool,
     id: iroh::EndpointId,
     path: &[u8],
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
@@ -704,7 +720,7 @@ fn add_immediate(
         ),
         e => (Code::BadPath, e.to_string()),
     };
-    let root = auto_root(&abs, push, false).map_err(refuse)?;
+    let root = auto_root(&abs, push, file_dest).map_err(refuse)?;
     // A symlink may lead to `/` or to a name that is not UTF-8.
     let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoRootError::NotFound))?;
     check_root(&canonical).map_err(refuse)?;
@@ -730,7 +746,13 @@ fn admit<'a>(
     resolved: Resolved<'a>,
     hello: &Hello,
 ) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
-    let rel = if hello.name.is_empty() {
+    // A single file's name is placed by `place_single`, not joined here.
+    let rel = if hello.single_file {
+        if !is_one_component(&hello.name) {
+            return Err((Code::BadPath, "invalid name".into()));
+        }
+        resolved.rel.clone()
+    } else if hello.name.is_empty() {
         resolved.rel.clone()
     } else {
         resolved
@@ -744,12 +766,56 @@ fn admit<'a>(
                 return Err((Code::ReadOnly, "export is read-only for this key".into()));
             }
         }
+        Ok(Direction::DaemonSends) if hello.single_file => {
+            return Err((
+                Code::BadPath,
+                "pulling a single file is not supported".into(),
+            ));
+        }
         Ok(Direction::DaemonSends) => {}
         // A listing never reaches here; no dedicated code for a malformed
         // direction either: UNKNOWN is the honest answer.
         Ok(Direction::ListExports) | Err(_) => return Err((Code::Unknown, "bad direction".into())),
     }
     Ok((resolved, rel))
+}
+
+/// A single-file push to `rel` in the export at `export_root`: the
+/// directory that will hold the file (export-relative) and the file's
+/// name in it, by rsync's rules ([`place_file`]). A symlink at the
+/// destination is never followed (it is replaced by the file); the
+/// session root's components are checked later by `prepare_root`.
+fn place_single(
+    export_root: &Path,
+    rel: &RelPath,
+    hello: &Hello,
+) -> Result<(RelPath, SingleFile), (Code, String)> {
+    use std::os::unix::ffi::OsStrExt;
+    let dest = if rel.as_bytes().is_empty() {
+        export_root.to_path_buf()
+    } else {
+        export_root.join(rel.to_os())
+    };
+    let placed = place_file(&dest, hello.contents_only, &hello.name, false)
+        .map_err(|e| (Code::BadPath, e.to_string()))?;
+    let root = placed
+        .root
+        .strip_prefix(export_root)
+        .ok()
+        .and_then(|r| RelPath::new(r.as_os_str().as_bytes()).ok());
+    let name = RelPath::new(&placed.name)
+        .ok()
+        .filter(|_| is_one_component(&placed.name));
+    match (root, name) {
+        (Some(root), Some(name)) => Ok((
+            root,
+            SingleFile {
+                wire: name.clone(),
+                local: name,
+            },
+        )),
+        _ => Err((Code::BadPath, "invalid path".into())),
+    }
 }
 
 async fn reject(
