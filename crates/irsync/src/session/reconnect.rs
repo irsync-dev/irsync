@@ -274,15 +274,17 @@ pub fn explain(
 /// pull picks its local root. Dials the way a session's first connection
 /// does: each dial bounded by `opts.first_dial_timeout`, up to
 /// `opts.dial_retries` retries with backoff within `opts.max`. A connection
-/// lost before the reply counts as a failed try too; a daemon that never
-/// answered gives [`NeverReached`]. A refusal or a final close is explained
-/// as for a session and not retried.
+/// lost before the reply, or no reply within `timeout` (`--timeout`),
+/// counts as a failed try too; a daemon that never answered gives
+/// [`NeverReached`]. A refusal or a final close is explained as for a
+/// session and not retried.
 pub async fn probe_path(
     endpoint: &Endpoint,
     target: EndpointAddr,
     path: &[u8],
     remote: &str,
     opts: ReconnectOpts,
+    timeout: Option<Duration>,
 ) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
     let start = Instant::now();
     let mut attempt = 0u32;
@@ -304,7 +306,7 @@ pub async fn probe_path(
         let err = match dialled {
             Ok(conn) => {
                 reached = true;
-                let res = super::single::probe(&conn, path).await;
+                let res = super::single::probe(&conn, path, timeout).await;
                 conn.close(0u32.into(), b"done");
                 match res {
                     Ok(kind) => return Ok(kind),

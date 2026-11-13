@@ -842,7 +842,7 @@ async fn probe_retries_a_connection_lost_before_the_reply() {
             backoff_max: Duration::from_millis(10),
             ..ReconnectOpts::default()
         };
-        let kind = probe_path(&client, addr, b"m/f.iso", "host:m/f.iso", opts)
+        let kind = probe_path(&client, addr, b"m/f.iso", "host:m/f.iso", opts, None)
             .await
             .unwrap();
         assert_eq!(kind, Kind::File);
@@ -858,13 +858,45 @@ async fn probe_reports_an_empty_reply_as_malformed() {
         let addr = common::addr_of(&server);
         let _daemon = fake_daemon(server, |_| Some(Vec::new()));
         let conn = client.connect(addr, irsync_proto::ALPN).await.unwrap();
-        let err = irsync::session::single::probe(&conn, b"m/f.iso")
+        let err = irsync::session::single::probe(&conn, b"m/f.iso", None)
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("malformed reply"), "{err:#}");
         assert!(
             err.downcast_ref::<irsync::session::engine::SessionRefused>()
                 .is_none(),
+            "{err:#}"
+        );
+        conn.close(0u32.into(), b"done");
+    })
+    .await;
+}
+
+/// A daemon that takes the probe but never answers: the wait for the reply
+/// ends at `--timeout`, as a transport error (so `probe_path` retries it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_without_a_reply_times_out() {
+    within30(async {
+        let (client, server) = common::loopback_pair().await;
+        let addr = common::addr_of(&server);
+        let _daemon = tokio::spawn(async move {
+            let conn = server.accept().await.unwrap().await.unwrap();
+            let (_send, mut recv) = conn.accept_bi().await.unwrap();
+            let _ = recv.read_to_end(1 << 20).await;
+            conn.closed().await;
+        });
+        let conn = client.connect(addr, irsync_proto::ALPN).await.unwrap();
+        let err =
+            irsync::session::single::probe(&conn, b"m/f.iso", Some(Duration::from_millis(200)))
+                .await
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no reply to Hello within"),
+            "{err:#}"
+        );
+        assert!(
+            err.downcast_ref::<irsync::session::engine::TransportError>()
+                .is_some(),
             "{err:#}"
         );
         conn.close(0u32.into(), b"done");

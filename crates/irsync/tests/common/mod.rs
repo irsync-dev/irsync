@@ -633,7 +633,7 @@ impl Harness {
             .client
             .connect(self.daemon.addr.clone(), irsync_proto::ALPN)
             .await?;
-        let kind = irsync::session::single::probe(&conn, remote_path).await;
+        let kind = irsync::session::single::probe(&conn, remote_path, None).await;
         conn.close(0u32.into(), b"done");
         kind
     }

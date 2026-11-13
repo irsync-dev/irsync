@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::Context;
 use iroh::endpoint::Connection;
@@ -143,8 +144,14 @@ pub fn source_is_single(path: &Path, contents_only: bool) -> Result<bool, PlaceE
 
 /// Asks the daemon what `path` (as typed, without a trailing slash) is,
 /// before the client picks a local root for a pull. A refusal comes back
-/// as [`SessionRefused`], with the codes a pull of `path` would get.
-pub async fn probe(conn: &Connection, path: &[u8]) -> anyhow::Result<path_info::Kind> {
+/// as [`SessionRefused`], with the codes a pull of `path` would get. The
+/// wait for the reply ends after `timeout` (`--timeout`; none or zero:
+/// no limit), as for a session's Hello.
+pub async fn probe(
+    conn: &Connection,
+    path: &[u8],
+    timeout: Option<Duration>,
+) -> anyhow::Result<path_info::Kind> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         direction: hello::Direction::Probe as i32,
@@ -160,9 +167,17 @@ pub async fn probe(conn: &Connection, path: &[u8]) -> anyhow::Result<path_info::
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
-    let body = read_frame(&mut recv)
-        .await
-        .map_err(|e| TransportError(format!("reading PathInfo: {e}")))?;
+    let reply = async {
+        read_frame(&mut recv)
+            .await
+            .map_err(|e| TransportError(format!("reading PathInfo: {e}")))
+    };
+    let body = match timeout.filter(|t| !t.is_zero()) {
+        Some(t) => tokio::time::timeout(t, reply)
+            .await
+            .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
+        None => reply.await?,
+    };
     // An Error never holds field 3, so a reply without `kind` is one.
     if let Ok(PathInfo { kind: Some(kind) }) = PathInfo::decode(&body[..]) {
         return path_info::Kind::try_from(kind).context("unknown kind of path in the reply");

@@ -921,7 +921,10 @@ async fn sync(
                     // With a trailing slash the remote path must be a directory.
                     Direction::DaemonSends if !*remote_co => {
                         let (endpoint, target) = (&conn.endpoint, conn.target.clone());
-                        let kind = probe_path(endpoint, target, rpath, &remote_text, ropts).await?;
+                        let timeout = conn.opts.timeout;
+                        let kind =
+                            probe_path(endpoint, target, rpath, &remote_text, ropts, timeout)
+                                .await?;
                         pull_plan(dir_plan.clone(), kind, path, *local_co, rpath)?
                     }
                     Direction::DaemonSends => dir_plan.clone(),
