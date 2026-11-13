@@ -104,6 +104,10 @@ on a pull.
 - `irsync myserver:dir/f.iso` with no destination lists that one file.
 - The missing parent directories of `T` are handled as for a directory
   destination.
+- On a push the daemon does not follow a symlink at `T`. A symlink to a
+  file, or one that points nowhere, is replaced by the file. A symlink to a
+  directory is an error ("is a symlink to a directory"); name the real
+  directory instead.
 
 A pull without a trailing slash first asks the daemon whether the path is a
 file, a directory or missing. That costs one extra short connection. A

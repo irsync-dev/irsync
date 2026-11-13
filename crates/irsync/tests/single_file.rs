@@ -449,12 +449,15 @@ async fn push_through_symlink_fails() {
             assert!(err.contains("bad session path"), "{dest:?}: {err}");
             assert!(err.contains("is not a directory"), "{dest:?}: {err}");
         }
-        // Into the link: it is not a directory.
+        // Into the link: it is not followed.
         let err = h
             .run_single_push(&archive_opts(), &f, b"m/link", true)
             .await
             .unwrap_err();
-        assert!(format!("{err:#}").contains("not a directory"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("is a symlink to a directory"),
+            "{err:#}"
+        );
         assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"outside");
         let mut names: Vec<_> = fs::read_dir(outside.path())
             .unwrap()
@@ -468,6 +471,38 @@ async fn push_through_symlink_fails() {
                 .count(),
             0
         );
+    })
+    .await;
+}
+
+/// A push to `m/link`, a symlink to a directory outside the export, is
+/// refused: the link stays and nothing is written where it points.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_onto_symlink_to_dir_is_refused() {
+    within30(async {
+        let h = Harness::new().await;
+        let outside = outside_link(&h);
+        let f = source(&h, b"image");
+        let err = h
+            .run_single_push(&archive_opts(), &f, b"m/link", false)
+            .await
+            .unwrap_err();
+        let err = format!("{err:#}");
+        let want = format!(
+            "bad session path: {} is a symlink to a directory",
+            h.export.path().join("link").display()
+        );
+        assert!(err.contains(&want), "{err}");
+        let link = h.export.path().join("link");
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), outside.path());
+        let mut names: Vec<_> = fs::read_dir(outside.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["secret", "sub"]);
+        assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"outside");
     })
     .await;
 }

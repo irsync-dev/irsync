@@ -835,8 +835,11 @@ fn place_single(
     } else {
         export_root.join(rel.to_os())
     };
-    let placed = place_file(&dest, hello.contents_only, &hello.name, false)
-        .map_err(|e| (Code::BadPath, e.to_string()))?;
+    let placed =
+        place_file(&dest, hello.contents_only, &hello.name, false).map_err(|e| match e {
+            PlaceError::SymlinkToDirectory(_) => (Code::BadPath, format!("bad session path: {e}")),
+            e => (Code::BadPath, e.to_string()),
+        })?;
     let root = placed
         .root
         .strip_prefix(export_root)

@@ -84,15 +84,42 @@ fn symlink_dest_followed_on_client() {
     assert_eq!((p.root, p.name), (t, b"f.iso".to_vec()));
 }
 
+/// On the daemon a symlink at `T` to a file, or a dangling one, is a file
+/// to replace: nothing is written through it.
 #[test]
 fn symlink_dest_is_a_file_on_daemon() {
+    let d = tempfile::tempdir().unwrap();
+    let real = d.path().join("real");
+    fs::write(&real, b"x").unwrap();
+    for (t, to) in [("T", real.clone()), ("D", d.path().join("nowhere"))] {
+        let t = d.path().join(t);
+        symlink(&to, &t).unwrap();
+        let p = place_file(&t, false, b"f.iso", false).unwrap();
+        assert_eq!((p.root, p.name), parent_name(&t));
+    }
+}
+
+/// On the daemon a symlink at `T` to a directory is refused, with or
+/// without a trailing slash: neither replacing the link nor writing into
+/// its target is what the user meant.
+#[test]
+fn symlink_to_dir_dest_is_refused_on_daemon() {
     let d = tempfile::tempdir().unwrap();
     let real = d.path().join("real");
     fs::create_dir(&real).unwrap();
     let t = d.path().join("T");
     symlink(&real, &t).unwrap();
-    let p = place_file(&t, false, b"f.iso", false).unwrap();
-    assert_eq!((p.root, p.name), (d.path().to_path_buf(), b"T".to_vec()));
+    for contents_only in [false, true] {
+        match place_file(&t, contents_only, b"f.iso", false) {
+            Err(e @ PlaceError::SymlinkToDirectory(_)) => {
+                assert_eq!(
+                    e.to_string(),
+                    format!("{} is a symlink to a directory", t.display())
+                )
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }
 
 #[test]

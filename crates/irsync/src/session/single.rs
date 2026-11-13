@@ -53,6 +53,10 @@ pub enum PlaceError {
     NotADirectory(PathBuf),
     #[error("{}: is a directory", .0.display())]
     IsADirectory(PathBuf),
+    /// The daemon's destination is a symlink to a directory: it neither
+    /// replaces the link nor writes through it.
+    #[error("{} is a symlink to a directory", .0.display())]
+    SymlinkToDirectory(PathBuf),
     #[error("{}: {}", .0.display(), .1)]
     Io(PathBuf, io::Error),
 }
@@ -78,7 +82,9 @@ pub fn split_last(path: &Path) -> (PathBuf, Vec<u8>) {
 
 /// Decide where a single file named `src_name` lands for destination `dest`.
 /// `follow` resolves a symlink at `dest` (the client does, the daemon does
-/// not). A missing root directory is not checked here; callers create it.
+/// not). Without `follow`, a symlink to a file (or a dangling one) is a
+/// file to replace and a symlink to a directory is refused. A missing root
+/// directory is not checked here; callers create it.
 pub fn place_file(
     dest: &Path,
     contents_only: bool,
@@ -92,6 +98,10 @@ pub fn place_file(
     };
     let in_dir = match meta {
         Ok(m) if m.is_dir() => true,
+        // Only decides; nothing is written through the link.
+        Ok(m) if m.is_symlink() && std::fs::metadata(dest).is_ok_and(|t| t.is_dir()) => {
+            return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()))
+        }
         Ok(_) => {
             if contents_only {
                 return Err(PlaceError::NotADirectory(dest.to_path_buf()));

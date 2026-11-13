@@ -428,8 +428,16 @@ cross-referenced from commit messages and review notes.
     gets lasting read-write access to the whole parent. The user chose this
     knowingly. Cost if wrong: a wider grant than the one file.
   - *Both sides check the path above the file.* A symlinked or non-directory
-    parent is refused before the file or the probe looks below it, so
-    neither leaks what exists outside an export.
+    parent fails a push or pull, and a probe answers `MISSING` for it,
+    before anything below it is looked at, so neither leaks what exists
+    outside an export.
+  - *The daemon does not follow a symlink at `T`.* A symlink to a file, or a
+    dangling one, is replaced by the file. A symlink to a directory is
+    refused (`BAD_PATH`, "is a symlink to a directory"): replacing the link
+    would surprise a user who meant the directory, and writing through it
+    could reach outside the export. Only the link's target kind is looked
+    at; nothing is written through it. Cost if wrong: a user must name the
+    real directory instead of the link.
   - *No directory is ever replaced by a file.* An empty directory at
     `T/f.iso` fails, where rsync replaces it. Cost if wrong: one rsync
     divergence.
