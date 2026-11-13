@@ -1213,7 +1213,7 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "filegen"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "clap",
  "indicatif",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "fileset"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "irsync"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "irsync-proto"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "blake3",
  "fastcdc",
@@ -2920,7 +2920,7 @@ dependencies = [
 
 [[package]]
 name = "netstress"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -4787,7 +4787,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stress"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "anyhow",
  "blake3",
