@@ -445,7 +445,9 @@ impl Ctx {
     }
 
     /// Absolute path of an index key. A single file's key under its wire
-    /// name maps to the key of its local name.
+    /// name maps to the key of its local name. Every caller today passes a
+    /// key already built from the local name, so that mapping never fires;
+    /// it is kept as a guard for a caller that passes the wire key.
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
         let mapped;
         let key = match &self.single {
