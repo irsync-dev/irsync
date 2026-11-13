@@ -11,6 +11,7 @@ mod receiver;
 pub mod reconnect;
 mod recv_io;
 mod sender_role;
+pub mod single;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
