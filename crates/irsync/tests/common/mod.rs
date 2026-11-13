@@ -611,6 +611,50 @@ impl Harness {
         self.run_hello(opts, hello, local).await
     }
 
+    /// What `remote_path` is on the daemon (one probe connection).
+    pub async fn probe(
+        &self,
+        remote_path: &[u8],
+    ) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+        let conn = self
+            .client
+            .connect(self.daemon.addr.clone(), irsync_proto::ALPN)
+            .await?;
+        let kind = irsync::session::single::probe(&conn, remote_path).await;
+        conn.close(0u32.into(), b"done");
+        kind
+    }
+
+    /// Pulls the one file at `remote_path` to `dest` (with a trailing `/`
+    /// when `contents_only`), as the CLI does: probes first, so nothing is
+    /// created locally unless the remote path is a file, then places it by
+    /// rsync's rules and pulls into the directory that holds it.
+    pub async fn run_single_pull(
+        &self,
+        opts: &irsync::cli::SyncOptions,
+        remote_path: &[u8],
+        dest: &std::path::Path,
+        contents_only: bool,
+    ) -> anyhow::Result<irsync::session::Outcome> {
+        use irsync::session::single::{place_file, split_last};
+        use irsync_proto::v1::path_info::Kind;
+        use std::os::unix::ffi::OsStrExt;
+        let kind = self.probe(remote_path).await?;
+        anyhow::ensure!(kind == Kind::File, "remote path is {kind:?}, not a file");
+        let remote = std::path::Path::new(std::ffi::OsStr::from_bytes(remote_path));
+        let (_, basename) = split_last(remote);
+        let placed = place_file(dest, contents_only, &basename, true)?;
+        let mut hello = Self::hello(Flow::Pull);
+        hello.path = remote_path.to_vec();
+        hello.contents_only = false;
+        hello.single_file = true;
+        hello.name = placed.name.clone();
+        let mut local =
+            Self::side_for(&placed.root, self.client_state.path()).with_single(placed.name);
+        local.contents_only = false;
+        self.run_hello(opts, hello, local).await
+    }
+
     /// One complete session; waits until the daemon has finished its side too.
     pub async fn run(
         &self,

@@ -6,7 +6,17 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
+use iroh::endpoint::Connection;
+use irsync_proto::chunk::CHUNK_PARAMS;
+use irsync_proto::v1::{error::Code, hello, path_info, Error, Hello, PathInfo};
+use irsync_proto::PROTOCOL_VERSION;
+use prost::Message;
+
+use super::engine::{read_frame, SessionRefused, TransportError};
+use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
+use crate::net::frame::write_msg;
 
 /// A one-file transfer. Each name is exactly one path component. `wire` is
 /// the receiver's name for the file, `local` is this side's name; they are
@@ -119,4 +129,42 @@ pub fn source_is_single(path: &Path, contents_only: bool) -> Result<bool, PlaceE
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(PlaceError::Io(path.to_path_buf(), e)),
     }
+}
+
+/// Asks the daemon what `path` (as typed, without a trailing slash) is,
+/// before the client picks a local root for a pull. A refusal comes back
+/// as [`SessionRefused`], with the codes a pull of `path` would get.
+pub async fn probe(conn: &Connection, path: &[u8]) -> anyhow::Result<path_info::Kind> {
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        direction: hello::Direction::Probe as i32,
+        chunk_min: CHUNK_PARAMS.min,
+        chunk_avg: CHUNK_PARAMS.avg,
+        chunk_max: CHUNK_PARAMS.max,
+        build: Some(BuildInfo::current().to_wire()),
+        path: path.to_vec(),
+        ..Hello::default()
+    };
+    let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
+    write_msg(&mut send, &hello)
+        .await
+        .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
+    send.finish()?;
+    let body = read_frame(&mut recv)
+        .await
+        .map_err(|e| TransportError(format!("reading PathInfo: {e}")))?;
+    // Both replies decode as either message (field 1 is a varint in each).
+    // A PathInfo never holds field 2; the daemon's Error always has a
+    // message there.
+    if let Ok(e) = Error::decode(&body[..]) {
+        if !e.message.is_empty() {
+            return Err(SessionRefused {
+                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+                message: e.message,
+            }
+            .into());
+        }
+    }
+    let info = PathInfo::decode(&body[..]).context("malformed reply to Hello")?;
+    path_info::Kind::try_from(info.kind).context("unknown kind of path in the reply")
 }

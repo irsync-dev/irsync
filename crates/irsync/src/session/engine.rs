@@ -512,7 +512,7 @@ impl Privs {
 }
 
 /// Reads one raw frame body (the caller decides what it is).
-async fn read_frame(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
+pub(crate) async fn read_frame(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
     let mut len = [0u8; 4];
     AsyncReadExt::read_exact(recv, &mut len).await?;
     let len = u32::from_be_bytes(len) as usize;
@@ -595,7 +595,7 @@ pub async fn client_session_key(
     let (src, dst) = match direction {
         Direction::ClientSends => (local_loc, remote_loc),
         Direction::DaemonSends => (remote_loc, local_loc),
-        Direction::ListExports => bail!("a listing has no session"),
+        Direction::ListExports | Direction::Probe => bail!("a listing or probe has no session"),
     };
     let (o, single) = (opts.clone(), local.single.clone());
     Ok(tokio::task::spawn_blocking(move || {
@@ -855,7 +855,7 @@ fn client_single(
 
 /// What [`prepare_root`] does with missing components of the session root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Missing {
+pub(crate) enum Missing {
     /// Sending: the root must exist.
     Refuse,
     /// Receiving: create them.
@@ -867,7 +867,11 @@ enum Missing {
 /// Checks the session root below the export root: every existing component
 /// must be a real directory (never a symlink, which could lead outside the
 /// export); missing ones are handled as `missing` says.
-fn prepare_root(export_root: &Path, rel: &RelPath, missing: Missing) -> io::Result<PathBuf> {
+pub(crate) fn prepare_root(
+    export_root: &Path,
+    rel: &RelPath,
+    missing: Missing,
+) -> io::Result<PathBuf> {
     let mut p = export_root.to_path_buf();
     let check = |p: &Path| -> io::Result<bool> {
         match std::fs::symlink_metadata(p) {

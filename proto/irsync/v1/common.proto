@@ -19,6 +19,7 @@ message Hello {
     // No session: the daemon answers with an ExportList of what this key
     // may reach, then closes. `path` and `name` are empty.
     LIST_EXPORTS = 2;
+    PROBE = 3; // no session: the daemon answers with PathInfo for path, then closes
   }
   Direction direction = 5;
   uint32 chunk_min = 6;
@@ -120,6 +121,15 @@ message ExportEntry {
 // The reply to a LIST_EXPORTS Hello, sorted by name.
 message ExportList {
   repeated ExportEntry exports = 1;
+}
+// The reply to a PROBE Hello: what `path` is on the daemon.
+message PathInfo {
+  enum Kind {
+    MISSING = 0;
+    DIRECTORY = 1;
+    FILE = 2; // anything that isn't a directory
+  }
+  Kind kind = 1;
 }
 message HelloAck {
   bytes session_id = 1;

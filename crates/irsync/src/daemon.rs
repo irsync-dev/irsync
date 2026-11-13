@@ -14,7 +14,8 @@ use iroh::endpoint::{Connection, Incoming, SendStream};
 use iroh::{Endpoint, SecretKey};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{
-    error::Code, export_entry, hello::Direction, Error, ExportEntry, ExportList, Hello,
+    error::Code, export_entry, hello::Direction, path_info, Error, ExportEntry, ExportList, Hello,
+    PathInfo,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use tokio::sync::Notify;
@@ -35,8 +36,8 @@ use crate::net::frame::{read_msg, write_msg};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
-use crate::session::engine::{serve_daemon, Place};
-use crate::session::single::{is_one_component, place_file, SingleFile};
+use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
+use crate::session::single::{is_one_component, place_file, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, HASH_WORKERS};
@@ -531,6 +532,31 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         Ok(None) => Err(no_access(&hello)),
         Err(e) => Err(e),
     };
+    if hello.direction == Direction::Probe as i32 {
+        let kind = match validated {
+            Ok((resolved, rel)) => {
+                let root = resolved.export.path.clone();
+                tokio::task::spawn_blocking(move || probe_kind(&root, &rel))
+                    .await
+                    .map_err(|e| (Code::Internal, format!("probing the path failed: {e}")))
+            }
+            Err(e) => Err(e),
+        };
+        return match kind {
+            Ok(kind) => {
+                tracing::info!(peer = %id.fmt_short(), ?kind, "probed path");
+                write_msg(&mut send, &PathInfo { kind: kind as i32 }).await?;
+                send.finish()?;
+                let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
+                conn.close(0u32.into(), b"done");
+                Ok(())
+            }
+            Err((code, message)) => {
+                tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting probe");
+                reject(&conn, &mut send, code, message).await
+            }
+        };
+    }
     let validated = match validated {
         Ok((resolved, rel)) if hello.single_file => {
             let (root, hello) = (resolved.export.path.clone(), hello.clone());
@@ -677,7 +703,7 @@ async fn serve_immediate(
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
     let push = match Direction::try_from(hello.direction) {
         Ok(Direction::ClientSends) => true,
-        Ok(Direction::DaemonSends) => false,
+        Ok(Direction::DaemonSends | Direction::Probe) => false,
         _ => return Err((Code::Unknown, "bad direction".into())),
     };
     // An export's short name stands for its path only when this peer may
@@ -766,13 +792,8 @@ fn admit<'a>(
                 return Err((Code::ReadOnly, "export is read-only for this key".into()));
             }
         }
-        Ok(Direction::DaemonSends) if hello.single_file => {
-            return Err((
-                Code::BadPath,
-                "pulling a single file is not supported".into(),
-            ));
-        }
-        Ok(Direction::DaemonSends) => {}
+        // A probe is resolved and checked as a pull of its path.
+        Ok(Direction::DaemonSends | Direction::Probe) => {}
         // A listing never reaches here; no dedicated code for a malformed
         // direction either: UNKNOWN is the honest answer.
         Ok(Direction::ListExports) | Err(_) => return Err((Code::Unknown, "bad direction".into())),
@@ -780,17 +801,23 @@ fn admit<'a>(
     Ok((resolved, rel))
 }
 
-/// A single-file push to `rel` in the export at `export_root`: the
-/// directory that will hold the file (export-relative) and the file's
-/// name in it, by rsync's rules ([`place_file`]). A symlink at the
-/// destination is never followed (it is replaced by the file); the
-/// session root's components are checked later by `prepare_root`.
+/// A single-file session at `rel` in the export at `export_root`: the
+/// directory that holds the file (export-relative) and the file's names.
+/// A push places the file by rsync's rules ([`place_file`]); a pull sends
+/// the file `rel` names, under the receiver's name `hello.name`. Nothing
+/// is looked at through a symlink: the directories above the file are
+/// checked as `prepare_root` checks a session root, first.
 fn place_single(
     export_root: &Path,
     rel: &RelPath,
     hello: &Hello,
 ) -> Result<(RelPath, SingleFile), (Code, String)> {
+    if hello.direction == Direction::DaemonSends as i32 {
+        return source_single(export_root, rel, hello);
+    }
     use std::os::unix::ffi::OsStrExt;
+    // A missing directory is created later, by the session.
+    prepare_root(export_root, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
     let dest = if rel.as_bytes().is_empty() {
         export_root.to_path_buf()
     } else {
@@ -816,6 +843,60 @@ fn place_single(
         )),
         _ => Err((Code::BadPath, "invalid path".into())),
     }
+}
+
+/// The pull half of [`place_single`]: `rel` must name an existing entry
+/// that is not a directory. Its directory becomes the session root.
+fn source_single(
+    export_root: &Path,
+    rel: &RelPath,
+    hello: &Hello,
+) -> Result<(RelPath, SingleFile), (Code, String)> {
+    let parent = rel.parent();
+    let dir = prepare_root(export_root, &parent, Missing::Refuse).map_err(bad_session_path)?;
+    let invalid = || (Code::BadPath, "invalid name".to_string());
+    let Some(name) = rel.components().last() else {
+        return Err((Code::BadPath, PlaceError::IsADirectory(dir).to_string()));
+    };
+    let file = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    match std::fs::symlink_metadata(&file) {
+        Ok(m) if m.is_dir() => {
+            return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let e = io::Error::new(e.kind(), format!("{} does not exist", file.display()));
+            return Err(bad_session_path(e));
+        }
+        Err(e) => return Err((Code::BadPath, PlaceError::Io(file, e).to_string())),
+    }
+    let wire = RelPath::new(&hello.name).map_err(|_| invalid())?;
+    let local = RelPath::new(name).map_err(|_| invalid())?;
+    Ok((parent, SingleFile { wire, local }))
+}
+
+/// What `rel` is in the export at `export_root`, for a probe. Like a
+/// pull, it never looks through a symlink: a parent that is one, or is
+/// missing, makes the path missing. The last component is not followed.
+fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
+    use path_info::Kind;
+    let Ok(dir) = prepare_root(export_root, &rel.parent(), Missing::Refuse) else {
+        return Kind::Missing;
+    };
+    let Some(name) = rel.components().last() else {
+        return Kind::Directory;
+    };
+    let path = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => Kind::Directory,
+        Ok(_) => Kind::File,
+        Err(_) => Kind::Missing,
+    }
+}
+
+/// The reply `serve_daemon` gives for a session root it cannot use.
+fn bad_session_path(e: io::Error) -> (Code, String) {
+    (Code::BadPath, format!("bad session path: {e}"))
 }
 
 async fn reject(

@@ -1,6 +1,7 @@
-//! One file as the source of a push: the daemon places it by rsync's rules
-//! (into a directory, under a new name, or over a file), lists only that
-//! file in the directory that holds it, and never touches anything else.
+//! One file as the source of a copy: the receiving side places it by
+//! rsync's rules (into a directory, under a new name, or over a file), the
+//! session lists only that file in the directory that holds it, and nothing
+//! else is touched. A pull first probes what the remote path is.
 
 mod common;
 
@@ -9,11 +10,12 @@ use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use common::{archive_opts, Harness};
+use common::{archive_opts, Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::fs::paths::RelPath;
 use irsync::session::single::SingleFile;
 use irsync::session::SessionKey;
+use irsync_proto::v1::path_info::Kind;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
@@ -334,4 +336,398 @@ fn single_and_dir_sessions_have_different_keys() {
     let dir = SessionKey::for_daemon(client, "m", &rel, &hello, None);
     let one = SessionKey::for_daemon(client, "m", &rel, &hello, Some(&single));
     assert_ne!(dir.as_bytes(), one.as_bytes());
+}
+
+// ---- Renamed pushes: the wire name differs from the sender's name. ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_to_new_name_again_transfers_nothing() {
+    within30(async {
+        let h = Harness::new().await;
+        let f = source(&h, &data(64 * KIB, 1));
+        let first = h
+            .run_single_push(&archive_opts(), &f, b"m/T", false)
+            .await
+            .unwrap();
+        assert!(first.bytes_transferred > 0, "{first:?}");
+        let again = h
+            .run_single_push(&archive_opts(), &f, b"m/T", false)
+            .await
+            .unwrap();
+        assert!(again.errors.is_empty(), "{:?}", again.errors);
+        assert_eq!(again.bytes_transferred, 0, "{again:?}");
+        assert_eq!(
+            fs::read(h.export.path().join("T")).unwrap(),
+            fs::read(&f).unwrap()
+        );
+    })
+    .await;
+}
+
+/// Changes 4 KiB in the middle of `f` and gives it a new mtime.
+fn change_middle(f: &Path) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(f)
+        .unwrap()
+        .write_all_at(&data(4 * KIB, 2), 4 * MIB as u64)
+        .unwrap();
+    set_mtime(
+        f,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_to_new_name_uses_delta() {
+    within30(async {
+        let h = Harness::new().await;
+        let f = source(&h, &data(8 * MIB, 1));
+        h.run_single_push(&archive_opts(), &f, b"m/T", false)
+            .await
+            .unwrap();
+        change_middle(&f);
+        let out = h
+            .run_single_push(&archive_opts(), &f, b"m/T", false)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(out.bytes_transferred < MIB as u64, "{out:?}");
+        assert_eq!(
+            fs::read(h.export.path().join("T")).unwrap(),
+            fs::read(&f).unwrap()
+        );
+    })
+    .await;
+}
+
+// ---- Symlinks inside the export are never walked through. ----
+
+/// `m/link` points at a directory outside the export holding the file
+/// `secret` and the directory `sub/f.iso`.
+fn outside_link(h: &Harness) -> tempfile::TempDir {
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret"), b"outside").unwrap();
+    fs::create_dir_all(outside.path().join("sub/f.iso")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), h.export.path().join("link")).unwrap();
+    outside
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_through_symlink_is_missing() {
+    within30(async {
+        let h = Harness::new().await;
+        let _outside = outside_link(&h);
+        assert_eq!(h.probe(b"m/link/secret").await.unwrap(), Kind::Missing);
+        assert_eq!(h.probe(b"m/link/sub").await.unwrap(), Kind::Missing);
+        assert_eq!(h.probe(b"m/link/nope").await.unwrap(), Kind::Missing);
+        // The link itself is not followed: it is not a directory.
+        assert_eq!(h.probe(b"m/link").await.unwrap(), Kind::File);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_through_symlink_fails() {
+    within30(async {
+        let h = Harness::new().await;
+        let outside = outside_link(&h);
+        let f = source(&h, b"image");
+        // Through the link: refused before anything below it is looked at
+        // (`sub/f.iso` being a directory is not revealed).
+        for (dest, co) in [
+            (&b"m/link/secret"[..], false),
+            (b"m/link/new", false),
+            (b"m/link/sub", false),
+            (b"m/link/sub", true),
+        ] {
+            let err = h
+                .run_single_push(&archive_opts(), &f, dest, co)
+                .await
+                .unwrap_err();
+            let err = format!("{err:#}");
+            assert!(err.contains("bad session path"), "{dest:?}: {err}");
+            assert!(err.contains("is not a directory"), "{dest:?}: {err}");
+        }
+        // Into the link: it is not a directory.
+        let err = h
+            .run_single_push(&archive_opts(), &f, b"m/link", true)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("not a directory"), "{err:#}");
+        assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"outside");
+        let mut names: Vec<_> = fs::read_dir(outside.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["secret", "sub"]);
+        assert_eq!(
+            fs::read_dir(outside.path().join("sub/f.iso"))
+                .unwrap()
+                .count(),
+            0
+        );
+    })
+    .await;
+}
+
+// ---- Probe and pull. ----
+
+/// `f.iso` at the export's root, with mode 0o640.
+fn remote_source(h: &Harness, bytes: &[u8]) -> std::path::PathBuf {
+    let f = h.export.path().join("f.iso");
+    fs::write(&f, bytes).unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o640)).unwrap();
+    f
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_kinds() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        assert_eq!(h.probe(b"m/f.iso").await.unwrap(), Kind::File);
+        assert_eq!(h.probe(b"m").await.unwrap(), Kind::Directory);
+        assert_eq!(h.probe(b"m/nope").await.unwrap(), Kind::Missing);
+        assert_eq!(h.probe(b"m/nope/deeper").await.unwrap(), Kind::Missing);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_into_dir() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        fs::create_dir(&l).unwrap();
+        let out = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(fs::read(l.join("f.iso")).unwrap(), b"image");
+        assert_eq!(mode(&l.join("f.iso")), 0o640);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_to_new_name() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        let out = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(fs::symlink_metadata(&l).unwrap().is_file());
+        assert_eq!(fs::read(&l).unwrap(), b"image");
+        assert!(fs::symlink_metadata(h.local.path().join("f.iso")).is_err());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_with_slash_creates_dir() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        let out = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, true)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(l.is_dir());
+        assert_eq!(fs::read(l.join("f.iso")).unwrap(), b"image");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_onto_file_updates_it() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        fs::write(&l, b"old contents").unwrap();
+        let out = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(fs::symlink_metadata(&l).unwrap().is_file());
+        assert_eq!(fs::read(&l).unwrap(), b"image");
+        assert_eq!(mode(&l), 0o640);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_into_busy_dir_touches_nothing_else() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        // The remote holding directory has metadata that must not travel.
+        fs::set_permissions(h.export.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        set_mtime(
+            h.export.path(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+        );
+        let l = h.local.path().join("L");
+        fs::create_dir_all(l.join("b")).unwrap();
+        fs::write(l.join("a"), b"keep a").unwrap();
+        fs::write(l.join("b/c"), b"keep c").unwrap();
+        fs::set_permissions(&l, fs::Permissions::from_mode(0o750)).unwrap();
+        let o = opts(&["-a", "--delete"]);
+
+        // A new file: written into L (the kernel moves L's mtime, as with
+        // rsync), but nothing else changes.
+        let out = h.run_single_pull(&o, b"m/f.iso", &l, false).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(out.deleted.is_empty(), "{:?}", out.deleted);
+        assert_eq!(fs::read(l.join("f.iso")).unwrap(), b"image");
+        assert_eq!(fs::read(l.join("a")).unwrap(), b"keep a");
+        assert_eq!(fs::read(l.join("b/c")).unwrap(), b"keep c");
+        assert_eq!(mode(&l), 0o750);
+
+        // Nothing to write: L's metadata stays exactly as it is.
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+        set_mtime(&l, old);
+        let out = h.run_single_pull(&o, b"m/f.iso", &l, false).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(out.deleted.is_empty(), "{:?}", out.deleted);
+        assert_eq!(fs::read(l.join("a")).unwrap(), b"keep a");
+        assert_eq!(fs::read(l.join("b/c")).unwrap(), b"keep c");
+        assert_eq!(mode(&l), 0o750);
+        assert_eq!(mtime(&l), old);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_dry_run_creates_nothing() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        let o = opts(&["-a", "--dry-run"]);
+        let out = h.run_single_pull(&o, b"m/f.iso", &l, true).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(fs::symlink_metadata(&l).is_err());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_dir_in_the_way_fails() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        let l = h.local.path().join("L");
+        fs::create_dir_all(l.join("f.iso")).unwrap();
+        let err = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("is a directory"), "{err:#}");
+        assert!(l.join("f.iso").is_dir());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_of_missing_path_creates_nothing() {
+    within30(async {
+        let h = Harness::new().await;
+        let l = h.local.path().join("L");
+        let err = h
+            .run_single_pull(&archive_opts(), b"m/nope", &l, true)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("Missing"), "{err:#}");
+        assert!(fs::symlink_metadata(&l).is_err());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_to_new_name_uses_delta() {
+    within30(async {
+        let h = Harness::new().await;
+        let f = remote_source(&h, &data(8 * MIB, 1));
+        let l = h.local.path().join("L");
+        h.run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(&l).unwrap(), fs::read(&f).unwrap());
+        change_middle(&f);
+        let out = h
+            .run_single_pull(&archive_opts(), b"m/f.iso", &l, false)
+            .await
+            .unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(out.bytes_transferred < MIB as u64, "{out:?}");
+        assert_eq!(fs::read(&l).unwrap(), fs::read(&f).unwrap());
+    })
+    .await;
+}
+
+/// A single-file pull `Hello` for `path`, with the receiver's name `name`.
+fn pull_hello(path: &[u8], name: &[u8]) -> irsync_proto::v1::Hello {
+    let mut hello = Harness::hello(Flow::Pull);
+    hello.path = path.to_vec();
+    hello.contents_only = false;
+    hello.single_file = true;
+    hello.name = name.to_vec();
+    hello
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_with_bad_name_is_refused() {
+    within30(async {
+        let h = Harness::new().await;
+        remote_source(&h, b"image");
+        for name in [&b""[..], b"..", b"a/b"] {
+            let local = h.local_side().with_single(b"x".to_vec());
+            let err = h
+                .run_hello(&archive_opts(), pull_hello(b"m/f.iso", name), local)
+                .await
+                .unwrap_err();
+            assert!(format!("{err:#}").contains("invalid name"), "{err:#}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_pull_of_a_directory_or_nothing_is_refused() {
+    within30(async {
+        let h = Harness::new().await;
+        fs::create_dir(h.export.path().join("d")).unwrap();
+        let local = h.local_side().with_single(b"d".to_vec());
+        let err = h
+            .run_hello(&archive_opts(), pull_hello(b"m/d", b"d"), local)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("is a directory"), "{err:#}");
+        // The export root itself, and a file that is not there.
+        let local = h.local_side().with_single(b"m".to_vec());
+        let err = h
+            .run_hello(&archive_opts(), pull_hello(b"m", b"m"), local)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("is a directory"), "{err:#}");
+        let local = h.local_side().with_single(b"nope".to_vec());
+        let err = h
+            .run_hello(&archive_opts(), pull_hello(b"m/nope", b"nope"), local)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("does not exist"), "{err:#}");
+    })
+    .await;
 }
