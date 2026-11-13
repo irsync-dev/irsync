@@ -7,7 +7,7 @@
     <title>irsync</title>
     <meta
       name="description"
-      content="irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for today's networks."
+      content="irsync: remote sync through firewalls and over bad networks. It takes rsync's flags, needs no port forwarding, and carries on where it stopped."
     />
     <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="style.css" />
@@ -18,9 +18,7 @@
         <a class="name" href="./">irsync</a>
         <ul>
           <li><a href="book/">documentation</a></li>
-          <li><a href="#fileset">fileset</a></li>
           <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
-          <li><a href="#install">install</a></li>
         </ul>
       </nav>
     </header>
@@ -29,412 +27,129 @@
       <p class="alpha" role="note">
         <strong>Alpha</strong>
         <span>
-          irsync is alpha software. The command line and the network protocol
-          may change before the beta, and versions may then not talk to each
-          other. Keep another copy of anything you sync with it.
+          The command line and the protocol may still change. Keep another
+          copy of anything you sync with it.
         </span>
       </p>
 
       <section class="hero" aria-labelledby="headline">
-        <h1 id="headline">irsync — resilient file synchronization</h1>
+        <h1 id="headline">
+          Remote sync through firewalls and over bad networks
+        </h1>
         <p class="lede">
-          irsync is a one-way directory synchroniser in the mould of rsync,
-          rebuilt for today's networks. It takes rsync's flags and its
-          trailing-slash rule.
+          irsync takes the rsync flags you already know. It needs no port
+          forwarding or dynamic DNS, and after a drop, a closed laptop or
+          Ctrl-C, the same command carries on where it stopped.
         </p>
-        <p class="lede">
-          It connects through <a href="https://iroh.computer">iroh</a>, so it
-          gets through NATs and firewalls without port forwarding or dynamic
-          DNS. A transfer outlives the network connection: after a drop, a
-          closed laptop or Ctrl-C, the same command carries on where it
-          stopped.
-        </p>
-        <p class="lede-last">
-          <a href="book/explanation/correctness.html">Correctness comes first</a>:
-          a completed sync of files that are not being written leaves an exact
-          copy, and you can check that yourself with
-          <a href="#fileset">fileset</a>.
-        </p>
-
-        <ul class="needs" aria-label="What you need">
-          <li>Linux or macOS on both ends</li>
-          <li>ssh access to the server (optional)</li>
-        </ul>
-
-        <p class="actions">
-          <a class="button primary" href="#install">Install irsync</a>
-          <a class="button quiet" href="book/tutorial/first-sync.html"
-            >Your first sync</a
-          >
-        </p>
-
-        <div class="tabset">
-          <div class="tabs" role="radiogroup" aria-label="Two ways to set up">
-            <input
-              type="radio"
-              name="setup"
-              id="setup-ssh"
-              class="visually-hidden"
-              checked
-            />
-            <label for="setup-ssh">With ssh</label>
-            <input
-              type="radio"
-              name="setup"
-              id="setup-manual"
-              class="visually-hidden"
-            />
-            <label for="setup-manual">Without ssh</label>
-          </div>
-
-          <figure class="pane pane-ssh">
-            <p class="pane-lede">
-              If <code>ssh myserver</code> logs you in, install irsync on the
-              client only. The first sync sets the server up.
-            </p>
-            <pre
-              class="terminal"
-              tabindex="0"
-              role="region"
-              aria-label="Terminal session: the first push sets the server up over ssh"
-            ><span class="prompt">client$</span> irsync -av ~/Photos/ myserver:/srv/photos/
-<span class="dim">irsync: myserver is not a saved alias; setting it up over ssh
-irsync: set up myserver over ssh:
-irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
-irsync:   generated the daemon identity
-irsync:   granted this client (a3e4753e5e) access to any path
-irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
-irsync:   saved host alias myserver -&gt; 4a29f16a4f</span>
-2021/07/IMG_4466.heic
-2021/07/IMG_4467.heic</pre>
-            <figcaption>
-              Later runs go over iroh and don't use ssh.
-            </figcaption>
-          </figure>
-
-          <figure class="pane pane-manual">
-            <p class="pane-lede">
-              Without ssh, or to share only named folders: install irsync on
-              both machines and exchange two IDs once.
-            </p>
-            <pre
-              class="terminal"
-              tabindex="0"
-              role="region"
-              aria-label="Terminal session: set the server up by hand, then push"
-            ><span class="prompt">client$</span> irsync id show                         <span class="dim"># last line: the client's id</span>
-<span class="prompt">server$</span> irsync export add photos:/srv/photos  <span class="dim"># prints the server's (daemon's) id</span>
-<span class="prompt">server$</span> irsync grant add photos &lt;client-id&gt;
-<span class="prompt">server$</span> irsync daemon
-<span class="prompt">client$</span> irsync host add myserver &lt;server-id&gt;
-<span class="prompt">client$</span> irsync -av ~/Photos/ myserver:photos/
-2021/07/IMG_4466.heic
-2021/07/IMG_4467.heic</pre>
-            <figcaption>
-              Nothing goes through ssh; the two IDs are the whole trust setup.
-            </figcaption>
-          </figure>
-        </div>
-
-        <figure class="session">
-          <pre
-            class="terminal"
-            tabindex="0"
-            role="region"
-            aria-label="The live progress block of a push"
-          ><span class="dim">──────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
-list      31,204 entries  walking 2021/08/  peer 29,877 entries  walking 2021/07/
-transfer  <span class="flow">[████████████░░░░░░░░░░░░░░░░░░]</span>   40%  74.31G/183.62G  112.40MB/s  0:11:17  32 in flight  [direct]
-            <span class="flow">[██████████████░░░░░░]</span>   70%  2021/08/VID_20210814_183022.mov  1.21G  9.80MB/s
-            <span class="flow">[█████░░░░░░░░░░░░░░░]</span>   25%  2021/08/VID_20210812_091544.mov  864.20M  6.10MB/s
-  hashing                       2021/08/VID_20210815_101230.mov  640.55M
-            <span class="flow">[█████████░░░░░░░░░░░]</span>   47%  2021/08/VID_20210811_200417.mov  212.37M  4.70MB/s
-            <span class="flow">[██████████████████░░]</span>   92%  2021/07/IMG_4502.dng  48.16M  3.20MB/s
-            <span class="flow">[██░░░░░░░░░░░░░░░░░░]</span>   11%  2021/07/IMG_4503.dng  46.90M  2.90MB/s
-            <span class="flow">[██████████░░░░░░░░░░]</span>   54%  2021/07/IMG_4470.heic  4.31M  2.40MB/s
-            <span class="flow">[█░░░░░░░░░░░░░░░░░░░]</span>    7%  2021/07/IMG_4471.heic  3.87M  1.10MB/s
-  … and 24 more</pre>
-          <figcaption>
-            Either way, the push looks like this. Below the files that
-            <code>-v</code> lists, irsync draws a live block on a terminal: the
-            listing on both sides, the transfer, and one row per file that is
-            being hashed or has a data stream open. Shown here at one moment.
-          </figcaption>
-        </figure>
-      </section>
-
-      <section class="claims" aria-labelledby="claims-heading">
-        <h2 id="claims-heading" class="visually-hidden">What irsync does</h2>
-        <ul>
-          <li class="card">
-            <h3>Transparent Connections</h3>
-            <p>
-              The daemon is reached by its <code>EndpointId</code>, the public
-              half of its key, not by an address. The client pins that key for
-              each host; there is no trust-on-first-use.
-            </p>
-            <a
-              href="book/explanation/identity-and-trust.html#the-client-pins-the-daemon"
-              >Identity and trust →</a
-            >
-          </li>
-          <li class="card">
-            <h3>Resilient Transfers</h3>
-            <p>
-              A session outlives any connection. After a drop the client redials
-              for up to 24 hours by default; after Ctrl-C or a reboot, the next
-              run of the same command resumes from the last verified chunk.
-            </p>
-            <a
-              href="book/explanation/sessions-and-resume.html#when-the-connection-drops"
-              >Sessions and resume →</a
-            >
-          </li>
-          <li class="card">
-            <h3>Efficient Bandwidth Usage</h3>
-            <p>
-              A session keeps up to 4,096 files between request and
-              acknowledgement, which hides the per-file round trips, and up to
-              32 QUIC data streams by default fill the link; a large file
-              spreads over several streams.
-            </p>
-            <a
-              href="book/explanation/transfer-algorithm.html#files-in-flight-and-streams"
-              >The transfer algorithm →</a
-            >
-          </li>
-        </ul>
-      </section>
-
-      <section id="fileset" aria-labelledby="fileset-heading">
-        <h2 id="fileset-heading">fileset: check any copy, made by any tool</h2>
-        <p>
-          fileset records the checksums and metadata of a directory tree. Check
-          a copy against that record after rsync, rclone, cp or irsync, or
-          months later to catch bitrot.
-        </p>
-        <pre
-          class="terminal"
-          tabindex="0"
-          role="region"
-          aria-label="Record a manifest, copy with rsync, then check the copy"
-        ><span class="prompt">$</span> fileset init ~/Photos
-<span class="prompt">$</span> rsync -a ~/Photos/ /mnt/backup/Photos/
-<span class="prompt">$</span> fileset check /mnt/backup/Photos</pre>
         <p class="more">
-          <a href="book/fileset/introduction.html">Introduction to fileset →</a>
+          <a href="book/introduction.html">Introduction →</a>
           ·
-          <a href="#install">Install fileset</a>
+          <a href="book/tutorial/first-sync.html">Tutorial →</a>
+          ·
+          <a href="book/contributing/setup.html">Contributing →</a>
         </p>
+
+        <ol class="steps">
+          <li>
+            <h2 id="install"><span aria-hidden="true">1</span>Install</h2>
+            <div class="cmd">
+              <pre
+                class="terminal"
+                tabindex="0"
+                role="region"
+                aria-label="Install command"
+              ><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --alpha</span></pre>
+            </div>
+            <p class="note">
+              Linux and macOS. Installs <code>irsync</code> and
+              <code>fileset</code> into <code>~/.local/bin</code>.
+              <a href="book/introduction.html#install"
+                >Other ways to install →</a
+              >
+            </p>
+          </li>
+          <li>
+            <h2><span aria-hidden="true">2</span>Sync</h2>
+            <div class="cmd">
+              <pre
+                class="terminal"
+                tabindex="0"
+                role="region"
+                aria-label="A first sync"
+              ><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
+            </div>
+            <p class="note">
+              If <code>ssh myserver</code> logs you in, this sets the server up
+              too.
+              <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
+                >No ssh? Set the server up by hand →</a
+              >
+            </p>
+          </li>
+        </ol>
       </section>
 
-      <section id="rsync" aria-labelledby="rsync-heading">
-        <h2 id="rsync-heading">If you know rsync</h2>
-        <p>
-          <code>-a</code> and rsync's trailing-slash rule work as they do in
-          rsync; <code>-v</code> lists files as rsync's does, but
-          <code>-vv</code> and <code>-vvv</code> turn on debug and trace logs.
-          <code>--delete</code> deletes after the transfer, as
-          <code>--delete-after</code> does. What changes is underneath.
-        </p>
-        <div
-          class="table-scroll"
-          tabindex="0"
-          role="region"
-          aria-label="irsync compared with rsync"
-        >
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">
-                  <span class="visually-hidden">Dimension</span>
-                </th>
-                <th scope="col">rsync</th>
-                <th scope="col">irsync</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <th scope="row">Transport</th>
-                <td>TCP or SSH</td>
-                <td>iroh QUIC, NAT traversal, pinned Ed25519 identities</td>
-              </tr>
-              <tr>
-                <th scope="row">Delta unit</th>
-                <td>basis block, 700 B .. 128 KiB, ~sqrt(size)</td>
-                <td>
-                  content-defined chunk, 64 KiB .. 1 MiB, 256 KiB average;
-                  blocks of 512 B .. 4 KiB inside a missing chunk
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">1-byte edit in a 1 GiB file</th>
-                <td>~32 KiB literal + tokens</td>
-                <td>
-                  ~1 KiB literal + a few operations, with ~10 KiB of block
-                  signatures the other way
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Rename detection</th>
-                <td>none (name similarity only, <code>--fuzzy</code>)</td>
-                <td>
-                  by content: a renamed or copied file's chunks are found in the
-                  index and copied locally
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Digest caching across runs</th>
-                <td>none; <code>-c</code> re-reads everything</td>
-                <td>
-                  persistent SQLite index keyed on size, mtime, ctime, inode
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Streams</th>
-                <td>one, in order</td>
-                <td>
-                  up to <code>--parallel</code> QUIC streams (32 by default),
-                  runs split at 64 MiB
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Files in flight</th>
-                <td>pipelined, bounded by the window</td>
-                <td>
-                  up to 4,096 per session, from request to acknowledgement
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Resume</th>
-                <td>
-                  <code>--partial</code> keeps bytes; the next run re-checksums
-                  them
-                </td>
-                <td>
-                  chunk-granular, verified ranges persisted; plan persisted
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Round trips before first data byte</th>
-                <td>~0 (pipelined)</td>
-                <td>1.5 (plan, chunk list, request)</td>
-              </tr>
-              <tr>
-                <th scope="row">Compression</th>
-                <td><code>-z</code></td>
-                <td>none</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="more">
-          <a href="book/explanation/transfer-algorithm.html#compared-with-rsync"
-            >The full comparison, including where rsync is ahead →</a
-          >
-        </p>
-      </section>
-
-      <section id="install" aria-labelledby="install-heading">
-        <h2 id="install-heading">Install</h2>
-        <p>
-          The install script puts <code>irsync</code> and
-          <code>fileset</code> in <code>~/.local/bin</code>. Until the first
-          stable release, v0.1.0, there are only alphas and betas, so add
-          <code>--alpha</code>:
-        </p>
-        <pre
-          class="terminal"
-          tabindex="0"
-          role="region"
-          aria-label="Install command"
-        ><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --alpha</pre>
-        <p>
-          From v0.1.0 on, drop <code>-s -- --alpha</code> to get the newest
-          stable release, or use <code>--beta</code> to try a beta. Homebrew
-          and apt/dnf packages follow with v0.1.0. You can also download a
-          tarball from the
-          <a href="https://github.com/irsync-dev/irsync/releases"
-            >GitHub Releases page</a
-          >.
-        </p>
-        <p>
-          Release binaries cover Linux on x86_64 and arm64, and macOS on Apple
-          Silicon, as client and as daemon. With ssh, the client is enough: the
-          first sync copies irsync to the server when both run the same OS and
-          CPU. When they differ, install irsync on both machines and use the
-          setup under “Without ssh”.
-        </p>
-        <p>
-          Other Linux and macOS machines can build from source with Rust: see
-          the <a href="https://github.com/irsync-dev/irsync#install">README</a>.
-        </p>
-        <p>
-          <a href="book/fileset/introduction.html"><code>fileset</code></a> is a
-          separate tool that works with any copy tool, not only irsync. It
-          records the checksums and metadata of a directory tree and later
-          checks the tree against them. The install script above already
-          installs it.
-        </p>
-      </section>
-
-      <section id="the-book" aria-labelledby="book-heading">
-        <h2 id="book-heading">The book</h2>
-        <ul class="map">
-          <li>
-            <h3><a href="book/tutorial/first-sync.html">Tutorial</a></h3>
-            <p>
-              Set a server up over ssh with one command, or by hand; push,
-              resume and pull a photo library.
-            </p>
-          </li>
-          <li>
-            <h3><a href="book/how-to/run-the-daemon.html">How-to guides</a></h3>
-            <p>
-              Run the daemon under systemd or launchd, connect directly or
-              through a relay, seed the index, watch a transfer with telemetry.
-            </p>
-          </li>
-          <li>
-            <h3><a href="book/reference/command-line.html">Reference</a></h3>
-            <p>
-              Every flag, the management commands, remote addresses,
-              configuration, metrics, the protocol and the known limitations.
-            </p>
-          </li>
-          <li>
-            <h3>
-              <a href="book/explanation/transfer-algorithm.html">Explanation</a>
-            </h3>
-            <p>
-              The transfer algorithm, sessions and resume, identity and trust,
-              connections, how a changed file is received, and how we know
-              irsync is correct.
-            </p>
-          </li>
-          <li>
-            <h3><a href="book/fileset/introduction.html">fileset</a></h3>
-            <p>
-              Record a directory tree, then check a copy of it, whichever tool
-              made the copy: a tutorial, how to check rsync and irsync copies,
-              catching bitrot, and how fileset works.
-            </p>
-          </li>
-        </ul>
-      </section>
+      <div class="pair">
+        <section aria-labelledby="fileset-heading">
+          <h2 id="fileset-heading">fileset</h2>
+          <p>
+            A helper that ships with irsync: check that a copy is exact,
+            whichever tool made it — rsync, rclone, cp or irsync.
+          </p>
+          <p class="more">
+            <a href="book/fileset/introduction.html"
+              >Introduction to fileset →</a
+            >
+          </p>
+        </section>
+        <section aria-labelledby="contribute-heading">
+          <h2 id="contribute-heading">Contribute</h2>
+          <p>
+            irsync is open source under the
+            <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
+              >MIT license</a
+            >.
+          </p>
+          <p class="more">
+            <a href="https://github.com/irsync-dev/irsync"
+              >github.com/irsync-dev/irsync →</a
+            >
+            ·
+            <a href="book/contributing/setup.html">Contributor guide →</a>
+          </p>
+        </section>
+      </div>
     </main>
 
     <footer class="bottom">
       <p>
-        irsync is
+        <a href="https://github.com/irsync-dev/irsync">irsync</a> is built by
+        <a href="https://github.com/lambdanature/">Michael Wildpaner</a> and
+        published under the
         <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
-          >MIT licensed</a
-        >. Source at
-        <a href="https://github.com/irsync-dev/irsync"
-          >github.com/irsync-dev/irsync</a
-        >. To work on it, see
-        <a href="book/contributing/setup.html">Contributing</a>.
+          >MIT license</a
+        >.
       </p>
     </footer>
+
+    <!-- Adds a copy button to each command. Without script the page is the
+         same, minus the buttons. -->
+    <script>
+      if (navigator.clipboard) {
+        for (const cmd of document.querySelectorAll(".cmd")) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "copy";
+          button.onclick = () => {
+            const text = cmd.querySelector(".copy").textContent;
+            navigator.clipboard.writeText(text).then(() => {
+              button.textContent = "copied";
+              setTimeout(() => (button.textContent = "copy"), 1500);
+            });
+          };
+          cmd.append(button);
+        }
+      }
+    </script>
   </body>
 </html>
