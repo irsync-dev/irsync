@@ -33,7 +33,9 @@ use irsync::session::reconnect::{
     describe_dial, explain, probe_path, run_with_reconnect, with_wrong_id_hint, ConnState,
     NeverReached, ReconnectOpts,
 };
-use irsync::session::single::{is_one_component, place_file, source_is_single, split_last};
+use irsync::session::single::{
+    is_one_component, place_file, source_is_single, split_last, PlaceError,
+};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
@@ -1040,7 +1042,13 @@ struct Plan {
 /// holds it (a trailing slash on it is an error); anything else as `dir`.
 /// Several sources always go into the destination as a directory.
 fn push_plan(dir: Plan, path: &Path, contents_only: bool, several: bool) -> anyhow::Result<Plan> {
-    if !source_is_single(path, contents_only)? {
+    // The caller's message already starts with `path`.
+    let single = source_is_single(path, contents_only).map_err(|e| match e {
+        PlaceError::Io(_, e) => anyhow::Error::new(e),
+        PlaceError::NotADirectory(_) => anyhow::anyhow!("not a directory"),
+        e => e.into(),
+    })?;
+    if !single {
         return Ok(dir);
     }
     let (root, name) = split_last(path);

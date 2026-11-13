@@ -234,13 +234,21 @@ fn file_source_with_slash_fails() {
     // as for any failed source among several.
     let o = s.run(&s.work, &["f.iso/", "g.iso", &s.remote("photos/T")]);
     assert_eq!(o.status.code(), Some(23), "{}", stderr(&o));
-    assert!(stderr(&o).contains("not a directory"), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("irsync: f.iso: not a directory"),
+        "{}",
+        stderr(&o)
+    );
     assert!(!s.photos.join("T/f.iso").exists());
     assert_eq!(fs::read(s.photos.join("T/g.iso")).unwrap(), b"other");
     // Alone it is the only source and it failed: nothing got through.
     let o = s.run(&s.work, &["f.iso/", &s.remote("photos/U")]);
     assert!(!o.status.success());
-    assert!(stderr(&o).contains("not a directory"), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("irsync: f.iso: not a directory"),
+        "{}",
+        stderr(&o)
+    );
     assert!(!s.photos.join("U").exists());
 }
 
