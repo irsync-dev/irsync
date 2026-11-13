@@ -8,8 +8,9 @@ The correctness work found a silent failure. If a program writes to a
 source file while irsync's sender is still hashing it, the destination can
 end up as a mix of old and new content that the source never held. The run
 ends with exit 0 and no warning. Details, file:line references and a
-reproduction are in `TODO.md`, "Torn file when the source changes during
-hashing, 2026-11-10".
+reproduction are in `TODO.md` as of commit 5497ee9, "Torn file when the
+source changes during hashing, 2026-11-10" (since moved to
+`docs/IRSYNC_DECISIONS.md`, R45).
 
 Correctness comes first for irsync. A sync that finishes quietly with a
 wrong copy is the worst outcome it can have. The user's goal: **if irsync

@@ -286,6 +286,28 @@ timestamps, symlinks, `--delete-before`, 5000-step listings, long names,
 error), xattrs (no `-X`), paths beyond macOS's 1024-byte `PATH_MAX`, and
 the `du` comparison for sparse files, meaningless on the FileVault volume.
 
+### Writing during the sync: mode and hard links
+
+Found by the concurrent stress mode on 2026-11-12. That mode (`--concurrent`
+on `irsync-stress` and `irsync-netstress`) runs filegen against the source
+while irsync syncs it, accepts exit 23 and 24, and checks that every
+destination file is a state the source held at some point; a self-test
+proves the checker catches torn files. Four `matrix.sh` rows run it
+(`concurrent`, `concurrent-paranoid`, `net-concurrent`,
+`net-concurrent-paranoid`). Design:
+`docs/superpowers/specs/2026-11-12-concurrent-write-stress-design.md`; how
+to run it: "Writing during the sync" in `book/src/contributing/bug-hunting.md`.
+The first full-pace runs found two irsync bugs:
+
+- A file whose mode, owner or group changed, or that was renamed over,
+  between the walk and the hash landed with the new content and the old
+  mode. **Fixed 2026-11-12**, `IRSYNC_DECISIONS.md` R46.
+- With `-H`, a name renamed away or replaced after the walk was still
+  linked to its group's content. **Fixed 2026-11-12**, `IRSYNC_DECISIONS.md`
+  R47. Verified with eight runs of the `hardlink` row's weights at
+  `--pace fast` (push and pull, seeds 1 to 4, 5 iterations each): all
+  passed, with several hundred link checks.
+
 ## Acceptance run
 
 Binaries: a release build of the tree at commit 8cb3102 for all four tools.

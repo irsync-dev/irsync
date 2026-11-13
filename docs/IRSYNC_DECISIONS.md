@@ -192,7 +192,8 @@ cross-referenced from commit messages and review notes.
   the receiver already holds every chunk, it gets the walk-time content,
   which matches the listed metadata. Retries and resumed plans still
   re-stat. The walk stats are kept in the listed-files map (48
-  bytes per regular file).
+  bytes per regular file). Since R45 the hash pass is also checked against
+  a stat taken after it.
 - Temp files are `.irsync.<name>.part` in the destination directory (or
   `--partial-dir`), and `.irsync.<name>.tmp` for symlinks, specials and
   hard links; both come from `recv::temp_name`, which cuts the name and
@@ -324,6 +325,73 @@ cross-referenced from commit messages and review notes.
   the single final fix wave**, deviating from the "one fix wave" rule, because
   the fix wave itself introduced the idle-timeout regression and it hit the
   core use case.
+
+### 1.12 SSH onboarding
+
+- **R44 — Ad-hoc mode over ssh installs a daemon that stays** (2026-11-10).
+  rsync's ssh mode spawns a server per run; irsync's first run to a host
+  goes through ssh, copies the binary over when needed, sets up and starts
+  a daemon, grants the client, and later runs connect to that daemon
+  directly. Such daemons publish to the DHT by default, since later runs
+  must find them without ssh; `--no-remote-dht` turns that off, and
+  `--ssh` forces the ssh step. When the remote version differs and the
+  remote has the same OS and CPU, onboarding copies the client's binary
+  over. Only runs that go through ssh (first sync, `--ssh`, or the
+  fallback when the daemon can't be reached) update it; other OS or CPU
+  and updating a reachable older daemon are open (`TODO.md`). Design:
+  `superpowers/specs/2026-11-10-ssh-onboarding-design.md`.
+
+### 1.13 Files that change during a sync
+
+- **R45 — A file changed while it is hashed or sent never lands torn**
+  (2026-11-11). Before, the sender hashed a file in one pass and never
+  stat'ed it again, so a writer that changed the start after the pass read
+  it and the end before the pass reached it gave a digest of old start plus
+  new end. The receiver took the old start from its own copy, the sender
+  sent the new end, every check passed, and the destination held a state
+  the source never held, with exit 0. Now the sender stats the file after
+  hashing, and the receiver asks before placing; a changed file is retried
+  once, then fails with exit 23. `--paranoid` sends from reflink clones or
+  hashes again, and re-checks every listed file at the end (exit 24 if
+  files vanished). rsync has the same weakness, so this is beyond parity.
+  Limits (memory-mapped writers without `--paranoid`, coarse timestamps)
+  are in the correctness page. Design:
+  `superpowers/specs/2026-11-10-source-change-detection-design.md`.
+- **R46 — A file is placed with the mode and ids it was hashed under**
+  (2026-11-12). The receiver took only size and mtime from the hash stat;
+  mode, uid and gid stayed as the walk saw them. A file whose mode, owner
+  or group changed, or that was renamed over, between walk and hash got
+  the new content with the old mode, and a retry did not refresh it. The
+  hash stat now carries mode, uid and gid, and the first `ChunkListPart`
+  sends them with the owner and group names, mapped as for a listing
+  entry (R40). The `--paranoid` `Replan` entry's names are now mapped too.
+  Found by the concurrent stress mode. Tests: `*_before_hash_places_the_new_*`
+  in `tests/change_detection.rs`,
+  `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` in `tests/ids_e2e.rs`.
+- **R47 — With `-H`, each extra name is checked before it is linked**
+  (2026-11-12). Link groups are fixed when the tree is listed (R23), and
+  names after the first were never requested or checked, so a name renamed
+  away or replaced after the walk still got linked to the group's content:
+  a state that name never held, with exit 0. Now the session ends with a
+  link check. The first `ChunkListPart` also carries the hash stat's change
+  time and inode; the receiver sends a `CheckLink` with that stat for each
+  link to a file sent in this session, and the sender lstats each name and
+  answers `Unlinked` for any whose stat differs. An equal stat, change time
+  included, means the name has named that content since the hash (adding
+  or removing a name changes the change time). A name that is still a
+  regular file comes back with its entry and is sent as a file of its own,
+  as a `Replan` is, so the run can still exit 0; a name that is gone fails
+  (exit 23). Links to files not sent this session are made unchecked: both
+  names held that content when listed. The stats are stored with the
+  session (`SessionProgress.placed`), so a resumed connection checks links
+  to files placed before the drop. Found by the concurrent stress mode.
+  Tests: `replaced_link_is_sent_as_its_own_file*`,
+  `link_renamed_away_is_not_linked*` and
+  `unchanged_links_are_checked_and_made` in `tests/change_detection.rs`,
+  `links_to_files_placed_before_a_drop_are_checked` in
+  `tests/posix_extras.rs`. Known small edge: after a reconnect, the resumed
+  plan keeps a resent name's old link entry marked done; the file is still
+  sent and placed correctly.
 
 ---
 
