@@ -244,3 +244,91 @@ async fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything()
     })
     .await;
 }
+
+/// A single-file push through `test-blackout`: the dead zone drops the
+/// connection mid-file and the same session resumes (the session key must
+/// match across the redial).
+#[tokio::test(start_paused = true)]
+async fn single_file_push_resumes_after_blackout() {
+    with_netsim(ProfileName::TestBlackout, 1, async {
+        let h = Harness::new().await;
+        let src = h.local.path().join("big.bin");
+        std::fs::write(&src, noise(16 << 20)).unwrap();
+        let mut opts = archive_opts();
+        opts.timeout = Some(Duration::from_secs(2));
+
+        let (parent, name) = irsync::session::single::split_last(&src);
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = b"m/new.bin".to_vec();
+        hello.contents_only = false;
+        hello.single_file = true;
+        hello.name = name.clone();
+        let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
+        local.contents_only = false;
+        let ropts = ReconnectOpts {
+            max: Duration::from_secs(60),
+            ..ReconnectOpts::default()
+        };
+        let (out, reconnects) = h.run_reconnect_hello(&opts, hello, ropts, local).await;
+        out.expect("single-file push");
+        assert!(reconnects >= 1, "the dead zone forced no reconnect");
+        assert_eq!(
+            h.daemon.session_ids().len(),
+            1,
+            "the redial started a new session"
+        );
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            std::fs::read(h.export.path().join("new.bin")).unwrap()
+        );
+    })
+    .await;
+}
+
+/// The same for a single-file pull, placed as the CLI does.
+#[tokio::test(start_paused = true)]
+async fn single_file_pull_resumes_after_blackout() {
+    with_netsim(ProfileName::TestBlackout, 1, async {
+        let h = Harness::new().await;
+        let src = h.export.path().join("big.bin");
+        std::fs::write(&src, noise(16 << 20)).unwrap();
+        let mut opts = archive_opts();
+        opts.timeout = Some(Duration::from_secs(2));
+
+        let remote = b"m/big.bin";
+        let kind = h.probe(remote).await.unwrap();
+        assert_eq!(kind, irsync_proto::v1::path_info::Kind::File);
+        let placed = irsync::session::single::place_file(
+            &h.local.path().join("copy.bin"),
+            false,
+            b"big.bin",
+            true,
+        )
+        .unwrap();
+        let mut hello = Harness::hello(Flow::Pull);
+        hello.path = remote.to_vec();
+        hello.contents_only = false;
+        hello.single_file = true;
+        hello.name = placed.name.clone();
+        let mut local =
+            Harness::side_for(&placed.root, h.client_state.path()).with_single(placed.name.clone());
+        local.contents_only = false;
+        let ropts = ReconnectOpts {
+            max: Duration::from_secs(60),
+            ..ReconnectOpts::default()
+        };
+        let (out, reconnects) = h.run_reconnect_hello(&opts, hello, ropts, local).await;
+        out.expect("single-file pull");
+        assert!(reconnects >= 1, "the dead zone forced no reconnect");
+        assert_eq!(
+            h.daemon.session_ids().len(),
+            1,
+            "the redial started a new session"
+        );
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            std::fs::read(h.local.path().join("copy.bin")).unwrap()
+        );
+    })
+    .await;
+}

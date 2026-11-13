@@ -564,6 +564,19 @@ impl Harness {
         ropts: irsync::session::reconnect::ReconnectOpts,
         local: irsync::session::LocalSide,
     ) -> (anyhow::Result<irsync::session::Outcome>, u32) {
+        self.run_reconnect_hello(opts, Self::hello(flow), ropts, local)
+            .await
+    }
+
+    /// [`Self::run_reconnect`] with the caller's `hello` (its `session_id`
+    /// is replaced on each redial).
+    pub async fn run_reconnect_hello(
+        &self,
+        opts: &irsync::cli::SyncOptions,
+        hello: irsync_proto::v1::Hello,
+        ropts: irsync::session::reconnect::ReconnectOpts,
+        local: irsync::session::LocalSide,
+    ) -> (anyhow::Result<irsync::session::Outcome>, u32) {
         use irsync::session::reconnect::{run_with_reconnect, ConnState};
         let mut reconnects = 0;
         let out = run_with_reconnect(
@@ -571,7 +584,7 @@ impl Harness {
             self.daemon.addr.clone(),
             "daemon:m/",
             |id| {
-                let mut h = Self::hello(flow);
+                let mut h = hello.clone();
                 h.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
                 h
             },

@@ -495,10 +495,16 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         anyhow::bail!("timed out waiting for Hello");
     };
     let (mut send, recv, hello) = first?;
+    // Only session hellos: a listing or a probe never bumps `sessions`, so
+    // counting it would leave the tests' `settle` waiting forever.
     #[cfg(feature = "test-hooks")]
-    shared
-        .hellos
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if hello.direction != Direction::ListExports as i32
+        && hello.direction != Direction::Probe as i32
+    {
+        shared
+            .hellos
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 
     if hello.direction == Direction::ListExports as i32 {
         if let Err((code, message)) = version_check(&hello) {
