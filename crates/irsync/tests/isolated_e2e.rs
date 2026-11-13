@@ -232,7 +232,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
     let dest = format!("{id}:m/");
     let config = tmp.join("irsync.toml");
     let args = [
-        "-av",
+        "-avv",
         "--reconnect",
         "0",
         "--address",
@@ -248,7 +248,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         "client failed: {}",
         String::from_utf8_lossy(&o.stderr)
     );
-    // Both ends announce their own build at startup, at info.
+    // Both ends announce their own build at startup, at info (-vv on the client).
     let build = irsync::build::BuildInfo::current();
     let own = format!(
         "version={} commit={} dirty={}",
@@ -512,7 +512,7 @@ fn no_exports_warning_names_the_split_file_that_holds_them() {
 }
 
 #[test]
-fn verbose_prints_one_summary_per_session() {
+fn very_verbose_prints_one_summary_per_session() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     for d in ["dst", "home", "xdg"] {
@@ -532,7 +532,7 @@ fn verbose_prints_one_summary_per_session() {
         format!("{}:m/", d.id),
     );
     let mut args = vec![
-        "-v",
+        "-vv",
         "--reconnect",
         "0",
         "--address",
@@ -563,7 +563,7 @@ fn verbose_prints_one_summary_per_session() {
 }
 
 #[test]
-fn verbose_prints_a_summary_for_a_failed_session() {
+fn very_verbose_prints_a_summary_for_a_failed_session() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     for d in ["dst", "home", "xdg", "src"] {
@@ -577,7 +577,7 @@ fn verbose_prints_a_summary_for_a_failed_session() {
     let src = tmp.join("src").display().to_string();
     let o = run_client(
         &[
-            "-v",
+            "-vv",
             "--reconnect",
             "0",
             "--address",
@@ -608,6 +608,11 @@ fn verbose_prints_a_summary_for_a_failed_session() {
 /// must give up on) through a real daemon, with the file report on or off.
 /// Returns the client's output.
 fn push_unreadable(tmp: &Path, report: Option<&Path>) -> std::process::Output {
+    push_unreadable_with(tmp, report, &[])
+}
+
+/// [`push_unreadable`] with extra flags before the operands.
+fn push_unreadable_with(tmp: &Path, report: Option<&Path>, flags: &[&str]) -> std::process::Output {
     for d in ["src", "dst", "home", "xdg"] {
         std::fs::create_dir_all(tmp.join(d)).unwrap();
     }
@@ -620,7 +625,7 @@ fn push_unreadable(tmp: &Path, report: Option<&Path>) -> std::process::Output {
     let src = format!("{}/", tmp.join("src").display());
     let dest = format!("{}:m/", d.id);
     let config = tmp.join("irsync.toml");
-    let args = [
+    let mut args = vec![
         "-a",
         "--reconnect",
         "0",
@@ -628,9 +633,9 @@ fn push_unreadable(tmp: &Path, report: Option<&Path>) -> std::process::Output {
         &address,
         "--config",
         config.to_str().unwrap(),
-        &src,
-        &dest,
     ];
+    args.extend_from_slice(flags);
+    args.extend([src.as_str(), dest.as_str()]);
     let env: Vec<(&str, &Path)> = report
         .map(|p| vec![(irsync::file_report::ENV, p)])
         .unwrap_or_default();
@@ -698,4 +703,62 @@ fn file_report_that_cannot_be_opened_is_said_on_stderr_and_the_sync_goes_on() {
     assert!(!report.exists());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("cannot open the file report"), "{err}");
+}
+
+/// The lines of `err` that name `bad.bin`.
+fn bad_bin_lines(err: &str) -> usize {
+    err.lines().filter(|l| l.contains("bad.bin")).count()
+}
+
+#[test]
+fn by_default_a_sync_prints_nothing_but_its_errors_each_once() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let o = push_unreadable(dir.path(), None);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert_eq!(o.status.code(), Some(23), "{out}\n{err}");
+    assert_eq!(out, "", "{err}");
+    assert_eq!(bad_bin_lines(&err), 1, "{err}");
+}
+
+#[test]
+fn quiet_still_prints_errors() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let o = push_unreadable_with(dir.path(), None, &["-q"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert_eq!(o.status.code(), Some(23), "{out}\n{err}");
+    assert_eq!(out, "", "{err}");
+    assert_eq!(bad_bin_lines(&err), 1, "{err}");
+}
+
+#[test]
+fn verbose_lists_files_and_the_trailer_but_no_session_summary() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let o = push_unreadable_with(dir.path(), None, &["-v"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert_eq!(o.status.code(), Some(23), "{out}\n{err}");
+    assert!(out.lines().any(|l| l == "ok.txt"), "{out}");
+    assert!(
+        out.contains("\nsent ") && out.contains("total size is "),
+        "{out}"
+    );
+    assert!(!out.contains("session 1/"), "{out}");
+    assert_eq!(bad_bin_lines(&err), 1, "{err}");
 }

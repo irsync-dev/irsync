@@ -79,7 +79,7 @@ is on purpose, and irsync never adds back an immediate grant you removed. See
 
 ## The transfer is slow and says `relay`
 
-The live block, and the summary line at the end of each session, name the
+The live block (`--progress`), and the summary line at the end of each session (`-vv`), name the
 path the connection took: `direct` or `relay`. See
 [Connect directly or through a relay](direct-and-relay.md#see-which-path-a-sync-took).
 

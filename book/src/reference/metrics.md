@@ -104,7 +104,7 @@ the only one that cannot overlap the others.
 `irsync_active_microseconds_total{activity}` is the other half: the wall time
 during which at least one task was doing the activity, so it never exceeds the
 wall time. Busy divided by active is how many tasks did it at once, on
-average. The `-v` summary shows the active time, followed by `×N` when that
+average. The `-vv` summary shows the active time, followed by `×N` when that
 average is 1.5 or more: `place 18.2s ×14.8` is 18.2 s of the run during which
 about fifteen files were being placed at a time. `index_wait` appears there as
 `index` on the `waiting` line.
@@ -141,7 +141,7 @@ across both machines. The local `EndpointId` is the `endpoint_id` field on
 are exported over OTLP. Events logged inside a span pick up its context.
 
 Log lines show that context too. The daemon's lines, and the client's under
-`-v`, start with the span stack and its fields, as in
+`-vv`, start with the span stack and its fields, as in
 `session{session_id=… side="daemon" …}:transfer: …`.
 
 ## Overhead
@@ -165,10 +165,10 @@ client's and the daemon's CPU time, which is far steadier than wall time.
 | sinks off | 11.64 s | +0.4% | 10.50 s | 43.5 s | -2.1% |
 | all sinks on | 11.26 s | -2.8% | 11.45 s | 46.5 s | +4.6% |
 
-"All sinks on" is `-v`, the debug port on the client and the daemon, and OTLP
+"All sinks on" is the session summary (`-vv`), the debug port on the client and the daemon, and OTLP
 over HTTP on both sides. The OTLP endpoint was a local HTTP server that
 answers every request with 200, so serialising and sending are measured and a
 collector's own work is not. Against sinks off, the median wall time with
 everything on is 3.3% lower (pooled) and the CPU time 6.8% higher (10 runs).
-The extra CPU is the once-a-second sampler, the 22,000 `-v` lines and the
+The extra CPU is the once-a-second sampler, the 22,000 per-file lines and the
 exporters, running on otherwise idle cores.

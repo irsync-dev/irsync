@@ -31,7 +31,7 @@ covers irsync's own timings; this page adds the method and the system tools.
    vary far less between runs than wall time, and they say what changed.
    Report wall time too, but over several runs.
 5. **Find the cause before fixing it.** Go from the coarse to the fine: the
-   `-v` summary for the phase, `perf stat` for CPU against waiting,
+   `-vv` summary for the phase, `perf stat` for CPU against waiting,
    `perf record` for the hot code, `strace -c` for the syscalls. When a
    profile shows a cost but not its caller, count the calls per call site
    with temporary code (a counter keyed by `#[track_caller]`'s location
@@ -87,7 +87,7 @@ development machine. Do not leave them set on a shared or production host.
 
 ## Tools
 
-**`-v` summary.** Add `-v` to the client. The block at the end of each
+**`-vv` summary.** Add `-vv` to the client. The block at the end of each
 session shows wall time, busy time per activity (walk, plan, hash, write,
 waiting on the peer, …), CPU and wire bytes, for the client and the daemon.
 Start here to see which phase and which side to look at.

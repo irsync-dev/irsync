@@ -452,6 +452,13 @@ fn parse_relay_mode(s: &str) -> Result<crate::config::settings::RelayMode, Strin
     }
 }
 
+/// Whether an rsync `--info` list (`flist0,progress2`) turns progress on.
+fn info_asks_progress(spec: &str) -> bool {
+    spec.split(',')
+        .filter_map(|f| f.strip_prefix("progress"))
+        .any(|level| level != "0")
+}
+
 fn parse_yes_no(s: &str) -> Result<bool, String> {
     match s.to_ascii_lowercase().as_str() {
         "yes" | "true" => Ok(true),
@@ -630,8 +637,8 @@ pub struct SyncArgs {
     /// are sparse in the source are written sparse.
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
-    /// List each file as it is handled, and log more per repeat (-vv:
-    /// debug, -vvv: trace).
+    /// List each file transferred and end with a transfer summary; -vv adds
+    /// a summary per session and info logging, -vvv debug, -vvvv trace.
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
     /// Print errors only; also turns the live progress block off.
@@ -708,11 +715,11 @@ pub struct SyncArgs {
     /// Print a block of transfer statistics at the end.
     #[arg(long)]
     pub stats: bool,
-    /// Accepted for rsync compatibility: the live progress block is always
-    /// drawn when stdout is a terminal, and off with -q.
-    #[arg(long)]
+    /// Draw a live progress block while stdout is a terminal.
+    #[arg(short = 'P', long)]
     pub progress: bool,
-    /// Accepted for rsync compatibility (e.g. `progress2`); see --progress.
+    /// rsync's output selection; only `progress1` or `progress2` is read,
+    /// as --progress.
     #[arg(long, value_name = "SPEC")]
     pub info: Option<String>,
     /// Print rsync's per-file change summary (the itemize codes).
@@ -902,8 +909,8 @@ pub struct SyncOptions {
     pub partial_dir: Option<PathBuf>,
     pub ignore_errors: bool,
     pub stats: bool,
+    /// `--progress`, `-P` or `--info=progress1|2`.
     pub progress: bool,
-    pub info: Option<String>,
     pub itemize: bool,
     pub timeout: Option<Duration>,
     pub parallel: Option<u32>,
@@ -976,8 +983,7 @@ impl SyncOptions {
             partial_dir: a.partial_dir.clone(),
             ignore_errors: a.ignore_errors,
             stats: a.stats,
-            progress: a.progress,
-            info: a.info.clone(),
+            progress: a.progress || a.info.as_deref().is_some_and(info_asks_progress),
             itemize: a.itemize_changes,
             timeout: a.timeout.filter(|&t| t != 0).map(Duration::from_secs),
             parallel: a.parallel,

@@ -73,7 +73,7 @@ pub struct TelemetryConfig {
     pub side: Side,
     /// The log filter unless `RUST_LOG` is set.
     pub log_default: String,
-    /// `-v`: the per-session summary.
+    /// `-vv`: the per-session summary.
     pub summary: bool,
     /// The debug HTTP port.
     pub debug_addr: Option<SocketAddr>,
@@ -109,7 +109,7 @@ pub(crate) enum RecorderKind {
     Fanout,
 }
 
-/// The recorder for `cfg`: none without a metric sink (the `-v` summary
+/// The recorder for `cfg`: none without a metric sink (the `-vv` summary
 /// reads the meters directly), the one sink's alone, or a fanout to both.
 pub(crate) fn recorder_kind(cfg: &TelemetryConfig) -> Option<RecorderKind> {
     match (cfg.debug_addr.is_some(), cfg.otlp.is_some()) {

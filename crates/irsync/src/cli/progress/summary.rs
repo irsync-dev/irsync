@@ -1,4 +1,4 @@
-//! The `-v` session summary: where one session's time and bytes went.
+//! The `-vv` session summary: where one session's time and bytes went.
 //!
 //! ```text
 //! session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect
@@ -17,7 +17,7 @@ use super::{clock, commas, human};
 use crate::session::reconnect::ConnState;
 use crate::telemetry::meter::{Activity, Counter, Usage};
 
-/// One finished (or failed) session, for the `-v` summary.
+/// One finished (or failed) session, for the `-vv` summary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {
     /// 0-based position among the run's sources, and their count.

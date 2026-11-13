@@ -143,8 +143,10 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         init_telemetry(
             TelemetryConfig {
                 side: Side::Client,
-                log_default: client_log_default(opts.verbose, opts.quiet).to_string(),
-                summary: opts.verbose >= 1 && !opts.quiet,
+                // `-v` lists files; logging starts at `-vv`.
+                log_default: client_log_default(opts.verbose.saturating_sub(1), opts.quiet)
+                    .to_string(),
+                summary: opts.verbose >= 2 && !opts.quiet,
                 debug_addr: opts.debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
                 trace_files: trace_files_from_env(),
@@ -163,11 +165,14 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             }
         }
         let bus = EventBus::default();
-        // `-q` silences everything but errors. On a terminal the live
-        // progress block is always drawn; `TERM=dumb` is not a terminal.
-        let tty =
-            std::io::stdout().is_terminal() && std::env::var("TERM").map_or(true, |t| t != "dumb");
-        let task = (!opts.quiet).then(|| {
+        // The live block only with `--progress`, on a terminal (`TERM=dumb`
+        // is not one), and never with `-q`. Without it the reporter still
+        // runs: it prints failures on stderr as they happen.
+        let tty = opts.progress
+            && !opts.quiet
+            && std::io::stdout().is_terminal()
+            && std::env::var("TERM").map_or(true, |t| t != "dumb");
+        let task = {
             let screen = if tty {
                 Screen::tty(
                     Box::new(WriterTerm::new(Box::new(std::io::stdout()), || {
@@ -178,7 +183,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             } else {
                 Screen::plain(Box::new(std::io::stdout()))
             };
-            // Log lines now print above the block.
+            // With a block, log lines print above it.
             log.attach(screen.multi());
             // A bad command line fails in `sync` below with the same error.
             let source = match direction_of(args) {
@@ -187,18 +192,16 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             };
             let r =
                 Reporter::with_screen(screen, opts.verbose, opts.stats, opts.itemize, opts.dry_run)
+                    .with_quiet(opts.quiet)
                     .with_delete_mode(opts.delete)
                     .with_source(source);
             tokio::spawn(r.run(bus.subscribe(), None))
-        });
+        };
         let start = Instant::now();
         let result = sync(args, opts, &bus, &log).await;
         // Every session has dropped its sender clone: the reporter drains and stops.
         drop(bus);
-        let reporter = match task {
-            Some(t) => t.await.ok(),
-            None => None,
-        };
+        let reporter = task.await.ok();
         let elapsed = start.elapsed();
         (result, reporter, elapsed)
     });
@@ -228,8 +231,11 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
                     outcome.vanished_omitted
                 );
             }
+            // Those the reporter printed as they happened are not repeated.
             for (path, msg) in &outcome.errors {
-                eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
+                if !reporter.as_mut().is_some_and(|r| r.take_shown(path, msg)) {
+                    eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
+                }
             }
             if outcome.max_delete_reached {
                 eprintln!("irsync: deletions stopped due to the --max-delete limit");

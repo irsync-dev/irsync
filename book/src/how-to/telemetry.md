@@ -8,7 +8,7 @@ each off until you turn it on. The names and labels are listed in
 
 | Sink | Turn it on | What you get |
 | --- | --- | --- |
-| Summary | `-v` on the client | A block at the end of each session: wall time, busy time per activity, time waiting on the peer, CPU, peak memory, bytes on the wire, RTT and loss. |
+| Summary | `-vv` on the client | A block at the end of each session: wall time, busy time per activity, time waiting on the peer, CPU, peak memory, bytes on the wire, RTT and loss. |
 | Debug HTTP port | `--debug-addr [IP:]PORT` on the client; `debug_addr` under `[daemon]` for the daemon | `/metrics` in the Prometheus text format, `/debug/timing` with wall and busy time per span name, and `/debug/flame` with folded stacks. |
 | OpenTelemetry | `OTEL_EXPORTER_OTLP_ENDPOINT`, or `otlp_endpoint` under `[telemetry]` | Spans and metrics over OTLP. |
 
@@ -17,10 +17,10 @@ With all three off the cost is a few untaken branches; the measurements are in
 
 ## Read the summary
 
-Add `-v` to the client:
+Add `-vv` to the client:
 
 ```sh
-irsync -av ~/Photos/ myserver:photos/
+irsync -avv ~/Photos/ myserver:photos/
 ```
 
 At the end of each session it prints a block like this one:

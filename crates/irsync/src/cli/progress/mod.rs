@@ -1,9 +1,16 @@
-//! User-facing output: the live progress block on a terminal, `-v` per-file
-//! lines, `-i` itemize codes and the `--stats` block, driven by the session's
-//! [`Event`]s.
+//! User-facing output: the live progress block (`--progress`), `-v` per-file
+//! lines, `-i` itemize codes, the `--stats` block and failed files on stderr,
+//! driven by the session's [`Event`]s.
 //!
-//! When stdout is a terminal (and `TERM` is not `dumb`) and `-q` is not
-//! given, a block sits under the scrolling output:
+//! As in rsync, a sync prints nothing on stdout by default; `-v` lists the
+//! files and ends with the `sent .. received ..` trailer, `-vv` adds a
+//! summary per session, and `-q` prints errors only. Without the block each
+//! failed file goes to stderr as it fails, and main leaves those out of its
+//! list at the end ([`Reporter::take_shown`]).
+//!
+//! With `--progress` (or `-P`, or `--info=progress1|2`), when stdout is a
+//! terminal (and `TERM` is not `dumb`) and `-q` is not given, a block sits
+//! under the scrolling output:
 //!
 //! ```text
 //! ──────────────────────────────────────────────────────────────────────
@@ -41,10 +48,8 @@
 //!   scrolling lines (and, via [`screen::LogWriter`], tracing output on
 //!   stderr) above it.
 //!
-//! Off a terminal nothing of this is drawn: the output is the same `-v`,
-//! `-i`, `--stats` and trailer lines, byte for byte, as before the block
-//! existed. `--progress` and `--info=progress*` are accepted and change
-//! nothing.
+//! Without the block the output is the same `-v`, `-i`, `--stats` and
+//! trailer lines, byte for byte.
 //!
 //! The reporter only ever reads from a broadcast channel, so it cannot slow
 //! the engine down; if it lags it loses events (never the final totals,
@@ -55,6 +60,7 @@ pub mod screen;
 pub mod state;
 pub mod summary;
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -79,6 +85,14 @@ pub struct Reporter {
     screen: Screen,
     live: Live,
     verbosity: u8,
+    /// `-q`: nothing on stdout; errors still go to `errors`.
+    quiet: bool,
+    /// Where a failed file is reported as it happens when there is no block
+    /// (stderr in production).
+    errors: Box<dyn Write + Send>,
+    /// Failures already printed on `errors`, with how often, so that main
+    /// does not list them again at the end ([`Reporter::take_shown`]).
+    shown: HashMap<(RelPath, String), usize>,
     stats: bool,
     itemize: bool,
     dry_run: bool,
@@ -176,11 +190,43 @@ impl Reporter {
             screen,
             live: Live::new(Party::Local, DeleteMode::Off, Instant::now()),
             verbosity,
+            quiet: false,
+            errors: Box::new(std::io::stderr()),
+            shown: HashMap::new(),
             stats,
             itemize,
             dry_run,
             lagged: 0,
             last_draw: None,
+        }
+    }
+
+    /// `-q`: print nothing on stdout, only the failures (on `errors`).
+    pub fn with_quiet(mut self, quiet: bool) -> Reporter {
+        self.quiet = quiet;
+        self
+    }
+
+    /// Where failures go as they happen (default stderr).
+    pub fn with_errors(mut self, errors: Box<dyn Write + Send>) -> Reporter {
+        self.errors = errors;
+        self
+    }
+
+    /// Whether this failure was already printed as it happened; each call
+    /// accounts for one printing. Main lists only the others at the end.
+    pub fn take_shown(&mut self, path: &RelPath, msg: &str) -> bool {
+        let key = (path.clone(), msg.to_string());
+        match self.shown.get_mut(&key) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                true
+            }
+            Some(_) => {
+                self.shown.remove(&key);
+                true
+            }
+            None => false,
         }
     }
 
@@ -264,7 +310,7 @@ impl Reporter {
             }
             Event::Conn(_) => self.draw(true),
             Event::SessionEnd(s) => {
-                if self.verbosity >= 1 {
+                if self.verbosity >= 2 {
                     let width = self.screen.geometry().width;
                     for l in summary::render(&s, width) {
                         self.line(&l);
@@ -280,7 +326,7 @@ impl Reporter {
                 let path = shown(&p);
                 if self.itemize {
                     self.line(&format!("{DELETING} {path}"));
-                } else {
+                } else if self.verbosity >= 1 {
                     self.line(&format!("would delete {path}"));
                 }
             }
@@ -306,8 +352,17 @@ impl Reporter {
             | Event::Skipped(..)
             | Event::PeerSkipped(_)
             | Event::Delete { .. }
-            | Event::Failed(..)
             | Event::SessionStart { .. } => {}
+            // On a terminal with the block, the block's `errors` section
+            // shows it and main lists every failure once the block is gone.
+            Event::Failed(p, msg) => {
+                if !self.screen.is_tty() {
+                    let line = format!("irsync: {}: {msg}\n", p.to_os().to_string_lossy());
+                    let _ = self.errors.write_all(line.as_bytes());
+                    let _ = self.errors.flush();
+                    *self.shown.entry((p, msg)).or_default() += 1;
+                }
+            }
         }
     }
 
@@ -330,8 +385,11 @@ impl Reporter {
         }
     }
 
-    /// One output line, above any progress block.
+    /// One output line, above any progress block; none under `-q`.
     fn line(&mut self, s: &str) {
+        if self.quiet {
+            return;
+        }
         self.screen.println(s);
     }
 
@@ -362,7 +420,7 @@ impl Reporter {
     /// `sent .. received ..` / `total size is ..` trailer.
     pub fn finish(&mut self, outcome: &Outcome, elapsed: Duration) {
         self.screen.clear();
-        if self.lagged > 0 {
+        if self.lagged > 0 && !self.quiet {
             eprintln!(
                 "irsync: note: {} progress events were dropped (output may be incomplete)",
                 self.lagged

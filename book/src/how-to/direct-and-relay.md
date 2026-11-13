@@ -8,10 +8,10 @@ this way is in [Connections](../explanation/connections.md).
 
 ## See which path a sync took
 
-Run the sync with `-v`:
+Run the sync with `-vv`:
 
 ```sh
-irsync -av ~/Photos/ myserver:photos/
+irsync -avv ~/Photos/ myserver:photos/
 ```
 
 The first line of the summary at the end of each session names the path,
@@ -21,7 +21,7 @@ The first line of the summary at the end of each session names the path,
 session 1/1  push  ~/Photos/ -> myserver:photos/  wall 3:12  direct
 ```
 
-The live progress block shows the same word while the sync runs.
+The live progress block (`--progress`) shows the same word while the sync runs.
 
 ## Refuse relays
 

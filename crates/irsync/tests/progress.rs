@@ -586,16 +586,84 @@ async fn no_summary_without_verbose() {
 }
 
 #[tokio::test]
-async fn a_summary_per_session_prints_above_the_trailer_under_v() {
+async fn a_summary_per_session_prints_above_the_trailer_under_vv() {
     let buf = Buf::default();
     let events = (0..3)
         .flat_map(|i| [Event::SessionStart { index: i, of: 3 }, summary(i, 3)])
         .collect();
-    let mut r = feed(reporter(&buf, false, 1, false, false), events).await;
+    let mut r = feed(reporter(&buf, false, 2, false, false), events).await;
     r.finish(&Outcome::default(), Duration::from_secs(1));
     let t = buf.text();
     let at = |n: &str| t.find(n).unwrap_or_else(|| panic!("no {n:?} in:\n{t}"));
     assert!(at("session 1/3") < at("session 2/3"));
     assert!(at("session 2/3") < at("session 3/3"));
     assert!(at("session 3/3") < at("sent 0 bytes"));
+}
+
+#[tokio::test]
+async fn v_alone_prints_no_session_summary() {
+    let buf = Buf::default();
+    let events = vec![Event::SessionStart { index: 0, of: 1 }, summary(0, 1)];
+    let mut r = feed(reporter(&buf, false, 1, false, false), events).await;
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    assert!(!t.contains("session 1/"), "{t}");
+    assert!(t.contains("sent 0 bytes"), "{t}");
+}
+
+#[tokio::test]
+async fn without_a_block_a_failed_file_goes_to_stderr_as_it_happens() {
+    let (out, err) = (Buf::default(), Buf::default());
+    let r = reporter(&out, false, 0, false, false).with_errors(Box::new(err.clone()));
+    let mut r = feed(r, vec![Event::Failed(rp("a/b.txt"), "boom".into())]).await;
+    assert_eq!(err.text(), "irsync: a/b.txt: boom\n");
+    assert_eq!(out.text(), "");
+    // Printed once: main does not list it again at the end.
+    assert!(r.take_shown(&rp("a/b.txt"), "boom"));
+    assert!(!r.take_shown(&rp("a/b.txt"), "boom"));
+    assert!(!r.take_shown(&rp("other"), "boom"));
+}
+
+#[tokio::test]
+async fn with_a_block_a_failed_file_is_not_printed_as_it_happens() {
+    let (out, err) = (Buf::default(), Buf::default());
+    let r = reporter(&out, true, 0, false, false).with_errors(Box::new(err.clone()));
+    let mut r = feed(r, vec![Event::Failed(rp("a/b.txt"), "boom".into())]).await;
+    assert_eq!(err.text(), "");
+    assert!(!r.take_shown(&rp("a/b.txt"), "boom"));
+}
+
+#[tokio::test]
+async fn quiet_prints_errors_and_nothing_else() {
+    let (out, err) = (Buf::default(), Buf::default());
+    let r = reporter(&out, false, 1, true, true)
+        .with_quiet(true)
+        .with_errors(Box::new(err.clone()));
+    let events = vec![
+        Event::FileDone(rp("f"), 1),
+        Event::Itemized(rp("f"), ">f+++++++++".into()),
+        Event::WouldDelete(rp("g")),
+        Event::Failed(rp("h"), "boom".into()),
+    ];
+    let mut r = feed(r, events).await;
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    assert_eq!(out.text(), "");
+    assert_eq!(err.text(), "irsync: h: boom\n");
+}
+
+#[tokio::test]
+async fn would_delete_lines_need_v_or_i() {
+    for (v, itemize, want) in [
+        (0, false, ""),
+        (1, false, "would delete g\n"),
+        (0, true, "*deleting   g\n"),
+    ] {
+        let buf = Buf::default();
+        feed(
+            reporter(&buf, false, v, false, itemize),
+            vec![Event::WouldDelete(rp("g"))],
+        )
+        .await;
+        assert_eq!(buf.text(), want, "v={v} i={itemize}");
+    }
 }

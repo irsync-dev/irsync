@@ -69,7 +69,7 @@ and a different meaning follow in
 | `--devices` | Preserve character and block device nodes. |
 | `--specials` | Preserve FIFOs. Sockets are never copied. |
 | `-H`, `--hard-links` | Files linked together in the source are linked together in the destination. |
-| `-v`, `--verbose` | List each file as it is handled and end each session with a summary of time, CPU, memory and bytes. `-vv` adds debug logs, `-vvv` trace logs. |
+| `-v`, `--verbose` | List each file transferred, and end with rsync's `sent … received …` and `total size is …` lines. `-vv` adds a summary of time, CPU, memory and bytes at the end of each session, and info logs; `-vvv` debug logs, `-vvvv` trace logs. |
 | `-q`, `--quiet` | Print errors only. Also turns the live progress block off. |
 | `-n`, `--dry-run` | Change nothing on either side. With `-v` or `-i`, list what would be done. |
 | `-c`, `--checksum` | Compare by content, not by size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read. |
@@ -107,8 +107,9 @@ wins.
 | `--delete-excluded` | Also delete destination files that the filters exclude. Implies `--delete`, so the deletions run after the transfer. | Implies `--delete`, so the deletions run during the transfer. |
 | `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. | Finds runs of zeros at write granularity, not only whole chunks. |
 | `--timeout SECS` | Drop a connection that moves no data and no control message for `SECS` seconds; the session then reconnects. `0`, the default, means no timeout. | A connection idle for `SECS` seconds ends the run with code 30. |
-| `--progress` | Accepted and ignored: the live progress block is always drawn when stdout is a terminal. | Prints the progress of each file. |
-| `--info SPEC` | Accepted and ignored, for example `--info=progress2`. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
+| `--progress` | Draws the live progress block (see [Output](#output)) when stdout is a terminal. | Prints the progress of each file. |
+| `-P` | The same as `--progress`. irsync always keeps partial files. | The same as `--partial --progress`. |
+| `--info SPEC` | Only `progress1` and `progress2` are read, as `--progress`; the rest is ignored. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
 
 ### Deletions
 
@@ -121,7 +122,12 @@ directory where the gap was found. `--ignore-errors` deletes anyway. Combine
 
 ### Output
 
-On a terminal the client draws a live block at the bottom of the screen: the
+As in rsync, a sync prints nothing on stdout by default. Errors and warnings
+go to stderr, each failed file as it fails. `-v` lists each file transferred
+and ends with the `sent … received …` and `total size is …` lines; `-q`
+prints errors only.
+
+With `--progress` (or `-P`) on a terminal, the client draws a live block at the bottom of the screen: the
 listing walk on both sides, a transfer bar with rsync's percent semantics, one
 row per file that is being hashed or has a data stream open and is not yet
 sent in full, and the deletion pass. The rows are as many as half the
@@ -131,8 +137,11 @@ including those beyond the rows drawn. It is not the session's window of up to
 4,096 files in flight described in
 [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams):
 a file in that window that is neither being hashed nor has a stream open has
-no row and is not counted. `-q` turns the block off. When stdout is not a terminal, or `TERM` is
-`dumb`, the block is not drawn and the output is plain lines.
+no row and is not counted. While the block is drawn, failed files show in its
+`errors` section instead of scrolling, and the full list goes to stderr once the
+block is cleared at the end. `-q` turns the block off. When stdout is not a
+terminal, or `TERM` is `dumb`, the block is not drawn and the output is plain
+lines.
 
 ## irsync flags
 

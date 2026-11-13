@@ -268,6 +268,12 @@ cross-referenced from commit messages and review notes.
   arrives); until then the percentage is blank.
 - `--info=progress1|progress2` only; `-v`, `-i`, `--stats` follow rsync's
   shapes.
+- **R48 — A sync is silent by default, as rsync is.** The live block needs
+  `--progress` (`-P`, `--info=progress1|2`); without it each failed file
+  goes to stderr as it fails, and is not listed again at the end. `-v` is
+  rsync's: files and the trailer. The per-session summary and info logging
+  moved to `-vv`. `-P` does not add `--partial`: partial files are always
+  kept. Cost if wrong: users who liked the block by default type `-P`.
 - Client endpoints do not publish their address (`publish: false`); daemons
   do.
 

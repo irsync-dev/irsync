@@ -795,3 +795,16 @@ fn no_wait_requires_debug_addr() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--debug-addr"), "{err}");
 }
+
+#[test]
+fn progress_block_is_asked_for_with_progress_p_or_info_progress() {
+    assert!(!opts(&["a/", "b/"]).progress);
+    assert!(!opts(&["-v", "a/", "b/"]).progress);
+    assert!(opts(&["--progress", "a/", "b/"]).progress);
+    assert!(opts(&["-P", "a/", "b/"]).progress);
+    assert!(opts(&["-avP", "a/", "b/"]).progress);
+    assert!(opts(&["--info=progress2", "a/", "b/"]).progress);
+    assert!(opts(&["--info=flist0,progress1", "a/", "b/"]).progress);
+    assert!(!opts(&["--info=progress0", "a/", "b/"]).progress);
+    assert!(!opts(&["--info=stats2", "a/", "b/"]).progress);
+}

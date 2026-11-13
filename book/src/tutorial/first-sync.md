@@ -59,8 +59,8 @@ survives a reboot (see
 Then the push runs over iroh. `-a` recurses into directories and keeps
 symlinks, permissions, times, group, owner and device files; `-v` lists each
 file. The trailing `/` on `~/Photos/` copies the directory's contents, as in
-rsync. On a terminal a live block at the bottom of the screen shows the
-transfer as it runs.
+rsync. Add `-P` to see a live block at the bottom of the screen that shows
+the transfer as it runs.
 
 Later runs use the alias and do not touch ssh. If the daemon has stopped,
 for example after a reboot, a sync waits about 15 seconds for an answer, then
