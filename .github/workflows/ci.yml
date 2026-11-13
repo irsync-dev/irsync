@@ -1,9 +1,20 @@
 name: CI
 
 on:
+  # A change that touches only Markdown, the book or the site skips CI; the
+  # site workflow (site.yml) checks those. paths-ignore does not apply to
+  # workflow_call, so the release gate always runs everything.
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - book/**
+      - site/**
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - book/**
+      - site/**
   # The release gate (release-gate.yml) calls this as its test gate on a tag push.
   workflow_call:
     inputs:

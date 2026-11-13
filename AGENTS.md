@@ -12,6 +12,11 @@ cargo-nextest, dist, mdbook) and checks the system tools;
 
 ## Tests
 
+A change that touches only Markdown files, `book/` or `site/` needs no
+tests, clippy or fmt; CI skips them too. The site workflow
+(`.github/workflows/site.yml`) still builds and checks the book and site
+after the push to `main`.
+
 Everyday run, while working on a change:
 
 ```sh
