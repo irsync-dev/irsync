@@ -69,6 +69,54 @@ copies the directory's contents; one without copies the directory itself.
 | `irsync -a myserver:photos/ ~/copy/` | The contents of the export in `~/copy`. |
 | `irsync -a myserver:photos ~/copy/` | The export as `~/copy/photos`. |
 
+## Copying one file
+
+A source may be a single file, in either direction. It lands where rsync
+would put it. `T` is the destination as typed, and `L` the local destination
+on a pull.
+
+| Command | `T` is a directory | `T` does not exist | `T` is a file |
+| --- | --- | --- | --- |
+| `irsync f.iso myserver:T` | `T/f.iso` | a file named `T` | `T` is updated |
+| `irsync f.iso myserver:T/` | `T/f.iso` | directory `T` is created, then `T/f.iso` | error |
+| `irsync myserver:dir/f.iso L` | `L/f.iso` | a file named `L` | `L` is updated |
+| `irsync myserver:dir/f.iso L/` | `L/f.iso` | directory `L` is created, then `L/f.iso` | error |
+
+- A trailing slash on the file source (`f.iso/`) is an error. A lone source
+  that fails this way exits 1; with other sources, the run exits 23.
+- If `T/f.iso` already exists and is a directory, the copy fails and nothing
+  is replaced. rsync would replace an empty directory; `irsync` never
+  replaces a directory with a file.
+- An existing file is updated as it is inside a directory copy: delta
+  transfer, `.part` files, `--inplace`, `--append`, `-c`, `-u`, `-n`, `-i`
+  and the metadata flags all apply, and a dropped connection resumes.
+- Nothing else in the destination directory is touched. `--delete`,
+  `--delete-excluded` and `--max-delete` are accepted and do nothing.
+- `--include` and `--exclude` are matched against the file's name. An
+  excluded file is not copied, and the run exits 0.
+- A symlink or special file as the source is treated as it would be inside a
+  directory copy: a symlink is copied as a link with `-l` or `-a` and
+  skipped otherwise; a device or special file needs `-D` or `-a`. A source
+  symlink is not followed.
+- Several sources may be files and directories mixed (push only). The
+  destination is then always a directory, and each file lands under its own
+  name.
+- `irsync myserver:dir/f.iso` with no destination lists that one file.
+- The missing parent directories of `T` are handled as for a directory
+  destination.
+
+A pull without a trailing slash first asks the daemon whether the path is a
+file, a directory or missing. That costs one extra short connection. A
+remote symlink as the last component counts as a file and is pulled as a
+link, even if it points to a directory. A remote file that does not exist is
+an error.
+
+With an automatic ("immediate") grant, a push of a file to a missing `T`
+exports `T`'s parent directory, which must already exist, and creates
+nothing. The client then has lasting read-write access to that whole
+directory. When `T` is a directory, or the destination ends in `/`, the
+grant is as for a directory push.
+
 ## Listing
 
 A single remote operand lists instead of copying:

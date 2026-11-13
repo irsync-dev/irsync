@@ -39,10 +39,15 @@ handled over ssh. See
   one source.
 - rsync's trailing-slash rule holds on both sides: `Photos/` copies the
   directory's contents, `Photos` copies the directory itself.
+- A source may be one file, pushed or pulled. It is placed as rsync would
+  place it: into `T` if that is a directory, as `T` if it does not exist, over
+  `T` if that is a file. See
+  [Copying one file](remote-addresses.md#copying-one-file).
 - A single remote operand lists instead of copying. `irsync HOST:` prints the
   exports this client may reach, one `NAME PATH ACCESS` line each, where
   `ACCESS` is `rw` or `ro` with the export's `read_only` applied.
-  `irsync HOST:PATH` prints the files a pull would fetch and writes nothing; it
+  `irsync HOST:PATH` prints the files a pull would fetch (just that file, if
+  `PATH` is a file) and writes nothing; it
   recurses unless `--no-recursive` is given. A listing does not redial: if the
   connection fails, it exits instead of waiting out the reconnect window.
 

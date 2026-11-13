@@ -18,6 +18,11 @@
   [Connections](../explanation/connections.md#relays).
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data
   crosses the link as it is stored.
+- **Several sources with `--delete` can delete what an earlier source
+  copied.** Each source is its own session, one after the other. In
+  `irsync --delete a.iso photos/ myserver:T/`, the `photos/` session deletes
+  the `T/a.iso` that was just copied. rsync merges the sources into one list
+  and does not. The same happens with `a/ b/`.
 - **Linux and macOS only**, on x86_64 and aarch64, as client and as daemon.
 - **No extended attributes or ACLs.** `irsync` copies neither; see the next
   section.

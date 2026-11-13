@@ -16,7 +16,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `3`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `4`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A 4-byte big-endian length, then that many bytes of one protobuf message |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -85,11 +85,18 @@ The client sends `Hello` on the control stream:
 - `protocol_version` and the three chunking parameters;
 - `session_id`: 16 bytes to resume a session, empty for a new one;
 - `direction`: `CLIENT_SENDS` (a push), `DAEMON_SENDS` (a pull) or
-  `LIST_EXPORTS`;
+  `LIST_EXPORTS` or `PROBE`;
 - `path`, the remote `PATH` as typed, which the daemon resolves (see
   [Remote addresses](remote-addresses.md#resolution-order)); `contents_only`,
   the trailing-slash rule; and on a push of a source without a trailing slash,
   `name`, its basename;
+- `single_file` (field 31): the session copies one file. `name` is then the
+  source's basename on a push, and the name the file gets on the client on a
+  pull; it must be one path component. The daemon treats the directory that
+  holds the file as the session root, so nothing else in it is listed or
+  deleted. `--delete` and its relatives are ignored. On a push the daemon
+  decides the file's name on its side by rsync's rules and returns it in
+  `HelloAck.single_name`, which can differ from `name` (a file named `T`);
 - the client's preserve flags (`-l -p -t -g -o -D -H -S`, `-r`, `-d`), which
   the daemon honours in both directions; a `Hello` without them means
   everything;
@@ -112,10 +119,19 @@ The client sends `Hello` on the control stream:
 - `build`: the client's `BuildInfo` (package version, short git commit, dirty
   flag).
 
+A `PROBE` opens no session. The daemon resolves `path` as it would for a
+pull, applies the same access checks, and answers with a `PathInfo` whose
+`kind` is `MISSING`, `DIRECTORY` or `FILE` (anything that is not a directory,
+a symlink included), then closes. A client uses it to learn whether a pull
+without a trailing slash names a file. `PathInfo` has `kind` on field 3, with
+fields 1 and 2 reserved and the field marked `optional`, so a refusal (an
+`Error`) never decodes as a `PathInfo`.
+
 For `LIST_EXPORTS` the daemon answers with an `ExportList`, the exports this
 key may use with their paths and effective access, sorted by name, and closes
 the connection. Otherwise it answers with `HelloAck` (the session id, whether
-the session was resumed, its protocol version and its `BuildInfo`), or with an
+the session was resumed, its protocol version, its `BuildInfo` and, on a
+single-file push, `single_name`), or with an
 `Error` and close code 2. Each side logs the other's build at info level once
 the session is up.
 

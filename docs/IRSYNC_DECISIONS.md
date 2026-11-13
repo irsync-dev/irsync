@@ -398,6 +398,49 @@ cross-referenced from commit messages and review notes.
   `tests/posix_extras.rs`. Known small edge: after a reconnect, the resumed
   plan keeps a resent name's old link entry marked done; the file is still
   sent and placed correctly.
+- **R48 — A single file can be the source of a copy** (2026-11-13). It
+  lands where rsync would put it, in both directions (the table is in the
+  book's remote-addresses page). Design:
+  `superpowers/specs/2026-11-13-single-file-design.md`. Rulings:
+  - *The receiver's name goes on the wire.* `Hello.single_file` (31) marks the
+    session, and `name` is one component. On a push the daemon picks the name
+    the file gets (`T` itself when `T` is new) and returns it in
+    `HelloAck.single_name` (5); the sender maps its own name to it. Why:
+    only the receiver can see what `T` is, and the file can be renamed.
+    Cost if wrong: a protocol change. `PROTOCOL_VERSION` is 4, with no
+    compatibility path; an older peer gets the version error, never a
+    directory-shaped copy.
+  - *The holding directory is the session root.* The listing has one entry,
+    the file, and the planner never deletes or restamps the root. Why: the
+    receiver's safety checks, index and resume work unchanged, and no
+    sibling can be touched. The session key includes the name, so a rerun
+    resumes and never collides with a directory session. Cost if wrong: a
+    second kind of root in the engine.
+  - *A pull probes first.* Without a trailing slash the client sends a
+    `PROBE` Hello and gets `PathInfo` (`MISSING`, `DIRECTORY` or `FILE`,
+    `kind` = 3, `optional`, fields 1 and 2 reserved so an `Error` never reads
+    as one). Nothing local is created until the answer is `FILE`. A remote
+    symlink as the last component is `FILE` and is pulled as a link; a
+    missing remote file is an error. Cost if wrong: one extra connection per
+    pull, and people who expect a followed directory link get a link.
+  - *An automatic export covers the parent.* A file push to a missing `T`
+    exports `T`'s parent, which must exist, and creates nothing. The client
+    gets lasting read-write access to the whole parent. The user chose this
+    knowingly. Cost if wrong: a wider grant than the one file.
+  - *Both sides check the path above the file.* A symlinked or non-directory
+    parent is refused before the file or the probe looks below it, so
+    neither leaks what exists outside an export.
+  - *No directory is ever replaced by a file.* An empty directory at
+    `T/f.iso` fails, where rsync replaces it. Cost if wrong: one rsync
+    divergence.
+  - *A lone `f.iso/` source exits 1*, as every "all sources failed" run
+    does; with other sources it is 23.
+  - *`--delete` does nothing for one file.* Several sources with `--delete`
+    can still delete what an earlier source copied; this is a known
+    limitation (book: limitations).
+  Tests: `tests/single_file.rs`, `tests/single_file_e2e.rs` (includes the
+  rsync comparison), `tests/single_place.rs`, and the two resume tests in
+  `tests/netsim.rs`.
 
 ---
 
@@ -891,7 +934,6 @@ left:
 - `Outcome` counts only the final connection; cumulative figures live in
   `SessionProgress`. Stored session errors are re-encoded every 2 s
   (persister rewrites the whole plan blob, O(N)).
-- Single-file sources are refused in v1 (directories only).
 
 **GC**
 - `older_than` is one age for parts and sessions on each side (on purpose:

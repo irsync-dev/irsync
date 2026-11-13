@@ -586,7 +586,9 @@ pub struct SyncArgs {
     /// an EndpointId; EXPORT: a directory the daemon shares by name).
     /// Exactly one side is remote; several sources only when pushing. A
     /// trailing `/` copies a directory's contents, none the directory
-    /// itself.
+    /// itself. A source may be one file: it goes into DEST if that is a
+    /// directory, becomes DEST if that does not exist, and updates DEST if
+    /// that is a file (DEST ending in `/` is always a directory).
     #[arg(value_name = "SRC... DEST")]
     pub paths: Vec<String>,
 
