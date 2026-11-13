@@ -32,4 +32,11 @@ message SessionProgress {
   repeated uint64 done_file_ids = 1; // files acknowledged DONE
   uint64 bytes_transferred = 2; // cumulative over all connections
   uint64 deleted = 3; // deletions so far (counts against --max-delete)
+  // Receiver, `-H`: files placed that had more than one name when listed,
+  // with the stat their chunk list was hashed under, for the link check.
+  repeated PlacedStat placed = 4;
+}
+message PlacedStat {
+  bytes path = 1;
+  SourceStat stat = 2;
 }

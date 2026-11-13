@@ -188,6 +188,18 @@ message FileEntry {
   string group = 33;
 }
 
+// A source file's stat, as the sender compares it (`-H`'s link check).
+message SourceStat {
+  uint64 size = 1;
+  int64 mtime_sec = 2;
+  uint32 mtime_nsec = 3;
+  int64 ctime_sec = 4;
+  uint32 ctime_nsec = 5;
+  uint64 inode = 6;
+  uint32 mode = 7;
+  uint32 uid = 8;
+  uint32 gid = 9;
+}
 message Range {
   uint64 offset = 1;
   uint64 length = 2;

@@ -19,8 +19,9 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, ChunkBasis, ChunkListPart, FileAck, MayPlace,
-    NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settled,
+    control::Msg, file_ack::Status, file_entry::Kind, CheckLink, ChunkBasis, ChunkListPart,
+    FileAck, LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan,
+    SessionDone, Settled, Unlinked,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -289,6 +290,12 @@ struct SenderRole {
     settled: bool,
     /// Listed files the final re-check found gone.
     vanished: Vec<RelPath>,
+    /// `-H`'s link check (see `CheckLink`): the way to the checker task
+    /// while the receiver's `CheckLink`s come in, and the task.
+    link_tx: Option<mpsc::UnboundedSender<(RelPath, Freshness)>>,
+    link_task: Option<JoinHandle<()>>,
+    /// The receiver sent `CheckLinksEnd`.
+    links_ended: bool,
 }
 
 /// Records per `ChunkListPart` (a test hook may shrink it).
@@ -739,6 +746,8 @@ impl SenderRole {
                 // with its mtime, mode and ids, never the walk's.
                 let list_stat = ListStat {
                     mtime: stat.mtime,
+                    ctime: stat.ctime,
+                    inode: stat.inode,
                     mode: stat.mode,
                     uid: stat.uid,
                     gid: stat.gid,
@@ -1301,6 +1310,52 @@ impl SenderRole {
         Ok(())
     }
 
+    /// One name the receiver is about to link (`-H`, see `CheckLink`):
+    /// handed to the checker task.
+    fn on_check_link(&mut self, c: CheckLink) -> anyhow::Result<()> {
+        if !self.ctx.opts.check_links {
+            bail!("protocol error: CheckLink without -H");
+        }
+        if self.links_ended {
+            bail!("protocol error: CheckLink after CheckLinksEnd");
+        }
+        let (Ok(path), Some(want)) = (RelPath::new(&c.path), c.want) else {
+            bail!("protocol error: CheckLink without a path or a stat");
+        };
+        let want = super::parts::freshness_of(&want);
+        let _ = self.link_checker().send((path, want));
+        Ok(())
+    }
+
+    /// The way to the checker task, started on first use.
+    fn link_checker(&mut self) -> &mpsc::UnboundedSender<(RelPath, Freshness)> {
+        let (ctx, out, replanned) = (&self.ctx, &self.out, &self.replanned);
+        let task = &mut self.link_task;
+        self.link_tx.get_or_insert_with(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            *task = Some(tokio::spawn(
+                check_links(ctx.clone(), out.clone(), rx, replanned.clone())
+                    .instrument(tracing::Span::current()),
+            ));
+            tx
+        })
+    }
+
+    /// The receiver has sent every `CheckLink`: the checker answers the
+    /// last of them, then `LinksChecked`.
+    fn on_check_links_end(&mut self) -> anyhow::Result<()> {
+        if !self.ctx.opts.check_links {
+            bail!("protocol error: CheckLinksEnd without -H");
+        }
+        if std::mem::replace(&mut self.links_ended, true) {
+            bail!("protocol error: a second CheckLinksEnd");
+        }
+        self.link_checker();
+        // Closing the way in ends the checker once it has drained it.
+        self.link_tx = None;
+        Ok(())
+    }
+
     /// The final re-check is over: what it found counts in the outcome.
     fn on_rechecked(&mut self, vanished: Vec<RelPath>, errors: Vec<(RelPath, String)>) {
         for (path, msg) in &errors {
@@ -1666,6 +1721,85 @@ async fn recheck(
     out.send_paced(Msg::Settled(settled)).await;
 }
 
+/// `-H`'s link check (see `CheckLink`): each name the receiver is about to
+/// link must still be exactly the file its target was hashed as (`want`):
+/// a regular file the walk would list, with an equal stat. The change time
+/// moves whenever a name is added to or removed from a file, and on every
+/// write, so an equal stat means the name has held that content since the
+/// target was hashed. Any other name goes back as `Unlinked`: with its
+/// entry as it is now when the walk would list it as a regular file (it is
+/// then admitted to be planned once more, its retry used, as a re-planned
+/// file is), without one when it is gone or of another kind. Ends, with
+/// `LinksChecked`, once `rx` is closed and drained. Its frames are paced:
+/// one per name, not bounded by the files in flight.
+async fn check_links(
+    ctx: Arc<Ctx>,
+    out: Out,
+    mut rx: mpsc::UnboundedReceiver<(RelPath, Freshness)>,
+    replanned: Arc<std::sync::Mutex<HashSet<RelPath>>>,
+) {
+    let mut names = crate::fs::ids::IdNames::new();
+    let mut batch = Vec::with_capacity(RECHECK_BATCH);
+    while rx.recv_many(&mut batch, RECHECK_BATCH).await > 0 {
+        let todo = std::mem::take(&mut batch);
+        let paths: Vec<RelPath> = todo.iter().map(|(p, _)| p.clone()).collect();
+        let c = ctx.clone();
+        let found = blocking(move || {
+            Ok(todo
+                .into_iter()
+                .filter_map(|(path, want)| {
+                    c.activity
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if c.hooks.no_change_checks() {
+                        return None;
+                    }
+                    if !walk_admits(&c.root, &path, &c.filters) {
+                        return Some((path, None));
+                    }
+                    match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                        Ok((e, ctime)) if Freshness::of_entry(&e, ctime) == want => None,
+                        Ok((e, _)) if e.kind() == Kind::Regular => Some((path, Some(e))),
+                        _ => Some((path, None)),
+                    }
+                })
+                .collect::<Vec<_>>())
+        })
+        .await;
+        let unlinked = found.unwrap_or_else(|e| {
+            // Not checked: not linked either.
+            tracing::warn!(error = %e, "link check failed");
+            paths.into_iter().map(|p| (p, None)).collect()
+        });
+        for (path, entry) in unlinked {
+            let entry = entry.map(|mut e| {
+                tracing::info!(
+                    "{}: no longer the file it was a hard link to; sending it as a file",
+                    crate::fs::paths::escape_path(path.as_bytes())
+                );
+                e.path = path.as_bytes().to_vec();
+                names.attach(&mut e);
+                replanned
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(path.clone());
+                e
+            });
+            if entry.is_none() {
+                tracing::info!(
+                    "{}: no longer the file it was a hard link to, nor a regular file; not linked",
+                    crate::fs::paths::escape_path(path.as_bytes())
+                );
+            }
+            out.send_paced(Msg::Unlinked(Unlinked {
+                path: path.as_bytes().to_vec(),
+                entry,
+            }))
+            .await;
+        }
+    }
+    out.send_paced(Msg::LinksChecked(LinksChecked {})).await;
+}
+
 /// Whether the walk (from `root`, with `filters`) would list `path` as a
 /// regular file: no component is a symlink or excluded, the file is regular
 /// and is not one of irsync's own temporary files.
@@ -1795,6 +1929,9 @@ pub(super) async fn run(
         names: crate::fs::ids::IdNames::new(),
         replanned: Arc::default(),
         rechecking: None,
+        link_tx: None,
+        link_task: None,
+        links_ended: false,
         settled: false,
         vanished: Vec::new(),
     };
@@ -1826,7 +1963,9 @@ pub(super) async fn run(
                 Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.decide(true),
                 // A resumed plan with nothing left to request asks for the
                 // final re-check first.
-                Ev::Ctrl(Msg::Plan(_) | Msg::Settle(_)) => s.decide(false),
+                Ev::Ctrl(
+                    Msg::Plan(_) | Msg::Settle(_) | Msg::CheckLink(_) | Msg::CheckLinksEnd(_),
+                ) => s.decide(false),
                 _ => {}
             }
         }
@@ -1859,6 +1998,8 @@ pub(super) async fn run(
             }
             Ev::Ctrl(Msg::Plan(p)) => s.on_plan(p),
             Ev::Ctrl(Msg::Settle(_)) => s.on_settle(),
+            Ev::Ctrl(Msg::CheckLink(c)) => s.on_check_link(c),
+            Ev::Ctrl(Msg::CheckLinksEnd(_)) => s.on_check_links_end(),
             Ev::Send(Done::Rechecked { vanished, errors }) => {
                 s.on_rechecked(vanished, errors);
                 Ok(())
@@ -1892,6 +2033,9 @@ pub(super) async fn run(
             Ev::Ctrl(Msg::Done(_)) if s.ctx.opts.settle && !s.settled => Err(anyhow::anyhow!(
                 "protocol error: SessionDone without the final re-check (--paranoid)"
             )),
+            Ev::Ctrl(Msg::Done(_)) if s.ctx.opts.check_links && !s.links_ended => Err(
+                anyhow::anyhow!("protocol error: SessionDone without the link check (-H)"),
+            ),
             Ev::Ctrl(Msg::Done(d)) => {
                 s.on_session_done(d);
                 break Ok(());
@@ -1917,6 +2061,9 @@ pub(super) async fn run(
     };
     s.transfer.end();
     if let Some(t) = s.rechecking.take() {
+        t.abort();
+    }
+    if let Some(t) = s.link_task.take() {
         t.abort();
     }
     if res.is_ok() {
@@ -2115,6 +2262,9 @@ mod tests {
             names: crate::fs::ids::IdNames::new(),
             replanned: Arc::default(),
             rechecking: None,
+            link_tx: None,
+            link_task: None,
+            links_ended: false,
             settled: false,
             vanished: Vec::new(),
         };

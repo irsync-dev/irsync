@@ -142,7 +142,7 @@ export.
 | Message | Direction | Meaning |
 | --- | --- | --- |
 | `PlanItem` | receiver to sender | Send this file: `WHOLE` (nothing to reuse at that path), `DELTA` (the receiver holds an old version) or `APPEND` (the receiver trusts its first `append_from` bytes). |
-| `ChunkListPart` | sender to receiver | Part of a file's chunk list. The first part also carries the mtime (`mtime_sec`, `mtime_nsec`) the file was hashed under; with the `size`, the receiver places the file with them instead of the walk's. |
+| `ChunkListPart` | sender to receiver | Part of a file's chunk list. The first part also carries the stat the file was hashed under: mtime, mode, owner and group (with their names), change time and inode. With the `size`, the receiver places the file with them instead of the walk's. The change time and inode are for the link check (`CheckLink`). |
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
@@ -154,6 +154,10 @@ export.
 | `Settle` | receiver to sender | With `--paranoid` (not on a dry run), once, in place of the first `SessionDone`: every path is planned and no file is in flight. The sender stats every file it listed again. |
 | `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed, with its entry as it is now. The receiver plans it again, under a new file id. |
 | `Settled` | sender to receiver | The re-check is over: the listed files that vanished, and those it could not stat. The receiver sends `SessionDone` once the re-planned files are done. |
+| `CheckLink` | receiver to sender | With `-H` (not on a dry run), once every path is planned, no file is in flight and the re-check (if any) is over: one per hard link about to be made to a file sent in this session, on this connection or an earlier one. It carries the name and the stat its target was hashed under. |
+| `CheckLinksEnd` | receiver to sender | The last `CheckLink` has been sent. With `-H` it is always sent, even with no links to check, before `SessionDone`. |
+| `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise that name fails. |
+| `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
 | `SessionDone` | receiver to sender | The session's totals, errors and deletions. |
 | `Error` | daemon to client | A refusal, as above. |
 

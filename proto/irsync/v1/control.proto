@@ -77,6 +77,12 @@ message ChunkListPart {
   uint32 gid = 12;
   string user = 13;
   string group = 14;
+  // The rest of that stat, set on the same part: with `-H`, the receiver
+  // asks the sender whether a file's other names still are this file (see
+  // CheckLink).
+  int64 ctime_sec = 15;
+  uint32 ctime_nsec = 16;
+  uint64 inode = 17;
 }
 // receiver -> sender: `records` chunk records of room freed (lists the
 // receiver dropped: placed, failed or replaced files). Each connection
@@ -129,6 +135,31 @@ message Settled {
   repeated PathError errors = 2;
   uint64 vanished_omitted = 3;
 }
+// `-H`, unless a dry run: the link check. receiver -> sender, once every
+// path is planned, nothing is in flight and the final re-check (if any) is
+// settled: one CheckLink per hard link to be made to a file sent in this
+// session (on any connection), then CheckLinksEnd. `path` is the name to
+// link, `want` the stat its target was hashed under (as sent with the
+// target's chunk list). The link is made only if `path` is still exactly
+// that file: same inode, size, times, mode and ids. The change time moves
+// whenever a name is added or removed, so an equal stat means `path` has
+// named that content since it was hashed.
+message CheckLink {
+  bytes path = 1;
+  SourceStat want = 2;
+}
+message CheckLinksEnd {}
+// sender -> receiver, after CheckLinksEnd: a CheckLink `path` that is no
+// longer the file it names in `want`. The receiver does not link it. With
+// `entry` (a regular file the walk would list, as it is now) the receiver
+// plans it as a file of its own, as for a Replan, and the sender admits its
+// PlanItem with its retry used. Without (gone, or not such a file) the name
+// fails. Then LinksChecked ends the check.
+message Unlinked {
+  bytes path = 1;
+  FileEntry entry = 2;
+}
+message LinksChecked {}
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -219,5 +250,9 @@ message Control {
     Replan replan = 17;
     Settle settle = 18;
     Settled settled = 19;
+    CheckLink check_link = 20;
+    CheckLinksEnd check_links_end = 21;
+    Unlinked unlinked = 22;
+    LinksChecked links_checked = 23;
   }
 }

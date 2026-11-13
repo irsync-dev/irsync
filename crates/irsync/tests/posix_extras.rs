@@ -7,6 +7,8 @@ use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, assert_trees_equal, sync_trees, Flow};
@@ -406,6 +408,65 @@ async fn hard_links_survive_a_dropped_connection() {
                 ino(&dst.join(format!("f{i:02}.bin"))),
                 ino(&dst.join(format!("links/l{i:02}"))),
                 "{flow:?}: links/l{i:02} not linked"
+            );
+        }
+    }
+}
+
+/// `-H` across a dropped connection: link targets placed before the drop
+/// are checked on the resumed connection too, against the stats stored
+/// with the session (one `CheckLink` per link in all). Small targets are
+/// placed long before the large files reach the drop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn links_to_files_placed_before_a_drop_are_checked() {
+    let opts = opts_with(|p| p.hard_links = true);
+    for flow in [Flow::Push, Flow::Pull] {
+        let h = common::Harness::new().await;
+        let src = h.src(flow);
+        fs::create_dir(src.join("links")).unwrap();
+        for i in 0..4 {
+            let f = src.join(format!("a{i}.bin"));
+            fs::write(&f, data(4 * 1024, i + 1)).unwrap();
+            fs::hard_link(&f, src.join(format!("links/a{i}"))).unwrap();
+        }
+        for i in 0..4 {
+            fs::write(src.join(format!("z{i}.bin")), data(4 * MIB, i + 11)).unwrap();
+        }
+        h.daemon.fault.drop_after_bytes(8 * MIB as u64);
+        let ropts = irsync::session::reconnect::ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let checks = Arc::new(AtomicU32::new(0));
+        let counter: irsync::session::FrameHook = {
+            let checks = checks.clone();
+            Arc::new(move |kind, m| {
+                if kind == irsync::session::StreamKind::Control
+                    && matches!(m, irsync_proto::v1::control::Msg::CheckLink(_))
+                {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                }
+                vec![m]
+            })
+        };
+        let mut local = h.local_side();
+        match flow {
+            Flow::Push => h.daemon.hooks.lock().unwrap().tamper_frames = Some(counter),
+            Flow::Pull => local.hooks.tamper_frames = Some(counter),
+        }
+        let (out, reconnects) = within60(h.run_reconnect(&opts, flow, ropts, local)).await;
+        let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+        assert!(h.daemon.fault.fired(), "{flow:?}: the fault never fired");
+        assert_eq!(reconnects, 1, "{flow:?}");
+        assert!(out.resumed, "{flow:?}");
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        assert_eq!(checks.load(Ordering::SeqCst), 4, "{flow:?}: links checked");
+        let dst = h.dst(flow);
+        for i in 0..4 {
+            assert_eq!(
+                ino(&dst.join(format!("a{i}.bin"))),
+                ino(&dst.join(format!("links/a{i}"))),
+                "{flow:?}: links/a{i} not linked"
             );
         }
     }

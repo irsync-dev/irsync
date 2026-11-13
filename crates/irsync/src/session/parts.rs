@@ -25,14 +25,46 @@ pub(super) const MAX_LIST_CHUNKS: usize = 1 << 24;
 /// The metadata of the stat a file was hashed under, besides its size: the
 /// receiver places the file with these, not the walk's. `user` and `group`
 /// name `uid` and `gid` on the sender (empty when they have no name).
+/// `ctime` and `inode` are for `-H`'s link check (`CheckLink`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct ListStat {
     pub mtime: (i64, u32),
+    pub ctime: (i64, u32),
+    pub inode: u64,
     pub mode: u32,
     pub uid: u32,
     pub gid: u32,
     pub user: String,
     pub group: String,
+}
+
+/// The stat a chunk list of `size` bytes was hashed under, as `CheckLink`
+/// carries it (the sender's ids, not mapped).
+pub(super) fn source_stat(size: u64, s: &ListStat) -> irsync_proto::v1::SourceStat {
+    irsync_proto::v1::SourceStat {
+        size,
+        mtime_sec: s.mtime.0,
+        mtime_nsec: s.mtime.1,
+        ctime_sec: s.ctime.0,
+        ctime_nsec: s.ctime.1,
+        inode: s.inode,
+        mode: s.mode,
+        uid: s.uid,
+        gid: s.gid,
+    }
+}
+
+/// The sender's side of [`source_stat`]: what its own stat is compared with.
+pub(super) fn freshness_of(s: &irsync_proto::v1::SourceStat) -> crate::hasher::Freshness {
+    crate::hasher::Freshness {
+        size: s.size,
+        mtime: (s.mtime_sec, s.mtime_nsec),
+        ctime: (s.ctime_sec, s.ctime_nsec),
+        inode: s.inode,
+        mode: s.mode,
+        uid: s.uid,
+        gid: s.gid,
+    }
 }
 
 /// Cuts a digest into parts of at most `per_part` records, in order.
@@ -68,6 +100,8 @@ pub(super) fn split(
             };
             if k == 0 {
                 (part.mtime_sec, part.mtime_nsec) = stat.mtime;
+                (part.ctime_sec, part.ctime_nsec) = stat.ctime;
+                part.inode = stat.inode;
                 (part.mode, part.uid, part.gid) = (stat.mode, stat.uid, stat.gid);
                 (part.user, part.group) = (stat.user.clone(), stat.group.clone());
             }
@@ -132,6 +166,8 @@ fn feed(slot: &mut Option<Assembly>, mut part: ChunkListPart) -> Result<Option<A
         *slot = Some(Assembly {
             stat: ListStat {
                 mtime: (part.mtime_sec, part.mtime_nsec),
+                ctime: (part.ctime_sec, part.ctime_nsec),
+                inode: part.inode,
                 mode: part.mode,
                 uid: part.uid,
                 gid: part.gid,
@@ -360,6 +396,8 @@ mod tests {
     fn st() -> ListStat {
         ListStat {
             mtime: (1_700_000_000, 123_456_789),
+            ctime: (1_700_000_001, 5),
+            inode: 77,
             mode: 0o100640,
             uid: 1001,
             gid: 1002,
@@ -386,9 +424,11 @@ mod tests {
         let p = &parts[0];
         assert_eq!((p.mtime_sec, p.mtime_nsec), st().mtime);
         assert_eq!((p.mode, p.uid, p.gid), (0o100640, 1001, 1002));
+        assert_eq!((p.ctime_sec, p.ctime_nsec, p.inode), (1_700_000_001, 5, 77));
         assert_eq!((p.user.as_str(), p.group.as_str()), ("alice", "staff"));
         assert!(parts[1..].iter().all(|p| {
             (p.mtime_sec, p.mtime_nsec, p.mode, p.uid, p.gid) == (0, 0, 0, 0, 0)
+                && (p.ctime_sec, p.ctime_nsec, p.inode) == (0, 0, 0)
                 && p.user.is_empty()
                 && p.group.is_empty()
         }));

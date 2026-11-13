@@ -1325,3 +1325,152 @@ async fn chgrp_before_hash_places_the_new_group() {
 async fn chgrp_before_hash_places_the_new_group_on_pull() {
     within30(hashed_group_is_placed_for(Flow::Pull)).await;
 }
+
+/// What happens to `b.bin`, a hard link of `a.bin` when listed, before
+/// `a.bin` is hashed (then `a.bin` is rewritten in place, which `b.bin`
+/// no longer sees).
+#[derive(Clone, Copy, Debug)]
+enum LinkChange {
+    /// Replaced by a file of its own.
+    Replaced,
+    /// Renamed away: gone.
+    Gone,
+}
+
+/// `-H`: `b.bin` never held `a.bin`'s new content, so it must not be
+/// linked to the copy of it. Replaced, it is sent as the file it now is,
+/// in the same run; gone, it fails (exit 23). Either way the next run
+/// leaves an exact copy.
+async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
+    use std::os::unix::fs::MetadataExt;
+    let h = Harness::new().await;
+    let (a, b) = (h.src(flow).join("a.bin"), h.src(flow).join("b.bin"));
+    fs::write(&a, data(SIZE, 21)).unwrap();
+    fs::hard_link(&a, &b).unwrap();
+    let first = Arc::new(AtomicBool::new(false));
+    let hook: HashHook = {
+        let (a, b, first) = (a.clone(), b.clone(), first.clone());
+        Arc::new(move |p: &RelPath, bytes: u64| {
+            if p.as_bytes() != b"a.bin" || bytes != 0 || first.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            match change {
+                LinkChange::Replaced => {
+                    let tmp = b.with_file_name("b.bin.new");
+                    fs::write(&tmp, data(1000, 22)).unwrap();
+                    fs::rename(&tmp, &b).unwrap();
+                }
+                LinkChange::Gone => fs::rename(&b, b.with_file_name("c.bin")).unwrap(),
+            }
+            // In place: only `a.bin` names this file now.
+            fs::File::options()
+                .write(true)
+                .open(&a)
+                .unwrap()
+                .write_all_at(&data(TEAR, 23), 0)
+                .unwrap();
+        })
+    };
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => local.hooks.during_hash = Some(hook),
+        Flow::Pull => h.daemon.hooks.lock().unwrap().during_hash = Some(hook),
+    }
+    let opts = opts_with(&["-H"]);
+    let out = h.run_side(&opts, flow, local).await.unwrap();
+    assert!(first.load(Ordering::SeqCst), "the hook never fired");
+    let (da, db) = (h.dst(flow).join("a.bin"), h.dst(flow).join("b.bin"));
+    assert!(fs::read(&da).unwrap() == fs::read(&a).unwrap());
+    match change {
+        LinkChange::Replaced => {
+            assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+            assert_eq!(fs::read(&db).unwrap(), data(1000, 22));
+            assert_ne!(
+                fs::metadata(&da).unwrap().ino(),
+                fs::metadata(&db).unwrap().ino()
+            );
+        }
+        LinkChange::Gone => {
+            assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
+            assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
+            let (p, m) = &out.errors[0];
+            assert_eq!(p.as_bytes(), b"b.bin");
+            assert!(m.contains("changed during the sync"), "{m}");
+            assert!(!db.exists(), "b.bin was placed");
+        }
+    }
+    let again = h.run(&opts, flow).await.unwrap();
+    assert_eq!(again.exit_code(), 0, "{:?}", again.errors);
+    assert!(fs::read(&da).unwrap() == fs::read(&a).unwrap());
+    match change {
+        LinkChange::Replaced => assert_eq!(fs::read(&db).unwrap(), data(1000, 22)),
+        LinkChange::Gone => {
+            assert!(!db.exists());
+            assert!(fs::read(h.dst(flow).join("c.bin")).unwrap() == fs::read(&a).unwrap());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaced_link_is_sent_as_its_own_file() {
+    within30(changed_link_is_not_linked_for(
+        Flow::Push,
+        LinkChange::Replaced,
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replaced_link_is_sent_as_its_own_file_on_pull() {
+    within30(changed_link_is_not_linked_for(
+        Flow::Pull,
+        LinkChange::Replaced,
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_renamed_away_is_not_linked() {
+    within30(changed_link_is_not_linked_for(Flow::Push, LinkChange::Gone)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_renamed_away_is_not_linked_on_pull() {
+    within30(changed_link_is_not_linked_for(Flow::Pull, LinkChange::Gone)).await;
+}
+
+/// `-H` on a tree nothing writes to: every link is checked once (one
+/// `CheckLink` each) and made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unchanged_links_are_checked_and_made() {
+    use std::os::unix::fs::MetadataExt;
+    within30(async {
+        let flow = Flow::Pull;
+        let h = Harness::new().await;
+        for i in 0..3u32 {
+            let f = h.src(flow).join(format!("f{i}"));
+            fs::write(&f, data(1000, i)).unwrap();
+            fs::hard_link(&f, h.src(flow).join(format!("g{i}"))).unwrap();
+            fs::hard_link(&f, h.src(flow).join(format!("h{i}"))).unwrap();
+        }
+        let checks = Arc::new(AtomicU32::new(0));
+        let mut local = h.local_side();
+        local.hooks.tamper_frames = Some(frame_counter(
+            |m| matches!(m, Msg::CheckLink(_)),
+            checks.clone(),
+        ));
+        let out = h.run_side(&opts_with(&["-H"]), flow, local).await.unwrap();
+        assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
+        assert_eq!(checks.load(Ordering::SeqCst), 6);
+        for i in 0..3u32 {
+            let ino = |n: &str| {
+                fs::metadata(h.dst(flow).join(format!("{n}{i}")))
+                    .unwrap()
+                    .ino()
+            };
+            assert_eq!(ino("f"), ino("g"));
+            assert_eq!(ino("f"), ino("h"));
+        }
+    })
+    .await;
+}

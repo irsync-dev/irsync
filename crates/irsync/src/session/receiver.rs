@@ -23,7 +23,7 @@ use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, plan_item::Action, ChunkListPart, FileAck,
     FileEntry, Itemized, ListRoom, ListingEnd, MayPlace, NeedChunks, PathError, PlaceVerdict,
-    PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled,
+    PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled, SourceStat,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -163,6 +163,20 @@ enum Settling {
     Settled,
 }
 
+/// Where the receiver stands with `-H`'s link check (see `CheckLink`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkCheck {
+    /// No check this session.
+    Off,
+    /// Asked for once the session is complete and settled.
+    Due,
+    /// `CheckLink`s on their way; the sender's `Unlinked`s and
+    /// `LinksChecked` are to come.
+    Asked,
+    /// `LinksChecked` received.
+    Done,
+}
+
 /// What a file in [`St::Confirming`] holds until the sender's verdict.
 enum Held {
     /// The verified `.part`, with the bytes its writer took from the sender.
@@ -206,6 +220,9 @@ struct RFile {
     list: u32,
     /// A chunk list arriving in parts, until its last part.
     assembly: Option<Assembly>,
+    /// The sender's stat behind the latest complete chunk list, as sent
+    /// (ids not mapped): `-H`'s link check compares names with it.
+    hashed: Option<SourceStat>,
     /// In [`St::Confirming`]: what to place on the sender's verdict.
     held: Option<Held>,
     /// The current chunk list as native records (set once opened).
@@ -313,6 +330,16 @@ struct Receiver {
     /// target the final re-check sends again. `None` when the plan was not
     /// made on this connection (resumed from the stored plan): unknown.
     kept_links: Option<HashMap<RelPath, Vec<(RelPath, FileEntry)>>>,
+    /// `-H`: where the link check stands.
+    link_check: LinkCheck,
+    /// `-H`: the files placed in this session (on any connection) that had
+    /// more than one name when listed, with the stat each was hashed under.
+    placed_from: HashMap<RelPath, SourceStat>,
+    /// `-H`: names the sender found are no longer their target's file
+    /// (`Unlinked`): not linked.
+    unlinked: HashSet<RelPath>,
+    /// The task sending the `CheckLink`s.
+    link_asker: Option<JoinHandle<()>>,
     /// Owner and group names for the destination entries `replan` reads.
     names: crate::fs::ids::IdNames,
     /// This side's ids for the owner and group names the sender sends with
@@ -337,14 +364,24 @@ impl Receiver {
             return false;
         }
         match self.settling {
-            Settling::Off | Settling::Settled => true,
+            Settling::Off | Settling::Settled => {}
             Settling::Due => {
                 tracing::debug!("asking the sender for its final re-check");
                 self.out.send(Msg::Settle(Settle {}));
                 self.settling = Settling::Asked;
+                return false;
+            }
+            Settling::Asked => return false,
+        }
+        // After the re-check: a file it sent again may be a link target.
+        match self.link_check {
+            LinkCheck::Off | LinkCheck::Done => true,
+            LinkCheck::Due => {
+                self.ask_link_check();
+                self.link_check = LinkCheck::Asked;
                 false
             }
-            Settling::Asked => false,
+            LinkCheck::Asked => false,
         }
     }
 
@@ -359,7 +396,7 @@ impl Receiver {
         let Ok(path) = RelPath::new(&r.path) else {
             anyhow::bail!("protocol error: Replan with an invalid path");
         };
-        let Some(mut entry) = r.entry.filter(|e| e.kind() == Kind::Regular) else {
+        let Some(entry) = r.entry.filter(|e| e.kind() == Kind::Regular) else {
             anyhow::bail!("protocol error: Replan without a regular file's entry");
         };
         if !self.regular.contains(&path) || self.failed.contains(&path) {
@@ -373,6 +410,13 @@ impl Receiver {
         if !self.replanned.insert(path.clone()) {
             anyhow::bail!("protocol error: a second Replan for one path");
         }
+        self.plan_again(path, entry).await;
+        Ok(())
+    }
+
+    /// Plans a file the sender found changed (`Replan`, or a hard-link name
+    /// sent as a file of its own, `Unlinked`) under a new file id.
+    pub(super) async fn plan_again(&mut self, path: RelPath, mut entry: FileEntry) {
         entry.path = path.as_bytes().to_vec();
         // The sender's owner and group names become this side's ids.
         if let Some(map) = self.ids.as_mut() {
@@ -389,7 +433,7 @@ impl Receiver {
                     .bus
                     .emit(super::Event::Failed(path.clone(), msg.clone()));
                 self.errors.push((path, msg));
-                return Ok(());
+                return;
             }
         };
         if let Some(report) = &mut self.report {
@@ -408,7 +452,7 @@ impl Receiver {
                     .bus
                     .emit(super::Event::Itemized(path.clone(), code));
             }
-            return Ok(());
+            return;
         };
         tracing::info!(?path, "re-planned: changed during the sync");
         self.max_id += 1;
@@ -450,7 +494,6 @@ impl Receiver {
         }
         self.queued
             .push_back((file_id, path, entry, action, append_from, deferred));
-        Ok(())
     }
 
     /// The sender's final re-check is over.
@@ -575,6 +618,7 @@ impl Receiver {
                 lists: 0,
                 list: 0,
                 assembly: None,
+                hashed: None,
                 held: None,
                 digest: None,
                 _slot: slot,
@@ -771,6 +815,7 @@ impl Receiver {
                 // the walk and the hash (a `chmod`, or a file renamed over
                 // it) must not leave new content with old metadata.
                 f.entry.size = d.size;
+                f.hashed = Some(super::parts::source_stat(d.size, &stat));
                 (f.entry.mtime_sec, f.entry.mtime_nsec) = stat.mtime;
                 (f.entry.mode, f.entry.uid, f.entry.gid) = (stat.mode, stat.uid, stat.gid);
                 (f.entry.user, f.entry.group) = (stat.user, stat.group);
@@ -1306,6 +1351,9 @@ impl Receiver {
                 let placed = self.files.remove(&file_id);
                 self.active -= 1;
                 self.release_list(file_id);
+                if let Some(f) = &placed {
+                    self.note_placed(f.path.clone(), f.entry.nlink, f.hashed);
+                }
                 self.persist.done(file_id);
                 self.ctx.progress.store(true, Ordering::Relaxed);
                 self.out.send(Msg::Ack(FileAck {
@@ -1337,6 +1385,8 @@ impl Receiver {
             Ev::Ctrl(Msg::PlaceVerdict(v)) => self.on_verdict(v).await,
             Ev::Ctrl(Msg::Replan(r)) => self.on_replan(r).await?,
             Ev::Ctrl(Msg::Settled(s)) => self.on_settled(s)?,
+            Ev::Ctrl(Msg::Unlinked(u)) => self.on_unlinked(u).await?,
+            Ev::Ctrl(Msg::LinksChecked(_)) => self.on_links_checked()?,
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
@@ -1462,6 +1512,12 @@ pub(super) async fn run(
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
     let persist = Persister::start(&ctx).await;
+    // Link targets placed by earlier connections of this session.
+    let placed_from = persist
+        .placed_stats()
+        .iter()
+        .filter_map(|p| Some((RelPath::new(&p.path).ok()?, p.stat?)))
+        .collect();
     let stored = persist.stored_plan().clone();
     let routes: Routes = Arc::default();
     let bytes = Arc::new(AtomicU64::new(0));
@@ -1515,6 +1571,14 @@ pub(super) async fn run(
         vanished: Vec::new(),
         vanished_omitted: 0,
         kept_links: None,
+        link_check: if ctx.opts.check_links {
+            LinkCheck::Due
+        } else {
+            LinkCheck::Off
+        },
+        placed_from,
+        unlinked: HashSet::new(),
+        link_asker: None,
         names: crate::fs::ids::IdNames::new(),
         ids: (!ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
     };
@@ -1633,6 +1697,9 @@ pub(super) async fn run(
     r.transfer.end();
     if let Err(e) = res {
         acceptor.abort();
+        if let Some(t) = r.link_asker.take() {
+            t.abort();
+        }
         if let Some(p) = planner_abort {
             p.abort();
         }

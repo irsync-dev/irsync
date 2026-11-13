@@ -1257,6 +1257,15 @@ mod tests {
                 done_file_ids: vec![1],
                 bytes_transferred: 9,
                 deleted: 3,
+                placed: vec![irsync_proto::v1::PlacedStat {
+                    path: b"a".to_vec(),
+                    stat: Some(irsync_proto::v1::SourceStat {
+                        size: 5,
+                        ctime_sec: 6,
+                        inode: 7,
+                        ..Default::default()
+                    }),
+                }],
             },
             created_at: 1,
             updated_at: 2,

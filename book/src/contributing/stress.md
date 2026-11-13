@@ -214,6 +214,8 @@ has the full record of each.
 | A FIFO whose only change was its modification time was never updated. | the acceptance run | `tests/posix_extras.rs` `fifo_mtime_is_applied_and_updated`, `tests/plan.rs` `special_metadata_only_difference_is_meta_only` |
 | One side's long local work, such as the daemon hashing with `-c`, was invisible to the other side's inactivity watchdog. | the `bigfile` matrix row | `tests/resume.rs` `peer_local_progress_resets_idle_watchdog` |
 | Metadata applied to a destination file with several links reached the names the source had unlinked. | the `hardlink` matrix row | `tests/posix_extras.rs` `link_broken_at_source_with_equal_content_is_broken_at_destination`, `mode_change_does_not_reach_a_destination_link_outside_the_tree` |
+| A file whose mode, owner or group changed between the listing and the hash was placed with the listing's. | `--concurrent` | `tests/change_detection.rs` `*_before_hash_places_the_new_*`, `tests/ids_e2e.rs` `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` |
+| With `-H`, a name replaced or renamed away after the listing was still linked to the copy of the file it used to name. | `--concurrent` | `tests/change_detection.rs` `replaced_link_is_sent_as_its_own_file*`, `link_renamed_away_is_not_linked*`, `tests/posix_extras.rs` `links_to_files_placed_before_a_drop_are_checked` |
 
 ### Tests
 

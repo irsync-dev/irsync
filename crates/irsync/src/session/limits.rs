@@ -88,12 +88,13 @@ const FILE_WIRE: usize = 16 * 1024;
 /// - Sender: chunk lists, sent only into the room the receiver granted
 ///   (`list_budget` records, `RECORD_WIRE` each); paced frames
 ///   ([`OUT_BUDGET`]: the final re-check's `Replan`s, one per listed file
-///   that changed, and its `Settled`); per file in flight
+///   that changed, and its `Settled`; the link check's `Unlinked`s and
+///   `LinksChecked`); per file in flight
 ///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`), the empty first
 ///   part that withdraws a retried file's list and a `PlaceVerdict` per
 ///   list (`FILE_WIRE`).
 /// - Receiver: paced frames ([`OUT_BUDGET`]: the planner's `Itemized`,
-///   `offer_bases`); `NeedChunks` for at most every chunk of the lists it
+///   `offer_bases`, the link check's `CheckLink`s); `NeedChunks` for at most every chunk of the lists it
 ///   holds (`list_budget` records), once per list (1 + [`MAX_RETRIES`]) and
 ///   per re-request ([`MAX_REREQUESTS`]), `INDEX_WIRE` each; per file in
 ///   flight a `PlanItem`, an `Itemized`, a `FileAck`, a `ListRoom` and a
@@ -415,6 +416,9 @@ mod tests {
             gid: u32::MAX,
             user: "u".repeat(256),
             group: "g".repeat(256),
+            ctime_sec: i64::MIN,
+            ctime_nsec: u32::MAX,
+            inode: u64::MAX,
         };
         let header = len(Msg::ChunkListPart(part(0)));
         let full = len(Msg::ChunkListPart(part(super::super::parts::PART_RECORDS)));

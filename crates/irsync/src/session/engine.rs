@@ -132,6 +132,10 @@ pub(super) struct RoleOpts {
     /// `Replan`, `Settled`): `--paranoid`, unless a dry run. Both sides
     /// derive it from the client's options, so they always agree.
     pub settle: bool,
+    /// Both roles: `-H`, unless a dry run: before it links, the receiver
+    /// asks the sender whether each name still is the file it was sent as
+    /// (`CheckLink`). Derived from the client's options, as `settle` is.
+    pub check_links: bool,
 }
 
 impl RoleOpts {
@@ -156,6 +160,7 @@ impl RoleOpts {
             append: o.append,
             paranoid: o.paranoid,
             settle: o.paranoid && !o.dry_run,
+            check_links: o.preserve.hard_links && !o.dry_run,
         }
     }
 
@@ -230,6 +235,7 @@ impl RoleOpts {
             paranoid: !receives && hello.paranoid,
             // In both directions: a receiving daemon asks for the re-check.
             settle: hello.paranoid && !hello.dry_run,
+            check_links: preserve.hard_links && !hello.dry_run,
         }
     }
 }
@@ -1740,6 +1746,7 @@ pub(super) async fn test_ctx() -> TestCtx {
             append: Append::Off,
             paranoid: false,
             settle: false,
+            check_links: false,
         },
         privs: Privs::current(),
         hooks: SideHooks::default(),

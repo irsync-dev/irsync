@@ -236,7 +236,7 @@ landed. Items the final review's fix wave closed are not listed.
       `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` in
       `crates/irsync/tests/ids_e2e.rs`.
 
-- [ ] With `-H`, a hard link can show content its path never held. Link groups
+- [x] With `-H`, a hard link can show content its path never held. Link groups
       are fixed at walk time (`session/control.rs:581-592`). Names after the
       first are `Kind::Hardlink`: they are never requested and never checked
       (`planner.rs:587-598`, `recv_links.rs:15-26`). `link_pass`
@@ -248,3 +248,21 @@ landed. Items the final review's fix wave closed are not listed.
       stat; otherwise skip it or retry. Until it is fixed, the concurrent
       campaign rows report failures of this kind (a failing path that is a
       hard link).
+
+      **Closed 2026-11-12.** With `-H`, the session now ends with a link
+      check: the receiver sends a `CheckLink` for each link to a file sent
+      in the session, with the stat that file was hashed under (the first
+      `ChunkListPart` now carries its change time and inode too). The
+      sender lstats each name and answers `Unlinked` for any whose stat
+      differs; the receiver does not link those. A name that is still a
+      regular file comes with its entry and is sent as a file of its own,
+      as a `Replan` is; one that is gone fails (exit 23).
+      An equal stat, change time included, means the name has named that
+      content since the hash. The stats are stored with the session, so a
+      resumed connection checks links to files placed before the drop.
+      Tests: `replaced_link_is_sent_as_its_own_file*`,
+      `link_renamed_away_is_not_linked*` and
+      `unchanged_links_are_checked_and_made` in
+      `crates/irsync/tests/change_detection.rs`,
+      `links_to_files_placed_before_a_drop_are_checked` in
+      `crates/irsync/tests/posix_extras.rs`.

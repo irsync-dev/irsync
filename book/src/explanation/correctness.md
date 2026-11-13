@@ -169,6 +169,16 @@ the chunks. Here is what happens when a file changes along the way.
   removes it.
 - **Created after the listing.** It is not sent in this run.
 
+- **A hard-link name that changes, with `-H`.** irsync groups the names of
+  a file when it lists the source, and sends the file once, under its first
+  name. Just before it makes the other names links to the copy, the
+  receiver asks the sender to look at each name again. A name that is no
+  longer exactly the file that was hashed is not linked. A name replaced by
+  a file of its own is sent as that file, in the same run, with its retry
+  already used. A name that is gone fails, and the run exits 23. A name
+  whose first name was not sent, because the destination was up to date, is
+  linked as listed: both names held that content when irsync listed them.
+
 These checks compare size, modification time, change time, inode,
 permissions, owner and group. Programs can reset the modification time, but
 nothing can set the change time back.
@@ -255,10 +265,10 @@ though its content is unchanged.
   re-check starts with its retry used, so a transient mismatch fails it at
   once. Its hard-link names at the destination are linked to the new copy.
 - **Hard-link names, with `-H`.** The final re-check stats only the main
-  name of each group of hard-linked files. If another name is replaced or
-  deleted at the source before the re-check, it is not noticed: the run can
-  exit 0 instead of 24, or not send that name again. The destination still
-  holds states the source held.
+  name of each group of hard-linked files. The link check that follows it
+  looks at the other names again, but only those of files sent in this run.
+  If such a name is deleted at the source, it fails rather than counting as
+  vanished: the run exits 23 instead of 24.
 - **Bind mounts** share one device number, and cloning across them fails
   with `EXDEV`, so that filesystem falls back to the second hash.
 - **A umask of 002** makes new directories group-writable, which may leave

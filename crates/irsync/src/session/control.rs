@@ -13,7 +13,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_entry::Kind, Control, FileEntry, Hash, ListingEnd, ListingEntry, PathError,
-    PlanEntry, SessionPlan, SessionProgress,
+    PlacedStat, PlanEntry, SessionPlan, SessionProgress, SourceStat,
 };
 use prost::Message as _;
 use tokio::sync::mpsc;
@@ -714,6 +714,8 @@ pub(super) struct Persister {
     /// Position of each file id in `rec.plan.entries`.
     planned: HashMap<u64, usize>,
     done: HashSet<u64>,
+    /// Position of each path in `rec.progress.placed`.
+    placed_at: HashMap<Vec<u8>, usize>,
     dirty: bool,
     last: Instant,
 }
@@ -743,12 +745,20 @@ impl Persister {
             .map(|(i, e)| (e.file_id, i))
             .collect();
         let done = rec.progress.done_file_ids.iter().copied().collect();
+        let placed_at = rec
+            .progress
+            .placed
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.path.clone(), i))
+            .collect();
         let mut p = Persister {
             index: ctx.index().clone(),
             base_bytes: rec.progress.bytes_transferred,
             rec,
             planned,
             done,
+            placed_at,
             dirty: true,
             last: Instant::now(),
         };
@@ -805,6 +815,29 @@ impl Persister {
             self.rec.progress.deleted += n;
             self.dirty = true;
         }
+    }
+
+    /// Receiver, `-H`: the stat a placed file was hashed under, for the
+    /// link check (see `PlacedStat`); a path placed again replaces it.
+    pub fn placed(&mut self, path: &RelPath, stat: SourceStat) {
+        let placed = &mut self.rec.progress.placed;
+        match self.placed_at.get(path.as_bytes()) {
+            Some(&i) => placed[i].stat = Some(stat),
+            None => {
+                self.placed_at
+                    .insert(path.as_bytes().to_vec(), placed.len());
+                placed.push(PlacedStat {
+                    path: path.as_bytes().to_vec(),
+                    stat: Some(stat),
+                });
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// What [`Persister::placed`] recorded, this connection and earlier ones.
+    pub fn placed_stats(&self) -> &[PlacedStat] {
+        &self.rec.progress.placed
     }
 
     pub fn done(&mut self, file_id: u64) {
@@ -930,6 +963,10 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Replan(_) => "Replan",
         Msg::Settle(_) => "Settle",
         Msg::Settled(_) => "Settled",
+        Msg::CheckLink(_) => "CheckLink",
+        Msg::CheckLinksEnd(_) => "CheckLinksEnd",
+        Msg::Unlinked(_) => "Unlinked",
+        Msg::LinksChecked(_) => "LinksChecked",
     }
 }
 
