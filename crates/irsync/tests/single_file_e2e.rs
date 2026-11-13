@@ -232,28 +232,25 @@ fn snapshot(root: &Path) -> Tree {
     out
 }
 
-/// Each row of the placement table, pushed by `rsync -a` locally and by
-/// irsync to the daemon from the same starting tree, gives the same tree
-/// (or fails in both).
-#[test]
-fn matches_rsync_placement() {
-    if !rsync_present() {
-        skip_allowed(std::env::var_os("CI").is_some());
-        eprintln!("skipping: rsync not on PATH (or older than 3.1)");
-        return;
-    }
-    let s = setup();
-    let src = s.work.join("f.iso");
-    fs::write(&src, b"new image").unwrap();
-    fs::set_permissions(&src, fs::Permissions::from_mode(0o640)).unwrap();
-    set_mtime(&src, 1_500_000_000);
-    let rsync_root = s.work.join("rsync");
-    type Prep = fn(&Path);
-    let rows: [(&str, Prep, &str, bool); 6] = [
+/// One row of the placement table: a label, what the destination
+/// directory holds first, the destination (`T` or `T/`) and whether the
+/// copy succeeds.
+type Row = (&'static str, fn(&Path), &'static str, bool);
+
+/// The placement table, for both directions: `T` a directory, missing, a
+/// file, or a directory in the way, with and without a trailing slash.
+fn placement_rows() -> [Row; 7] {
+    [
         (
             "into_dir",
             |r| fs::create_dir_all(r.join("T/other")).unwrap(),
             "T",
+            true,
+        ),
+        (
+            "into_dir_slash",
+            |r| fs::create_dir_all(r.join("T/other")).unwrap(),
+            "T/",
             true,
         ),
         ("missing", |_| {}, "T", true),
@@ -278,9 +275,27 @@ fn matches_rsync_placement() {
             "T",
             false,
         ),
-    ];
-    for (label, prep, dest, succeeds) in rows {
-        let (a, b) = (rsync_root.join(label), s.photos.join(label));
+    ]
+}
+
+/// `f.iso` at `src` with fixed contents, mode and mtime.
+fn placement_source(src: &Path) {
+    fs::write(src, b"new image").unwrap();
+    fs::set_permissions(src, fs::Permissions::from_mode(0o640)).unwrap();
+    set_mtime(src, 1_500_000_000);
+}
+
+/// For each row: prepares `rsync_root/LABEL` and `irsync_root/LABEL` the
+/// same way, copies `src` there with `rsync -a` and with `irsync` (run by
+/// `irsync(label, dest)`), and compares the two trees and outcomes.
+fn compare_placement(
+    src: &Path,
+    rsync_root: &Path,
+    irsync_root: &Path,
+    irsync: impl Fn(&str, &str) -> Output,
+) {
+    for (label, prep, dest, succeeds) in placement_rows() {
+        let (a, b) = (rsync_root.join(label), irsync_root.join(label));
         for d in [&a, &b] {
             fs::create_dir_all(d).unwrap();
             prep(d);
@@ -300,10 +315,7 @@ fn matches_rsync_placement() {
             "{label}: rsync: {}",
             stderr(&st)
         );
-        let o = s.run(
-            &s.work,
-            &["f.iso", &s.remote(&format!("photos/{label}/{dest}"))],
-        );
+        let o = irsync(label, dest);
         assert_eq!(
             o.status.success(),
             succeeds,
@@ -312,6 +324,47 @@ fn matches_rsync_placement() {
         );
         assert_eq!(snapshot(&a), snapshot(&b), "{label}: trees differ");
     }
+}
+
+/// Each row of the placement table, pushed by `rsync -a` locally and by
+/// irsync to the daemon from the same starting tree, gives the same tree
+/// (or fails in both).
+#[test]
+fn matches_rsync_placement() {
+    if !rsync_present() {
+        skip_allowed(std::env::var_os("CI").is_some());
+        eprintln!("skipping: rsync not on PATH (or older than 3.1)");
+        return;
+    }
+    let s = setup();
+    let src = s.work.join("f.iso");
+    placement_source(&src);
+    compare_placement(&src, &s.work.join("rsync"), &s.photos, |label, dest| {
+        s.run(
+            &s.work,
+            &["f.iso", &s.remote(&format!("photos/{label}/{dest}"))],
+        )
+    });
+}
+
+/// The same table pulled: `rsync -a` copies the daemon's file locally, and
+/// irsync pulls it from the daemon, into the same starting trees.
+#[test]
+fn matches_rsync_placement_on_pull() {
+    if !rsync_present() {
+        skip_allowed(std::env::var_os("CI").is_some());
+        eprintln!("skipping: rsync not on PATH (or older than 3.1)");
+        return;
+    }
+    let s = setup();
+    fs::create_dir(s.photos.join("src")).unwrap();
+    let src = s.photos.join("src/f.iso");
+    placement_source(&src);
+    let (rsync_root, irsync_root) = (s.work.join("rsync"), s.work.join("irsync"));
+    compare_placement(&src, &rsync_root, &irsync_root, |label, dest| {
+        let local = format!("{}/{label}/{dest}", irsync_root.display());
+        s.run(&s.work, &[&s.remote("photos/src/f.iso"), &local])
+    });
 }
 
 /// Sets `p`'s mtime to `secs` (both tools must copy it).
