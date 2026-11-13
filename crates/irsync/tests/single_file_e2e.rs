@@ -1,6 +1,7 @@
 //! One file as the source of a copy, through the `irsync` binary: pushes
 //! and pulls placed by rsync's rules, several sources, a listing of one
-//! file, and the same placement as `rsync -a` (skipped without GNU rsync).
+//! file, a push through the immediate grant, and the same placement as
+//! `rsync -a` in both directions (skipped without GNU rsync).
 
 mod common;
 
@@ -26,7 +27,9 @@ fn ok(home: &Path, args: &[&str]) -> String {
 struct Setup {
     _dir: tempfile::TempDir,
     _daemon: common::BinaryDaemon,
+    server: PathBuf,
     client: PathBuf,
+    client_id: String,
     photos: PathBuf,
     work: PathBuf,
     daemon_id: String,
@@ -60,7 +63,9 @@ fn setup() -> Setup {
     Setup {
         _dir: dir,
         _daemon: daemon,
+        server,
         client,
+        client_id,
         photos,
         work,
         daemon_id: daemon_id.to_string(),
@@ -85,6 +90,93 @@ impl Setup {
         let o = self.run(cwd, args);
         assert!(o.status.success(), "{args:?}: {}", stderr(&o));
         o
+    }
+}
+
+/// The automatic exports' paths, from the server's config.
+fn auto_exports(s: &Setup) -> Vec<PathBuf> {
+    let config = s.server.join(".config/irsync/irsync.toml");
+    let paths = irsync::config::paths::Paths::resolve(Some(&config));
+    let config = irsync::config::file::Config::load(&paths).unwrap();
+    let mut v: Vec<PathBuf> = config
+        .exports
+        .exports
+        .values()
+        .filter(|e| e.auto)
+        .map(|e| e.path.clone())
+        .collect();
+    v.sort();
+    v
+}
+
+/// The names in `dir`, sorted.
+fn names(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    v.sort();
+    v
+}
+
+/// The ssh quick-start path: a key with the immediate grant pushes one
+/// file to `HOST:tmp` (the daemon's `<home>/tmp`). A missing `tmp` becomes
+/// the file and the home is exported; a directory `tmp` gets
+/// `tmp/f.iso` and is itself exported; a file `tmp` is updated. A missing
+/// parent is refused, and nothing is created or exported.
+#[test]
+fn immediate_push_of_one_file() {
+    for case in ["missing", "dir", "file", "no_parent"] {
+        let s = setup();
+        ok(&s.server, &["grant", "add", "immediate", &s.client_id]);
+        let home = s.server.canonicalize().unwrap();
+        let tmp = home.join("tmp");
+        fs::write(s.work.join("f.iso"), b"image").unwrap();
+        match case {
+            "dir" => fs::create_dir(&tmp).unwrap(),
+            "file" => fs::write(&tmp, b"old").unwrap(),
+            _ => {}
+        }
+        let before = names(&home);
+        let dest = if case == "no_parent" {
+            "nope/tmp"
+        } else {
+            "tmp"
+        };
+        let o = s.run(&s.work, &["f.iso", &s.remote(dest)]);
+        if case == "no_parent" {
+            assert!(!o.status.success(), "{case}");
+            assert!(
+                stderr(&o).contains("no such file or directory"),
+                "{}",
+                stderr(&o)
+            );
+            assert_eq!(names(&home), before, "{case}: something was created");
+            assert_eq!(auto_exports(&s), Vec::<PathBuf>::new(), "{case}");
+            continue;
+        }
+        assert!(o.status.success(), "{case}: {}", stderr(&o));
+        match case {
+            "missing" => {
+                assert_eq!(fs::read(&tmp).unwrap(), b"image");
+                let mut want = before.clone();
+                want.push("tmp".into());
+                want.sort();
+                assert_eq!(names(&home), want, "{case}: something else was created");
+                assert_eq!(auto_exports(&s), std::slice::from_ref(&home), "{case}");
+            }
+            "dir" => {
+                assert_eq!(names(&tmp), ["f.iso"], "{case}");
+                assert_eq!(fs::read(tmp.join("f.iso")).unwrap(), b"image");
+                assert_eq!(names(&home), before, "{case}");
+                assert_eq!(auto_exports(&s), std::slice::from_ref(&tmp), "{case}");
+            }
+            _ => {
+                assert_eq!(fs::read(&tmp).unwrap(), b"image");
+                assert_eq!(names(&home), before, "{case}");
+                assert_eq!(auto_exports(&s), std::slice::from_ref(&home), "{case}");
+            }
+        }
     }
 }
 
