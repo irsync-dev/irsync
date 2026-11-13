@@ -545,7 +545,13 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         return match kind {
             Ok(kind) => {
                 tracing::info!(peer = %id.fmt_short(), ?kind, "probed path");
-                write_msg(&mut send, &PathInfo { kind: kind as i32 }).await?;
+                write_msg(
+                    &mut send,
+                    &PathInfo {
+                        kind: Some(kind as i32),
+                    },
+                )
+                .await?;
                 send.finish()?;
                 let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
                 conn.close(0u32.into(), b"done");

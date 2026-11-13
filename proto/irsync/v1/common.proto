@@ -122,14 +122,17 @@ message ExportEntry {
 message ExportList {
   repeated ExportEntry exports = 1;
 }
-// The reply to a PROBE Hello: what `path` is on the daemon.
+// The reply to a PROBE Hello: what `path` is on the daemon. A refusal is
+// an Error instead; `kind` is always set and on a field number Error does
+// not use, so the client tells the two apart.
 message PathInfo {
   enum Kind {
     MISSING = 0;
     DIRECTORY = 1;
     FILE = 2; // anything that isn't a directory
   }
-  Kind kind = 1;
+  reserved 1, 2;
+  optional Kind kind = 3;
 }
 message HelloAck {
   bytes session_id = 1;

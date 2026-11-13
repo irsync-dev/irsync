@@ -704,6 +704,28 @@ async fn pull_with_bad_name_is_refused() {
     .await;
 }
 
+/// A raw single-file pull whose parent goes through a symlink inside the
+/// export is refused like any path through a link, and nothing comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_pull_through_symlinked_parent_is_refused() {
+    within30(async {
+        let h = Harness::new().await;
+        let _outside = outside_link(&h);
+        let local = h.local_side().with_single(b"secret".to_vec());
+        let err = h
+            .run_hello(
+                &archive_opts(),
+                pull_hello(b"m/link/secret", b"secret"),
+                local,
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("bad session path"), "{err:#}");
+        assert_eq!(fs::read_dir(h.local.path()).unwrap().count(), 0);
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn single_pull_of_a_directory_or_nothing_is_refused() {
     within30(async {

@@ -809,8 +809,21 @@ impl Drop for DaemonGuard {
 /// Runs the built `irsync` with `home` as HOME (and the state under it),
 /// bounded to 30 s so a protocol hang fails the test instead of blocking it.
 pub fn irsync_bin(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    irsync_bin_in(home, None, args)
+}
+
+/// [`irsync_bin`] run from the directory `cwd` (`None`: the test's own).
+pub fn irsync_bin_in(
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+    args: &[&str],
+) -> std::process::Output {
     use std::process::{Command, Stdio};
-    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .args(args)
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("xdg"))

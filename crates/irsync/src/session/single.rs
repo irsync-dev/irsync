@@ -153,18 +153,16 @@ pub async fn probe(conn: &Connection, path: &[u8]) -> anyhow::Result<path_info::
     let body = read_frame(&mut recv)
         .await
         .map_err(|e| TransportError(format!("reading PathInfo: {e}")))?;
-    // Both replies decode as either message (field 1 is a varint in each).
-    // A PathInfo never holds field 2; the daemon's Error always has a
-    // message there.
-    if let Ok(e) = Error::decode(&body[..]) {
-        if !e.message.is_empty() {
-            return Err(SessionRefused {
-                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-                message: e.message,
-            }
-            .into());
-        }
+    // An Error never holds field 3, so a reply without `kind` is one.
+    if let Ok(PathInfo { kind: Some(kind) }) = PathInfo::decode(&body[..]) {
+        return path_info::Kind::try_from(kind).context("unknown kind of path in the reply");
     }
-    let info = PathInfo::decode(&body[..]).context("malformed reply to Hello")?;
-    path_info::Kind::try_from(info.kind).context("unknown kind of path in the reply")
+    match Error::decode(&body[..]) {
+        Ok(e) => Err(SessionRefused {
+            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+            message: e.message,
+        }
+        .into()),
+        Err(_) => anyhow::bail!("malformed reply to Hello"),
+    }
 }

@@ -1,5 +1,5 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,9 +12,9 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, Args, Command, ConfigArgs, ConfigCmd, DaemonArgs, Direction, ExportArgs, ExportCmd,
-    FilesArgs, GrantArgs, GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, SyncOptions,
+    validate, Args, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction, ExportArgs,
+    ExportCmd, FilesArgs, GrantArgs, GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd,
+    IndexArgs, LogArgs, SyncOptions,
 };
 use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
@@ -30,15 +30,16 @@ use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
-    describe_dial, explain, run_with_reconnect, with_wrong_id_hint, ConnState, NeverReached,
-    ReconnectOpts,
+    describe_dial, explain, probe_path, run_with_reconnect, with_wrong_id_hint, ConnState,
+    NeverReached, ReconnectOpts,
 };
+use irsync::session::single::{is_one_component, place_file, source_is_single, split_last};
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
 use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{export_entry, hello, Hello};
+use irsync_proto::v1::{export_entry, hello, path_info, Hello};
 use irsync_proto::PROTOCOL_VERSION;
 
 fn main() {
@@ -717,7 +718,8 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
             }
         };
         let _ = CLIENT_STATE.set(tmp.path().join("state"));
-        let dest = tmp.path().join("list").to_string_lossy().into_owned();
+        // With the slash a listed file keeps its own name.
+        let dest = format!("{}/", tmp.path().join("list").display());
         args.sync.paths = vec![operand, dest];
         let mut opts = opts.clone();
         opts.dry_run = true;
@@ -853,23 +855,29 @@ async fn sync(
             bail!("internal: unexpected location kinds");
         };
         let (root, name) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
-        let hello = Hello {
-            protocol_version: PROTOCOL_VERSION,
-            session_id: vec![],
-            path: rpath.clone(),
-            name,
-            direction: match direction {
-                Direction::ClientSends => hello::Direction::ClientSends,
-                Direction::DaemonSends => hello::Direction::DaemonSends,
-            } as i32,
-            chunk_min: CHUNK_PARAMS.min,
-            chunk_avg: CHUNK_PARAMS.avg,
-            chunk_max: CHUNK_PARAMS.max,
-            contents_only: *remote_co,
-            build: Some(BuildInfo::current().to_wire()),
-            // The receiver-side options are filled in from `opts` by the session.
-            ..Hello::default()
+        let dir_plan = Plan {
+            root,
+            local_contents_only: *local_co,
+            hello: Hello {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: vec![],
+                path: rpath.clone(),
+                name,
+                direction: match direction {
+                    Direction::ClientSends => hello::Direction::ClientSends,
+                    Direction::DaemonSends => hello::Direction::DaemonSends,
+                } as i32,
+                chunk_min: CHUNK_PARAMS.min,
+                chunk_avg: CHUNK_PARAMS.avg,
+                chunk_max: CHUNK_PARAMS.max,
+                contents_only: *remote_co,
+                build: Some(BuildInfo::current().to_wire()),
+                // The receiver-side options are filled in from `opts` by the session.
+                ..Hello::default()
+            },
+            single: None,
         };
+        let several = of > 1;
         let ropts = ReconnectOpts {
             max: opts
                 .reconnect
@@ -905,19 +913,32 @@ async fn sync(
             } else {
                 ropts
             };
-            let res = session(
-                &conn.endpoint,
-                conn.target.clone(),
-                &remote_text,
-                direction,
-                root.clone(),
-                *local_co,
-                hello.clone(),
-                &filters,
-                &conn.opts,
-                ropts,
-                bus,
-            )
+            let res = async {
+                let plan = match direction {
+                    Direction::ClientSends => {
+                        push_plan(dir_plan.clone(), path, *local_co, several)?
+                    }
+                    // With a trailing slash the remote path must be a directory.
+                    Direction::DaemonSends if !*remote_co => {
+                        let (endpoint, target) = (&conn.endpoint, conn.target.clone());
+                        let kind = probe_path(endpoint, target, rpath, &remote_text, ropts).await?;
+                        pull_plan(dir_plan.clone(), kind, path, *local_co, rpath)?
+                    }
+                    Direction::DaemonSends => dir_plan.clone(),
+                };
+                session(
+                    &conn.endpoint,
+                    conn.target.clone(),
+                    &remote_text,
+                    direction,
+                    plan,
+                    &filters,
+                    &conn.opts,
+                    ropts,
+                    bus,
+                )
+                .await
+            }
             .await;
             // Only a host that was never reached; a refusal is final.
             match res {
@@ -1002,6 +1023,69 @@ async fn sync(
     })
 }
 
+/// One source's session: the local root, and the `Hello` to send.
+#[derive(Clone)]
+struct Plan {
+    root: PathBuf,
+    local_contents_only: bool,
+    hello: Hello,
+    /// The local name of the one file a single-file session copies.
+    single: Option<Vec<u8>>,
+}
+
+/// A push of `path`: a file is pushed on its own from the directory that
+/// holds it (a trailing slash on it is an error); anything else as `dir`.
+/// Several sources always go into the destination as a directory.
+fn push_plan(dir: Plan, path: &Path, contents_only: bool, several: bool) -> anyhow::Result<Plan> {
+    if !source_is_single(path, contents_only)? {
+        return Ok(dir);
+    }
+    let (root, name) = split_last(path);
+    let hello = Hello {
+        single_file: true,
+        name: name.clone(),
+        contents_only: dir.hello.contents_only || several,
+        ..dir.hello
+    };
+    Ok(Plan {
+        root,
+        local_contents_only: false,
+        hello,
+        single: Some(name),
+    })
+}
+
+/// A pull of `rpath`, which the daemon says is `kind`, into `local`: a file
+/// is placed by rsync's rules and pulled on its own; anything else as `dir`.
+fn pull_plan(
+    dir: Plan,
+    kind: path_info::Kind,
+    local: &Path,
+    contents_only: bool,
+    rpath: &[u8],
+) -> anyhow::Result<Plan> {
+    if kind != path_info::Kind::File {
+        return Ok(dir);
+    }
+    let basename = rpath.rsplit(|&b| b == b'/').next().unwrap_or_default();
+    if !is_one_component(basename) || basename == b"~" {
+        bail!("cannot tell the file's name from {}", escape_path(rpath));
+    }
+    let placed = place_file(local, contents_only, basename, true)?;
+    let hello = Hello {
+        single_file: true,
+        name: placed.name.clone(),
+        contents_only: false,
+        ..dir.hello
+    };
+    Ok(Plan {
+        root: placed.root,
+        local_contents_only: false,
+        hello,
+        single: Some(placed.name),
+    })
+}
+
 /// One source: open the local index, then run the session, reconnecting and
 /// resuming as needed.
 #[allow(clippy::too_many_arguments)]
@@ -1010,14 +1094,32 @@ async fn session(
     target: EndpointAddr,
     remote: &str,
     direction: Direction,
-    root: PathBuf,
-    local_contents_only: bool,
-    hello: Hello,
+    plan: Plan,
     filters: &Arc<FilterSet>,
     opts: &SyncOptions,
     ropts: ReconnectOpts,
     bus: &EventBus,
 ) -> anyhow::Result<Outcome> {
+    let Plan {
+        root,
+        local_contents_only,
+        hello,
+        single,
+    } = plan;
+    // A single-file copy never deletes anything.
+    let single_opts;
+    let opts = match single {
+        Some(_) => {
+            single_opts = SyncOptions {
+                delete: DeleteMode::Off,
+                delete_excluded: false,
+                max_delete: None,
+                ..opts.clone()
+            };
+            &single_opts
+        }
+        None => opts,
+    };
     let dry_run = opts.dry_run;
     let state = client_state_dir(opts);
     let index = tokio::task::spawn_blocking({
@@ -1034,7 +1136,9 @@ async fn session(
         }
     })
     .await??;
-    if !dry_run {
+    // A single file's root is a directory that holds other things: no
+    // housekeeping there.
+    if !dry_run && single.is_none() {
         // Housekeeping for this root, at most daily unless partial records
         // have gone stale (an hour untouched) since; never fatal.
         match irsync::daemon::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await
@@ -1050,6 +1154,9 @@ async fn session(
         }
     }
     let mut side = LocalSide::new(root, local_contents_only, index, filters.clone());
+    if let Some(name) = single {
+        side = side.with_single(name);
+    }
     side.hooks.bus = bus.clone();
     #[cfg(feature = "test-hooks")]
     {

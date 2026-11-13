@@ -270,6 +270,66 @@ pub fn explain(
     }
 }
 
+/// What `path` is on the daemon ([`super::single::probe`]), asked before a
+/// pull picks its local root. Dials the way a session's first connection
+/// does: each dial bounded by `opts.first_dial_timeout`, up to
+/// `opts.dial_retries` retries with backoff within `opts.max`; a daemon that
+/// never answered gives [`NeverReached`]. A refusal or close is explained
+/// as for a session.
+pub async fn probe_path(
+    endpoint: &Endpoint,
+    target: EndpointAddr,
+    path: &[u8],
+    remote: &str,
+    opts: ReconnectOpts,
+) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+    let start = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
+        let dialled = match opts.first_dial_timeout {
+            Some(limit) => match tokio::time::timeout(limit, dial).await {
+                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
+                Err(_) => Err(format!(
+                    "connecting to {}: no answer within {} s",
+                    target.id,
+                    limit.as_secs()
+                )),
+            },
+            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
+        };
+        let msg = match dialled {
+            Ok(conn) => {
+                let res = super::single::probe(&conn, path)
+                    .await
+                    .map_err(|e| explain(e, Some(&conn), remote, &endpoint.id()));
+                conn.close(0u32.into(), b"done");
+                return res;
+            }
+            Err(msg) => msg,
+        };
+        let err = anyhow::Error::new(TransportError(msg));
+        let elapsed = start.elapsed();
+        if attempt >= opts.dial_retries || elapsed >= opts.max {
+            let tries = attempt + 1;
+            let plural = if tries == 1 { "" } else { "s" };
+            return Err(err
+                .context(NeverReached)
+                .context(format!("gave up after {tries} attempt{plural}")));
+        }
+        attempt += 1;
+        let wait = opts.delay(attempt).min(opts.max - elapsed);
+        tracing::warn!(
+            error = %format!("{err:#}"),
+            attempt,
+            of = opts.dial_retries,
+            wait_ms = wait.as_millis() as u64,
+            "could not connect; retrying"
+        );
+        tokio::time::sleep(wait).await;
+    }
+}
+
 /// The hint for a `Hello` the daemon refused as unauthorized (a key with
 /// grants, for a path it may not use); `None` for any other refusal.
 fn describe_refusal(r: &SessionRefused, remote: &str, client: &EndpointId) -> Option<String> {
