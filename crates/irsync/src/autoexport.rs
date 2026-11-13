@@ -25,8 +25,11 @@ pub enum AutoRootError {
 /// its parent when it is anything else (a file is never an export). A
 /// missing `abs` on a `push` whose parent is a directory is created here
 /// (that one directory only) and exported; otherwise there is nothing to
-/// export. The root must pass [`check_root`], before anything is created.
-pub fn auto_root(abs: &Path, push: bool) -> Result<PathBuf, AutoRootError> {
+/// export. With `file_dest` (a push whose destination is a single file) a
+/// missing `abs` is the file to be written, so its parent directory is
+/// exported and nothing is created; the parent must be a directory. The
+/// root must pass [`check_root`], before anything is created.
+pub fn auto_root(abs: &Path, push: bool, file_dest: bool) -> Result<PathBuf, AutoRootError> {
     let parent = || {
         let p = abs
             .parent()
@@ -41,6 +44,7 @@ pub fn auto_root(abs: &Path, push: bool) -> Result<PathBuf, AutoRootError> {
             Ok(abs.to_path_buf())
         }
         Ok(_) => parent(),
+        Err(_) if push && file_dest => parent(),
         Err(_) if push => {
             if !abs.parent().is_some_and(Path::is_dir) {
                 return Err(AutoRootError::NotFound);

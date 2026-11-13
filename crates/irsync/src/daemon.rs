@@ -704,7 +704,7 @@ fn add_immediate(
         ),
         e => (Code::BadPath, e.to_string()),
     };
-    let root = auto_root(&abs, push).map_err(refuse)?;
+    let root = auto_root(&abs, push, false).map_err(refuse)?;
     // A symlink may lead to `/` or to a name that is not UTF-8.
     let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoRootError::NotFound))?;
     check_root(&canonical).map_err(refuse)?;
