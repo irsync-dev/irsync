@@ -54,7 +54,7 @@ For everyday work, run the suite with the features CI uses:
 cargo test -q --workspace --all-features --no-fail-fast
 ```
 
-This skips four slow network-fault tests (marked `#[ignore]`) in
+This skips five slow network-fault tests (marked `#[ignore]`) in
 `crates/netstress/tests/e2e.rs`. They run the real fault binaries on real
 time, take a few minutes together, and the first run also builds those
 binaries. The full regression, which
@@ -64,7 +64,7 @@ CI and [Before pushing](setup.md#before-pushing) use, runs them too:
 cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 ```
 
-No other test is ignored, so `--include-ignored` adds exactly these four.
+No other test is ignored, so `--include-ignored` adds exactly these five.
 
 The syncs through the fault layer in `crates/irsync/tests/netsim.rs` are
 not ignored, though they need minutes of network time: they run client
@@ -72,7 +72,7 @@ and daemon in one process on tokio's paused clock, over an in-memory
 network (`with_netsim` in `crates/irsync/tests/common`). Whenever every
 task waits on a timer, the clock jumps to the next one, so they finish in
 about a second. Write a new test of irsync through the fault layer that
-way. A test that runs the real fault binaries is ignored like the four.
+way. A test that runs the real fault binaries is ignored like the five.
 
 That relies on everything with a deadline reading tokio's clock
 (`tokio::time::Instant`), not `std::time::Instant`. irsync's reconnect,

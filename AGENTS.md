@@ -23,7 +23,7 @@ Everyday run, while working on a change:
 cargo test -q --workspace --all-features --no-fail-fast
 ```
 
-This skips four slow network-fault (netstress) tests, marked `#[ignore]`.
+This skips five slow network-fault (netstress) tests, marked `#[ignore]`.
 They take a few minutes, and the first run builds the fault binaries into
 `target/netsim/debug`.
 
@@ -37,7 +37,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 ```
 
-`--include-ignored` adds exactly those four; no other test is ignored. A
+`--include-ignored` adds exactly those five; no other test is ignored. A
 new test of irsync through the fault layer should run in-process on
 tokio's paused clock (`with_netsim` in `crates/irsync/tests/common`, as
 in `tests/netsim.rs`), which takes seconds, rather than be ignored. Mark
