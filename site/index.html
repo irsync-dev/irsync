@@ -7,7 +7,7 @@
     <title>irsync</title>
     <meta
       name="description"
-      content="irsync: remote sync through firewalls and over bad networks. It takes rsync's flags, needs no port forwarding, and carries on where it stopped."
+      content="irsync: peer-to-peer file and directory sync in the spirit of rsync that adapts to any network topology and survives connection drops without restarting."
     />
     <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="style.css" />
@@ -15,7 +15,10 @@
   <body>
     <header class="top">
       <nav aria-label="Site">
-        <a class="name" href="./">irsync</a>
+        <p class="brand">
+          <a class="name" href="./">irsync</a>
+          <span class="badge">alpha</span>
+        </p>
         <ul>
           <li><a href="book/">documentation</a></li>
           <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
@@ -24,98 +27,161 @@
     </header>
 
     <main>
-      <p class="alpha" role="note">
-        <strong>Alpha</strong>
-        <span>
-          The command line and the protocol may still change. Keep another
-          copy of anything you sync with it.
-        </span>
-      </p>
-
       <section class="hero" aria-labelledby="headline">
-        <h1 id="headline">
-          Remote sync through firewalls and over bad networks
-        </h1>
+        <h1 id="headline">Resilient file sync over any network topology</h1>
         <p class="lede">
-          irsync takes the rsync flags you already know. It needs no port
-          forwarding or dynamic DNS, and after a drop, a closed laptop or
-          Ctrl-C, the same command carries on where it stopped.
+          Peer-to-peer file and directory sync in the spirit of rsync that
+          adapts to any network topology and survives connection drops
+          without restarting.
         </p>
-        <p class="more">
-          <a href="book/introduction.html">Introduction →</a>
-          ·
-          <a href="book/tutorial/first-sync.html">Tutorial →</a>
-          ·
-          <a href="book/contributing/setup.html">Contributing →</a>
+        <p class="lede">
+          Move files and full directory trees directly between devices
+          without configuring firewalls, port forwarding, or static IPs.
+          Built on iroh, transfers punch through NATs, fall back to relays
+          when needed, and handle network switches mid-stream. If a
+          connection drops, the transfer picks up at the exact byte where it
+          stopped.
         </p>
+        <p class="actions">
+          <a class="button primary" href="book/tutorial/first-sync.html"
+            >Your first sync</a
+          >
+          <a class="button quiet" href="book/introduction.html"
+            >Introduction</a
+          >
+          <a class="button quiet" href="book/reference/limitations.html"
+            >Known limitations</a
+          >
+        </p>
+      </section>
 
-        <ol class="steps">
-          <li>
-            <h2 id="install"><span aria-hidden="true">1</span>Install</h2>
-            <div class="cmd">
-              <pre
-                class="terminal"
-                tabindex="0"
-                role="region"
-                aria-label="Install command"
-              ><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --alpha</span></pre>
-            </div>
-            <p class="note">
-              Linux and macOS. Installs <code>irsync</code> and
-              <code>fileset</code> into <code>~/.local/bin</code>.
-              <a href="book/introduction.html#install"
-                >Other ways to install →</a
+      <ol class="steps">
+        <li>
+          <h2 id="install"><span aria-hidden="true">1</span>Install</h2>
+          <div class="cmd">
+            <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --alpha</span></pre>
+          </div>
+          <p class="note">
+            Linux and macOS. Installs <code>irsync</code> and
+            <code>fileset</code> into <code>~/.local/bin</code>. There is no
+            stable release yet, so <code>--alpha</code> takes the newest
+            alpha release.
+            <a href="book/introduction.html#install"
+              >Other ways to install&nbsp;→</a
+            >
+          </p>
+        </li>
+        <li>
+          <h2><span aria-hidden="true">2</span>First Sync</h2>
+          <div class="cmd">
+            <pre><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
+          </div>
+          <p class="note">
+            If <code>ssh myserver</code> logs you in, the first run sets the
+            server up too. Later runs connect over iroh and do not use ssh.
+            <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
+              >No ssh? Set the server up by hand&nbsp;→</a
+            >
+            If interrupted, the next run of the same command resumes where
+            the last one stopped.
+          </p>
+        </li>
+      </ol>
+
+      <section class="how" aria-labelledby="how-heading">
+        <h2 id="how-heading">How it connects</h2>
+        <div class="columns">
+          <div>
+            <h3>Peer to peer, over iroh</h3>
+            <p>
+              The two machines find each other and traverse NATs and
+              firewalls. The daemon is reached by its iroh identity, not by
+              an address.
+            </p>
+          </div>
+          <div>
+            <h3>Encrypted, key to key</h3>
+            <p>
+              Traffic is encrypted end to end. The client only connects to
+              the daemon key it was given, and the daemon only lets in keys
+              it has granted.
+              <a href="book/explanation/identity-and-trust.html"
+                >Identity and trust&nbsp;→</a
               >
             </p>
-          </li>
-          <li>
-            <h2><span aria-hidden="true">2</span>Sync</h2>
-            <div class="cmd">
-              <pre
-                class="terminal"
-                tabindex="0"
-                role="region"
-                aria-label="A first sync"
-              ><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
-            </div>
-            <p class="note">
-              If <code>ssh myserver</code> logs you in, this sets the server up
-              too.
-              <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
-                >No ssh? Set the server up by hand →</a
+          </div>
+          <div>
+            <h3>A relay when there is no direct path</h3>
+            <p>
+              By default a public relay run by n0, the developers of iroh.
+              It cannot read the data. Run your own, or refuse relays with
+              <code>--no-relay</code>.
+              <a href="book/how-to/direct-and-relay.html"
+                >Direct or relay&nbsp;→</a
               >
             </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="limits" aria-labelledby="limits-heading">
+        <div class="limits-title">
+          <h2 id="limits-heading">Before you rely on it</h2>
+          <span class="badge">alpha</span>
+        </div>
+        <ul>
+          <li>
+            The command line and the protocol may change before the beta.
+            Keep another copy of anything you sync with it.
           </li>
-        </ol>
+          <li>
+            It is not a drop-in replacement for rsync. It has its own
+            protocol, so both ends must run irsync.
+          </li>
+          <li>
+            Some rsync options are missing, such as <code>-X</code>,
+            <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
+            are not copied.
+          </li>
+          <li>
+            Windows is not supported. Relayed connections are much slower
+            than direct ones.
+          </li>
+        </ul>
+        <p class="note">
+          <a href="book/reference/limitations.html"
+            >Known limitations&nbsp;→</a
+          >
+        </p>
       </section>
 
       <div class="pair">
         <section aria-labelledby="fileset-heading">
           <h2 id="fileset-heading">fileset</h2>
           <p>
-            A helper that ships with irsync: check that a copy is exact,
-            whichever tool made it — rsync, rclone, cp or irsync.
+            A helper that ships with irsync. It checks that a copy is exact,
+            whichever tool made it: rsync, rclone, cp or irsync.
           </p>
-          <p class="more">
+          <p class="note">
             <a href="book/fileset/introduction.html"
-              >Introduction to fileset →</a
+              >Introduction to fileset&nbsp;→</a
             >
           </p>
         </section>
-        <section aria-labelledby="contribute-heading">
-          <h2 id="contribute-heading">Contribute</h2>
+        <section aria-labelledby="help-heading">
+          <h2 id="help-heading">Help</h2>
           <p>
-            irsync is open source under the
-            <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
-              >MIT license</a
-            >.
+            Ask questions and report bugs in GitHub Issues. Report security
+            problems privately to security@irsync.org.
           </p>
-          <p class="more">
-            <a href="https://github.com/irsync-dev/irsync"
-              >github.com/irsync-dev/irsync →</a
+          <p class="note">
+            <a href="https://github.com/irsync-dev/irsync/issues"
+              >GitHub Issues&nbsp;→</a
             >
-            ·
-            <a href="book/contributing/setup.html">Contributor guide →</a>
+            <span aria-hidden="true">·</span>
+            <a href="book/how-to/troubleshooting.html"
+              >Troubleshoot a first sync&nbsp;→</a
+            >
           </p>
         </section>
       </div>
@@ -123,12 +189,17 @@
 
     <footer class="bottom">
       <p>
-        <a href="https://github.com/irsync-dev/irsync">irsync</a> is built by
+        irsync is built by
         <a href="https://github.com/lambdanature/">Michael Wildpaner</a> and
         published under the
         <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
           >MIT license</a
         >.
+        <a href="book/contributing/setup.html">Contributor guide</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/irsync-dev/irsync"
+          >github.com/irsync-dev/irsync</a
+        >
       </p>
     </footer>
 
