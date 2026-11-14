@@ -33,6 +33,13 @@ any verbosity and overrides `-v`:
 RUST_LOG=info,irsync::wire=trace irsync -av ~/Photos/ myserver:photos/
 ```
 
+`irsync::wire` sits under `irsync`, so `RUST_LOG=irsync=trace` turns the
+trace on too. To get irsync's trace logs without it, add `,irsync::wire=off`:
+
+```sh
+RUST_LOG=irsync=trace,irsync::wire=off irsync -av ~/Photos/ myserver:photos/
+```
+
 The trace goes to stderr with the other logs, at trace level. Each message
 sent or received is one line. A line from a push, as the client logged it:
 
@@ -88,10 +95,11 @@ FILE; it holds paths and file names`. The file is pcapng, the format Wireshark s
 overwritten. A daemon writes every session it serves into the one file.
 Before it exits, irsync waits up to 2 seconds for the last records to reach
 the disk. If another process is already writing the file, the second one
-writes `<name>.<pid>.pcapng` next to it instead, and the warning names that
-file. When a test runs the client and the daemon in one process, both write
-into the same file, so each message is there twice: once sent, once
-received.
+writes `<stem>.<pid>.pcapng` next to it instead, where `<stem>` is the name
+without its extension: for `~/push.pcapng`, that is `~/push.<pid>.pcapng`.
+The warning names that file. When a test runs the client and the daemon in
+one process, both write into the same file, so each message is there twice:
+once sent, once received.
 
 ### What is in it
 
@@ -158,6 +166,10 @@ needed. To keep the settings, import the profile in `tools/wireshark/profile/`;
 [`tools/wireshark/README.md`](https://github.com/irsync-dev/irsync/blob/main/tools/wireshark/README.md)
 says how, and gives the same two settings for `tshark`.
 
+The layout below has not yet been checked in Wireshark itself: the checks,
+and the fallback if the flow graph comes out empty, are in
+`tools/wireshark/README.md`.
+
 In the packet details, each record opens up into its fields and the irsync
 message inside it. Some ways in:
 
@@ -174,10 +186,6 @@ message inside it. Some ways in:
 - **Conversations.** Statistics, Conversations lists each connection (an
   address pair) and each stream (a port pair) with its message count and
   bytes.
-
-The layout has not yet been checked in Wireshark itself: the checks, and the
-fallback if the flow graph comes out empty, are in
-`tools/wireshark/README.md`.
 
 ## The key log
 
@@ -211,12 +219,13 @@ Open the capture and point Wireshark at the key log:
 wireshark -o tls.keylog_file:"$HOME/irsync-keys.log" ~/quic.pcap
 ```
 
-Wireshark then decrypts the QUIC packets. You see the handshake, the frames
-inside each packet, the acknowledgements, losses and retransmits, flow
-control limits, and each stream's bytes (Follow, QUIC Stream). You do not see
-irsync's messages decoded: Wireshark only decodes stream data for protocols
-it knows, and `irsync/1` is not one of them. The capture file above is the
-way to read the messages.
+This has not yet been checked with irsync's traffic, so take the rest of
+this section as what Wireshark should show. It should decrypt the QUIC
+packets and show the handshake, the frames inside each packet, the
+acknowledgements, losses and retransmits, flow control limits, and each
+stream's bytes (Follow, QUIC Stream). It will not decode irsync's messages:
+Wireshark only decodes stream data for protocols it knows, and `irsync/1` is
+not one of them. The capture file above is the way to read the messages.
 
 What stays opaque:
 
@@ -225,8 +234,8 @@ What stays opaque:
   relays off, or dial an address (see
   [Connect directly or through a relay](../how-to/direct-and-relay.md)), to
   get a direct connection.
-- **Multipath.** Wireshark understands the multipath extension, but
-  decrypting a connection that used several paths has not been tried yet.
+- **Multipath.** Whether Wireshark can read and decrypt a connection that
+  used several paths has not been checked yet.
 
 ## Safety
 

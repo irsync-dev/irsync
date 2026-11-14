@@ -117,9 +117,10 @@ often the peer acknowledges.
 
 ## TLS 1.3 inside QUIC
 
-QUIC has no handshake of its own. It runs a TLS 1.3 handshake
-([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) inside its first
-packets and uses the keys TLS agrees on to encrypt every packet after that
+QUIC has a handshake of its own (RFC 9000, section 7), and that handshake
+carries a TLS 1.3 handshake
+([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) in its first packets.
+The keys TLS agrees on then encrypt every packet after that
 ([RFC 9001](https://www.rfc-editor.org/rfc/rfc9001)). iroh uses the rustls
 TLS library.
 
