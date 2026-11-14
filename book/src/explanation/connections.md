@@ -58,9 +58,11 @@ Given an address, through `--address` or a host's `address` key, the client
 dials it and nothing else: no relay, no DNS, no DHT, no mDNS and no port
 mapper. This is how two `irsync` processes talk on one machine, on a LAN, or
 without internet access. The `EndpointId` is still required and still checked,
-so an address only says where to knock, not whom to trust. Over the
-connection, iroh may still learn and try further addresses of the daemon; for a
-daemon on loopback those are loopback too.
+so an address only says where to knock, not whom to trust. Nor does it fix
+the path: over the connection, both sides still tell each other their local
+addresses, and iroh may open more paths to them. Even with the daemon on
+loopback, it can reach back to the client's LAN or Docker bridge address
+(see [Dial a known address](../how-to/direct-and-relay.md#dial-a-known-address)).
 
 On the daemon's side, `listen` pins the sockets it binds, at most one IPv4 and
 one IPv6, and `portmap` asks the router for a port mapping with UPnP, PCP or

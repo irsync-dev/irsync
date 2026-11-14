@@ -142,9 +142,17 @@ sockets; it does not isolate the daemon. Turn everything off explicitly.
 
 `--address` takes `ip:port`, `[ipv6]:port` or `host:port`, may be repeated,
 and resolves host names with the system resolver. With an address the client
-turns its relay, DNS, DHT, mDNS and port mapper off and talks to nothing but
-the addresses it was given. The daemon's `EndpointId` is still required and
+turns its relay, DNS, DHT, mDNS and port mapper off, and dials only the
+addresses it was given. The daemon's `EndpointId` is still required and
 still checked. `--address` together with `--relay` is refused.
+
+An address picks where the connection starts, not every path it takes. Once
+connected, the two sides still tell each other their local addresses, and
+the daemon may open more paths to the client's other addresses, such as its
+LAN, VPN or Docker bridge address. A capture of a client and a daemon on one
+machine, with the daemon listening on `127.0.0.1` only, showed the daemon
+sending to the client's LAN and Docker addresses too. irsync has no setting
+that stops this.
 
 ## See also
 
