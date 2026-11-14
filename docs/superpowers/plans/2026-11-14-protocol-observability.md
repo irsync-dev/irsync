@@ -38,10 +38,11 @@ written by hand, Wireshark/tshark for checks.
 - Docs write home paths as `~/…`, example hosts `myclient`/`myserver`, roles client/server.
 - Commit messages: a short summary line, a blank line, a brief plain-English why. No attribution trailers of any kind.
 - Before each commit: `cargo test -q --workspace --all-features --no-fail-fast`; before the last one, the full regression from `AGENTS.md`.
+- Verbosity, sync and daemon alike: none or `-v` warnings, `-vv` info, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message. `RUST_LOG` overrides all of it.
 
 ## Review Focus
 
-1. **A run with `-vvv` and no `RUST_LOG`.** `-vvv` sets `irsync=trace`, which would switch the wire trace on and flood the log. Expected: the wire trace stays off unless `irsync::wire` is named. Pinned in Task 4 (`verbose_defaults_keep_wire_trace_off`).
+1. **A run with `-vvvv` and no `RUST_LOG`.** `-vvvv` sets `irsync=trace`, which would also switch the wire trace on and flood the log. Expected: the wire trace is on only at `-vvvvv` (sync and daemon alike) or when `RUST_LOG` names `irsync::wire`. Pinned in Task 4 (`wire_trace_only_at_five_v`) and Task 10 (`daemon_counts_v_like_the_client`).
 2. **A process that dies mid-session.** Expected: the capture holds every record up to shortly before the end and opens in Wireshark. Pinned in Task 5 (`records_reach_disk_without_close`).
 3. **Non-UTF-8 file names in the text trace.** Expected: printed as hex, no panic, no lossy text. Pinned in Task 4 (`non_utf8_path_prints_as_hex`).
 4. **A session resumed on a new connection.** Expected: the new connection gets its own fake address, and both carry the same `session_id`. Pinned in Task 3 (`second_connection_gets_new_address`).
@@ -366,35 +367,43 @@ Rendering rules: `Name { field: value, … }` on one line, omitting fields at th
     let c = Control { msg: Some(Msg::Listing(e)) };
     assert!(render(&dyn_of(&c)).contains("path: 0x66ff"));
 }
-#[test] fn verbose_defaults_keep_wire_trace_off() {
-    for v in 0..=4 {
-        assert!(!filter_enables_wire(client_log_default(v, false)), "client -v×{v}");
-        assert!(!filter_enables_wire(daemon_log_default(v, false)), "daemon -v×{v}");
+#[test] fn wire_trace_only_at_five_v() {
+    // client_log_default gets the sync's -v count minus one (main.rs:150).
+    for v in 0..=3 {
+        assert!(!filter_enables_wire(client_log_default(v, false)), "sync -v×{}", v + 1);
     }
+    assert!(filter_enables_wire(client_log_default(4, false)));        // -vvvvv
+    assert!(filter_enables_wire(client_log_default(9, false)));
+    assert!(filter_enables_irsync_trace(client_log_default(3, false))); // -vvvv still traces the rest
+}
+#[test] fn daemon_trace_level_keeps_wire_off() {
+    // Until Task 10 unifies the daemon with the client.
+    assert!(!filter_enables_wire(daemon_log_default(5, false)));
 }
 ```
 
-`dyn_of` encodes a message and decodes it as a `DynamicMessage` from the pool; `filter_enables_wire` builds an `EnvFilter` and checks `irsync::wire` at TRACE. Match the field names to the real `ListingEntry`/`FileEntry` definitions. The last test lives in `main.rs`'s tests.
+`dyn_of` encodes a message and decodes it as a `DynamicMessage` from the pool; `filter_enables_wire` / `filter_enables_irsync_trace` build an `EnvFilter` and check `irsync::wire` / `irsync::session` at TRACE. Match the field names to the real `ListingEntry`/`FileEntry` definitions. The last two tests live in `main.rs`'s tests.
 
 - [ ] **Step 2: Run them and see them fail**
 
-Run: `cargo test -q -p irsync --bins --lib text verbose_defaults`
+Run: `cargo test -q -p irsync --bins --lib text wire_trace daemon_trace`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** `render` over `prost_reflect` (descriptor pool built once from `FILE_DESCRIPTOR_SET` in a `OnceLock`), `emit`, and hook `emit` into the Task 3 sink. Append `,irsync::wire=off` to the client's `debug,irsync=trace` and the daemon's `trace` defaults.
+- [ ] **Step 3: Implement** `render` over `prost_reflect` (descriptor pool built once from `FILE_DESCRIPTOR_SET` in a `OnceLock`), `emit`, and hook `emit` into the Task 3 sink. `client_log_default`: `3 => "debug,irsync=trace,irsync::wire=off"`, `_ => "debug,irsync=trace"` (so `-vvvvv` on a sync adds the wire trace). Daemon `_ => "trace,irsync::wire=off"` for now. `RUST_LOG` still replaces these defaults entirely, so `RUST_LOG=info,irsync::wire=trace` turns the wire trace on at any `-v` count. In `book/src/reference/command-line.md:77` add "`-vvvvv` also every protocol message (see the protocol debugging how-to)".
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -q -p irsync --bins --lib text verbose_defaults`
+Run: `cargo test -q -p irsync --bins --lib text wire_trace daemon_trace`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "Print every protocol message under RUST_LOG=irsync::wire=trace
+git commit -m "Print every protocol message at -vvvvv or irsync::wire=trace
 
 One line per message sent or received, with side, stream and session.
-File content prints as its length and a short hash. -vvv leaves it off."
+File content prints as its length and a short hash. RUST_LOG can turn
+it on at any verbosity."
 ```
 
 ---
@@ -641,7 +650,7 @@ Bottom-up, one section per layer, each saying what iroh provides, the standard b
 
 - [ ] **Step 2: Write `protocol-debugging.md`**
 
-Sections: the text trace (`RUST_LOG=irsync::wire=trace`, what each field means, sample line); the capture (`IRSYNC_CAPTURE`, what's in a `Record`, trimming, fake addresses and ports, the `tools/wireshark/open-capture.sh` command, useful display filters such as `pbf.irsync.capture.v1.Record.session_id` (check the real field names in Wireshark), the flow graph); the key log (`SSLKEYLOGFILE`, what Wireshark shows, that relayed traffic stays opaque); safety (captures and key logs hold paths and secrets). Screenshots of the flow graph: take them on a machine with Wireshark; if you can't, add the `tshark -z flow` text output instead and list "add screenshots" for Mike in the hand-off.
+Sections: the text trace (`-vvvvv` on either side, or `RUST_LOG=info,irsync::wire=trace` at any verbosity; what each field means, sample line); the capture (`IRSYNC_CAPTURE`, what's in a `Record`, trimming, fake addresses and ports, the `tools/wireshark/open-capture.sh` command, useful display filters such as `pbf.irsync.capture.v1.Record.session_id` (check the real field names in Wireshark), the flow graph); the key log (`SSLKEYLOGFILE`, what Wireshark shows, that relayed traffic stays opaque); safety (captures and key logs hold paths and secrets). Screenshots of the flow graph: take them on a machine with Wireshark; if you can't, add the `tshark -z flow` text output instead and list "add screenshots" for Mike in the hand-off.
 
 - [ ] **Step 3: Build the book**
 
@@ -659,4 +668,70 @@ git commit -m "Add the Networking page and a protocol debugging how-to
 
 Contributors get a bottom-up view of the network stack, tied to iroh and
 the RFCs, and instructions for the trace, the capture and the key log."
+```
+
+---
+
+### Task 10: The daemon counts `-v` like the client
+
+**Files:**
+- Modify: `crates/irsync/src/main.rs:86-104` (one log ladder), `:1309` (daemon call), `crates/irsync/src/daemon.rs:995-1007` (start-up message)
+- Modify: `crates/irsync/src/cli/mod.rs:473` (help text "up to -vvv")
+- Modify: `book/src/reference/command-line.md:191-205`, `book/src/how-to/run-the-daemon.md`, and any page that tells people to run the daemon with `-v`/`-vv` for logs (`grep -rn "daemon.*-v" book/src`)
+
+**Interfaces:**
+- Produces: `client_log_default` renamed `log_default(verbose: u8, quiet: bool)`; `daemon_log_default` removed. The daemon calls `log_default(d.log.verbose.saturating_sub(1), d.log.quiet)`, the same shift a sync uses, so on both sides: none or `-v` warnings, `-vv` info, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message. `gc` and `index` keep their current unshifted call.
+- Produces: `fn startup_banner(version: &str, ep: &Endpoint, settings: &Settings) -> String` in `daemon.rs`.
+
+The daemon's default drops from info to warnings, so a daemon started by hand would print nothing. When stdout is a terminal, it prints a banner before the existing lines:
+
+```
+irsync daemon 0.1.0-beta.1 started
+  relay: https://… (or "disabled")
+  discovery: dns, dht, mdns (those that are on)
+```
+
+followed by the existing `endpoint id:` / `listening on:` / `debug port:` lines, unchanged and printed in every case (a parent process and the tests parse them). The version is the package version with the `BuildInfo` commit, as `irsync --version` prints it.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// main.rs tests
+#[test] fn daemon_counts_v_like_the_client() {
+    let d = |v: u8| log_default(v.saturating_sub(1), false);
+    assert_eq!(d(0), "warn");
+    assert_eq!(d(2), "warn,irsync=info");
+    assert!(!filter_enables_wire(d(4)));
+    assert!(filter_enables_wire(d(5)));
+}
+// daemon.rs tests
+#[tokio::test] async fn banner_names_version_and_network() {
+    let (ep, settings) = offline_endpoint_and_settings().await;
+    let b = startup_banner("9.9.9", &ep, &settings);
+    assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
+    assert!(b.contains("relay: disabled"));
+}
+```
+
+Delete `daemon_trace_level_keeps_wire_off` from Task 4; it no longer applies.
+
+- [ ] **Step 2: Run them and see them fail**
+
+Run: `cargo test -q -p irsync --bins --lib daemon_counts banner_names`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**, using `std::io::stdout().is_terminal()` for the banner. Update the help text to "Log more; repeat for more still (up to -vvvvv)", and the daemon's section in `command-line.md` with the same ladder as the sync's. In `run-the-daemon.md`, note that the daemon logs warnings only by default and that `-vv` gives the info logs it used to give.
+
+- [ ] **Step 4: Run the full regression** (see `AGENTS.md`)
+
+Expected: all pass, fmt and both clippy runs clean. Tests that read the daemon's stdout (`tests/common/mod.rs:888-960`, `tests/telemetry_debug.rs:123`) still pass because they don't run on a terminal.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "Count -v the same way on the daemon as on the client
+
+-vvvvv now means every protocol message on both sides. The daemon logs
+warnings by default and greets a terminal with its version and network
+settings instead."
 ```
