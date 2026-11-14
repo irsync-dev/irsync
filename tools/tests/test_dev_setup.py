@@ -10,7 +10,10 @@ SCRIPT = os.path.join(ROOT, "tools", "dev-setup.sh")
 
 # Real programs the script itself runs; everything else on PATH is a fake.
 UTILS = ["bash", "env", "sh", "dirname", "uname", "sed", "grep", "awk", "head",
-         "tr", "cat", "cut"]
+         "tr", "cat", "cut", "mktemp", "rm", "tar"]
+# Real programs that are linked in only where they exist: GNU tar runs xz as
+# a program, macOS's tar has it built in and ships no xz.
+OPTIONAL_UTILS = ["xz"]
 
 GOOD = {
     "cc": "echo cc",
@@ -35,11 +38,17 @@ class DevSetupCheckTests(unittest.TestCase):
         os.mkdir(self.bin)
         for u in UTILS:
             os.symlink(shutil.which(u), os.path.join(self.bin, u))
+        for u in OPTIONAL_UTILS:
+            if shutil.which(u):
+                os.symlink(shutil.which(u), os.path.join(self.bin, u))
         # Must never run in --check mode: it would install rustup.
         self.fake("curl", 'echo "curl called" >&2; exit 99')
 
     def fake(self, name, body):
         path = os.path.join(self.bin, name)
+        # Never write through a symlink to the real program.
+        if os.path.lexists(path):
+            os.remove(path)
         with open(path, "w") as f:
             f.write(f"#!/bin/sh\n{body}\n")
         os.chmod(path, 0o755)
@@ -59,8 +68,21 @@ class DevSetupCheckTests(unittest.TestCase):
 
     def test_good_system_tools_pass(self):
         r, out = self.check()
-        for tool in ["C compiler", "git", "GNU rsync", "Python"]:
+        for tool in ["C compiler", "git", "GNU rsync", "Python", "curl", "tar with xz"]:
             self.assertRegex(out, rf"ok +{tool}", out)
+
+    def test_tar_without_xz_names_the_package(self):
+        r, out = self.check(tar="exit 2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertRegex(out, r"missing +xz, so tar can write and read \.tar\.xz.*\(required\)")
+        self.assertRegex(out, r"xz-utils|brew install xz")
+
+    def test_missing_tar_and_curl_are_required(self):
+        os.remove(os.path.join(self.bin, "curl"))
+        r, out = self.check(tar=None)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertRegex(out, r"missing +tar.*\(required\)")
+        self.assertRegex(out, r"missing +curl.*\(required\)")
 
     def test_old_and_bsd_rsync_are_refused(self):
         for line in ["rsync  version 2.6.9  protocol version 29",
