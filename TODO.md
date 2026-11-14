@@ -1,3 +1,11 @@
+# Critical
+
+- [ ] Sign release files and verify them against a public key built into
+      irsync. Today a release download is checked only by SHA-256 over
+      HTTPS, which catches a damaged file but not a swapped one. Applies
+      to the cross-platform install over ssh (`ssh/release.rs`) and to
+      `site/install.sh`.
+
 # Collection of open TODO items, in no particular order
 
 - [ ] OpenTelemetry instrumentation, export on the daemon side, stats printing after a run
@@ -5,8 +13,6 @@
     - [ ] Only happens when a run goes through ssh (first sync, `--ssh`, or the
           fallback when the daemon can't be reached); a reachable older daemon is
           not updated on its own
-    - [ ] Other OS or CPU: see the release-binary item under "Open items from SSH
-          onboarding" below
 - [ ] Adversarial fuzz testing / hardening for the daemon mode
 - [ ] Performance and resource measurements on daemon mode, potentially re-think execution model (fork vs. threads, ulimits)
 
@@ -34,13 +40,6 @@ does not have yet:
 
 Left over after `docs/superpowers/plans/2026-11-10-ssh-onboarding.md`
 landed. Items the final review's fix wave closed are not listed.
-
-## Later item from the spec
-
-- [ ] Install on a server whose OS or CPU differs from the client's: download
-      the release binary for the client's exact tag (or `latest` for a dev
-      build), check its signature, copy it over ssh. Waits for the release
-      pipeline (see the spec's "Later item").
 
 ## Grants and automatic exports
 
@@ -89,10 +88,9 @@ landed. Items the final review's fix wave closed are not listed.
 
 ## ssh client and onboarding
 
-- [ ] A copied binary with the same OS/CPU may still not run (older glibc,
-      NixOS build); the probe then sees no version and reinstalls every run.
-      Run `--version` after the upload and say "the copied binary does not
-      run on <dest>".
+- [ ] A same-platform copy that does not run on the server (older glibc,
+      NixOS build) is refused with a clear message since 2026-11-14. It
+      could fall back to the release binary, which is static on Linux.
 - [ ] The first run makes three ssh connections (probe, install, setup), so
       password users get three prompts. Consider ControlMaster or folding
       probe and setup together.

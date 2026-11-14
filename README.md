@@ -87,8 +87,10 @@ Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
 With ssh, the client is enough: the first sync copies irsync to the server when
-both run the same OS and CPU. When they differ, install irsync on both machines
-and set the server up by hand.
+both run the same OS and CPU. When they differ, a released irsync downloads the
+release binary for the server's platform and copies that over instead. A build
+from source cannot do that; then install irsync on both machines and set the
+server up by hand.
 
 The workspace also holds `fileset`, an independent tool that records the
 checksums and metadata of a directory tree and later verifies the tree against
@@ -109,8 +111,8 @@ irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
 The first time, irsync sets the server up over SSH: it copies itself there
-(when the server runs the same OS and CPU), gives this client's key access,
-starts the daemon and saves `myserver` as a host alias. It prints what it did.
+(or, for another OS or CPU, the matching release binary), gives this
+client's key access, starts the daemon and saves `myserver` as a host alias. It prints what it did.
 Later runs connect over iroh directly and do not use SSH. If the daemon stops
 answering, irsync waits about 15 seconds, then checks it over SSH and starts it
 again.

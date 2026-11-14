@@ -44,17 +44,35 @@ Then check that `irsync daemon` is running on the server.
 
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh
-irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
+irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
 ```
 
-**Cause.** The ssh setup installs irsync by copying the client's own binary,
-which only runs on the same OS and CPU.
+**Cause.** When the server's OS or CPU differs from the client's, the ssh
+setup installs the release binary of the client's own version. That needs a
+client that is itself a release: a build from source has no matching release
+binary. The same stop, worded "there is no release binary for that
+platform", comes for a server no release is built for, such as an Intel Mac.
 
-**Fix.** [Install](../introduction.md#install) irsync on the server yourself
-and [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
+**Fix.** Use a released irsync on the client
+([Install](../introduction.md#install)), or install irsync on the server
+yourself and
+[set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 Installing it on the server does not make the ssh setup work, because the
-setup only uses its own copy of the client's exact build. Release binaries,
-planned for the beta, will remove this step.
+setup only uses its own copy of the client's exact build.
+
+Other messages from this step:
+
+- `need curl or wget on this machine to download the release binary`, or
+  `tar failed (it must be able to read .xz)`: the client downloads and
+  unpacks the release itself. Install the missing tool on the client.
+- `could not download …`: the client could not reach GitHub. Check the
+  network and run again.
+- `there is no release v… to download`, or `release v… is not this build`:
+  the client is a development build that carries a release's version
+  number. Use a released irsync.
+- `the download of … is damaged (SHA-256 does not match)`: run again.
+
+Nothing on the server is changed in any of these cases.
 
 ## The daemon rejected this client's key
 

@@ -343,9 +343,19 @@ cross-referenced from commit messages and review notes.
   `--ssh` forces the ssh step. When the remote version differs and the
   remote has the same OS and CPU, onboarding copies the client's binary
   over. Only runs that go through ssh (first sync, `--ssh`, or the
-  fallback when the daemon can't be reached) update it; other OS or CPU
-  and updating a reachable older daemon are open (`TODO.md`). Design:
-  `superpowers/specs/2026-11-10-ssh-onboarding-design.md`.
+  fallback when the daemon can't be reached) update it; updating a
+  reachable older daemon is open (`TODO.md`). Design:
+  `superpowers/specs/2026-11-10-ssh-onboarding-design.md`. Amended
+  2026-11-14: when the remote has another OS or CPU, a release build
+  downloads the release binary for its own tag on the client (`curl` or
+  `wget`, then `tar`), checks its SHA-256 and copies that over; the
+  server needs no internet access and `install.sh` never runs there. A
+  development build still needs the same OS and CPU. On both paths the
+  server runs the new binary with `--version` and replaces the old one
+  only if it reports the client's exact build. Release files are not
+  signed yet; checking a signature against a key built into irsync is
+  open and critical (`TODO.md`). Design:
+  `superpowers/specs/2026-11-14-cross-platform-install-design.md`.
 
 ### 1.13 Files that change during a sync
 

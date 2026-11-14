@@ -43,7 +43,12 @@ irsync:   saved host alias myserver -> 4a29f16a4f
 In steps, it:
 
 - copies itself to the server, when the server runs the same OS and CPU as
-  the client. Otherwise it stops and says so; then install irsync on both
+  the client. When they differ, a released irsync downloads the release
+  binary of its own version for the server's platform, checks it, and copies
+  that over. The download happens on the client, which needs `curl` or
+  `wget`, and `tar`; the server needs no internet access. A build from
+  source cannot do this, and not every platform has a release binary (an
+  Intel Mac has none). irsync then stops and says so; install irsync on both
   machines and [set the server up by hand](#set-the-server-up-by-hand);
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The

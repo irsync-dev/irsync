@@ -64,19 +64,30 @@ The setup then grants nothing, and you grant exports by hand as in
 
 ## A server with another OS or CPU
 
-The setup copies the client's own binary, so it works only when both machines
-run the same OS and CPU. Otherwise it stops with:
+When both machines run the same OS and CPU, the setup copies the client's
+own binary. When they differ, a released irsync downloads the release binary
+of its own version for the server's platform, checks its SHA-256, and copies
+that over:
 
 ```text
-irsync: myserver is not a saved alias; setting it up over ssh
-irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64, so it cannot copy itself there. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
+irsync: downloading irsync v0.1.0-beta.1 for linux aarch64
+irsync: set up myserver over ssh:
+irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/share/irsync/bin/irsync (release binary for linux aarch64)
 ```
 
-Install irsync on the server yourself and
+The download happens on the client, which needs `curl` or `wget`, and a
+`tar` that reads `.xz`. The server needs no internet access. Either way the
+server runs the new binary with `--version` before it replaces anything, and
+keeps what it had unless the binary reports the client's exact build.
+
+Release binaries exist for Linux on x86_64 and arm64 and for macOS on Apple
+Silicon. For any other server, and for a client built from source, the setup
+stops and changes nothing. Then install irsync on the server yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 Installing it on the server does not make the ssh setup work: the setup only
-uses its own copy of the client's exact build. Release binaries, planned for
-the beta, will remove this step.
+uses its own copy of the client's exact build. See
+[Troubleshooting](troubleshooting.md#ssh-setup-stops-the-server-runs-another-os-or-cpu)
+for the messages.
 
 ## Keep the daemon running
 

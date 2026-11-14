@@ -71,9 +71,11 @@ Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
 With ssh, the client is enough: the first sync copies irsync to the server when
-both run the same OS and CPU. When they differ, install irsync on both machines
-and set the server up by hand
-([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
+both run the same OS and CPU. When they differ, a released irsync downloads the
+release binary for the server's platform and copies that over instead. A build
+from source cannot do that, and some platforms have no release binary (an Intel
+Mac, for example): then install irsync on both machines and set the server up
+by hand ([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
 
 ## Quick start
 
