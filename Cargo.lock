@@ -2202,6 +2202,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
+ "prost-reflect",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "rand_core 0.6.4",

@@ -20,6 +20,8 @@ use irsync_proto::v1::{
     ListingStreamHeader, PathInfo,
 };
 
+mod text;
+
 pub use irsync_proto::capture::v1::{Side, StreamKind};
 
 /// A protocol message the taps can report.
@@ -100,7 +102,9 @@ fn any_on() -> bool {
 
 /// Hands a finished record to the outputs that are on.
 fn sink(conn: &ConnInner, record: Record) {
-    // Task 4: `text::emit(&record)` when `wire_trace_on()`.
+    if wire_trace_on() {
+        text::emit(&record);
+    }
     // Task 5: `capture::submit(record)` when a recorder exists.
     #[cfg(test)]
     if let Some(c) = &conn.collector {

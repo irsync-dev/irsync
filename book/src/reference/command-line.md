@@ -74,7 +74,7 @@ and a different meaning follow in
 | `--devices` | Preserve character and block device nodes. |
 | `--specials` | Preserve FIFOs. Sockets are never copied. |
 | `-H`, `--hard-links` | Files linked together in the source are linked together in the destination. |
-| `-v`, `--verbose` | List each file transferred, and end with rsync's `sent … received …` and `total size is …` lines. `-vv` adds a summary of time, CPU, memory and bytes at the end of each session, and info logs; `-vvv` debug logs, `-vvvv` trace logs. |
+| `-v`, `--verbose` | List each file transferred, and end with rsync's `sent … received …` and `total size is …` lines. `-vv` adds a summary of time, CPU, memory and bytes at the end of each session, and info logs; `-vvv` debug logs, `-vvvv` trace logs, `-vvvvv` also every protocol message (see the protocol debugging how-to). |
 | `-q`, `--quiet` | Print errors only. Also turns the live progress block off. |
 | `-n`, `--dry-run` | Change nothing on either side. With `-v` or `-i`, list what would be done. |
 | `-c`, `--checksum` | Compare by content, not by size and time: every file on both sides is read, no cached hash is trusted, and the index is refreshed from what was read. |

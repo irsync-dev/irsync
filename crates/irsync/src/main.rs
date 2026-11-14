@@ -89,6 +89,8 @@ fn client_log_default(verbose: u8, quiet: bool) -> &'static str {
         (false, 0) => "warn",
         (false, 1) => "warn,irsync=info",
         (false, 2) => "info,irsync=debug",
+        (false, 3) => "debug,irsync=trace,irsync::wire=off",
+        // `-vvvvv`: every protocol message too.
         _ => "debug,irsync=trace",
     }
 }
@@ -99,7 +101,8 @@ fn daemon_log_default(verbose: u8, quiet: bool) -> &'static str {
         (true, _) => "error",
         (false, 0) => "info",
         (false, 1) => "debug",
-        _ => "trace",
+        // The wire trace stays off until the daemon's levels match the client's.
+        _ => "trace,irsync::wire=off",
     }
 }
 
@@ -1964,6 +1967,45 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether the filter `spec` lets `target` log at TRACE.
+    fn filter_enables(spec: &str, target: &str) -> bool {
+        use tracing_subscriber::layer::SubscriberExt;
+        let sub = tracing_subscriber::registry().with(tracing_subscriber::EnvFilter::new(spec));
+        tracing::subscriber::with_default(sub, || match target {
+            "irsync::wire" => tracing::enabled!(target: "irsync::wire", tracing::Level::TRACE),
+            _ => tracing::enabled!(target: "irsync::session", tracing::Level::TRACE),
+        })
+    }
+
+    fn filter_enables_wire(spec: &str) -> bool {
+        filter_enables(spec, "irsync::wire")
+    }
+
+    fn filter_enables_irsync_trace(spec: &str) -> bool {
+        filter_enables(spec, "irsync::session")
+    }
+
+    #[test]
+    fn wire_trace_only_at_five_v() {
+        // client_log_default gets the sync's -v count minus one (run_sync).
+        for v in 0..=3 {
+            assert!(
+                !filter_enables_wire(client_log_default(v, false)),
+                "sync -v x{}",
+                v + 1
+            );
+        }
+        assert!(filter_enables_wire(client_log_default(4, false)));
+        assert!(filter_enables_wire(client_log_default(9, false)));
+        assert!(filter_enables_irsync_trace(client_log_default(3, false)));
+    }
+
+    #[test]
+    fn daemon_trace_level_keeps_wire_off() {
+        // Until the daemon's levels are unified with the client's.
+        assert!(!filter_enables_wire(daemon_log_default(5, false)));
+    }
 
     fn out(max_delete: bool, errors: usize) -> Outcome {
         Outcome {
