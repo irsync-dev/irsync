@@ -73,7 +73,6 @@ fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
 fn run_client_env(args: &[&str], tmp: &Path, env: &[(&str, &Path)]) -> std::process::Output {
     use std::io::Read;
     let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
-        .envs(env.iter().copied())
         .args(args)
         .env("HOME", tmp.join("home"))
         .env("XDG_STATE_HOME", tmp.join("xdg"))
@@ -81,6 +80,7 @@ fn run_client_env(args: &[&str], tmp: &Path, env: &[(&str, &Path)]) -> std::proc
         .env("IRSYNC_RSH", "false")
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -300,6 +300,65 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
 }
 
 /// The roots of the index files under `state`.
+/// With `--address` the client binds to the one local address it reaches
+/// the daemon from, so it offers the daemon no other address to open a
+/// second path to. Bound to every interface, it would offer this machine's
+/// LAN, VPN and Docker addresses too. On a machine with loopback only, this
+/// passes either way.
+#[test]
+fn address_mode_offers_only_the_address_it_dials_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmp = dir.path();
+    for d in ["src", "dst", "home", "xdg"] {
+        std::fs::create_dir_all(tmp.join(d)).unwrap();
+    }
+    std::fs::write(tmp.join("src/a.bin"), bytes(256 * 1024)).unwrap();
+    let d = start_daemon(tmp);
+    let address = d.listen.to_string();
+    let src = format!("{}/", tmp.join("src").display());
+    let dest = format!("{}:m/", d.id);
+    let config = tmp.join("irsync.toml");
+    let args = [
+        "-a",
+        "--reconnect",
+        "0",
+        "--address",
+        &address,
+        "--config",
+        config.to_str().unwrap(),
+        &src,
+        &dest,
+    ];
+    // iroh logs the candidates of each holepunching round at debug.
+    let log = Path::new("warn,iroh::_events::qnt=debug");
+    let o = run_client_env(&args, tmp, &[("RUST_LOG", log)]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "client failed: {err}");
+    let rounds: Vec<String> = err
+        .lines()
+        .map(plain)
+        .filter(|l| l.contains("local_candidates="))
+        .collect();
+    assert!(!rounds.is_empty(), "no holepunching round logged:\n{err}");
+    for round in &rounds {
+        let local = round
+            .split("local_candidates={")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .unwrap_or_else(|| panic!("no candidate list in {round:?}"));
+        for addr in local.split(", ") {
+            assert!(
+                addr.starts_with("127.0.0.1:"),
+                "client offered {addr}, not only 127.0.0.1: {round}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(tmp.join("dst/a.bin")).unwrap(),
+        bytes(256 * 1024)
+    );
+}
+
 fn index_roots(state: &Path) -> Vec<std::path::PathBuf> {
     let Ok(rd) = std::fs::read_dir(state.join("index")) else {
         return Vec::new();

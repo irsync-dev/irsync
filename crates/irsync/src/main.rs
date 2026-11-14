@@ -569,7 +569,7 @@ async fn connect_for(
             "isolated mode: dialling directly, relay and lookups off"
         );
     }
-    let endpoint_opts = client_endpoint_opts(
+    let mut endpoint_opts = client_endpoint_opts(
         secret,
         opts.relay.as_deref(),
         opts.no_relay,
@@ -578,6 +578,13 @@ async fn connect_for(
         host_entry.as_ref(),
         &addresses,
     )?;
+    if !addresses.is_empty() {
+        // Bound to every interface, the client would offer the daemon all
+        // of them for extra paths; bound to the source of the dial, only
+        // that one.
+        endpoint_opts.bind_addrs = irsync::net::addr::source_binds(&resolved);
+        tracing::debug!(binds = ?endpoint_opts.bind_addrs, "isolated mode: binding");
+    }
     let endpoint = build_endpoint(endpoint_opts).await?;
     // Direct addresses replace everything; else the daemon's own report,
     // when there is one, goes along with the lookups.
