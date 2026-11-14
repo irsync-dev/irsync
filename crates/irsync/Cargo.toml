@@ -62,6 +62,8 @@ rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 rusqlite = { workspace = true }
 blake3 = { workspace = true }
+# Only to check a downloaded release tarball against sha256.sum.
+sha2 = { workspace = true }
 jwalk = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }

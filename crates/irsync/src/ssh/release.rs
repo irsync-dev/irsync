@@ -1,0 +1,282 @@
+//! The release binary for a server whose OS or CPU differs from this
+//! machine's: which file it is, and downloading, checking and unpacking it
+//! here on the client. Knows nothing about ssh.
+
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
+
+use crate::build::BuildInfo;
+
+/// Where GitHub serves a release's files, without the tag.
+const RELEASES: &str = "https://github.com/irsync-dev/irsync/releases/download";
+
+/// The checksum list every release carries.
+const SUMS: &str = "sha256.sum";
+
+/// The release target for a server platform, as `parse_uname` names it.
+pub fn target_for(os: Option<&str>, arch: Option<&str>) -> Option<&'static str> {
+    match (os?, arch?) {
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        _ => None,
+    }
+}
+
+/// `v<version>` if this build can have a release; `None` for a development
+/// build: uncommitted changes, an unknown commit, or built with `netsim`.
+pub fn release_tag(info: &BuildInfo) -> Option<String> {
+    if cfg!(feature = "netsim") || info.dirty == Some(true) || info.commit == "unknown" {
+        return None;
+    }
+    Some(format!("v{}", info.version))
+}
+
+/// The hex digest `sums` lists for `file_name`, lowercased. Takes both
+/// `<hex> *<name>` and `<hex>  <name>` lines.
+pub fn expected_sha256(sums: &str, file_name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hex, name) = line.trim().split_once(char::is_whitespace)?;
+        let name = name.trim_start();
+        let name = name.strip_prefix('*').unwrap_or(name);
+        (name == file_name).then(|| hex.to_ascii_lowercase())
+    })
+}
+
+/// Test builds only: a URL that stands in for `RELEASES/<tag>`, from
+/// `IRSYNC_TEST_RELEASE_URL`. May be a `file://` URL.
+#[cfg(feature = "test-hooks")]
+pub fn test_url() -> Option<String> {
+    std::env::var("IRSYNC_TEST_RELEASE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+}
+
+/// The URL prefix of `tag`'s files, and whether `file://` is allowed.
+fn source(tag: &str) -> (String, bool) {
+    #[cfg(feature = "test-hooks")]
+    if let Some(url) = test_url() {
+        return (url, true);
+    }
+    (format!("{RELEASES}/{tag}"), false)
+}
+
+/// A downloaded, checked and unpacked release binary. The directory that
+/// holds it is removed on drop.
+#[derive(Debug)]
+pub struct Fetched {
+    bin: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl Fetched {
+    pub fn bin(&self) -> &Path {
+        &self.bin
+    }
+}
+
+/// Download `irsync-<target>.tar.xz` and `sha256.sum` for `tag` with the
+/// system's `curl` or `wget`, check the tarball's hash, and unpack
+/// `irsync-<target>/irsync` with `tar`.
+pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
+    let (base, allow_file) = source(tag);
+    let dir = tempfile::Builder::new()
+        .prefix("irsync-release.")
+        .tempdir()
+        .context("cannot make a temporary directory for the download")?;
+    let file = format!("irsync-{target}.tar.xz");
+    let tarball = dir.path().join(&file);
+    let sums = dir.path().join(SUMS);
+    download(&format!("{base}/{file}"), &tarball, tag, allow_file)?;
+    download(&format!("{base}/{SUMS}"), &sums, tag, allow_file)?;
+
+    let listed = std::fs::read_to_string(&sums).context("cannot read the downloaded sha256.sum")?;
+    let Some(want) = expected_sha256(&listed, &file) else {
+        bail!("{SUMS} does not list {file}");
+    };
+    if sha256_of(&tarball)? != want {
+        bail!("the download of {file} is damaged (SHA-256 does not match); try again");
+    }
+
+    let member = format!("irsync-{target}/irsync");
+    let out = Command::new("tar")
+        .arg("-xJf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(dir.path())
+        .arg(&member)
+        .output()
+        .context("cannot run tar to unpack the release binary")?;
+    let bin = dir.path().join(&member);
+    // A symlink is not the binary, whatever it points at.
+    let is_file = std::fs::symlink_metadata(&bin).is_ok_and(|m| m.is_file());
+    if !is_file {
+        if !out.status.success() && !mentions_missing_member(&out.stderr) {
+            bail!(
+                "cannot unpack {file}: tar failed (it must be able to read .xz): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        bail!("{file} does not hold {member}");
+    }
+    Ok(Fetched { bin, _dir: dir })
+}
+
+/// Whether tar's complaint is that the member is not in the archive (GNU
+/// tar and bsdtar both say "Not found in archive").
+fn mentions_missing_member(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .contains("not found in archive")
+}
+
+fn sha256_of(path: &Path) -> Result<String> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    Curl,
+    Wget,
+}
+
+/// Fetch `url` into `to` with curl, or wget when there is no curl. Their
+/// own error output stays on the terminal.
+fn download(url: &str, to: &Path, tag: &str, allow_file: bool) -> Result<()> {
+    let protocols = if allow_file { "=file,https" } else { "=https" };
+    let mut curl = Command::new("curl");
+    curl.args(["-fsSL", "--proto", protocols, "--proto-redir", "=https"])
+        .arg("-o")
+        .arg(to)
+        .arg(url);
+    let mut wget = Command::new("wget");
+    wget.arg("-q").arg("-O").arg(to).arg(url);
+    for (tool, mut cmd) in [(Tool::Curl, curl), (Tool::Wget, wget)] {
+        match cmd.status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => bail!("{}", download_failure(tool, status.code(), tag, url)),
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("cannot run {tool:?} to download {url}"))
+            }
+        }
+    }
+    bail!("need curl or wget on this machine to download the release binary")
+}
+
+/// The message for a download that `tool` gave up on with exit `code`.
+/// curl's 22 and wget's 8 mean the server answered with an error, which
+/// for a release file means there is no such release.
+fn download_failure(tool: Tool, code: Option<i32>, tag: &str, url: &str) -> String {
+    match (tool, code) {
+        (Tool::Curl, Some(22)) | (Tool::Wget, Some(8)) => format!(
+            "there is no release {tag} to download ({url}); this irsync looks like a \
+             development build"
+        ),
+        _ => format!("could not download {url}; check the network and try again"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targets() {
+        assert_eq!(
+            target_for(Some("linux"), Some("x86_64")),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            target_for(Some("linux"), Some("aarch64")),
+            Some("aarch64-unknown-linux-musl")
+        );
+        assert_eq!(
+            target_for(Some("macos"), Some("aarch64")),
+            Some("aarch64-apple-darwin")
+        );
+        assert_eq!(target_for(Some("macos"), Some("x86_64")), None);
+        assert_eq!(target_for(Some("linux"), None), None);
+        assert_eq!(target_for(None, Some("x86_64")), None);
+    }
+
+    #[test]
+    #[cfg(not(feature = "netsim"))]
+    fn tags() {
+        let b = |sha, dirty| BuildInfo::from_parts("0.1.0-beta.1", sha, dirty);
+        assert_eq!(
+            release_tag(&b(Some("ae5ebe5"), Some("false"))).as_deref(),
+            Some("v0.1.0-beta.1")
+        );
+        assert_eq!(
+            release_tag(&b(Some("ae5ebe5"), None)).as_deref(),
+            Some("v0.1.0-beta.1")
+        );
+        assert_eq!(release_tag(&b(Some("ae5ebe5"), Some("true"))), None);
+        assert_eq!(release_tag(&b(None, Some("false"))), None);
+    }
+
+    #[test]
+    #[cfg(feature = "netsim")]
+    fn a_netsim_build_has_no_release() {
+        let b = BuildInfo::from_parts("0.1.0", Some("ae5ebe5"), Some("false"));
+        assert_eq!(release_tag(&b), None);
+    }
+
+    #[test]
+    fn sums() {
+        let s = "AAAA *irsync-a.tar.xz\r\nbbbb  irsync-b.tar.xz\ncccc *source.tar.gz\n";
+        assert_eq!(
+            expected_sha256(s, "irsync-a.tar.xz").as_deref(),
+            Some("aaaa")
+        );
+        assert_eq!(
+            expected_sha256(s, "irsync-b.tar.xz").as_deref(),
+            Some("bbbb")
+        );
+        assert_eq!(expected_sha256(s, "irsync-c.tar.xz"), None);
+        // A name that is only the tail of another does not match.
+        assert_eq!(expected_sha256(s, "a.tar.xz"), None);
+    }
+
+    #[test]
+    fn a_missing_release_is_told_apart_from_a_failed_download() {
+        let url = "https://example.invalid/v1/f.tar.xz";
+        for (tool, code) in [(Tool::Curl, 22), (Tool::Wget, 8)] {
+            let m = download_failure(tool, Some(code), "v1", url);
+            assert!(m.contains("there is no release v1 to download"), "{m}");
+            assert!(m.contains("development build"), "{m}");
+        }
+        for (tool, code) in [
+            (Tool::Curl, Some(6)),
+            (Tool::Curl, Some(8)),
+            (Tool::Wget, Some(4)),
+            (Tool::Wget, Some(22)),
+            (Tool::Curl, None),
+        ] {
+            let m = download_failure(tool, code, "v1", url);
+            assert!(m.starts_with(&format!("could not download {url}")), "{m}");
+        }
+    }
+}
