@@ -902,6 +902,21 @@ cross-referenced from commit messages and review notes.
 - Missing tests: `Parallel` from config, `HelloAck` timeout, daemon
   watchdog, `--max-delete` across a reconnect (budget may reset after a lost
   `SessionDone`).
+- Frame length prefixes are read one byte at a time (`net/frame.rs`,
+  `read_body`), straight from the QUIC stream. Measured 2026-11-15 on
+  loopback, release builds: a push of 20,000 1 KB files took 0.865 s
+  (median of 8) and 0.585 s with the client's control stream read through
+  a 64 KiB `BufReader`, 32% faster; a no-change sync and 4 KiB+ frames
+  showed no difference. The client reads ~100k small `Control` messages
+  on that one stream, the only serial path. The saving (~2.8 µs per
+  message) is far more than the read calls cost (~0.15 µs in a
+  microbenchmark) and is not explained. Fix when it matters: hold one
+  buffered reader for the whole life of the control and listing streams
+  (not data streams: large chunks, no gain, 64 KiB each), keep `Counted`
+  under the buffer, and take care where a stream switches readers (the
+  daemon's `Hello` at `daemon.rs:496`, the listing header), with a test
+  that no read-ahead bytes are lost. Measure over a real link first; the
+  network may hide most of the gain.
 
 ### 2.3 Deferred minors by area
 
