@@ -166,9 +166,10 @@ needed. To keep the settings, import the profile in `tools/wireshark/profile/`;
 [`tools/wireshark/README.md`](https://github.com/irsync-dev/irsync/blob/main/tools/wireshark/README.md)
 says how, and gives the same two settings for `tshark`.
 
-The layout below has not yet been checked in Wireshark itself: the checks,
-and the fallback if the flow graph comes out empty, are in
-`tools/wireshark/README.md`.
+The decoding and the flow graph below were checked with tshark 4.6. On
+Ubuntu, tshark cannot read `.proto` files in your home directory and shows
+every packet as `<UNKNOWN>`; `tools/wireshark/README.md` gives the
+workaround. The Wireshark GUI is not affected.
 
 In the packet details, each record opens up into its fields and the irsync
 message inside it. Some ways in:

@@ -47,33 +47,65 @@ fn read_capture(path: &Path) -> Vec<Record> {
     records
 }
 
-/// The Wireshark options that decode a capture with no plugin.
-fn tshark_args() -> Vec<String> {
-    let proto = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
-    vec![
-        "-o".into(),
-        "protobuf.default_type:irsync.capture.v1.Record".into(),
-        "-o".into(),
-        format!("uat:protobuf_search_paths:\"{}\",\"TRUE\"", proto.display()),
-    ]
+/// Copies the repository's `proto/` tree to `to`. tshark reads the copy:
+/// Ubuntu's AppArmor profile for tshark denies it the home directory, where
+/// the clone usually is, and Wireshark then decodes nothing, without an error.
+fn copy_protos(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_protos(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
-/// With `tshark` on `PATH`, it must see one protobuf packet per record.
-/// Skipped silently without it.
+/// With `tshark` on `PATH`, every packet must decode as a `Record` from the
+/// `.proto` files, the settings the docs give. Skipped silently without it.
 fn check_with_tshark(path: &Path, records: usize) {
+    let protos = path.with_file_name("proto");
+    copy_protos(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto"),
+        &protos,
+    );
     let Ok(out) = std::process::Command::new("tshark")
         .arg("-r")
         .arg(path)
-        .args(tshark_args())
-        .args(["-T", "fields", "-e", "frame.number", "-Y", "protobuf"])
+        .arg("-o")
+        .arg("protobuf.default_type:irsync.capture.v1.Record")
+        .arg("-o")
+        .arg(format!(
+            "uat:protobuf_search_paths:\"{}\",\"TRUE\"",
+            protos.display()
+        ))
+        .args([
+            "-T",
+            "fields",
+            "-e",
+            "protobuf.message.name",
+            "-Y",
+            "protobuf",
+        ])
         .output()
     else {
         return;
     };
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "tshark failed: {stderr}");
-    let lines = String::from_utf8_lossy(&out.stdout).lines().count();
-    assert_eq!(lines, records, "tshark stderr: {stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), records, "tshark stderr: {stderr}");
+    // Each line lists the packet's message names, outermost first; an
+    // unknown type leaves it empty.
+    for line in lines {
+        assert!(
+            line.starts_with("irsync.capture.v1.Record"),
+            "not decoded: {line:?}; tshark stderr: {stderr}"
+        );
+    }
 }
 
 fn is_event(r: &Record) -> bool {
