@@ -46,7 +46,7 @@ use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
 use crate::hasher::{HashEvent, HashProgress, Hasher};
 use crate::index::IndexHandle;
-use crate::net::frame::{write_msg, MAX_FRAME};
+use crate::net::frame::{read_body, write_msg};
 use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
@@ -513,24 +513,19 @@ impl Privs {
     }
 }
 
-/// Reads one raw frame body (the caller decides what it is).
-pub(crate) async fn read_frame(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    AsyncReadExt::read_exact(recv, &mut len).await?;
-    let len = u32::from_be_bytes(len) as usize;
-    if len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "oversize frame"));
-    }
-    let mut body = vec![0u8; len];
-    AsyncReadExt::read_exact(recv, &mut body).await?;
-    Ok(body)
+/// Reads one raw frame body; the end of the stream is an error here, as a
+/// reply is always expected.
+pub(crate) async fn read_reply_body(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
+    read_body(recv)
+        .await?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "end of stream before reply"))
 }
 
 /// The daemon answers `Hello` with `HelloAck`, or with `Error` when it
 /// refuses. The two differ in the wire type of field 1, so at most one
 /// decodes as a well-formed ack.
 async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
-    let body = read_frame(recv)
+    let body = read_reply_body(recv)
         .await
         .map_err(|e| TransportError(format!("reading HelloAck: {e}")))?;
     if let Ok(ack) = HelloAck::decode(&body[..]) {
@@ -556,7 +551,7 @@ pub async fn list_exports(conn: &Connection, hello: Hello) -> anyhow::Result<Vec
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
-    let body = read_frame(&mut recv)
+    let body = read_reply_body(&mut recv)
         .await
         .map_err(|e| TransportError(format!("reading ExportList: {e}")))?;
     if let Ok(list) = ExportList::decode(&body[..]) {

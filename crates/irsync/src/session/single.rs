@@ -14,7 +14,7 @@ use irsync_proto::v1::{error::Code, hello, path_info, Error, Hello, PathInfo};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
-use super::engine::{read_frame, SessionRefused, TransportError};
+use super::engine::{read_reply_body, SessionRefused, TransportError};
 use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
 use crate::net::frame::write_msg;
@@ -168,7 +168,7 @@ pub async fn probe(
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
     let reply = async {
-        read_frame(&mut recv)
+        read_reply_body(&mut recv)
             .await
             .map_err(|e| TransportError(format!("reading PathInfo: {e}")))
     };

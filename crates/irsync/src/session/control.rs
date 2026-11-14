@@ -1103,7 +1103,9 @@ mod tests {
             Arc::default(),
         ));
         // The length prefix of a 400 KB frame and the first part of its body.
-        w.write_all(&400_000u32.to_be_bytes()).await.unwrap();
+        let mut prefix = Vec::new();
+        crate::net::frame::encode_prefix(400_000, &mut prefix);
+        w.write_all(&prefix).await.unwrap();
         w.write_all(&[0u8; 1000]).await.unwrap();
         let moved = async {
             while activity.load(std::sync::atomic::Ordering::Relaxed) == 0 {

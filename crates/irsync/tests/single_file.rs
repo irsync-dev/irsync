@@ -807,7 +807,8 @@ fn fake_daemon(
             match reply(n) {
                 None => conn.close(0u32.into(), b"gone"),
                 Some(body) => {
-                    let len = (body.len() as u32).to_be_bytes();
+                    let mut len = Vec::new();
+                    irsync::net::frame::encode_prefix(body.len(), &mut len);
                     send.write_all(&len).await.unwrap();
                     send.write_all(&body).await.unwrap();
                     send.finish().unwrap();
