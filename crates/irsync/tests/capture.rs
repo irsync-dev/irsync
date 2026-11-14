@@ -47,6 +47,35 @@ fn read_capture(path: &Path) -> Vec<Record> {
     records
 }
 
+/// The Wireshark options that decode a capture with no plugin.
+fn tshark_args() -> Vec<String> {
+    let proto = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    vec![
+        "-o".into(),
+        "protobuf.default_type:irsync.capture.v1.Record".into(),
+        "-o".into(),
+        format!("uat:protobuf_search_paths:\"{}\",\"TRUE\"", proto.display()),
+    ]
+}
+
+/// With `tshark` on `PATH`, it must see one protobuf packet per record.
+/// Skipped silently without it.
+fn check_with_tshark(path: &Path, records: usize) {
+    let Ok(out) = std::process::Command::new("tshark")
+        .arg("-r")
+        .arg(path)
+        .args(tshark_args())
+        .args(["-T", "fields", "-e", "frame.number", "-Y", "protobuf"])
+        .output()
+    else {
+        return;
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tshark failed: {stderr}");
+    let lines = String::from_utf8_lossy(&out.stdout).lines().count();
+    assert_eq!(lines, records, "tshark stderr: {stderr}");
+}
+
 fn is_event(r: &Record) -> bool {
     matches!(r.msg, Some(Msg::StreamEvent(_)) | Some(Msg::PathChange(_)))
 }
@@ -73,6 +102,11 @@ async fn push_capture_has_both_sides_of_every_message() {
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     irsync::net::tap::drain_capture(Duration::from_secs(30));
     let recs = read_capture(&path);
+    if let Some(keep) = std::env::var_os("IRSYNC_KEEP_CAPTURE") {
+        // For looking at the capture by hand, see tools/wireshark/README.md.
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::copy(&path, Path::new(&keep).join("c.pcapng")).unwrap();
+    }
 
     // Stream events are counted apart: a finish is reported as sent by the
     // writer and as received by the reader, but they are not one message.
@@ -122,4 +156,5 @@ async fn push_capture_has_both_sides_of_every_message() {
         .iter()
         .filter(|r| r.msg.is_some() && !is_event(r))
         .all(|r| r.local_endpoint_id.len() == 32));
+    check_with_tshark(&path, recs.len());
 }
