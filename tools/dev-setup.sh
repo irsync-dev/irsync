@@ -60,6 +60,7 @@ hint() {
         case $1 in
             cc) echo "apt install build-essential" ;;
             musl-gcc) echo "apt install musl-tools" ;;
+            xz) echo "apt install xz-utils" ;;
             node) echo "apt install nodejs npm" ;;
             apt-ftparchive) echo "apt install apt-utils" ;;
             createrepo_c) echo "apt install createrepo-c" ;;
@@ -204,6 +205,26 @@ if [ -n "$py_v" ] && version_ge "$py_v" 3.11; then
     ok "Python $py_v"
 else
     bad "Python 3.11 or newer${py_v:+, have $py_v}: $(hint python3)"
+fi
+
+# curl, and a tar that writes and reads .tar.xz, for the tests of the
+# release download (crates/irsync/tests/ssh_release.rs). GNU tar needs the
+# xz program for that; macOS's tar has xz built in.
+if have curl; then ok "curl"; else bad "curl: $(hint curl)"; fi
+tar_xz_ok() {
+    local d rc=0
+    d=$(mktemp -d) || return 1
+    echo x >"$d/f"
+    { tar -cJf "$d/t.tar.xz" -C "$d" f && tar -tJf "$d/t.tar.xz" >/dev/null; } 2>/dev/null || rc=1
+    rm -rf "$d"
+    return $rc
+}
+if ! have tar; then
+    bad "tar: $(hint tar)"
+elif tar_xz_ok; then
+    ok "tar with xz"
+else
+    bad "xz, so tar can write and read .tar.xz: $(hint xz)"
 fi
 
 if [ "$os" = Linux ]; then

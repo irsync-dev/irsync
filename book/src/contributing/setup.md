@@ -35,6 +35,10 @@ it again whenever you like.
   the `CI` environment variable set, the test fails instead of skipping. On
   macOS the bundled rsync (2.6.9 or openrsync) is too old:
   `brew install rsync`.
+- **`curl`, and a `tar` that writes and reads `.tar.xz`**, for
+  `crates/irsync/tests/ssh_release.rs`, which builds a small release
+  tarball and downloads it from a local directory. GNU tar needs the `xz`
+  program for that (`apt install xz-utils`); macOS's tar has xz built in.
 
 ## Continuous integration
 
