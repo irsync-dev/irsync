@@ -17,7 +17,7 @@ fn pool() -> &'static DescriptorPool {
     })
 }
 
-fn descriptor(full_name: &str) -> MessageDescriptor {
+pub(super) fn descriptor(full_name: &str) -> MessageDescriptor {
     pool()
         .get_message_by_name(full_name)
         .unwrap_or_else(|| panic!("{full_name} is in the descriptor set"))

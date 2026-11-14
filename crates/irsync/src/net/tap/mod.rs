@@ -14,12 +14,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use iroh::endpoint::{Connection, WeakConnectionHandle};
 use iroh::EndpointId;
-use irsync_proto::capture::v1::{record, stream_event, Direction, Record, StreamEvent};
+use irsync_proto::capture::v1::{record, stream_event, Direction, PathChange, Record, StreamEvent};
 use irsync_proto::v1::{
     control, Control, DataChunk, DataStreamHeader, Error, ExportList, Hello, HelloAck,
     ListingStreamHeader, PathInfo,
 };
 
+mod capture;
+mod pcapng;
+mod scrub;
 mod text;
 
 pub use irsync_proto::capture::v1::{Side, StreamKind};
@@ -87,9 +90,10 @@ pub(crate) fn wire_trace_on() -> bool {
     tracing::enabled!(target: "irsync::wire", tracing::Level::TRACE)
 }
 
-/// Whether a capture recorder exists. Task 5 replaces this stub.
+/// Whether a capture recorder exists. Opens it on the first call when
+/// `IRSYNC_CAPTURE` is set; after that, one atomic load.
 fn recorder_on() -> bool {
-    false
+    capture::recorder().is_some()
 }
 
 fn any_on() -> bool {
@@ -105,13 +109,14 @@ fn sink(conn: &ConnInner, record: Record) {
     if wire_trace_on() {
         text::emit(&record);
     }
-    // Task 5: `capture::submit(record)` when a recorder exists.
     #[cfg(test)]
     if let Some(c) = &conn.collector {
-        c.lock().unwrap().push(record);
+        c.lock().unwrap().push(record.clone());
     }
     #[cfg(not(test))]
-    let _ = (conn, record);
+    let _ = conn;
+    // Scrubs file content before anything reaches the file.
+    capture::submit(record);
 }
 
 /// Next connection number, process-wide, from 1.
@@ -182,6 +187,9 @@ impl ConnTap {
                 closed.await;
                 REGISTRY.lock().unwrap().remove(&key);
             });
+            if recorder_on() {
+                watch_paths(&rt, conn, tap.clone());
+            }
         }
         ConnTap(Some(tap))
     }
@@ -239,6 +247,70 @@ impl ConnTap {
     }
 }
 
+/// The selected path's remote address as iroh prints it (`ip:…`,
+/// `relay:…`), if a path is selected.
+fn selected_path(conn: &Connection) -> Option<String> {
+    let paths = conn.paths();
+    let selected = paths.iter().find(|p| p.is_selected());
+    selected.map(|p| p.remote_addr().to_string())
+}
+
+/// Records the selected path now and each time it changes, until the
+/// connection closes. Holds only a weak handle, so it never keeps the
+/// connection open.
+fn watch_paths(rt: &tokio::runtime::Handle, conn: &Connection, tap: Arc<ConnInner>) {
+    use futures::StreamExt as _;
+    use iroh::endpoint::PathEvent;
+    // Subscribe before the first look, so no change falls in between.
+    let mut events = conn.path_events();
+    let weak = conn.weak_handle();
+    let mut last = selected_path(conn);
+    if let Some(remote) = &last {
+        tap.path_change(remote);
+    }
+    rt.spawn(async move {
+        while let Some(event) = events.next().await {
+            let now = match event {
+                PathEvent::Selected { remote_addr, .. } => Some(remote_addr.to_string()),
+                PathEvent::Lagged { .. } => weak.upgrade().and_then(|c| selected_path(&c)),
+                _ => continue,
+            };
+            if now.is_some() && now != last {
+                tap.path_change(now.as_deref().unwrap_or_default());
+                last = now;
+            }
+        }
+    });
+}
+
+impl ConnInner {
+    /// A record of this connection, not of any one stream.
+    fn record(&self, stream: Option<&StreamInner>, direction: Direction) -> Record {
+        Record {
+            side: self.side.into(),
+            direction: direction.into(),
+            stream: stream.map_or(StreamKind::Unspecified, |s| s.kind).into(),
+            quic_stream_id: stream.map_or(0, |s| s.quic_stream_id),
+            session_id: self.session.get().map(|s| s.to_vec()).unwrap_or_default(),
+            file_id: None,
+            connection: self.connection,
+            local_endpoint_id: self.local.get().map(|l| l.to_vec()).unwrap_or_default(),
+            remote_endpoint_id: self.remote.to_vec(),
+            encoded_len: 0,
+            trimmed: None,
+            msg: None,
+        }
+    }
+
+    fn path_change(&self, remote: &str) {
+        let mut record = self.record(None, Direction::Unspecified);
+        record.msg = Some(record::Msg::PathChange(PathChange {
+            remote: remote.to_owned(),
+        }));
+        sink(self, record);
+    }
+}
+
 struct StreamInner {
     conn: Arc<ConnInner>,
     kind: StreamKind,
@@ -257,18 +329,10 @@ impl StreamInner {
     ) {
         let c = &*self.conn;
         let record = Record {
-            side: c.side.into(),
-            direction: direction.into(),
-            stream: self.kind.into(),
-            quic_stream_id: self.quic_stream_id,
-            session_id: c.session.get().map(|s| s.to_vec()).unwrap_or_default(),
             file_id: file_id.or_else(|| self.file_id.get().copied()),
-            connection: c.connection,
-            local_endpoint_id: c.local.get().map(|l| l.to_vec()).unwrap_or_default(),
-            remote_endpoint_id: c.remote.to_vec(),
             encoded_len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
-            trimmed: None,
             msg: Some(msg),
+            ..c.record(Some(self), direction)
         };
         sink(c, record);
     }
@@ -508,6 +572,39 @@ mod tests {
         }
         assert_eq!(s[1].direction(), Direction::Sent);
         assert_eq!(g[1].direction(), Direction::Received);
+    }
+
+    #[tokio::test]
+    async fn selected_path_is_recorded() {
+        let (c, _s) = loopback_conn_pair().await;
+        let records = Records::default();
+        let tap = Arc::new(ConnInner {
+            side: Side::Client,
+            connection: 7,
+            remote: [0; 32],
+            local: OnceLock::new(),
+            session: OnceLock::new(),
+            collector: Some(records.clone()),
+        });
+        watch_paths(&tokio::runtime::Handle::current(), &c, tap);
+        let change = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let found = records.lock().unwrap().iter().find_map(|r| match &r.msg {
+                    Some(record::Msg::PathChange(p)) => Some((r.clone(), p.remote.clone())),
+                    _ => None,
+                });
+                if let Some(f) = found {
+                    break f;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a path change is recorded");
+        let (r, remote) = change;
+        assert!(remote.starts_with("ip:127.0.0.1:"), "{remote}");
+        assert_eq!(r.stream(), StreamKind::Unspecified);
+        assert_eq!(r.connection, 7);
     }
 
     #[tokio::test]
