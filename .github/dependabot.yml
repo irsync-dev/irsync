@@ -1,0 +1,32 @@
+# Weekly update PRs, one per ecosystem. The cooldown waits a week after a
+# release before proposing it: most hijacked releases are found and pulled
+# within days. Security updates are not delayed by the cooldown.
+#
+# The Action pins in release.yml come from [dist.github-action-commits] in
+# dist-workspace.toml, which Dependabot does not read: update that table to
+# match when Dependabot bumps the other workflows, then run `dist generate`.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    # dist writes release.yml; a Dependabot edit there would fail CI's
+    # `dist generate --check`.
+    exclude-paths:
+      - .github/workflows/release.yml
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
