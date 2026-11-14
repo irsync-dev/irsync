@@ -182,7 +182,7 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     match upload(rsh, dest, &exe)? {
         Upload::Done => {}
         Upload::Short => bail!("{}", cut_short(dest)),
-        Upload::NotThisVersion => bail!(
+        Upload::NotThisVersion | Upload::DoesNotRun => bail!(
             "the copied irsync does not run on {dest}. Nothing was changed there. \
              Install irsync on the server and set it up by hand: {BY_HAND_URL}"
         ),
@@ -225,6 +225,10 @@ fn install_release(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
              changed there.",
             *LONG_VERSION
         ),
+        Upload::DoesNotRun => bail!(
+            "the release binary for {os} {arch} does not run on {dest} (is the home \
+             directory there mounted noexec?). Nothing was changed there. {by_hand}"
+        ),
     }
     Ok(Install::Downloaded {
         replaced: probe.installed.clone(),
@@ -254,9 +258,12 @@ enum Upload {
     Done,
     /// Fewer bytes arrived than were sent.
     Short,
-    /// The file arrived whole, but on the server it does not run or does
-    /// not report this build's version.
+    /// The file arrived whole and runs on the server, but reports another
+    /// version than this build's.
     NotThisVersion,
+    /// The file arrived whole, but on the server it prints no version: it
+    /// does not run there (wrong libc, a `noexec` home).
+    DoesNotRun,
 }
 
 /// Send `local` to the server as the new irsync. It replaces the old one
@@ -272,14 +279,16 @@ fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
     // in double quotes in the remote sh command.
     let want = format!("irsync {}", *LONG_VERSION);
     debug_assert!(!want.contains(['"', '$', '`']), "{want}");
-    // Exit 3 marks a short upload, exit 4 a binary that is not this build;
+    // Exit 3 marks a short upload, exit 4 a binary that reports another
+    // version, exit 5 one that prints no version at all (it does not run);
     // the temp file is removed first.
     let cmd = format!(
         "mkdir -p \"$HOME/{dir}\" && cat > {tmp} \
          && {{ [ \"$(wc -c < {tmp})\" -eq {len} ] || {{ rm -f {tmp}; exit 3; }}; }} \
          && chmod 755 {tmp} \
-         && {{ [ \"$({tmp} --version 2>/dev/null | head -n 1)\" = \"{want}\" ] \
-         || {{ rm -f {tmp}; exit 4; }}; }} \
+         && {{ v=$({tmp} --version 2>/dev/null | head -n 1); \
+         [ -n \"$v\" ] || {{ rm -f {tmp}; exit 5; }}; \
+         [ \"$v\" = \"{want}\" ] || {{ rm -f {tmp}; exit 4; }}; }} \
          && mv -f {tmp} \"$HOME/{REMOTE_BIN}\""
     );
     let status = rsh
@@ -291,6 +300,7 @@ fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
         Some(0) => Ok(Upload::Done),
         Some(3) => Ok(Upload::Short),
         Some(4) => Ok(Upload::NotThisVersion),
+        Some(5) => Ok(Upload::DoesNotRun),
         _ => bail!("copying irsync to {dest} failed ({status})"),
     }
 }

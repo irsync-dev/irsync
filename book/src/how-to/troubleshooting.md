@@ -67,9 +67,15 @@ Other messages from this step:
   unpacks the release itself. Install the missing tool on the client.
 - `could not download …`: the client could not reach GitHub. Check the
   network and run again.
-- `there is no release v… to download`, or `release v… is not this build`:
-  the client is a development build that carries a release's version
-  number. Use a released irsync.
+- `GitHub answered with an error for …`: either GitHub is having trouble
+  (run again later), or there is no release with the client's version
+  number, which means the client is a development build. Then use a
+  released irsync.
+- `release v… is not this build`: the client is a development build that
+  carries a release's version number. Use a released irsync.
+- `the release binary for … does not run on myserver`: the server could not
+  run the binary, for example because its home directory is mounted
+  `noexec`. Install irsync on the server yourself and set it up by hand.
 - `the download of … is damaged (SHA-256 does not match)`: run again.
 
 Nothing on the server is changed in any of these cases.

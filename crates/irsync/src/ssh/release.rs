@@ -186,13 +186,15 @@ fn download(url: &str, to: &Path, tag: &str, allow_file: bool) -> Result<()> {
 }
 
 /// The message for a download that `tool` gave up on with exit `code`.
-/// curl's 22 and wget's 8 mean the server answered with an error, which
-/// for a release file means there is no such release.
+/// curl's 22 and wget's 8 mean the server answered with an error: a
+/// missing release (404), but also an outage or a rate limit, so the
+/// message does not claim to know which.
 fn download_failure(tool: Tool, code: Option<i32>, tag: &str, url: &str) -> String {
     match (tool, code) {
         (Tool::Curl, Some(22)) | (Tool::Wget, Some(8)) => format!(
-            "there is no release {tag} to download ({url}); this irsync looks like a \
-             development build"
+            "GitHub answered with an error for {url}. If there is no release {tag}, this \
+             irsync is a development build and cannot install on another OS or CPU; \
+             otherwise try again later"
         ),
         _ => format!("could not download {url}; check the network and try again"),
     }
@@ -265,8 +267,9 @@ mod tests {
         let url = "https://example.invalid/v1/f.tar.xz";
         for (tool, code) in [(Tool::Curl, 22), (Tool::Wget, 8)] {
             let m = download_failure(tool, Some(code), "v1", url);
-            assert!(m.contains("there is no release v1 to download"), "{m}");
-            assert!(m.contains("development build"), "{m}");
+            assert!(m.contains("answered with an error"), "{m}");
+            assert!(m.contains("If there is no release v1"), "{m}");
+            assert!(m.contains(url), "{m}");
         }
         for (tool, code) in [
             (Tool::Curl, Some(6)),

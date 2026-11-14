@@ -169,6 +169,23 @@ fn a_release_that_is_not_this_build_is_not_installed() {
 }
 
 #[test]
+fn a_downloaded_binary_that_does_not_run_says_so() {
+    let (uname, target, _) = release::other_platform();
+    let f = fake(Some(uname));
+    let rel = tempfile::tempdir().unwrap();
+    let broken = fake_exe(&f, None);
+    set_release_url(&release::fake_release(rel.path(), target, &broken));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("does not run on myserver"), "{e}");
+    assert!(e.contains("Nothing was changed"), "{e}");
+    assert!(!e.contains("development build"), "{e}");
+    assert_nothing_installed(&f);
+}
+
+#[test]
 fn a_failed_download_changes_nothing() {
     let (uname, _, _) = release::other_platform();
     let f = fake(Some(uname));
