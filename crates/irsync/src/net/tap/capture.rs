@@ -13,7 +13,7 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use irsync_proto::capture::v1::{Direction, Record, Side, StreamKind};
 use prost::Message as _;
@@ -176,13 +176,17 @@ impl Recorder {
         }
     }
 
-    /// Waits until every submitted record is written and flushed.
-    #[cfg(test)]
-    pub(crate) fn wait_idle(&self) {
-        let mut count = self.pending.count.lock().unwrap();
-        while *count > 0 {
-            count = self.pending.idle.wait(count).unwrap();
-        }
+    /// Waits until every record submitted so far is written and flushed,
+    /// or `timeout` passes (a writer that panicked never catches up).
+    /// Returns whether it caught up.
+    pub(crate) fn drain(&self, timeout: Duration) -> bool {
+        let count = self.pending.count.lock().unwrap();
+        let (count, _) = self
+            .pending
+            .idle
+            .wait_timeout_while(count, timeout, |c| *c > 0)
+            .unwrap();
+        *count == 0
     }
 }
 
@@ -269,6 +273,16 @@ pub(crate) fn recorder() -> Option<&'static Recorder> {
                 .ok()
         })
         .as_ref()
+}
+
+/// Before the process exits: waits up to `timeout` for the capture to reach
+/// the disk. Costs nothing, and never opens a capture, when none is open.
+pub fn drain(timeout: Duration) {
+    if let Some(r) = RECORDER.get().and_then(Option::as_ref) {
+        if !r.drain(timeout) {
+            warn!("the protocol capture may be missing its last records");
+        }
+    }
 }
 
 /// Hands `record` to the process's recorder, if there is one.
@@ -360,7 +374,7 @@ mod tests {
     }
 
     fn read_packets(r: &Recorder) -> Vec<Packet> {
-        r.wait_idle();
+        assert!(r.drain(Duration::from_secs(30)));
         parse(&std::fs::read(r.path()).unwrap())
     }
 
@@ -473,7 +487,7 @@ mod tests {
             })),
             ..Default::default()
         });
-        r.wait_idle();
+        assert!(r.drain(Duration::from_secs(30)));
         let file = std::fs::read(r.path()).unwrap();
         assert!(!file.windows(24).any(|w| w == &secret[..24]));
         let got = parse(&file);
@@ -533,6 +547,38 @@ mod tests {
         r.submit(need(1, Side::Client, Direction::Sent, 0, 1));
         let ts = read_packets(&r)[0].ts;
         assert!(ts.abs_diff(now) < 60_000_000, "{ts} vs {now}");
+    }
+
+    #[test]
+    fn drain_puts_every_record_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Recorder::open(dir.path().join("f.pcapng")).unwrap();
+        for i in 0..1000 {
+            r.submit(need(1, Side::Client, Direction::Sent, 0, i));
+        }
+        assert!(r.drain(Duration::from_secs(30)));
+        let got = parse(&std::fs::read(r.path()).unwrap());
+        assert_eq!(got.len(), 1000);
+        assert_eq!(got[999].record.file_id(), 999);
+    }
+
+    #[test]
+    fn drain_without_a_recorder_returns_at_once() {
+        // No IRSYNC_CAPTURE in tests: nothing to wait for, nothing opened.
+        let t = std::time::Instant::now();
+        drain(Duration::from_secs(10));
+        assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn paused_clock_shows_simulated_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Recorder::open(dir.path().join("f.pcapng")).unwrap();
+        r.submit(need(1, Side::Client, Direction::Sent, 0, 1));
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        r.submit(need(1, Side::Client, Direction::Sent, 0, 2));
+        let got = read_packets(&r);
+        assert_eq!(got[1].ts - got[0].ts, 3_600_000_000);
     }
 
     #[test]

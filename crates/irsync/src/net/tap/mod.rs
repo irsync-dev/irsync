@@ -25,6 +25,7 @@ mod pcapng;
 mod scrub;
 mod text;
 
+pub use capture::drain as drain_capture;
 pub use irsync_proto::capture::v1::{Side, StreamKind};
 
 /// A protocol message the taps can report.

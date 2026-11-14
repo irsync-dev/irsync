@@ -50,10 +50,10 @@ fn main() {
     let _ = irsync::fs::rlimit::raise_nofile();
     if args.cmd.is_none() && args.sync.paths.len() == 1 {
         let opts = SyncOptions::from_args(&args);
-        std::process::exit(run_list(args, &opts));
+        exit_after_capture(run_list(args, &opts));
     }
     match &args.cmd {
-        Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
+        Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d)),
         Some(Command::Gc {
             dry_run,
             log,
@@ -77,9 +77,16 @@ fn main() {
         }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
-            std::process::exit(run_sync(&args, &opts));
+            exit_after_capture(run_sync(&args, &opts));
         }
     }
+}
+
+/// Exits with `code` once the protocol capture, if one is open, is on disk.
+/// The daemon gets here after SIGTERM or SIGINT too.
+fn exit_after_capture(code: i32) -> ! {
+    irsync::net::tap::drain_capture(std::time::Duration::from_secs(2));
+    std::process::exit(code)
 }
 
 /// The client's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
