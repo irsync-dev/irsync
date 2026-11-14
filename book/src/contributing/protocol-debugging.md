@@ -211,32 +211,55 @@ Capture the UDP packets at the same time, with Wireshark or `tcpdump`. For a
 client and a daemon on one machine, with the daemon listening on port 43210:
 
 ```sh
-sudo tcpdump -i lo -w ~/quic.pcap udp port 43210
+sudo tcpdump -i lo -U -w /tmp/quic.pcap udp port 43210
 ```
 
-Open the capture and point Wireshark at the key log:
+`tcpdump` gives up root before it writes, so write to `/tmp`: the
+`tcpdump` user cannot write to your home directory. Open the capture and
+point Wireshark at the key log:
 
 ```sh
-wireshark -o tls.keylog_file:"$HOME/irsync-keys.log" ~/quic.pcap
+wireshark -o tls.keylog_file:"$HOME/irsync-keys.log" /tmp/quic.pcap
 ```
 
-This has not yet been checked with irsync's traffic, so take the rest of
-this section as what Wireshark should show. It should decrypt the QUIC
-packets and show the handshake, the frames inside each packet, the
-acknowledgements, losses and retransmits, flow control limits, and each
-stream's bytes (Follow, QUIC Stream). It will not decode irsync's messages:
-Wireshark only decodes stream data for protocols it knows, and `irsync/1` is
-not one of them. The capture file above is the way to read the messages.
+Wireshark finds the QUIC packets by itself. With the key log it decrypts the
+handshake and the client's packets: the frames inside each packet, the
+acknowledgements, flow control limits and the stream frames. Follow, QUIC
+Stream shows a stream's bytes. On the control stream, stream 0, they start
+with the first message's length prefix and the `Hello`. Wireshark does not
+decode the messages themselves, since it does not know `irsync/1`. The
+capture file above is the way to read them.
 
 What stays opaque:
 
+- **Frames Wireshark does not know.** iroh's QUIC library, `noq`, speaks
+  QUIC multipath (frames `0x3e`, `0x3f`, `0x3e75` to `0x3e7c`) and iroh's
+  own NAT traversal (frames `0x3d7f90` to `0x3d7f94`). Wireshark 4.6 knows
+  neither. It cannot skip a frame it does not know, so it misreads the rest
+  of that packet: expect `Unknown` frames with random-looking types and
+  `[Malformed Packet]` ACKs after one of these.
+- **Most packets from the server side.** Each side hands out its connection
+  IDs in multipath `PATH_NEW_CONNECTION_ID` frames, not the standard ones,
+  so Wireshark cannot tie packets sent to those IDs to the connection. It
+  marks them "Unknown QUIC connection" and does not decrypt them. In a
+  checked push, the client's packets on the main path all decrypted, and of
+  the daemon's, only the first two did; the rest were mostly
+  acknowledgements.
+- **Probes to other addresses.** NAT traversal tries the other side's other
+  local addresses too, so a capture on one interface can miss packets, and
+  one on `lo` can show packets between `127.0.0.1` and the machine's LAN
+  or Docker addresses.
 - **Relayed traffic.** Through a relay, the QUIC packets travel inside the
   relay connection's own TLS, whose keys are not in the key log. Turn
   relays off, or dial an address (see
   [Connect directly or through a relay](../how-to/direct-and-relay.md)), to
   get a direct connection.
-- **Multipath.** Whether Wireshark can read and decrypt a connection that
-  used several paths has not been checked yet.
+
+Checked with tshark 4.6.4 and irsync 0.1.0-beta.1, client and daemon on one
+machine, dialled by address.
+
+On Ubuntu, `tshark` (not the Wireshark GUI) reads only files you own in
+`/tmp`: copy the capture and the key log there first, as your own user.
 
 ## Safety
 
