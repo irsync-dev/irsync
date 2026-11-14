@@ -171,7 +171,7 @@ impl ConnTap {
             local: OnceLock::new(),
             session: OnceLock::new(),
             #[cfg(test)]
-            collector: None,
+            collector: tests::new_tap_collector(),
         });
         let weak = conn.weak_handle();
         let closed = weak.closed();
@@ -188,9 +188,9 @@ impl ConnTap {
                 closed.await;
                 REGISTRY.lock().unwrap().remove(&key);
             });
-            if recorder_on() {
-                watch_paths(&rt, conn, tap.clone());
-            }
+            // The text trace reports the path too, so this runs whenever
+            // the tap is on, not only with a capture.
+            watch_paths(&rt, conn, tap.clone());
         }
         ConnTap(Some(tap))
     }
@@ -427,6 +427,30 @@ mod tests {
         ForceOn(())
     }
 
+    thread_local! {
+        /// Where taps made by [`ConnTap::of`] on this thread put their records.
+        static COLLECT: std::cell::RefCell<Option<Records>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn new_tap_collector() -> Option<Records> {
+        COLLECT.with(|c| c.borrow().clone())
+    }
+
+    /// Until dropped, taps that [`ConnTap::of`] makes on this thread put
+    /// their records in `records`.
+    struct Collect(());
+
+    impl Drop for Collect {
+        fn drop(&mut self) {
+            COLLECT.with(|c| *c.borrow_mut() = None);
+        }
+    }
+
+    fn collect_new_taps(records: Records) -> Collect {
+        COLLECT.with(|c| *c.borrow_mut() = Some(records));
+        Collect(())
+    }
+
     type Records = Arc<Mutex<Vec<Record>>>;
 
     /// An on stream tap, not tied to a connection, whose records land in the
@@ -606,6 +630,32 @@ mod tests {
         assert!(remote.starts_with("ip:127.0.0.1:"), "{remote}");
         assert_eq!(r.stream(), StreamKind::Unspecified);
         assert_eq!(r.connection, 7);
+    }
+
+    #[tokio::test]
+    async fn path_is_recorded_without_a_recorder() {
+        // Taps on, but no capture file: the text trace still needs the
+        // path, as the docs promise.
+        let _on = force_on_for_test();
+        let records = Records::default();
+        let _collect = collect_new_taps(records.clone());
+        let (c, _s) = loopback_conn_pair().await;
+        assert!(ConnTap::of(&c).is_on());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let found = records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|r| matches!(r.msg, Some(record::Msg::PathChange(_))));
+                if found {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a path change is recorded");
     }
 
     #[tokio::test]

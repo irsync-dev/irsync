@@ -734,7 +734,8 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         return run_sync(&args, &opts);
     }
     let log = LogWriter::new();
-    init_logging(opts.verbose, opts.quiet, log.clone());
+    // Counts -v as a sync does: logging starts at -vv.
+    init_logging(opts.verbose.saturating_sub(1), opts.quiet, log.clone());
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

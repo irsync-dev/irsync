@@ -267,6 +267,47 @@ mod tests {
     }
 
     #[test]
+    fn every_record_kind_renders() {
+        // One default of each kind, through the same lookup `emit` uses, so a
+        // renamed proto message fails here rather than in a live trace. The
+        // match has no `_` arm: a new kind does not compile until it is added.
+        use record::Msg as M;
+        let all = [
+            M::Hello(Default::default()),
+            M::HelloAck(Default::default()),
+            M::Error(Default::default()),
+            M::ExportList(Default::default()),
+            M::PathInfo(Default::default()),
+            M::Control(Default::default()),
+            M::ListingStreamHeader(Default::default()),
+            M::DataStreamHeader(Default::default()),
+            M::DataChunk(Default::default()),
+            M::StreamEvent(Default::default()),
+            M::PathChange(Default::default()),
+        ];
+        for msg in all {
+            let name = match &msg {
+                M::Hello(_) => "Hello",
+                M::HelloAck(_) => "HelloAck",
+                M::Error(_) => "Error",
+                M::ExportList(_) => "ExportList",
+                M::PathInfo(_) => "PathInfo",
+                M::Control(_) => "Control",
+                M::ListingStreamHeader(_) => "ListingStreamHeader",
+                M::DataStreamHeader(_) => "DataStreamHeader",
+                M::DataChunk(_) => "DataChunk",
+                M::StreamEvent(_) => "StreamEvent",
+                M::PathChange(_) => "PathChange",
+            };
+            assert_eq!(render(&inner(&msg)), format!("{name} {{}}"));
+            emit(&Record {
+                msg: Some(msg),
+                ..Default::default()
+            });
+        }
+    }
+
+    #[test]
     fn utf8_path_prints_quoted_and_empty_message_is_braces() {
         let e = FileEntry {
             path: b"a/b".to_vec(),

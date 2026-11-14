@@ -87,13 +87,15 @@ pub(crate) struct Recorder {
 }
 
 /// Opens `path` for writing, mode 0600 if it is new, without truncating,
-/// and takes its lock; `None` if another holds the lock.
+/// and takes its lock; `None` if another holds the lock. A symlink at
+/// `path` is an error: following it would empty and chmod its target.
 fn open_locked(path: &Path) -> io::Result<Option<File>> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
@@ -419,6 +421,21 @@ mod tests {
         assert_eq!(r.path(), path);
         r.submit(need(1, Side::Client, Direction::Sent, 0, 1));
         assert_eq!(read_packets(&r).len(), 1);
+    }
+
+    #[test]
+    fn symlink_at_the_path_is_refused() {
+        // Following it would empty and chmod whatever file it points to.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("precious");
+        std::fs::write(&target, b"keep me").unwrap();
+        std::fs::set_permissions(&target, Permissions::from_mode(0o644)).unwrap();
+        let link = dir.path().join("f.pcapng");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(Recorder::open(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep me");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     #[test]

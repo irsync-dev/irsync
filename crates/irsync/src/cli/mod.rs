@@ -640,7 +640,8 @@ pub struct SyncArgs {
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
     /// List each file transferred and end with a transfer summary; -vv adds
-    /// a summary per session and info logging, -vvv debug, -vvvv trace.
+    /// a summary per session and info logging, -vvv debug, -vvvv trace,
+    /// -vvvvv trace plus every protocol message.
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
     /// Print errors only; also turns the live progress block off.
