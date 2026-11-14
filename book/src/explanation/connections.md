@@ -6,6 +6,8 @@ or an IP address. This page explains how a client gets from that id to a
 working connection, and what keeps the connection going. The steps to change
 each part are in
 [Connect directly or through a relay](../how-to/direct-and-relay.md).
+[Networking](networking.md) explains the layers underneath (lookups, hole
+punching, QUIC, TLS and streams) and the standards behind them.
 
 ## Finding the daemon
 
@@ -25,11 +27,10 @@ addresses: that is iroh's default, so that publishing an id does not publish
 where the machine is. mDNS announces the daemon's local addresses, and only on
 the local network.
 
-Whatever a lookup returns, the connection is to the key and nothing else. The
-QUIC handshake proves that the far end holds the key for the `EndpointId` the
-client dialled, and the daemon learns the client's `EndpointId` the same way.
-A lookup that returns a wrong address leads to a failed connection, not to a
-wrong peer.
+Whatever a lookup returns, the connection is to the key and nothing else: the
+TLS handshake inside QUIC proves both keys (see
+[Networking](networking.md#tls-13-inside-quic)). A lookup that returns a wrong
+address leads to a failed connection, not to a wrong peer.
 
 ## Relays
 

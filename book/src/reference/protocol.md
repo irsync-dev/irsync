@@ -6,6 +6,8 @@ The protobuf definitions in
 normative. This page summarises the constants, the streams and the messages;
 where it disagrees with the `.proto` files, they win. The Rust types are
 generated from them in the `irsync-proto` crate.
+[Networking](../explanation/networking.md) explains the layers below these
+messages, and walks through a real session message by message.
 
 The protocol and the on-disk state (index, session records) change without
 compatibility paths until the first release. A client that speaks another
