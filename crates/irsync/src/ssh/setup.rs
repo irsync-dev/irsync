@@ -395,7 +395,7 @@ fn stop_daemon(pid: u32, state: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Starts `exe daemon` in its own session, output appended to `log`, and
+/// Starts `exe daemon -vv` in its own session, output appended to `log`, and
 /// waits until it holds the lock.
 fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(state).with_context(|| format!("creating {}", state.display()))?;
@@ -406,7 +406,8 @@ fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::
         .with_context(|| format!("opening {}", log.display()))?;
     let start = out.metadata().map(|m| m.len()).unwrap_or(0);
     let mut cmd = Command::new(exe);
-    cmd.arg("daemon");
+    // `-vv`: info logs, as a service definition runs it; the default is warnings.
+    cmd.args(["daemon", "-vv"]);
     if *paths != Paths::resolve(None) {
         cmd.arg("--config").arg(&paths.config);
     }

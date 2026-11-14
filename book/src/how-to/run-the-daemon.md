@@ -263,8 +263,7 @@ it. The default level is `warn`: the daemon logs warnings and errors only.
 `-vv` gives info logs, which is what a service wants in its journal; `-vvv`
 gives debug, `-vvvv` trace, and `-vvvvv` trace plus every protocol message,
 as on the client. `-q` lowers it to errors only. `RUST_LOG` overrides all of
-them, in the
-`tracing` filter syntax, for example `RUST_LOG=irsync=debug`.
+them, in the `tracing` filter syntax, for example `RUST_LOG=irsync=debug`.
 
 Each line of a session carries the session's span and its fields, as in
 `session{session_id=… side="daemon" …}:transfer: …`, which tells concurrent

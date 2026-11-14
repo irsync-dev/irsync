@@ -386,6 +386,7 @@ mod tests {
         assert!(!text.contains("systemctl"));
         // The plist body starts at column 0 so it can be pasted as a file.
         assert!(h.iter().any(|l| l.starts_with("<?xml ")));
+        at(&h, "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>");
         let pid = at(&h, "  pid=\"$(sed -n 's/^pid=//p' /s/daemon.lock)\"");
         let wait = at(
             &h,

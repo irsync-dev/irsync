@@ -1018,7 +1018,7 @@ pub async fn run_from_settings(
     if std::io::stdout().is_terminal() {
         print!(
             "{}",
-            startup_banner(crate::build::LONG_VERSION.as_str(), &endpoint, &settings)
+            startup_banner(crate::build::LONG_VERSION.as_str(), &settings)
         );
     }
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
@@ -1049,7 +1049,7 @@ pub async fn run_from_settings(
 
 /// What the daemon prints first when stdout is a terminal: its version and
 /// which network services it uses.
-pub fn startup_banner(version: &str, _ep: &Endpoint, settings: &Settings) -> String {
+pub fn startup_banner(version: &str, settings: &Settings) -> String {
     let d = &settings.daemon;
     let relay = match (&d.relay_mode, &d.relay) {
         (crate::config::settings::RelayMode::Disabled, _) => "disabled".to_string(),
@@ -1494,25 +1494,12 @@ mod banner_tests {
     use super::*;
     use crate::config::settings::RelayMode;
 
-    #[tokio::test]
-    async fn banner_names_version_and_network() {
-        let ep = build_endpoint(crate::net::EndpointOpts {
-            secret: SecretKey::generate(),
-            relay: RelayChoice::Disabled,
-            dht: false,
-            dns: false,
-            mdns: false,
-            publish: false,
-            bind_addrs: vec!["127.0.0.1:0".parse().unwrap()],
-            portmap: false,
-            congestion: Default::default(),
-        })
-        .await
-        .unwrap();
+    #[test]
+    fn banner_names_version_and_network() {
         let mut settings = Settings::default();
         settings.daemon.relay_mode = RelayMode::Disabled;
         settings.daemon.discovery.dht = false;
-        let b = startup_banner("9.9.9", &ep, &settings);
+        let b = startup_banner("9.9.9", &settings);
         assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
         assert!(b.contains("relay: disabled"));
         assert!(b.contains("discovery: dns, mdns"));
