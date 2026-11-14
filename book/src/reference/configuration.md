@@ -167,7 +167,7 @@ be an `EndpointId`.
 | `relay` | `[client]`'s | This host's relay server. |
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |
-| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. Cannot be combined with `--relay`. |
+| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
 | `parallel` | `[client]`'s | Data streams a push to this host keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
 | `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
@@ -188,7 +188,7 @@ take effect at the next start.
 | `identity` | `~/.config/irsync/daemon_ed25519` | The daemon's private key, generated when missing. |
 | `idle_timeout` | `30m` | Drop an authenticated connection that has had no traffic and no local progress, such as hashing or writing, for this long. The client reconnects and resumes. `0` disables it. |
 | `dormant_session_timeout` | `7d` | How long the daemon keeps an interrupted session, and its partial files, for a client to resume. |
-| `listen` | none | The sockets to bind, at most one IPv4 and one IPv6; port `0` lets the system pick. Without it the daemon binds any address on a port picked at start. Flag: `--listen`. |
+| `listen` | none | The sockets to bind, at most one IPv4 and one IPv6; port `0` lets the system pick. Without it the daemon binds any address on a port picked at start. The daemon offers clients the addresses it binds for extra paths: a specific address offers only that one, any address offers every interface. Flag: `--listen`. |
 | `portmap` | `true` | Ask the router for a port mapping with UPnP, PCP or NAT-PMP. Set `false` in isolated setups. |
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. |
 | `relay_mode` | `default` | `disabled`: no relay, direct connections only. |

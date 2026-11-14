@@ -142,17 +142,31 @@ sockets; it does not isolate the daemon. Turn everything off explicitly.
 
 `--address` takes `ip:port`, `[ipv6]:port` or `host:port`, may be repeated,
 and resolves host names with the system resolver. With an address the client
-turns its relay, DNS, DHT, mDNS and port mapper off, and dials only the
-addresses it was given. The daemon's `EndpointId` is still required and
-still checked. `--address` together with `--relay` is refused.
+turns its relay, DNS, DHT, mDNS and port mapper off. The daemon's
+`EndpointId` is still required and still checked. `--address` together with
+`--relay` is refused.
 
-An address picks where the connection starts, not every path it takes. Once
-connected, the two sides still tell each other their local addresses, and
-the daemon may open more paths to the client's other addresses, such as its
-LAN, VPN or Docker bridge address. A capture of a client and a daemon on one
-machine, with the daemon listening on `127.0.0.1` only, showed the daemon
-sending to the client's LAN and Docker addresses too. irsync has no setting
-that stops this.
+### Keep to one path
+
+An address picks where the connection starts. Once connected, the two sides
+still tell each other their local addresses, and iroh may open more paths
+between them and move the transfer to the fastest one: a LAN path instead of
+the VPN you dialled, say. Neither irsync nor iroh can turn that exchange off,
+but each side offers only the addresses its sockets are bound to:
+
+- **The client**, given an address, binds to the local address the system
+  sends from to reach it, one for IPv4 and one for IPv6, taken from the
+  first given address of each. It offers the daemon nothing else. If that
+  local address goes away, say when a VPN drops, the sync fails and redials
+  instead of moving to another network. Addresses of one IP version share
+  that local address, so a second address that needs another one may not be
+  reachable.
+- **The daemon** offers every address it listens on. `listen` with a
+  specific address, as in step 1, offers only that one. Without `listen`,
+  or with `0.0.0.0` or `[::]`, it offers each of its interfaces, and the
+  client opens paths to them as well.
+
+With both, the connection keeps to the path you dialled.
 
 ## See also
 
