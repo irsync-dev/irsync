@@ -5,7 +5,10 @@
 
 use std::io;
 
+use irsync_proto::capture::v1::{stream_event, Direction};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use super::tap::{StreamTap, WireMsg};
 
 /// Largest frame body accepted by [`read_msg`] (16 MiB).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -102,6 +105,64 @@ where
         Some(body) => M::decode(body.as_slice())
             .map(Some)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+    }
+}
+
+/// [`write_msg`], reporting `m` to `tap` as sent (and a failed write as a reset).
+pub async fn write_msg_tapped<M, W>(w: &mut W, m: &M, tap: &StreamTap) -> io::Result<()>
+where
+    M: WireMsg,
+    W: AsyncWrite + Unpin,
+{
+    if !tap.is_on() {
+        return write_msg(w, m).await;
+    }
+    let len = m.encoded_len();
+    if len <= MAX_FRAME {
+        // Reported before the write so it precedes the peer's receive.
+        tap.sent(m, len);
+    }
+    let res = write_msg(w, m).await;
+    if let Err(e) = &res {
+        tap.event(stream_event::Kind::Reset, Direction::Sent, &e.to_string());
+    }
+    res
+}
+
+/// [`read_msg`], reporting the message to `tap` as received, a clean end of
+/// stream as finished and an error as a reset.
+pub async fn read_msg_tapped<M, R>(r: &mut R, tap: &StreamTap) -> io::Result<Option<M>>
+where
+    M: WireMsg,
+    R: AsyncRead + Unpin,
+{
+    let res = match read_body(r).await {
+        Ok(None) => Ok(None),
+        Ok(Some(body)) => M::decode(body.as_slice())
+            .map(|m| Some((body.len(), m)))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        Err(e) => Err(e),
+    };
+    if !tap.is_on() {
+        return res.map(|o| o.map(|(_, m)| m));
+    }
+    match res {
+        Ok(None) => {
+            tap.event(stream_event::Kind::Finished, Direction::Received, "");
+            Ok(None)
+        }
+        Ok(Some((len, m))) => {
+            tap.received(&m, len);
+            Ok(Some(m))
+        }
+        Err(e) => {
+            tap.event(
+                stream_event::Kind::Reset,
+                Direction::Received,
+                &e.to_string(),
+            );
+            Err(e)
+        }
     }
 }
 

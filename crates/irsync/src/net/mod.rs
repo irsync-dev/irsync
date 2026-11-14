@@ -5,6 +5,7 @@ mod endpoint;
 pub mod frame;
 #[cfg(feature = "netsim")]
 pub mod netsim;
+pub mod tap;
 
 #[cfg(feature = "test-hooks")]
 pub use endpoint::build_endpoint_with_stream_window;
