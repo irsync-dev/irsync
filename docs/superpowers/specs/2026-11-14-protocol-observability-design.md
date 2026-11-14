@@ -262,7 +262,7 @@ design and can be revisited.
   same file, so each message appears twice, once sent and once
   received, told apart by the record's side and direction. Two
   processes never share a file: a process that finds the file already
-  in use writes to `<name>.<pid>.pcapng` instead and logs where.
+  in use writes to `<stem>.<pid>.pcapng` next to it instead and logs where.
 - *Call:* `SSLKEYLOGFILE` is honoured in every build, as is the
   convention, but irsync logs a warning naming the file when it turns
   key logging on, so a variable left set for browser debugging doesn't

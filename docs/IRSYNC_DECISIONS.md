@@ -417,8 +417,9 @@ cross-referenced from commit messages and review notes.
     the file gets (`T` itself when `T` is new) and returns it in
     `HelloAck.single_name` (5); the sender maps its own name to it. Why:
     only the receiver can see what `T` is, and the file can be renamed.
-    Cost if wrong: a protocol change. `PROTOCOL_VERSION` is 4, with no
-    compatibility path; an older peer gets the version error, never a
+    Cost if wrong: a protocol change. `PROTOCOL_VERSION` went to 4, with no
+    compatibility path (it is 5 since frame lengths became varints,
+    2026-11-14); an older peer gets the version error, never a
     directory-shaped copy.
   - *The holding directory is the session root.* The listing has one entry,
     the file, and the planner never deletes or restamps the root. Why: the
