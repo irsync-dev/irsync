@@ -17,7 +17,8 @@ use prost::Message;
 use super::engine::{read_reply_body, SessionRefused, TransportError};
 use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
-use crate::net::frame::write_msg;
+use crate::net::frame::write_msg_tapped;
+use crate::net::tap::{ConnTap, StreamKind as TapStream};
 
 /// A one-file transfer. Each name is exactly one path component. `wire` is
 /// the receiver's name for the file, `local` is this side's name; they are
@@ -163,10 +164,12 @@ pub async fn probe(
         ..Hello::default()
     };
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
-    write_msg(&mut send, &hello)
+    let tap = ConnTap::of(conn).stream(TapStream::Control, u64::from(send.id()));
+    write_msg_tapped(&mut send, &hello, &tap)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
+    tap.finished();
     let reply = async {
         read_reply_body(&mut recv)
             .await
@@ -179,7 +182,8 @@ pub async fn probe(
         None => reply.await?,
     };
     // An Error never holds field 3, so a reply without `kind` is one.
-    if let Ok(PathInfo { kind: Some(kind) }) = PathInfo::decode(&body[..]) {
+    if let Ok(info @ PathInfo { kind: Some(kind) }) = PathInfo::decode(&body[..]) {
+        tap.received(&info, body.len());
         return path_info::Kind::try_from(kind).context("unknown kind of path in the reply");
     }
     match Error::decode(&body[..]) {
@@ -187,11 +191,14 @@ pub async fn probe(
         Ok(e) if e.code == Code::Unknown as i32 && e.message.is_empty() => {
             anyhow::bail!("malformed reply to Hello")
         }
-        Ok(e) => Err(SessionRefused {
-            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-            message: e.message,
+        Ok(e) => {
+            tap.received(&e, body.len());
+            Err(SessionRefused {
+                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+                message: e.message,
+            }
+            .into())
         }
-        .into()),
         Err(_) => anyhow::bail!("malformed reply to Hello"),
     }
 }

@@ -699,6 +699,7 @@ impl Harness {
             .client
             .connect(self.daemon.addr.clone(), irsync_proto::ALPN)
             .await?;
+        irsync::net::tap::ConnTap::of(&conn).set_local_id(self.client.id());
         let out = irsync::session::engine::run_client(conn.clone(), hello, local, opts).await;
         conn.close(0u32.into(), b"done");
         // The daemon's side ends right after ours; wait for its bookkeeping.

@@ -789,6 +789,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
                 None => with_wrong_id_hint(err),
             }
         })?;
+    irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;

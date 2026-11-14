@@ -306,6 +306,7 @@ pub async fn probe_path(
         let err = match dialled {
             Ok(conn) => {
                 reached = true;
+                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 let res = super::single::probe(&conn, path, timeout).await;
                 conn.close(0u32.into(), b"done");
                 match res {
@@ -550,6 +551,7 @@ async fn attempts(
         let (res, conn) = match dialled {
             Ok(conn) => {
                 reached = true;
+                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 let run = run_client_inner(
                     conn.clone(),
                     hello_for(session),

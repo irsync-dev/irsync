@@ -30,7 +30,8 @@ use crate::filter::{FilterSet, Verdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::index::IndexHandle;
-use crate::net::frame::{read_msg, write_msg};
+use crate::net::frame::{read_msg_tapped, write_msg_tapped};
+use crate::net::tap::StreamTap;
 use crate::plan::Side;
 use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts, WALK_THREADS};
 use crate::telemetry::Phase;
@@ -239,6 +240,7 @@ pub(super) fn spawn_writer(
     events: mpsc::UnboundedSender<Ev>,
     hooks: &super::SideHooks,
     ceiling: usize,
+    tap: StreamTap,
 ) -> (Out, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Option<Queued>>();
     let budget = Arc::new(ByteBudget::new(OUT_BUDGET));
@@ -255,7 +257,7 @@ pub(super) fn spawn_writer(
                     .flat_map(|m| tamper.frames(StreamKind::Control, m))
                 {
                     let c = Control { msg: Some(msg) };
-                    if let Err(e) = write_msg(&mut send, &c).await {
+                    if let Err(e) = write_msg_tapped(&mut send, &c, &tap).await {
                         let _ =
                             writer_events.send(Ev::WriterFailed(format!("control stream: {e}")));
                         return;
@@ -265,6 +267,7 @@ pub(super) fn spawn_writer(
                 unqueued.sub(q.len);
             }
             if send.finish().is_ok() {
+                tap.finished();
                 let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
             }
         }
@@ -315,9 +318,10 @@ pub(super) fn spawn_reader(
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
     scan: Arc<PeerScan>,
+    tap: StreamTap,
 ) -> JoinHandle<()> {
     tokio::spawn(
-        read_control(recv, events, bus, activity, scan).instrument(tracing::Span::current()),
+        read_control(recv, events, bus, activity, scan, tap).instrument(tracing::Span::current()),
     )
 }
 
@@ -352,6 +356,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
     scan: Arc<PeerScan>,
+    tap: StreamTap,
 ) {
     let mut recv = Counted {
         inner: recv,
@@ -359,7 +364,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
     };
     loop {
         // Activity is counted per read, in `Counted`.
-        let frame = read_msg::<Control, _>(&mut recv).await;
+        let frame = read_msg_tapped::<Control, _>(&mut recv, &tap).await;
         match frame {
             Ok(Some(Control { msg: Some(msg) })) => match msg {
                 Msg::Listing(_) | Msg::ListingError(_) | Msg::ListingEnd(_) => {
@@ -1067,6 +1072,7 @@ mod tests {
             super::super::EventBus::default(),
             Arc::default(),
             Arc::default(),
+            StreamTap::off(),
         ));
         let ev = rx.recv().await.expect("an event");
         reader.abort();
@@ -1101,6 +1107,7 @@ mod tests {
             super::super::EventBus::default(),
             activity.clone(),
             Arc::default(),
+            StreamTap::off(),
         ));
         // The length prefix of a 400 KB frame and the first part of its body.
         let mut prefix = Vec::new();
