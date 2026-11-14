@@ -132,9 +132,19 @@ using output from the text trace.
 
 ### 3. Text trace
 
-Turned on through the existing logging, under its own target, e.g.
-`RUST_LOG=irsync::wire=trace`. Off, it costs nothing beyond the
-`tracing` level check.
+Turned on through the existing logging, under its own target,
+`irsync::wire`: with `-vvvvv` on either side, or with `RUST_LOG` naming
+the target (e.g. `RUST_LOG=info,irsync::wire=trace`) at any verbosity.
+Off, it costs nothing beyond the `tracing` level check.
+
+For `-vvvvv` to mean the same on both sides, the daemon counts `-v` the
+way a sync does: none or `-v` warnings, `-vv` info, `-vvv` debug,
+`-vvvv` trace, `-vvvvv` trace plus every protocol message. Its default
+therefore drops from info to warnings. When its stdout is a terminal,
+the daemon prints a short start-up message: `irsync daemon <version>
+started`, its relay and its discovery methods, before the existing
+`endpoint id:` and `listening on:` lines, which stay unchanged in every
+case because parent processes and tests read them.
 
 One event per message sent or received, printing the whole message field
 by field, tagged with the context already at hand where the frame is
