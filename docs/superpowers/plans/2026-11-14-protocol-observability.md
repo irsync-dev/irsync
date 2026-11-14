@@ -677,7 +677,8 @@ the RFCs, and instructions for the trace, the capture and the key log."
 **Files:**
 - Modify: `crates/irsync/src/main.rs:86-104` (one log ladder), `:1309` (daemon call), `crates/irsync/src/daemon.rs:995-1007` (start-up message)
 - Modify: `crates/irsync/src/cli/mod.rs:473` (help text "up to -vvv")
-- Modify: `book/src/reference/command-line.md:191-205`, `book/src/how-to/run-the-daemon.md`, and any page that tells people to run the daemon with `-v`/`-vv` for logs (`grep -rn "daemon.*-v" book/src`)
+- Modify: `crates/irsync/src/ssh/onboard.rs:222-250` (the service files the setup prints) and its test at `:421-423`
+- Modify: `book/src/reference/command-line.md:191-205`, `book/src/how-to/run-the-daemon.md:98-170`, `book/src/tutorial/first-sync.md:189-198`, and any other page that shows the daemon's start-up output or tells people to run it with `-v` for logs (`grep -rn "irsync daemon" book/src`)
 
 **Interfaces:**
 - Produces: `client_log_default` renamed `log_default(verbose: u8, quiet: bool)`; `daemon_log_default` removed. The daemon calls `log_default(d.log.verbose.saturating_sub(1), d.log.quiet)`, the same shift a sync uses, so on both sides: none or `-v` warnings, `-vv` info, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message. `gc` and `index` keep their current unshifted call.
@@ -711,16 +712,25 @@ followed by the existing `endpoint id:` / `listening on:` / `debug port:` lines,
     assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
     assert!(b.contains("relay: disabled"));
 }
+// onboard.rs tests: change the existing assertion and add the macOS one
+at(&h, "ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv");
+// macOS howto:
+at(&h, "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>");
 ```
 
 Delete `daemon_trace_level_keeps_wire_off` from Task 4; it no longer applies.
 
 - [ ] **Step 2: Run them and see them fail**
 
-Run: `cargo test -q -p irsync --bins --lib daemon_counts banner_names`
+Run: `cargo test -q -p irsync --bins --lib daemon_counts banner_names howto`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**, using `std::io::stdout().is_terminal()` for the banner. Update the help text to "Log more; repeat for more still (up to -vvvvv)", and the daemon's section in `command-line.md` with the same ladder as the sync's. In `run-the-daemon.md`, note that the daemon logs warnings only by default and that `-vv` gives the info logs it used to give.
+- [ ] **Step 3: Implement**, using `std::io::stdout().is_terminal()` for the banner. Update the help text to "Log more; repeat for more still (up to -vvvvv)", and the daemon's section in `command-line.md` with the same ladder as the sync's.
+
+Every service definition runs the daemon with `-vv`, so a service keeps the info logs it had before:
+- `onboard.rs`: the systemd user unit's `ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv`, and the launchd plist's `ProgramArguments` gains `<string>-vv</string>`.
+- `run-the-daemon.md`: the same two changes in the user-service section (it repeats what the setup prints), and in "Under systemd" `ExecStart=/usr/local/bin/irsync daemon -vv --config /etc/irsync/irsync.toml` with the `Environment=RUST_LOG=info` line removed (`RUST_LOG` would override `-vv`). Add one sentence: the daemon logs warnings only by default; `-vv` gives info logs, which is what a service wants in its journal.
+- `first-sync.md`: the expected output in step 4 gains the banner, since the tutorial runs the daemon in a terminal.
 
 - [ ] **Step 4: Run the full regression** (see `AGENTS.md`)
 
@@ -733,5 +743,5 @@ git commit -m "Count -v the same way on the daemon as on the client
 
 -vvvvv now means every protocol message on both sides. The daemon logs
 warnings by default and greets a terminal with its version and network
-settings instead."
+settings instead; service files run it with -vv to keep info logs."
 ```
