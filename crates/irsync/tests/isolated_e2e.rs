@@ -165,7 +165,7 @@ fn start_daemon(tmp: &Path) -> Daemon {
     .unwrap();
 
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
-        .args(["daemon", "--config"])
+        .args(["daemon", "-vv", "--config"])
         .arg(tmp.join("irsync.toml"))
         .args(["--listen", "127.0.0.1:0"])
         .env_remove("IRSYNC_PASSPHRASE")

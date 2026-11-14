@@ -1,0 +1,49 @@
+syntax = "proto3";
+package irsync.capture.v1;
+
+import "irsync/v1/common.proto";
+import "irsync/v1/control.proto";
+import "irsync/v1/data.proto";
+
+// One capture packet. Never sent on the wire.
+message Record {
+  Side side = 1;                  // the side that recorded it
+  Direction direction = 2;
+  StreamKind stream = 3;
+  uint64 quic_stream_id = 4;
+  bytes session_id = 5;           // empty until known
+  optional uint64 file_id = 6;
+  uint32 connection = 7;          // order of first appearance in this file, from 1
+  bytes local_endpoint_id = 8;
+  bytes remote_endpoint_id = 9;
+  uint32 encoded_len = 10;        // the message's size on the wire, without prefix
+  Trimmed trimmed = 11;           // set when anything was dropped
+  oneof msg {
+    irsync.v1.Hello hello = 20;
+    irsync.v1.HelloAck hello_ack = 21;
+    irsync.v1.Error error = 22;
+    irsync.v1.ExportList export_list = 23;
+    irsync.v1.PathInfo path_info = 24;
+    irsync.v1.Control control = 25;
+    irsync.v1.ListingStreamHeader listing_stream_header = 26;
+    irsync.v1.DataStreamHeader data_stream_header = 27;
+    irsync.v1.DataChunk data_chunk = 28;
+    StreamEvent stream_event = 40;
+    PathChange path_change = 41;
+  }
+}
+enum Side { SIDE_UNSPECIFIED = 0; SIDE_CLIENT = 1; SIDE_DAEMON = 2; }
+enum Direction { DIRECTION_UNSPECIFIED = 0; DIRECTION_SENT = 1; DIRECTION_RECEIVED = 2; }
+enum StreamKind { STREAM_KIND_UNSPECIFIED = 0; STREAM_KIND_CONTROL = 1; STREAM_KIND_LISTING = 2; STREAM_KIND_DATA = 3; }
+message StreamEvent {
+  enum Kind { KIND_UNSPECIFIED = 0; OPENED = 1; FINISHED = 2; RESET = 3; }
+  Kind kind = 1;
+  string detail = 2;              // the error, for RESET
+}
+message PathChange { string remote = 1; } // the selected path as iroh prints it: ip:port or relay URL
+message ContentSummary { uint32 len = 1; bytes blake3_prefix = 2; } // 8 bytes
+message Trimmed {
+  uint32 original_len = 1;        // the message's encoded size before trimming
+  uint32 dropped_entries = 2;     // repeated entries removed to fit
+  repeated ContentSummary content = 3; // file bytes removed, in message order
+}

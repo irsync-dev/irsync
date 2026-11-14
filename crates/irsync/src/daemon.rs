@@ -2,7 +2,7 @@
 //! anything, resolves and validates the requested export, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io;
+use std::io::{self, IsTerminal};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::endpoint::{Connection, Incoming, SendStream};
-use iroh::{Endpoint, SecretKey};
+use iroh::{Endpoint, EndpointId, SecretKey};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{
     error::Code, export_entry, hello::Direction, path_info, Error, ExportEntry, ExportList, Hello,
@@ -32,7 +32,8 @@ use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
 use crate::net::addr::HostPort;
-use crate::net::frame::{read_msg, write_msg};
+use crate::net::frame::{read_msg_tapped, write_msg_tapped};
+use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
@@ -290,10 +291,11 @@ impl Daemon {
                     let Some(inc) = inc else { break };
                     let shared = self.shared.clone();
                     let local_id = local_id.clone();
+                    let local = self.endpoint.id();
                     let live = Live::enter(&live);
                     tokio::spawn(async move {
                         let _live = live;
-                        if let Err(e) = handle(shared, inc, local_id).await {
+                        if let Err(e) = handle(shared, inc, local, local_id).await {
                             tracing::warn!("connection failed: {e:#}");
                         }
                     });
@@ -462,8 +464,15 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
     });
 }
 
-async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> Result<()> {
+async fn handle(
+    shared: Arc<Shared>,
+    incoming: Incoming,
+    local: EndpointId,
+    local_id: Arc<str>,
+) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
+    let conn_tap = ConnTap::of(&conn);
+    conn_tap.set_local_id(local);
     // Authorise on the verified key, against a fresh read of the grants,
     // before touching any stream. An unreadable config fails closed.
     let id = conn.remote_id();
@@ -483,18 +492,19 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
     }
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
-        let hello: Hello = read_msg(&mut recv)
+        let tap = conn_tap.stream(TapStream::Control, u64::from(recv.id()));
+        let hello: Hello = read_msg_tapped(&mut recv, &tap)
             .await
             .context("read Hello")?
             .context("peer closed before Hello")?;
-        anyhow::Ok((send, recv, hello))
+        anyhow::Ok((send, recv, tap, hello))
     })
     .await;
     let Ok(first) = first else {
         conn.close(2u32.into(), b"hello timeout");
         anyhow::bail!("timed out waiting for Hello");
     };
-    let (mut send, recv, hello) = first?;
+    let (mut send, recv, tap, hello) = first?;
     // Only session hellos: a listing or a probe never bumps `sessions`, so
     // counting it would leave the tests' `settle` waiting forever.
     #[cfg(feature = "test-hooks")]
@@ -509,11 +519,12 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
     if hello.direction == Direction::ListExports as i32 {
         if let Err((code, message)) = version_check(&hello) {
             tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting listing");
-            return reject(&conn, &mut send, code, message).await;
+            return reject(&conn, &mut send, &tap, code, message).await;
         }
         tracing::info!(peer = %id.fmt_short(), "listing exports");
-        write_msg(&mut send, &list_exports_for(&snap, &grants)).await?;
+        write_msg_tapped(&mut send, &list_exports_for(&snap, &grants), &tap).await?;
         send.finish()?;
+        tap.finished();
         let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
         conn.close(0u32.into(), b"done");
         return Ok(());
@@ -551,21 +562,23 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         return match kind {
             Ok(kind) => {
                 tracing::info!(peer = %id.fmt_short(), ?kind, "probed path");
-                write_msg(
+                write_msg_tapped(
                     &mut send,
                     &PathInfo {
                         kind: Some(kind as i32),
                     },
+                    &tap,
                 )
                 .await?;
                 send.finish()?;
+                tap.finished();
                 let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
                 conn.close(0u32.into(), b"done");
                 Ok(())
             }
             Err((code, message)) => {
                 tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting probe");
-                reject(&conn, &mut send, code, message).await
+                reject(&conn, &mut send, &tap, code, message).await
             }
         };
     }
@@ -589,7 +602,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
                 Err(e) => {
                     tracing::warn!(export = %name, "cannot open index: {e:#}");
                     let message = format!("cannot open index for export {name:?}: {e:#}");
-                    let res = reject(&conn, &mut send, Code::Internal, message).await;
+                    let res = reject(&conn, &mut send, &tap, Code::Internal, message).await;
                     #[cfg(feature = "test-hooks")]
                     shared
                         .sessions
@@ -605,7 +618,10 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
                 fsync: resolved.export.fsync,
                 single,
             };
-            let res = serve_daemon(conn, send, recv, place, hello, index, hosting, &local_id).await;
+            let res = serve_daemon(
+                conn, send, recv, tap, place, hello, index, hosting, &local_id,
+            )
+            .await;
             #[cfg(feature = "test-hooks")]
             {
                 use std::sync::atomic::Ordering::SeqCst;
@@ -618,7 +634,7 @@ async fn handle(shared: Arc<Shared>, incoming: Incoming, local_id: Arc<str>) -> 
         }
         Err((code, message)) => {
             tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting session");
-            let res = reject(&conn, &mut send, code, message).await;
+            let res = reject(&conn, &mut send, &tap, code, message).await;
             #[cfg(feature = "test-hooks")]
             shared
                 .sessions
@@ -917,18 +933,21 @@ fn bad_session_path(e: io::Error) -> (Code, String) {
 async fn reject(
     conn: &Connection,
     send: &mut SendStream,
+    tap: &StreamTap,
     code: Code,
     message: String,
 ) -> Result<()> {
-    write_msg(
+    write_msg_tapped(
         send,
         &Error {
             code: code as i32,
             message,
         },
+        tap,
     )
     .await?;
     send.finish()?;
+    tap.finished();
     // Wait (bounded) for the peer to read the error before closing the connection.
     let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
     conn.close(2u32.into(), b"rejected");
@@ -995,6 +1014,13 @@ pub async fn run_from_settings(
     // reload): a parent process that reads these lines may dial at once.
     // `daemon.addr` follows each endpoint's address for `ssh-setup`.
     let state = settings.state_dir.clone();
+    // The daemon logs warnings by default, so a terminal gets a greeting.
+    if std::io::stdout().is_terminal() {
+        print!(
+            "{}",
+            startup_banner(crate::build::LONG_VERSION.as_str(), &settings)
+        );
+    }
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
         crate::daemon_addr::spawn_writer(state.clone(), ep.clone());
         println!("endpoint id: {}", ep.id());
@@ -1019,6 +1045,31 @@ pub async fn run_from_settings(
     }
     announce(daemon.endpoint());
     daemon.run(shutdown).await
+}
+
+/// What the daemon prints first when stdout is a terminal: its version and
+/// which network services it uses.
+pub fn startup_banner(version: &str, settings: &Settings) -> String {
+    let d = &settings.daemon;
+    let relay = match (&d.relay_mode, &d.relay) {
+        (crate::config::settings::RelayMode::Disabled, _) => "disabled".to_string(),
+        (_, Some(url)) => url.to_string(),
+        _ => "default (n0)".to_string(),
+    };
+    let on: Vec<&str> = [
+        ("dns", d.discovery.dns),
+        ("dht", d.discovery.dht),
+        ("mdns", d.discovery.mdns),
+    ]
+    .into_iter()
+    .filter_map(|(n, e)| e.then_some(n))
+    .collect();
+    let discovery = if on.is_empty() {
+        "none".to_string()
+    } else {
+        on.join(", ")
+    };
+    format!("irsync daemon {version} started\n  relay: {relay}\n  discovery: {discovery}\n")
 }
 
 /// The sockets the daemon announces: the fault layer's when it is on.
@@ -1436,4 +1487,21 @@ pub async fn gc_if_due_skipping(
     gc_skipping(index, root, older_than, false, skip)
         .await
         .map(Some)
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::*;
+    use crate::config::settings::RelayMode;
+
+    #[test]
+    fn banner_names_version_and_network() {
+        let mut settings = Settings::default();
+        settings.daemon.relay_mode = RelayMode::Disabled;
+        settings.daemon.discovery.dht = false;
+        let b = startup_banner("9.9.9", &settings);
+        assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
+        assert!(b.contains("relay: disabled"));
+        assert!(b.contains("discovery: dns, mdns"));
+    }
 }

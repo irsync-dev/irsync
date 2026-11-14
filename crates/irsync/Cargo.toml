@@ -66,6 +66,7 @@ blake3 = { workspace = true }
 sha2 = { workspace = true }
 jwalk = { workspace = true }
 prost = { workspace = true }
+prost-reflect = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

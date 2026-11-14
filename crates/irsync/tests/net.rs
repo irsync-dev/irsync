@@ -4,7 +4,7 @@ use std::io;
 
 use common::{connect_pair, loopback_pair, within};
 use iroh::SecretKey;
-use irsync::net::frame::{read_msg, write_msg, MAX_FRAME};
+use irsync::net::frame::{encode_prefix, read_msg, write_msg, MAX_FRAME};
 use irsync::net::EndpointOpts;
 use irsync_proto::v1::{Hello, HelloAck};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
@@ -75,8 +75,9 @@ async fn oversize_frame_rejected() {
     let (client, server) = connect_pair(&b, &a).await;
 
     let (mut send, _recv) = client.open_bi().await.unwrap();
-    let len = u32::try_from(MAX_FRAME + 1).unwrap();
-    send.write_all(&len.to_be_bytes()).await.unwrap();
+    let mut prefix = Vec::new();
+    encode_prefix(MAX_FRAME + 1, &mut prefix);
+    send.write_all(&prefix).await.unwrap();
     send.write_all(&[0u8; 64]).await.unwrap();
 
     let (_send, mut recv) = within(server.accept_bi()).await.unwrap();
@@ -110,7 +111,7 @@ async fn eof_returns_none() {
 
     // Stream 2: EOF mid-prefix is an error, not a clean end.
     let (mut send, _r2) = client.open_bi().await.unwrap();
-    send.write_all(&[0, 0]).await.unwrap();
+    send.write_all(&[0x80]).await.unwrap();
     send.finish().unwrap();
     let (_s2, mut recv) = within(server.accept_bi()).await.unwrap();
     let err = within(read_msg::<Hello, _>(&mut recv)).await.unwrap_err();
@@ -118,7 +119,9 @@ async fn eof_returns_none() {
 
     // Stream 3: EOF mid-body is an error too.
     let (mut send, _r3) = client.open_bi().await.unwrap();
-    send.write_all(&10u32.to_be_bytes()).await.unwrap();
+    let mut prefix = Vec::new();
+    encode_prefix(10, &mut prefix);
+    send.write_all(&prefix).await.unwrap();
     send.write_all(&[1, 2, 3]).await.unwrap();
     send.finish().unwrap();
     let (_s3, mut recv) = within(server.accept_bi()).await.unwrap();

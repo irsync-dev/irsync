@@ -2231,8 +2231,13 @@ mod tests {
         let ctx = t.ctx.clone();
         let (send, _) = ctx.conn.open_bi().await.unwrap();
         let (events, done) = mpsc::unbounded_channel();
-        let (out, _) =
-            crate::session::control::spawn_writer(send, events.clone(), &ctx.hooks, usize::MAX);
+        let (out, _) = crate::session::control::spawn_writer(
+            send,
+            events.clone(),
+            &ctx.hooks,
+            usize::MAX,
+            crate::net::tap::StreamTap::off(),
+        );
         let sender = Arc::new(Sender::new(
             ctx.conn.clone(),
             ctx.session_id,

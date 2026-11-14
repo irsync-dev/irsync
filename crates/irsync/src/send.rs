@@ -30,7 +30,8 @@ use crate::delta::{encode, encoded_len, Basis, Op};
 use crate::fs::clone::Cloned;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed, Hasher};
-use crate::net::frame::write_msg;
+use crate::net::frame::write_msg_tapped;
+use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 
@@ -514,10 +515,11 @@ impl Inner {
         let opened = self.conn.open_uni().await;
         drop(opening);
         let mut send = opened.map_err(io::Error::other)?;
+        let tap = ConnTap::of(&self.conn).stream(TapStream::Data, u64::from(send.id()));
         let _open = self.meter.get().map(|m| m.hold("irsync_streams_open"));
         let res = self
             .write_range(
-                &mut send, file_id, &file, name, rel, digest, &r, first, bases, sent,
+                &mut send, &tap, file_id, &file, name, rel, digest, &r, first, bases, sent,
             )
             .await;
         match res {
@@ -526,6 +528,7 @@ impl Inner {
             Err(e) if stopped_not_receiving(&e) => Ok(()),
             Err(e) => {
                 let _ = send.reset(VarInt::from_u32(1));
+                tap.reset(&e.to_string());
                 Err(e)
             }
             Ok(()) => Ok(()),
@@ -536,6 +539,7 @@ impl Inner {
     async fn write_range(
         &self,
         send: &mut iroh::endpoint::SendStream,
+        tap: &StreamTap,
         file_id: u64,
         file: &Arc<File>,
         name: &str,
@@ -558,7 +562,7 @@ impl Inner {
         let timed = || meter.map(|m| m.start(Activity::Send));
         {
             let _send = timed();
-            write_msg(send, &header).await?;
+            write_msg_tapped(send, &header, tap).await?;
         }
         #[cfg(feature = "test-hooks")]
         let cut = self.truncate.get().and_then(|t| t.cut(chunks.len()));
@@ -568,6 +572,7 @@ impl Inner {
             if cut == Some(k) {
                 let _send = timed();
                 send.finish().map_err(io::Error::other)?;
+                tap.finished();
                 return Ok(());
             }
             let data = match next.take() {
@@ -595,7 +600,7 @@ impl Inner {
                 // window does: sending, not waiting for the peer.
                 let _send = timed();
                 self.throttle(n).await;
-                write_msg(send, &frame).await?;
+                write_msg_tapped(send, &frame, tap).await?;
             }
             if let Some(m) = meter {
                 m.add(Counter::BytesLiteral, n);
@@ -608,6 +613,7 @@ impl Inner {
         {
             let _send = timed();
             send.finish().map_err(io::Error::other)?;
+            tap.finished();
         }
         // No time limit: this resolves once the peer has acknowledged every
         // byte, and the stream shares the link with up to `parallel` others,

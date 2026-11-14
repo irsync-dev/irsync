@@ -22,36 +22,39 @@ use super::limits::LISTING_QUEUE;
 use super::{SideHooks, StreamKind};
 use crate::fs::ids::IdMap;
 use crate::fs::paths::RelPath;
-use crate::net::frame::{read_msg, write_msg};
+use crate::net::frame::{read_msg_tapped, write_msg_tapped};
+use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::scan::ListStats;
 
 /// Client: opens the listing stream and names the session on it.
 pub(super) async fn open(
     conn: &Connection,
     session_id: &[u8; 16],
-) -> std::io::Result<(SendStream, RecvStream)> {
+) -> std::io::Result<(SendStream, RecvStream, StreamTap)> {
     let (mut send, recv) = conn.open_bi().await.map_err(std::io::Error::other)?;
+    let tap = ConnTap::of(conn).stream(TapStream::Listing, u64::from(send.id()));
     let header = ListingStreamHeader {
         session_id: session_id.to_vec(),
     };
-    write_msg(&mut send, &header).await?;
-    Ok((send, recv))
+    write_msg_tapped(&mut send, &header, &tap).await?;
+    Ok((send, recv, tap))
 }
 
 /// Daemon: accepts the client's listing stream; it must name `session_id`.
 pub(super) async fn accept(
     conn: &Connection,
     session_id: &[u8; 16],
-) -> anyhow::Result<(SendStream, RecvStream)> {
+) -> anyhow::Result<(SendStream, RecvStream, StreamTap)> {
     let (send, mut recv) = conn.accept_bi().await.context("accept listing stream")?;
-    let header: ListingStreamHeader = read_msg(&mut recv)
+    let tap = ConnTap::of(conn).stream(TapStream::Listing, u64::from(recv.id()));
+    let header: ListingStreamHeader = read_msg_tapped(&mut recv, &tap)
         .await
         .context("read ListingStreamHeader")?
         .context("the client ended the listing stream before its header")?;
     if header.session_id != session_id {
         bail!("protocol error: the listing stream names another session");
     }
-    Ok((send, recv))
+    Ok((send, recv, tap))
 }
 
 /// Handle for queueing listing frames to the listing writer.
@@ -110,6 +113,7 @@ pub(super) fn spawn_listing_writer(
     mut send: SendStream,
     events: mpsc::UnboundedSender<Ev>,
     hooks: &SideHooks,
+    tap: StreamTap,
 ) -> (ListingOut, oneshot::Sender<()>, JoinHandle<()>) {
     let tamper = hooks.tamper();
     let (tx, mut rx) = mpsc::channel::<Control>(LISTING_QUEUE);
@@ -128,7 +132,7 @@ pub(super) fn spawn_listing_writer(
                     .flat_map(|m| tamper.frames(StreamKind::Listing, m))
                 {
                     let c = Control { msg: Some(msg) };
-                    if let Err(e) = write_msg(&mut send, &c).await {
+                    if let Err(e) = write_msg_tapped(&mut send, &c, &tap).await {
                         let _ = events.send(Ev::WriterFailed(format!("listing stream: {e}")));
                         return;
                     }
@@ -138,6 +142,7 @@ pub(super) fn spawn_listing_writer(
                 let _ = gated.await;
             }
             if send.finish().is_ok() {
+                tap.finished();
                 let _ = tokio::time::timeout(DRAIN_TIMEOUT, send.stopped()).await;
             }
         }
@@ -195,6 +200,7 @@ impl PeerScan {
 /// posts `Ev::PeerListing`, the `ListingEnd` `Ev::Ctrl` (a full queue of
 /// either kind stops the reading). A listing that ends any other way keeps
 /// `sink` open until the task is aborted.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_listing_reader(
     recv: RecvStream,
     sink: ListingSink,
@@ -203,10 +209,11 @@ pub(super) fn spawn_listing_reader(
     hooks: &SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
+    tap: StreamTap,
 ) -> JoinHandle<()> {
     let hooks = hooks.clone();
     tokio::spawn(
-        read_listing(recv, sink, ids, events, hooks, activity, scan)
+        read_listing(recv, sink, ids, events, hooks, activity, scan, tap)
             .instrument(tracing::Span::current()),
     )
 }
@@ -236,6 +243,7 @@ fn out_of_order(path: &RelPath, last: &RelPath) -> Ev {
 }
 
 /// The reader's loop; see [`spawn_listing_reader`].
+#[allow(clippy::too_many_arguments)]
 async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
     mut recv: R,
     sink: ListingSink,
@@ -244,6 +252,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
     hooks: SideHooks,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
+    tap: StreamTap,
 ) {
     use crate::session::{Event, Party};
     let mut planner = match sink {
@@ -258,7 +267,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
     let mut entries = 0u64;
     // Why the listing stopped short, if it did.
     let failure = loop {
-        let frame = read_msg::<Control, _>(&mut recv).await;
+        let frame = read_msg_tapped::<Control, _>(&mut recv, &tap).await;
         activity.fetch_add(1, Ordering::Relaxed);
         let msg = match frame {
             Ok(Some(Control { msg: Some(msg) })) => msg,
@@ -422,6 +431,7 @@ mod tests {
                 SideHooks::default(),
                 Arc::default(),
                 Arc::default(),
+                StreamTap::off(),
             ));
             match rx.recv().await.expect("an event") {
                 Ev::ProtocolError(e) => assert!(e.contains("listing stream"), "{e}"),
