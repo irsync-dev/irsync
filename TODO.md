@@ -107,8 +107,8 @@ landed. Items the final review's fix wave closed are not listed.
       when an unreadable file was overwritten; `run_setup` doesn't tell ssh's
       exit 255 from a remote failure; a whitespace-only `--rsh` ignores
       `IRSYNC_RSH`.
-- [ ] A failed `cat` during upload leaves `irsync.tmp.$$` behind; the exit-3
-      sentinel could misreport a remote failure as a short upload.
+- [ ] The exit-3 sentinel could misreport a remote failure as a short
+      upload.
 
 ## Tests
 
@@ -119,3 +119,44 @@ landed. Items the final review's fix wave closed are not listed.
 - [ ] `tests/fixtures/fake-ssh` takes `$1` as the destination (breaks if
       `--rsh` carries flags) and logs only the destination, not the command.
 - [ ] Tidy: redundant `immediate: false` next to `..Grants::default()` in tests.
+
+# Open items from the cross-platform install, 2026-11-14
+
+Left over after `docs/superpowers/plans/2026-11-14-cross-platform-install.md`
+landed. Minors from the final review; the signature check is under
+"Critical" at the top.
+
+## The download on the client (`ssh/release.rs`)
+
+- [ ] No timeout or retry: a stalled connection hangs after "downloading
+      irsync …" until Ctrl-C. Consider curl's `--connect-timeout`, `--retry`
+      and `--speed-limit`/`--speed-time`.
+- [ ] Ctrl-C during the download or upload leaves `irsync-release.*` (the
+      tarball and the binary) in `TMPDIR`.
+- [ ] The `wget` fallback runs with `-q`, so it prints nothing of its own on
+      failure, and it has no https-only limit on redirects as curl does.
+- [ ] A missing `tar`, or a GNU tar without `xz`, is noticed only after both
+      downloads, and tar's multi-line error text lands in a one-line message.
+- [ ] "Not in the tarball" is told from "tar failed" by tar's English "not
+      found in archive"; under another locale a missing binary reads as
+      "cannot unpack". Run tar with `LC_ALL=C`.
+- [ ] GNU tar takes a `:` in the archive path for a remote host, so a
+      `TMPDIR` with a colon breaks the unpack. Use `--force-local`, or run
+      tar inside the temp directory with a relative name. bsdtar is fine.
+- [ ] `~/.curlrc` is honoured, so an odd user config can change the
+      download. `curl -q` would ignore it, proxy settings included.
+- [ ] A clean build ahead of its release (`cargo install --git`, a committed
+      branch) counts as a release build: every ssh run downloads and uploads
+      the release binary before the server rejects it. Correct message, slow.
+- [ ] The "downloading irsync …" line always goes to stderr; nobody checked
+      whether a quiet flag should silence it.
+
+## The upload command on the server (`ssh/client.rs`)
+
+- [ ] A rejected install on a fresh server leaves an empty
+      `~/.local/share/irsync/bin`, although the message says nothing was
+      changed.
+- [ ] A failed `cat`, `chmod` or `mv` (disk full) leaves the `.tmp.$$` file;
+      only the size and version checks remove it. A `trap 'rm -f …' EXIT`
+      would cover all of them. - [ ] A CPU that irsync does not know is reported as "an unknown CPU";
+      pass the raw `uname -m` text through.
