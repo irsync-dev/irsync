@@ -1,7 +1,7 @@
 //! The client side of SSH onboarding: drive the server through the system
 //! `ssh` (or `--rsh` / `IRSYNC_RSH`). irsync has no SSH code of its own.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -12,6 +12,10 @@ use crate::build::LONG_VERSION;
 
 /// irsync's own copy on the server, relative to the remote home.
 pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
+
+/// Where the book explains the setup without ssh.
+const BY_HAND_URL: &str =
+    "https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand";
 
 /// Printed first by the probe so a login banner before it can be ignored.
 const PROBE_MARKER: &str = "irsync-probe";
@@ -166,37 +170,74 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
         bail!(
             "{dest} runs {} {}, this irsync is {my_os} {my_arch}, so it cannot copy itself \
              there. Install irsync on both machines and set the server up by hand: \
-             https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand",
+             {BY_HAND_URL}",
             probe.os.unwrap_or("an unknown OS"),
             probe.arch.unwrap_or("an unknown CPU"),
         );
     }
     let exe = exe_path()?;
+    match upload(rsh, dest, &exe)? {
+        Upload::Done => {}
+        Upload::Short => bail!("{}", cut_short(dest)),
+        Upload::NotThisVersion => bail!(
+            "the copied irsync does not run on {dest}. Nothing was changed there. \
+             Install irsync on the server and set it up by hand: {BY_HAND_URL}"
+        ),
+    }
+    Ok(Install::Copied {
+        replaced: probe.installed.clone(),
+    })
+}
+
+fn cut_short(dest: &str) -> String {
+    format!("the copy of irsync on {dest} was cut short; nothing was changed, try again")
+}
+
+/// What the upload command reported.
+#[derive(Debug, PartialEq, Eq)]
+enum Upload {
+    Done,
+    /// Fewer bytes arrived than were sent.
+    Short,
+    /// The file arrived whole, but on the server it does not run or does
+    /// not report this build's version.
+    NotThisVersion,
+}
+
+/// Send `local` to the server as the new irsync. It replaces the old one
+/// only if the size matches and its `--version` is ours; otherwise the
+/// temp file is removed and nothing changes.
+fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
     let file =
-        std::fs::File::open(&exe).with_context(|| format!("cannot read {}", exe.display()))?;
+        std::fs::File::open(local).with_context(|| format!("cannot read {}", local.display()))?;
     let len = file.metadata()?.len();
     let dir = REMOTE_BIN.rsplit_once('/').map_or("", |(d, _)| d);
     let tmp = format!("\"$HOME/{REMOTE_BIN}.tmp.$$\"");
-    // Exit 3 marks a short upload; the temp file is removed first.
+    // `--version` prints the program name, then LONG_VERSION. The text sits
+    // in double quotes in the remote sh command.
+    let want = format!("irsync {}", *LONG_VERSION);
+    debug_assert!(!want.contains(['"', '$', '`']), "{want}");
+    // Exit 3 marks a short upload, exit 4 a binary that is not this build;
+    // the temp file is removed first.
     let cmd = format!(
         "mkdir -p \"$HOME/{dir}\" && cat > {tmp} \
          && {{ [ \"$(wc -c < {tmp})\" -eq {len} ] || {{ rm -f {tmp}; exit 3; }}; }} \
-         && chmod 755 {tmp} && mv -f {tmp} \"$HOME/{REMOTE_BIN}\""
+         && chmod 755 {tmp} \
+         && {{ [ \"$({tmp} --version 2>/dev/null | head -n 1)\" = \"{want}\" ] \
+         || {{ rm -f {tmp}; exit 4; }}; }} \
+         && mv -f {tmp} \"$HOME/{REMOTE_BIN}\""
     );
     let status = rsh
         .command(dest, &cmd)
         .stdin(Stdio::from(file))
         .status()
         .with_context(|| format!("cannot run {}", rsh.argv[0]))?;
-    if status.code() == Some(3) {
-        bail!("the copy of irsync on {dest} was cut short; nothing was changed, try again");
+    match status.code() {
+        Some(0) => Ok(Upload::Done),
+        Some(3) => Ok(Upload::Short),
+        Some(4) => Ok(Upload::NotThisVersion),
+        _ => bail!("copying irsync to {dest} failed ({status})"),
     }
-    if !status.success() {
-        bail!("copying irsync to {dest} failed ({status})");
-    }
-    Ok(Install::Copied {
-        replaced: probe.installed.clone(),
-    })
 }
 
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`

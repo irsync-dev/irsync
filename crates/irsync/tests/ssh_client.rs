@@ -238,3 +238,62 @@ fn install_removes_a_short_upload() {
     let dir = bin.parent().unwrap();
     assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
 }
+
+/// A stand-in binary that reports `version` (or fails when `None`).
+fn fake_exe(f: &Fake, version: Option<&str>) -> PathBuf {
+    let p = f.home.path().join("fake-irsync");
+    let body = match version {
+        Some(v) => format!("#!/bin/sh\necho '{v}'\n"),
+        None => "#!/bin/sh\nexit 126\n".to_owned(),
+    };
+    std::fs::write(&p, body).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+fn assert_nothing_installed(f: &Fake) {
+    let bin = f.home.path().join(REMOTE_BIN);
+    assert!(!bin.exists());
+    assert_eq!(std::fs::read_dir(bin.parent().unwrap()).unwrap().count(), 0);
+}
+
+#[test]
+fn install_rejects_a_copy_that_reports_another_version() {
+    let f = fake(None);
+    set_exe_override(fake_exe(&f, Some("irsync 9.9.9 (other)")));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("does not run on myserver"), "{e}");
+    assert!(e.contains("Nothing was changed"), "{e}");
+    assert_nothing_installed(&f);
+}
+
+#[test]
+fn install_rejects_a_copy_that_does_not_run() {
+    let f = fake(None);
+    set_exe_override(fake_exe(&f, None));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("does not run on myserver"), "{e}");
+    assert_nothing_installed(&f);
+}
+
+#[test]
+fn a_rejected_copy_keeps_the_old_binary() {
+    let f = fake(None);
+    let dst = f.home.path().join(REMOTE_BIN);
+    std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+    std::fs::write(&dst, "#!/bin/sh\necho 'irsync 0.0.1 (old)'\n").unwrap();
+    std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_exe_override(fake_exe(&f, Some("irsync 9.9.9 (other)")));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    ensure_installed(&f.rsh, "myserver", &p).unwrap_err();
+    assert!(std::fs::read_to_string(&dst)
+        .unwrap()
+        .contains("0.0.1 (old)"));
+    assert_eq!(std::fs::read_dir(dst.parent().unwrap()).unwrap().count(), 1);
+}
