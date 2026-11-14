@@ -7,8 +7,9 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, bail, Context, Result};
 use iroh::EndpointId;
 
+use super::release;
 use super::setup::SetupReport;
-use crate::build::LONG_VERSION;
+use crate::build::{BuildInfo, LONG_VERSION};
 
 /// irsync's own copy on the server, relative to the remote home.
 pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
@@ -155,11 +156,19 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Install {
     Current,
-    Copied { replaced: Option<String> },
+    Copied {
+        replaced: Option<String>,
+    },
+    /// The release binary for `platform` ("linux aarch64"), downloaded
+    /// here and copied over.
+    Downloaded {
+        replaced: Option<String>,
+        platform: String,
+    },
 }
 
-/// Make sure the server has this exact build, copying it over if the
-/// platforms match.
+/// Make sure the server has this exact build: copy this binary over if the
+/// platforms match, else the release binary for the server's platform.
 pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
     // `--version` prints the program name, then LONG_VERSION.
     if probe.installed.as_deref() == Some(format!("irsync {}", *LONG_VERSION).as_str()) {
@@ -167,13 +176,7 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     }
     let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
     if probe.os != Some(my_os) || probe.arch != Some(my_arch) {
-        bail!(
-            "{dest} runs {} {}, this irsync is {my_os} {my_arch}, so it cannot copy itself \
-             there. Install irsync on both machines and set the server up by hand: \
-             {BY_HAND_URL}",
-            probe.os.unwrap_or("an unknown OS"),
-            probe.arch.unwrap_or("an unknown CPU"),
-        );
+        return install_release(rsh, dest, probe);
     }
     let exe = exe_path()?;
     match upload(rsh, dest, &exe)? {
@@ -187,6 +190,58 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install>
     Ok(Install::Copied {
         replaced: probe.installed.clone(),
     })
+}
+
+/// The server's OS or CPU is not ours, so our own binary is no use there:
+/// download the release binary for this build's tag and copy that over.
+/// Only a release build can; see [`release::release_tag`].
+fn install_release(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
+    let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let os = probe.os.unwrap_or("an unknown OS");
+    let arch = probe.arch.unwrap_or("an unknown CPU");
+    let by_hand =
+        format!("Install irsync on both machines and set the server up by hand: {BY_HAND_URL}");
+    let Some(target) = release::target_for(probe.os, probe.arch) else {
+        bail!(
+            "{dest} runs {os} {arch}, this irsync is {my_os} {my_arch}, and there is no \
+             release binary for that platform. {by_hand}"
+        );
+    };
+    let Some(tag) = release_tag() else {
+        bail!(
+            "{dest} runs {os} {arch}, this irsync is {my_os} {my_arch} and a development \
+             build ({}). Only release builds install on another OS or CPU. {by_hand}",
+            *LONG_VERSION
+        );
+    };
+    eprintln!("irsync: downloading irsync {tag} for {os} {arch}");
+    let fetched = release::fetch(&tag, target)?;
+    match upload(rsh, dest, fetched.bin())? {
+        Upload::Done => {}
+        Upload::Short => bail!("{}", cut_short(dest)),
+        Upload::NotThisVersion => bail!(
+            "release {tag} is not this build ({}): this irsync is a development build with \
+             a release's version number, so it cannot install on {dest}. Nothing was \
+             changed there.",
+            *LONG_VERSION
+        ),
+    }
+    Ok(Install::Downloaded {
+        replaced: probe.installed.clone(),
+        platform: format!("{os} {arch}"),
+    })
+}
+
+/// The release tag of this build, or `None` for a development build. A
+/// test that points the download at its own files always gets a tag: test
+/// builds come from a tree with uncommitted changes.
+fn release_tag() -> Option<String> {
+    let info = BuildInfo::current();
+    #[cfg(feature = "test-hooks")]
+    if release::test_url().is_some() {
+        return Some(format!("v{}", info.version));
+    }
+    release::release_tag(&info)
 }
 
 fn cut_short(dest: &str) -> String {

@@ -1,12 +1,15 @@
 //! The client's SSH driver, run against the fake-ssh fixture.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use irsync::ssh::client::{
     ensure_installed, parse_uname, probe, set_exe_override, Install, Rsh, REMOTE_BIN,
 };
+
+#[path = "common/release.rs"]
+mod release;
 
 /// Tests that set process-wide env must not overlap.
 static ENV: Mutex<()> = Mutex::new(());
@@ -34,6 +37,7 @@ fn fake(uname: Option<&str>) -> Fake {
             Some(u) => std::env::set_var("FAKE_SSH_UNAME", u),
             None => std::env::remove_var("FAKE_SSH_UNAME"),
         }
+        std::env::remove_var("IRSYNC_TEST_RELEASE_URL");
     }
     set_exe_override(PathBuf::from(env!("CARGO_BIN_EXE_irsync")));
     let rsh = Rsh::from_opts(Some(fake_ssh().to_str().unwrap()));
@@ -92,7 +96,7 @@ fn install_copies_then_is_current() {
 }
 
 #[test]
-fn install_refuses_other_platform() {
+fn install_refuses_a_platform_without_a_release() {
     let f = fake(Some("Linux riscv64"));
     let p = probe(&f.rsh, "myserver").unwrap();
     let e = ensure_installed(&f.rsh, "myserver", &p).unwrap_err();
@@ -101,7 +105,10 @@ fn install_refuses_other_platform() {
         msg.starts_with("myserver runs linux an unknown CPU, this irsync is "),
         "{msg}"
     );
-    assert!(msg.contains("so it cannot copy itself there"), "{msg}");
+    assert!(
+        msg.contains("there is no release binary for that platform"),
+        "{msg}"
+    );
     assert!(
         msg.contains(
             "Install irsync on both machines and set the server up by hand: \
@@ -109,6 +116,69 @@ fn install_refuses_other_platform() {
         ),
         "{msg}"
     );
+    assert!(!f.home.path().join(".local").exists());
+}
+
+/// Point the release download at `url`.
+fn set_release_url(url: &str) {
+    // SAFETY: the caller holds ENV through its `Fake`.
+    unsafe { std::env::set_var("IRSYNC_TEST_RELEASE_URL", url) };
+}
+
+#[test]
+fn install_downloads_for_another_platform() {
+    let (uname, target, platform) = release::other_platform();
+    let f = fake(Some(uname));
+    let rel = tempfile::tempdir().unwrap();
+    let this = Path::new(env!("CARGO_BIN_EXE_irsync"));
+    set_release_url(&release::fake_release(rel.path(), target, this));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    assert_eq!(
+        r,
+        Install::Downloaded {
+            replaced: None,
+            platform: platform.into()
+        }
+    );
+    assert_eq!(
+        std::fs::read(f.home.path().join(REMOTE_BIN)).unwrap(),
+        std::fs::read(this).unwrap()
+    );
+    let p = probe(&f.rsh, "myserver").unwrap();
+    assert_eq!(
+        ensure_installed(&f.rsh, "myserver", &p).unwrap(),
+        Install::Current
+    );
+}
+
+#[test]
+fn a_release_that_is_not_this_build_is_not_installed() {
+    let (uname, target, _) = release::other_platform();
+    let f = fake(Some(uname));
+    let rel = tempfile::tempdir().unwrap();
+    let other = fake_exe(&f, Some("irsync 9.9.9 (other)"));
+    set_release_url(&release::fake_release(rel.path(), target, &other));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("development build"), "{e}");
+    assert!(e.contains("Nothing was changed"), "{e}");
+    assert_nothing_installed(&f);
+}
+
+#[test]
+fn a_failed_download_changes_nothing() {
+    let (uname, _, _) = release::other_platform();
+    let f = fake(Some(uname));
+    let rel = tempfile::tempdir().unwrap();
+    set_release_url(&release::url_of(rel.path()));
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("could not download"), "{e}");
     assert!(!f.home.path().join(".local").exists());
 }
 

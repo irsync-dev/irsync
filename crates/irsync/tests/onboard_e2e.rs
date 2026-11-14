@@ -2,6 +2,8 @@
 //! over (fake) ssh, saves the alias, then syncs over iroh.
 
 mod common;
+#[path = "common/release.rs"]
+mod release;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -42,6 +44,8 @@ struct World {
     src: tempfile::TempDir,
     port: u16,
     uname: Option<String>,
+    /// Where the client downloads a release from, instead of GitHub.
+    release_url: Option<String>,
 }
 
 impl World {
@@ -52,6 +56,7 @@ impl World {
             src: tempfile::tempdir().unwrap(),
             port: free_port(),
             uname: None,
+            release_url: None,
         };
         w.server_config("", "");
         std::fs::write(w.src.path().join("a.txt"), "hello\n").unwrap();
@@ -119,6 +124,10 @@ impl World {
         match &self.uname {
             Some(u) => cmd.env("FAKE_SSH_UNAME", u),
             None => cmd.env_remove("FAKE_SSH_UNAME"),
+        };
+        match &self.release_url {
+            Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
+            None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
         let mut child = cmd.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(180);
@@ -278,7 +287,10 @@ fn other_platform_changes_nothing() {
     let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("so it cannot copy itself there"), "{err}");
+    assert!(
+        err.contains("there is no release binary for that platform"),
+        "{err}"
+    );
     assert!(err.contains("set the server up by hand"), "{err}");
     assert!(
         !w.client_config().contains("[hosts"),
@@ -288,6 +300,28 @@ fn other_platform_changes_nothing() {
     assert!(!w.server.path().join(".config/irsync").exists());
     assert!(!w.server.path().join(".local").exists());
     assert!(!w.server.path().join("xdg").exists());
+}
+
+#[test]
+fn other_platform_gets_the_release_binary() {
+    let (uname, target, platform) = release::other_platform();
+    let mut w = World::new();
+    let rel = tempfile::tempdir().unwrap();
+    w.uname = Some(uname.into());
+    w.release_url = Some(release::fake_release(
+        rel.path(),
+        target,
+        Path::new(env!("CARGO_BIN_EXE_irsync")),
+    ));
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let err = ok(&o);
+    assert!(err.contains("irsync: downloading irsync v"), "{err}");
+    assert!(
+        err.contains(&format!("(release binary for {platform})")),
+        "{err}"
+    );
+    same_tree(w.src.path(), &dest);
 }
 
 #[test]

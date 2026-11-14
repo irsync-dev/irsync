@@ -113,16 +113,23 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     let version = &*LONG_VERSION;
     let r = &o.report;
     let mut out = vec![format!("set up {dest} over ssh:")];
-    match &o.install {
-        Install::Current => {}
-        Install::Copied { replaced: None } => {
-            out.push(format!("  installed irsync {version} at {bin}"));
-        }
-        Install::Copied {
-            replaced: Some(old),
-        } => {
+    let (replaced, note) = match &o.install {
+        Install::Current => (None, None),
+        Install::Copied { replaced } => (Some(replaced), None),
+        Install::Downloaded { replaced, platform } => (
+            Some(replaced),
+            Some(format!(" (release binary for {platform})")),
+        ),
+    };
+    let note = note.unwrap_or_default();
+    match replaced {
+        None => {}
+        Some(None) => out.push(format!("  installed irsync {version} at {bin}{note}")),
+        Some(Some(old)) => {
             let old = old.strip_prefix("irsync ").unwrap_or(old);
-            out.push(format!("  replaced irsync {old} with {version} at {bin}"));
+            out.push(format!(
+                "  replaced irsync {old} with {version} at {bin}{note}"
+            ));
         }
     }
     if r.identity == Created::Generated {
@@ -352,6 +359,38 @@ mod tests {
             root: false,
             client: id(1),
         }
+    }
+
+    #[test]
+    fn downloaded_says_which_platform() {
+        let o = onboarded(
+            Install::Downloaded {
+                replaced: None,
+                platform: "linux aarch64".into(),
+            },
+            DaemonOutcome::Started,
+            Some("linux"),
+        );
+        let s = summary(&o);
+        let want = format!(
+            "  installed irsync {} at ~/{REMOTE_BIN} (release binary for linux aarch64)",
+            *LONG_VERSION
+        );
+        assert!(s.contains(&want), "{s:?}");
+        let o = onboarded(
+            Install::Downloaded {
+                replaced: Some("irsync 0.0.1 (old)".into()),
+                platform: "linux aarch64".into(),
+            },
+            DaemonOutcome::Started,
+            Some("linux"),
+        );
+        let s = summary(&o);
+        let want = format!(
+            "  replaced irsync 0.0.1 (old) with {} at ~/{REMOTE_BIN} (release binary for linux aarch64)",
+            *LONG_VERSION
+        );
+        assert!(s.contains(&want), "{s:?}");
     }
 
     #[test]
