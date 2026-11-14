@@ -48,6 +48,7 @@ runs, in this order:
 
 ```sh
 cargo fmt --all --check
+python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings
 cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all
@@ -103,6 +104,7 @@ cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
 ```
 
 These are the checks CI runs.

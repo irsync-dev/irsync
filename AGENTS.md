@@ -35,10 +35,14 @@ cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
 ```
 
-`--include-ignored` adds exactly those five; no other test is ignored. A
-new test of irsync through the fault layer should run in-process on
+The last line tests `tools/dev-setup.sh` itself; it is Python, so no cargo
+command runs it. `--include-ignored` adds exactly those five slow tests; no
+other test is ignored.
+
+A new test of irsync through the fault layer should run in-process on
 tokio's paused clock (`with_netsim` in `crates/irsync/tests/common`, as
 in `tests/netsim.rs`), which takes seconds, rather than be ignored. Mark
 a test that runs the real fault binaries with

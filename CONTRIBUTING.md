@@ -36,9 +36,10 @@ cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
 ```
 
-`--include-ignored` adds four slow network-fault tests that take several
+`--include-ignored` adds five slow network-fault tests that take several
 minutes. Leave it off while you work on a change.
 
 More on the tests, the stress tools and the design records is in
