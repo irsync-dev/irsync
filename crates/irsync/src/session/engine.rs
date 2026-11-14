@@ -27,7 +27,6 @@ use irsync_proto::v1::{error::Code, Error, ExportEntry, ExportList, FileEntry, H
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use rand_core::{OsRng, RngCore};
-use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -46,7 +45,8 @@ use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
 use crate::hasher::{HashEvent, HashProgress, Hasher};
 use crate::index::IndexHandle;
-use crate::net::frame::{write_msg, MAX_FRAME};
+use crate::net::frame::{read_body, write_msg_tapped};
+use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
@@ -513,37 +513,43 @@ impl Privs {
     }
 }
 
-/// Reads one raw frame body (the caller decides what it is).
-pub(crate) async fn read_frame(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    AsyncReadExt::read_exact(recv, &mut len).await?;
-    let len = u32::from_be_bytes(len) as usize;
-    if len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "oversize frame"));
-    }
-    let mut body = vec![0u8; len];
-    AsyncReadExt::read_exact(recv, &mut body).await?;
-    Ok(body)
+/// Reads one raw frame body; the end of the stream is an error here, as a
+/// reply is always expected.
+pub(crate) async fn read_reply_body(recv: &mut RecvStream) -> io::Result<Vec<u8>> {
+    read_body(recv)
+        .await?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "end of stream before reply"))
 }
 
 /// The daemon answers `Hello` with `HelloAck`, or with `Error` when it
 /// refuses. The two differ in the wire type of field 1, so at most one
 /// decodes as a well-formed ack.
-async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
-    let body = read_frame(recv)
+///
+/// The ack names the session on `conn_tap` before `tap` reports it.
+async fn read_hello_reply(
+    recv: &mut RecvStream,
+    conn_tap: &ConnTap,
+    tap: &StreamTap,
+) -> anyhow::Result<HelloAck> {
+    let body = read_reply_body(recv)
         .await
         .map_err(|e| TransportError(format!("reading HelloAck: {e}")))?;
     if let Ok(ack) = HelloAck::decode(&body[..]) {
         if ack.session_id.len() == 16 {
+            conn_tap.set_session(&ack.session_id);
+            tap.received(&ack, body.len());
             return Ok(ack);
         }
     }
     match Error::decode(&body[..]) {
-        Ok(e) => Err(SessionRefused {
-            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-            message: e.message,
+        Ok(e) => {
+            tap.received(&e, body.len());
+            Err(SessionRefused {
+                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+                message: e.message,
+            }
+            .into())
         }
-        .into()),
         Err(_) => bail!("malformed reply to Hello"),
     }
 }
@@ -552,22 +558,28 @@ async fn read_hello_reply(recv: &mut RecvStream) -> anyhow::Result<HelloAck> {
 /// list (sorted by name). A refusal is a [`SessionRefused`].
 pub async fn list_exports(conn: &Connection, hello: Hello) -> anyhow::Result<Vec<ExportEntry>> {
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
-    write_msg(&mut send, &hello)
+    let tap = ConnTap::of(conn).stream(TapStream::Control, u64::from(send.id()));
+    write_msg_tapped(&mut send, &hello, &tap)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
-    let body = read_frame(&mut recv)
+    tap.finished();
+    let body = read_reply_body(&mut recv)
         .await
         .map_err(|e| TransportError(format!("reading ExportList: {e}")))?;
     if let Ok(list) = ExportList::decode(&body[..]) {
+        tap.received(&list, body.len());
         return Ok(list.exports);
     }
     match Error::decode(&body[..]) {
-        Ok(e) => Err(SessionRefused {
-            code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-            message: e.message,
+        Ok(e) => {
+            tap.received(&e, body.len());
+            Err(SessionRefused {
+                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
+                message: e.message,
+            }
+            .into())
         }
-        .into()),
         Err(_) => bail!("malformed reply to Hello"),
     }
 }
@@ -695,14 +707,17 @@ pub(super) async fn run_client_inner(
         .open_bi()
         .await
         .map_err(|e| TransportError(format!("opening control stream: {e}")))?;
-    write_msg(&mut send, &hello)
+    let conn_tap = ConnTap::of(&conn);
+    let tap = conn_tap.stream(TapStream::Control, u64::from(send.id()));
+    write_msg_tapped(&mut send, &hello, &tap)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
+    let reply = read_hello_reply(&mut recv, &conn_tap, &tap);
     let ack = match opts.timeout.filter(|t| !t.is_zero()) {
-        Some(t) => tokio::time::timeout(t, read_hello_reply(&mut recv))
+        Some(t) => tokio::time::timeout(t, reply)
             .await
             .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
-        None => read_hello_reply(&mut recv).await?,
+        None => reply.await?,
     };
     let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
     attempt.acked = Some(session_id);
@@ -825,7 +840,14 @@ pub(super) async fn run_client_inner(
         privs: Privs::current(),
         hooks: local.hooks,
     };
-    run_role(Arc::new(ctx), send, recv, listing, sends, Side::Client).await
+    run_role(
+        Arc::new(ctx),
+        (send, recv, tap),
+        listing,
+        sends,
+        Side::Client,
+    )
+    .await
 }
 
 /// The client's view of a single-file session: its own file name, and the
@@ -937,6 +959,7 @@ pub async fn serve_daemon(
     conn: Connection,
     send: SendStream,
     recv: RecvStream,
+    tap: StreamTap,
     place: Place,
     hello: Hello,
     index: IndexHandle,
@@ -963,7 +986,7 @@ pub async fn serve_daemon(
             Some(&place.export),
         )
     });
-    let res = serve_daemon_inner(conn, send, recv, place, hello, index, shared, &span)
+    let res = serve_daemon_inner(conn, send, recv, tap, place, hello, index, shared, &span)
         .instrument(span.clone())
         .await;
     if let Ok(out) = &res {
@@ -1041,6 +1064,7 @@ async fn serve_daemon_inner(
     conn: Connection,
     mut send: SendStream,
     recv: RecvStream,
+    tap: StreamTap,
     place: Place,
     hello: Hello,
     index: IndexHandle,
@@ -1075,7 +1099,7 @@ async fn serve_daemon_inner(
             "bad partial-dir {:?}: must be a relative path inside the destination",
             String::from_utf8_lossy(&hello.partial_dir)
         );
-        return refuse(&conn, &mut send, Code::BadPath, msg).await;
+        return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
     }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
@@ -1085,7 +1109,7 @@ async fn serve_daemon_inner(
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
-            return refuse(&conn, &mut send, Code::BadPath, msg).await;
+            return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
         }
     };
     let remote = conn.remote_id();
@@ -1107,18 +1131,19 @@ async fn serve_daemon_inner(
         };
         let Some(id) = id.filter(|_| found.is_some()) else {
             let msg = "unknown session".to_string();
-            return refuse(&conn, &mut send, Code::BadSession, msg).await;
+            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
         };
         // Stop an older connection still hosting it, then reload what it saved.
         let claim = shared.registry.claim(id, &conn).await?;
         let Some(rec) = load_record(&index, id, &key).await.filter(owned) else {
             let msg = "session finished".to_string();
-            return refuse(&conn, &mut send, Code::BadSession, msg).await;
+            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
         };
         (id, Some(rec), claim)
     };
     let resumed = record.is_some();
-    write_msg(
+    ConnTap::of(&conn).set_session(&session_id);
+    write_msg_tapped(
         &mut send,
         &HelloAck {
             session_id: session_id.to_vec(),
@@ -1130,6 +1155,7 @@ async fn serve_daemon_inner(
                 .map(|s| s.wire.as_bytes().to_vec())
                 .unwrap_or_default(),
         },
+        &tap,
     )
     .await?;
     drop(handshake);
@@ -1141,7 +1167,7 @@ async fn serve_daemon_inner(
         let mut byte = [0u8; 1];
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            AsyncReadExt::read(&mut recv, &mut byte),
+            tokio::io::AsyncReadExt::read(&mut recv, &mut byte),
         )
         .await;
         tracing::warn!("fault injection: dropping the connection after HelloAck");
@@ -1319,7 +1345,14 @@ async fn serve_daemon_inner(
             h
         },
     };
-    run_role(Arc::new(ctx), send, recv, listing, sends, Side::Daemon).await
+    run_role(
+        Arc::new(ctx),
+        (send, recv, tap),
+        listing,
+        sends,
+        Side::Daemon,
+    )
+    .await
 }
 
 /// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
@@ -1327,19 +1360,22 @@ async fn serve_daemon_inner(
 async fn refuse(
     conn: &Connection,
     send: &mut SendStream,
+    tap: &StreamTap,
     code: Code,
     msg: String,
 ) -> anyhow::Result<Outcome> {
     tracing::info!(peer = %conn.remote_id().fmt_short(), ?code, %msg, "refusing session");
-    write_msg(
+    write_msg_tapped(
         send,
         &Error {
             code: code as i32,
             message: msg.clone(),
         },
+        tap,
     )
     .await?;
     send.finish()?;
+    tap.finished();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
     conn.close(2u32.into(), b"rejected");
     bail!(msg);
@@ -1349,9 +1385,8 @@ async fn refuse(
 /// fatal error to the peer before giving up.
 async fn run_role(
     ctx: Arc<Ctx>,
-    send: SendStream,
-    recv: RecvStream,
-    listing: (SendStream, RecvStream),
+    control: (SendStream, RecvStream, StreamTap),
+    listing: (SendStream, RecvStream, StreamTap),
     sends: bool,
     side: Side,
 ) -> anyhow::Result<Outcome> {
@@ -1395,17 +1430,23 @@ async fn run_role(
     // a waiting list needs is always freed by files that can progress.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);
+    let (send, recv, control_tap) = control;
     let (out, mut writer) = control::spawn_writer(
         send,
         ev_tx.clone(),
         &ctx.hooks,
         out_ceiling(&ctx.hooks, sends),
+        control_tap.clone(),
     );
-    let (listing_send, listing_recv) = listing;
+    let (listing_send, listing_recv, listing_tap) = listing;
     // The gate holds back an empty listing half until the role has ended
     // (see `spawn_listing_writer`).
-    let (listing_out, listing_gate, listing_writer) =
-        listing_stream::spawn_listing_writer(listing_send, ev_tx.clone(), &ctx.hooks);
+    let (listing_out, listing_gate, listing_writer) = listing_stream::spawn_listing_writer(
+        listing_send,
+        ev_tx.clone(),
+        &ctx.hooks,
+        listing_tap.clone(),
+    );
     let scan = Arc::new(listing_stream::PeerScan::default());
     let (peer_tx, peer_rx) = mpsc::channel(LISTING_QUEUE);
     let listing_reader = listing_stream::spawn_listing_reader(
@@ -1420,6 +1461,7 @@ async fn run_role(
         &ctx.hooks,
         ctx.activity.clone(),
         scan.clone(),
+        listing_tap,
     );
     let reader = control::spawn_reader(
         recv,
@@ -1427,6 +1469,7 @@ async fn run_role(
         ctx.hooks.bus.clone(),
         ctx.activity.clone(),
         scan,
+        control_tap,
     );
     let idle = Arc::new(AtomicBool::new(false));
     // Spawned tasks do not inherit the span: their events belong to the session.

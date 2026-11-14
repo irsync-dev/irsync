@@ -50,10 +50,10 @@ fn main() {
     let _ = irsync::fs::rlimit::raise_nofile();
     if args.cmd.is_none() && args.sync.paths.len() == 1 {
         let opts = SyncOptions::from_args(&args);
-        std::process::exit(run_list(args, &opts));
+        exit_after_capture(run_list(args, &opts));
     }
     match &args.cmd {
-        Some(Command::Daemon(d)) => std::process::exit(run_daemon(d)),
+        Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d)),
         Some(Command::Gc {
             dry_run,
             log,
@@ -77,35 +77,35 @@ fn main() {
         }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
-            std::process::exit(run_sync(&args, &opts));
+            exit_after_capture(run_sync(&args, &opts));
         }
     }
 }
 
-/// The client's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
-fn client_log_default(verbose: u8, quiet: bool) -> &'static str {
+/// Exits with `code` once the protocol capture, if one is open, is on disk.
+/// The daemon gets here after SIGTERM or SIGINT too.
+fn exit_after_capture(code: i32) -> ! {
+    irsync::net::tap::drain_capture(std::time::Duration::from_secs(2));
+    std::process::exit(code)
+}
+
+/// The log filter for `-q` and `-v` on both sides, unless `RUST_LOG` is set.
+/// Callers pass the `-v` count minus one: `-v` alone is still warnings.
+fn log_default(verbose: u8, quiet: bool) -> &'static str {
     match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn",
         (false, 1) => "warn,irsync=info",
         (false, 2) => "info,irsync=debug",
+        (false, 3) => "debug,irsync=trace,irsync::wire=off",
+        // `-vvvvv`: every protocol message too.
         _ => "debug,irsync=trace",
-    }
-}
-
-/// The daemon's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
-fn daemon_log_default(verbose: u8, quiet: bool) -> &'static str {
-    match (quiet, verbose) {
-        (true, _) => "error",
-        (false, 0) => "info",
-        (false, 1) => "debug",
-        _ => "trace",
     }
 }
 
 /// Logging alone, for the commands without telemetry.
 fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
-    let cfg = TelemetryConfig::logs_only(Side::Client, client_log_default(verbose, quiet));
+    let cfg = TelemetryConfig::logs_only(Side::Client, log_default(verbose, quiet));
     init_telemetry(cfg, writer);
 }
 
@@ -147,8 +147,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             TelemetryConfig {
                 side: Side::Client,
                 // `-v` lists files; logging starts at `-vv`.
-                log_default: client_log_default(opts.verbose.saturating_sub(1), opts.quiet)
-                    .to_string(),
+                log_default: log_default(opts.verbose.saturating_sub(1), opts.quiet).to_string(),
                 summary: opts.verbose >= 2 && !opts.quiet,
                 debug_addr: opts.debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
@@ -735,7 +734,8 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         return run_sync(&args, &opts);
     }
     let log = LogWriter::new();
-    init_logging(opts.verbose, opts.quiet, log.clone());
+    // Counts -v as a sync does: logging starts at -vv.
+    init_logging(opts.verbose.saturating_sub(1), opts.quiet, log.clone());
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -779,6 +779,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
                 None => with_wrong_id_hint(err),
             }
         })?;
+    irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -1306,7 +1307,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         init_telemetry(
             TelemetryConfig {
                 side: Side::Daemon,
-                log_default: daemon_log_default(d.log.verbose, d.log.quiet).to_string(),
+                log_default: log_default(d.log.verbose.saturating_sub(1), d.log.quiet).to_string(),
                 summary: false,
                 debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
@@ -1964,6 +1965,48 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether the filter `spec` lets `target` log at TRACE.
+    fn filter_enables(spec: &str, target: &str) -> bool {
+        use tracing_subscriber::layer::SubscriberExt;
+        let sub = tracing_subscriber::registry().with(tracing_subscriber::EnvFilter::new(spec));
+        tracing::subscriber::with_default(sub, || match target {
+            "irsync::wire" => tracing::enabled!(target: "irsync::wire", tracing::Level::TRACE),
+            _ => tracing::enabled!(target: "irsync::session", tracing::Level::TRACE),
+        })
+    }
+
+    fn filter_enables_wire(spec: &str) -> bool {
+        filter_enables(spec, "irsync::wire")
+    }
+
+    fn filter_enables_irsync_trace(spec: &str) -> bool {
+        filter_enables(spec, "irsync::session")
+    }
+
+    #[test]
+    fn wire_trace_only_at_five_v() {
+        // log_default gets the sync's -v count minus one (run_sync).
+        for v in 0..=3 {
+            assert!(
+                !filter_enables_wire(log_default(v, false)),
+                "sync -v x{}",
+                v + 1
+            );
+        }
+        assert!(filter_enables_wire(log_default(4, false)));
+        assert!(filter_enables_wire(log_default(9, false)));
+        assert!(filter_enables_irsync_trace(log_default(3, false)));
+    }
+
+    #[test]
+    fn daemon_counts_v_like_the_client() {
+        let d = |v: u8| log_default(v.saturating_sub(1), false);
+        assert_eq!(d(0), "warn");
+        assert_eq!(d(2), "warn,irsync=info");
+        assert!(!filter_enables_wire(d(4)));
+        assert!(filter_enables_wire(d(5)));
+    }
 
     fn out(max_delete: bool, errors: usize) -> Outcome {
         Outcome {

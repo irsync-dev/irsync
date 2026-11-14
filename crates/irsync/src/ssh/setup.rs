@@ -395,7 +395,21 @@ fn stop_daemon(pid: u32, state: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Starts `exe daemon` in its own session, output appended to `log`, and
+/// The `exe daemon -vv` command line, without where its output goes.
+fn daemon_command(exe: &Path, paths: &Paths) -> Command {
+    let mut cmd = Command::new(exe);
+    // `-vv`: info logs, as a service definition runs it; the default is warnings.
+    cmd.args(["daemon", "-vv"]);
+    // A long-lived background daemon must not quietly write TLS secrets or
+    // a capture that were meant for one debugging run of the client.
+    cmd.env_remove("SSLKEYLOGFILE").env_remove("IRSYNC_CAPTURE");
+    if *paths != Paths::resolve(None) {
+        cmd.arg("--config").arg(&paths.config);
+    }
+    cmd
+}
+
+/// Starts `exe daemon -vv` in its own session, output appended to `log`, and
 /// waits until it holds the lock.
 fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(state).with_context(|| format!("creating {}", state.display()))?;
@@ -405,11 +419,7 @@ fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::
         .open(log)
         .with_context(|| format!("opening {}", log.display()))?;
     let start = out.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut cmd = Command::new(exe);
-    cmd.arg("daemon");
-    if *paths != Paths::resolve(None) {
-        cmd.arg("--config").arg(&paths.config);
-    }
+    let mut cmd = daemon_command(exe, paths);
     cmd.stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out);
@@ -459,4 +469,23 @@ fn tail(path: &Path, from: u64, n: usize) -> String {
     }
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_never_inherits_capture_or_key_log() {
+        // The daemon outlives this ssh session; a capture or TLS key log
+        // meant for one debugging run must not follow it.
+        let cmd = daemon_command(Path::new("irsync"), &Paths::resolve(None));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        for var in ["SSLKEYLOGFILE", "IRSYNC_CAPTURE"] {
+            assert!(
+                envs.contains(&(std::ffi::OsStr::new(var), None)),
+                "{var} is not removed: {envs:?}"
+            );
+        }
+    }
 }

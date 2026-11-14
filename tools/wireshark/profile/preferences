@@ -1,0 +1,2 @@
+# irsync capture profile: decode every packet as an irsync capture Record.
+protobuf.default_type: irsync.capture.v1.Record

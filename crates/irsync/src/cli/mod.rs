@@ -470,7 +470,7 @@ fn parse_yes_no(s: &str) -> Result<bool, String> {
 /// How much the commands that log (`daemon`, `gc`, `index`) say on stderr.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
 pub struct LogArgs {
-    /// Log more; repeat for more still (up to -vvv).
+    /// Log more; repeat for more still (up to -vvvvv).
     #[arg(short, long, action = ArgAction::Count, conflicts_with = "quiet")]
     pub verbose: u8,
     /// Log errors only, and print no summary.
@@ -640,7 +640,8 @@ pub struct SyncArgs {
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
     /// List each file transferred and end with a transfer summary; -vv adds
-    /// a summary per session and info logging, -vvv debug, -vvvv trace.
+    /// a summary per session and info logging, -vvv debug, -vvvv trace,
+    /// -vvvvv trace plus every protocol message.
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
     /// Print errors only; also turns the live progress block off.

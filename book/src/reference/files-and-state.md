@@ -32,7 +32,7 @@ that is set. The client and the daemon use the same layout.
 | `index/<hash>.sqlite-wal`, `-shm` | SQLite's write-ahead log and shared memory, beside each database. |
 | `daemon.lock` | Held by the running daemon, so a second daemon with the same state directory refuses to start. It holds the daemon's `pid`, the path of its program (`exe`) and its `version`, one `key=value` line each. The ssh setup reads it to tell whether a daemon runs and which build it is. |
 | `daemon.addr` | Where the running daemon can be reached right now: its `pid`, its home `relay` and each direct `addr`, one `key=value` line each, rewritten whenever they change. The ssh setup passes them to the client, so the first sync to a daemon it just started does not wait for the daemon to appear in the DHT or DNS. |
-| `daemon.log` | The log of a daemon the ssh setup started. A daemon you start yourself logs to stderr instead. |
+| `daemon.log` | The log of a daemon the ssh setup started, at info level (`-vv`). A daemon you start yourself logs to stderr instead. |
 
 Each database holds:
 

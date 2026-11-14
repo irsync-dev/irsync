@@ -10,10 +10,11 @@ use common::{
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
 use irsync::config::paths::Paths;
-use irsync::net::frame::{read_msg, write_msg};
+use irsync::net::frame::{read_body, read_msg, write_msg};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello, HelloAck};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
+use prost::Message as _;
 
 fn hello(path: &[u8], dir: Direction) -> Hello {
     Hello {
@@ -108,19 +109,14 @@ async fn exchange_against(
     send.finish().map_err(|e| e.to_string())?;
     // Only the reply: after a HelloAck the daemon waits for the listing
     // stream, which this client never opens.
-    let mut raw = vec![0u8; 4];
-    within(recv.read_exact(&mut raw))
+    let body = within(read_body(&mut recv))
         .await
-        .map_err(|e| e.to_string())?;
-    let len = u32::from_be_bytes(raw[..4].try_into().unwrap()) as usize;
-    raw.resize(4 + len, 0);
-    within(recv.read_exact(&mut raw[4..]))
-        .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .ok_or("end of stream before reply")?;
     // HelloAck and Error differ in the wire type of field 1, so at most one decodes.
-    Ok(match read_msg::<HelloAck, _>(&mut &raw[..]).await {
-        Ok(Some(ack)) => HelloAckOrError::Ack(ack),
-        _ => HelloAckOrError::Err(read_msg::<Error, _>(&mut &raw[..]).await.unwrap().unwrap()),
+    Ok(match HelloAck::decode(&body[..]) {
+        Ok(ack) => HelloAckOrError::Ack(ack),
+        _ => HelloAckOrError::Err(Error::decode(&body[..]).unwrap()),
     })
 }
 

@@ -34,6 +34,7 @@
 - [Sessions and resume](explanation/sessions-and-resume.md)
 - [Identity and trust](explanation/identity-and-trust.md)
 - [Connections](explanation/connections.md)
+- [Networking](explanation/networking.md)
 - [The transfer algorithm](explanation/transfer-algorithm.md)
 - [Receiving a changed file](explanation/receiving-a-changed-file.md)
 
@@ -58,6 +59,7 @@
   - [Hunting bugs](contributing/bug-hunting.md)
   - [Network stress with netstress](contributing/netstress.md)
   - [How netstress works](contributing/netstress-internals.md)
+- [Trace and capture the protocol](contributing/protocol-debugging.md)
 - [Performance](contributing/performance.md)
 - [Design records](contributing/design-records.md)
 - [Releasing](contributing/releasing.md)

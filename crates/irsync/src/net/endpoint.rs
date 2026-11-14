@@ -1,5 +1,6 @@
 //! Building the iroh endpoint used by both client and daemon.
 
+use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -319,12 +320,26 @@ pub async fn build_endpoint_with_stream_window(
     .await
 }
 
+/// Whether `SSLKEYLOGFILE` (the value passed in) asks for a TLS key log:
+/// any non-empty value does.
+fn keylog_wanted(var: Option<&OsStr>) -> bool {
+    var.is_some_and(|v| !v.is_empty())
+}
+
 /// Binds the endpoint; with `netsim`, on that transport alone.
 async fn build(
     opts: EndpointOpts,
     transport: QuicTransportConfig,
     #[cfg(feature = "netsim")] netsim: Option<Arc<dyn iroh::endpoint::transports::CustomTransport>>,
 ) -> Result<Endpoint, NetError> {
+    let keyfile = std::env::var_os("SSLKEYLOGFILE");
+    let keylog = keylog_wanted(keyfile.as_deref());
+    if keylog {
+        tracing::warn!(
+            "writing TLS secrets to {} (SSLKEYLOGFILE)",
+            keyfile.as_deref().unwrap_or_default().to_string_lossy()
+        );
+    }
     let builder = match &opts.relay {
         RelayChoice::N0Default => Endpoint::builder(presets::N0),
         RelayChoice::Custom(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
@@ -338,6 +353,7 @@ async fn build(
     // Start from no lookups and add exactly what was asked for, so the N0
     // preset's own pkarr/DNS services are neither duplicated nor forced on.
     let mut builder = builder
+        .keylog(keylog)
         .clear_address_lookup()
         .secret_key(opts.secret.clone())
         .alpns(vec![irsync_proto::ALPN.to_vec()])
@@ -386,6 +402,18 @@ async fn build(
     }
 
     Ok(builder.bind().await?)
+}
+
+#[cfg(test)]
+mod keylog_tests {
+    use super::*;
+
+    #[test]
+    fn keylog_follows_the_variable() {
+        assert!(!keylog_wanted(None));
+        assert!(!keylog_wanted(Some(OsStr::new(""))));
+        assert!(keylog_wanted(Some(OsStr::new("/tmp/k.log"))));
+    }
 }
 
 #[cfg(all(test, feature = "netsim"))]

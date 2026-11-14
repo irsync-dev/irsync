@@ -40,7 +40,8 @@ use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
-use crate::net::frame::read_msg;
+use crate::net::frame::read_msg_tapped;
+use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
@@ -1215,9 +1216,10 @@ async fn read_stream(
     mut s: RecvStream,
 ) {
     let _open = ctx.meter.hold("irsync_streams_open");
+    let tap = ConnTap::of(&ctx.conn).stream(TapStream::Data, u64::from(s.id()));
     let header = {
         let _recv = ctx.meter.start(Activity::Recv);
-        read_msg(&mut s).await
+        read_msg_tapped(&mut s, &tap).await
     };
     let header: DataStreamHeader = match header {
         Ok(Some(h)) => h,
@@ -1242,7 +1244,7 @@ async fn read_stream(
         // Code 0 tells the sender this is no failure (see `send.rs`).
         return stop(&mut s, 0);
     };
-    let accounted = read_range(&ctx, &route, &events, &bytes, &header, &mut s).await;
+    let accounted = read_range(&ctx, &route, &events, &bytes, &header, &mut s, &tap).await;
     // This stream's range is accounted for, delivered or not.
     finish_unit(&route, &events, file_id, accounted).await;
 }
@@ -1260,6 +1262,7 @@ async fn read_range(
     bytes: &AtomicU64,
     header: &DataStreamHeader,
     s: &mut RecvStream,
+    tap: &StreamTap,
 ) -> usize {
     let file_id = header.file_id;
     let first = header.first_chunk_idx as usize + route.idx_base as usize;
@@ -1272,7 +1275,7 @@ async fn read_range(
     for k in 0..n {
         let frame = {
             let _recv = ctx.meter.start(Activity::Recv);
-            read_msg::<DataChunk, _>(s).await
+            read_msg_tapped::<DataChunk, _>(s, tap).await
         };
         let frame = match frame {
             Ok(Some(c)) => c,
@@ -1380,7 +1383,7 @@ async fn read_range(
     } else {
         // Read to the end so the sender sees a clean finish rather than STOP.
         let _recv = ctx.meter.start(Activity::Recv);
-        match read_msg::<DataChunk, _>(s).await {
+        match read_msg_tapped::<DataChunk, _>(s, tap).await {
             Ok(None) => {}
             Ok(Some(_)) => {
                 tracing::warn!(file_id, "data stream carries more chunks than its header");
@@ -1443,8 +1446,13 @@ mod tests {
         let old = Arc::new(File::open(&path).unwrap());
         let (send, _) = ctx.conn.open_bi().await.unwrap();
         let (events, _events) = mpsc::unbounded_channel();
-        let (out, writer) =
-            super::super::control::spawn_writer(send, events, &ctx.hooks, usize::MAX);
+        let (out, writer) = super::super::control::spawn_writer(
+            send,
+            events,
+            &ctx.hooks,
+            usize::MAX,
+            crate::net::tap::StreamTap::off(),
+        );
         let route = Route {
             gen: 1,
             slot: Arc::new(tokio::sync::Mutex::new(None)),
@@ -1464,7 +1472,10 @@ mod tests {
         let read = async {
             let (_, mut recv) = t._peer.accept_bi().await.unwrap();
             let mut frames = Vec::new();
-            while let Some(c) = read_msg::<Control, _>(&mut recv).await.unwrap() {
+            while let Some(c) = crate::net::frame::read_msg::<Control, _>(&mut recv)
+                .await
+                .unwrap()
+            {
                 frames.extend(c.msg);
             }
             frames
