@@ -27,7 +27,6 @@ use irsync_proto::v1::{error::Code, Error, ExportEntry, ExportList, FileEntry, H
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use rand_core::{OsRng, RngCore};
-use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -1168,7 +1167,7 @@ async fn serve_daemon_inner(
         let mut byte = [0u8; 1];
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            AsyncReadExt::read(&mut recv, &mut byte),
+            tokio::io::AsyncReadExt::read(&mut recv, &mut byte),
         )
         .await;
         tracing::warn!("fault injection: dropping the connection after HelloAck");

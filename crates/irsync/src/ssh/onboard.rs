@@ -226,7 +226,7 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
                 "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
                 "<plist version=\"1.0\"><dict>",
                 "  <key>Label</key><string>org.irsync.daemon</string>",
-                "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string></array>",
+                "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>",
                 "  <key>RunAtLoad</key><true/>",
                 "  <key>KeepAlive</key><true/>",
                 "</dict></plist>",
@@ -239,7 +239,7 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
                 "[Unit]",
                 "Description=irsync daemon",
                 "[Service]",
-                "ExecStart=%h/.local/share/irsync/bin/irsync daemon",
+                "ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv",
                 "Restart=on-failure",
                 "[Install]",
                 "WantedBy=default.target",
@@ -419,7 +419,7 @@ mod tests {
             "To keep the daemon running after a reboot, make it a user service."
         );
         assert_eq!(h[1], "Put this in ~/.config/systemd/user/irsync.service:");
-        at(&h, "ExecStart=%h/.local/share/irsync/bin/irsync daemon");
+        at(&h, "ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv");
         at(&h, "Restart=on-failure");
         let pid = at(
             &h,

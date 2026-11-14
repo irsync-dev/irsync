@@ -16,6 +16,9 @@ listening on: <socket>
 debug port: <socket>
 ```
 
+When stdout is a terminal, a short banner comes first (version, relay and
+discovery); it is not printed to a pipe or a file.
+
 There is one `listening on:` line per bound socket. The `debug port:` line
 appears only when `debug_addr` is set (see [Telemetry](telemetry.md)). A
 process that starts the daemon can read these lines and dial at once.
@@ -101,7 +104,7 @@ On Linux, put this in `~/.config/systemd/user/irsync.service`:
 [Unit]
 Description=irsync daemon
 [Service]
-ExecStart=%h/.local/share/irsync/bin/irsync daemon
+ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -128,7 +131,7 @@ your home directory for `$HOME`:
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>org.irsync.daemon</string>
-  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string></array>
+  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
@@ -161,13 +164,12 @@ syntax; from fish or tcsh, run them under `sh`.
 
    [Service]
    Type=simple
-   ExecStart=/usr/local/bin/irsync daemon --config /etc/irsync/irsync.toml
+   ExecStart=/usr/local/bin/irsync daemon -vv --config /etc/irsync/irsync.toml
    ExecReload=/bin/kill -HUP $MAINPID
    KillSignal=SIGINT
    Restart=on-failure
    RestartSec=5
    User=irsync
-   Environment=RUST_LOG=info
 
    [Install]
    WantedBy=multi-user.target
@@ -209,14 +211,10 @@ restart.
      <array>
        <string>/usr/local/bin/irsync</string>
        <string>daemon</string>
+       <string>-vv</string>
        <string>--config</string>
        <string>/usr/local/etc/irsync/irsync.toml</string>
      </array>
-     <key>EnvironmentVariables</key>
-     <dict>
-       <key>RUST_LOG</key>
-       <string>info</string>
-     </dict>
      <key>RunAtLoad</key>
      <true/>
      <key>KeepAlive</key>
@@ -261,8 +259,11 @@ disks. Like `read_only`, the setting is read on every connection.
 ## Logs
 
 The daemon logs to stderr; journald and launchd's `StandardErrorPath` capture
-it. The default level is `info`. `-v` raises it to `debug`, `-vv` to `trace`,
-and `-q` lowers it to errors only. `RUST_LOG` overrides all of them, in the
+it. The default level is `warn`: the daemon logs warnings and errors only.
+`-vv` gives info logs, which is what a service wants in its journal; `-vvv`
+gives debug, `-vvvv` trace, and `-vvvvv` trace plus every protocol message,
+as on the client. `-q` lowers it to errors only. `RUST_LOG` overrides all of
+them, in the
 `tracing` filter syntax, for example `RUST_LOG=irsync=debug`.
 
 Each line of a session carries the session's span and its fields, as in

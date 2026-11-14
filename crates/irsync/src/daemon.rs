@@ -2,7 +2,7 @@
 //! anything, resolves and validates the requested export, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io;
+use std::io::{self, IsTerminal};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1014,6 +1014,13 @@ pub async fn run_from_settings(
     // reload): a parent process that reads these lines may dial at once.
     // `daemon.addr` follows each endpoint's address for `ssh-setup`.
     let state = settings.state_dir.clone();
+    // The daemon logs warnings by default, so a terminal gets a greeting.
+    if std::io::stdout().is_terminal() {
+        print!(
+            "{}",
+            startup_banner(crate::build::LONG_VERSION.as_str(), &endpoint, &settings)
+        );
+    }
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
         crate::daemon_addr::spawn_writer(state.clone(), ep.clone());
         println!("endpoint id: {}", ep.id());
@@ -1038,6 +1045,31 @@ pub async fn run_from_settings(
     }
     announce(daemon.endpoint());
     daemon.run(shutdown).await
+}
+
+/// What the daemon prints first when stdout is a terminal: its version and
+/// which network services it uses.
+pub fn startup_banner(version: &str, _ep: &Endpoint, settings: &Settings) -> String {
+    let d = &settings.daemon;
+    let relay = match (&d.relay_mode, &d.relay) {
+        (crate::config::settings::RelayMode::Disabled, _) => "disabled".to_string(),
+        (_, Some(url)) => url.to_string(),
+        _ => "default (n0)".to_string(),
+    };
+    let on: Vec<&str> = [
+        ("dns", d.discovery.dns),
+        ("dht", d.discovery.dht),
+        ("mdns", d.discovery.mdns),
+    ]
+    .into_iter()
+    .filter_map(|(n, e)| e.then_some(n))
+    .collect();
+    let discovery = if on.is_empty() {
+        "none".to_string()
+    } else {
+        on.join(", ")
+    };
+    format!("irsync daemon {version} started\n  relay: {relay}\n  discovery: {discovery}\n")
 }
 
 /// The sockets the daemon announces: the fault layer's when it is on.
@@ -1455,4 +1487,34 @@ pub async fn gc_if_due_skipping(
     gc_skipping(index, root, older_than, false, skip)
         .await
         .map(Some)
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::*;
+    use crate::config::settings::RelayMode;
+
+    #[tokio::test]
+    async fn banner_names_version_and_network() {
+        let ep = build_endpoint(crate::net::EndpointOpts {
+            secret: SecretKey::generate(),
+            relay: RelayChoice::Disabled,
+            dht: false,
+            dns: false,
+            mdns: false,
+            publish: false,
+            bind_addrs: vec!["127.0.0.1:0".parse().unwrap()],
+            portmap: false,
+            congestion: Default::default(),
+        })
+        .await
+        .unwrap();
+        let mut settings = Settings::default();
+        settings.daemon.relay_mode = RelayMode::Disabled;
+        settings.daemon.discovery.dht = false;
+        let b = startup_banner("9.9.9", &ep, &settings);
+        assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
+        assert!(b.contains("relay: disabled"));
+        assert!(b.contains("discovery: dns, mdns"));
+    }
 }

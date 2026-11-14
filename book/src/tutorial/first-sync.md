@@ -189,9 +189,13 @@ Start the daemon in the foreground, in a terminal you leave open:
 irsync daemon
 ```
 
-It prints its `EndpointId` and the sockets it listens on, then logs to stderr:
+It prints a banner, its `EndpointId` and the sockets it listens on, then logs
+warnings to stderr:
 
 ```text
+irsync daemon 0.1.0-beta.1 (a1b2c3d) started
+  relay: default (n0)
+  discovery: dns, dht, mdns
 endpoint id: 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff
 listening on: 192.168.1.10:41235
 ```

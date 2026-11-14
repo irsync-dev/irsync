@@ -89,8 +89,9 @@ fn exit_after_capture(code: i32) -> ! {
     std::process::exit(code)
 }
 
-/// The client's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
-fn client_log_default(verbose: u8, quiet: bool) -> &'static str {
+/// The log filter for `-q` and `-v` on both sides, unless `RUST_LOG` is set.
+/// Callers pass the `-v` count minus one: `-v` alone is still warnings.
+fn log_default(verbose: u8, quiet: bool) -> &'static str {
     match (quiet, verbose) {
         (true, _) => "error",
         (false, 0) => "warn",
@@ -102,20 +103,9 @@ fn client_log_default(verbose: u8, quiet: bool) -> &'static str {
     }
 }
 
-/// The daemon's log filter for `-q` and `-v`, unless `RUST_LOG` is set.
-fn daemon_log_default(verbose: u8, quiet: bool) -> &'static str {
-    match (quiet, verbose) {
-        (true, _) => "error",
-        (false, 0) => "info",
-        (false, 1) => "debug",
-        // The wire trace stays off until the daemon's levels match the client's.
-        _ => "trace,irsync::wire=off",
-    }
-}
-
 /// Logging alone, for the commands without telemetry.
 fn init_logging(verbose: u8, quiet: bool, writer: LogWriter) {
-    let cfg = TelemetryConfig::logs_only(Side::Client, client_log_default(verbose, quiet));
+    let cfg = TelemetryConfig::logs_only(Side::Client, log_default(verbose, quiet));
     init_telemetry(cfg, writer);
 }
 
@@ -157,8 +147,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             TelemetryConfig {
                 side: Side::Client,
                 // `-v` lists files; logging starts at `-vv`.
-                log_default: client_log_default(opts.verbose.saturating_sub(1), opts.quiet)
-                    .to_string(),
+                log_default: log_default(opts.verbose.saturating_sub(1), opts.quiet).to_string(),
                 summary: opts.verbose >= 2 && !opts.quiet,
                 debug_addr: opts.debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
@@ -1317,7 +1306,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         init_telemetry(
             TelemetryConfig {
                 side: Side::Daemon,
-                log_default: daemon_log_default(d.log.verbose, d.log.quiet).to_string(),
+                log_default: log_default(d.log.verbose.saturating_sub(1), d.log.quiet).to_string(),
                 summary: false,
                 debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
@@ -1996,23 +1985,26 @@ mod tests {
 
     #[test]
     fn wire_trace_only_at_five_v() {
-        // client_log_default gets the sync's -v count minus one (run_sync).
+        // log_default gets the sync's -v count minus one (run_sync).
         for v in 0..=3 {
             assert!(
-                !filter_enables_wire(client_log_default(v, false)),
+                !filter_enables_wire(log_default(v, false)),
                 "sync -v x{}",
                 v + 1
             );
         }
-        assert!(filter_enables_wire(client_log_default(4, false)));
-        assert!(filter_enables_wire(client_log_default(9, false)));
-        assert!(filter_enables_irsync_trace(client_log_default(3, false)));
+        assert!(filter_enables_wire(log_default(4, false)));
+        assert!(filter_enables_wire(log_default(9, false)));
+        assert!(filter_enables_irsync_trace(log_default(3, false)));
     }
 
     #[test]
-    fn daemon_trace_level_keeps_wire_off() {
-        // Until the daemon's levels are unified with the client's.
-        assert!(!filter_enables_wire(daemon_log_default(5, false)));
+    fn daemon_counts_v_like_the_client() {
+        let d = |v: u8| log_default(v.saturating_sub(1), false);
+        assert_eq!(d(0), "warn");
+        assert_eq!(d(2), "warn,irsync=info");
+        assert!(!filter_enables_wire(d(4)));
+        assert!(filter_enables_wire(d(5)));
     }
 
     fn out(max_delete: bool, errors: usize) -> Outcome {

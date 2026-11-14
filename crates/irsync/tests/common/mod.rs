@@ -928,7 +928,7 @@ pub fn spawn_daemon_binary_env(
     .unwrap();
     let log = server_home.join("daemon.stderr");
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
-        .args(["daemon", "--listen", "127.0.0.1:0"])
+        .args(["daemon", "-vv", "--listen", "127.0.0.1:0"])
         .env("HOME", server_home)
         .env("XDG_STATE_HOME", server_home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")

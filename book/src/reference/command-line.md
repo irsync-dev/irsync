@@ -194,15 +194,17 @@ irsync daemon [--config PATH] [--passphrase-file PATH] [--listen ADDR]... [-v|-q
 Serves the exports in the config file to the peers they are granted to, until
 it is interrupted. At start it prints `endpoint id: <EndpointId>` and one
 `listening on: <socket>` line per bound socket on stdout. Logs go to stderr at
-info level; `-v` gives debug, `-vv` trace, `-q` errors only, and `RUST_LOG`
-overrides all of them.
+warning level, counted like the sync's `-v`: `-vv` gives info, `-vvv` debug,
+`-vvvv` trace, `-vvvvv` trace plus every protocol message, `-q` errors only,
+and `RUST_LOG` overrides all of them. When stdout is a terminal, the daemon
+first prints a banner with its version, relay and discovery settings.
 
 | Flag | Meaning |
 | --- | --- |
 | `--config PATH` | The config file. A `hosts.toml` or `exports.toml` beside it is read too. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
-| `-v`, `--verbose` | Log more; repeat for more still. |
+| `-v`, `--verbose` | Log more; repeat for more still (up to `-vvvvv`). |
 | `-q`, `--quiet` | Log errors only. |
 
 ### irsync index

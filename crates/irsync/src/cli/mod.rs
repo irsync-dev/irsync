@@ -470,7 +470,7 @@ fn parse_yes_no(s: &str) -> Result<bool, String> {
 /// How much the commands that log (`daemon`, `gc`, `index`) say on stderr.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
 pub struct LogArgs {
-    /// Log more; repeat for more still (up to -vvv).
+    /// Log more; repeat for more still (up to -vvvvv).
     #[arg(short, long, action = ArgAction::Count, conflicts_with = "quiet")]
     pub verbose: u8,
     /// Log errors only, and print no summary.
