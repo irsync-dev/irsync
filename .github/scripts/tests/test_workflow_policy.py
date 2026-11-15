@@ -234,9 +234,8 @@ class AttestationTests(unittest.TestCase):
             self.assertEqual(job["permissions"].get(k), v)
 
     def test_package_callers_grant_attest_permissions(self):
-        for name in ["release-gate.yml", "release-resume.yml"]:
-            perms = jobs(load_workflows()[name])["packages"]["permissions"]
-            self.assertEqual(perms, {"contents": "read", **self.WRITE}, name)
+        perms = jobs(load_workflows()["release-resume.yml"])["packages"]["permissions"]
+        self.assertEqual(perms, {"contents": "read", **self.WRITE})
 
 
 RELEASE_SECRET = re.compile(r"secrets\.(PACKAGES_\w+|HOMEBREW_TAP_TOKEN)")
@@ -272,12 +271,18 @@ class EnvironmentTests(unittest.TestCase):
         # A called workflow's job sees its environment's secrets only when the
         # caller passes `secrets: inherit`: without it they arrive empty (seen
         # on the v0.1.0-beta.2 resume dry run).
-        for name in ["release-gate.yml", "release-resume.yml"]:
-            for job_id, job in jobs(load_workflows()[name]).items():
-                target = job.get("uses", "")
-                if target in ("./.github/workflows/packages.yml",
-                              "./.github/workflows/publish-homebrew.yml"):
-                    self.assertEqual(job.get("secrets"), "inherit", f"{name}: {job_id}")
+        for job_id, job in jobs(load_workflows()["release-resume.yml"]).items():
+            target = job.get("uses", "")
+            if target in ("./.github/workflows/packages.yml",
+                          "./.github/workflows/publish-homebrew.yml"):
+                self.assertEqual(job.get("secrets"), "inherit", job_id)
+
+    def test_gate_has_no_release_env_jobs(self):
+        # The gate hands packages and Homebrew to the resume run it starts.
+        for job_id, job in jobs(load_workflows()["release-gate.yml"]).items():
+            self.assertNotIn(job.get("uses"), ("./.github/workflows/packages.yml",
+                                               "./.github/workflows/publish-homebrew.yml"),
+                             job_id)
 
     def test_cloudflare_pub_in_site_env(self):
         wf = load_workflows()["site.yml"]
@@ -296,17 +301,14 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("publish-homebrew-formula", jobs(load_workflows()["release.yml"]))
         self.assertIsNone(RELEASE_SECRET.search(read("release.yml")))
 
-    def homebrew_caller(self, name):
-        callers = [j for j in jobs(load_workflows()[name]).values()
+    def homebrew_caller(self):
+        callers = [j for j in jobs(load_workflows()["release-resume.yml"]).values()
                    if j.get("uses") == "./.github/workflows/publish-homebrew.yml"]
-        self.assertEqual(len(callers), 1, name)
+        self.assertEqual(len(callers), 1)
         return callers[0]
 
     def test_homebrew_job_skips_prereleases(self):
-        gate = self.homebrew_caller("release-gate.yml")
-        self.assertIn("needs.check.outputs.prerelease == 'false'", gate["if"])
-        self.assertIn("needs.release.result == 'success'", gate["if"])
-        resume = self.homebrew_caller("release-resume.yml")
+        resume = self.homebrew_caller()
         self.assertEqual(resume["if"], "needs.check.outputs.homebrew == 'true'")
 
     def test_homebrew_job_in_release_env(self):
@@ -317,6 +319,56 @@ class EnvironmentTests(unittest.TestCase):
         text = read("release-resume.yml")
         self.assertNotIn("MAIN_REF", text)
         self.assertNotIn("refs/heads/", text)
+
+
+class GateTests(unittest.TestCase):
+    def gate(self):
+        return load_workflows()["release-gate.yml"]
+
+    def test_gate_starts_only_by_hand_with_a_version(self):
+        on = triggers(self.gate())
+        self.assertEqual(set(on), {"workflow_dispatch"})
+        self.assertEqual(set(on["workflow_dispatch"]["inputs"]), {"version"})
+
+    def test_no_workflow_runs_on_a_tag_push(self):
+        for name, wf in load_workflows().items():
+            push = triggers(wf).get("push") or {}
+            self.assertNotIn("tags", push, name)
+
+    def test_gate_pins_the_tested_commit(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn('ref="refs/heads/pinned/$TAG" -f sha="$GITHUB_SHA"', text)
+        self.assertIn('--ref "refs/heads/pinned/$TAG"', text)
+        self.assertIn('"$run_sha" != "$GITHUB_SHA"', text)
+
+    def test_gate_clears_stale_pin(self):
+        steps = jobs(self.gate())["release"]["steps"]
+        last = steps[-1]
+        self.assertEqual(last.get("if"), "always()")
+        self.assertIn("pinned/$TAG", last["run"])
+
+    def test_gate_refuses_while_old_release_run_active(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("in_progress", text)
+        self.assertIn("queued", text)
+
+    def test_gate_makes_release_branch_after_release(self):
+        job = jobs(self.gate())["branch"]
+        self.assertIn("release", job["needs"])
+        self.assertIn("new-branch", job["if"])
+
+    def test_gate_finishes_on_the_tag(self):
+        self.assertIn('release-resume.yml --ref "refs/tags/$TAG"',
+                      job_text("release-gate.yml", "finish"))
+
+    def test_gate_and_resume_share_concurrency(self):
+        self.assertEqual(self.gate()["concurrency"]["group"], "release-v${{ inputs.version }}")
+        self.assertEqual(load_workflows()["release-resume.yml"]["concurrency"]["group"],
+                         "release-${{ inputs.tag }}")
+
+    def test_ci_runs_on_release_branches(self):
+        push = triggers(load_workflows()["ci.yml"])["push"]
+        self.assertEqual(push["branches"], ["main", "release-*"])
 
 
 if __name__ == "__main__":

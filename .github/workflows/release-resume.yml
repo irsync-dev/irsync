@@ -1,9 +1,10 @@
-# Finishes a release that release.yml already published, when the gate
-# stopped before the packages, the Homebrew formula or the notes (for example
-# because the Homebrew push failed, or the gate lost track of the release.yml
-# run). Start it by
-# hand on the tag, so the release secrets (environment `release`, v* tags
-# only) open and the tagged scripts run:
+# The second half of every release. The release gate (release-gate.yml)
+# starts it on the new tag once release.yml has published the release. Start
+# it by hand on the tag to finish a release whose resume run failed (for
+# example because the Homebrew push failed) or that the gate lost track of
+# (it could not find or watch the release.yml run). It runs on the tag, so the
+# release secrets (environment `release`, v* tags only) open and the tagged
+# scripts run:
 #
 #   gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
 #

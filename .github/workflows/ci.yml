@@ -5,7 +5,7 @@ on:
   # site workflow (site.yml) checks those. paths-ignore does not apply to
   # workflow_call, so the release gate always runs everything.
   push:
-    branches: [main]
+    branches: [main, 'release-*']
     paths-ignore:
       - '**/*.md'
       - book/**
@@ -13,7 +13,8 @@ on:
   # No paths-ignore here: "CI result" is a required check on main, so it must
   # report on every pull request. The `changes` job skips the builds instead.
   pull_request:
-  # The release gate (release-gate.yml) calls this as its test gate on a tag push.
+  # The release gate (release-gate.yml) calls this as its test gate, on the
+  # commit it is about to release.
   workflow_call:
     inputs:
       plan:
@@ -104,7 +105,7 @@ jobs:
 
   # Runs the release build itself (dist and packaging/dist/build.sh) for the
   # Linux targets, on the same runners as release.yml, so a broken release
-  # build shows up here and not after the tag is pushed. The release gate
+  # build shows up here and not in a release run. The release gate
   # skips it: release.yml runs the same build there anyway.
   release-build:
     name: release build ${{ matrix.target }}
