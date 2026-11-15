@@ -306,5 +306,88 @@ class ResumeTests(FakeGh):
         self.assertEqual(self.state().get("calls", []), [])
 
 
+CODE_CHANGED = os.path.join(SCRIPTS, "code-changed.sh")
+CI_RESULT = os.path.join(SCRIPTS, "ci-result.sh")
+
+
+class CodeChangedTests(unittest.TestCase):
+    """code-changed.sh: does a change touch anything CI has to test?"""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="repo-")
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        self.git("init", "-q")
+        self.write("crates/x.rs", "fn main() {}\n")
+        self.base = self.commit()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               *args], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def write(self, path, text):
+        full = os.path.join(self.repo, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as f:
+            f.write(text)
+
+    def commit(self):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        return self.git("rev-parse", "HEAD")
+
+    def changed(self, base, head):
+        r = subprocess.run([CODE_CHANGED, base, head], cwd=self.repo,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_docs_only_change_is_not_code(self):
+        self.write("README.md", "hi\n")
+        self.write("book/src/x.md", "hi\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
+    def test_site_only_change_is_not_code(self):
+        self.write("site/index.html", "<p>hi</p>\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
+    def test_mixed_change_is_code(self):
+        self.write("book/a.md", "hi\n")
+        self.write("crates/x.rs", "fn main() { }\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=true")
+
+    def test_zero_base_is_code(self):
+        self.write("README.md", "hi\n")
+        head = self.commit()
+        self.assertEqual(self.changed("0" * 40, head), "code=true")
+
+    def test_unknown_base_is_code(self):
+        self.write("README.md", "hi\n")
+        head = self.commit()
+        self.assertEqual(self.changed("1" * 40, head), "code=true")
+
+
+class CiResultTests(unittest.TestCase):
+    """ci-result.sh: one pass/fail for the whole CI run."""
+
+    def run_result(self, needs):
+        return subprocess.run([CI_RESULT, json.dumps(needs)],
+                              capture_output=True, text=True)
+
+    def test_all_success_passes(self):
+        r = self.run_result({"a": {"result": "success"}, "b": {"result": "skipped"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_cancelled_need_fails(self):
+        r = self.run_result({"a": {"result": "success"}, "check": {"result": "cancelled"}})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check", r.stderr)
+
+    def test_failure_need_fails(self):
+        r = self.run_result({"deny": {"result": "failure"}})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("deny", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

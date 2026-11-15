@@ -125,5 +125,46 @@ class DependabotTests(unittest.TestCase):
             self.assertEqual(groups[0]["patterns"], ["*"], eco)
 
 
+class CiWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.ci = load_workflows()["ci.yml"]
+
+    def test_ci_result_needs_every_job(self):
+        j = jobs(self.ci)
+        self.assertIn("ci-result", j)
+        res = j["ci-result"]
+        self.assertEqual(res["name"], "CI result")
+        self.assertEqual(res["if"], "always()")
+        self.assertEqual(set(res["needs"]), set(j) - {"ci-result"})
+
+    def test_pull_request_has_no_paths_ignore(self):
+        on = triggers(self.ci)
+        self.assertNotIn("paths-ignore", on["pull_request"] or {})
+        self.assertIn("paths-ignore", on["push"])
+
+    def test_deny_job_present(self):
+        runs = [s.get("run", "") for j in jobs(self.ci).values() for s in j.get("steps", [])]
+        self.assertTrue(any("cargo deny --locked check" == r.strip() for r in runs), runs)
+
+    def test_dependency_review_on_prs_only(self):
+        found = False
+        for j in jobs(self.ci).values():
+            for s in j.get("steps", []):
+                if s.get("uses", "").startswith("actions/dependency-review-action@"):
+                    found = True
+                    self.assertEqual(j.get("if"), "github.event_name == 'pull_request'")
+                    self.assertEqual(s["with"]["fail-on-severity"], "low")
+        self.assertTrue(found, "no dependency-review job")
+
+    def test_advisories_daily(self):
+        wf = load_workflows()["advisories.yml"]
+        on = triggers(wf)
+        self.assertTrue(on["schedule"][0]["cron"])
+        self.assertIn("workflow_dispatch", on)
+        self.assertEqual(wf["permissions"], {"contents": "read"})
+        runs = [s.get("run", "") for j in jobs(wf).values() for s in j.get("steps", [])]
+        self.assertIn("cargo deny --locked check advisories", [r.strip() for r in runs])
+
+
 if __name__ == "__main__":
     unittest.main()

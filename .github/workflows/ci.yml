@@ -10,11 +10,9 @@ on:
       - '**/*.md'
       - book/**
       - site/**
+  # No paths-ignore here: "CI result" is a required check on main, so it must
+  # report on every pull request. The `changes` job skips the builds instead.
   pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - book/**
-      - site/**
   # The release gate (release-gate.yml) calls this as its test gate on a tag push.
   workflow_call:
     inputs:
@@ -27,8 +25,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Does this change need the builds? Only a pull request can say no: a
+  # Markdown-, book/- or site/-only change skips them (see code-changed.sh).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            .github/scripts/code-changed.sh "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: ${{ matrix.os }}${{ matrix.target && format(' {0}', matrix.target) || '' }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -94,7 +119,8 @@ jobs:
   # skips it: release.yml runs the same build there anyway.
   release-build:
     name: release build ${{ matrix.target }}
-    if: ${{ !inputs.plan }}
+    needs: changes
+    if: ${{ !inputs.plan && needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -142,3 +168,55 @@ jobs:
           cat contents.txt
           grep -qx "irsync-${{ matrix.target }}/irsync" contents.txt
           grep -qx "irsync-${{ matrix.target }}/fileset" contents.txt
+
+  # Dependencies: known vulnerabilities, unmaintained or yanked crates,
+  # licenses and sources, as set in deny.toml. Fails on any advisory; an
+  # accepted one goes in deny.toml's ignore list with a reason.
+  deny:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check the dependencies
+        run: cargo deny --locked check
+
+  # Flags a pull request that adds or bumps a dependency with a known
+  # vulnerability, in the pull request itself.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  # The one check the main branch ruleset requires: passes when every job
+  # above succeeded or was skipped.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [changes, check, release-build, deny, dependency-review]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: .github/scripts/ci-result.sh "$NEEDS"
