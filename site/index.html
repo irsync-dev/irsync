@@ -93,39 +93,17 @@
           </ol>
           <p class="mt-5 border-l-4 border-signal py-1 pl-4 text-small" role="note">
             <strong class="font-display font-bold">Beta.</strong>
-            Both ends run irsync, and it may still change: keep a backup.
+            The command line and the protocol may still change: keep a backup.
+            Both ends run irsync; it is not a drop-in replacement for rsync. Not
+            supported: Windows and NTFS, and the rsync options <code>-X</code>,
+            <code>-A</code> and <code>-z</code>, so extended attributes and ACLs
+            are not copied. Relayed connections are much slower than direct ones.
             <a href="book/reference/limitations.html">Known limitations</a>.
           </p>
         </section>
       </section>
 
-      <section class="rounded-box border-t-4 border-signal bg-base-200 px-6 py-8 sm:px-8" aria-labelledby="limits-heading">
-        <h2 id="limits-heading" class="text-heading">Before you rely on it</h2>
-        <ul class="mt-5 flex max-w-[66ch] list-disc flex-col gap-2 pl-5 marker:text-muted">
-          <li>
-            The command line and the protocol may change before the first stable
-            release. Keep another copy of anything you sync with it.
-          </li>
-          <li>
-            It is not a drop-in replacement for rsync. It has its own protocol,
-            so both ends must run irsync.
-          </li>
-          <li>
-            Some rsync options are missing, such as <code>-X</code>,
-            <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
-            are not copied.
-          </li>
-          <li>
-            Windows and NTFS is not supported. Relayed connections are much
-            slower than direct ones.
-          </li>
-        </ul>
-        <p class="mt-5">
-          The full list is in <a href="book/reference/limitations.html">Known limitations</a>.
-        </p>
-      </section>
-
-      <div class="grid gap-x-10 gap-y-10 py-14 md:grid-cols-2">
+      <div class="grid gap-x-10 gap-y-10 border-t border-base-300 py-12 md:grid-cols-2">
         <section aria-labelledby="help-heading">
           <h2 id="help-heading" class="text-heading">Help</h2>
           <p class="mt-3 max-w-[44ch]">
