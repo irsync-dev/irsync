@@ -16,6 +16,7 @@
 - [Seed the index](how-to/seed-the-index.md)
 - [Clean up state](how-to/clean-up.md)
 - [Watch a transfer with telemetry](how-to/telemetry.md)
+- [Verify a download](how-to/verify-a-download.md)
 
 # Reference
 
@@ -63,4 +64,5 @@
 - [Performance](contributing/performance.md)
 - [Design records](contributing/design-records.md)
 - [Releasing](contributing/releasing.md)
+  - [Supply chain security](contributing/supply-chain.md)
 - [This website](contributing/website.md)
