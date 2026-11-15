@@ -50,7 +50,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       DRY_RUN: ${{ inputs.dry-run }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -92,7 +92,7 @@ jobs:
       # The token is saved in this checkout's git config, and only here. It is
       # scoped to the packages repo.
       - name: Check out the packages repo
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: irsync-dev/packages
           token: ${{ secrets.PACKAGES_REPO_TOKEN }}
