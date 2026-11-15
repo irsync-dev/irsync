@@ -64,14 +64,21 @@ way a release starts. It does this, in order:
    tested. Then it launches `release.yml` for the tag
    and waits for it. `release.yml` builds `irsync` and `fileset` for Linux
    x86_64, Linux arm64 and macOS on Apple Silicon. It publishes the GitHub
-   Release with the tarballs, checksums and the install script. For stable
-   tags it also pushes the Homebrew formula to `irsync-dev/homebrew-tap`.
-4. **Packages** (stable tags only). `.github/workflows/packages.yml` builds
-   the `.deb` and `.rpm` files from the released Linux tarballs. It signs the
-   `.rpm` files, adds everything to `irsync-dev/packages`, signs the apt and
-   dnf metadata and pushes. It keeps the newest 3 versions. GitHub Pages
-   serves the result at `dist.irsync.org`. Then it attaches the same files,
-   signed `.rpm` files included, to the release.
+   Release with the tarballs, checksums, the install script and the
+   Homebrew formula, each with an attestation. The release is immutable from
+   then on: no file on it can be replaced or added.
+4. **Packages and Homebrew** (stable tags only). Both jobs wait for you to
+   approve the `release` environment, which holds their secrets. Open the
+   gate run and click "Review deployments", tick `release` and approve: one
+   click lets both start.
+   - `.github/workflows/packages.yml` builds the `.deb` and `.rpm` files
+     from the released Linux tarballs. It signs the `.rpm` files, adds
+     everything to `irsync-dev/packages`, signs the apt and dnf metadata and
+     pushes. It keeps the newest 3 versions. GitHub Pages serves the result
+     at `dist.irsync.org`. The packages get attestations, but are not
+     attached to the release.
+   - `.github/workflows/publish-homebrew.yml` pushes the formula from the
+     release to `irsync-dev/homebrew-tap`.
 5. **Notes.** It adds GitHub's list of changes to the release notes, under
    the heading `## What's changed`. For a stable release the list starts at
    the previous stable release, so it covers the betas in between too.
@@ -103,10 +110,9 @@ hand from the Actions tab.** That skips the tests.
 ## If a release fails
 
 **The check failed.** Nothing ran. Usually the version in the two files does
-not match the tag. Delete the tag (`git push origin --delete v1.2.3` and
-`git tag -d v1.2.3`), fix the version on `main`, and tag again. With
-[tag protection](#protecting-the-release-tags), only people on its bypass
-list can delete the tag.
+not match the tag. A release tag can't be deleted or moved (see
+[Protecting the release tags](#protecting-the-release-tags)), so fix the
+version on `main` and tag the next version (for example `v1.2.4`).
 
 **The test step failed.** Nothing was published. If it was a flaky test,
 use "Re-run failed jobs" on the gate run: the tag and the commit stay the
@@ -122,17 +128,16 @@ Actions tab under the release workflow: it may still be running.
 - If the GitHub Release was not created, treat it like a failed test: fix,
   then tag a new patch version.
 - If the GitHub Release was created, the release is public, but the gate
-  stopped before the packages and the notes. This happens when the Homebrew
-  push failed, or when the gate lost track of the `release.yml` run. If the
-  Homebrew push failed, fix the cause (often the `HOMEBREW_TAP_TOKEN`) and
-  use "Re-run failed jobs" on that `release.yml` run. That runs only the
-  Homebrew step and the jobs after it, not the release again. Then finish
-  the release with the resume workflow (see below).
+  stopped before the packages, Homebrew and the notes. This happens when
+  the gate lost track of the `release.yml` run. Finish the release with the
+  resume workflow (see below).
 
-**The packages step failed.** Re-run that job from the gate run, or use the
-resume workflow. It is safe to run again. If the packages repo already has
-this version, it builds nothing and changes nothing there; it only attaches
-any files the release is still missing.
+**The packages or Homebrew step failed.** Fix the cause (often a token in
+the `release` environment), then re-run that job from the gate run, or use
+the resume workflow. Both are safe to run again. If the packages repo
+already has this version, the packages job builds nothing and changes
+nothing there. If the tap already has the formula, the Homebrew job pushes
+nothing.
 
 **The notes step failed.** Re-run that job, or use the resume workflow. It
 does nothing if the heading is already there.
@@ -143,29 +148,34 @@ Two traps:
   launched. Cancel that run too, from the Actions tab.
 - **Re-running the gate's `release` job launches a second `release.yml`.** If
   the GitHub Release already exists, the second run fails when it tries to
-  create it. Re-run only the `packages` or `notes` job, not `release`, or use
-  the resume workflow.
+  create it. Re-run only the `packages`, `homebrew` or `notes` job, not
+  `release`, or use the resume workflow.
 
 ### Finishing a release with the resume workflow
 
 `.github/workflows/release-resume.yml` finishes a release that already
-exists. It runs the same packages and notes steps as the gate. It never
-builds or publishes a release. Start it on `main`, in the browser (Actions,
-Release resume, Run workflow) or with:
+exists. It runs the same packages, Homebrew and notes steps as the gate. It
+never builds or publishes a release. Start it **on the tag**, so the
+`release` environment opens. In the browser, go to Actions, Release resume,
+Run workflow, and pick the tag under "Use workflow from". Or run:
 
 ```sh
-gh workflow run release-resume.yml --ref main -f tag=v1.2.3
+gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
 ```
 
-It checks that the tag is a release tag and that its GitHub Release exists
-and is published. For a stable release it runs the packages step and the
-notes. For a pre-release it only adds the notes.
+It stops with an error if it runs on anything but that tag. It checks that
+the tag is a release tag and that its GitHub Release exists and is
+published. For a stable release it runs the packages and Homebrew steps
+(after you approve `release`) and the notes. For a pre-release it only adds
+the notes. It runs the scripts as they were at the tag. A fix to a release
+script on `main` reaches the next release, not this one.
 
 With `-f dry-run=true` it builds and signs the packages, for any release,
 pre-releases too. It checks that the token may push to the packages repo,
-but publishes nothing: no files on the release, no push, no notes. The
-packages and the updated repo are kept as artifacts of the run, for you to
-look at.
+but publishes nothing: no push, no Homebrew, no notes. The packages and the
+updated repo are kept as artifacts of the run, for you to look at. Use it
+on a pre-release to check the key and tokens before the first stable
+release.
 
 ## One-time setup
 
@@ -195,25 +205,21 @@ it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
 The workflow uses the fingerprint of the key it imports as `GPG_KEY_ID`, so
 there is nothing else to set.
 
-**Token.** Make a token that can push to `homebrew-tap` and `packages` and
-nothing else. A fine-grained personal access token with "Contents: read and
-write" on those two repositories works.
+**Tokens and secrets.** Make one fine-grained token per repository, and put
+the secrets in the `release` environment, not the repository. Step by step
+in [Supply chain security](supply-chain.md#maintainer-steps), steps 2 to 5:
 
-**Secrets.** In the `irsync-dev/irsync` repository, under Settings, Secrets
-and variables, Actions, add four secrets:
-
-| Secret | What it holds |
+| Secret (environment `release`) | What it holds |
 | --- | --- |
-| `PACKAGES_GPG_PRIVATE_KEY` | The private signing key: `private-key.asc` from [Making the signing key](#making-the-signing-key) |
+| `PACKAGES_GPG_PRIVATE_KEY` | The signing **subkey** only: `private-subkey.asc` |
 | `PACKAGES_GPG_PASSPHRASE` | The key's passphrase: `passphrase.txt`, with no newline at the end |
-| `PACKAGES_REPO_TOKEN` | The token, for pushing to `irsync-dev/packages` |
-| `HOMEBREW_TAP_TOKEN` | The token, for pushing to `irsync-dev/homebrew-tap` (cargo dist uses this name) |
+| `PACKAGES_REPO_TOKEN` | A token that can push to `irsync-dev/packages` and nothing else |
+| `HOMEBREW_TAP_TOKEN` | A token that can push to `irsync-dev/homebrew-tap` and nothing else |
 
-You can use the same token for both token secrets.
-
-**Tag protection (recommended).** Add a rule that protects tags matching `v*`,
-so only maintainers can push or move release tags. Step by step in
-[Protecting the release tags](#protecting-the-release-tags).
+**Repository settings.** `tools/github_settings.py apply` sets the
+rulesets (including [the release tags](#protecting-the-release-tags)), the
+environments, secret scanning and immutable releases. See
+[Checking the settings](supply-chain.md#checking-the-settings).
 
 ## The first release
 
@@ -248,7 +254,7 @@ Do the one-time setup first. Then:
    without publishing:
 
    ```sh
-   gh workflow run release-resume.yml --ref main -f tag=v0.1.0-alpha.1 -f dry-run=true
+   gh workflow run release-resume.yml --ref v0.1.0-alpha.1 -f tag=v0.1.0-alpha.1 -f dry-run=true
    ```
 
    This uses the GPG secrets, the packages repo token, nfpm and Ubuntu's
@@ -294,94 +300,27 @@ If `main` is protected against force pushes, allow it for this push.
 ## Protecting the release tags
 
 Pushing a `v*` tag starts a release, and the release workflow trusts the
-commit the tag points at. Without protection, anyone with write access can
-push a release tag, or move or delete one after the fact. A tag ruleset
-limits that to the people you choose. GitHub's older "tag protection rules"
-are gone; rulesets replace them.
-
-Nothing in the release workflows creates, moves or deletes tags, so the
-ruleset doesn't get in their way. They only read the tag you pushed.
-
-**1. Create the ruleset.** In `irsync-dev/irsync`, go to Settings, then
-Rules, then Rulesets. Click "New ruleset", then "New tag ruleset".
-
-**2. Name and enforcement.** Name it `Release tags`. Set "Enforcement
-status" to "Active". ("Evaluate" only logs what it would block, and is not
-available on every plan.)
-
-**3. Bypass list.** Click "Add bypass" and pick the "Repository admin"
-role. If someone should cut releases without being an admin, add the
-"Maintain" role too. Leave both on "Always allow". Only people with these
-roles can then push, move or delete release tags.
-
-**4. Target tags.** Under "Targets", click "Add target", then "Include by
-pattern", and enter `v*`. This matches every tag that starts with `v`,
-which covers both `v0.1.0` and `v0.1.0-alpha.1`.
-
-**5. Rules.** Tick these four:
+commit the tag points at. The `Release tags` ruleset, set by
+`tools/github_settings.py`, makes every `v*` tag permanent once pushed:
 
 | Rule | What it stops |
 | --- | --- |
-| Restrict creations | Pushing a new `v*` tag, which would start a release |
 | Restrict updates | Moving an existing tag to another commit |
 | Restrict deletions | Deleting a tag |
 | Block force pushes | Overwriting a tag with `git push --force` |
 
-Leave the other rules off. Click "Create".
+Nobody can bypass it, admins included. Creating tags is allowed, so anyone
+with write access can start a release gate. A stable release still
+publishes nothing beyond the GitHub Release until a maintainer approves the
+`release` environment. Nothing in the release workflows creates, moves or
+deletes tags.
 
-**Or with the GitHub CLI.** This creates the same ruleset. The number 5 is
-GitHub's ID for the "Repository admin" role (4 is "Write", 2 is
-"Maintain"):
-
-```sh
-gh api --method POST repos/irsync-dev/irsync/rulesets --input - <<'JSON'
-{
-  "name": "Release tags",
-  "target": "tag",
-  "enforcement": "active",
-  "bypass_actors": [
-    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
-  ],
-  "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
-  "rules": [
-    { "type": "creation" },
-    { "type": "update" },
-    { "type": "deletion" },
-    { "type": "non_fast_forward" }
-  ]
-}
-JSON
-```
-
-Then open the ruleset in Settings, Rules, Rulesets, and check that the
-bypass list shows "Repository admin".
-
-**6. Check it.** List the rulesets:
+A tag pushed by mistake stays. Release the next version instead. Check the
+ruleset with:
 
 ```sh
-gh api repos/irsync-dev/irsync/rulesets --jq '.[] | "\(.name): \(.target), \(.enforcement)"'
+tools/github_settings.py check
 ```
-
-This should print `Release tags: tag, active`. Then push a tag that
-matches but is not a release version. The release gate starts on any tag
-starting with `v` followed by a digit, so the test tag has none:
-
-```sh
-git tag v-ruleset-check
-git push origin v-ruleset-check
-```
-
-As an admin you can still push. Look for `Bypassed rule violations for
-refs/tags/v-ruleset-check` in the output: it shows the rule is active and
-you are on the bypass list. Delete the tag again:
-
-```sh
-git push origin --delete v-ruleset-check
-git tag -d v-ruleset-check
-```
-
-Someone with only write access gets `Cannot create ref due to creations
-being restricted` for the same push.
 
 ## Making the signing key
 
@@ -453,7 +392,7 @@ head -1 private-key.asc   # -----BEGIN PGP PRIVATE KEY BLOCK-----
 
 | File | What it is | Where it goes |
 | --- | --- | --- |
-| `private-key.asc` | The private key, still protected by the passphrase | `PACKAGES_GPG_PRIVATE_KEY`, and your backup |
+| `private-key.asc` | The private key, still protected by the passphrase | Your backup only. GitHub gets a signing subkey, `private-subkey.asc`, made in [Supply chain security](supply-chain.md#maintainer-steps) step 2 |
 | `passphrase.txt` | The passphrase | `PACKAGES_GPG_PASSPHRASE`, and your backup |
 | `revocation.rev` | Declares the key dead, even without the private key | Your backup only |
 | `public-key.asc` | The public key | Your records; every stable release publishes it as `irsync.asc` and `irsync.gpg` |
@@ -461,14 +400,17 @@ head -1 private-key.asc   # -----BEGIN PGP PRIVATE KEY BLOCK-----
 gpg made the revocation certificate together with the key. Anyone who has
 it can kill the key, so it never goes into GitHub.
 
-**5. Test the files the way the workflow uses them.** The workflow imports
-`private-key.asc` into an empty keyring, takes the first fingerprint it
-finds and signs with the passphrase. Do the same in a second empty keyring:
+**5. Test the files the way the workflow uses them.** First make the
+signing subkey ([Supply chain security](supply-chain.md#maintainer-steps)
+step 2). The workflow imports `private-subkey.asc` into an empty keyring,
+takes the first fingerprint it finds (the primary key's, whose secret part
+isn't there) and signs with the passphrase, which uses the subkey. Do the
+same in a second empty keyring:
 
 ```sh
 export GNUPGHOME="$PWD/ci-test"
 mkdir -m 700 "$GNUPGHOME"
-gpg --batch --import private-key.asc
+gpg --batch --import private-subkey.asc
 TEST_FPR=$(gpg --batch --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
 [ "$TEST_FPR" = "$FPR" ] && echo "fingerprint matches"
 echo test > test.txt
@@ -491,12 +433,13 @@ export GNUPGHOME="$PWD/gnupg"
 shell history:
 
 ```sh
-gh secret set PACKAGES_GPG_PRIVATE_KEY --repo irsync-dev/irsync < private-key.asc
-gh secret set PACKAGES_GPG_PASSPHRASE  --repo irsync-dev/irsync < passphrase.txt
-gh secret list --repo irsync-dev/irsync
+gh secret set PACKAGES_GPG_PRIVATE_KEY --env release --repo irsync-dev/irsync < private-subkey.asc
+gh secret set PACKAGES_GPG_PASSPHRASE  --env release --repo irsync-dev/irsync < passphrase.txt
+gh secret list --env release --repo irsync-dev/irsync
 ```
 
-In the browser instead, paste the whole of `private-key.asc`, including the
+In the browser instead (Settings, Environments, `release`), paste the whole
+of `private-subkey.asc`, including the
 `BEGIN` and `END` lines, and the 40 passphrase characters with nothing
 after them. GitHub never shows a secret again, so if you are unsure you
 pasted it right, set it again.
@@ -551,8 +494,11 @@ and rotate.
 
 1. Make the new key, with the same user ID, as in
    [Making the signing key](#making-the-signing-key).
-2. Put the new private key and passphrase into the `PACKAGES_GPG_PRIVATE_KEY`
-   and `PACKAGES_GPG_PASSPHRASE` secrets.
+2. Put the new key's signing subkey and passphrase into the
+   `PACKAGES_GPG_PRIVATE_KEY` and `PACKAGES_GPG_PASSPHRASE` secrets of the
+   `release` environment
+   ([Supply chain security](supply-chain.md#maintainer-steps), steps 2 and 4).
+   If only the subkey leaked, replace the subkey instead and keep the key.
 3. Cut a stable release. It signs the metadata with the new key and
    publishes the new public key as `irsync.asc` and `irsync.gpg`.
 4. Tell users to import the new key again. For apt, that means downloading

@@ -29,15 +29,24 @@ main() {
     --alpha) channel=alpha; shift ;;
   esac
 
+  # HTTPS only, also after a redirect: a redirect to plain HTTP would let
+  # anyone on the network path swap the download.
   fetch() { # URL: print the body on stdout
     if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "$1"
+      curl --proto '=https' --tlsv1.2 -fsSL "$1"
     elif command -v wget >/dev/null 2>&1; then
-      wget -qO- "$1"
+      wget --https-only -qO- "$1"
     else
       die "need curl or wget to download releases"
     fi
   }
+
+  # BusyBox wget (Alpine's default) has no --https-only. Checked here, before
+  # any download, so the message isn't lost inside a $(fetch ...).
+  if ! command -v curl >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 &&
+     ! wget --help 2>&1 | grep -q -- --https-only; then
+    die "this wget cannot refuse plain HTTP downloads; install curl and run again"
+  fi
 
   unreachable() {
     die "could not reach GitHub to list releases. Check your network; GitHub also

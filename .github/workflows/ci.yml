@@ -10,11 +10,9 @@ on:
       - '**/*.md'
       - book/**
       - site/**
+  # No paths-ignore here: "CI result" is a required check on main, so it must
+  # report on every pull request. The `changes` job skips the builds instead.
   pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - book/**
-      - site/**
   # The release gate (release-gate.yml) calls this as its test gate on a tag push.
   workflow_call:
     inputs:
@@ -27,8 +25,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Does this change need the builds? Only a pull request can say no: a
+  # Markdown-, book/- or site/-only change skips them (see code-changed.sh).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            .github/scripts/code-changed.sh "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     name: ${{ matrix.os }}${{ matrix.target && format(' {0}', matrix.target) || '' }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,7 +64,7 @@ jobs:
     env:
       TARGET_FLAG: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Install Rust (the version in rust-toolchain.toml)
         run: |
           rustup toolchain install
@@ -51,11 +76,11 @@ jobs:
           sudo apt-get update && sudo apt-get install -y musl-tools
           # Also makes the netstress tests' nested fault build use the target.
           echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-nextest@0.9.151
       - name: Install rsync (reference implementation for the comparison test)
@@ -94,7 +119,8 @@ jobs:
   # skips it: release.yml runs the same build there anyway.
   release-build:
     name: release build ${{ matrix.target }}
-    if: ${{ !inputs.plan }}
+    needs: changes
+    if: ${{ !inputs.plan && needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -112,7 +138,7 @@ jobs:
       # Keep equal to cargo-dist-version in dist-workspace.toml.
       DIST_VERSION: 0.34.0
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Install Rust (the version in rust-toolchain.toml)
@@ -122,7 +148,7 @@ jobs:
           rustc --version
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-build-${{ matrix.target }}
       - name: Install dist
@@ -133,6 +159,8 @@ jobs:
           echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
+      - name: Check release.yml matches dist-workspace.toml
+        run: dist generate --check
       - name: Build the release artifacts
         run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: Check the tarball holds both binaries
@@ -142,3 +170,84 @@ jobs:
           cat contents.txt
           grep -qx "irsync-${{ matrix.target }}/irsync" contents.txt
           grep -qx "irsync-${{ matrix.target }}/fileset" contents.txt
+
+  # The workflow rules (.github/scripts/tests, including the supply chain
+  # policy in test_workflow_policy.py) and actionlint, on every change: a
+  # workflow change is code too. Cheap, so it doesn't wait for `changes`.
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Workflow and release script tests
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          python3 -m unittest discover -s .github/scripts/tests
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+      # shellcheck is off: it would also lint the generated release.yml.
+      - name: Lint the workflows
+        run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='
+
+  # Dependencies: known vulnerabilities, unmaintained or yanked crates,
+  # licenses and sources, as set in deny.toml. Fails on any advisory; an
+  # accepted one goes in deny.toml's ignore list with a reason.
+  deny:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check the dependencies
+        run: cargo deny --locked check
+
+  # Flags a pull request that adds or bumps a dependency with a known
+  # vulnerability, in the pull request itself.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  # The one check the main branch ruleset requires: passes when every job
+  # above succeeded or was skipped.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [changes, check, release-build, workflows, deny, dependency-review]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: .github/scripts/ci-result.sh "$NEEDS"

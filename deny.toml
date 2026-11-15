@@ -1,0 +1,60 @@
+# cargo-deny settings. CI runs `cargo deny --locked check` on every change
+# (ci.yml, job `deny`) and the advisories check daily (advisories.yml).
+# How to accept an advisory: book/src/contributing/supply-chain.md.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Any RustSec advisory fails, and so do unmaintained and yanked crates. An
+# advisory we accept goes here with its ID and the reason, for example
+#   { id = "RUSTSEC-2026-0000", reason = "no fixed version yet; irsync never calls foo()" },
+yanked = "deny"
+unmaintained = "all"
+ignore = [
+    # TEMPORARY, awaiting the maintainer's decision. The fix (rusqlite 0.41,
+    # SQLite 3.54) is held back on purpose: see the rusqlite line in
+    # Cargo.toml and the test lookups_are_never_re_prepared. The exposure is
+    # real: fileset opens the .fileset.sqlite manifest inside a tree, which
+    # may have been copied from someone else.
+    { id = "RUSTSEC-2026-0459", reason = "TEMPORARY: SQLite fix held back by the 3.54 re-prepare regression; fileset opens manifests that may come from others, so this needs a decision, not a standing exception." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable. Only filegen uses it (via serde_yaml_ng), to read its own test specs; filegen is a test tool and is not shipped." },
+]
+
+[licenses]
+version = 2
+# Every license in the tree today, all compatible with irsync's MIT license.
+# Crates that offer a GPL or LGPL alternative (self_cell, r-efi) are used
+# under their MIT or Apache-2.0 option. MPL-2.0 (attohttpc, option-ext) is
+# file-level copyleft: fine for a binary as long as those crates' sources
+# stay available, which crates.io ensures.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[sources]
+# crates.io, and our iroh fork (pinned to a commit in Cargo.toml). Nothing else.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/irsync-dev/iroh"]
+
+[bans]
+multiple-versions = "warn"

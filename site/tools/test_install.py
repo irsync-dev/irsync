@@ -119,5 +119,67 @@ class ShellTest(unittest.TestCase):
             subprocess.run([dash, "-n", str(SCRIPT)], check=True)
 
 
+FAKE_FETCHER = """#!/bin/sh
+# Logs its arguments, then prints a releases list for the API URL and a
+# do-nothing installer for anything else. `--help` lists --https-only
+# unless FAKE_NO_HTTPS_ONLY is set (BusyBox wget has no such flag).
+if [ "$1" = --help ]; then
+  [ -n "${FAKE_NO_HTTPS_ONLY-}" ] || echo "  --https-only   only follow secure HTTPS links"
+  exit 0
+fi
+printf '%s\\n' "$*" >> "$FAKE_LOG"
+for a in "$@"; do
+  case $a in
+    https://api.github.com/*) printf '[{"tag_name": "v1.2.3", "draft": false}]\\n'; exit 0 ;;
+  esac
+done
+printf 'exit 0\\n'
+"""
+
+# What install.sh runs besides the downloader.
+TOOLS = ["sh", "grep", "sed", "awk", "mktemp", "rm", "cat", "printf"]
+
+
+class FetchFlagsTest(unittest.TestCase):
+    """install.sh's own downloads must refuse plain HTTP, even after a redirect."""
+
+    def run_with(self, fetcher, extra_env=None, expect_ok=True):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            for tool in TOOLS:
+                (bindir / tool).symlink_to(shutil.which(tool))
+            fake = bindir / fetcher
+            fake.write_text(FAKE_FETCHER)
+            fake.chmod(0o755)
+            log = Path(tmp) / "calls.log"
+            env = {"PATH": str(bindir), "FAKE_LOG": str(log), "TMPDIR": tmp,
+                   **(extra_env or {})}
+            r = subprocess.run([str(bindir / "sh"), str(SCRIPT)], env=env,
+                               capture_output=True, text=True)
+            if not expect_ok:
+                return r, log
+            self.assertEqual(r.returncode, 0, r.stderr)
+            calls = log.read_text().splitlines()
+            self.assertEqual(len(calls), 2, calls)
+            return calls
+
+    def test_curl_downloads_are_https_only(self):
+        for call in self.run_with("curl"):
+            self.assertIn("--proto =https", call)
+            self.assertIn("--tlsv1.2", call)
+
+    def test_wget_downloads_are_https_only(self):
+        for call in self.run_with("wget"):
+            self.assertIn("--https-only", call)
+
+    def test_wget_without_https_only_refuses(self):
+        r, log = self.run_with("wget", {"FAKE_NO_HTTPS_ONLY": "1"}, expect_ok=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("install curl", r.stderr)
+        self.assertNotIn("could not reach GitHub", r.stderr)
+        self.assertFalse(log.exists(), "nothing may be downloaded")
+
+
 if __name__ == "__main__":
     unittest.main()

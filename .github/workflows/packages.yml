@@ -1,15 +1,16 @@
 # Builds the .deb and .rpm packages for a stable release, adds them to the
 # signed apt/dnf repo (irsync-dev/packages, served at https://dist.irsync.org)
-# and attaches the same files to the GitHub Release. Release-gate.yml calls
+# and attests them. They are not attached to the GitHub Release: releases are
+# immutable once published. Release-gate.yml calls
 # this after the release succeeded, and release-resume.yml calls it to finish
 # a release whose gate failed later on. It is never started on its own.
 #
 # A re-run for a version the repo already has builds nothing and changes
-# nothing in the repo; it only attaches files the release is missing.
+# nothing in the repo; it only attests the packages again.
 #
 # A dry run (pre-release tags allowed) builds, signs and checks everything,
-# and checks that the token may push to the packages repo, but uploads
-# nothing to the release and pushes nothing. The result is a workflow artifact.
+# and checks that the token may push to the packages repo, but attests and
+# pushes nothing. The result is a workflow artifact.
 
 name: Packages
 
@@ -22,13 +23,9 @@ on:
       dry-run:
         type: boolean
         default: false
-    secrets:
-      PACKAGES_REPO_TOKEN:
-        required: true
-      PACKAGES_GPG_PRIVATE_KEY:
-        required: true
-      PACKAGES_GPG_PASSPHRASE:
-        required: true
+    # No secrets here: the job reads PACKAGES_* from the `release` environment,
+    # which opens only for runs on a v* tag (after an approval). GitHub does
+    # not let a caller pass environment secrets in.
 
 permissions:
   contents: read
@@ -36,8 +33,13 @@ permissions:
 jobs:
   packages:
     runs-on: ubuntu-latest
+    environment: release
+    # contents: read is enough: the packages repo is pushed with its own token,
+    # and the packages are no longer attached to the (immutable) release.
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+      attestations: write
     # Only one job at a time may update the packages repo.
     concurrency:
       group: packages-repo
@@ -48,7 +50,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       DRY_RUN: ${{ inputs.dry-run }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
@@ -90,7 +92,7 @@ jobs:
       # The token is saved in this checkout's git config, and only here. It is
       # scoped to the packages repo.
       - name: Check out the packages repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: irsync-dev/packages
           token: ${{ secrets.PACKAGES_REPO_TOKEN }}
@@ -126,7 +128,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
         run: packaging/update-repo.sh packages-repo "$RUNNER_TEMP/built" 3
 
-      # Taken from the repo, so the release gets the signed .rpm files.
+      # Taken from the repo, so the attested files are the signed .rpm files.
       - name: Collect this version's packages
         run: packaging/repo-version.sh copy packages-repo "$VERSION" "$RUNNER_TEMP/packages"
 
@@ -148,28 +150,19 @@ jobs:
             git push
           fi
 
-      # After the push, so the release and the repo always hold the same files.
-      - name: Attach the packages to the release
+      # Releases are immutable once published, so the packages are not
+      # attached to them; they live in the apt/dnf repo. Each gets a signed
+      # build provenance record instead, checkable with
+      # `gh attestation verify <file> --repo irsync-dev/irsync`.
+      - name: Attest the packages
         if: ${{ !inputs.dry-run }}
-        run: |
-          set -euo pipefail
-          attached=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          files=()
-          for f in "$RUNNER_TEMP"/packages/*; do
-            name=${f##*/}
-            if grep -qxF "$name" <<<"$attached"; then
-              echo "$name is already attached."
-            else
-              files+=("$f")
-            fi
-          done
-          if [ "${#files[@]}" -gt 0 ]; then
-            gh release upload "$TAG" "${files[@]}"
-          fi
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/packages/*
 
       - name: Keep the packages (dry run)
         if: ${{ inputs.dry-run }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-${{ inputs.tag }}
           path: ${{ runner.temp }}/packages
@@ -177,7 +170,7 @@ jobs:
 
       - name: Keep the repo tree (dry run)
         if: ${{ inputs.dry-run }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-repo-${{ inputs.tag }}
           path: |

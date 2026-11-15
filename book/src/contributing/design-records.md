@@ -13,6 +13,7 @@ shipped.
 | [FILEGEN_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/FILEGEN_DECISIONS.md) | The rulings made while building `filegen`. |
 | [IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md) | The rulings made while building `irsync-stress`, the irsync bugs the harness found, its acceptance run and its sweeps. |
 | [NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md) | The calls made while building `irsync-netstress` and its fault layer, and the results of the real runs. |
+| [SUPPLY_CHAIN_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/SUPPLY_CHAIN_DECISIONS.md) | How the way from a commit to a user's install is guarded, and the trade-offs taken. |
 
 [`docs/superpowers/`](https://github.com/irsync-dev/irsync/tree/main/docs/superpowers)
 is history: the specs (`specs/`), implementation plans (`plans/`) and

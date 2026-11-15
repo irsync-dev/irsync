@@ -1,0 +1,63 @@
+# Pushes the Homebrew formula of a published release to
+# irsync-dev/homebrew-tap. release-gate.yml calls it for stable tags after
+# release.yml published the release, and release-resume.yml calls it to
+# finish a release. It replaces dist's built-in Homebrew job so it can run in
+# the `release` environment: HOMEBREW_TAP_TOKEN lives there and opens only for
+# runs on a v* tag, after an approval. (dist 0.34.0 can't call a local custom
+# publish job: it writes `uses: $/.github/...`.)
+#
+# The formula is the irsync.rb that dist built and attached to the release.
+# Safe to run again: if the tap already has that formula, it pushes nothing.
+
+name: Publish Homebrew formula
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew:
+    runs-on: ubuntu-22.04
+    environment: release
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: true
+          repository: irsync-dev/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Download the formula from the release
+        run: gh release download "$TAG" --pattern '*.rb' --dir Formula --clobber
+
+      # The formula name may differ from the app name, so publish each *.rb
+      # under its own file name.
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          brew update
+          git config user.name "irsync releases"
+          git config user.email "releases@irsync.org"
+          for f in Formula/*.rb; do
+            # Leave the description and homepage as written.
+            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "$f" || true
+            git add "$f"
+          done
+          if git diff --cached --quiet; then
+            echo "The tap already has the formula for $TAG."
+            exit 0
+          fi
+          git commit -m "irsync ${TAG#v}"
+          git push

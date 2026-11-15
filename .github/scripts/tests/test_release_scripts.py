@@ -254,9 +254,16 @@ class NotesTests(FakeGh):
 
 
 class ResumeTests(FakeGh):
-    def resume(self, tag, dry_run, release=None):
+    def setUp(self):
+        super().setUp()
+        # On a runner GITHUB_REF is always set; here only where a test sets it.
+        self.env.pop("GITHUB_REF", None)
+
+    def resume(self, tag, dry_run, release=None, ref=None):
         releases = {tag: release} if release else {}
         self.set_state(releases=releases, tags=[tag], generated="x")
+        if ref is not None:
+            self.env["GITHUB_REF"] = ref
         return self.run_script(RESUME, tag, "true" if dry_run else "false")
 
     def out(self, r):
@@ -268,23 +275,23 @@ class ResumeTests(FakeGh):
 
     def test_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED)),
-                         {"packages": "true", "notes": "true"})
+                         {"packages": "true", "homebrew": "true", "notes": "true"})
 
     def test_prerelease_tag_gets_notes_only(self):
         self.assertEqual(self.out(self.resume("v1.2.3-beta.1", False, self.PRE)),
-                         {"packages": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true"})
 
     def test_stable_tag_marked_prerelease_gets_no_packages(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PRE)),
-                         {"packages": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true"})
 
     def test_dry_run_on_alpha(self):
         self.assertEqual(self.out(self.resume("v0.1.0-alpha.1", True, self.PRE)),
-                         {"packages": "true", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false"})
 
     def test_dry_run_on_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", True, self.PUBLISHED)),
-                         {"packages": "true", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false"})
 
     def test_draft_fails(self):
         r = self.resume("v1.2.3", False, {"body": "", "isDraft": True, "isPrerelease": False})
@@ -299,11 +306,115 @@ class ResumeTests(FakeGh):
             self.assertIn("no GitHub Release", r.stderr)
             self.assertEqual(r.stdout, "")
 
+    def test_resume_refuses_branch_ref(self):
+        r = self.resume("v1.2.3", False, self.PUBLISHED, ref="refs/heads/main")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3", r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(self.state().get("calls", []), [])
+
+    def test_resume_refuses_other_tag_ref(self):
+        r = self.resume("v1.2.3", False, self.PUBLISHED, ref="refs/tags/v1.2.4")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--ref v1.2.3", r.stderr)
+
+    def test_resume_accepts_matching_tag_ref(self):
+        self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED,
+                                              ref="refs/tags/v1.2.3")),
+                         {"packages": "true", "homebrew": "true", "notes": "true"})
+
     def test_bad_tag_fails_before_gh(self):
         r = self.resume("v1.2.3;id", True, self.PUBLISHED)
         self.assertEqual(r.returncode, 1)
         self.assertEqual(r.stdout, "")
         self.assertEqual(self.state().get("calls", []), [])
+
+
+CODE_CHANGED = os.path.join(SCRIPTS, "code-changed.sh")
+CI_RESULT = os.path.join(SCRIPTS, "ci-result.sh")
+
+
+class CodeChangedTests(unittest.TestCase):
+    """code-changed.sh: does a change touch anything CI has to test?"""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="repo-")
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        self.git("init", "-q")
+        self.write("crates/x.rs", "fn main() {}\n")
+        self.base = self.commit()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               *args], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def write(self, path, text):
+        full = os.path.join(self.repo, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as f:
+            f.write(text)
+
+    def commit(self):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        return self.git("rev-parse", "HEAD")
+
+    def changed(self, base, head):
+        r = subprocess.run([CODE_CHANGED, base, head], cwd=self.repo,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_docs_only_change_is_not_code(self):
+        self.write("README.md", "hi\n")
+        self.write("book/src/x.md", "hi\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
+    def test_site_only_change_is_not_code(self):
+        self.write("site/index.html", "<p>hi</p>\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
+    def test_mixed_change_is_code(self):
+        self.write("book/a.md", "hi\n")
+        self.write("crates/x.rs", "fn main() { }\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=true")
+
+    def test_code_renamed_to_docs_is_code(self):
+        self.git("mv", "crates/x.rs", "README.md")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=true")
+
+    def test_zero_base_is_code(self):
+        self.write("README.md", "hi\n")
+        head = self.commit()
+        self.assertEqual(self.changed("0" * 40, head), "code=true")
+
+    def test_unknown_base_is_code(self):
+        self.write("README.md", "hi\n")
+        head = self.commit()
+        self.assertEqual(self.changed("1" * 40, head), "code=true")
+
+
+class CiResultTests(unittest.TestCase):
+    """ci-result.sh: one pass/fail for the whole CI run."""
+
+    def run_result(self, needs):
+        return subprocess.run([CI_RESULT, json.dumps(needs)],
+                              capture_output=True, text=True)
+
+    def test_all_success_passes(self):
+        r = self.run_result({"a": {"result": "success"}, "b": {"result": "skipped"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_cancelled_need_fails(self):
+        r = self.run_result({"a": {"result": "success"}, "check": {"result": "cancelled"}})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check", r.stderr)
+
+    def test_failure_need_fails(self):
+        r = self.run_result({"deny": {"result": "failure"}})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("deny", r.stderr)
 
 
 if __name__ == "__main__":
