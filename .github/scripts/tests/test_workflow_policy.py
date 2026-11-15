@@ -144,6 +144,17 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertNotIn("paths-ignore", on["pull_request"] or {})
         self.assertIn("paths-ignore", on["push"])
 
+    def test_workflow_checks_in_ci(self):
+        # The rules in this file and actionlint must run on every pull request
+        # that touches a workflow, inside a job "CI result" needs.
+        runs = {jid: " ".join(s.get("run", "") for s in j.get("steps", []))
+                for jid, j in jobs(self.ci).items()}
+        self.assertTrue(any("unittest discover -s .github/scripts/tests" in r
+                            for r in runs.values()), "policy tests not in ci.yml")
+        self.assertTrue(any("actionlint" in r for r in runs.values()), "actionlint not in ci.yml")
+        self.assertTrue(any("dist generate --check" in r for r in runs.values()),
+                        "dist generate --check not in ci.yml")
+
     def test_deny_job_present(self):
         runs = [s.get("run", "") for j in jobs(self.ci).values() for s in j.get("steps", [])]
         self.assertTrue(any("cargo deny --locked check" == r.strip() for r in runs), runs)

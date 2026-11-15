@@ -380,6 +380,10 @@ class CodeChangedTests(unittest.TestCase):
         self.write("crates/x.rs", "fn main() { }\n")
         self.assertEqual(self.changed(self.base, self.commit()), "code=true")
 
+    def test_code_renamed_to_docs_is_code(self):
+        self.git("mv", "crates/x.rs", "README.md")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=true")
+
     def test_zero_base_is_code(self):
         self.write("README.md", "hi\n")
         head = self.commit()

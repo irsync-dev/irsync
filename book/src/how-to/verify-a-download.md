@@ -15,13 +15,16 @@ Download the file from the
 [releases page](https://github.com/irsync-dev/irsync/releases), then:
 
 ```sh
-gh attestation verify irsync-x86_64-unknown-linux-musl.tar.xz --repo irsync-dev/irsync
+gh attestation verify irsync-x86_64-unknown-linux-musl.tar.xz \
+  --repo irsync-dev/irsync \
+  --signer-workflow irsync-dev/irsync/.github/workflows/release.yml
 ```
 
-A good file prints `Verification succeeded!` and names the workflow that
-built it, `.github/workflows/release.yml`, and the tag. Anything else (a
-failure, or a different repository or workflow) means: don't use the file,
-and please [report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
+`--signer-workflow` matters: without it, a file attested by any workflow in
+the repository would pass, including one someone pushed on a branch. A good
+file prints `Verification succeeded!` and the tag it was built from. A
+failure means: don't use the file, and please
+[report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
 
 The same works for `irsync-installer.sh` and the other archives on the
 release.
@@ -34,10 +37,10 @@ and dnf already check every download against the repository's signing key.
 To check a package file by hand as well:
 
 ```sh
-gh attestation verify irsync_1.2.3_amd64.deb --repo irsync-dev/irsync
+gh attestation verify irsync_1.2.3_amd64.deb \
+  --repo irsync-dev/irsync \
+  --signer-workflow irsync-dev/irsync/.github/workflows/packages.yml
 ```
-
-This one names `.github/workflows/packages.yml` as the workflow.
 
 ## The apt and dnf signing key
 
@@ -52,6 +55,10 @@ Compare the 40-character fingerprint it prints with the one in
 [SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md#how-releases-are-built).
 The two must match exactly.
 
+If irsync's signing key ever changes its subkey, apt and dnf need the key
+file again: download `irsync.gpg` (apt) or `irsync.asc` (dnf) as when you
+added the repository. The fingerprint stays the same.
+
 ## Homebrew
 
 The formula in `irsync-dev/tap` pins the SHA-256 of each archive, and
@@ -59,5 +66,7 @@ The formula in `irsync-dev/tap` pins the SHA-256 of each archive, and
 find it in Homebrew's cache and verify it as above:
 
 ```sh
-gh attestation verify "$(brew --cache irsync)" --repo irsync-dev/irsync
+gh attestation verify "$(brew --cache irsync)" \
+  --repo irsync-dev/irsync \
+  --signer-workflow irsync-dev/irsync/.github/workflows/release.yml
 ```

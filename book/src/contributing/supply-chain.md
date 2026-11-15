@@ -102,7 +102,7 @@ a signing subkey. Use the separate keyring from
 export GNUPGHOME="$PWD/gnupg"
 FPR=$(gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
 gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
-    --quick-add-key "$FPR" rsa4096 sign 2y
+    --quick-add-key "$FPR" rsa4096 sign never
 SUB=$(gpg --list-secret-keys --with-colons "$FPR" | awk -F: '$1 == "fpr" { n++ } n == 2 { print $10; exit }')
 gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
     --armor --export-secret-subkeys "$SUB!" > private-subkey.asc
@@ -113,10 +113,16 @@ The `!` exports exactly that subkey. `private-subkey.asc` goes into GitHub.
 Keep `private-key.asc`, `passphrase.txt` and the revocation certificate
 offline. Users keep trusting the primary fingerprint, which doesn't change.
 
+The subkey never expires, like the key itself: apt users keep the public key
+in a local file that nothing refreshes, so an expiry date would break
+`apt update` for all of them on that day.
+
 If the subkey leaks, revoke it in this keyring (`gpg --edit-key "$FPR"`,
 `key 1`, `revkey`, `save`), add a new one as above, and replace the secret.
 Then commit the re-exported `public-key.asc` to the packages repo as
-`irsync.asc` and `irsync.gpg`, as in rotation step 3.
+`irsync.asc` and `irsync.gpg`, as in rotation step 3. The fingerprint users
+trust stays the same, but apt and dnf only learn the new subkey when they
+download the key file again, so tell users to (rotation step 4).
 
 **3. Tokens.** Make two fine-grained personal access tokens, each limited to
 one repository with "Contents: read and write" and nothing else:

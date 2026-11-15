@@ -23,5 +23,7 @@ while IFS= read -r path; do
         *.md | book/* | site/*) ;;
         *) echo "code=true"; exit 0 ;;
     esac
-done < <(git diff --name-only "$base" "$head")
+# --no-renames: a file moved from crates/ to docs/ is a change to both paths.
+# base...head: only what the change itself did, not newer commits on main.
+done < <(git diff --no-renames --name-only "$base...$head")
 echo "code=false"

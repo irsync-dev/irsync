@@ -159,6 +159,8 @@ jobs:
           echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
+      - name: Check release.yml matches dist-workspace.toml
+        run: dist generate --check
       - name: Build the release artifacts
         run: dist build --artifacts=local --target=${{ matrix.target }}
       - name: Check the tarball holds both binaries
@@ -168,6 +170,35 @@ jobs:
           cat contents.txt
           grep -qx "irsync-${{ matrix.target }}/irsync" contents.txt
           grep -qx "irsync-${{ matrix.target }}/fileset" contents.txt
+
+  # The workflow rules (.github/scripts/tests, including the supply chain
+  # policy in test_workflow_policy.py) and actionlint, on every change: a
+  # workflow change is code too. Cheap, so it doesn't wait for `changes`.
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Workflow and release script tests
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          python3 -m unittest discover -s .github/scripts/tests
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+      # shellcheck is off: it would also lint the generated release.yml.
+      - name: Lint the workflows
+        run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='
 
   # Dependencies: known vulnerabilities, unmaintained or yanked crates,
   # licenses and sources, as set in deny.toml. Fails on any advisory; an
@@ -209,7 +240,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, check, release-build, deny, dependency-review]
+    needs: [changes, check, release-build, workflows, deny, dependency-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read
