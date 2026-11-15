@@ -60,7 +60,7 @@
             class="mt-4 max-w-[36em] text-lede md:text-[1.1875rem] lg:mt-5 lg:text-lede"
           >
             Copy files and directory trees the way rsync does, directly between
-            your devices.
+            your devices, with irsync on both ends.
           </p>
           <ul class="mt-5 flex max-w-[36em] flex-col gap-2 lg:mt-8 lg:gap-4">
             <li>
@@ -167,11 +167,7 @@
           >
             <strong class="font-display font-bold">Beta.</strong>
             The command line and the protocol may still change: keep a backup.
-            Both ends run irsync; it is not a drop-in replacement for rsync. Not
-            supported: Windows and NTFS, and the rsync options <code>-X</code>,
-            <code>-A</code> and <code>-z</code>, so extended attributes and ACLs
-            are not copied. Relayed connections are much slower than direct
-            ones.
+            Windows, extended attributes and ACLs are not supported yet.
             <a href="book/reference/limitations.html">Known limitations</a>.
           </p>
         </section>
