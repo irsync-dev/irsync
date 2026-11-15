@@ -201,7 +201,8 @@ def apply(repo, want):
         gh(f"repos/{repo}/actions/permissions", "-X", "PUT", body=want["actions"])
     if want.get("immutable_releases"):
         gh(f"repos/{repo}/immutable-releases", "-X", "PUT")
-    if want.get("dependency_graph"):
+    if want.get("dependency_graph") and gh(f"repos/{repo}/dependency-graph/sbom",
+                                           ok_missing=True) is None:
         print(f"{repo}: turn on the dependency graph by hand: Settings, Code security, "
               "Dependency graph, Enable. There is no API for it.")
     for name, env in want.get("environments", {}).items():
