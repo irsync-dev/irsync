@@ -109,11 +109,12 @@ gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
     --quick-add-key "$FPR" rsa4096 sign never
 SUB=$(gpg --list-secret-keys --with-colons "$FPR" | awk -F: '$1 == "fpr" { n++ } n == 2 { print $10; exit }')
 gpg --batch --pinentry-mode loopback --passphrase-file passphrase.txt \
-    --armor --export-secret-subkeys "$SUB!" > private-subkey.asc
+    --armor --export-secret-subkeys "$SUB"'!' > private-subkey.asc
 gpg --armor --export "$FPR" > public-key.asc
 ```
 
-The `!` exports exactly that subkey. `private-subkey.asc` goes into GitHub.
+The `!` exports exactly that subkey. It sits in single quotes so that
+zsh and bash don't read it as history expansion. `private-subkey.asc` goes into GitHub.
 Keep `private-key.asc`, `passphrase.txt` and the revocation certificate
 offline. Users keep trusting the primary fingerprint, which doesn't change.
 
