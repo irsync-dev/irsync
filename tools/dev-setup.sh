@@ -315,7 +315,7 @@ fi
 if [ "$os" = Linux ]; then
     if have musl-gcc; then ok "musl-gcc"; else warn "musl-gcc, for release builds and tools/ci.sh release-build" "$(hint musl-gcc)"; fi
 fi
-if have node && have npx; then ok "node and npx"; else warn "node and npx, for site/serve.sh and site/deploy.sh" "$(hint node)"; fi
+if have node && have npx; then ok "node and npx"; else warn "node and npx, for site/build.sh, site/serve.sh and site/deploy.sh" "$(hint node)"; fi
 
 if [ "$os" = Linux ]; then
     # nfpm at the version CI installs (.github/scripts/install-packaging-tools.sh).

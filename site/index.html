@@ -12,23 +12,31 @@
     <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body>
-    <header class="top">
-      <nav aria-label="Site">
-        <p class="brand">
-          <a class="name" href="./">irsync</a>
-          <span class="badge">beta</span>
+  <body class="mx-auto max-w-[960px] p-4 min-[720px]:px-8 min-[720px]:pb-8">
+    <header>
+      <nav
+        aria-label="Site"
+        class="mb-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-base-300 pb-3 font-mono text-code"
+      >
+        <p class="flex items-center gap-3">
+          <a class="font-semibold text-base-content no-underline" href="./">irsync</a>
+          <span class="badge badge-sm border-0 bg-warn-soft font-mono text-caption text-warning">beta</span>
         </p>
-        <ul>
-          <li><a href="book/">documentation</a></li>
-          <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
+        <ul class="flex flex-wrap gap-x-4 gap-y-1">
+          <li><a class="text-ink-muted hover:text-base-content" href="book/">documentation</a></li>
+          <li>
+            <a class="text-ink-muted hover:text-base-content" href="https://github.com/irsync-dev/irsync">source</a>
+          </li>
         </ul>
       </nav>
     </header>
 
-    <main>
-      <p class="alpha" role="note">
-        <strong>Beta</strong>
+    <main class="flex flex-col gap-6">
+      <p
+        class="alert mb-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-field border-warning bg-warn-soft px-3 py-2 text-code text-base-content"
+        role="note"
+      >
+        <strong class="font-mono font-semibold text-warning">Beta</strong>
         <span>
           Approaching the first stable release. The command line and the
           protocol may still change, based on correctness testing, performance
@@ -36,36 +44,45 @@
           with it.
         </span>
       </p>
-      <section class="hero" aria-labelledby="headline">
+
+      <section class="flex flex-col gap-3" aria-labelledby="headline">
         <h1 id="headline">
           <strong>irsync:</strong> Resilient file sync over any network topology
         </h1>
-        <p class="lede">
+        <p class="max-w-[44em]">
           Peer-to-peer file and directory sync in the spirit of rsync that
           adapts to any network topology and survives connection drops without
           restarting.
         </p>
-        <p class="lede">
+        <p class="max-w-[44em]">
           Move files and full directory trees directly between devices without
           configuring firewalls, port forwarding, or static IPs. Built on iroh,
           transfers punch through NATs, fall back to relays when needed, and
           handle network switches mid-stream. If a connection drops, the
           transfer picks up at the exact byte where it stopped.
         </p>
-        <p class="actions">
-          <a class="button primary" href="book/tutorial/first-sync.html"
+        <p class="flex flex-wrap gap-2 pt-1">
+          <a class="btn btn-sm btn-primary text-code font-semibold no-underline" href="book/tutorial/first-sync.html"
             >Your first sync</a
           >
-          <a class="button quiet" href="book/introduction.html">Introduction</a>
-          <a class="button quiet" href="book/reference/limitations.html"
+          <a
+            class="btn btn-sm btn-outline border-line-strong text-code font-medium text-base-content no-underline hover:bg-base-200"
+            href="book/introduction.html"
+            >Introduction</a
+          >
+          <a
+            class="btn btn-sm btn-outline border-line-strong text-code font-medium text-base-content no-underline hover:bg-base-200"
+            href="book/reference/limitations.html"
             >Known limitations</a
           >
         </p>
       </section>
 
-      <ol class="steps">
-        <li>
-          <h2 id="install"><span aria-hidden="true">1</span>Install</h2>
+      <ol class="grid grid-cols-[minmax(0,1fr)] gap-4">
+        <li class="flex flex-col gap-1">
+          <h2 id="install">
+            <span class="mr-2 font-mono text-ink-muted" aria-hidden="true">1</span>Install
+          </h2>
           <div class="cmd">
             <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta</span></pre>
           </div>
@@ -79,8 +96,10 @@
             >
           </p>
         </li>
-        <li>
-          <h2><span aria-hidden="true">2</span>First Sync</h2>
+        <li class="flex flex-col gap-1">
+          <h2>
+            <span class="mr-2 font-mono text-ink-muted" aria-hidden="true">2</span>First Sync
+          </h2>
           <div class="cmd">
             <pre><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
           </div>
@@ -96,9 +115,9 @@
         </li>
       </ol>
 
-      <section class="how" aria-labelledby="how-heading">
+      <section class="flex flex-col gap-3 border-t border-base-300 pt-4" aria-labelledby="how-heading">
         <h2 id="how-heading">How it connects</h2>
-        <div class="columns">
+        <div class="flex flex-wrap gap-x-8 gap-y-4 [&>div]:flex [&>div]:min-w-0 [&>div]:flex-[1_1_240px] [&>div]:flex-col [&>div]:gap-1 [&_p]:note">
           <div>
             <h3>Peer to peer, over iroh</h3>
             <p>
@@ -131,39 +150,41 @@
         </div>
       </section>
 
-      <section class="limits" aria-labelledby="limits-heading">
-        <div class="limits-title">
-          <h2 id="limits-heading">Before you rely on it</h2>
-          <span class="badge">Beta</span>
+      <section class="card rounded-field border border-base-300 bg-base-200" aria-labelledby="limits-heading">
+        <div class="card-body gap-2 p-4">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <h2 id="limits-heading" class="card-title text-heading">Before you rely on it</h2>
+            <span class="badge badge-sm border-0 bg-warn-soft font-mono text-caption text-warning">Beta</span>
+          </div>
+          <ul class="flex list-disc flex-col gap-1 pl-4 text-code text-ink-muted">
+            <li>
+              The command line and the protocol may change before the first stable
+              release. Keep another copy of anything you sync with it.
+            </li>
+            <li>
+              It is not a drop-in replacement for rsync. It has its own protocol,
+              so both ends must run irsync.
+            </li>
+            <li>
+              Some rsync options are missing, such as <code>-X</code>,
+              <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
+              are not copied.
+            </li>
+            <li>
+              Windows and NTFS is not supported. Relayed connections are much
+              slower than direct ones.
+            </li>
+          </ul>
+          <p class="note">
+            <a href="book/reference/limitations.html">Known limitations&nbsp;→</a>
+          </p>
         </div>
-        <ul>
-          <li>
-            The command line and the protocol may change before the first stable
-            release. Keep another copy of anything you sync with it.
-          </li>
-          <li>
-            It is not a drop-in replacement for rsync. It has its own protocol,
-            so both ends must run irsync.
-          </li>
-          <li>
-            Some rsync options are missing, such as <code>-X</code>,
-            <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
-            are not copied.
-          </li>
-          <li>
-            Windows and NTFS is not supported. Relayed connections are much
-            slower than direct ones.
-          </li>
-        </ul>
-        <p class="note">
-          <a href="book/reference/limitations.html">Known limitations&nbsp;→</a>
-        </p>
       </section>
 
-      <div class="pair">
+      <div class="flex flex-wrap gap-x-8 gap-y-4 [&>section]:flex [&>section]:min-w-0 [&>section]:flex-[1_1_280px] [&>section]:flex-col [&>section]:gap-1">
         <section aria-labelledby="fileset-heading">
           <h2 id="fileset-heading">fileset</h2>
-          <p>
+          <p class="text-ink-muted">
             A helper that ships with irsync. It checks that a copy is exact,
             whichever tool made it: rsync, rclone, cp or irsync.
           </p>
@@ -175,7 +196,7 @@
         </section>
         <section aria-labelledby="help-heading">
           <h2 id="help-heading">Help</h2>
-          <p>
+          <p class="text-ink-muted">
             Ask questions and report bugs in GitHub Issues. Report security
             problems privately to security@irsync.org.
           </p>
@@ -192,7 +213,7 @@
       </div>
     </main>
 
-    <footer class="bottom">
+    <footer class="mt-6 border-t border-base-300 pt-3 text-caption font-normal text-ink-muted">
       <p>
         irsync is built by
         <a href="https://github.com/lambdanature/">Michael Wildpaner</a> and
@@ -215,6 +236,8 @@
         for (const cmd of document.querySelectorAll(".cmd")) {
           const button = document.createElement("button");
           button.type = "button";
+          button.className =
+            "btn btn-xs flex-none border-line-strong bg-base-100 font-mono text-code-small font-normal text-ink-muted hover:text-base-content";
           button.textContent = "copy";
           button.onclick = () => {
             const text = cmd.querySelector(".copy").textContent;

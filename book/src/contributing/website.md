@@ -7,7 +7,9 @@ landing page at `/` and this book at `/book/`.
 
 | Path | What it holds |
 | --- | --- |
-| `site/index.html`, `site/404.html`, `site/style.css`, `site/robots.txt`, `site/_headers` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
+| `site/index.html`, `site/404.html`, `site/robots.txt`, `site/_headers`, `site/install.sh` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
+| `site/tailwind.css` | The landing page's stylesheet: the Tailwind CSS and daisyUI source that the build compiles into `style.css`. |
+| `site/package.json`, `site/package-lock.json` | The npm packages the stylesheet is built with, pinned. Not deployed. |
 | `site/tokens.json` | The design tokens: colours, type, spacing, radius, shadow. |
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
@@ -24,16 +26,33 @@ keyed on mdbook's theme class, and `tokens.css` next to the landing page
 keyed on its `data-theme` attribute. Every colour, font stack, spacing,
 radius and shadow on the site comes from these properties.
 
+The landing page is styled with [Tailwind CSS](https://tailwindcss.com/)
+and [daisyUI](https://daisyui.com/). `site/tailwind.css` maps both onto the
+tokens: Tailwind's spacing, radius, font and text-size scales, and one daisyUI
+theme, `irsync`, whose colours (`base-100`, `primary`, `warning` and so on)
+are `--ir-*` properties. Token colours with no daisyUI name are Tailwind
+colours of their own: `ink-muted`, `line-strong`, `accent-soft`, `warn-soft`
+and `link`. Write `text-ink-muted` or `bg-base-200`, not a raw colour. The
+daisyUI theme has no dark twin: `tokens.css` switches the properties it
+refers to between light and dark.
+
 ## Building
 
-The build needs mdbook and Python 3:
+The build needs mdbook, Python 3 and Node.js with npm:
 
 ```sh
 site/build.sh
 ```
 
 It empties `target/site/`, generates the token CSS, builds the book into
-`target/site/book/` and copies the landing page files into `target/site/`.
+`target/site/book/`, copies the landing page files into `target/site/` and
+compiles `site/tailwind.css` into `target/site/style.css`. Tailwind keeps
+only the classes that `site/index.html` and `site/404.html` use. The
+Tailwind CLI and daisyUI come from `site/node_modules/` (git-ignored); the
+build runs `npm ci` there first when it is missing or older than
+`site/package-lock.json`. To move to newer versions, change them in
+`site/package.json` and run `npm install` in `site/`, which updates the lock
+file.
 No font files ship: the site uses the system font stacks from the tokens. The
 empty `book/theme/fonts/fonts.css` keeps mdbook from copying its web fonts,
 and the build removes that stylesheet and its link from every book page.

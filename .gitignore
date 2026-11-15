@@ -6,3 +6,5 @@
 /book/theme/tokens.css
 # mdbook output of a plain `mdbook build book`; site/build.sh builds elsewhere
 /book/book
+# npm packages for the landing page build (site/package-lock.json pins them)
+/site/node_modules

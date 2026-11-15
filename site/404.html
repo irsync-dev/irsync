@@ -10,24 +10,24 @@
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-<header class="top">
-  <nav aria-label="Site">
-    <a class="name" href="/">irsync</a>
-    <ul>
-      <li><a href="/book/">documentation</a></li>
-      <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
+<body class="mx-auto max-w-[960px] p-4 min-[720px]:px-8 min-[720px]:pb-8">
+<header>
+  <nav aria-label="Site" class="mb-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-base-300 pb-3 font-mono text-code">
+    <a class="font-semibold text-base-content" href="/">irsync</a>
+    <ul class="flex flex-wrap gap-x-4 gap-y-1">
+      <li><a class="text-ink-muted hover:text-base-content" href="/book/">documentation</a></li>
+      <li><a class="text-ink-muted hover:text-base-content" href="https://github.com/irsync-dev/irsync">source</a></li>
     </ul>
   </nav>
 </header>
 
 <main>
-  <section class="hero" aria-labelledby="headline">
+  <section class="flex flex-col gap-3" aria-labelledby="headline">
     <h1 id="headline">No page here</h1>
-    <p class="lede">Nothing is published at this address.</p>
-    <p class="actions">
-      <a class="button primary" href="/">The irsync home page</a>
-      <a class="button quiet" href="/book/">The book</a>
+    <p class="max-w-[44em]">Nothing is published at this address.</p>
+    <p class="flex flex-wrap gap-2 pt-1">
+      <a class="btn btn-sm btn-primary text-code font-semibold no-underline" href="/">The irsync home page</a>
+      <a class="btn btn-sm btn-outline border-line-strong text-code font-medium text-base-content no-underline hover:bg-base-200" href="/book/">The book</a>
     </p>
   </section>
 </main>

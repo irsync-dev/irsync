@@ -1,0 +1,168 @@
+/* The landing page's stylesheet: the Tailwind CSS input that site/build.sh
+   compiles into style.css. Only the classes used in index.html and 404.html
+   are kept.
+
+   Every colour, size, space and radius comes from the design tokens
+   (tokens.css, generated from tokens.json): the Tailwind theme and the one
+   daisyUI theme below refer to the --ir-* properties instead of holding
+   values of their own. tokens.css switches those properties between light
+   and dark, so the daisyUI theme needs no dark twin. */
+
+@import "tailwindcss" source(none);
+@source "./index.html";
+@source "./404.html";
+
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
+}
+
+@plugin "daisyui/theme" {
+  name: "irsync";
+  default: true;
+  prefersdark: false;
+  color-scheme: dark light;
+
+  --color-base-100: var(--ir-surface);
+  --color-base-200: var(--ir-surface-raised);
+  --color-base-300: var(--ir-line);
+  --color-base-content: var(--ir-ink);
+  --color-primary: var(--ir-accent);
+  --color-primary-content: var(--ir-on-accent);
+  --color-secondary: var(--ir-accent-soft);
+  --color-secondary-content: var(--ir-accent);
+  --color-accent: var(--ir-accent);
+  --color-accent-content: var(--ir-on-accent);
+  --color-neutral: var(--ir-surface-raised);
+  --color-neutral-content: var(--ir-ink);
+  --color-info: var(--ir-accent);
+  --color-info-content: var(--ir-on-accent);
+  --color-success: var(--ir-accent);
+  --color-success-content: var(--ir-on-accent);
+  --color-warning: var(--ir-warn);
+  --color-warning-content: var(--ir-surface);
+  --color-error: var(--ir-danger);
+  --color-error-content: var(--ir-surface);
+
+  --radius-selector: var(--ir-radius-sm);
+  --radius-field: var(--ir-radius-md);
+  --radius-box: var(--ir-radius-lg);
+  --size-selector: var(--ir-space-1);
+  --size-field: var(--ir-space-1);
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/* Tailwind's scales, taken from the tokens. Spacing: the tokens are
+   multiples of 4px, and so is Tailwind's scale, so p-3 is --ir-space-3. */
+@theme {
+  --spacing: var(--ir-space-1);
+
+  --font-sans: var(--ir-font-sans);
+  --font-mono: var(--ir-font-mono);
+
+  --radius-sm: var(--ir-radius-sm);
+  --radius-md: var(--ir-radius-md);
+  --radius-lg: var(--ir-radius-lg);
+
+  --text-display: var(--ir-display-size);
+  --text-display--line-height: var(--ir-display-line);
+  --text-display--font-weight: var(--ir-display-weight);
+  --text-display--letter-spacing: var(--ir-display-tracking);
+  --text-heading: var(--ir-heading-size);
+  --text-heading--line-height: var(--ir-heading-line);
+  --text-heading--font-weight: var(--ir-heading-weight);
+  --text-body: var(--ir-body-size);
+  --text-body--line-height: var(--ir-body-line);
+  --text-body--font-weight: var(--ir-body-weight);
+  --text-caption: var(--ir-caption-size);
+  --text-caption--line-height: var(--ir-caption-line);
+  --text-caption--font-weight: var(--ir-caption-weight);
+  --text-code: var(--ir-code-size);
+  --text-code--line-height: var(--ir-code-line);
+  --text-code--font-weight: var(--ir-code-weight);
+  --text-code-small: var(--ir-code-small-size);
+  --text-code-small--line-height: var(--ir-code-small-line);
+  --text-code-small--font-weight: var(--ir-code-small-weight);
+
+  /* Token colours daisyUI has no name for. */
+  --color-ink-muted: var(--ir-ink-muted);
+  --color-line-strong: var(--ir-line-strong);
+  --color-accent-soft: var(--ir-accent-soft);
+  --color-warn-soft: var(--ir-warn-soft);
+  --color-link: var(--ir-link);
+
+  --shadow-lg: var(--ir-shadow-lg);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-base-100 font-sans text-body text-base-content;
+  }
+
+  h1 {
+    @apply text-display;
+  }
+
+  h2 {
+    @apply text-heading;
+  }
+
+  h3 {
+    @apply text-body font-semibold;
+  }
+
+  code,
+  pre {
+    @apply font-mono text-code;
+  }
+
+  a {
+    @apply rounded-sm text-link;
+  }
+
+  a:hover {
+    @apply underline;
+  }
+
+  /* A link inside running text is always underlined. */
+  p a {
+    @apply underline underline-offset-2;
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid transparent;
+    box-shadow: var(--ir-focus-ring);
+  }
+}
+
+@layer components {
+  /* A command in a terminal frame. A long command wraps inside the frame, so
+     all of it can be read on a narrow screen; the copy button, added by the
+     script in index.html, stays in the frame's top right corner. */
+  .cmd {
+    @apply flex items-start gap-3 rounded-box border border-base-300 bg-base-200 py-3 pr-3 pl-4;
+  }
+
+  .cmd pre {
+    @apply min-w-0 flex-1 py-1 whitespace-pre-wrap wrap-anywhere;
+  }
+
+  .cmd .prompt {
+    @apply text-ink-muted select-none;
+  }
+}
+
+/* Small secondary text under a command or a paragraph, with its link. A
+   utility rather than a component, so that variants such as [&_p]:note
+   work. */
+@utility note {
+  @apply text-code text-ink-muted;
+}
