@@ -16,21 +16,28 @@ const RETRY_DELAY: Duration = Duration::from_millis(10);
 /// another thread's fork still holds open for writing) for up to about
 /// one second. Every other error is returned at once.
 ///
-/// The child starts with SIGINT and SIGTERM unblocked even when the caller
-/// has them blocked (see `signals::block`): std passes the signal mask on
-/// to the child, and a daemon that inherited the block would never see the
-/// SIGINT that stops it.
+/// The child starts with SIGINT and SIGTERM unblocked and at their default
+/// action, even when the caller has them blocked (see `signals::block`) or
+/// ignored (as a background job starts): std passes the mask on to the
+/// child, exec keeps an ignored signal ignored, and a child that inherited
+/// either would never see the SIGINT that stops it. A shell cannot even
+/// trap a signal that was ignored when it started.
 ///
 /// `spawn` alone leaves the signal handler's foreground child slot alone
 /// (the daemon has its own slot); `status` and `output` set it.
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
-    // SAFETY: between fork and exec the closure only calls `sigemptyset`,
-    // `sigaddset` and `pthread_sigmask`, which are async-signal-safe and
-    // do not allocate. Registered once, outside the ETXTBSY retry loop; a
-    // caller passing the same `Command` again only stacks an identical,
-    // harmless unblock.
+    // SAFETY: between fork and exec the closure only calls `signal`,
+    // `sigemptyset`, `sigaddset` and `pthread_sigmask`, which are
+    // async-signal-safe and do not allocate. Registered once, outside the
+    // ETXTBSY retry loop; a caller passing the same `Command` again only
+    // stacks an identical, harmless reset.
     unsafe {
         cmd.pre_exec(|| {
+            for sig in [libc::SIGINT, libc::SIGTERM] {
+                if libc::signal(sig, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
             libc::sigemptyset(set.as_mut_ptr());
             libc::sigaddset(set.as_mut_ptr(), libc::SIGINT);
@@ -127,6 +134,51 @@ mod tests {
         let mask = u64::from_str_radix(hex, 16).unwrap();
         let bit = |sig: i32| 1u64 << (sig - 1);
         assert_eq!(mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)), 0, "{line}");
+    }
+
+    /// Set in the copy of this test binary that
+    /// `the_child_starts_with_sigint_and_sigterm_not_ignored` runs.
+    const IGNORING_PARENT: &str = "STRESS_TEST_IGNORING_PARENT";
+
+    #[test]
+    #[cfg(target_os = "linux")] // reads /proc
+    fn the_child_starts_with_sigint_and_sigterm_not_ignored() {
+        // A process started as a background job has SIGINT ignored, and
+        // exec keeps an ignored signal ignored. Ignoring them here would
+        // reach every test running alongside, so a copy of this binary,
+        // started with both ignored, plays the parent.
+        if std::env::var_os(IGNORING_PARENT).is_some() {
+            let out = output(
+                Command::new("grep")
+                    .args(["SigIgn", "/proc/self/status"])
+                    .stdout(std::process::Stdio::piped()),
+            )
+            .unwrap();
+            let line = String::from_utf8(out.stdout).unwrap();
+            let hex = line.trim().strip_prefix("SigIgn:").unwrap().trim();
+            let mask = u64::from_str_radix(hex, 16).unwrap();
+            let bit = |sig: i32| 1u64 << (sig - 1);
+            assert_eq!(mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)), 0, "{line}");
+            return;
+        }
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "process::tests::the_child_starts_with_sigint_and_sigterm_not_ignored",
+        ])
+        .env(IGNORING_PARENT, "1");
+        // SAFETY: `signal` is async-signal-safe and does not allocate.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_IGN);
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
     #[test]
