@@ -32,6 +32,6 @@ done < <(printf '%s\n' "$tags" | sort -V)
 
 if [ ${#stray[@]} -gt 0 ]; then
     printf '%s\n' "${stray[@]}"
-    echo "::error::Tags without a GitHub Release: ${stray[*]}. Release tags are created only by the release gate; delete these tags." >&2
+    echo "::error::Tags without a GitHub Release: ${stray[*]}. Release tags are created only by the release gate. A stray tag cannot be deleted or reused, so the next release must use a later version." >&2
     exit 1
 fi
