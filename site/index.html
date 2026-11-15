@@ -17,7 +17,7 @@
       <nav aria-label="Site">
         <p class="brand">
           <a class="name" href="./">irsync</a>
-          <span class="badge">alpha</span>
+          <span class="badge">beta</span>
         </p>
         <ul>
           <li><a href="book/">documentation</a></li>
@@ -27,28 +27,36 @@
     </header>
 
     <main>
+      <p class="alpha" role="note">
+        <strong>Beta</strong>
+        <span>
+          Approaching the first stable release. The command line and the
+          protocol may still change, based on correctness testing, performance
+          measurements and user feedback. Keep another copy of anything you sync
+          with it.
+        </span>
+      </p>
       <section class="hero" aria-labelledby="headline">
-        <h1 id="headline">Resilient file sync over any network topology</h1>
+        <h1 id="headline">
+          <strong>irsync:</strong> Resilient file sync over any network topology
+        </h1>
         <p class="lede">
           Peer-to-peer file and directory sync in the spirit of rsync that
-          adapts to any network topology and survives connection drops
-          without restarting.
+          adapts to any network topology and survives connection drops without
+          restarting.
         </p>
         <p class="lede">
-          Move files and full directory trees directly between devices
-          without configuring firewalls, port forwarding, or static IPs.
-          Built on iroh, transfers punch through NATs, fall back to relays
-          when needed, and handle network switches mid-stream. If a
-          connection drops, the transfer picks up at the exact byte where it
-          stopped.
+          Move files and full directory trees directly between devices without
+          configuring firewalls, port forwarding, or static IPs. Built on iroh,
+          transfers punch through NATs, fall back to relays when needed, and
+          handle network switches mid-stream. If a connection drops, the
+          transfer picks up at the exact byte where it stopped.
         </p>
         <p class="actions">
           <a class="button primary" href="book/tutorial/first-sync.html"
             >Your first sync</a
           >
-          <a class="button quiet" href="book/introduction.html"
-            >Introduction</a
-          >
+          <a class="button quiet" href="book/introduction.html">Introduction</a>
           <a class="button quiet" href="book/reference/limitations.html"
             >Known limitations</a
           >
@@ -59,13 +67,13 @@
         <li>
           <h2 id="install"><span aria-hidden="true">1</span>Install</h2>
           <div class="cmd">
-            <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --alpha</span></pre>
+            <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta</span></pre>
           </div>
           <p class="note">
             Linux and macOS. Installs <code>irsync</code> and
             <code>fileset</code> into <code>~/.local/bin</code>. There is no
-            stable release yet, so <code>--alpha</code> takes the newest
-            alpha release.
+            stable release yet, so <code>--beta</code> takes the newest beta
+            release.
             <a href="book/introduction.html#install"
               >Other ways to install&nbsp;→</a
             >
@@ -82,8 +90,8 @@
             <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
               >No ssh? Set the server up by hand&nbsp;→</a
             >
-            If interrupted, the next run of the same command resumes where
-            the last one stopped.
+            If interrupted, the next run of the same command resumes where the
+            last one stopped.
           </p>
         </li>
       </ol>
@@ -94,17 +102,16 @@
           <div>
             <h3>Peer to peer, over iroh</h3>
             <p>
-              The two machines find each other and traverse NATs and
-              firewalls. The daemon is reached by its iroh identity, not by
-              an address.
+              The two machines find each other and traverse NATs and firewalls.
+              The daemon is reached by its iroh identity, not by an address.
             </p>
           </div>
           <div>
             <h3>Encrypted, key to key</h3>
             <p>
-              Traffic is encrypted end to end. The client only connects to
-              the daemon key it was given, and the daemon only lets in keys
-              it has granted.
+              Traffic is encrypted end to end. The client only connects to the
+              daemon key it was given, and the daemon only lets in keys it has
+              granted.
               <a href="book/explanation/identity-and-trust.html"
                 >Identity and trust&nbsp;→</a
               >
@@ -113,8 +120,8 @@
           <div>
             <h3>A relay when there is no direct path</h3>
             <p>
-              By default a public relay run by n0, the developers of iroh.
-              It cannot read the data. Run your own, or refuse relays with
+              By default a public relay run by n0, the developers of iroh. It
+              cannot read the data. Run your own, or refuse relays with
               <code>--no-relay</code>.
               <a href="book/how-to/direct-and-relay.html"
                 >Direct or relay&nbsp;→</a
@@ -127,16 +134,16 @@
       <section class="limits" aria-labelledby="limits-heading">
         <div class="limits-title">
           <h2 id="limits-heading">Before you rely on it</h2>
-          <span class="badge">alpha</span>
+          <span class="badge">Beta</span>
         </div>
         <ul>
           <li>
-            The command line and the protocol may change before the beta.
-            Keep another copy of anything you sync with it.
+            The command line and the protocol may change before the first stable
+            release. Keep another copy of anything you sync with it.
           </li>
           <li>
-            It is not a drop-in replacement for rsync. It has its own
-            protocol, so both ends must run irsync.
+            It is not a drop-in replacement for rsync. It has its own protocol,
+            so both ends must run irsync.
           </li>
           <li>
             Some rsync options are missing, such as <code>-X</code>,
@@ -144,14 +151,12 @@
             are not copied.
           </li>
           <li>
-            Windows is not supported. Relayed connections are much slower
-            than direct ones.
+            Windows and NTFS is not supported. Relayed connections are much
+            slower than direct ones.
           </li>
         </ul>
         <p class="note">
-          <a href="book/reference/limitations.html"
-            >Known limitations&nbsp;→</a
-          >
+          <a href="book/reference/limitations.html">Known limitations&nbsp;→</a>
         </p>
       </section>
 

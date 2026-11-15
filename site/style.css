@@ -107,6 +107,27 @@ main {
   line-height: var(--ir-code-line);
 }
 
+.alpha {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ir-space-1) var(--ir-space-3);
+  align-items: baseline;
+  max-width: 100%;
+  margin-bottom: var(--ir-space-6);
+  padding: var(--ir-space-2) var(--ir-space-3);
+  background: var(--ir-warn-soft);
+  border: 1px solid var(--ir-warn);
+  border-radius: var(--ir-radius-md);
+  font-size: var(--ir-code-size);
+  line-height: var(--ir-code-line);
+}
+
+.alpha strong {
+  color: var(--ir-warn);
+  font-family: var(--ir-font-mono);
+  font-weight: var(--ir-heading-weight);
+}
+
 /* One-word state, here "alpha". */
 
 .badge {
