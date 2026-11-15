@@ -136,10 +136,6 @@ mod tests {
         assert_eq!(mask & (bit(libc::SIGINT) | bit(libc::SIGTERM)), 0, "{line}");
     }
 
-    /// Set in the copy of this test binary that
-    /// `the_child_starts_with_sigint_and_sigterm_not_ignored` runs.
-    const IGNORING_PARENT: &str = "STRESS_TEST_IGNORING_PARENT";
-
     #[test]
     #[cfg(target_os = "linux")] // reads /proc
     fn the_child_starts_with_sigint_and_sigterm_not_ignored() {
@@ -147,6 +143,7 @@ mod tests {
         // exec keeps an ignored signal ignored. Ignoring them here would
         // reach every test running alongside, so a copy of this binary,
         // started with both ignored, plays the parent.
+        const IGNORING_PARENT: &str = "STRESS_TEST_IGNORING_PARENT";
         if std::env::var_os(IGNORING_PARENT).is_some() {
             let out = output(
                 Command::new("grep")
