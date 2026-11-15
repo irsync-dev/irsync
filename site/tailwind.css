@@ -1,0 +1,223 @@
+/* The landing page's stylesheet: the Tailwind CSS input that site/build.sh
+   compiles into style.css. Only the classes used in index.html and 404.html
+   are kept.
+
+   The look comes from network cabling: the colours of fibre-optic cable
+   jackets (aqua multimode for the route and every action, single-mode
+   yellow kept for the beta warning only) on cool, deep-navy ink. Headings
+   and controls are set in Barlow, a typeface modelled on road signs, like
+   the labels on a patch panel, and the small labels in running text in its
+   narrower Barlow Semi Condensed; running text in a book serif; commands in
+   monospace. Barlow is the one family that ships (Latin only, from
+   @fontsource; site/build.sh copies the files into fonts/). The serif and
+   the monospace are stacks of faces the systems already have. */
+
+@import "tailwindcss" source(none);
+
+@font-face {
+  font-family: "Barlow";
+  font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("fonts/barlow-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("fonts/barlow-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("fonts/barlow-semi-condensed-latin-600-normal.woff2") format("woff2");
+}
+@source "./index.html";
+@source "./404.html";
+
+/* The palette, light first, swapped for dark by the system setting. */
+:root {
+  color-scheme: light dark;
+  --site-ground: #f2f5f6;
+  --site-raised: #ffffff;
+  --site-rule: #ccd6db;
+  --site-ink: #13222c;
+  --site-muted: #4f616c;
+  --site-aqua: #00a6b4;
+  --site-aqua-ink: #00707b;
+  --site-on-aqua: #ffffff;
+  --site-signal: #f6c700;
+  --site-on-signal: #13222c;
+  --site-term: #13222c;
+  --site-term-ink: #dde7eb;
+  --site-term-muted: #8da3ae;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --site-ground: #0e1920;
+    --site-raised: #15242d;
+    --site-rule: #263943;
+    --site-ink: #e2ebee;
+    --site-muted: #96a9b3;
+    --site-aqua: #2cc4d1;
+    --site-aqua-ink: #5ed6e0;
+    --site-on-aqua: #0e1920;
+    --site-term: #081116;
+    --site-term-muted: #7f949f;
+  }
+}
+
+@plugin "daisyui" {
+  themes: false;
+  logs: false;
+}
+
+/* One daisyUI theme on the palette above; it needs no dark twin because
+   the properties it refers to change with the system setting. */
+@plugin "daisyui/theme" {
+  name: "irsync";
+  default: true;
+  prefersdark: false;
+  color-scheme: light dark;
+
+  --color-base-100: var(--site-ground);
+  --color-base-200: var(--site-raised);
+  --color-base-300: var(--site-rule);
+  --color-base-content: var(--site-ink);
+  --color-primary: var(--site-aqua-ink);
+  --color-primary-content: var(--site-on-aqua);
+  --color-secondary: var(--site-aqua);
+  --color-secondary-content: var(--site-on-aqua);
+  --color-accent: var(--site-aqua);
+  --color-accent-content: var(--site-on-aqua);
+  --color-neutral: var(--site-term);
+  --color-neutral-content: var(--site-term-ink);
+  --color-info: var(--site-aqua-ink);
+  --color-info-content: var(--site-on-aqua);
+  --color-success: var(--site-aqua-ink);
+  --color-success-content: var(--site-on-aqua);
+  --color-warning: var(--site-signal);
+  --color-warning-content: var(--site-on-signal);
+  --color-error: #c8322b;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 2px;
+  --radius-field: 2px;
+  --radius-box: 4px;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
+  --font-display: Barlow, Bahnschrift, "DIN Alternate", "Franklin Gothic Medium", sans-serif;
+  --font-condensed: "Barlow Semi Condensed", Bahnschrift, "DIN Alternate", "Arial Narrow",
+    sans-serif;
+  --font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  --color-muted: var(--site-muted);
+  --color-aqua: var(--site-aqua);
+  --color-link: var(--site-aqua-ink);
+  --color-signal: var(--site-signal);
+  --color-on-signal: var(--site-on-signal);
+  --color-term: var(--site-term);
+  --color-term-ink: var(--site-term-ink);
+  --color-term-muted: var(--site-term-muted);
+
+  /* A scale on a perfect fourth (4:3) from a 17px body. */
+  --text-lede: 1.3125rem;
+  --text-lede--line-height: 1.5;
+  --text-body: 1.0625rem;
+  --text-body--line-height: 1.6;
+  --text-small: 0.9375rem;
+  --text-small--line-height: 1.55;
+  --text-label: 1rem;
+  --text-label--line-height: 1.25;
+  --text-heading: 1.75rem;
+  --text-heading--line-height: 1.15;
+  --text-display: clamp(2rem, 4vw, 3rem);
+  --text-display--line-height: 1.05;
+  --text-display--letter-spacing: -0.01em;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-base-100 font-serif text-body text-base-content antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display font-semibold;
+  }
+
+  code,
+  pre {
+    @apply font-mono text-[0.875em];
+  }
+
+  /* An inline flag or path is never split across lines. */
+  code {
+    @apply whitespace-nowrap;
+  }
+
+  a {
+    @apply text-link underline decoration-1 underline-offset-[3px];
+  }
+
+  a:hover {
+    @apply decoration-2;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--site-aqua-ink);
+    outline-offset: 3px;
+  }
+}
+
+@layer components {
+  /* A command on a dark terminal strip, in both themes. A long command
+     wraps inside the strip, so all of it can be read on a narrow screen;
+     the copy button, added by the script in index.html, stays at the top
+     right. */
+  .cmd {
+    @apply flex items-start gap-3 rounded-box bg-term py-3 pr-3 pl-4 text-term-ink;
+  }
+
+  .cmd pre {
+    @apply min-w-0 flex-1 py-1 text-[0.9375rem] leading-relaxed whitespace-pre-wrap wrap-anywhere;
+  }
+
+  .cmd .prompt {
+    @apply text-term-muted select-none;
+  }
+}
+
+/* Station on the route: the numbered circle at the left of each step, and
+   the aqua line that joins it to the next one. */
+@utility station {
+  @apply relative pb-5 pl-10 last:pb-0;
+
+  &::before {
+    content: "";
+    @apply absolute top-7 bottom-0 left-[12px] w-1 bg-aqua;
+  }
+
+  &:last-child::before {
+    @apply hidden;
+  }
+}

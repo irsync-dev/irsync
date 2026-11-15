@@ -2,7 +2,7 @@
 
 This page is the start of the testing pages. For the case made to users, that
 a finished sync leaves the destination exactly like the source under the
-conditions stated there, and what backs it, see [How we know irsync is correct](../explanation/correctness.md).
+conditions stated there, and what backs it, see [How we verify irsync's correctness](../explanation/correctness.md).
 This section is for people who change irsync and need to know which test to
 add or run.
 

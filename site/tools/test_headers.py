@@ -96,6 +96,13 @@ class HeadersTest(unittest.TestCase):
                 served.update(headers)
         self.assertEqual(served.get("Content-Type"), "text/plain; charset=utf-8")
 
+    def test_fonts_are_cached(self):
+        served = {}
+        for pattern, headers in self.rules.items():
+            if pattern_matches(pattern, "https://irsync.org/fonts/barlow-latin-400-normal.woff2"):
+                served.update(headers)
+        self.assertIn("max-age=", served.get("Cache-Control", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

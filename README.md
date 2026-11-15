@@ -24,9 +24,9 @@ of the public relays run by n0, the developers of iroh. A relay cannot read
 the data. You can run your own, or refuse relays with `--no-relay`; see
 [Connect directly or through a relay](https://irsync.org/book/how-to/direct-and-relay.html).
 
-> **Alpha.** irsync is alpha software. The command line and the network
-> protocol may change before the beta, and versions may then not talk to each
-> other. Keep another copy of anything you sync with it.
+> **Beta.** irsync is beta software. The command line and the network
+> protocol may still change before the first stable release, and versions may
+> then not talk to each other. Keep another copy of anything you sync with it.
 
 It is designed to fill whatever bandwidth the link has, and to survive a bad
 one. A sync session outlives any single network connection: when hotel wifi
@@ -54,8 +54,7 @@ after `sh -s --`. `--alpha` takes the newest release of any kind:
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta
 ```
 
-The first stable release will be v0.1.0. Until it is out, there are only
-alphas and betas, so add `--alpha`.
+The first stable release will be v0.1.0. Until it is out, add `--beta`.
 
 The script also writes a small receipt file,
 `~/.config/irsync/irsync-receipt.json`. It only records what was installed.

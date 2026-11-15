@@ -89,18 +89,25 @@ def check_links(site_dir):
 
 _FONT_SUFFIXES = {".woff", ".woff2", ".ttf", ".otf", ".eot"}
 
+# The one web font that ships: the landing page's Barlow, in the top-level
+# fonts/ directory (see site/build.sh).
+_ALLOWED_FONT = re.compile(r"fonts/barlow(-semi-condensed)?-latin-\d{3}-normal\.woff2")
+
 
 def check_fonts(site_dir):
-    """No font files and no `fonts/` directory ship: the site uses the
-    system font stacks from the tokens."""
+    """No font files and no `fonts/` directory ship, except the landing
+    page's Barlow in the top-level `fonts/`. The book uses system font
+    stacks; this keeps mdbook's web fonts out."""
     site_dir = Path(site_dir).resolve()
     problems = []
     for p in sorted(site_dir.rglob("*")):
         rel = p.relative_to(site_dir)
         if p.is_dir() and p.name == "fonts":
-            problems.append(f"{rel}: a fonts directory ships")
+            if rel.as_posix() != "fonts":
+                problems.append(f"{rel}: a fonts directory ships")
         elif p.is_file() and p.suffix.lower() in _FONT_SUFFIXES:
-            problems.append(f"{rel}: a font file ships")
+            if not _ALLOWED_FONT.fullmatch(rel.as_posix()):
+                problems.append(f"{rel}: a font file ships")
     return problems
 
 

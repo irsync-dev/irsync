@@ -3,31 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="light dark">
 <title>No page here · irsync</title>
 <meta name="robots" content="noindex">
 <!-- Served for any unknown URL outside /book/, so every path is absolute. -->
-<link rel="stylesheet" href="/tokens.css">
+<link rel="preload" href="/fonts/barlow-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/barlow-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/barlow-semi-condensed-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-<header class="top">
-  <nav aria-label="Site">
-    <a class="name" href="/">irsync</a>
-    <ul>
-      <li><a href="/book/">documentation</a></li>
-      <li><a href="https://github.com/irsync-dev/irsync">source</a></li>
+<body class="mx-auto max-w-[1040px] px-5 pb-12 sm:px-10">
+<header>
+  <nav aria-label="Site" class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-6 font-display">
+    <a class="text-[1.625rem] leading-none font-semibold text-base-content no-underline" href="/">irsync</a>
+    <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
+      <li><a class="text-base-content no-underline hover:underline" href="/book/">Documentation</a></li>
+      <li><a class="text-base-content no-underline hover:underline" href="https://github.com/irsync-dev/irsync">Source</a></li>
     </ul>
   </nav>
 </header>
 
 <main>
-  <section class="hero" aria-labelledby="headline">
-    <h1 id="headline">No page here</h1>
-    <p class="lede">Nothing is published at this address.</p>
-    <p class="actions">
-      <a class="button primary" href="/">The irsync home page</a>
-      <a class="button quiet" href="/book/">The book</a>
+  <section class="pt-14 pb-16 sm:pt-20" aria-labelledby="headline">
+    <h1 id="headline" class="max-w-[17ch] text-display">No page here</h1>
+    <p class="mt-8 max-w-[34em] text-lede">Nothing is published at this address. Check the link, or start from one of these.</p>
+    <p class="mt-8 flex flex-wrap gap-3">
+      <a class="btn btn-primary h-auto px-5 py-3 font-display text-label font-semibold no-underline" href="/">Go to the irsync home page</a>
+      <a class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-semibold text-base-content no-underline hover:bg-base-200" href="/book/">Open the documentation</a>
     </p>
   </section>
 </main>

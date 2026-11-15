@@ -38,14 +38,30 @@ mdbook build "$root/book" -d "$out/book"
 rm -rf "$out/book/fonts"
 python3 "$root/site/tools/strip_font_link.py" "$out/book"
 
-# Landing page files and install.sh; the tools, the token source, the site
-# scripts and the deploy settings stay behind.
-for f in "$root"/site/*; do
-  case $f in
-    "$root"/site/tools | "$root"/site/tokens.json | "$root"/site/build.sh | "$root"/site/serve.sh | "$root"/site/deploy.sh | "$root"/site/wrangler.jsonc) ;;
-    *) cp -R "$f" "$out/" ;;
-  esac
+# The landing page files and install.sh. Everything else in site/ (the
+# tools, the sources, the scripts, the deploy settings) stays behind.
+for f in index.html 404.html robots.txt _headers install.sh; do
+  cp "$root/site/$f" "$out/"
 done
 
-# The landing page takes its tokens from a data-theme attribute.
-tokens --light "[data-theme=light]" --dark "[data-theme=dark]" -o "$out/tokens.css"
+# Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in
+# site/package-lock.json, compile site/tailwind.css into style.css. npm ci
+# runs only when site/node_modules is missing or older than the lock file.
+site=$root/site
+if [ ! -f "$site/node_modules/.package-lock.json" ] ||
+  [ "$site/package-lock.json" -nt "$site/node_modules/.package-lock.json" ]; then
+  (cd "$site" && npm ci --ignore-scripts --no-audit --no-fund)
+fi
+"$site/node_modules/.bin/tailwindcss" --cwd "$site" -i tailwind.css -o "$out/style.css" --minify
+
+# Barlow, the landing page's one web font family: the faces tailwind.css
+# names, Latin only, and the licence (SIL Open Font License) that must ship
+# with them. Both packages carry the same Barlow Project licence.
+fontsource=$site/node_modules/@fontsource
+mkdir -p "$out/fonts"
+for f in barlow/files/barlow-latin-400-normal.woff2 \
+  barlow/files/barlow-latin-600-normal.woff2 \
+  barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2; do
+  cp "$fontsource/$f" "$out/fonts/"
+done
+cp "$fontsource/barlow/LICENSE" "$out/fonts/barlow-OFL.txt"
