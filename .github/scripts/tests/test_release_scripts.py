@@ -150,6 +150,22 @@ class BumpVersionTests(unittest.TestCase):
         return subprocess.run([BUMP, version], cwd=os.path.join(self.dir, "a"), env=self.env,
                               capture_output=True, text=True)
 
+    def test_commits_on_a_release_branch(self):
+        main = self.run_ok("git", "rev-parse", "main").strip()
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.run_ok("git", "branch", "--show-current").strip(),
+                         "release-v1.3.0-beta.1")
+        self.assertEqual(self.run_ok("git", "rev-parse", "main").strip(), main)
+
+    def test_hint_goes_through_a_pull_request(self):
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("git push -u origin release-v1.3.0-beta.1", r.stdout)
+        self.assertIn("gh pr create", r.stdout)
+        self.assertIn("git tag -a v1.3.0-beta.1", r.stdout)
+        self.assertNotIn("git push origin main", r.stdout)
+
     def test_bumps_and_commits(self):
         r = self.bump("1.3.0-beta.1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
