@@ -5,6 +5,9 @@
       HTTPS, which catches a damaged file but not a swapped one. Applies
       to the cross-platform install over ssh (`ssh/release.rs`) and to
       `site/install.sh`.
+    - Since 2026-11-15 every release file has a GitHub attestation, and
+      anyone can check one by hand (`book/src/how-to/verify-a-download.md`).
+      Neither of the two install paths checks it yet, so this stays open.
 
 # Collection of open TODO items, in no particular order
 
@@ -160,3 +163,57 @@ landed. Minors from the final review; the signature check is under
       only the size and version checks remove it. A `trap 'rm -f …' EXIT`
       would cover all of them. - [ ] A CPU that irsync does not know is reported as "an unknown CPU";
       pass the raw `uname -m` text through.
+
+# Open items from the supply chain work, 2026-11-15
+
+What the supply chain work (`docs/SUPPLY_CHAIN_DECISIONS.md`) left open:
+decisions, checks it couldn't run, and the minor findings of the final
+review, deferred.
+
+## Decisions
+
+- [ ] RUSTSEC-2026-0459 (bundled SQLite) has a TEMPORARY exception in
+      `deny.toml`. The fix, rusqlite 0.41 with SQLite 3.54, breaks
+      `lookups_are_never_re_prepared`, which is why rusqlite is held at 0.40.
+      `fileset` opens manifests that may come from someone else, so the hole
+      is real. Either take the re-prepare cost (or work around it) and
+      upgrade, or write down why the exception stands.
+
+## Checks not yet run
+
+- [ ] Check an `.rpm` signed by the signing subkey with `rpm -Kv` on Fedora and
+      on the oldest supported RHEL, after `rpm --import` of `irsync.asc`. The
+      beta.3 dry run checked the apt metadata (good signature by subkey
+      `561F2581…B9D0`), but not the `.rpm` files, and `packages.yml` doesn't
+      check them either. Do it before the first stable release.
+- [ ] `itemize_over_a_slow_link_stays_within_the_out_budget` (backpressure)
+      fails now and then on ubuntu-latest with "daemon session did not
+      finish": 2026-11-12 three times, 2026-11-15 once, each passing on a
+      re-run. The release gate runs it too, so a flake stops a release.
+
+## Deferred review findings
+
+- [ ] `[dist.github-action-commits]` in `dist-workspace.toml` doesn't follow
+      Dependabot: when it bumps checkout or the artifact Actions elsewhere,
+      `release.yml` stays on the old commits. A policy test that compares
+      the SHAs would flag the drift on the Dependabot PR.
+- [ ] `tools/github_settings.py` edges:
+    - [ ] The `release` reviewer is whoever runs `apply`. A second
+          maintainer running it would replace the first. Keep the list in
+          the file instead.
+    - [ ] `two_factor_requirement_enabled` is visible only to org owners;
+          for anyone else the check wrongly reports 2FA as off.
+    - [ ] The required `CI result` check has no `integration_id`, so any app
+          with write access could post it. Pin it to GitHub Actions (15368).
+    - [ ] `repos/{repo}/rulesets` lists org rulesets too; one with the same
+          name as a repo ruleset would make `apply` PUT to the wrong ID.
+- [ ] A tag on any commit, not only on `main`, can start a release, and a
+      pre-release is public before any approval. Fine while there's one
+      maintainer. For the group phase, add a tag ruleset with a `creation`
+      rule and a maintainer bypass (see `book/src/contributing/supply-chain.md`,
+      "When more maintainers join").
+- [ ] Releases tagged before 2026-11-15 can't be finished with the resume
+      workflow: their copy requires `main`, the new one refuses it. Only
+      pre-releases exist from then, so nothing needs it today.
+- [ ] `book/src/how-to/verify-a-download.md` calls the tap `irsync-dev/tap`
+      (Homebrew's short name). The repository is `irsync-dev/homebrew-tap`.
