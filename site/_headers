@@ -9,6 +9,11 @@
 /install.sh
   Content-Type: text/plain; charset=utf-8
 
+# The landing page's Barlow files. Their names stay the same when Barlow is
+# updated, so they are cached for 30 days rather than forever.
+/fonts/*
+  Cache-Control: public, max-age=2592000
+
 https://dev.irsync.org/*
   X-Robots-Tag: noindex
 

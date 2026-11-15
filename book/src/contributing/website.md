@@ -42,10 +42,14 @@ single-mode yellow kept for the beta warning only.
   twin. Colours with no daisyUI name are Tailwind colours of their own:
   `muted`, `aqua`, `link`, `signal`, `on-signal` and the `term` colours of
   the command strips. Write `text-muted` or `bg-base-200`, not a raw colour.
-- **Type** is three system font stacks, no font files: a DIN-style face
-  (`font-display`: DIN Alternate on macOS, Bahnschrift on Windows) for
-  headings and controls, a book serif (`font-serif`: Charter, Sitka Text,
-  Cambria) for running text, and monospace for commands. Text sizes are the
+- **Type** is three families. [Barlow](https://github.com/jpt/barlow)
+  (`font-display`), a typeface modelled on road signs, for the headline,
+  buttons, the header and the footer, in regular (400) and semibold (600);
+  its narrower Barlow Semi Condensed (`font-condensed`, semibold only) for
+  the small labels in running text: the fact labels, the step headings and
+  "Beta.". Barlow is the one family that ships, Latin only. A book serif
+  (`font-serif`: Charter, Sitka Text, Cambria) for running text, and
+  monospace for commands; both are system font stacks. Text sizes are the
   named steps `text-display`, `text-heading`, `text-lede`, `text-body`,
   `text-small` and `text-label`.
 - **The route.** The steps under Get started are stations on one aqua line
@@ -63,13 +67,17 @@ It empties `target/site/`, generates the book's token CSS, builds the book into
 `target/site/book/`, copies the landing page files into `target/site/` and
 compiles `site/tailwind.css` into `target/site/style.css`. Tailwind keeps
 only the classes that `site/index.html` and `site/404.html` use. The
-Tailwind CLI and daisyUI come from `site/node_modules/` (git-ignored); the
+Tailwind CLI, daisyUI and Barlow (`@fontsource/barlow` and
+`@fontsource/barlow-semi-condensed`) come from
+`site/node_modules/` (git-ignored); the
 build runs `npm ci` there first when it is missing or older than
 `site/package-lock.json`. To move to newer versions, change them in
 `site/package.json` and run `npm install` in `site/`, which updates the lock
 file.
 
-No font files ship: the site uses system font stacks. The
+The build copies Barlow's three WOFF2 files and its licence (the SIL Open Font
+License, which must ship with the fonts) into `target/site/fonts/`. They are
+the only font files on the site: the book uses system font stacks. The
 empty `book/theme/fonts/fonts.css` keeps mdbook from copying its web fonts,
 and the build removes that stylesheet and its link from every book page.
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,
@@ -90,7 +98,8 @@ It enforces four things:
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
   resolves to a file, and every `#fragment` to an `id` on the target page.
   External links are not fetched.
-- **No fonts.** No font file and no `fonts/` directory is in the build.
+- **No fonts but Barlow.** No font file and no `fonts/` directory is in the
+  build, except the landing page's Barlow files in the top-level `fonts/`.
 - **Moved files.** Documents that moved into the book (the list is
   `MOVED_FILES` in `check.py`) are not referred to, by path or by bare name,
   from any tracked file once they are gone. `docs/superpowers/` is history

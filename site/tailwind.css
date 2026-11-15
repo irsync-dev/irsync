@@ -5,11 +5,38 @@
    The look comes from network cabling: the colours of fibre-optic cable
    jackets (aqua multimode for the route and every action, single-mode
    yellow kept for the beta warning only) on cool, deep-navy ink. Headings
-   and controls are set in a DIN-style face, like the labels on a patch
-   panel; running text in a book serif; commands in monospace. No font files
-   ship: each family is a stack of faces the systems already have. */
+   and controls are set in Barlow, a typeface modelled on road signs, like
+   the labels on a patch panel, and the small labels in running text in its
+   narrower Barlow Semi Condensed; running text in a book serif; commands in
+   monospace. Barlow is the one family that ships (Latin only, from
+   @fontsource; site/build.sh copies the files into fonts/). The serif and
+   the monospace are stacks of faces the systems already have. */
 
 @import "tailwindcss" source(none);
+
+@font-face {
+  font-family: "Barlow";
+  font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("fonts/barlow-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("fonts/barlow-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("fonts/barlow-semi-condensed-latin-600-normal.woff2") format("woff2");
+}
 @source "./index.html";
 @source "./404.html";
 
@@ -91,8 +118,9 @@
 }
 
 @theme {
-  --font-display: "DIN Alternate", Bahnschrift, "D-DIN", "DIN 2014", "Barlow Semi Condensed",
-    "Franklin Gothic Medium", "Arial Narrow", sans-serif-condensed, sans-serif;
+  --font-display: Barlow, Bahnschrift, "DIN Alternate", "Franklin Gothic Medium", sans-serif;
+  --font-condensed: "Barlow Semi Condensed", Bahnschrift, "DIN Alternate", "Arial Narrow",
+    sans-serif;
   --font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 
@@ -134,7 +162,7 @@
   h1,
   h2,
   h3 {
-    @apply font-display font-bold;
+    @apply font-display font-semibold;
   }
 
   code,

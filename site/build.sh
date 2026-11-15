@@ -53,3 +53,15 @@ if [ ! -f "$site/node_modules/.package-lock.json" ] ||
   (cd "$site" && npm ci --ignore-scripts --no-audit --no-fund)
 fi
 "$site/node_modules/.bin/tailwindcss" --cwd "$site" -i tailwind.css -o "$out/style.css" --minify
+
+# Barlow, the landing page's one web font family: the faces tailwind.css
+# names, Latin only, and the licence (SIL Open Font License) that must ship
+# with them. Both packages carry the same Barlow Project licence.
+fontsource=$site/node_modules/@fontsource
+mkdir -p "$out/fonts"
+for f in barlow/files/barlow-latin-400-normal.woff2 \
+  barlow/files/barlow-latin-600-normal.woff2 \
+  barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2; do
+  cp "$fontsource/$f" "$out/fonts/"
+done
+cp "$fontsource/barlow/LICENSE" "$out/fonts/barlow-OFL.txt"

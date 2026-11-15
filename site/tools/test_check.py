@@ -60,6 +60,21 @@ class FontTests(TmpCase):
         problems = check_fonts(self.d)
         self.assertEqual(len(problems), 2, problems)
 
+    def test_barlow_in_top_level_fonts_passes(self):
+        write(self.d, "fonts/barlow-latin-400-normal.woff2", "")
+        write(self.d, "fonts/barlow-latin-600-normal.woff2", "")
+        write(self.d, "fonts/barlow-semi-condensed-latin-600-normal.woff2", "")
+        write(self.d, "fonts/barlow-OFL.txt", "")
+        self.assertEqual(check_fonts(self.d), [])
+
+    def test_other_fonts_next_to_barlow_are_reported(self):
+        write(self.d, "fonts/barlow-latin-400-normal.woff2", "")
+        write(self.d, "fonts/open-sans.woff2", "")
+        write(self.d, "book/fonts/barlow-latin-400-normal.woff2", "")
+        problems = check_fonts(self.d)
+        # the stray top-level font, and the book's fonts directory and file
+        self.assertEqual(len(problems), 3, problems)
+
     def test_site_without_fonts_passes(self):
         write(self.d, "index.html", "<p>x</p>")
         write(self.d, "book/css/general.css", "body { font-family: sans-serif; }")

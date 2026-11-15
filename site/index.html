@@ -9,6 +9,29 @@
       name="description"
       content="irsync: peer-to-peer file and directory sync in the spirit of rsync that adapts to any network topology and survives connection drops without restarting."
     />
+    <!-- Fetch the fonts alongside the stylesheet, not after it, so the page
+         does not first draw in a fallback font. -->
+    <link
+      rel="preload"
+      href="fonts/barlow-latin-400-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="fonts/barlow-latin-600-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="fonts/barlow-semi-condensed-latin-600-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body class="mx-auto max-w-[1120px] px-5 pb-12 sm:px-10">
@@ -19,12 +42,12 @@
       >
         <p class="flex items-center gap-3">
           <a
-            class="text-[1.625rem] leading-none font-bold text-base-content no-underline"
+            class="text-[1.625rem] leading-none font-semibold text-base-content no-underline"
             href="./"
             >irsync</a
           >
           <span
-            class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-bold text-on-signal"
+            class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-semibold text-on-signal"
             >beta</span
           >
         </p>
@@ -49,7 +72,7 @@
 
     <main>
       <section
-        class="grid items-start gap-x-8 gap-y-10 pt-6 pb-14 sm:pt-8 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:gap-x-12"
+        class="grid items-start gap-x-8 gap-y-10 pt-4 pb-10 sm:pt-6 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:gap-x-12"
         aria-labelledby="headline"
       >
         <div>
@@ -57,14 +80,14 @@
             Resilient file sync over any network
           </h1>
           <p
-            class="mt-4 max-w-[36em] text-lede md:text-[1.1875rem] lg:mt-5 lg:text-lede"
+            class="mt-4 max-w-[36em] text-lede md:text-[1.1875rem] lg:text-lede"
           >
             Copy files and directory trees the way rsync does, directly between
             your devices, with irsync on both ends.
           </p>
-          <ul class="mt-5 flex max-w-[36em] flex-col gap-2 lg:mt-8 lg:gap-4">
+          <ul class="mt-5 flex max-w-[36em] flex-col gap-2">
             <li>
-              <strong class="font-display text-label font-bold"
+              <strong class="font-condensed text-label font-semibold"
                 >No open ports.</strong
               >
               Connects directly through NATs and firewalls, or
@@ -73,7 +96,7 @@
               <a href="https://www.iroh.computer/">iroh</a>.
             </li>
             <li>
-              <strong class="font-display text-label font-bold"
+              <strong class="font-condensed text-label font-semibold"
                 >Survives network changes and outages.</strong
               >
               A transfer keeps going through roaming, brownouts and
@@ -82,7 +105,7 @@
               >.
             </li>
             <li>
-              <strong class="font-display text-label font-bold"
+              <strong class="font-condensed text-label font-semibold"
                 >Private and authenticated.</strong
               >
               Traffic is encrypted end to end, and each side
@@ -91,7 +114,7 @@
               >.
             </li>
             <li>
-              <strong class="font-display text-label font-bold"
+              <strong class="font-condensed text-label font-semibold"
                 >Correctness first.</strong
               >
               A completed <code>irsync -a --delete</code> of a source that is
@@ -101,14 +124,14 @@
               >.
             </li>
           </ul>
-          <p class="mt-6 flex flex-wrap gap-3 lg:mt-10">
+          <p class="mt-6 flex flex-wrap gap-3">
             <a
-              class="btn btn-primary h-auto px-5 py-3 font-display text-label font-bold no-underline"
+              class="btn btn-primary h-auto px-5 py-3 font-display text-label font-semibold no-underline"
               href="book/tutorial/first-sync.html"
               >Your first sync</a
             >
             <a
-              class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-bold text-base-content no-underline hover:bg-base-200"
+              class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-semibold text-base-content no-underline hover:bg-base-200"
               href="book/introduction.html"
               >Read the introduction</a
             >
@@ -122,11 +145,11 @@
           <ol class="mt-5">
             <li class="station">
               <span
-                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-bold bg-base-100"
+                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-semibold bg-base-100"
                 aria-hidden="true"
                 >1</span
               >
-              <h3 id="install" class="text-label leading-7">Install</h3>
+              <h3 id="install" class="font-condensed text-label leading-7">Install</h3>
               <div class="cmd mt-2">
                 <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
               </div>
@@ -142,11 +165,11 @@
             </li>
             <li class="station">
               <span
-                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-bold bg-aqua text-base-100"
+                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-semibold bg-aqua text-base-100"
                 aria-hidden="true"
                 >2</span
               >
-              <h3 class="text-label leading-7">Sync</h3>
+              <h3 class="font-condensed text-label leading-7">Sync</h3>
               <div class="cmd mt-2">
                 <pre><span class="prompt">$</span> <span class="copy">irsync <span class="whitespace-nowrap">-av</span> ~/Photos/ myserver:/srv/photos/</span></pre>
               </div>
@@ -165,7 +188,7 @@
             class="mt-5 border-l-4 border-signal py-1 pl-4 text-small"
             role="note"
           >
-            <strong class="font-display font-bold">Beta.</strong>
+            <strong class="font-condensed font-semibold">Beta.</strong>
             The command line and the protocol may still change: keep a backup.
             Windows, extended attributes and ACLs are not supported yet.
             <a href="book/reference/limitations.html">Known limitations</a>.
@@ -175,7 +198,7 @@
     </main>
 
     <footer
-      class="flex flex-wrap justify-between gap-x-8 gap-y-3 border-t border-base-300 pt-6 text-small text-muted"
+      class="flex flex-wrap justify-between gap-x-8 gap-y-3 border-t border-base-300 pt-6 font-display text-small text-muted"
     >
       <p class="max-w-[52ch]">
         irsync is built by
@@ -205,7 +228,7 @@
           const button = document.createElement("button");
           button.type = "button";
           button.className =
-            "btn btn-xs h-auto flex-none border-term-muted bg-transparent px-2 py-1 font-display text-[0.8125rem] font-bold text-term-ink hover:bg-term-ink hover:text-term";
+            "btn btn-xs h-auto flex-none border-term-muted bg-transparent px-2 py-1 font-display text-[0.8125rem] font-semibold text-term-ink hover:bg-term-ink hover:text-term";
           button.textContent = "Copy";
           button.onclick = () => {
             const text = cmd.querySelector(".copy").textContent;
