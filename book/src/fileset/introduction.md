@@ -38,8 +38,8 @@ irsync installs it too. The quickest is the install script:
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
 ```
 
-Until the first stable release, v0.1.0, is out, there are only alphas and
-betas, so add `--alpha` straight after `sh -s --`.
+Until the first stable release, v0.1.0, is out, add `--beta` straight after
+`sh -s --`.
 
 Homebrew (`brew install irsync-dev/tap/irsync`) and apt and dnf
 ([dist.irsync.org](https://dist.irsync.org)) work the same way from v0.1.0

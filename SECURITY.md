@@ -11,7 +11,7 @@ you posted while we work on a fix.
 
 ## Supported versions
 
-irsync is alpha software. Only the latest commit on `main` gets security
+irsync is beta software. Only the latest commit on `main` gets security
 fixes.
 
 ## How irsync protects data

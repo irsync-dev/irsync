@@ -18,9 +18,9 @@ mostly unchanged tree cheap.
 Correctness comes first. [How we know irsync is correct](explanation/correctness.md)
 states what a completed sync promises, and how you can check it yourself.
 
-> **Alpha.** irsync is alpha software. The command line and the network
-> protocol may change before the beta, and versions may then not talk to each
-> other. Keep another copy of anything you sync with it.
+> **Beta.** irsync is beta software. The command line and the network
+> protocol may still change before the first stable release, and versions may
+> then not talk to each other. Keep another copy of anything you sync with it.
 
 ## Install
 
@@ -39,8 +39,7 @@ after `sh -s --`. `--alpha` takes the newest release of any kind:
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta
 ```
 
-The first stable release will be v0.1.0. Until it is out, there are only
-alphas and betas, so add `--alpha`.
+The first stable release will be v0.1.0. Until it is out, add `--beta`.
 
 The script also writes a small receipt file,
 `~/.config/irsync/irsync-receipt.json`. It only records what was installed.
@@ -129,6 +128,19 @@ setting up a checkout, running the tests, the stress and network-stress
 tools, and how this website is built.
 
 The source is at [github.com/irsync-dev/irsync](https://github.com/irsync-dev/irsync).
+
+## Get help
+
+- **A first sync fails.** [Troubleshoot a first sync](how-to/troubleshooting.md)
+  goes through the common causes and their fixes.
+- **Questions and bugs.** Ask a question or report a bug in
+  [GitHub Issues](https://github.com/irsync-dev/irsync/issues). For a bug,
+  say which version runs on each machine (`irsync --version`), which OS, the
+  command you ran and what it printed.
+- **Security problems.** Do not open a public issue. Email
+  [security@irsync.org](mailto:security@irsync.org) instead; the
+  [security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+  says what to include.
 
 ## License
 
