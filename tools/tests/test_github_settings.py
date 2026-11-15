@@ -1,7 +1,9 @@
 """Tests for tools/github_settings.py: the desired state and the diff. No network."""
 import importlib.util
 import os
+import subprocess
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location(
@@ -79,6 +81,38 @@ class DesiredTests(unittest.TestCase):
         lines = gs.diff(want, have)
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("PACKAGES_GPG_PRIVATE_KEY", lines[0])
+
+    def test_desired_release_branches_like_main(self):
+        rs = gs.desired(1)[REPO]["rulesets"]
+        self.assertEqual(rs["Release branches"]["include"], ["refs/heads/release-*"])
+        self.assertEqual(rs["Release branches"]["rules"], rs["main"]["rules"])
+        self.assertEqual(rs["Release branches"]["bypass_actors"], [])
+
+    def test_desired_pins_cannot_move(self):
+        pins = gs.desired(1)[REPO]["rulesets"]["Pinned release commits"]
+        self.assertEqual(pins["include"], ["refs/heads/pinned/*"])
+        self.assertEqual(set(pins["rules"]), {"update", "non_fast_forward"})
+
+    def test_stray_tags_reported(self):
+        self.assertEqual(gs.stray_tag_lines("v1.0.1\n"),
+                         ["irsync-dev/irsync: tag v1.0.1: has no GitHub Release (pushed by hand?)"])
+        self.assertEqual(gs.stray_tag_lines(""), [])
+
+    def test_stray_tag_script_failure_is_an_error(self):
+        # Non-zero exit with empty stdout is a gh failure, not "clean".
+        with mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 1, stdout="", stderr="gh: boom")):
+            lines = gs.stray_tags()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("boom", lines[0])
+
+    def test_stray_tag_script_finds_tags(self):
+        with mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 1, stdout="v1.0.1\nv1.0.2\n", stderr="::error::x")):
+            self.assertEqual(len(gs.stray_tags()), 2)
+        with mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 0, stdout="", stderr="")):
+            self.assertEqual(gs.stray_tags(), [])
 
     def test_desired_tags_allow_creation(self):
         tags = gs.desired(1)[REPO]["rulesets"]["Release tags"]
