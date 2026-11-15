@@ -29,6 +29,12 @@ differ, the code is what shipped.
    the tokens, and a tag alone isn't enough without the click. Cost if
    wrong: one manual step per stable release.
 
+   The gate and resume call `packages.yml` and `publish-homebrew.yml` with
+   `secrets: inherit`. Without it, the called job got the environment's
+   secrets empty, even though it names the environment itself (found on the
+   v0.1.0-beta.2 resume dry run). `inherit` also passes repo-wide secrets, so
+   there must be none: `tools/github_settings.py` checks that.
+
 4. **The resume workflow runs on the tag, not on `main`.** Why: the
    `release` environment opens only for tags. Cost if wrong: a fix to a
    release script on `main` doesn't reach a release already tagged. That

@@ -68,6 +68,18 @@ class DesiredTests(unittest.TestCase):
     def test_desired_dependency_graph_on(self):
         self.assertIs(gs.desired(1)[REPO]["dependency_graph"], True)
 
+    def test_desired_no_repo_wide_secrets(self):
+        # The release callers pass `secrets: inherit`, so a repo-wide secret
+        # would reach the packages and Homebrew jobs.
+        self.assertEqual(gs.desired(1)[REPO]["repo_wide_secrets"], [])
+
+    def test_diff_reports_repo_wide_secret(self):
+        want = {REPO: {"repo_wide_secrets": []}}
+        have = {REPO: {"repo_wide_secrets": ["PACKAGES_GPG_PRIVATE_KEY"]}}
+        lines = gs.diff(want, have)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("PACKAGES_GPG_PRIVATE_KEY", lines[0])
+
     def test_desired_tags_allow_creation(self):
         tags = gs.desired(1)[REPO]["rulesets"]["Release tags"]
         self.assertNotIn("creation", tags["rules"])
