@@ -50,8 +50,10 @@ differ, the code is what shipped.
    included, can swap a file on a release. Cost if wrong: people who
    downloaded packages from the release page now use dist.irsync.org.
 
-7. **Attestations, verified by hand.** dist attests every archive and
-   installer, and `packages.yml` attests the packages. `install.sh` doesn't
+7. **Attestations, verified by hand.** dist attests every file on the
+   release in its host job (`github-attestations-phase = "host"`). Its
+   default attests only the per-target archives, which left the installer
+   unattested up to v0.1.0-beta.2. `packages.yml` attests the packages. `install.sh` doesn't
    check them. Why: checking in the script would need `gh` on every user's
    machine. Cost if wrong: an install through `install.sh` trusts GitHub's
    release storage, as before.

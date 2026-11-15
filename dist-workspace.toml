@@ -32,6 +32,10 @@ install-path = "~/.local/bin"
 # Signed build provenance for every artifact, checkable with
 # `gh attestation verify <file> --repo irsync-dev/irsync`
 github-attestations = true
+# Attest in the host job, just before publishing, so every file on the release
+# gets one: by default dist attests only the per-target archives, and the
+# installer, the Homebrew formula and the checksum files go without.
+github-attestations-phase = "host"
 # Whether to install an updater program
 install-updater = false
 # Don't run the release workflow on pull requests; PR CI stays as it was

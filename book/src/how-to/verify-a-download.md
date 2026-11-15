@@ -26,8 +26,9 @@ file prints `Verification succeeded!` and the tag it was built from. A
 failure means: don't use the file, and please
 [report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
 
-The same works for `irsync-installer.sh` and the other archives on the
-release.
+The same works for every other file on the release: the other archives,
+`irsync-installer.sh`, `irsync.rb` and the checksum files. Releases up to
+v0.1.0-beta.2 have attestations for the archives only.
 
 ## A `.deb` or `.rpm` package
 
