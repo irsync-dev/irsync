@@ -764,8 +764,10 @@ fn env_in_target() -> Env {
 /// Whether `dir`'s filesystem clones files (`FICLONE`); tests that need it
 /// skip otherwise.
 fn reflinks(dir: &Path) -> bool {
-    let a = fs::File::create(dir.join(".probe-a")).unwrap();
-    std::io::Write::write_all(&mut &a, b"probe").unwrap();
+    fs::write(dir.join(".probe-a"), b"probe").unwrap();
+    // Open for reading: FICLONE refuses a write-only source (EBADF), which
+    // would read as "cannot clone" on every filesystem.
+    let a = fs::File::open(dir.join(".probe-a")).unwrap();
     let b = fs::File::create(dir.join(".probe-b")).unwrap();
     let ok = irsync::recv::reflink(&a, &b).is_ok();
     let _ = fs::remove_file(dir.join(".probe-a"));

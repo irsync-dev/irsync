@@ -86,6 +86,10 @@ fn build_tree(root: &Path) {
     // Varied mtimes with nanoseconds: deepest paths first so directory times stick.
     let mut all = Vec::new();
     collect(root, &mut all);
+    // By name first: every tree built here must give a path the same time,
+    // and the order a directory lists its entries in differs from one
+    // directory to the next on some filesystems (ZFS).
+    all.sort();
     all.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
     for (i, p) in all.iter().enumerate() {
         let i = i as i64;

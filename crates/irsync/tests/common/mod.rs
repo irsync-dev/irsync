@@ -2,15 +2,16 @@
 #![allow(dead_code)]
 
 /// Creates a file named with raw non-UTF-8 `name` bytes in `dir`. Returns `None`
-/// (after a note on stderr) when the filesystem refuses such names (e.g. APFS),
-/// so callers can skip; panics on any other error.
+/// (after a note on stderr) when the filesystem refuses such names, so callers
+/// can skip: APFS on macOS, and on Linux ZFS with `utf8only=on`, which answers
+/// `EILSEQ`. Panics on any other error, and on a Linux refusal when `CI` is
+/// set: the runners' filesystem takes such names, so a skip there would hide
+/// the tests.
 pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let p = dir.join(std::ffi::OsStr::from_bytes(name));
     match std::fs::write(&p, b"x") {
         Ok(()) => Some(p),
-        // Only macOS filesystems (APFS) refuse such names; on Linux any such
-        // error is unexpected and must fail rather than skip silently.
         Err(e)
             if cfg!(target_os = "macos")
                 && (matches!(
@@ -22,6 +23,12 @@ pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::pa
                 )) =>
         {
             eprintln!("skipping non-UTF-8 name: filesystem refused");
+            None
+        }
+        Err(e)
+            if e.raw_os_error() == Some(nix::libc::EILSEQ) && std::env::var_os("CI").is_none() =>
+        {
+            eprintln!("skipping non-UTF-8 name: filesystem refused (ZFS with utf8only=on?)");
             None
         }
         Err(e) => panic!("creating non-UTF-8 name failed: {e}"),

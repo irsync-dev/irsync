@@ -88,6 +88,12 @@ async fn delta_requests_remote_chunks_before_copying_local_ones() {
             out.bytes_transferred
         );
         let events = log.lock().unwrap().clone();
+        if events.iter().any(|e| e == "clone:x.bin") {
+            // Where the filesystem clones (btrfs, xfs, ZFS), the unchanged
+            // head comes with the clone of the old file: nothing is copied.
+            eprintln!("skipping the order check: the old file was cloned, no local copies");
+            return;
+        }
         let need = first(&events, "need:x.bin");
         let chunk = first(&events, "chunk:x.bin");
         let copied = first(&events, "copied:x.bin");

@@ -378,7 +378,14 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join(OsStr::from_bytes(b"bad\xff"));
-        std::fs::write(&p, b"abc").unwrap();
+        if let Err(e) = std::fs::write(&p, b"abc") {
+            // ZFS with utf8only=on refuses such names (EILSEQ, 84 on Linux).
+            // CI's filesystem takes them, so there a refusal must fail.
+            assert_eq!(e.raw_os_error(), Some(84), "{e}");
+            assert!(std::env::var_os("CI").is_none(), "CI is set: {e}");
+            eprintln!("skipping: the filesystem refuses non-UTF-8 names");
+            return;
+        }
         let e = Entry::from_path(&p).unwrap().0;
         assert_eq!(e.kind, Kind::File);
         assert_eq!(e.size, 3);
