@@ -4,10 +4,14 @@
 # Prepares a release commit: sets <version> (for example 1.2.3 or
 # 1.2.3-beta.1, without a "v") in Cargo.toml ([workspace.package]) and in
 # packaging/dist/dist.toml, updates Cargo.lock to match, and commits the three
-# files as "Release v<version>" on a new branch, release-v<version>. main only
-# takes changes through a pull request, so it does not push or tag: open the
-# pull request, merge it once "CI result" passes, then tag the merged commit
-# on main. The script prints those commands at the end.
+# files as "Release v<version>" on a new branch, bump-v<version>.
+#
+# Run it on the branch the release is cut from: release-X.Y for a patch
+# (X.Y.Z with Z > 0), main for everything else (release-branch.sh has the
+# rule). That branch only takes changes through a pull request, so the script
+# does not push and does not tag: open the pull request, merge it once "CI
+# result" passes, then start the release gate on the base branch. The gate
+# creates the tag. The script prints those commands at the end.
 #
 # Run it anywhere in the repo, with no uncommitted changes to tracked files.
 set -euo pipefail
@@ -17,6 +21,7 @@ version=$1
 tag=v$version
 here=$(cd "$(dirname "$0")" && pwd)
 check=$here/check-release-tag.sh
+base_of=$here/release-branch.sh
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -33,7 +38,16 @@ if "$check" --versions "$tag" >/dev/null 2>&1; then
     exit 1
 fi
 
-branch="release-$tag"
+# The branch this release is cut from; the version is already valid here.
+base=$("$base_of" "$version")
+current=$(git branch --show-current)
+if [ "$current" != "$base" ]; then
+    echo "error: $version is released from $base, but you are on ${current:-a detached HEAD}." >&2
+    echo "Run: git switch $base && git pull --ff-only" >&2
+    exit 1
+fi
+
+branch="bump-$tag"
 if git rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
     echo "error: the branch $branch already exists." >&2
     exit 1
@@ -73,10 +87,8 @@ cat <<EOF
 
 Next:
   git push -u origin $branch
-  gh pr create --fill
+  gh pr create --fill --base $base
   # once "CI result" passes:
   gh pr merge --merge
-  git switch main && git pull --ff-only
-  git tag -a $tag -m "irsync $version"
-  git push origin $tag
+  gh workflow run release-gate.yml --ref $base -f version=$version
 EOF

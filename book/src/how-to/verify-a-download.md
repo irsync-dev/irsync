@@ -22,7 +22,11 @@ gh attestation verify irsync-x86_64-unknown-linux-musl.tar.xz \
 
 `--signer-workflow` matters: without it, a file attested by any workflow in
 the repository would pass, including one someone pushed on a branch. A good
-file prints `Verification succeeded!` and the tag it was built from. A
+file prints `Verification succeeded!` and the commit it was built from. That commit
+is the one the release tag points to. The release workflow runs on a
+temporary branch, `pinned/vX.Y.Z`, which is deleted afterwards, so the
+attestation names that branch and not the tag. Don't use
+`--source-ref refs/tags/vX.Y.Z`: it will not match. A
 failure means: don't use the file, and please
 [report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
 

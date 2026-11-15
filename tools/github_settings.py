@@ -12,6 +12,7 @@ file doesn't mention is left alone.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -56,6 +57,13 @@ def desired(maintainer_id):
                     "pull_request": {"required_approving_review_count": 0},
                     "required_status_checks": {"contexts": [REQUIRED_CHECK]},
                 })),
+                "Release branches": ruleset("branch", ["refs/heads/release-*"], dict(protect, **{
+                    "pull_request": {"required_approving_review_count": 0},
+                    "required_status_checks": {"contexts": [REQUIRED_CHECK]},
+                })),
+                # The release gate creates and deletes these; nobody can move one.
+                "Pinned release commits": ruleset("branch", ["refs/heads/pinned/*"],
+                                                  {"update": {}, "non_fast_forward": {}}),
                 "Release tags": ruleset("tag", ["refs/tags/v*"],
                                         dict(protect, update={})),
             },
@@ -186,6 +194,27 @@ def fetch(repo):
     return state
 
 
+def stray_tag_lines(output):
+    """One difference line per tag that stray-tags.sh printed."""
+    return [f"{MAIN}: tag {tag}: has no GitHub Release (pushed by hand?)"
+            for tag in output.split()]
+
+
+def stray_tags():
+    """Run .github/scripts/stray-tags.sh; return difference lines.
+
+    The script exits 1 with tags on stdout when there are strays. Any other
+    failure leaves stdout empty: report that as an error, not as clean."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                          ".github", "scripts", "stray-tags.sh")
+    r = subprocess.run([script], capture_output=True, text=True,
+                       env=dict(os.environ, GH_REPO=MAIN))
+    if r.returncode != 0 and not r.stdout.strip():
+        return [f"{MAIN}: could not check for stray tags: "
+                f"{r.stderr.strip() or f'stray-tags.sh exited {r.returncode}'}"]
+    return stray_tag_lines(r.stdout)
+
+
 def required_check_has_passed(repo):
     """True if the checked-out commit has a successful REQUIRED_CHECK run."""
     sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
@@ -233,9 +262,9 @@ def apply(repo, want):
                 gh(base, "-X", "POST", body=p)
     existing = {r["name"]: r["id"] for r in gh(f"repos/{repo}/rulesets") or []}
     for name, rs in want.get("rulesets", {}).items():
-        if repo == MAIN and name == "main" and name not in existing \
+        if repo == MAIN and name in ("main", "Release branches") and name not in existing \
                 and not required_check_has_passed(repo):
-            print(f"{repo}: skipping ruleset 'main': no successful '{REQUIRED_CHECK}' "
+            print(f"{repo}: skipping ruleset '{name}': no successful '{REQUIRED_CHECK}' "
                   "check on this commit yet. Push it, let CI pass, and run apply again.")
             continue
         payload = ruleset_payload(name, rs)
@@ -262,6 +291,8 @@ def main():
 
     have = {repo: fetch(repo) for repo in want}
     lines = diff(want, have)
+    if MAIN in want:
+        lines += stray_tags()
     org = gh(f"orgs/{ORG}")
     if not org.get("two_factor_requirement_enabled"):
         lines.append(f"{ORG}: two-factor authentication is not required. Turn it on in the "

@@ -1,9 +1,10 @@
 # Builds the .deb and .rpm packages for a stable release, adds them to the
 # signed apt/dnf repo (irsync-dev/packages, served at https://dist.irsync.org)
 # and attests them. They are not attached to the GitHub Release: releases are
-# immutable once published. Release-gate.yml calls
-# this after the release succeeded, and release-resume.yml calls it to finish
-# a release whose gate failed later on. It is never started on its own.
+# immutable once published. Release-resume.yml calls
+# this, in the run the release gate starts on the new tag after the release
+# succeeded, and in a run started by hand to finish a release. It is never
+# started on its own.
 #
 # A re-run for a version the repo already has builds nothing and changes
 # nothing in the repo; it only attests the packages again.
