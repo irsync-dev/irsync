@@ -156,20 +156,22 @@ class BumpVersionTests(unittest.TestCase):
         return subprocess.run([BUMP, version], cwd=os.path.join(self.dir, "a"), env=self.env,
                               capture_output=True, text=True)
 
-    def test_commits_on_a_release_branch(self):
+    def test_commits_on_a_bump_branch(self):
         main = self.run_ok("git", "rev-parse", "main").strip()
         r = self.bump("1.3.0-beta.1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.run_ok("git", "branch", "--show-current").strip(),
-                         "release-v1.3.0-beta.1")
+                         "bump-v1.3.0-beta.1")
         self.assertEqual(self.run_ok("git", "rev-parse", "main").strip(), main)
 
     def test_hint_goes_through_a_pull_request(self):
         r = self.bump("1.3.0-beta.1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("git push -u origin release-v1.3.0-beta.1", r.stdout)
-        self.assertIn("gh pr create", r.stdout)
-        self.assertIn("git tag -a v1.3.0-beta.1", r.stdout)
+        self.assertIn("git push -u origin bump-v1.3.0-beta.1", r.stdout)
+        self.assertIn("gh pr create --fill --base main", r.stdout)
+        self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0-beta.1",
+                      r.stdout)
+        self.assertNotIn("git tag", r.stdout)
         self.assertNotIn("git push origin main", r.stdout)
 
     def test_bumps_and_commits(self):
@@ -186,7 +188,6 @@ class BumpVersionTests(unittest.TestCase):
         self.assertEqual(self.run_ok("git", "status", "--porcelain"), "")
         self.assertEqual(self.run_ok("git", "show", "--name-only", "--format=").split(),
                          ["Cargo.lock", "Cargo.toml", "packaging/dist/dist.toml"])
-        self.assertIn("git tag -a v1.3.0-beta.1 -m \"irsync 1.3.0-beta.1\"", r.stdout)
         self.run_ok(CHECK, "--versions", "v1.3.0-beta.1")
 
     def assert_refused(self, r, message):
@@ -205,6 +206,25 @@ class BumpVersionTests(unittest.TestCase):
     def test_uncommitted_changes(self):
         self.write("a/src/lib.rs", "// edit\n")
         self.assert_refused(self.bump("1.3.0"), "uncommitted changes")
+
+    def test_patch_needs_release_branch(self):
+        r = self.bump("1.2.4")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("git switch release-1.2", r.stderr)
+
+    def test_patch_on_release_branch(self):
+        self.run_ok("git", "switch", "-q", "-c", "release-1.2")
+        r = self.bump("1.2.4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.run_ok("git", "branch", "--show-current").strip(), "bump-v1.2.4")
+        self.assertIn("--base release-1.2", r.stdout)
+        self.assertIn("--ref release-1.2", r.stdout)
+
+    def test_prerelease_not_on_release_branch(self):
+        self.run_ok("git", "switch", "-q", "-c", "release-1.2")
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("git switch main", r.stderr)
 
 
 class NotesTests(FakeGh):
