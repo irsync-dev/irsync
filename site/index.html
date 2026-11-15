@@ -26,33 +26,31 @@
     </header>
 
     <main>
-      <section class="grid items-start gap-x-14 gap-y-10 pt-6 pb-14 sm:pt-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]" aria-labelledby="headline">
+      <section class="grid items-start gap-x-8 gap-y-10 pt-6 pb-14 sm:pt-8 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:gap-x-12" aria-labelledby="headline">
         <div>
           <h1 id="headline" class="max-w-[18ch] text-display">
             Sync files between any two machines, over any network
           </h1>
-          <p class="mt-5 max-w-[36em] text-lede">
+          <p class="mt-4 max-w-[36em] text-lede md:text-[1.1875rem] lg:text-lede">
             Copy files and directory trees the way rsync does, directly between
-            your devices, without configuring firewalls, port forwarding or
-            static IPs.
+            your devices, with no port forwarding or static IPs.
           </p>
-          <ul class="mt-6 flex max-w-[36em] flex-col gap-3">
+          <ul class="mt-5 flex max-w-[36em] flex-col gap-2">
             <li>
               <strong class="font-display text-label font-bold">No open ports.</strong>
               The two machines find each other through NATs and firewalls, and
               use a relay only when there is no direct path.
             </li>
             <li>
-              <strong class="font-display text-label font-bold">Picks up where it stopped.</strong>
-              Transfers survive a switch of network. If the connection drops,
-              run the same command again; it resumes at the exact byte.
+              <strong class="font-display text-label font-bold">Survives network changes.</strong>
+              A transfer keeps going when a machine switches networks.
             </li>
             <li>
               <strong class="font-display text-label font-bold">Encrypted end to end.</strong>
               Each side talks only to the keys it was given.
             </li>
           </ul>
-          <p class="mt-8 flex flex-wrap gap-3">
+          <p class="mt-6 flex flex-wrap gap-3">
             <a class="btn btn-primary h-auto px-5 py-3 font-display text-label font-bold no-underline" href="book/tutorial/first-sync.html">Your first sync</a>
             <a
               class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-bold text-base-content no-underline hover:bg-base-200"
@@ -62,64 +60,41 @@
           </p>
         </div>
 
-        <div class="flex flex-col gap-3 lg:pt-2">
-          <div class="cmd">
-            <pre><span class="prompt"># Install (Linux and macOS)</span>
-<span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
-          </div>
-          <div class="cmd">
-            <pre><span class="prompt"># Copy a directory to a server you can ssh into</span>
-<span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
-          </div>
-          <p class="mt-2 border-l-4 border-signal py-1 pl-4 text-small" role="note">
+        <section class="md:pt-1" aria-labelledby="start-heading">
+          <h2 id="start-heading" class="text-[1.1875rem] leading-tight">Get started</h2>
+          <ol class="mt-5">
+            <li class="station">
+              <span class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-bold bg-base-100" aria-hidden="true">1</span>
+              <h3 id="install" class="text-label leading-7">Install</h3>
+              <div class="cmd mt-2">
+                <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
+              </div>
+              <p class="mt-2 text-small text-muted">
+                Linux and macOS. Installs <code>irsync</code> and
+                <code>fileset</code> into <code>~/.local/bin</code>.
+                <a href="book/introduction.html#install">Other ways to install</a>.
+              </p>
+            </li>
+            <li class="station">
+              <span class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-bold bg-aqua text-base-100" aria-hidden="true">2</span>
+              <h3 class="text-label leading-7">Sync</h3>
+              <div class="cmd mt-2">
+                <pre><span class="prompt">$</span> <span class="copy">irsync <span class="whitespace-nowrap">-av</span> ~/Photos/ myserver:/srv/photos/</span></pre>
+              </div>
+              <p class="mt-2 text-small text-muted">
+                If <code>ssh myserver</code> logs you in, the first run sets the
+                server up too; later runs connect over iroh, not ssh. No ssh?
+                <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand">Set the server up by hand</a>.
+                <em>Interrupted? Run the same command again; it resumes.</em>
+              </p>
+            </li>
+          </ol>
+          <p class="mt-5 border-l-4 border-signal py-1 pl-4 text-small" role="note">
             <strong class="font-display font-bold">Beta.</strong>
-            Both ends run irsync; it is not a drop-in replacement for rsync. The
-            command line and the protocol may still change, so keep another copy
-            of anything you sync with it.
+            Both ends run irsync, and it may still change: keep a backup.
             <a href="book/reference/limitations.html">Known limitations</a>.
           </p>
-        </div>
-      </section>
-
-      <section class="border-t border-base-300 py-14" aria-labelledby="start-heading">
-        <h2 id="start-heading" class="text-heading">Get started</h2>
-        <ol class="mt-10 max-w-[760px]">
-          <li class="station">
-            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-base-100 font-display text-label font-bold" aria-hidden="true">1</span>
-            <h3 id="install" class="text-heading leading-[34px]">Install</h3>
-            <div class="cmd mt-4">
-              <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
-            </div>
-            <p class="mt-3 max-w-[62ch] text-small text-muted">
-              Linux and macOS. Installs <code>irsync</code> and
-              <code>fileset</code> into <code>~/.local/bin</code>. There is no
-              stable release yet, so <code>--beta</code> takes the newest beta
-              release. There are also
-              <a href="book/introduction.html#install">other ways to install</a>.
-            </p>
-          </li>
-          <li class="station">
-            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-base-100 font-display text-label font-bold" aria-hidden="true">2</span>
-            <h3 class="text-heading leading-[34px]">Sync</h3>
-            <div class="cmd mt-4">
-              <pre><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
-            </div>
-            <p class="mt-3 max-w-[62ch] text-small text-muted">
-              If <code>ssh myserver</code> logs you in, the first run sets the
-              server up too. Later runs connect over iroh and do not use ssh.
-              No ssh?
-              <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand">Set the server up by hand</a>.
-            </p>
-          </li>
-          <li class="station">
-            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-aqua font-display text-label font-bold text-base-100" aria-hidden="true">3</span>
-            <h3 class="text-heading leading-[34px]">Interrupted? Run it again</h3>
-            <p class="mt-3 max-w-[62ch]">
-              If the connection drops or you stop the transfer, run the same
-              command again. It resumes where the last run stopped.
-            </p>
-          </li>
-        </ol>
+        </section>
       </section>
 
       <section class="border-t border-base-300 py-14" aria-labelledby="how-heading">

@@ -142,6 +142,11 @@
     @apply font-mono text-[0.875em];
   }
 
+  /* An inline flag or path is never split across lines. */
+  code {
+    @apply whitespace-nowrap;
+  }
+
   a {
     @apply text-link underline decoration-1 underline-offset-[3px];
   }
@@ -177,11 +182,11 @@
 /* Station on the route: the numbered circle at the left of each step, and
    the aqua line that joins it to the next one. */
 @utility station {
-  @apply relative pb-10 pl-14 last:pb-0;
+  @apply relative pb-5 pl-10 last:pb-0;
 
   &::before {
     content: "";
-    @apply absolute top-9 bottom-0 left-[15px] w-1 bg-aqua;
+    @apply absolute top-7 bottom-0 left-[12px] w-1 bg-aqua;
   }
 
   &:last-child::before {
