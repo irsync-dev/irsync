@@ -14,7 +14,9 @@ CHECK = os.path.join(SCRIPTS, "check-release-tag.sh")
 NOTES = os.path.join(SCRIPTS, "release-notes.sh")
 RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 BUMP = os.path.join(SCRIPTS, "bump-version.sh")
+STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
 HEADING = "## What's changed"
+REL = {"body": "", "isDraft": False, "isPrerelease": False}
 
 
 class FakeGh(unittest.TestCase):
@@ -286,7 +288,7 @@ class ResumeTests(FakeGh):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return dict(l.split("=", 1) for l in r.stdout.splitlines())
 
-    PUBLISHED = {"body": "", "isDraft": False, "isPrerelease": False}
+    PUBLISHED = REL
     PRE = {"body": "", "isDraft": False, "isPrerelease": True}
 
     def test_stable(self):
@@ -344,6 +346,36 @@ class ResumeTests(FakeGh):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(r.stdout, "")
         self.assertEqual(self.state().get("calls", []), [])
+
+
+class StrayTagTests(FakeGh):
+    def stray(self):
+        return self.run_script(STRAY)
+
+    def test_no_tags(self):
+        r = self.stray()
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_every_tag_has_a_release(self):
+        self.set_state(releases={"v1.0.0": REL, "v1.1.0-beta.1": REL},
+                       tags=["v1.0.0", "v1.1.0-beta.1"])
+        self.assertEqual(self.stray().returncode, 0)
+
+    def test_old_alphas_are_accepted(self):
+        self.set_state(releases={}, tags=["v0.1.0-alpha.1", "v0.1.0-alpha.2"])
+        self.assertEqual(self.stray().returncode, 0)
+
+    def test_hand_pushed_tag_is_stray(self):
+        self.set_state(releases={"v1.0.0": REL}, tags=["v1.0.0", "v1.0.1", "v1.0.10"])
+        r = self.stray()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "v1.0.1\nv1.0.10\n")
+        self.assertIn("::error::", r.stderr)
+        self.assertIn("v1.0.1", r.stderr)
+
+    def test_draft_release_counts(self):
+        self.set_state(releases={"v1.0.0": dict(REL, isDraft=True)}, tags=["v1.0.0"])
+        self.assertEqual(self.stray().returncode, 0)
 
 
 CODE_CHANGED = os.path.join(SCRIPTS, "code-changed.sh")

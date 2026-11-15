@@ -4,6 +4,7 @@
 State lives in the JSON file named by FAKE_GH_STATE:
   releases: {tag: {"body": str, "isDraft": bool, "isPrerelease": bool}}
   tags: [tag, ...]
+  branches: [name, ...] (optional, default [])
   generated: str (what generate-notes returns)
   calls: [argv, ...] (appended by every call)
 Only the calls the scripts make are understood; anything else fails.
@@ -57,8 +58,18 @@ elif args[0] == "api":
     rest = [a for a in args[1:] if a != "--paginate"]
     endpoint = rest[0]
     repo = os.environ["GH_REPO"]
-    if endpoint == f"repos/{repo}/git/matching-refs/tags/v":
+    tags_prefix = f"repos/{repo}/git/matching-refs/tags/"
+    heads_prefix = f"repos/{repo}/git/matching-refs/heads/"
+    if endpoint.startswith(tags_prefix):
         for t in state["tags"]:
+            if t.startswith(endpoint[len(tags_prefix):]):
+                print(t)
+    elif endpoint.startswith(heads_prefix):
+        for b in state.get("branches", []):
+            if b.startswith(endpoint[len(heads_prefix):]):
+                print(b)
+    elif endpoint == f"repos/{repo}/releases":
+        for t in state["releases"]:
             print(t)
     elif endpoint == f"repos/{repo}/releases/generate-notes":
         state["generate"] = fields()
