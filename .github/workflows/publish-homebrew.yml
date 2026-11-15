@@ -3,8 +3,9 @@
 # run the release gate starts after release.yml published the release, or in
 # a run started by hand to finish a release. It replaces dist's built-in
 # Homebrew job so it can run in the `release` environment: HOMEBREW_TAP_TOKEN
-# lives there and opens only for runs on a v* tag, after an approval. (dist 0.34.0 can't call a local custom
-# publish job: it writes `uses: $/.github/...`.)
+# lives there and opens only for runs on a v* tag, after an approval. (dist
+# 0.34.0 can't call a local custom publish job: it writes
+# `uses: $/.github/...`.)
 #
 # The formula is the irsync.rb that dist built and attached to the release.
 # Safe to run again: if the tap already has that formula, it pushes nothing.

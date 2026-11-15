@@ -108,6 +108,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The check job saw no tag, but the tests took a while. A release
+          # published by an earlier attempt in the meantime has the tag now.
+          if gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq '.[].ref' |
+              grep -qxF -- "refs/tags/$TAG"; then
+            echo "::error::The tag $TAG exists now: an earlier attempt published the release while the tests ran. Finish it with release-resume.yml (see the releasing guide), and do not start the gate again."
+            exit 1
+          fi
+
           # A pinned/ branch left over from an earlier attempt. The tag does
           # not exist (the check job made sure), so that attempt released
           # nothing, and no run of it is still going (the step above).

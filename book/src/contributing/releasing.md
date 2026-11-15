@@ -131,7 +131,8 @@ release starts. It does this, in order:
    is immutable from then on, and no file on it can be replaced or added.
    The gate then deletes the `pinned/` branch.
 5. **Branch** (`X.Y.0` only). It creates `release-X.Y` at the released
-   commit.
+   commit. This step and the next one start together after the release;
+   neither waits for the other.
 6. **Resume.** It starts `.github/workflows/release-resume.yml` on the new
    tag. This run waits for the gate run to end. The rest happens there,
    because the secrets of the `release` environment open only for runs on a
@@ -209,7 +210,8 @@ Actions tab under the release workflow: it may still be running.
   and the notes. This happens when the gate lost track of the `release.yml`
   run. Finish the release with the resume workflow (see below). For
   `X.Y.0`, also create the branch `release-X.Y` at the released commit by
-  hand, if it is missing.
+  hand, if it is missing (see
+  [Creating `release-X.Y` by hand](#creating-release-xy-by-hand)).
 
 **The packages or Homebrew step failed.** Fix the cause (often a token in
 the `release` environment), then re-run that job from the resume run, or
@@ -320,6 +322,24 @@ rulesets (including [the release tags](#protecting-the-release-tags) and
 the release branches), the environments, secret scanning and immutable
 releases. See [Checking the settings](supply-chain.md#checking-the-settings).
 
+## Creating `release-X.Y` by hand
+
+The `branch` job creates `release-X.Y` after the release is public. If it
+fails, or the branch is missing, create it at the released commit:
+
+```sh
+git push origin vX.Y.Z:refs/heads/release-X.Y
+```
+
+The `Release branches` ruleset may refuse to create the ref. If it does, an
+admin disables that ruleset for a moment, pushes the branch, and turns the
+ruleset on again with `tools/github_settings.py apply`.
+
+**Watch the first stable release.** The first `X.Y.0` is the first time the
+`branch` job creates `release-X.Y`, and it runs after the release is
+public. The `Release branches` ruleset may block it. If it does, create the
+branch by hand as above, and fix the ruleset or the job.
+
 **Watch the first patch release.** The first release from a `release-X.Y`
 branch should be watched. The gate creates `pinned/vX.Y.Z` with the
 workflow's built-in token, and GitHub may refuse that if the workflow files
@@ -330,32 +350,36 @@ fix. Don't work around it by pushing tags.
 
 Do the one-time setup first. Then:
 
-1. **Merge to `main`.** The gate can only launch `release.yml` once it is on
+1. **Merge to `main`.** (Done.) The gate can only launch `release.yml` once it is on
    the default branch, so the merge comes first. The install steps in the
    README and the book go live with it. They say that Homebrew, apt and dnf
    start with v0.1.0, and that `--alpha` works before that.
-2. **Put the install script on irsync.org.** The merge deploys the site,
+2. **Put the install script on irsync.org.** (Done.) The merge deploys the site,
    with `install.sh`, to staging. Check that
    `https://dev.irsync.org/install.sh` is there, then promote the site (see
    [Promoting to irsync.org](website.md#promoting-to-irsyncorg)).
-3. **Rehearse with an alpha.** Follow
-   [Cutting a release](#cutting-a-release) with the version `0.1.0-alpha.1`.
-   Tags are no longer pushed by hand: the gate creates the tag.
+3. **Rehearse with a pre-release.** Done: `0.1.0-alpha.1` was rehearsed
+   this way, with the old flow. Its tag exists and it has no release, so
+   the start check refuses that version now. The next rehearsal uses the
+   next pre-release, for example `0.1.0-beta.4`. Follow
+   [Cutting a release](#cutting-a-release) with that version. The gate
+   creates the tag.
 
    Check that:
-   - the gate passes and creates the tag `v0.1.0-alpha.1`;
+   - the gate passes and creates the tag `v0.1.0-beta.4`;
    - the GitHub Release is marked as a pre-release and has the tarballs, the
      checksums and the installer;
    - its notes end with `## What's changed`;
    - the install script with `--alpha` installs it, and without `--alpha`
      says there is no stable release yet;
    - nothing went to Homebrew, apt or dnf.
-4. **Dry-run the packages on the alpha.** An alpha skips Homebrew, apt and
-   dnf, so the steps only stable releases run have not run yet. Run them
+4. **Dry-run the packages on the pre-release.** A pre-release skips
+   Homebrew, apt and dnf, so the steps only stable releases run have not
+   run yet. Once the rehearsal release from step 3 is published, run them
    without publishing:
 
    ```sh
-   gh workflow run release-resume.yml --ref v0.1.0-alpha.1 -f tag=v0.1.0-alpha.1 -f dry-run=true
+   gh workflow run release-resume.yml --ref v0.1.0-beta.4 -f tag=v0.1.0-beta.4 -f dry-run=true
    ```
 
    This uses the GPG secrets, the packages repo token, nfpm and Ubuntu's

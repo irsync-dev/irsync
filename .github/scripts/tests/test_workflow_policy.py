@@ -341,6 +341,16 @@ class GateTests(unittest.TestCase):
         self.assertIn('--ref "refs/heads/pinned/$TAG"', text)
         self.assertIn('"$run_sha" != "$GITHUB_SHA"', text)
 
+    def test_gate_rechecks_the_tag_before_pinning(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("git/matching-refs/tags/$TAG", text)
+        self.assertIn('grep -qxF -- "refs/tags/$TAG"', text)
+        self.assertIn("release-resume.yml", text)
+        self.assertLess(
+            text.index("git/matching-refs/tags/$TAG"),
+            text.index('ref="refs/heads/pinned/$TAG"'),
+        )
+
     def test_gate_clears_stale_pin(self):
         steps = jobs(self.gate())["release"]["steps"]
         last = steps[-1]

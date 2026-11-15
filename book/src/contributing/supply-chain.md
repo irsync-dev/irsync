@@ -14,10 +14,11 @@ maintainer can do. Why each choice was made is in
 - `main` only changes through a pull request that passed the `CI result`
   check. Nobody can push to it directly or force-push, admins included. A
   pull request needs no approving review while irsync has one maintainer.
-- Release tags (`v*`) are created only by the release workflow, together
-  with the GitHub Release. They can never be moved or deleted. A tag pushed
-  by hand has no release and blocks the next gate run; the settings check
-  reports it.
+- Release tags (`v*`) are created by the release workflow, together with
+  the GitHub Release. They can never be moved or deleted. Anyone with write
+  access can still push a new `v*` tag by hand. That is caught, not
+  blocked: a tag with no release stops the next gate run, and
+  `tools/github_settings.py check` reports it.
 - `release-*` branches take changes only through a pull request that passed
   `CI result`, like `main`. The `pinned/*` branches the gate makes can't be
   moved.
@@ -181,4 +182,7 @@ These are settings changes in `tools/github_settings.py`, not a redesign:
   `dist-workspace.toml`, `deny.toml` and `site/install.sh` need a
   maintainer's review;
 - the `release` environment gets `prevent_self_review`, so whoever starts a
-  release can't also approve it.
+  release can't also approve it. This is not enough alone: the resume
+  run is started by `github-actions[bot]`, not by the person who started
+  the gate, so the setting would not stop that person from approving
+  their own release.
