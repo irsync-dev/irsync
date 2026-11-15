@@ -1,4 +1,4 @@
-# How we know irsync is correct
+# How we verify irsync's correctness
 
 For a sync tool, correctness comes first and speed second. This page states
 what irsync claims, what backs each part of the claim, how you can check it

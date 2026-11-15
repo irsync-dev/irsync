@@ -31,7 +31,7 @@
 
 # Explanation
 
-- [How we know irsync is correct](explanation/correctness.md)
+- [How we verify irsync's correctness](explanation/correctness.md)
 - [Sessions and resume](explanation/sessions-and-resume.md)
 - [Identity and trust](explanation/identity-and-trust.md)
 - [Connections](explanation/connections.md)
