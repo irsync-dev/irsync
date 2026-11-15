@@ -11,7 +11,7 @@
     />
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body class="mx-auto max-w-[1040px] px-5 pb-12 sm:px-10">
+  <body class="mx-auto max-w-[1120px] px-5 pb-12 sm:px-10">
     <header>
       <nav aria-label="Site" class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-6 font-display">
         <p class="flex items-center gap-3">
@@ -26,52 +26,69 @@
     </header>
 
     <main>
-      <p class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-l-4 border-signal py-1 pl-4 text-small" role="note">
-        <strong class="font-display text-label font-bold">Beta</strong>
-        <span class="max-w-[62ch]">
-          Approaching the first stable release. The command line and the
-          protocol may still change, based on correctness testing, performance
-          measurements and user feedback. Keep another copy of anything you sync
-          with it.
-        </span>
-      </p>
-
-      <section class="pt-14 pb-16 sm:pt-20" aria-labelledby="headline">
-        <h1 id="headline" class="max-w-[17ch] text-display">
-          Resilient file sync over any network topology
-        </h1>
-        <div class="mt-8 flex max-w-[34em] flex-col gap-4">
-          <p class="text-lede">
-            Peer-to-peer file and directory sync in the spirit of rsync that
-            adapts to any network topology and survives connection drops without
-            restarting.
+      <section class="grid items-start gap-x-14 gap-y-10 pt-6 pb-14 sm:pt-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]" aria-labelledby="headline">
+        <div>
+          <h1 id="headline" class="max-w-[18ch] text-display">
+            Sync files between any two machines, over any network
+          </h1>
+          <p class="mt-5 max-w-[36em] text-lede">
+            Copy files and directory trees the way rsync does, directly between
+            your devices, without configuring firewalls, port forwarding or
+            static IPs.
           </p>
-          <p>
-            Move files and full directory trees directly between devices without
-            configuring firewalls, port forwarding, or static IPs. Built on iroh,
-            transfers punch through NATs, fall back to relays when needed, and
-            handle network switches mid-stream. If a connection drops, the
-            transfer picks up at the exact byte where it stopped.
+          <ul class="mt-6 flex max-w-[36em] flex-col gap-3">
+            <li>
+              <strong class="font-display text-label font-bold">No open ports.</strong>
+              The two machines find each other through NATs and firewalls, and
+              use a relay only when there is no direct path.
+            </li>
+            <li>
+              <strong class="font-display text-label font-bold">Picks up where it stopped.</strong>
+              Transfers survive a switch of network. If the connection drops,
+              run the same command again; it resumes at the exact byte.
+            </li>
+            <li>
+              <strong class="font-display text-label font-bold">Encrypted end to end.</strong>
+              Each side talks only to the keys it was given.
+            </li>
+          </ul>
+          <p class="mt-8 flex flex-wrap gap-3">
+            <a class="btn btn-primary h-auto px-5 py-3 font-display text-label font-bold no-underline" href="book/tutorial/first-sync.html">Your first sync</a>
+            <a
+              class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-bold text-base-content no-underline hover:bg-base-200"
+              href="book/introduction.html"
+              >Read the introduction</a
+            >
           </p>
         </div>
-        <p class="mt-8 flex flex-wrap gap-3">
-          <a class="btn btn-primary h-auto px-5 py-3 font-display text-label font-bold no-underline" href="book/tutorial/first-sync.html">Your first sync</a>
-          <a
-            class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-bold text-base-content no-underline hover:bg-base-200"
-            href="book/introduction.html"
-            >Read the introduction</a
-          >
-        </p>
+
+        <div class="flex flex-col gap-3 lg:pt-2">
+          <div class="cmd">
+            <pre><span class="prompt"># Install (Linux and macOS)</span>
+<span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
+          </div>
+          <div class="cmd">
+            <pre><span class="prompt"># Copy a directory to a server you can ssh into</span>
+<span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
+          </div>
+          <p class="mt-2 border-l-4 border-signal py-1 pl-4 text-small" role="note">
+            <strong class="font-display font-bold">Beta.</strong>
+            Both ends run irsync; it is not a drop-in replacement for rsync. The
+            command line and the protocol may still change, so keep another copy
+            of anything you sync with it.
+            <a href="book/reference/limitations.html">Known limitations</a>.
+          </p>
+        </div>
       </section>
 
       <section class="border-t border-base-300 py-14" aria-labelledby="start-heading">
         <h2 id="start-heading" class="text-heading">Get started</h2>
-        <ol class="mt-10">
+        <ol class="mt-10 max-w-[760px]">
           <li class="station">
             <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-base-100 font-display text-label font-bold" aria-hidden="true">1</span>
             <h3 id="install" class="text-heading leading-[34px]">Install</h3>
             <div class="cmd mt-4">
-              <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta</span></pre>
+              <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
             </div>
             <p class="mt-3 max-w-[62ch] text-small text-muted">
               Linux and macOS. Installs <code>irsync</code> and
@@ -89,8 +106,8 @@
             </div>
             <p class="mt-3 max-w-[62ch] text-small text-muted">
               If <code>ssh myserver</code> logs you in, the first run sets the
-              server up too. Later runs connect over iroh and do not use ssh. No
-              ssh?
+              server up too. Later runs connect over iroh and do not use ssh.
+              No ssh?
               <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand">Set the server up by hand</a>.
             </p>
           </li>
@@ -107,29 +124,35 @@
 
       <section class="border-t border-base-300 py-14" aria-labelledby="how-heading">
         <h2 id="how-heading" class="text-heading">How it connects</h2>
+        <p class="mt-3 max-w-[62ch] text-muted">
+          irsync connects through iroh, an open-source networking library. You
+          do not need to set anything up for it.
+        </p>
         <div class="mt-8 grid gap-x-10 gap-y-8 md:grid-cols-3">
           <div>
-            <h3 class="text-[1.1875rem] leading-tight">Peer to peer, over iroh</h3>
+            <h3 class="text-[1.1875rem] leading-tight">Directly, when it can</h3>
             <p class="mt-2 text-small text-muted">
-              The two machines find each other and traverse NATs and firewalls.
-              The daemon is reached by its iroh identity, not by an address.
+              The two machines find each other and connect directly, even when
+              both sit behind a home router or a firewall. The server is found by
+              its key, not by an IP address.
             </p>
           </div>
           <div>
             <h3 class="text-[1.1875rem] leading-tight">Encrypted, key to key</h3>
             <p class="mt-2 text-small text-muted">
               Traffic is encrypted end to end. The client only connects to the
-              daemon key it was given, and the daemon only lets in keys it has
+              server key it was given, and the server only lets in keys it has
               granted. More in
               <a href="book/explanation/identity-and-trust.html">Identity and trust</a>.
             </p>
           </div>
           <div>
-            <h3 class="text-[1.1875rem] leading-tight">A relay when there is no direct path</h3>
+            <h3 class="text-[1.1875rem] leading-tight">Through a relay, when it must</h3>
             <p class="mt-2 text-small text-muted">
-              By default a public relay run by n0, the developers of iroh. It
-              cannot read the data. Run your own, or refuse relays with
-              <code>--no-relay</code>. More in
+              When no direct connection is possible, the encrypted traffic passes
+              through a relay server, which cannot read it. By default that is a
+              public relay run by n0, the developers of iroh. Run your own, or
+              refuse relays with <code>--no-relay</code>. More in
               <a href="book/how-to/direct-and-relay.html">Direct or relay</a>.
             </p>
           </div>
@@ -163,14 +186,6 @@
       </section>
 
       <div class="grid gap-x-10 gap-y-10 py-14 md:grid-cols-2">
-        <section aria-labelledby="fileset-heading">
-          <h2 id="fileset-heading" class="text-heading">fileset</h2>
-          <p class="mt-3 max-w-[44ch]">
-            A helper that ships with irsync. It checks that a copy is exact,
-            whichever tool made it: rsync, rclone, cp or irsync. Start with the
-            <a href="book/fileset/introduction.html">introduction to fileset</a>.
-          </p>
-        </section>
         <section aria-labelledby="help-heading">
           <h2 id="help-heading" class="text-heading">Help</h2>
           <p class="mt-3 max-w-[44ch]">
@@ -180,6 +195,14 @@
             <a href="book/how-to/troubleshooting.html">Troubleshooting</a>.
             Report security problems privately to
             <a href="mailto:security@irsync.org">security@irsync.org</a>.
+          </p>
+        </section>
+        <section aria-labelledby="fileset-heading">
+          <h2 id="fileset-heading" class="text-heading">Also included: fileset</h2>
+          <p class="mt-3 max-w-[44ch]">
+            A helper that checks that a copy is exact, whichever tool made it:
+            rsync, rclone, cp or irsync. Start with the
+            <a href="book/fileset/introduction.html">introduction to fileset</a>.
           </p>
         </section>
       </div>
