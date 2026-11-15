@@ -217,3 +217,57 @@ review, deferred.
       pre-releases exist from then, so nothing needs it today.
 - [ ] `book/src/how-to/verify-a-download.md` calls the tap `irsync-dev/tap`
       (Homebrew's short name). The repository is `irsync-dev/homebrew-tap`.
+
+# Open items from the CI speed-up, 2026-11-15
+
+Pull request #21 cut the build time (less debug info) and cancels a pull
+request's superseded runs. What is left, for discussion. Figures are from
+CI runs of 2026-11-15, before #21: about 12 minutes a run on Linux
+(4 cores) and 11 on macOS (3 cores), of which about 7 and 6 minutes are
+running the tests. "Test time" below is the sum over tests, which the
+runner divides by its cores.
+
+## Checks not yet run
+
+- [ ] The build saving on GitHub: measured only locally (a rebuild went
+      from 54 s to 16 s). It shows from the second run of #21 on, once the
+      cache is warm. The estimate is about 2 minutes a job.
+- [ ] The cancelling: push twice to a pull request and see the first run
+      cancelled.
+
+## Tests that wait on real timeouts
+
+- [ ] `onboard_e2e` takes about 410 s of test time on every machine, fast
+      or slow, because it waits on production timeouts. On macOS that is
+      36% of all test time. Five tests dial a dead daemon and wait out the
+      60 s connection timeout (`net/endpoint.rs`, `max_idle_timeout`).
+      Four more take about 20 s each; the 15 s `SSH_HOST_FIRST_DIAL` in
+      `main.rs` is the likely cause, not traced. Option: let tests shorten
+      these through a test-only setting, as `IRSYNC_TEST_RELEASE_URL` does
+      for the release URL. Estimated saving: 1.5 minutes on Linux, 2 on
+      macOS. Cost: these tests no longer run with the real values.
+
+## Heavy tests
+
+- [ ] `backpressure` and `blocking_pool` take 515 s of test time on Linux
+      (macOS CI already skips them). Options: smaller data in the four or
+      five heaviest tests, or run them only on `main`. Smaller data needs
+      care: the tests must still fill the queues they are about. Estimated
+      saving: up to 2 minutes on Linux.
+- [ ] `itemize_over_a_slow_link_stays_within_the_out_budget` took 128 s
+      and failed the `main` run of 2026-11-15 03:55 UTC with "daemon
+      session did not finish". Flaky under load; not looked into.
+- [ ] `concurrent_pulls_finish_when_their_walks_could_fill_the_blocking_pool`
+      took 57 s on Linux CI against its own 60 s limit (21 s locally). One
+      slow runner away from failing.
+- [ ] The five netstress tests take 55 to 62 s each on Linux CI and 15 to
+      21 s locally. They probably all wait about 40 s for the nested fault
+      build; inferred from the timings, not measured. #21 should shorten
+      that build too. Look again after it lands.
+
+## Runner use
+
+- [ ] Every merge runs the whole suite twice, on the pull request and
+      again on the push to `main`, macOS included. Option: run macOS on
+      only one of the two. On `main` only, a macOS-only failure shows up
+      after the merge instead of before.
