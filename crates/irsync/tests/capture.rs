@@ -64,7 +64,8 @@ fn copy_protos(from: &Path, to: &Path) {
 }
 
 /// With `tshark` on `PATH`, every packet must decode as a `Record` from the
-/// `.proto` files, the settings the docs give. Skipped silently without it.
+/// `.proto` files, the settings the docs give. Skipped silently without it,
+/// and with a note where tshark is not allowed to read the capture.
 fn check_with_tshark(path: &Path, records: usize) {
     let protos = path.with_file_name("proto");
     copy_protos(
@@ -94,6 +95,12 @@ fn check_with_tshark(path: &Path, records: usize) {
         return;
     };
     let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("You don't have permission to read the file") {
+        // Ubuntu confines tshark with AppArmor to /tmp, /var/tmp and ~/tmp;
+        // the file itself is ours and readable. Happens with TMPDIR elsewhere.
+        eprintln!("skipping tshark: it may not read {}", path.display());
+        return;
+    }
     assert!(out.status.success(), "tshark failed: {stderr}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<_> = stdout.lines().collect();
