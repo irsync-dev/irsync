@@ -24,6 +24,9 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# The checks themselves are in tools/ci.sh, one job there per job here, so
+# they run the same on a developer's machine. This file keeps what is
+# GitHub's: the triggers, the runners and the tool installs.
 jobs:
   # Does this change need the builds? Only a pull request can say no: a
   # Markdown-, book/- or site/-only change skips them (see code-changed.sh).
@@ -61,8 +64,6 @@ jobs:
         # In a called workflow github.event_name is the caller's event, so
         # `inputs.plan` tells a release run (it is set) from a normal one.
         include: ${{ fromJSON(inputs.plan && '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""},{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""}]') }}
-    env:
-      TARGET_FLAG: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (the version in rust-toolchain.toml)
@@ -74,7 +75,8 @@ jobs:
         if: matrix.target != ''
         run: |
           sudo apt-get update && sudo apt-get install -y musl-tools
-          # Also makes the netstress tests' nested fault build use the target.
+          # tools/ci.sh check builds for this target. It also makes the
+          # netstress tests' nested fault build use it.
           echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -94,24 +96,11 @@ jobs:
           fi
       - name: Show rsync version the tests will use
         run: rsync --version | head -1
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Test the dev setup script
-        run: python3 -m unittest discover -s tools/tests
-      - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features $TARGET_FLAG -- -D warnings
-      - name: Clippy without OpenTelemetry
-        run: cargo clippy --locked --workspace --all-targets --no-default-features $TARGET_FLAG -- -D warnings
-      # nextest runs each test in its own process, tests from all files side
-      # by side, and kills a hung test (see .config/nextest.toml). It does
-      # not run doc tests, so cargo test runs those. On macOS the ci-macos
-      # profile leaves out slow tests that Linux covers.
-      - name: Test
-        env:
-          PROFILE: ${{ runner.os == 'macOS' && 'ci-macos' || 'ci' }}
-        run: cargo nextest run --locked --workspace --all-features --profile "$PROFILE" --run-ignored all $TARGET_FLAG
-      - name: Doc tests
-        run: cargo test --locked --workspace --all-features --doc $TARGET_FLAG
+      # Format, the dev-setup tests, clippy twice, the tests with nextest
+      # and the doc tests. On macOS it leaves out slow tests that Linux
+      # covers (the ci-macos profile).
+      - name: Format, clippy and tests
+        run: tools/ci.sh check
 
   # Runs the release build itself (dist and packaging/dist/build.sh) for the
   # Linux targets, on the same runners as release.yml, so a broken release
@@ -159,17 +148,11 @@ jobs:
           echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
-      - name: Check release.yml matches dist-workspace.toml
-        run: dist generate --check
+      # dist generate --check, the build, and a look inside the tarball.
       - name: Build the release artifacts
-        run: dist build --artifacts=local --target=${{ matrix.target }}
-      - name: Check the tarball holds both binaries
-        run: |
-          set -euo pipefail
-          tar -tJf target/distrib/irsync-${{ matrix.target }}.tar.xz > contents.txt
-          cat contents.txt
-          grep -qx "irsync-${{ matrix.target }}/irsync" contents.txt
-          grep -qx "irsync-${{ matrix.target }}/fileset" contents.txt
+        env:
+          CI_RELEASE_TARGET: ${{ matrix.target }}
+        run: tools/ci.sh release-build
 
   # The workflow rules (.github/scripts/tests, including the supply chain
   # policy in test_workflow_policy.py) and actionlint, on every change: a
@@ -185,20 +168,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Workflow and release script tests
-        run: |
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
-          python3 -m unittest discover -s .github/scripts/tests
+      - name: Install PyYAML
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
       - name: Install actionlint
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check -
-          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-      # shellcheck is off: it would also lint the generated release.yml.
-      - name: Lint the workflows
-        run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='
+          mkdir "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/actionlint" actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+      - name: Workflow rule tests and actionlint
+        run: tools/ci.sh workflows
 
   # Dependencies: known vulnerabilities, unmaintained or yanked crates,
   # licenses and sources, as set in deny.toml. Fails on any advisory; an
@@ -218,7 +200,7 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - name: Check the dependencies
-        run: cargo deny --locked check
+        run: tools/ci.sh deny
 
   # Flags a pull request that adds or bumps a dependency with a known
   # vulnerability, in the pull request itself.

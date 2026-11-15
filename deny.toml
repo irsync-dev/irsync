@@ -1,5 +1,5 @@
 # cargo-deny settings. CI runs `cargo deny --locked check` on every change
-# (ci.yml, job `deny`) and the advisories check daily (advisories.yml).
+# (tools/ci.sh and ci.yml, job `deny`) and the advisories check daily (advisories.yml).
 # How to accept an advisory: book/src/contributing/supply-chain.md.
 
 [graph]

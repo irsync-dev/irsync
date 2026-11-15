@@ -1,5 +1,5 @@
 # cargo-nextest settings. CI runs the tests with `cargo nextest run --profile ci`
-# (see .github/workflows/ci.yml); `cargo test` keeps working as before.
+# (see tools/ci.sh, job check); `cargo test` keeps working as before.
 
 [profile.ci]
 # Run every test, so one failure does not hide the others.

@@ -20,8 +20,9 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
 what rustup and cargo can install: rustup, the toolchain with rustfmt and
-clippy, the musl target on Linux, and cargo-nextest, dist and mdbook at the
-versions CI uses. It points git at the repo's hooks. System tools such as
+clippy, the musl target on Linux, and cargo-nextest, cargo-deny, dist,
+actionlint and mdbook. The CI tools are held to the versions CI uses: if you
+have another version, it is replaced. Any mdbook will do. It points git at the repo's hooks. System tools such as
 rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
 it again whenever you like.
@@ -43,8 +44,19 @@ it again whenever you like.
 ## Continuous integration
 
 The workflow in `.github/workflows/ci.yml` runs on GitHub for every push to
-`main` and every pull request, on Linux and macOS. It installs GNU rsync and
-runs, in this order:
+`main` and every pull request, on Linux and macOS. The workflow installs
+the tools; the checks themselves are in `tools/ci.sh`, one job there per job
+in the workflow, so the same script runs them on your machine:
+
+```sh
+tools/ci.sh                  # every job
+tools/ci.sh check            # one job
+tools/ci.sh --help
+```
+
+To change what CI checks, change `tools/ci.sh`.
+
+The `check` job installs GNU rsync and runs, in this order:
 
 ```sh
 cargo fmt --all --check
@@ -58,10 +70,19 @@ cargo test --locked --workspace --all-features --doc
 `--locked` makes the run fail if `Cargo.lock` is out of date, as the release
 build would.
 
-A second job, `release build`, runs the release build itself for the two
+The `release-build` job runs the release build itself for the two
 Linux targets (x86_64 and arm64 musl): `dist build`, which runs
 `packaging/dist/build.sh`, on the same runners as a release. A change that
-would break a release fails here, before anyone tags it.
+would break a release fails here, before anyone tags it. On your machine it
+builds the one musl target that matches it, on Linux only, and needs dist
+and `musl-gcc`.
+
+The `deny` job checks the dependencies with `cargo deny`, and the
+`workflows` job runs the workflow rule tests and actionlint, which needs
+PyYAML and actionlint ([Supply chain](supply-chain.md)).
+
+Two things run only on GitHub: the macOS and arm64 runs, and the dependency
+review of a pull request.
 
 The tests run with [cargo-nextest](https://nexte.st), which runs each test
 in its own process and tests from all files side by side. That makes the
@@ -79,8 +100,8 @@ tests that work the same on every OS, which Linux CI still runs (see
 The second clippy run keeps the build without the `otel` feature compiling
 (see [Cargo features](testing.md#cargo-features)).
 
-You don't need nextest locally: `cargo test` runs the same tests. To run
-them the way CI does, install it with `cargo install cargo-nextest --locked`.
+For everyday work you don't need nextest: `cargo test` runs the same
+tests. `tools/ci.sh check` needs it; `tools/dev-setup.sh` installs it.
 
 ## The pre-push hook
 
@@ -99,12 +120,9 @@ git config core.hooksPath .githooks
 Clippy and the tests are not part of the hook. Run them yourself:
 
 ```sh
-touch crates/irsync/build.rs    # re-runs the build script, which bakes in the git commit
-cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
+tools/ci.sh check
 ```
 
-These are the checks CI runs.
+This is the full regression, the same script CI's `check` job runs. After
+a change under `.github/`, to the dependencies or to the release build, run
+`tools/ci.sh` with no job, which runs CI's other jobs too.

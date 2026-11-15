@@ -61,10 +61,11 @@ binaries. The full regression, which
 CI and [Before pushing](setup.md#before-pushing) use, runs them too:
 
 ```sh
-cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
+tools/ci.sh check
 ```
 
-No other test is ignored, so `--include-ignored` adds exactly these five.
+With plain `cargo test`, `-- --include-ignored` adds them. No other test is
+ignored, so it adds exactly these five.
 
 The syncs through the fault layer in `crates/irsync/tests/netsim.rs` are
 not ignored, though they need minutes of network time: they run client
