@@ -65,6 +65,9 @@ class DesiredTests(unittest.TestCase):
         self.assertEqual(main["rules"]["pull_request"]["required_approving_review_count"], 0)
         self.assertEqual(main["bypass_actors"], [])
 
+    def test_desired_dependency_graph_on(self):
+        self.assertIs(gs.desired(1)[REPO]["dependency_graph"], True)
+
     def test_desired_tags_allow_creation(self):
         tags = gs.desired(1)[REPO]["rulesets"]["Release tags"]
         self.assertNotIn("creation", tags["rules"])

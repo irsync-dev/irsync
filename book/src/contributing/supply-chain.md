@@ -94,6 +94,10 @@ account (Settings, Password and authentication), not SMS. Then, in the
 `irsync-dev` organisation, go to Settings, Authentication security, and
 tick "Require two-factor authentication".
 
+**Dependency graph.** In `irsync-dev/irsync`, go to Settings, Code
+security, and enable "Dependency graph". The dependency review job in CI
+needs it, and there is no API to turn it on.
+
 **2. Split the signing key.** The primary key stays offline. GitHub gets only
 a signing subkey. Use the separate keyring from
 [Making the signing key](releasing.md#making-the-signing-key):
