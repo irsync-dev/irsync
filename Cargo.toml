@@ -83,6 +83,13 @@ iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7
 iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
 iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
 
+# Debug and test builds keep only what a backtrace needs: file names and
+# line numbers. Full debug info tripled the time to link the test binaries
+# and made the build folder five times larger. For a debugger session, set
+# CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = "s"
 strip = true
