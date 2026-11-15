@@ -8,6 +8,8 @@ import os
 import re
 import unittest
 
+import tomllib
+
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -164,6 +166,48 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(wf["permissions"], {"contents": "read"})
         runs = [s.get("run", "") for j in jobs(wf).values() for s in j.get("steps", [])]
         self.assertIn("cargo deny --locked check advisories", [r.strip() for r in runs])
+
+
+def dist_config():
+    with open(os.path.join(ROOT, "dist-workspace.toml"), "rb") as f:
+        return tomllib.load(f)
+
+
+def step_uses(step, action):
+    return step.get("uses", "").split("@")[0] == action
+
+
+class AttestationTests(unittest.TestCase):
+    ATTEST = "actions/attest"
+    WRITE = {"id-token": "write", "attestations": "write"}
+
+    def test_dist_attestations_on(self):
+        self.assertIs(dist_config()["dist"].get("github-attestations"), True)
+
+    def test_release_yml_attests(self):
+        wf = load_workflows()["release.yml"]
+        attesting = [j for j in jobs(wf).values()
+                     if any(step_uses(s, self.ATTEST) for s in j.get("steps", []))]
+        self.assertTrue(attesting, "release.yml attests nothing")
+        for j in attesting:
+            perms = {**(wf.get("permissions") or {}), **(j.get("permissions") or {})}
+            for k, v in self.WRITE.items():
+                self.assertEqual(perms.get(k), v)
+
+    def test_packages_attested_not_uploaded(self):
+        self.assertNotIn("gh release upload", read("packages.yml"))
+        job = jobs(load_workflows()["packages.yml"])["packages"]
+        steps = [s for s in job["steps"] if step_uses(s, self.ATTEST)]
+        self.assertEqual(len(steps), 1)
+        self.assertIn("runner.temp }}/packages/", steps[0]["with"]["subject-path"])
+        self.assertEqual(steps[0]["if"], "${{ !inputs.dry-run }}")
+        for k, v in self.WRITE.items():
+            self.assertEqual(job["permissions"].get(k), v)
+
+    def test_package_callers_grant_attest_permissions(self):
+        for name in ["release-gate.yml", "release-resume.yml"]:
+            perms = jobs(load_workflows()[name])["packages"]["permissions"]
+            self.assertEqual(perms, {"contents": "read", **self.WRITE}, name)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,9 @@ publish-prereleases = false
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 # Path that installers should place binaries in
 install-path = "~/.local/bin"
+# Signed build provenance for every artifact, checkable with
+# `gh attestation verify <file> --repo irsync-dev/irsync`
+github-attestations = true
 # Whether to install an updater program
 install-updater = false
 # Don't run the release workflow on pull requests; PR CI stays as it was
@@ -49,3 +52,4 @@ musl-tools = "*"
 "actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0
 "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
 "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6" # v4.2.2

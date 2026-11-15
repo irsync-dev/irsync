@@ -77,7 +77,9 @@ jobs:
       PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
       PACKAGES_GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
     permissions:
-      contents: write
+      contents: read
+      id-token: write
+      attestations: write
 
   notes:
     needs: check
