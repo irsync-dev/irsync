@@ -144,20 +144,28 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertNotIn("paths-ignore", on["pull_request"] or {})
         self.assertIn("paths-ignore", on["push"])
 
+    def ci_script_runs(self, job, command):
+        """ci.yml runs `tools/ci.sh JOB`, and that job runs `command`."""
+        runs = [s.get("run", "").strip() for j in jobs(self.ci).values()
+                for s in j.get("steps", [])]
+        self.assertIn(f"tools/ci.sh {job}", runs)
+        with open(os.path.join(ROOT, "tools", "ci.sh")) as f:
+            script = f.read()
+        fn = "job_" + job.replace("-", "_")
+        body = re.search(rf"^{fn}\(\) \{{\n(.*?)^\}}", script, re.M | re.S)
+        self.assertIsNotNone(body, f"no {fn} in tools/ci.sh")
+        self.assertRegex(body.group(1), rf"(?m)^ +run {re.escape(command)}$")
+
     def test_workflow_checks_in_ci(self):
         # The rules in this file and actionlint must run on every pull request
-        # that touches a workflow, inside a job "CI result" needs.
-        runs = {jid: " ".join(s.get("run", "") for s in j.get("steps", []))
-                for jid, j in jobs(self.ci).items()}
-        self.assertTrue(any("unittest discover -s .github/scripts/tests" in r
-                            for r in runs.values()), "policy tests not in ci.yml")
-        self.assertTrue(any("actionlint" in r for r in runs.values()), "actionlint not in ci.yml")
-        self.assertTrue(any("dist generate --check" in r for r in runs.values()),
-                        "dist generate --check not in ci.yml")
+        # that touches a workflow, inside a job "CI result" needs. The
+        # commands are in tools/ci.sh, which ci.yml runs.
+        self.ci_script_runs("workflows", "python3 -m unittest discover -s .github/scripts/tests")
+        self.ci_script_runs("workflows", "actionlint -shellcheck= -pyflakes=")
+        self.ci_script_runs("release-build", "dist generate --check")
 
     def test_deny_job_present(self):
-        runs = [s.get("run", "") for j in jobs(self.ci).values() for s in j.get("steps", [])]
-        self.assertTrue(any("cargo deny --locked check" == r.strip() for r in runs), runs)
+        self.ci_script_runs("deny", "cargo deny --locked check")
 
     def test_dependency_review_on_prs_only(self):
         found = False

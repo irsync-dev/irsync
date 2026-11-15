@@ -7,7 +7,8 @@ The contributor guide is the book under `book/src/contributing/`. Start with
 ## Setup
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain,
-cargo-nextest, dist, mdbook) and checks the system tools;
+cargo-nextest, cargo-deny, dist, mdbook) and actionlint, at CI's versions,
+and checks the system tools;
 `tools/dev-setup.sh --check` only reports.
 
 ## Tests
@@ -30,17 +31,16 @@ They take a few minutes, and the first run builds the fault binaries into
 Full regression, before committing to `main` or pushing:
 
 ```sh
-touch crates/irsync/build.rs    # re-runs the build script, which bakes in the git commit
-cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
+tools/ci.sh check
 ```
 
-The last line tests `tools/dev-setup.sh` itself; it is Python, so no cargo
-command runs it. `--include-ignored` adds exactly those five slow tests; no
-other test is ignored.
+This is the script CI runs: formatting, the tests of `tools/dev-setup.sh`,
+clippy with and without OpenTelemetry, every test including those five slow
+ones (no other test is ignored), and the doc tests. It needs cargo-nextest.
+
+`tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
+`workflows` (after a change under `.github/`) and `release-build` (after a
+change to the release build or packaging; Linux only).
 
 A new test of irsync through the fault layer should run in-process on
 tokio's paused clock (`with_netsim` in `crates/irsync/tests/common`, as
@@ -58,8 +58,9 @@ cargo test -p netstress -- --include-ignored
 ## Things that trip people up
 
 - **CI runs on GitHub** (`.github/workflows/ci.yml`, Linux and macOS) for
-  every push to `main` and every pull request, with the full regression.
-  Run it locally first anyway: a macOS-only failure is cheaper to find here.
+  every push to `main` and every pull request. Its jobs run `tools/ci.sh`,
+  so change a check there, not in the workflow. Run it locally first
+  anyway: a macOS-only failure is cheaper to find here.
 - **GNU rsync 3.1 or newer must be on `PATH`.** Without it,
   `crates/irsync/tests/rsync_compare.rs` passes without checking anything.
   macOS ships an older rsync: `brew install rsync`.

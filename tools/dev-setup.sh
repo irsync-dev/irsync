@@ -3,14 +3,18 @@
 #
 # Usage: tools/dev-setup.sh [--check]
 #
-# Installs what rustup and cargo can install: rustup itself, the toolchain
-# from rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
-# and cargo-nextest, dist and mdbook at the versions CI uses. Points git at
-# the repo's hooks. Checks the rest, which comes from the system package
-# manager, and says which package to install. Safe to run again.
+# Installs what it can without root: rustup itself, the toolchain from
+# rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
+# and cargo-nextest, cargo-deny, dist, actionlint and mdbook. The CI tools
+# are held to the versions CI uses: another version is replaced. (mdbook is
+# not: any version builds the book.) Points git at the repo's hooks. Checks
+# the rest, which comes from the system package manager, and says which
+# package to install. Safe to run again. With all of it in place,
+# tools/ci.sh runs the CI checks here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
-# something required is missing, else 0. Missing optional tools only warn.
+# something required is missing, else 0. Missing optional tools, and ones
+# at another version than CI's, only warn.
 set -euo pipefail
 # With pipefail, never end a pipe in a reader that stops early (head -1,
 # grep -q): the writer then dies of SIGPIPE and the pipe fails. Use
@@ -21,15 +25,18 @@ check_only=false
 case ${1:-} in
     "") ;;
     --check) check_only=true ;;
-    -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "usage: $0 [--check]" >&2; exit 2 ;;
 esac
 
 os=$(uname -s)
 failed=0
 ok() { printf '  ok       %s\n' "$*"; }
-warn() { printf '  missing  %s (optional)\n' "$*"; }
-bad() { printf '  missing  %s (required)\n' "$*"; failed=1; }
+# warn and bad take what is missing and, optionally, the command that
+# installs it. The command gets a line of its own, easy to copy.
+fix() { [ -z "$1" ] || printf '               %s\n' "$1"; }
+warn() { printf '  missing  %s (optional)\n' "$1"; fix "${2:-}"; }
+bad() { printf '  missing  %s (required)\n' "$1"; fix "${2:-}"; failed=1; }
 step() { printf '%s\n' "$*"; }
 run() {
     printf '  running  %s\n' "$*"
@@ -47,11 +54,11 @@ version_ge() {
         exit 0 }'
 }
 
-# The package that provides a system tool, for the "missing" message.
+# The command that installs a system tool, for the "missing" message.
 hint() {
     if [ "$os" = Darwin ]; then
         case $1 in
-            cc | git) echo "run: xcode-select --install" ;;
+            cc | git) echo "xcode-select --install" ;;
             python3) echo "brew install python" ;;
             node) echo "brew install node" ;;
             *) echo "brew install $1" ;;
@@ -67,7 +74,6 @@ hint() {
             rpmsign) echo "apt install rpm" ;;
             gpg) echo "apt install gnupg" ;;
             dpkg-deb) echo "apt install dpkg" ;;
-            nfpm) echo "see .github/scripts/install-packaging-tools.sh" ;;
             *) echo "apt install $1" ;;
         esac
     fi
@@ -86,9 +92,9 @@ fi
 if have rustup; then
     ok "rustup"
 elif $check_only; then
-    bad "rustup: run tools/dev-setup.sh without --check to install it"
+    bad "rustup" "tools/dev-setup.sh"
 else
-    have curl || { bad "curl, to download rustup: $(hint curl)"; exit 1; }
+    have curl || { bad "curl, to download rustup" "$(hint curl)"; exit 1; }
     # The official installer. It adds ~/.cargo/bin to the shell profile.
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
         sh -s -- -y --default-toolchain none
@@ -123,10 +129,11 @@ if have rustup; then
             ok "$label with rustfmt and clippy (needs $need)"
             rust_ready=true
         else
-            bad "Rust $need or newer, have $have_v: run rustup update $channel"
+            bad "Rust $need or newer, have $have_v" "rustup update $channel"
         fi
     else
-        bad "Rust $channel toolchain with rustfmt and clippy"
+        bad "Rust $channel toolchain with rustfmt and clippy" \
+            "rustup toolchain install $channel --profile minimal --component rustfmt --component clippy"
     fi
 fi
 
@@ -139,7 +146,7 @@ if $rust_ready && [ "$os" = Linux ]; then
     if rustup target list --installed --toolchain "$channel" | grep -x "$musl" >/dev/null; then
         ok "target $musl"
     else
-        warn "target $musl, for release builds"
+        warn "target $musl, for release builds" "rustup target add --toolchain $channel $musl"
     fi
 fi
 
@@ -149,41 +156,110 @@ tool_version() {
 }
 
 # A cargo-installed tool at the version CI pins.
-#   cargo_tool CRATE PINNED-VERSION "VERSION-COMMAND" WHAT-FOR
-# A missing tool is installed at the pinned version. A different version is
-# left alone: the message says how to match CI.
+#   cargo_tool CRATE PINNED-VERSION "VERSION-COMMAND" WHAT-FOR [any]
+# A missing tool is installed at the pinned version, and so is one at
+# another version: cargo install replaces it. With "any", whatever version
+# is there stays.
 cargo_tool() {
-    local crate=$1 pin=$2 cmd=$3 why=$4 have_v
+    local crate=$1 pin=$2 cmd=$3 why=$4 any=${5:-} have_v
+    local install="cargo install --locked $crate"
+    [ -n "$any" ] || install="$install --version $pin"
     if [ -z "$pin" ]; then
         warn "$crate: no pinned version found, skipped"
         return
     fi
     have_v=$(tool_version "$cmd")
-    if [ -z "$have_v" ] && $rust_ready && ! $check_only; then
-        run cargo install --locked "$crate" --version "$pin"
+    if [ -n "$have_v" ] && [ -n "$any" ]; then
+        ok "$crate $have_v"
+        return
+    fi
+    if [ "$have_v" != "$pin" ] && $rust_ready && ! $check_only; then
+        run $install
         have_v=$(tool_version "$cmd")
     fi
-    if [ -z "$have_v" ]; then
-        warn "$crate $pin, $why"
+    if [ -z "$have_v" ] && [ -n "$any" ]; then
+        warn "$crate, $why" "$install"
+    elif [ -z "$have_v" ]; then
+        warn "$crate $pin, $why" "$install"
     elif [ "$have_v" = "$pin" ]; then
         ok "$crate $have_v"
     else
-        ok "$crate $have_v (CI uses $pin: cargo install --locked $crate --version $pin)"
+        warn "$crate $pin, have $have_v, $why" "$install"
     fi
 }
 
 nextest_pin=$(sed -n 's/.*cargo-nextest@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
 dist_pin=$(sed -n 's/^cargo-dist-version *= *"\(.*\)"/\1/p' "$root/dist-workspace.toml")
 mdbook_pin=$(sed -n 's/^ *MDBOOK_VERSION: *\([0-9.]*\).*/\1/p' "$root/.github/workflows/site.yml" | sed -n 1p)
-cargo_tool cargo-nextest "$nextest_pin" "cargo nextest --version" "to run the tests as CI does"
-cargo_tool cargo-dist "$dist_pin" "dist --version" "for release builds"
-cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site"
+deny_pin=$(sed -n 's/.*cargo-deny@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
+cargo_tool cargo-nextest "$nextest_pin" "cargo nextest --version" "for tools/ci.sh check"
+cargo_tool cargo-deny "$deny_pin" "cargo deny --version" "for tools/ci.sh deny"
+cargo_tool cargo-dist "$dist_pin" "dist --version" "for release builds and tools/ci.sh release-build"
+cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site" any
+
+# actionlint, for tools/ci.sh workflows. Not a crate: the release binary is
+# downloaded, checked against the SHA-256 below and put next to the cargo
+# tools. To move to a new version, change it in the workflows and replace
+# these lines from actionlint_VERSION_checksums.txt on the release page;
+# tools/tests/test_dev_setup.py holds the two together.
+actionlint_pin=1.7.7
+actionlint_sha256() {
+    case $1 in
+        linux_amd64) echo 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 ;;
+        linux_arm64) echo 401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0 ;;
+        darwin_amd64) echo 28e5de5a05fc558474f638323d736d822fff183d2d492f0aecb2b73cc44584f5 ;;
+        darwin_arm64) echo 2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db ;;
+    esac
+}
+sha256_of() {
+    if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
+}
+# Prints nothing and returns 1 if it cannot install; the caller reports.
+install_actionlint() {
+    local plat want d got rc=0
+    case $(uname -m) in
+        x86_64) plat=amd64 ;;
+        aarch64 | arm64) plat=arm64 ;;
+        *) return 1 ;;
+    esac
+    plat=$(echo "$os" | tr '[:upper:]' '[:lower:]')_$plat
+    want=$(actionlint_sha256 "$plat")
+    [ -n "$want" ] && have curl && have tar || return 1
+    d=$(mktemp -d) || return 1
+    printf '  running  download actionlint %s (%s)\n' "$actionlint_pin" "$plat"
+    if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/a.tar.gz" \
+        "https://github.com/rhysd/actionlint/releases/download/v$actionlint_pin/actionlint_${actionlint_pin}_$plat.tar.gz"; then
+        got=$(sha256_of "$d/a.tar.gz")
+        if [ "$got" = "$want" ]; then
+            mkdir -p "$cargo_bin" && tar -xzf "$d/a.tar.gz" -C "$cargo_bin" actionlint || rc=1
+        else
+            printf '  refused  actionlint download: SHA-256 is %s, expected %s\n' "$got" "$want"
+            rc=1
+        fi
+    else
+        rc=1
+    fi
+    rm -rf "$d"
+    return $rc
+}
+actionlint_v=$(tool_version "actionlint -version")
+if [ "$actionlint_v" != "$actionlint_pin" ] && ! $check_only; then
+    install_actionlint || true
+    actionlint_v=$(tool_version "actionlint -version")
+fi
+if [ -z "$actionlint_v" ]; then
+    warn "actionlint $actionlint_pin, for tools/ci.sh workflows" "tools/dev-setup.sh"
+elif [ "$actionlint_v" = "$actionlint_pin" ]; then
+    ok "actionlint $actionlint_v"
+else
+    warn "actionlint $actionlint_pin, have $actionlint_v, for tools/ci.sh workflows" "tools/dev-setup.sh"
+fi
 
 # ---------------------------------------------------------------- System
 step "System tools (install these with your package manager)"
 
-if have cc; then ok "C compiler (cc)"; else bad "C compiler (cc): $(hint cc)"; fi
-if have git; then ok "git"; else bad "git: $(hint git)"; fi
+if have cc; then ok "C compiler (cc)"; else bad "C compiler (cc)" "$(hint cc)"; fi
+if have git; then ok "git"; else bad "git" "$(hint git)"; fi
 
 # GNU rsync 3.1+, for the comparison test. macOS ships 2.6.9 or openrsync.
 rsync_v=""
@@ -193,7 +269,7 @@ fi
 if [ -n "$rsync_v" ] && version_ge "$rsync_v" 3.1; then
     ok "GNU rsync $rsync_v"
 else
-    bad "GNU rsync 3.1 or newer${rsync_v:+, have $rsync_v}: $(hint rsync)"
+    bad "GNU rsync 3.1 or newer${rsync_v:+, have $rsync_v}" "$(hint rsync)"
 fi
 
 # Python 3.11+ (tomllib), for the release, packaging and site scripts.
@@ -204,13 +280,22 @@ fi
 if [ -n "$py_v" ] && version_ge "$py_v" 3.11; then
     ok "Python $py_v"
 else
-    bad "Python 3.11 or newer${py_v:+, have $py_v}: $(hint python3)"
+    bad "Python 3.11 or newer${py_v:+, have $py_v}" "$(hint python3)"
+fi
+
+# The workflow rule tests (tools/ci.sh workflows) read YAML.
+if have python3 && python3 -c 'import yaml' >/dev/null 2>&1; then
+    ok "PyYAML"
+elif [ "$os" = Darwin ]; then
+    warn "PyYAML, for tools/ci.sh workflows" "python3 -m pip install pyyaml"
+else
+    warn "PyYAML, for tools/ci.sh workflows" "apt install python3-yaml"
 fi
 
 # curl, and a tar that writes and reads .tar.xz, for the tests of the
 # release download (crates/irsync/tests/ssh_release.rs). GNU tar needs the
 # xz program for that; macOS's tar has xz built in.
-if have curl; then ok "curl"; else bad "curl: $(hint curl)"; fi
+if have curl; then ok "curl"; else bad "curl" "$(hint curl)"; fi
 tar_xz_ok() {
     local d rc=0
     d=$(mktemp -d) || return 1
@@ -220,21 +305,33 @@ tar_xz_ok() {
     return $rc
 }
 if ! have tar; then
-    bad "tar: $(hint tar)"
+    bad "tar" "$(hint tar)"
 elif tar_xz_ok; then
     ok "tar with xz"
 else
-    bad "xz, so tar can write and read .tar.xz: $(hint xz)"
+    bad "xz, so tar can write and read .tar.xz" "$(hint xz)"
 fi
 
 if [ "$os" = Linux ]; then
-    if have musl-gcc; then ok "musl-gcc"; else warn "musl-gcc, for release builds: $(hint musl-gcc)"; fi
+    if have musl-gcc; then ok "musl-gcc"; else warn "musl-gcc, for release builds and tools/ci.sh release-build" "$(hint musl-gcc)"; fi
 fi
-if have node && have npx; then ok "node and npx"; else warn "node and npx, for site/serve.sh and site/deploy.sh: $(hint node)"; fi
+if have node && have npx; then ok "node and npx"; else warn "node and npx, for site/serve.sh and site/deploy.sh" "$(hint node)"; fi
 
 if [ "$os" = Linux ]; then
-    for t in nfpm apt-ftparchive createrepo_c rpm rpmsign gpg dpkg-deb; do
-        if have "$t"; then ok "$t"; else warn "$t, for the packaging tests: $(hint "$t")"; fi
+    # nfpm at the version CI installs (.github/scripts/install-packaging-tools.sh).
+    nfpm_pin=$(sed -n 's/^NFPM_VERSION=\([0-9.]*\)$/\1/p' "$root/.github/scripts/install-packaging-tools.sh")
+    nfpm_install="go install github.com/goreleaser/nfpm/v2/cmd/nfpm@${nfpm_pin:+v}${nfpm_pin:-latest}"
+    nfpm_v=$(tool_version "nfpm --version")
+    if ! have nfpm; then
+        warn "nfpm${nfpm_pin:+ $nfpm_pin}, for the packaging tests" "$nfpm_install"
+    elif [ -z "$nfpm_v" ] || [ -z "$nfpm_pin" ] || [ "$nfpm_v" = "$nfpm_pin" ]; then
+        # A build that does not print its version is taken as it is.
+        ok "nfpm${nfpm_v:+ $nfpm_v}"
+    else
+        warn "nfpm $nfpm_pin, have $nfpm_v, for the packaging tests" "$nfpm_install"
+    fi
+    for t in apt-ftparchive createrepo_c rpm rpmsign gpg dpkg-deb; do
+        if have "$t"; then ok "$t"; else warn "$t, for the packaging tests" "$(hint "$t")"; fi
     done
 fi
 
@@ -248,7 +345,7 @@ fi
 if [ "$hooks" = .githooks ]; then
     ok "git hooks from .githooks (formatting checked on push)"
 else
-    warn "git hooks: git config core.hooksPath .githooks"
+    warn "git hooks" "git config core.hooksPath .githooks"
 fi
 
 if [ "$failed" = 0 ]; then

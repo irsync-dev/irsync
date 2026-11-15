@@ -32,15 +32,16 @@ Some tests compare irsync with rsync and need GNU rsync 3.1 or newer on your
 Run the same checks as CI:
 
 ```sh
-cargo test -q --workspace --all-features --no-fail-fast -- --include-ignored
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
+tools/ci.sh check
 ```
 
-`--include-ignored` adds five slow network-fault tests that take several
-minutes. Leave it off while you work on a change.
+It checks formatting, runs clippy and runs every test, including five slow
+network-fault tests that take several minutes. It needs cargo-nextest, which
+`tools/dev-setup.sh` installs. While you work on a change, this is quicker:
+
+```sh
+cargo test -q --workspace --all-features --no-fail-fast
+```
 
 More on the tests, the stress tools and the design records is in
 [Testing](https://irsync.org/book/contributing/testing.html) and the other

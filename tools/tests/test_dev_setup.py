@@ -1,5 +1,6 @@
 """Tests for tools/dev-setup.sh --check, against fake tools on a bare PATH."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -123,6 +124,97 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(out, r"missing +node and npx.*\(optional\)")
         self.assertRegex(out, r"missing +mdbook.*\(optional\)")
         self.assertIn("Ready.", out)
+
+    def test_ci_tools_are_optional_and_named(self):
+        # What tools/ci.sh needs beyond the build: none of it is here.
+        r, out = self.check(python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
+        self.assertEqual(r.returncode, 0, out)
+        for tool in ["cargo-nextest", "cargo-deny", "cargo-dist", "PyYAML", "actionlint"]:
+            self.assertRegex(out, rf"missing +{tool}.*tools/ci\.sh.*\(optional\)")
+
+    def test_ci_tools_found(self):
+        r, out = self.check(actionlint=f"echo {self.actionlint_pin()}; echo 'installed by building from source'",
+                            cargo='[ "$1" = deny ] && echo "cargo-deny 0.1.0"',
+                            mdbook="echo mdbook v0.0.1")
+        self.assertRegex(out, r"ok +PyYAML")
+        self.assertRegex(out, rf"ok +actionlint {re.escape(self.actionlint_pin())}")
+        # Another version than CI's is reported, with the one CI uses.
+        self.assertRegex(out, r"missing +cargo-deny \d+\.\d+\.\d+, have 0\.1\.0.*\(optional\)")
+        # Any mdbook will do.
+        self.assertRegex(out, r"ok +mdbook 0\.0\.1\n")
+
+    def test_another_actionlint_version_is_reported(self):
+        r, out = self.check(actionlint="echo 0.0.1")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"missing +actionlint \S+, have 0\.0\.1.*\(optional\)")
+
+    def actionlint_pin(self):
+        with open(SCRIPT) as f:
+            return re.search(r"^actionlint_pin=(\S+)$", f.read(), re.M).group(1)
+
+    def test_actionlint_pin_matches_the_workflows(self):
+        with open(SCRIPT) as f:
+            script = f.read()
+        amd64 = re.search(r"linux_amd64\) echo ([0-9a-f]{64}) ;;", script).group(1)
+        for wf in ["ci.yml", "release-tooling.yml"]:
+            with open(os.path.join(ROOT, ".github", "workflows", wf)) as f:
+                text = f.read()
+            self.assertIn(f"ACTIONLINT_VERSION: {self.actionlint_pin()}\n", text, wf)
+            self.assertIn(f"ACTIONLINT_SHA256: {amd64}\n", text, wf)
+
+    def setup(self, **tools):
+        """Runs the script without --check, with a cargo that records its calls."""
+        log = os.path.join(self.tmp, "cargo.log")
+        for name, body in {**GOOD, **tools}.items():
+            self.fake(name, body)
+        self.fake("cargo", f'echo "$*" >> {log}\n' + tools.get("cargo", "") + "\nexit 0")
+        for u in ["sha256sum", "shasum", "mkdir"]:
+            if shutil.which(u):
+                os.symlink(shutil.which(u), os.path.join(self.bin, u))
+        r = subprocess.run([SCRIPT], env={"PATH": self.bin, "HOME": self.tmp},
+                           capture_output=True, text=True)
+        calls = ""
+        if os.path.exists(log):
+            with open(log) as f:
+                calls = f.read()
+        return r.stdout + r.stderr, calls
+
+    def test_setup_replaces_another_version_but_keeps_any_mdbook(self):
+        out, calls = self.setup(cargo='[ "$1" = deny ] && echo "cargo-deny 0.1.0"',
+                                mdbook="echo mdbook v0.0.1",
+                                curl="exit 22")
+        self.assertRegex(calls, r"install --locked cargo-deny --version \d+\.\d+\.\d+\n")
+        self.assertRegex(calls, r"install --locked cargo-nextest --version")
+        self.assertNotIn("mdbook", calls)
+
+    def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
+        out, calls = self.setup(curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+        self.assertRegex(out, r"refused +actionlint download: SHA-256 is")
+        self.assertRegex(out, r"missing +actionlint")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", "actionlint")))
+
+    def test_install_commands_get_their_own_line(self):
+        r, out = self.check(cc=None)
+        lines = out.splitlines()
+        i = next(n for n, l in enumerate(lines) if "C compiler" in l)
+        self.assertRegex(lines[i], r"^  missing  C compiler \(cc\) \(required\)$")
+        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install)$")
+        self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"
+                              r" {15}cargo install --locked cargo-deny --version \S+\n")
+        # No version for mdbook: any will do.
+        self.assertRegex(out, r"missing  mdbook, .*\n {15}cargo install --locked mdbook\n")
+
+    @unittest.skipUnless(os.uname().sysname == "Linux", "the packaging tools are checked on Linux only")
+    def test_nfpm_is_held_to_the_ci_version(self):
+        with open(os.path.join(ROOT, ".github", "scripts", "install-packaging-tools.sh")) as f:
+            pin = re.search(r"^NFPM_VERSION=(\S+)$", f.read(), re.M).group(1)
+        install = rf" {{15}}go install github\.com/goreleaser/nfpm/v2/cmd/nfpm@v{re.escape(pin)}\n"
+        r, out = self.check()
+        self.assertRegex(out, rf"missing  nfpm {re.escape(pin)}, for the packaging tests \(optional\)\n" + install)
+        r, out = self.check(nfpm="echo 0.0.1")
+        self.assertRegex(out, rf"missing  nfpm {re.escape(pin)}, have 0\.0\.1, .*\n" + install)
+        r, out = self.check(nfpm=f"echo {pin}")
+        self.assertRegex(out, rf"ok +nfpm {re.escape(pin)}\n")
 
     def test_old_rust_is_refused(self):
         r, out = self.check(rustup="""case "$1 $2" in
