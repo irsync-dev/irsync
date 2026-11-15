@@ -205,6 +205,16 @@ class AttestationTests(unittest.TestCase):
             for k, v in self.WRITE.items():
                 self.assertEqual(perms.get(k), v)
 
+    def test_every_release_file_attested(self):
+        # By default dist attests only the per-target archives; the installer,
+        # the Homebrew formula and the checksum files go unattested. In the
+        # host phase it attests everything it is about to publish.
+        self.assertEqual(dist_config()["dist"].get("github-attestations-phase"), "host")
+        host = jobs(load_workflows()["release.yml"])["host"]
+        steps = [s for s in host["steps"] if step_uses(s, self.ATTEST)]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["with"]["subject-path"].strip(), "artifacts/*")
+
     def test_packages_attested_not_uploaded(self):
         self.assertNotIn("gh release upload", read("packages.yml"))
         job = jobs(load_workflows()["packages.yml"])["packages"]
