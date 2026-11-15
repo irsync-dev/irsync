@@ -37,9 +37,10 @@
           </p>
           <ul class="mt-5 flex max-w-[36em] flex-col gap-2">
             <li>
-              <strong class="font-display text-label font-bold">No open ports.</strong>
+              <strong class="font-display text-label font-bold">No open ports</strong>, powered by <a href="https://www.iroh.computer/">iroh</a>.
               The two machines find each other through NATs and firewalls, and
-              use a relay only when there is no direct path.
+              use a relay only when there is no direct path. More in
+              <a href="book/how-to/direct-and-relay.html">Direct or relay</a>.
             </li>
             <li>
               <strong class="font-display text-label font-bold">Survives network changes.</strong>
@@ -47,7 +48,8 @@
             </li>
             <li>
               <strong class="font-display text-label font-bold">Encrypted end to end.</strong>
-              Each side talks only to the keys it was given.
+              Each side talks only to the keys it was given. More in
+              <a href="book/explanation/identity-and-trust.html">Identity and trust</a>.
             </li>
           </ul>
           <p class="mt-6 flex flex-wrap gap-3">
@@ -117,8 +119,7 @@
             <p class="mt-2 text-small text-muted">
               Traffic is encrypted end to end. The client only connects to the
               server key it was given, and the server only lets in keys it has
-              granted. More in
-              <a href="book/explanation/identity-and-trust.html">Identity and trust</a>.
+              granted.
             </p>
           </div>
           <div>
@@ -127,8 +128,7 @@
               When no direct connection is possible, the encrypted traffic passes
               through a relay server, which cannot read it. By default that is a
               public relay run by n0, the developers of iroh. Run your own, or
-              refuse relays with <code>--no-relay</code>. More in
-              <a href="book/how-to/direct-and-relay.html">Direct or relay</a>.
+              refuse relays with <code>--no-relay</code>.
             </p>
           </div>
         </div>
