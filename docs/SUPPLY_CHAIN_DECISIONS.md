@@ -112,6 +112,4 @@ differ, the code is what shipped.
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
   spec's non-goals.
-- The apt/dnf key fingerprint goes into `SECURITY.md` with the first stable
-  release.
 - The SQLite exception (decision 9).

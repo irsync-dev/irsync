@@ -29,6 +29,12 @@ release can't be changed. To check a download, see
 [Verify a download](https://irsync.org/book/how-to/verify-a-download.html).
 
 The apt and dnf repositories at dist.irsync.org are signed by the key
-`irsync releases <releases@irsync.org>`. Its fingerprint will be listed here
-with the first stable release.
+`irsync releases <releases@irsync.org>`, with this fingerprint:
+
+```
+58A0 F740 B554 8CE7 3D16  1CCD ABDF 7107 434D F0E0
+```
+
+The signatures come from a signing subkey of that key. The primary key is
+kept offline.
 
