@@ -1,6 +1,6 @@
 # Adds GitHub's list of changes to a release's notes, under "## What's
-# changed" (see .github/scripts/release-notes.sh). Release-gate.yml and
-# release-resume.yml call this; it is never started on its own. Safe to run
+# changed" (see .github/scripts/release-notes.sh). Release-resume.yml
+# calls this; it is never started on its own. Safe to run
 # again: it does nothing if the heading is already there.
 
 name: Release notes
