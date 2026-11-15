@@ -25,15 +25,25 @@ seconds, before the tests. Nothing is published.
    ```
 
    It sets the version in `Cargo.toml` (`[workspace.package]`) and
-   `packaging/dist/dist.toml`, updates `Cargo.lock` to match, and commits the
-   three files as `Release v1.2.3`. It doesn't push or tag. It prints the
-   commands for the next steps.
-2. Push to `main`: `git push origin main`.
-3. Wait for CI on `main` to go green. That includes the `release build` jobs,
-   which run the Linux release build the way the release will.
-4. Tag the commit and push the tag. Use an annotated tag (`-a`):
+   `packaging/dist/dist.toml`, and updates `Cargo.lock` to match. It commits
+   the three files as `Release v1.2.3` on a new branch, `release-v1.2.3`.
+   It doesn't push or tag. It prints the commands for the next steps.
+2. Open a pull request. `main` only takes changes through one:
 
    ```sh
+   git push -u origin release-v1.2.3
+   gh pr create --fill
+   ```
+
+3. Wait for its `CI result` check to pass. That includes the `release build`
+   jobs, which run the Linux release build the way the release will. Then
+   merge it: `gh pr merge --merge`.
+4. Tag the merged commit on `main` and push the tag. Use an annotated tag
+   (`-a`). The tag can't be moved or deleted once pushed, so check that
+   `main` holds the new version first:
+
+   ```sh
+   git switch main && git pull --ff-only
    git tag -a v1.2.3 -m "irsync 1.2.3"
    git push origin v1.2.3
    ```

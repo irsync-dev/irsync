@@ -4,8 +4,10 @@
 # Prepares a release commit: sets <version> (for example 1.2.3 or
 # 1.2.3-beta.1, without a "v") in Cargo.toml ([workspace.package]) and in
 # packaging/dist/dist.toml, updates Cargo.lock to match, and commits the three
-# files as "Release v<version>". It does not push or tag: push to main, wait
-# for CI to go green, then tag. The script prints those commands at the end.
+# files as "Release v<version>" on a new branch, release-v<version>. main only
+# takes changes through a pull request, so it does not push or tag: open the
+# pull request, merge it once "CI result" passes, then tag the merged commit
+# on main. The script prints those commands at the end.
 #
 # Run it anywhere in the repo, with no uncommitted changes to tracked files.
 set -euo pipefail
@@ -28,6 +30,12 @@ fi
 
 if "$check" --versions "$tag" >/dev/null 2>&1; then
     echo "error: the version is already $version." >&2
+    exit 1
+fi
+
+branch="release-$tag"
+if git rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
+    echo "error: the branch $branch already exists." >&2
     exit 1
 fi
 
@@ -57,14 +65,18 @@ EOF
 cargo update --workspace --quiet
 cargo metadata --locked --format-version 1 >/dev/null
 
+git switch --quiet -c "$branch"
 git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock packaging/dist/dist.toml
 git log --oneline -1
 
 cat <<EOF
 
 Next:
-  git push origin main
-  # wait for CI on main to go green, then:
+  git push -u origin $branch
+  gh pr create --fill
+  # once "CI result" passes:
+  gh pr merge --merge
+  git switch main && git pull --ff-only
   git tag -a $tag -m "irsync $version"
   git push origin $tag
 EOF
