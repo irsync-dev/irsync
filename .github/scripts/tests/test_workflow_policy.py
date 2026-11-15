@@ -250,6 +250,17 @@ class EnvironmentTests(unittest.TestCase):
         call = triggers(load_workflows()["packages.yml"])["workflow_call"]
         self.assertNotIn("secrets", call)
 
+    def test_release_env_callers_inherit_secrets(self):
+        # A called workflow's job sees its environment's secrets only when the
+        # caller passes `secrets: inherit`: without it they arrive empty (seen
+        # on the v0.1.0-beta.2 resume dry run).
+        for name in ["release-gate.yml", "release-resume.yml"]:
+            for job_id, job in jobs(load_workflows()[name]).items():
+                target = job.get("uses", "")
+                if target in ("./.github/workflows/packages.yml",
+                              "./.github/workflows/publish-homebrew.yml"):
+                    self.assertEqual(job.get("secrets"), "inherit", f"{name}: {job_id}")
+
     def test_cloudflare_pub_in_site_env(self):
         wf = load_workflows()["site.yml"]
         found = False

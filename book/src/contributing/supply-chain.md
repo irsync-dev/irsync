@@ -19,7 +19,8 @@ maintainer can do. Why each choice was made is in
 - The signing key and the tokens for the packages repo and the Homebrew tap
   live in the `release` environment. It opens only for jobs running on a
   `v*` tag, and only after a maintainer approves. A change merged to `main`
-  can't reach them.
+  can't reach them. No secret is stored repo-wide; the settings check
+  reports one if it appears.
 - The Cloudflare tokens live in the `site` environment, which opens only
   for runs on `main`.
 - Every Action is pinned to a commit, not a version tag its owner could

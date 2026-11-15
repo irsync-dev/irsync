@@ -159,6 +159,10 @@ jobs:
     uses: ./.github/workflows/packages.yml
     with:
       tag: ${{ github.ref_name }}
+    # Environment secrets reach a called workflow's job only with `inherit`.
+    # No secret is stored repo-wide, so nothing else comes along
+    # (tools/github_settings.py checks that).
+    secrets: inherit
     permissions:
       contents: read
       id-token: write
@@ -172,6 +176,10 @@ jobs:
     uses: ./.github/workflows/publish-homebrew.yml
     with:
       tag: ${{ github.ref_name }}
+    # Environment secrets reach a called workflow's job only with `inherit`.
+    # No secret is stored repo-wide, so nothing else comes along
+    # (tools/github_settings.py checks that).
+    secrets: inherit
     permissions:
       contents: read
 

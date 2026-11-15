@@ -40,6 +40,10 @@ def desired(maintainer_id):
             "immutable_releases": True,
             # Needed by dependency review in ci.yml. No API turns it on.
             "dependency_graph": True,
+            # Every Actions secret lives in an environment. The release gate
+            # calls packages.yml and publish-homebrew.yml with
+            # `secrets: inherit`, so a repo-wide secret would reach them.
+            "repo_wide_secrets": [],
             "environments": {
                 "release": {"policies": [{"name": "v*", "type": "tag"}],
                             "reviewers": [maintainer_id],
@@ -157,6 +161,8 @@ def fetch(repo):
     state["actions"] = gh(f"repos/{repo}/actions/permissions")
     imm = gh(f"repos/{repo}/immutable-releases", ok_missing=True)
     state["immutable_releases"] = bool(imm and imm.get("enabled"))
+    state["repo_wide_secrets"] = sorted(
+        s["name"] for s in (gh(f"repos/{repo}/actions/secrets") or {}).get("secrets", []))
     # The SBOM endpoint answers only while the dependency graph is on.
     state["dependency_graph"] = gh(f"repos/{repo}/dependency-graph/sbom",
                                    ok_missing=True) is not None
@@ -199,6 +205,11 @@ def apply(repo, want):
             gh(f"repos/{repo}/automated-security-fixes", "-X", "PUT")
     if "actions" in want:
         gh(f"repos/{repo}/actions/permissions", "-X", "PUT", body=want["actions"])
+    if want.get("repo_wide_secrets") == []:
+        extra = (gh(f"repos/{repo}/actions/secrets") or {}).get("secrets", [])
+        if extra:
+            print(f"{repo}: move these secrets into an environment and delete them "
+                  f"repo-wide (not done automatically): {', '.join(s['name'] for s in extra)}")
     if want.get("immutable_releases"):
         gh(f"repos/{repo}/immutable-releases", "-X", "PUT")
     if want.get("dependency_graph") and gh(f"repos/{repo}/dependency-graph/sbom",
