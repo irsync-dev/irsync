@@ -2,98 +2,123 @@
    compiles into style.css. Only the classes used in index.html and 404.html
    are kept.
 
-   Every colour, size, space and radius comes from the design tokens
-   (tokens.css, generated from tokens.json): the Tailwind theme and the one
-   daisyUI theme below refer to the --ir-* properties instead of holding
-   values of their own. tokens.css switches those properties between light
-   and dark, so the daisyUI theme needs no dark twin. */
+   The look comes from network cabling: the colours of fibre-optic cable
+   jackets (aqua multimode for the route and every action, single-mode
+   yellow kept for the beta warning only) on cool, deep-navy ink. Headings
+   and controls are set in a DIN-style face, like the labels on a patch
+   panel; running text in a book serif; commands in monospace. No font files
+   ship: each family is a stack of faces the systems already have. */
 
 @import "tailwindcss" source(none);
 @source "./index.html";
 @source "./404.html";
+
+/* The palette, light first, swapped for dark by the system setting. */
+:root {
+  color-scheme: light dark;
+  --site-ground: #f2f5f6;
+  --site-raised: #ffffff;
+  --site-rule: #ccd6db;
+  --site-ink: #13222c;
+  --site-muted: #4f616c;
+  --site-aqua: #00a6b4;
+  --site-aqua-ink: #00707b;
+  --site-on-aqua: #ffffff;
+  --site-signal: #f6c700;
+  --site-on-signal: #13222c;
+  --site-term: #13222c;
+  --site-term-ink: #dde7eb;
+  --site-term-muted: #8da3ae;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --site-ground: #0e1920;
+    --site-raised: #15242d;
+    --site-rule: #263943;
+    --site-ink: #e2ebee;
+    --site-muted: #96a9b3;
+    --site-aqua: #2cc4d1;
+    --site-aqua-ink: #5ed6e0;
+    --site-on-aqua: #0e1920;
+    --site-term: #081116;
+    --site-term-muted: #7f949f;
+  }
+}
 
 @plugin "daisyui" {
   themes: false;
   logs: false;
 }
 
+/* One daisyUI theme on the palette above; it needs no dark twin because
+   the properties it refers to change with the system setting. */
 @plugin "daisyui/theme" {
   name: "irsync";
   default: true;
   prefersdark: false;
-  color-scheme: dark light;
+  color-scheme: light dark;
 
-  --color-base-100: var(--ir-surface);
-  --color-base-200: var(--ir-surface-raised);
-  --color-base-300: var(--ir-line);
-  --color-base-content: var(--ir-ink);
-  --color-primary: var(--ir-accent);
-  --color-primary-content: var(--ir-on-accent);
-  --color-secondary: var(--ir-accent-soft);
-  --color-secondary-content: var(--ir-accent);
-  --color-accent: var(--ir-accent);
-  --color-accent-content: var(--ir-on-accent);
-  --color-neutral: var(--ir-surface-raised);
-  --color-neutral-content: var(--ir-ink);
-  --color-info: var(--ir-accent);
-  --color-info-content: var(--ir-on-accent);
-  --color-success: var(--ir-accent);
-  --color-success-content: var(--ir-on-accent);
-  --color-warning: var(--ir-warn);
-  --color-warning-content: var(--ir-surface);
-  --color-error: var(--ir-danger);
-  --color-error-content: var(--ir-surface);
+  --color-base-100: var(--site-ground);
+  --color-base-200: var(--site-raised);
+  --color-base-300: var(--site-rule);
+  --color-base-content: var(--site-ink);
+  --color-primary: var(--site-aqua-ink);
+  --color-primary-content: var(--site-on-aqua);
+  --color-secondary: var(--site-aqua);
+  --color-secondary-content: var(--site-on-aqua);
+  --color-accent: var(--site-aqua);
+  --color-accent-content: var(--site-on-aqua);
+  --color-neutral: var(--site-term);
+  --color-neutral-content: var(--site-term-ink);
+  --color-info: var(--site-aqua-ink);
+  --color-info-content: var(--site-on-aqua);
+  --color-success: var(--site-aqua-ink);
+  --color-success-content: var(--site-on-aqua);
+  --color-warning: var(--site-signal);
+  --color-warning-content: var(--site-on-signal);
+  --color-error: #c8322b;
+  --color-error-content: #ffffff;
 
-  --radius-selector: var(--ir-radius-sm);
-  --radius-field: var(--ir-radius-md);
-  --radius-box: var(--ir-radius-lg);
-  --size-selector: var(--ir-space-1);
-  --size-field: var(--ir-space-1);
+  --radius-selector: 2px;
+  --radius-field: 2px;
+  --radius-box: 4px;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
   --border: 1px;
   --depth: 0;
   --noise: 0;
 }
 
-/* Tailwind's scales, taken from the tokens. Spacing: the tokens are
-   multiples of 4px, and so is Tailwind's scale, so p-3 is --ir-space-3. */
 @theme {
-  --spacing: var(--ir-space-1);
+  --font-display: "DIN Alternate", Bahnschrift, "D-DIN", "DIN 2014", "Barlow Semi Condensed",
+    "Franklin Gothic Medium", "Arial Narrow", sans-serif-condensed, sans-serif;
+  --font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 
-  --font-sans: var(--ir-font-sans);
-  --font-mono: var(--ir-font-mono);
+  --color-muted: var(--site-muted);
+  --color-aqua: var(--site-aqua);
+  --color-link: var(--site-aqua-ink);
+  --color-signal: var(--site-signal);
+  --color-on-signal: var(--site-on-signal);
+  --color-term: var(--site-term);
+  --color-term-ink: var(--site-term-ink);
+  --color-term-muted: var(--site-term-muted);
 
-  --radius-sm: var(--ir-radius-sm);
-  --radius-md: var(--ir-radius-md);
-  --radius-lg: var(--ir-radius-lg);
-
-  --text-display: var(--ir-display-size);
-  --text-display--line-height: var(--ir-display-line);
-  --text-display--font-weight: var(--ir-display-weight);
-  --text-display--letter-spacing: var(--ir-display-tracking);
-  --text-heading: var(--ir-heading-size);
-  --text-heading--line-height: var(--ir-heading-line);
-  --text-heading--font-weight: var(--ir-heading-weight);
-  --text-body: var(--ir-body-size);
-  --text-body--line-height: var(--ir-body-line);
-  --text-body--font-weight: var(--ir-body-weight);
-  --text-caption: var(--ir-caption-size);
-  --text-caption--line-height: var(--ir-caption-line);
-  --text-caption--font-weight: var(--ir-caption-weight);
-  --text-code: var(--ir-code-size);
-  --text-code--line-height: var(--ir-code-line);
-  --text-code--font-weight: var(--ir-code-weight);
-  --text-code-small: var(--ir-code-small-size);
-  --text-code-small--line-height: var(--ir-code-small-line);
-  --text-code-small--font-weight: var(--ir-code-small-weight);
-
-  /* Token colours daisyUI has no name for. */
-  --color-ink-muted: var(--ir-ink-muted);
-  --color-line-strong: var(--ir-line-strong);
-  --color-accent-soft: var(--ir-accent-soft);
-  --color-warn-soft: var(--ir-warn-soft);
-  --color-link: var(--ir-link);
-
-  --shadow-lg: var(--ir-shadow-lg);
+  /* A scale on a perfect fourth (4:3) from a 17px body. */
+  --text-lede: 1.3125rem;
+  --text-lede--line-height: 1.5;
+  --text-body: 1.0625rem;
+  --text-body--line-height: 1.6;
+  --text-small: 0.9375rem;
+  --text-small--line-height: 1.55;
+  --text-label: 1rem;
+  --text-label--line-height: 1.25;
+  --text-heading: 1.75rem;
+  --text-heading--line-height: 1.15;
+  --text-display: clamp(2.75rem, 7vw, 5rem);
+  --text-display--line-height: 1;
+  --text-display--letter-spacing: -0.01em;
 }
 
 @layer base {
@@ -103,66 +128,63 @@
   }
 
   body {
-    @apply bg-base-100 font-sans text-body text-base-content;
+    @apply bg-base-100 font-serif text-body text-base-content antialiased;
   }
 
-  h1 {
-    @apply text-display;
-  }
-
-  h2 {
-    @apply text-heading;
-  }
-
+  h1,
+  h2,
   h3 {
-    @apply text-body font-semibold;
+    @apply font-display font-bold;
   }
 
   code,
   pre {
-    @apply font-mono text-code;
+    @apply font-mono text-[0.875em];
   }
 
   a {
-    @apply rounded-sm text-link;
+    @apply text-link underline decoration-1 underline-offset-[3px];
   }
 
   a:hover {
-    @apply underline;
+    @apply decoration-2;
   }
 
-  /* A link inside running text is always underlined. */
-  p a {
-    @apply underline underline-offset-2;
-  }
-
-  a:focus-visible,
-  button:focus-visible {
-    outline: 2px solid transparent;
-    box-shadow: var(--ir-focus-ring);
+  :focus-visible {
+    outline: 2px solid var(--site-aqua-ink);
+    outline-offset: 3px;
   }
 }
 
 @layer components {
-  /* A command in a terminal frame. A long command wraps inside the frame, so
-     all of it can be read on a narrow screen; the copy button, added by the
-     script in index.html, stays in the frame's top right corner. */
+  /* A command on a dark terminal strip, in both themes. A long command
+     wraps inside the strip, so all of it can be read on a narrow screen;
+     the copy button, added by the script in index.html, stays at the top
+     right. */
   .cmd {
-    @apply flex items-start gap-3 rounded-box border border-base-300 bg-base-200 py-3 pr-3 pl-4;
+    @apply flex items-start gap-3 rounded-box bg-term py-3 pr-3 pl-4 text-term-ink;
   }
 
   .cmd pre {
-    @apply min-w-0 flex-1 py-1 whitespace-pre-wrap wrap-anywhere;
+    @apply min-w-0 flex-1 py-1 text-[0.9375rem] leading-relaxed whitespace-pre-wrap wrap-anywhere;
   }
 
   .cmd .prompt {
-    @apply text-ink-muted select-none;
+    @apply text-term-muted select-none;
   }
 }
 
-/* Small secondary text under a command or a paragraph, with its link. A
-   utility rather than a component, so that variants such as [&_p]:note
-   work. */
-@utility note {
-  @apply text-code text-ink-muted;
+/* Station on the route: the numbered circle at the left of each step, and
+   the aqua line that joins it to the next one. */
+@utility station {
+  @apply relative pb-10 pl-14 last:pb-0;
+
+  &::before {
+    content: "";
+    @apply absolute top-9 bottom-0 left-[15px] w-1 bg-aqua;
+  }
+
+  &:last-child::before {
+    @apply hidden;
+  }
 }

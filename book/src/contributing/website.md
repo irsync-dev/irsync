@@ -10,7 +10,7 @@ landing page at `/` and this book at `/book/`.
 | `site/index.html`, `site/404.html`, `site/robots.txt`, `site/_headers`, `site/install.sh` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
 | `site/tailwind.css` | The landing page's stylesheet: the Tailwind CSS and daisyUI source that the build compiles into `style.css`. |
 | `site/package.json`, `site/package-lock.json` | The npm packages the stylesheet is built with, pinned. Not deployed. |
-| `site/tokens.json` | The design tokens: colours, type, spacing, radius, shadow. |
+| `site/tokens.json` | The book's design tokens: colours, type, spacing, radius, shadow. |
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
@@ -21,20 +21,35 @@ landing page at `/` and this book at `/book/`.
 `site/tokens.json` is a verbatim copy of the design system's
 `project/tokens.json`. To take a new version, replace the file with the
 design system's file; do not edit it by hand. The build turns it into CSS
-custom properties named `--ir-*`, twice: `book/theme/tokens.css` (git-ignored)
-keyed on mdbook's theme class, and `tokens.css` next to the landing page
-keyed on its `data-theme` attribute. Every colour, font stack, spacing,
-radius and shadow on the site comes from these properties.
+custom properties named `--ir-*` in `book/theme/tokens.css` (git-ignored),
+keyed on mdbook's theme class. Every colour, font stack, spacing, radius and
+shadow in the book comes from these properties.
+
+The landing page no longer uses these tokens; it has its own design, which
+the book is meant to take over later.
+
+## The landing page design
 
 The landing page is styled with [Tailwind CSS](https://tailwindcss.com/)
-and [daisyUI](https://daisyui.com/). `site/tailwind.css` maps both onto the
-tokens: Tailwind's spacing, radius, font and text-size scales, and one daisyUI
-theme, `irsync`, whose colours (`base-100`, `primary`, `warning` and so on)
-are `--ir-*` properties. Token colours with no daisyUI name are Tailwind
-colours of their own: `ink-muted`, `line-strong`, `accent-soft`, `warn-soft`
-and `link`. Write `text-ink-muted` or `bg-base-200`, not a raw colour. The
-daisyUI theme has no dark twin: `tokens.css` switches the properties it
-refers to between light and dark.
+and [daisyUI](https://daisyui.com/), from `site/tailwind.css`. Its look comes
+from network cabling: deep navy ink, aqua (the jacket colour of multimode
+fibre) for the route through the steps and for every link and button, and
+single-mode yellow kept for the beta warning only.
+
+- **Colours** are the `--site-*` properties at the top of
+  `site/tailwind.css`, light first and swapped for dark by the system
+  setting. One daisyUI theme, `irsync`, refers to them, so it needs no dark
+  twin. Colours with no daisyUI name are Tailwind colours of their own:
+  `muted`, `aqua`, `link`, `signal`, `on-signal` and the `term` colours of
+  the command strips. Write `text-muted` or `bg-base-200`, not a raw colour.
+- **Type** is three system font stacks, no font files: a DIN-style face
+  (`font-display`: DIN Alternate on macOS, Bahnschrift on Windows) for
+  headings and controls, a book serif (`font-serif`: Charter, Sitka Text,
+  Cambria) for running text, and monospace for commands. Text sizes are the
+  named steps `text-display`, `text-heading`, `text-lede`, `text-body`,
+  `text-small` and `text-label`.
+- **The route.** The steps under Get started are stations on one aqua line
+  (the `station` utility); keep it for content that really is a sequence.
 
 ## Building
 
@@ -44,7 +59,7 @@ The build needs mdbook, Python 3 and Node.js with npm:
 site/build.sh
 ```
 
-It empties `target/site/`, generates the token CSS, builds the book into
+It empties `target/site/`, generates the book's token CSS, builds the book into
 `target/site/book/`, copies the landing page files into `target/site/` and
 compiles `site/tailwind.css` into `target/site/style.css`. Tailwind keeps
 only the classes that `site/index.html` and `site/404.html` use. The
@@ -53,7 +68,8 @@ build runs `npm ci` there first when it is missing or older than
 `site/package-lock.json`. To move to newer versions, change them in
 `site/package.json` and run `npm install` in `site/`, which updates the lock
 file.
-No font files ship: the site uses the system font stacks from the tokens. The
+
+No font files ship: the site uses system font stacks. The
 empty `book/theme/fonts/fonts.css` keeps mdbook from copying its web fonts,
 and the build removes that stylesheet and its link from every book page.
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,

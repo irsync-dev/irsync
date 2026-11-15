@@ -44,9 +44,6 @@ for f in index.html 404.html robots.txt _headers install.sh; do
   cp "$root/site/$f" "$out/"
 done
 
-# The landing page takes its tokens from a data-theme attribute.
-tokens --light "[data-theme=light]" --dark "[data-theme=dark]" -o "$out/tokens.css"
-
 # Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in
 # site/package-lock.json, compile site/tailwind.css into style.css. npm ci
 # runs only when site/node_modules is missing or older than the lock file.

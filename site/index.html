@@ -3,41 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="light dark" />
     <title>irsync</title>
     <meta
       name="description"
       content="irsync: peer-to-peer file and directory sync in the spirit of rsync that adapts to any network topology and survives connection drops without restarting."
     />
-    <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body class="mx-auto max-w-[960px] p-4 min-[720px]:px-8 min-[720px]:pb-8">
+  <body class="mx-auto max-w-[1040px] px-5 pb-12 sm:px-10">
     <header>
-      <nav
-        aria-label="Site"
-        class="mb-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-base-300 pb-3 font-mono text-code"
-      >
+      <nav aria-label="Site" class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-6 font-display">
         <p class="flex items-center gap-3">
-          <a class="font-semibold text-base-content no-underline" href="./">irsync</a>
-          <span class="badge badge-sm border-0 bg-warn-soft font-mono text-caption text-warning">beta</span>
+          <a class="text-[1.625rem] leading-none font-bold text-base-content no-underline" href="./">irsync</a>
+          <span class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-bold text-on-signal">beta</span>
         </p>
-        <ul class="flex flex-wrap gap-x-4 gap-y-1">
-          <li><a class="text-ink-muted hover:text-base-content" href="book/">documentation</a></li>
-          <li>
-            <a class="text-ink-muted hover:text-base-content" href="https://github.com/irsync-dev/irsync">source</a>
-          </li>
+        <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
+          <li><a class="text-base-content no-underline hover:underline" href="book/">Documentation</a></li>
+          <li><a class="text-base-content no-underline hover:underline" href="https://github.com/irsync-dev/irsync">Source</a></li>
         </ul>
       </nav>
     </header>
 
-    <main class="flex flex-col gap-6">
-      <p
-        class="alert mb-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-field border-warning bg-warn-soft px-3 py-2 text-code text-base-content"
-        role="note"
-      >
-        <strong class="font-mono font-semibold text-warning">Beta</strong>
-        <span>
+    <main>
+      <p class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-l-4 border-signal py-1 pl-4 text-small" role="note">
+        <strong class="font-display text-label font-bold">Beta</strong>
+        <span class="max-w-[62ch]">
           Approaching the first stable release. The command line and the
           protocol may still change, based on correctness testing, performance
           measurements and user feedback. Keep another copy of anything you sync
@@ -45,188 +36,166 @@
         </span>
       </p>
 
-      <section class="flex flex-col gap-3" aria-labelledby="headline">
-        <h1 id="headline">
-          <strong>irsync:</strong> Resilient file sync over any network topology
+      <section class="pt-14 pb-16 sm:pt-20" aria-labelledby="headline">
+        <h1 id="headline" class="max-w-[17ch] text-display">
+          Resilient file sync over any network topology
         </h1>
-        <p class="max-w-[44em]">
-          Peer-to-peer file and directory sync in the spirit of rsync that
-          adapts to any network topology and survives connection drops without
-          restarting.
-        </p>
-        <p class="max-w-[44em]">
-          Move files and full directory trees directly between devices without
-          configuring firewalls, port forwarding, or static IPs. Built on iroh,
-          transfers punch through NATs, fall back to relays when needed, and
-          handle network switches mid-stream. If a connection drops, the
-          transfer picks up at the exact byte where it stopped.
-        </p>
-        <p class="flex flex-wrap gap-2 pt-1">
-          <a class="btn btn-sm btn-primary text-code font-semibold no-underline" href="book/tutorial/first-sync.html"
-            >Your first sync</a
-          >
+        <div class="mt-8 flex max-w-[34em] flex-col gap-4">
+          <p class="text-lede">
+            Peer-to-peer file and directory sync in the spirit of rsync that
+            adapts to any network topology and survives connection drops without
+            restarting.
+          </p>
+          <p>
+            Move files and full directory trees directly between devices without
+            configuring firewalls, port forwarding, or static IPs. Built on iroh,
+            transfers punch through NATs, fall back to relays when needed, and
+            handle network switches mid-stream. If a connection drops, the
+            transfer picks up at the exact byte where it stopped.
+          </p>
+        </div>
+        <p class="mt-8 flex flex-wrap gap-3">
+          <a class="btn btn-primary h-auto px-5 py-3 font-display text-label font-bold no-underline" href="book/tutorial/first-sync.html">Your first sync</a>
           <a
-            class="btn btn-sm btn-outline border-line-strong text-code font-medium text-base-content no-underline hover:bg-base-200"
+            class="btn btn-outline h-auto border-2 border-current px-5 py-3 font-display text-label font-bold text-base-content no-underline hover:bg-base-200"
             href="book/introduction.html"
-            >Introduction</a
-          >
-          <a
-            class="btn btn-sm btn-outline border-line-strong text-code font-medium text-base-content no-underline hover:bg-base-200"
-            href="book/reference/limitations.html"
-            >Known limitations</a
+            >Read the introduction</a
           >
         </p>
       </section>
 
-      <ol class="grid grid-cols-[minmax(0,1fr)] gap-4">
-        <li class="flex flex-col gap-1">
-          <h2 id="install">
-            <span class="mr-2 font-mono text-ink-muted" aria-hidden="true">1</span>Install
-          </h2>
-          <div class="cmd">
-            <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta</span></pre>
-          </div>
-          <p class="note">
-            Linux and macOS. Installs <code>irsync</code> and
-            <code>fileset</code> into <code>~/.local/bin</code>. There is no
-            stable release yet, so <code>--beta</code> takes the newest beta
-            release.
-            <a href="book/introduction.html#install"
-              >Other ways to install&nbsp;→</a
-            >
-          </p>
-        </li>
-        <li class="flex flex-col gap-1">
-          <h2>
-            <span class="mr-2 font-mono text-ink-muted" aria-hidden="true">2</span>First Sync
-          </h2>
-          <div class="cmd">
-            <pre><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
-          </div>
-          <p class="note">
-            If <code>ssh myserver</code> logs you in, the first run sets the
-            server up too. Later runs connect over iroh and do not use ssh.
-            <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
-              >No ssh? Set the server up by hand&nbsp;→</a
-            >
-            If interrupted, the next run of the same command resumes where the
-            last one stopped.
-          </p>
-        </li>
-      </ol>
+      <section class="border-t border-base-300 py-14" aria-labelledby="start-heading">
+        <h2 id="start-heading" class="text-heading">Get started</h2>
+        <ol class="mt-10">
+          <li class="station">
+            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-base-100 font-display text-label font-bold" aria-hidden="true">1</span>
+            <h3 id="install" class="text-heading leading-[34px]">Install</h3>
+            <div class="cmd mt-4">
+              <pre><span class="prompt">$</span> <span class="copy">curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta</span></pre>
+            </div>
+            <p class="mt-3 max-w-[62ch] text-small text-muted">
+              Linux and macOS. Installs <code>irsync</code> and
+              <code>fileset</code> into <code>~/.local/bin</code>. There is no
+              stable release yet, so <code>--beta</code> takes the newest beta
+              release. There are also
+              <a href="book/introduction.html#install">other ways to install</a>.
+            </p>
+          </li>
+          <li class="station">
+            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-base-100 font-display text-label font-bold" aria-hidden="true">2</span>
+            <h3 class="text-heading leading-[34px]">Sync</h3>
+            <div class="cmd mt-4">
+              <pre><span class="prompt">$</span> <span class="copy">irsync -av ~/Photos/ myserver:/srv/photos/</span></pre>
+            </div>
+            <p class="mt-3 max-w-[62ch] text-small text-muted">
+              If <code>ssh myserver</code> logs you in, the first run sets the
+              server up too. Later runs connect over iroh and do not use ssh. No
+              ssh?
+              <a href="book/tutorial/first-sync.html#set-the-server-up-by-hand">Set the server up by hand</a>.
+            </p>
+          </li>
+          <li class="station">
+            <span class="absolute top-0 left-0 flex size-[34px] items-center justify-center rounded-full border-4 border-aqua bg-aqua font-display text-label font-bold text-base-100" aria-hidden="true">3</span>
+            <h3 class="text-heading leading-[34px]">Interrupted? Run it again</h3>
+            <p class="mt-3 max-w-[62ch]">
+              If the connection drops or you stop the transfer, run the same
+              command again. It resumes where the last run stopped.
+            </p>
+          </li>
+        </ol>
+      </section>
 
-      <section class="flex flex-col gap-3 border-t border-base-300 pt-4" aria-labelledby="how-heading">
-        <h2 id="how-heading">How it connects</h2>
-        <div class="flex flex-wrap gap-x-8 gap-y-4 [&>div]:flex [&>div]:min-w-0 [&>div]:flex-[1_1_240px] [&>div]:flex-col [&>div]:gap-1 [&_p]:note">
+      <section class="border-t border-base-300 py-14" aria-labelledby="how-heading">
+        <h2 id="how-heading" class="text-heading">How it connects</h2>
+        <div class="mt-8 grid gap-x-10 gap-y-8 md:grid-cols-3">
           <div>
-            <h3>Peer to peer, over iroh</h3>
-            <p>
+            <h3 class="text-[1.1875rem] leading-tight">Peer to peer, over iroh</h3>
+            <p class="mt-2 text-small text-muted">
               The two machines find each other and traverse NATs and firewalls.
               The daemon is reached by its iroh identity, not by an address.
             </p>
           </div>
           <div>
-            <h3>Encrypted, key to key</h3>
-            <p>
+            <h3 class="text-[1.1875rem] leading-tight">Encrypted, key to key</h3>
+            <p class="mt-2 text-small text-muted">
               Traffic is encrypted end to end. The client only connects to the
               daemon key it was given, and the daemon only lets in keys it has
-              granted.
-              <a href="book/explanation/identity-and-trust.html"
-                >Identity and trust&nbsp;→</a
-              >
+              granted. More in
+              <a href="book/explanation/identity-and-trust.html">Identity and trust</a>.
             </p>
           </div>
           <div>
-            <h3>A relay when there is no direct path</h3>
-            <p>
+            <h3 class="text-[1.1875rem] leading-tight">A relay when there is no direct path</h3>
+            <p class="mt-2 text-small text-muted">
               By default a public relay run by n0, the developers of iroh. It
               cannot read the data. Run your own, or refuse relays with
-              <code>--no-relay</code>.
-              <a href="book/how-to/direct-and-relay.html"
-                >Direct or relay&nbsp;→</a
-              >
+              <code>--no-relay</code>. More in
+              <a href="book/how-to/direct-and-relay.html">Direct or relay</a>.
             </p>
           </div>
         </div>
       </section>
 
-      <section class="card rounded-field border border-base-300 bg-base-200" aria-labelledby="limits-heading">
-        <div class="card-body gap-2 p-4">
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h2 id="limits-heading" class="card-title text-heading">Before you rely on it</h2>
-            <span class="badge badge-sm border-0 bg-warn-soft font-mono text-caption text-warning">Beta</span>
-          </div>
-          <ul class="flex list-disc flex-col gap-1 pl-4 text-code text-ink-muted">
-            <li>
-              The command line and the protocol may change before the first stable
-              release. Keep another copy of anything you sync with it.
-            </li>
-            <li>
-              It is not a drop-in replacement for rsync. It has its own protocol,
-              so both ends must run irsync.
-            </li>
-            <li>
-              Some rsync options are missing, such as <code>-X</code>,
-              <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
-              are not copied.
-            </li>
-            <li>
-              Windows and NTFS is not supported. Relayed connections are much
-              slower than direct ones.
-            </li>
-          </ul>
-          <p class="note">
-            <a href="book/reference/limitations.html">Known limitations&nbsp;→</a>
-          </p>
-        </div>
+      <section class="rounded-box border-t-4 border-signal bg-base-200 px-6 py-8 sm:px-8" aria-labelledby="limits-heading">
+        <h2 id="limits-heading" class="text-heading">Before you rely on it</h2>
+        <ul class="mt-5 flex max-w-[66ch] list-disc flex-col gap-2 pl-5 marker:text-muted">
+          <li>
+            The command line and the protocol may change before the first stable
+            release. Keep another copy of anything you sync with it.
+          </li>
+          <li>
+            It is not a drop-in replacement for rsync. It has its own protocol,
+            so both ends must run irsync.
+          </li>
+          <li>
+            Some rsync options are missing, such as <code>-X</code>,
+            <code>-A</code> and <code>-z</code>. Extended attributes and ACLs
+            are not copied.
+          </li>
+          <li>
+            Windows and NTFS is not supported. Relayed connections are much
+            slower than direct ones.
+          </li>
+        </ul>
+        <p class="mt-5">
+          The full list is in <a href="book/reference/limitations.html">Known limitations</a>.
+        </p>
       </section>
 
-      <div class="flex flex-wrap gap-x-8 gap-y-4 [&>section]:flex [&>section]:min-w-0 [&>section]:flex-[1_1_280px] [&>section]:flex-col [&>section]:gap-1">
+      <div class="grid gap-x-10 gap-y-10 py-14 md:grid-cols-2">
         <section aria-labelledby="fileset-heading">
-          <h2 id="fileset-heading">fileset</h2>
-          <p class="text-ink-muted">
+          <h2 id="fileset-heading" class="text-heading">fileset</h2>
+          <p class="mt-3 max-w-[44ch]">
             A helper that ships with irsync. It checks that a copy is exact,
-            whichever tool made it: rsync, rclone, cp or irsync.
-          </p>
-          <p class="note">
-            <a href="book/fileset/introduction.html"
-              >Introduction to fileset&nbsp;→</a
-            >
+            whichever tool made it: rsync, rclone, cp or irsync. Start with the
+            <a href="book/fileset/introduction.html">introduction to fileset</a>.
           </p>
         </section>
         <section aria-labelledby="help-heading">
-          <h2 id="help-heading">Help</h2>
-          <p class="text-ink-muted">
-            Ask questions and report bugs in GitHub Issues. Report security
-            problems privately to security@irsync.org.
-          </p>
-          <p class="note">
-            <a href="https://github.com/irsync-dev/irsync/issues"
-              >GitHub Issues&nbsp;→</a
-            >
-            <span aria-hidden="true">·</span>
-            <a href="book/how-to/troubleshooting.html"
-              >Troubleshoot a first sync&nbsp;→</a
-            >
+          <h2 id="help-heading" class="text-heading">Help</h2>
+          <p class="mt-3 max-w-[44ch]">
+            Ask questions and report bugs in
+            <a href="https://github.com/irsync-dev/irsync/issues">GitHub Issues</a>.
+            If a first sync fails, see
+            <a href="book/how-to/troubleshooting.html">Troubleshooting</a>.
+            Report security problems privately to
+            <a href="mailto:security@irsync.org">security@irsync.org</a>.
           </p>
         </section>
       </div>
     </main>
 
-    <footer class="mt-6 border-t border-base-300 pt-3 text-caption font-normal text-ink-muted">
-      <p>
+    <footer class="flex flex-wrap justify-between gap-x-8 gap-y-3 border-t border-base-300 pt-6 text-small text-muted">
+      <p class="max-w-[52ch]">
         irsync is built by
         <a href="https://github.com/lambdanature/">Michael Wildpaner</a> and
         published under the
-        <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE"
-          >MIT license</a
-        >.
-        <a href="book/contributing/setup.html">Contributor guide</a>
-        <span aria-hidden="true">·</span>
-        <a href="https://github.com/irsync-dev/irsync"
-          >github.com/irsync-dev/irsync</a
-        >
+        <a href="https://github.com/irsync-dev/irsync/blob/main/LICENSE">MIT license</a>.
       </p>
+      <ul class="flex flex-wrap gap-x-6 gap-y-1">
+        <li><a href="book/contributing/setup.html">Contributor guide</a></li>
+        <li><a href="https://github.com/irsync-dev/irsync">Source on GitHub</a></li>
+      </ul>
     </footer>
 
     <!-- Adds a copy button to each command. Without script the page is the
@@ -237,13 +206,13 @@
           const button = document.createElement("button");
           button.type = "button";
           button.className =
-            "btn btn-xs flex-none border-line-strong bg-base-100 font-mono text-code-small font-normal text-ink-muted hover:text-base-content";
-          button.textContent = "copy";
+            "btn btn-xs h-auto flex-none border-term-muted bg-transparent px-2 py-1 font-display text-[0.8125rem] font-bold text-term-ink hover:bg-term-ink hover:text-term";
+          button.textContent = "Copy";
           button.onclick = () => {
             const text = cmd.querySelector(".copy").textContent;
             navigator.clipboard.writeText(text).then(() => {
-              button.textContent = "copied";
-              setTimeout(() => (button.textContent = "copy"), 1500);
+              button.textContent = "Copied";
+              setTimeout(() => (button.textContent = "Copy"), 1500);
             });
           };
           cmd.append(button);
