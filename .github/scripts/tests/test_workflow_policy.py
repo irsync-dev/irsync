@@ -210,5 +210,74 @@ class AttestationTests(unittest.TestCase):
             self.assertEqual(perms, {"contents": "read", **self.WRITE}, name)
 
 
+RELEASE_SECRET = re.compile(r"secrets\.(PACKAGES_\w+|HOMEBREW_TAP_TOKEN)")
+
+
+def env_name(job):
+    e = job.get("environment")
+    return e.get("name") if isinstance(e, dict) else e
+
+
+class EnvironmentTests(unittest.TestCase):
+    def test_release_secrets_only_in_release_env(self):
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                if "uses" in job:
+                    continue  # a call: checked by test_callers_pass_no_release_secrets
+                if RELEASE_SECRET.search(job_text(name, job_id)):
+                    self.assertEqual(env_name(job), "release", f"{name}: {job_id}")
+
+    def test_callers_pass_no_release_secrets(self):
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                if job.get("uses", "").startswith("./"):
+                    secrets = job.get("secrets")
+                    if isinstance(secrets, dict):
+                        self.assertFalse(
+                            [k for k in secrets if RELEASE_SECRET.search(f"secrets.{k}")],
+                            f"{name}: {job_id} passes release secrets")
+        call = triggers(load_workflows()["packages.yml"])["workflow_call"]
+        self.assertNotIn("secrets", call)
+
+    def test_cloudflare_pub_in_site_env(self):
+        wf = load_workflows()["site.yml"]
+        found = False
+        for job_id, job in jobs(wf).items():
+            if "secrets.CLOUDFLARE_API_TOKEN_PUB" in job_text("site.yml", job_id):
+                found = True
+                self.assertEqual(env_name(job), "site", job_id)
+        self.assertTrue(found)
+
+    def test_dist_homebrew_replaced(self):
+        # dist 0.34.0 writes `uses: $/.github/...` for a local custom publish
+        # job, so the release gate publishes the formula instead (see
+        # publish-homebrew.yml). release.yml then needs no secrets at all.
+        self.assertEqual(dist_config()["dist"]["publish-jobs"], [])
+        self.assertNotIn("publish-homebrew-formula", jobs(load_workflows()["release.yml"]))
+        self.assertIsNone(RELEASE_SECRET.search(read("release.yml")))
+
+    def homebrew_caller(self, name):
+        callers = [j for j in jobs(load_workflows()[name]).values()
+                   if j.get("uses") == "./.github/workflows/publish-homebrew.yml"]
+        self.assertEqual(len(callers), 1, name)
+        return callers[0]
+
+    def test_homebrew_job_skips_prereleases(self):
+        gate = self.homebrew_caller("release-gate.yml")
+        self.assertIn("needs.check.outputs.prerelease == 'false'", gate["if"])
+        self.assertIn("needs.release.result == 'success'", gate["if"])
+        resume = self.homebrew_caller("release-resume.yml")
+        self.assertEqual(resume["if"], "needs.check.outputs.homebrew == 'true'")
+
+    def test_homebrew_job_in_release_env(self):
+        own = jobs(load_workflows()["publish-homebrew.yml"])["homebrew"]
+        self.assertEqual(env_name(own), "release")
+
+    def test_resume_has_no_main_guard(self):
+        text = read("release-resume.yml")
+        self.assertNotIn("MAIN_REF", text)
+        self.assertNotIn("refs/heads/", text)
+
+
 if __name__ == "__main__":
     unittest.main()

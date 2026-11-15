@@ -4,8 +4,10 @@
 # (ci.yml, including the musl release targets) on the tagged commit, and only
 # if that passes it launches release.yml for the tag and waits for it to
 # finish. After that, stable releases get .deb/.rpm packages in the apt/dnf
-# repo (packages.yml), and every release gets GitHub's change list added to
-# its notes (release-notes.yml).
+# repo (packages.yml) and their Homebrew formula in the tap
+# (publish-homebrew.yml), both after an approval of the `release` environment,
+# and every release gets GitHub's change list added to its notes
+# (release-notes.yml).
 #
 # If the gate fails after release.yml published the release, finish the
 # release with release-resume.yml.
@@ -157,14 +159,21 @@ jobs:
     uses: ./.github/workflows/packages.yml
     with:
       tag: ${{ github.ref_name }}
-    secrets:
-      PACKAGES_REPO_TOKEN: ${{ secrets.PACKAGES_REPO_TOKEN }}
-      PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
-      PACKAGES_GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
     permissions:
       contents: read
       id-token: write
       attestations: write
+
+  # Stable releases only, like the packages. Waits for the same `release`
+  # environment approval as the packages job; approve both at once.
+  homebrew:
+    needs: [check, release]
+    if: needs.release.result == 'success' && needs.check.outputs.prerelease == 'false'
+    uses: ./.github/workflows/publish-homebrew.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
 
   notes:
     needs: release

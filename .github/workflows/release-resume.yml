@@ -1,11 +1,15 @@
 # Finishes a release that release.yml already published, when the gate
-# stopped before the packages or the notes (for example because the Homebrew
-# push failed, or the gate lost track of the release.yml run). Start it by
-# hand on main: Actions, Release resume, Run workflow, with the tag.
+# stopped before the packages, the Homebrew formula or the notes (for example
+# because the Homebrew push failed, or the gate lost track of the release.yml
+# run). Start it by
+# hand on the tag, so the release secrets (environment `release`, v* tags
+# only) open and the tagged scripts run:
 #
-# It never builds or publishes a release. It only runs packages.yml (stable
-# releases) and the notes step for a GitHub Release that already exists. Both
-# are safe to run again.
+#   gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
+#
+# It never builds or publishes a release. It only runs packages.yml and
+# publish-homebrew.yml (stable releases) and the notes step for a GitHub
+# Release that already exists. All are safe to run again.
 #
 # Dry run: builds and signs the packages for any release, including a
 # pre-release, and checks the packages repo token, but publishes nothing. The
@@ -41,26 +45,19 @@ jobs:
       contents: read
     outputs:
       packages: ${{ steps.check.outputs.packages }}
+      homebrew: ${{ steps.check.outputs.homebrew }}
       notes: ${{ steps.check.outputs.notes }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag }}
       DRY_RUN: ${{ inputs.dry-run }}
-      MAIN_REF: refs/heads/${{ github.event.repository.default_branch }}
     steps:
-      - name: Check the branch
-        run: |
-          # The scripts and secrets used below must come from reviewed code.
-          if [ "$GITHUB_REF" != "$MAIN_REF" ]; then
-            echo "::error::Run this workflow on ${MAIN_REF#refs/heads/}, not $GITHUB_REF."
-            exit 1
-          fi
-
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
+      # Also checks that this run is on the tag itself (GITHUB_REF).
       - name: Check the tag and the release
         id: check
         run: .github/scripts/resume-check.sh "$TAG" "$DRY_RUN" >> "$GITHUB_OUTPUT"
@@ -72,14 +69,19 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       dry-run: ${{ inputs.dry-run }}
-    secrets:
-      PACKAGES_REPO_TOKEN: ${{ secrets.PACKAGES_REPO_TOKEN }}
-      PACKAGES_GPG_PRIVATE_KEY: ${{ secrets.PACKAGES_GPG_PRIVATE_KEY }}
-      PACKAGES_GPG_PASSPHRASE: ${{ secrets.PACKAGES_GPG_PASSPHRASE }}
     permissions:
       contents: read
       id-token: write
       attestations: write
+
+  homebrew:
+    needs: check
+    if: needs.check.outputs.homebrew == 'true'
+    uses: ./.github/workflows/publish-homebrew.yml
+    with:
+      tag: ${{ inputs.tag }}
+    permissions:
+      contents: read
 
   notes:
     needs: check

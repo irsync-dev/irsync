@@ -16,8 +16,13 @@ installers = ["shell", "homebrew"]
 tap = "irsync-dev/homebrew-tap"
 # Customize the Homebrew formula name
 formula = "irsync"
-# Publish jobs to run in CI
-publish-jobs = ["homebrew"]
+# Publish jobs to run in CI: none. The release gate pushes the Homebrew
+# formula itself (.github/workflows/publish-homebrew.yml), in the `release`
+# environment that holds HOMEBREW_TAP_TOKEN, so release.yml needs no secrets.
+# dist still builds the formula (installers = homebrew) and attaches it to the
+# release. (A local custom publish job is broken in dist 0.34.0: it writes
+# `uses: $/.github/...`.)
+publish-jobs = []
 # Whether to publish prereleases to package managers
 publish-prereleases = false
 # Target platforms to build apps for (Rust target-triple syntax)

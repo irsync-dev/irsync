@@ -23,13 +23,9 @@ on:
       dry-run:
         type: boolean
         default: false
-    secrets:
-      PACKAGES_REPO_TOKEN:
-        required: true
-      PACKAGES_GPG_PRIVATE_KEY:
-        required: true
-      PACKAGES_GPG_PASSPHRASE:
-        required: true
+    # No secrets here: the job reads PACKAGES_* from the `release` environment,
+    # which opens only for runs on a v* tag (after an approval). GitHub does
+    # not let a caller pass environment secrets in.
 
 permissions:
   contents: read
@@ -37,6 +33,7 @@ permissions:
 jobs:
   packages:
     runs-on: ubuntu-latest
+    environment: release
     # contents: read is enough: the packages repo is pushed with its own token,
     # and the packages are no longer attached to the (immutable) release.
     permissions:

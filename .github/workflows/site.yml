@@ -37,6 +37,9 @@ jobs:
   staging:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # The deploy tokens live in the `site` environment, which opens only for
+    # runs on main.
+    environment: site
     concurrency: site-staging
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -78,6 +81,7 @@ jobs:
   promote:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: site
     concurrency: site-promote
     env:
       GH_TOKEN: ${{ github.token }}
