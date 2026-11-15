@@ -99,41 +99,6 @@
         </section>
       </section>
 
-      <section class="border-t border-base-300 py-14" aria-labelledby="how-heading">
-        <h2 id="how-heading" class="text-heading">How it connects</h2>
-        <p class="mt-3 max-w-[62ch] text-muted">
-          irsync connects through iroh, an open-source networking library. You
-          do not need to set anything up for it.
-        </p>
-        <div class="mt-8 grid gap-x-10 gap-y-8 md:grid-cols-3">
-          <div>
-            <h3 class="text-[1.1875rem] leading-tight">Directly, when it can</h3>
-            <p class="mt-2 text-small text-muted">
-              The two machines find each other and connect directly, even when
-              both sit behind a home router or a firewall. The server is found by
-              its key, not by an IP address.
-            </p>
-          </div>
-          <div>
-            <h3 class="text-[1.1875rem] leading-tight">Encrypted, key to key</h3>
-            <p class="mt-2 text-small text-muted">
-              Traffic is encrypted end to end. The client only connects to the
-              server key it was given, and the server only lets in keys it has
-              granted.
-            </p>
-          </div>
-          <div>
-            <h3 class="text-[1.1875rem] leading-tight">Through a relay, when it must</h3>
-            <p class="mt-2 text-small text-muted">
-              When no direct connection is possible, the encrypted traffic passes
-              through a relay server, which cannot read it. By default that is a
-              public relay run by n0, the developers of iroh. Run your own, or
-              refuse relays with <code>--no-relay</code>.
-            </p>
-          </div>
-        </div>
-      </section>
-
       <section class="rounded-box border-t-4 border-signal bg-base-200 px-6 py-8 sm:px-8" aria-labelledby="limits-heading">
         <h2 id="limits-heading" class="text-heading">Before you rely on it</h2>
         <ul class="mt-5 flex max-w-[66ch] list-disc flex-col gap-2 pl-5 marker:text-muted">
