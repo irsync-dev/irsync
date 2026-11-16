@@ -1416,7 +1416,9 @@ fn config_editable(paths: &Paths, key: &[String]) -> anyhow::Result<()> {
 fn run_config(c: &ConfigArgs) -> i32 {
     use irsync::manage::config::{self as cfg, Got};
     let paths = file_paths(&c.files);
-    match &c.cmd {
+    // A noun alone lists.
+    let list = ConfigCmd::List;
+    match c.cmd.as_ref().unwrap_or(&list) {
         ConfigCmd::Get { key } => {
             let r = (|| -> anyhow::Result<bool> {
                 let path = cfg::parse_key(key)?;
@@ -1532,7 +1534,9 @@ fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -
 
 fn run_export(e: &ExportArgs) -> i32 {
     let paths = file_paths(&e.files);
-    match &e.cmd {
+    // A noun alone lists.
+    let list = ExportCmd::List;
+    match e.cmd.as_ref().unwrap_or(&list) {
         ExportCmd::Add(a) => finish(
             "export add",
             (|| {
@@ -1588,7 +1592,9 @@ fn run_export(e: &ExportArgs) -> i32 {
 
 fn run_grant(g: &GrantArgs) -> i32 {
     let paths = file_paths(&g.files);
-    match &g.cmd {
+    // A noun alone lists.
+    let list = GrantCmd::List { target: None };
+    match g.cmd.as_ref().unwrap_or(&list) {
         GrantCmd::Add { export, who, ro } => finish(
             "grant add",
             (|| {
@@ -1696,7 +1702,9 @@ fn run_grant(g: &GrantArgs) -> i32 {
 
 fn run_host(h: &HostArgs) -> i32 {
     let paths = file_paths(&h.files);
-    match &h.cmd {
+    // A noun alone lists.
+    let list = HostCmd::List;
+    match h.cmd.as_ref().unwrap_or(&list) {
         HostCmd::Add(a) => finish("host add", host_add(a, &paths)),
         HostCmd::Remove { alias } => finish(
             "host remove",
@@ -1766,7 +1774,11 @@ fn identity_of(
 }
 
 fn run_id(i: &IdArgs) -> i32 {
-    match &i.cmd {
+    // A noun alone lists.
+    let list = IdCmd::List {
+        passphrase_file: None,
+    };
+    match i.cmd.as_ref().unwrap_or(&list) {
         IdCmd::List { passphrase_file } => id_list(&i.files, passphrase_file.clone()),
         IdCmd::Show {
             daemon,

@@ -1393,3 +1393,63 @@ fn help_points_at_the_last_line_of_id_show() {
     assert!(help.contains("print its id (the last line)"), "{help}");
     assert!(!help.contains("second line"), "{help}");
 }
+
+/// A noun typed alone runs its `list`: same output, same exit code.
+#[test]
+fn a_bare_noun_runs_its_list() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(&home, &["host", "add", "laptop", &id]);
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", "laptop"]);
+    // The client identity exists before the comparison, so neither run
+    // prints "generated identity".
+    ok(&home, &["id", "generate"]);
+    for noun in ["id", "host", "export", "grant", "config"] {
+        let bare = irsync(&home, &[noun]);
+        let list = irsync(&home, &[noun, "list"]);
+        assert!(bare.status.success(), "{noun}");
+        assert!(!list.stdout.is_empty(), "{noun}");
+        assert_eq!(bare.stdout, list.stdout, "{noun}");
+        assert_eq!(bare.stderr, list.stderr, "{noun}");
+    }
+    // The flag after a bare noun names the file.
+    let other = d.path().join("other.toml");
+    std::fs::write(&other, format!("[hosts.nas]\nendpoint_id = \"{id}\"\n")).unwrap();
+    let c = other.to_str().unwrap();
+    assert_eq!(
+        ok(&home, &["host", "--config", c]),
+        ok(&home, &["host", "list", "--config", c])
+    );
+    assert!(ok(&home, &["host", "--config", c]).contains("nas"));
+}
+
+/// A bare noun only lists: it writes nothing, `--help` is still help, and
+/// the arguments of `list` need `list` typed out.
+#[test]
+fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    for noun in ["host", "export", "grant", "config"] {
+        assert!(irsync(&home, &[noun]).status.success(), "{noun}");
+    }
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    let o = irsync(&home, &["id", "--help"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Usage: irsync id"));
+    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    for args in [
+        &["grant", "photos"][..],
+        &["id", "--passphrase-file", "/p"],
+        &["id", "--daemon"],
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+    }
+}

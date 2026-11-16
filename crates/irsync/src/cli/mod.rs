@@ -181,16 +181,21 @@ pub enum Command {
     /// same for the daemon's exports).
     Index(IndexArgs),
     /// Manage host aliases (edits irsync.toml).
+    /// With no subcommand, runs `list`.
     Host(HostArgs),
     /// Manage exports (edits irsync.toml).
+    /// With no subcommand, runs `list`.
     Export(ExportArgs),
     /// Manage grants: who may use which export (edits irsync.toml).
+    /// With no subcommand, runs `list`.
     Grant(GrantArgs),
     /// This machine's identities (the client's and the daemon's).
+    /// With no subcommand, runs `list`.
     Id(IdArgs),
     /// Read and edit any key of the config file by its dotted path, as
     /// `git config` does: `config get daemon.listen`, `config set
     /// exports.photos.read_only true`.
+    /// With no subcommand, runs `list`.
     Config(ConfigArgs),
     /// Show the config files, identities, host aliases and exports.
     Show {
@@ -225,7 +230,7 @@ pub enum Command {
 #[derive(Debug, clap::Args)]
 pub struct ConfigArgs {
     #[command(subcommand)]
-    pub cmd: ConfigCmd,
+    pub cmd: Option<ConfigCmd>,
     #[command(flatten)]
     pub files: FilesArgs,
 }
@@ -257,7 +262,7 @@ pub enum ConfigCmd {
 #[derive(Debug, clap::Args)]
 pub struct IdArgs {
     #[command(subcommand)]
-    pub cmd: IdCmd,
+    pub cmd: Option<IdCmd>,
     #[command(flatten)]
     pub files: FilesArgs,
 }
@@ -312,7 +317,7 @@ pub enum IdCmd {
 #[derive(Debug, clap::Args)]
 pub struct HostArgs {
     #[command(subcommand)]
-    pub cmd: HostCmd,
+    pub cmd: Option<HostCmd>,
     #[command(flatten)]
     pub files: FilesArgs,
 }
@@ -333,7 +338,7 @@ pub enum HostCmd {
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     #[command(subcommand)]
-    pub cmd: ExportCmd,
+    pub cmd: Option<ExportCmd>,
     #[command(flatten)]
     pub files: FilesArgs,
 }
@@ -368,7 +373,7 @@ pub enum ExportCmd {
 #[derive(Debug, clap::Args)]
 pub struct GrantArgs {
     #[command(subcommand)]
-    pub cmd: GrantCmd,
+    pub cmd: Option<GrantCmd>,
     #[command(flatten)]
     pub files: FilesArgs,
 }

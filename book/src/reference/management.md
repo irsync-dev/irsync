@@ -6,6 +6,11 @@ These commands read and edit the config file, `~/.config/irsync/irsync.toml`
 `export update`; `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
+A noun on its own runs its `list`: `irsync host`, `irsync export`,
+`irsync grant`, `irsync id` and `irsync config` print what is there and
+change nothing. Arguments of `list`, such as a grant target, need `list`
+typed out.
+
 Every management command takes `--config PATH` to use another file. For a
 noun the flag may stand before or after the verb: `irsync export --config C
 add ...` and `irsync export add ... --config C` are the same.
