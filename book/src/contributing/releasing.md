@@ -410,6 +410,32 @@ Do the one-time setup first. Then:
    - `--uninstall` (with `--alpha`) removes the programs and the three
      pages;
    - nothing went to Homebrew, apt or dnf.
+
+   If a Mac with Rosetta is at hand, also run the install script once in a
+   Rosetta shell (`arch -x86_64 sh`). It should say it runs under Rosetta
+   and install the Apple Silicon build. The tests only fake this, with a
+   stand-in `sysctl`.
+
+   Then install the pre-release's formula with real Homebrew, with the man
+   page lines added the way `publish-homebrew.yml` adds them. It goes
+   into a throwaway local tap, since Homebrew may refuse a formula file
+   that is not in a tap. On a Mac with Homebrew, from a clone of this
+   repository:
+
+   ```sh
+   gh release download v0.1.0-beta.4 --repo irsync-dev/irsync --pattern irsync.rb
+   .github/scripts/formula-man-pages.sh irsync.rb
+   brew tap-new --no-git local/rehearsal
+   cp irsync.rb "$(brew --repository local/rehearsal)/Formula/"
+   brew install local/rehearsal/irsync
+   man -w irsync fileset irsync.toml
+   brew uninstall irsync
+   brew untap local/rehearsal
+   rm irsync.rb
+   ```
+
+   `man -w` should print a path under Homebrew's `share/man` for each of
+   the three pages.
 4. **Dry-run the packages on the pre-release.** A pre-release skips
    Homebrew, apt and dnf, so the steps only stable releases run have not
    run yet. Once the rehearsal release from step 3 is published, run them
