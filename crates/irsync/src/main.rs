@@ -1323,8 +1323,8 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             return 1;
         }
     };
-    // Before anything is read, created or opened: not as root, unless the
-    // server's owner said so.
+    // Before any key, socket, lock or state file is touched: not as root,
+    // unless the server's owner said so.
     let as_root = running_as_root();
     if as_root && !d.run_as_root {
         match Config::load(&Paths::resolve(d.config.as_deref())) {
@@ -1357,9 +1357,11 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
         )
     };
 
+    // Printed, not logged: -q and RUST_LOG must not hide it.
     if as_root {
-        tracing::warn!(
-            "running as root: any client with write access can create setuid files and device nodes"
+        eprintln!(
+            "irsync daemon: warning: running as root: any client with write access can \
+             create setuid files and device nodes"
         );
     }
 

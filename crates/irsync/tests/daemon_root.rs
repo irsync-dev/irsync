@@ -166,3 +166,16 @@ fn config_set_writes_the_key_as_a_boolean() {
     );
     assert!(!set("yes").status.success());
 }
+
+/// The warning is not a log line: `-q` and `RUST_LOG` cannot hide it.
+#[test]
+fn as_root_the_warning_survives_quiet() {
+    let (_d, home) = home(&config(""));
+    let r = daemon(&home, true, &["-q", "--run-as-root-i-know-what-i-am-doing"]);
+    assert!(r.started, "{}", r.err);
+    assert!(
+        r.err.contains("irsync daemon: warning: running as root"),
+        "{}",
+        r.err
+    );
+}
