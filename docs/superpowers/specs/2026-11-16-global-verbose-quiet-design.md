@@ -48,6 +48,9 @@ unencrypted key.
 - `irsync id generate --passphrase-file PATH` writes the private key
   encrypted with the passphrase in that file, so that the same flag and
   file unlock it afterwards.
+- A command that would generate a key on the side fails instead when
+  `--passphrase-file` is given (decided). Someone who passes a passphrase
+  expects a protected key; the way to get one is `id generate`.
 
 ## Non-goals
 
@@ -55,9 +58,10 @@ unencrypted key.
   commands. They get the flag; what it could show is for later issues.
 - Making other sync flags work before a command (`irsync -n gc`).
 - Encrypting keys that are generated on the side: by a first sync, by
-  `id show` or `id list` on a machine without a client key, by the
-  daemon's first start, or by ssh setup. They stay unencrypted even when
-  `--passphrase-file` is given. Only `id generate` encrypts.
+  `id show` or `id list` on a machine without a client key, or by the
+  daemon's first start. Only `id generate` encrypts. With
+  `--passphrase-file` those commands refuse to generate a key at all (see
+  below).
 - Encrypting with `IRSYNC_PASSPHRASE` or a prompt. `id generate` only
   encrypts when the file is given.
 - Changing the passphrase of an existing key, or encrypting one.
@@ -67,6 +71,7 @@ unencrypted key.
 
 - A flag before a command must never be dropped without a word.
   `irsync -a gc` must fail, not run `gc`.
+- No command given `--passphrase-file` may write an unencrypted key.
 - `id generate --passphrase-file` must never write an unencrypted key.
   If the file cannot be read or holds no passphrase, it fails and writes
   nothing.
@@ -139,9 +144,11 @@ is info level and stays hidden without `-vv`.
 
 ### `id generate` with `--passphrase-file`
 
-- The passphrase is the first line of the file, without its line ending.
-  That is how the file is read for unlocking, so the same file works for
-  both.
+- The passphrase is the first line of the file only (decided). Its line
+  ending is stripped, Unix (LF) or Windows (CR+LF), so a file copied from
+  the other kind of system gives the same passphrase. Nothing else is
+  trimmed: spaces are part of the passphrase. One function reads the file
+  for unlocking and for generating, so the same file works for both.
 - The private key is written in OpenSSH's encrypted format (what
   `ssh-keygen` writes with a passphrase; the `ssh-key` crate's `encrypt`).
   The `.pub` file, the two lines on stdout and the "wrote ..." line on
@@ -155,6 +162,25 @@ is info level and stays hidden without `-vv`.
 - Without the flag the key is unencrypted, as today, even when
   `IRSYNC_PASSPHRASE` is set. (My call: you asked for the file; the
   variable is often set to unlock another key.)
+
+### No key generated on the side with `--passphrase-file`
+
+Decided. Today a missing key is generated, unencrypted, by a sync or a
+listing, by `id show`, `id list` and `show` (the client's key), and by
+the daemon's first start. With `--passphrase-file` given, these fail instead
+and write nothing (exit 1). The error names the missing key file and says
+what to run: `irsync id generate --passphrase-file PATH`, with `--daemon`
+for the daemon's key.
+
+- It applies only when no key serves. An existing key is loaded as today,
+  and so is `~/.ssh/id_ed25519` when the client has no irsync key.
+- Only the flag triggers it. `IRSYNC_PASSPHRASE` alone does not: those
+  commands generate as today. (My call, to match your wording; the
+  variable is often set for another key.)
+- All of these go through one function (`load_or_generate` in
+  `identity.rs`), which already receives the passphrase file. The check
+  goes there.
+- ssh setup on the server is not affected: it never passes the flag on.
 
 ### Behaviour that changes
 
@@ -170,6 +196,9 @@ is info level and stays hidden without `-vv`.
   key (`gc`, `host list`, ...). It used to be an error there.
 - `id generate --passphrase-file` used to be an error and now writes an
   encrypted key.
+- A sync, `id show`, `id list`, `show` or `daemon` run with `--passphrase-file`
+  on a machine without the key used to generate an unencrypted key. Now
+  it fails and points at `id generate`.
 
 ### Help and docs
 
@@ -201,7 +230,10 @@ Parser tests next to the existing ones in `cli/mod.rs`:
 On the real binary: `id generate --passphrase-file` writes an encrypted
 key that `id show --passphrase-file` unlocks to the same id and that does
 not load without a passphrase; the empty-file and missing-file errors
-write nothing; without the flag the key is unencrypted.
+write nothing; without the flag the key is unencrypted. `id show`,
+`id list`, `daemon` and a sync with `--passphrase-file` and no key fail,
+write no key, and name `id generate`; without the flag they generate as
+today.
 
 One end-to-end check that `irsync -v id show` prints the identity.
 

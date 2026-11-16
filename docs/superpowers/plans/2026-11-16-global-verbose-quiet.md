@@ -20,7 +20,8 @@
 - `-v` with `-q` is accepted on every command, and `-q` wins.
 - `RUST_LOG` still overrides the level.
 - `id generate --passphrase-file` never writes an unencrypted key: an unreadable file or an empty first line is an error (exit 1) and nothing is written or removed.
-- Keys generated on the side (first sync, `id show`, `id list`, daemon start, ssh setup) stay unencrypted, with or without the flag.
+- No command given `--passphrase-file` writes an unencrypted key. A sync, a listing, `id show`, `id list`, `show` and `daemon` that would generate a missing key fail instead (exit 1), write nothing, and point at `irsync id generate --passphrase-file PATH`. Without the flag they generate as today, also when `IRSYNC_PASSPHRASE` is set.
+- The passphrase is the first line of the file only, with its LF or CR+LF line ending stripped and nothing else trimmed.
 - `IRSYNC_PASSPHRASE` and the prompt never encrypt a new key.
 - Levels, for every command: no flag and `-v` warnings; `-vv` info; `-vvv` debug; `-vvvv` trace; `-vvvvv` trace plus protocol messages; `-q` errors only. That is `log_default(verbose.saturating_sub(1), quiet)`.
 - Everyday test run: `cargo test -q --workspace --all-features --no-fail-fast`. Before the last commit: `tools/ci.sh check`.
@@ -38,6 +39,8 @@ Each line has a test in the task named.
 7. A passphrase file with a trailing newline, with `\r\n`, or with more lines: the key must unlock with the same file through `id show --passphrase-file`. Task 3.
 8. `id generate --force --passphrase-file` with an empty or missing passphrase file: the existing key must still be there afterwards. Task 3.
 9. `IRSYNC_PASSPHRASE` set while generating without the flag: the key is unencrypted. Task 3.
+10. `--passphrase-file` with an existing key, or with only `~/.ssh/id_ed25519`: the command must load it as today, not refuse. Task 3.
+11. A sync or the daemon started from a script with `--passphrase-file` on a new machine: must fail before it connects or binds, with the key path and the command to run in the message. Task 3.
 
 ## Files
 
@@ -369,7 +372,7 @@ at info with one -v; the management commands had no logging at all."
 
 ---
 
-### Task 3: `id generate` encrypts the key with `--passphrase-file`
+### Task 3: `id generate` encrypts the key, and nothing else generates one, with `--passphrase-file`
 
 **Files:**
 - Modify: `crates/irsync/src/identity.rs`
@@ -381,6 +384,7 @@ at info with one -v; the management commands had no logging at all."
 - Produces, in `identity.rs`:
   - `pub fn read_passphrase_file(path: &Path) -> Result<String, IdentityError>`: the first line, without its line ending (`str::lines`, so `\r\n` too). An empty first line or an empty file is `Ok("")`.
   - `IdentityError::EmptyPassphraseFile(PathBuf)`, message `passphrase file {0} is empty`.
+  - `IdentityError::NoKeyWithPassphraseFile(PathBuf)`, message: ``no key at {0}, and a key generated here would not be encrypted; run `irsync id generate --passphrase-file PATH` first (with --daemon for the daemon's key)``. `load_or_generate` returns it when nothing exists at `path` and `src.file` is `Some`, before it creates any directory.
   - `pub fn generate_openssh_with(path: &Path, comment: &str, passphrase: Option<&str>) -> Result<SecretKey, IdentityError>`. The existing `generate_openssh(path, comment)` keeps its signature and calls it with `None`, so its many callers do not change.
 
 - [ ] **Step 1: Write the failing library tests**
@@ -418,6 +422,46 @@ fn generate_without_a_passphrase_is_unencrypted_as_before() {
 }
 
 #[test]
+fn nothing_is_generated_on_the_side_with_a_passphrase_file() {
+    let d = tempfile::tempdir().unwrap();
+    let pf = d.path().join("p");
+    std::fs::write(&pf, "hunter2\n").unwrap();
+    let with_file = PassphraseSource { file: Some(pf.clone()), ..PassphraseSource::default() };
+    let path = d.path().join("sub/id_ed25519");
+    let e = load_or_generate(&path, &with_file, "irsync").unwrap_err();
+    assert!(matches!(e, IdentityError::NoKeyWithPassphraseFile(ref p) if p == &path));
+    let msg = e.to_string();
+    assert!(msg.contains("id generate --passphrase-file") && msg.contains("id_ed25519"));
+    assert!(!d.path().join("sub").exists());
+    // The same through the client's resolution, with and without an ssh path that is absent.
+    let absent = d.path().join("no-ssh-key");
+    for ssh in [None, Some(absent.as_path())] {
+        let e = load_client_identity(&path, ssh, &with_file, "irsync").unwrap_err();
+        assert!(matches!(e, IdentityError::NoKeyWithPassphraseFile(_)));
+    }
+    assert!(!path.exists());
+
+    // An existing key is loaded as before: encrypted with the file, or plain.
+    let enc = d.path().join("enc");
+    let secret = generate_openssh_with(&enc, "irsync", Some("hunter2")).unwrap();
+    let (k, generated) = load_or_generate(&enc, &with_file, "irsync").unwrap();
+    assert!(!generated && k.public() == secret.public());
+    let plain = d.path().join("plain");
+    let secret = generate_openssh(&plain, "irsync").unwrap();
+    let (k, generated) = load_or_generate(&plain, &with_file, "irsync").unwrap();
+    assert!(!generated && k.public() == secret.public());
+    // An ssh key serves the client when it has no irsync key: no refusal.
+    let (k, source) = load_client_identity(&path, Some(&plain), &with_file, "irsync").unwrap();
+    assert!(k.public() == secret.public() && source == KeySource::Ssh(plain.clone()));
+
+    // The environment variable alone does not refuse.
+    let env_only = PassphraseSource { env: Some("hunter2".into()), ..PassphraseSource::default() };
+    let fresh = d.path().join("fresh");
+    assert!(load_or_generate(&fresh, &env_only, "irsync").unwrap().1);
+    assert!(!PrivateKey::read_openssh_file(&fresh).unwrap().is_encrypted());
+}
+
+#[test]
 fn the_passphrase_file_is_read_up_to_its_first_line_ending() {
     let d = tempfile::tempdir().unwrap();
     let f = d.path().join("p");
@@ -426,7 +470,10 @@ fn the_passphrase_file_is_read_up_to_its_first_line_ending() {
         ("hunter2\n", "hunter2"),
         ("hunter2\r\n", "hunter2"),
         ("hunter2\nsecond line\n", "hunter2"),
+        ("hunter2\r\nsecond line\r\n", "hunter2"),
         (" two words ", " two words "),
+        ("tab\there \n", "tab\there "),
+        ("\r\n", ""),
         ("", ""),
         ("\nhunter2\n", ""),
     ] {
@@ -435,16 +482,32 @@ fn the_passphrase_file_is_read_up_to_its_first_line_ending() {
     }
     assert!(read_passphrase_file(&d.path().join("missing")).is_err());
 }
+
+#[test]
+fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
+    let d = tempfile::tempdir().unwrap();
+    let (unix, windows) = (d.path().join("unix"), d.path().join("windows"));
+    std::fs::write(&unix, "hunter2\n").unwrap();
+    std::fs::write(&windows, "hunter2\r\n").unwrap();
+    for (made_with, opened_with) in [(&unix, &windows), (&windows, &unix)] {
+        let path = d.path().join(format!("key-{}", made_with.file_name().unwrap().to_str().unwrap()));
+        let pass = read_passphrase_file(made_with).unwrap();
+        let secret = generate_openssh_with(&path, "irsync", Some(&pass)).unwrap();
+        let src = PassphraseSource { file: Some(opened_with.to_path_buf()), ..PassphraseSource::default() };
+        assert_eq!(load_identity_interactive(&path, &src).unwrap().public(), secret.public());
+    }
+}
 ```
 
 - [ ] **Step 2: Run them and see them fail**
 
 Run: `cargo test -p irsync --test identity 2>&1 | tail`
-Expected: does not compile (no `generate_openssh_with`, no `read_passphrase_file`).
+Expected: does not compile (no `generate_openssh_with`, no `read_passphrase_file`, no `NoKeyWithPassphraseFile`).
 
 - [ ] **Step 3: Implement in `identity.rs`**
 
-- `read_passphrase_file` as above; `PassphraseSource::passphrase` calls it instead of reading the file itself, so unlocking and generating read the file the same way.
+- `read_passphrase_file` as above: the first line only, with `\n` or `\r\n` stripped and nothing else trimmed (`str::lines` does exactly this). `PassphraseSource::passphrase` calls it instead of reading the file itself, so unlocking and generating read the file the same way.
+- `load_or_generate`: when nothing exists at `path` and `src.file.is_some()`, return `NoKeyWithPassphraseFile(path)` before creating the parent directory. The existing-key branch is untouched. `ssh/setup.rs` calls it with a default source and is not affected.
 - `generate_openssh_with` is today's `generate_openssh` body plus the passphrase. With `Some(p)`, the text written to `path` is `key.encrypt(&mut OsRng, p)?.to_openssh(LineEnding::LF)?`; the `.pub` line and the returned secret still come from the unencrypted `key`. The exists-checks, the atomic write and the modes do not change.
 - `generate_openssh(path, comment)` becomes `generate_openssh_with(path, comment, None)`.
 
@@ -535,17 +598,49 @@ fn only_id_generate_with_the_file_encrypts() {
     //    environment (build this one Command by hand, as the helper removes
     //    the variable): succeeds, and the key is not encrypted.
     assert!(!ssh_key::PrivateKey::read_openssh_file(&key).unwrap().is_encrypted());
-    // 2. In a second fresh home: `id show --passphrase-file pf` generates
-    //    the client key on the side (stderr has "generated identity"), and
-    //    that key is not encrypted.
+}
+
+#[test]
+fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
+    // A fresh home with no key of any kind (no ~/.ssh/id_ed25519 either).
+    std::fs::write(&pf, "hunter2\r\n").unwrap();
+    let daemon_key = home.join(".config/irsync/daemon_ed25519");
+    for args in [
+        &["id", "show", "--passphrase-file", pf_s][..],
+        &["--passphrase-file", pf_s, "id", "show"],
+        &["id", "list", "--passphrase-file", pf_s],
+        &["show", "--passphrase-file", pf_s],
+        &["daemon", "--passphrase-file", pf_s],
+        // A sync and a listing: the id is any valid EndpointId; they must
+        // fail on the key before they dial.
+        &["--passphrase-file", pf_s, "-a", "src/", &format!("{id}:photos/")],
+        &["--passphrase-file", pf_s, &format!("{id}:")],
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(err.contains("id generate --passphrase-file"), "{args:?}: {err}");
+        assert!(!key.exists() && !pub_key.exists() && !daemon_key.exists(), "{args:?}");
+    }
+    // The full form makes the protected key, and then the same commands work.
+    assert!(irsync(&home, &["id", "generate", "--passphrase-file", pf_s]).status.success());
+    assert!(irsync(&home, &["id", "show", "--passphrase-file", pf_s]).status.success());
+
+    // Without the flag a missing key is still generated, unencrypted
+    // (second fresh home, key2), also with IRSYNC_PASSPHRASE set.
+    let o = irsync(&home2, &["id", "show"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
     assert!(!ssh_key::PrivateKey::read_openssh_file(&key2).unwrap().is_encrypted());
 }
 ```
 
+The daemon case must fail before it binds or prints `endpoint id:`; if the daemon checks other things first (running as root, the lock), set the test up so it gets as far as the key.
+
 - [ ] **Step 6: Run them and see them fail**
 
-Run: `cargo test -p irsync --test commands_e2e id_generate only_id_generate 2>&1 | tail -20`
-Expected: the first three fail (the key is written unencrypted; the bad files are ignored). `only_id_generate_with_the_file_encrypts` passes already and stays as a guard.
+Run: `cargo test -p irsync --test commands_e2e id_generate only_id_generate commands_refuse 2>&1 | tail -20`
+Expected: the three `id_generate_*` tests fail (the key is written unencrypted; the bad files are ignored). `only_id_generate_with_the_file_encrypts` passes already and stays as a guard. `commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file` passes if Step 3 is done; it pins the library check on the real binary.
 
 - [ ] **Step 7: Implement in `main.rs`**
 
@@ -555,6 +650,8 @@ Expected: the first three fail (the key is written unencrypted; the bad files ar
 - `Some(p)`: `read_passphrase_file(p)`; a read error is reported with the path in the message (`reading passphrase file {path}`); an empty result is `IdentityError::EmptyPassphraseFile(p)`; otherwise pass `Some(&pass)`.
 
 Output is unchanged.
+
+No other change in `main.rs` is needed for the refusal: `load_or_generate` reports it and the callers print the error as they print any identity error. Check each message reads well with its prefix (`irsync id show: no key at ...`). If an existing test passes `--passphrase-file` on a machine without a key and expects a generated one, change it to generate the key first.
 
 - [ ] **Step 8: Run the tests**
 
@@ -569,7 +666,8 @@ git commit -m "Encrypt the key id generate writes with --passphrase-file
 
 irsync could unlock an encrypted identity but not make one. The
 passphrase is the first line of the file, read the same way as for
-unlocking."
+unlocking. With the flag, no other command generates a missing key:
+it would be unencrypted, so they fail and point at id generate."
 ```
 
 ---
@@ -585,7 +683,7 @@ No tests: a book-only change.
 
 - [ ] **Step 1: `command-line.md`**
 
-- Add a short section before `### irsync daemon`, titled `### Flags every command takes`, that says: `-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before or after any command (`irsync -v gc`, `irsync id show -vv`); `-v` asks for the command's own extra output and shows nothing more where a command has none; `-vv` gives info logs, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message; `-q` logs errors only and drops summaries, and wins over `-v`; `RUST_LOG` overrides the level; `--config PATH` names the config file for every command (`irsync --config f host list`); `--passphrase-file PATH` gives the passphrase of an encrypted key to the commands that load one, is ignored by the others, and makes `irsync id generate` write the new key encrypted; any other sync option before a command is an error.
+- Add a short section before `### irsync daemon`, titled `### Flags every command takes`, that says: `-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before or after any command (`irsync -v gc`, `irsync id show -vv`); `-v` asks for the command's own extra output and shows nothing more where a command has none; `-vv` gives info logs, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message; `-q` logs errors only and drops summaries, and wins over `-v`; `RUST_LOG` overrides the level; `--config PATH` names the config file for every command (`irsync --config f host list`); `--passphrase-file PATH` gives the passphrase of an encrypted key to the commands that load one, is ignored by the others, makes `irsync id generate` write the new key encrypted, and stops every other command from generating a missing key; any other sync option before a command is an error.
 - `irsync daemon`: in the usage block `[-v|-q]` becomes `[-v] [-q]`; the two table rows point at the new section (`-v`: "Nothing extra; `-vv` and up log more.").
 - `irsync index` and `irsync gc`: same usage change; `-v` row becomes "Nothing extra; `-vv` and up log more."; `-q` row stays.
 - The `--config PATH` rows of the sync, `daemon`, `index` and `gc` tables stay; no wording change is needed.
@@ -594,7 +692,7 @@ No tests: a book-only change.
 - [ ] **Step 2: `management.md`**
 
 `irsync export update [-n] [-v\|-q] NAME...` becomes `irsync export update [-n] [-v] [-q] NAME...`. Add one sentence near the top of the page: every command here accepts `-v` and `-q`, before or after it; see the command-line reference. The paragraph on `--config` (lines 15 to 17) says the flag may stand before or after the verb; add that it may stand before the noun too: `irsync --config C export add ...`.
-- The `id` table: `irsync id generate` gains `[--passphrase-file PATH]` in its command column, and its effect says: with it, the private key is written encrypted with the passphrase on the first line of that file; a file that is missing or empty is an error and nothing is written; `IRSYNC_PASSPHRASE` does not encrypt. Keys generated on the side (by a sync, `id show`, the daemon) are never encrypted.
+- The `id` table: `irsync id generate` gains `[--passphrase-file PATH]` in its command column, and its effect says: with it, the private key is written encrypted with the passphrase on the first line of that file; a file that is missing or empty is an error and nothing is written; `IRSYNC_PASSPHRASE` does not encrypt. Keys generated on the side (by a sync, `id show`, `id list`, the daemon) are never encrypted, so with `--passphrase-file` those commands do not generate a missing key: they fail and name `irsync id generate`. The line ending of the passphrase file, LF or CR+LF, is not part of the passphrase.
 
 - [ ] **Step 3: `configuration.md`**
 
