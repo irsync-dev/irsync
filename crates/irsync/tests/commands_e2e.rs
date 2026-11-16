@@ -9,6 +9,7 @@ fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
         .env("HOME", home)
         .env("XDG_STATE_HOME", home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -1712,4 +1713,98 @@ fn host_add_says_when_grants_move_to_a_new_id() {
     ok(&home, &["host", "add", "free", &old]);
     let o = irsync(&home, &["host", "add", "free", &new]);
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+fn fresh_home() -> (tempfile::TempDir, std::path::PathBuf) {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    (d, home)
+}
+
+#[test]
+fn verbose_before_a_management_command_runs_the_command() {
+    let (_d, home) = fresh_home();
+    // The first `id show` generates the client identity and says so.
+    assert!(irsync(&home, &["id", "show"]).status.success());
+    let plain = irsync(&home, &["id", "show"]);
+    for args in [
+        &["-v", "id", "show"][..],
+        &["id", "show", "-v"],
+        &["-q", "id", "show"],
+    ] {
+        let o = irsync(&home, args);
+        assert!(o.status.success(), "{args:?}");
+        assert_eq!(o.stdout, plain.stdout, "{args:?}");
+        assert!(o.stderr.is_empty(), "{args:?}");
+    }
+    assert!(plain.stderr.is_empty());
+    let o = irsync(&home, &["host", "list", "-v"]);
+    assert!(o.status.success() && o.stderr.is_empty());
+}
+
+#[test]
+fn config_before_a_command_names_the_file_the_command_uses() {
+    let (_d, home) = fresh_home();
+    let other = home.join("other.toml");
+    let other_s = other.to_str().unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    assert!(
+        irsync(&home, &["--config", other_s, "host", "add", "laptop", &id])
+            .status
+            .success()
+    );
+    assert!(std::fs::read_to_string(&other)
+        .unwrap()
+        .contains("[hosts.laptop]"));
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    let before = irsync(&home, &["--config", other_s, "host", "list"]);
+    let after = irsync(&home, &["host", "list", "--config", other_s]);
+    assert!(before.status.success() && before.stdout == after.stdout);
+    assert!(String::from_utf8_lossy(&before.stdout).contains("laptop"));
+    assert!(!String::from_utf8_lossy(&irsync(&home, &["host", "list"]).stdout).contains("laptop"));
+}
+
+#[test]
+fn vv_turns_logging_on_for_every_command() {
+    let (_d, home) = fresh_home();
+    for args in [
+        &["gc", "-vv"][..],
+        &["-vv", "id", "show"],
+        &["host", "list", "-vv"],
+        &["show", "-vv"],
+    ] {
+        let o = irsync(&home, args);
+        assert!(o.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("starting irsync"),
+            "{args:?}"
+        );
+    }
+    // stdout is the same with and without logging.
+    assert_eq!(
+        irsync(&home, &["-vv", "id", "show"]).stdout,
+        irsync(&home, &["id", "show"]).stdout
+    );
+}
+
+#[test]
+fn one_v_on_gc_logs_nothing_and_quiet_drops_the_summary() {
+    let (_d, home) = fresh_home();
+    let o = irsync(&home, &["gc", "-v"]);
+    assert!(o.status.success() && o.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("0 part file(s)"));
+    let o = irsync(&home, &["-q", "gc"]);
+    assert!(o.status.success() && o.stdout.is_empty() && o.stderr.is_empty());
+    let o = irsync(&home, &["gc", "-vv", "-q"]);
+    assert!(o.stdout.is_empty() && o.stderr.is_empty());
+}
+
+#[test]
+fn a_sync_option_before_a_command_exits_2() {
+    let (_d, home) = fresh_home();
+    let o = irsync(&home, &["-a", "gc"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr)
+        .contains("-a is a sync option and cannot be used with 'gc'"));
 }

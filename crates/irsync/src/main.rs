@@ -53,6 +53,9 @@ fn main() {
         exit_after_capture(run_list(args, &opts));
     }
     let (log, files) = (args.log, &args.files);
+    if !matches!(args.cmd, None | Some(Command::Daemon(_))) {
+        init_command_logging(log);
+    }
     match &args.cmd {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
@@ -80,6 +83,12 @@ fn main() {
 fn exit_after_capture(code: i32) -> ! {
     irsync::net::tap::drain_capture(std::time::Duration::from_secs(2));
     std::process::exit(code)
+}
+
+/// Logging for every command but a sync and the daemon, which set up
+/// their own: `-v` alone is still warnings, as for a sync.
+fn init_command_logging(log: LogArgs) {
+    init_logging(log.verbose.saturating_sub(1), log.quiet, LogWriter::new());
 }
 
 /// The log filter for `-q` and `-v` on both sides, unless `RUST_LOG` is set.
@@ -306,7 +315,6 @@ const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
-    init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<()> {
         let dir = Config::load(&file_paths(files))?.settings.state_dir;
         let rt = tokio::runtime::Runtime::new()?;
@@ -1223,7 +1231,6 @@ async fn session(
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
-    init_logging(log.verbose, log.quiet, LogWriter::new());
     let state = match Config::load(&file_paths(files)) {
         Ok(c) => c.settings.state_dir,
         Err(e) => {
@@ -1248,7 +1255,6 @@ fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
 /// `export update`: the named exports (`all`: every export) under the
 /// daemon's state directory.
 fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
-    init_logging(log.verbose, log.quiet, LogWriter::new());
     let result = (|| -> anyhow::Result<i32> {
         let config = Config::load(paths)?;
         let (settings, exports) = (config.settings, config.exports);
