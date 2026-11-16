@@ -400,3 +400,59 @@ fn cli_builtin_excludes_flags() {
         2
     );
 }
+
+#[test]
+fn cli_check_verbose_lists_entries() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let t = t.as_os_str();
+    assert_eq!(code(&["init".as_ref(), t]), 0);
+    let out = bin()
+        .args(["check".as_ref(), "-v".as_ref(), t])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let o = String::from_utf8_lossy(&out.stdout);
+    assert!(!o.is_empty());
+    assert!(o.lines().all(|l| l.starts_with("EQL ")), "{o}");
+    assert!(o.contains("EQL sub/b.txt kind=file size=5 "), "{o}");
+    let out = bin().args(["check".as_ref(), t]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn cli_verbose_help_names_the_entry_lines() {
+    let out = bin().args(["check", "--help"]).output().unwrap();
+    let o = String::from_utf8_lossy(&out.stdout);
+    assert!(o.contains("one line per entry"), "{o}");
+}
+
+#[test]
+fn cli_check_verbose_survives_closed_stdout() {
+    let d = tempfile::tempdir().unwrap();
+    for i in 0..2000 {
+        std::fs::write(d.path().join(format!("f{i:04}")), "x").unwrap();
+    }
+    let t = d.path().as_os_str();
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t]), 0);
+    let mut child = bin()
+        .args(["check".as_ref(), "-v".as_ref(), t])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let e = String::from_utf8_lossy(&out.stderr);
+    // 0 when the run finished before the pipe closed.
+    assert!(
+        matches!(out.status.code(), Some(0 | 2)),
+        "{:?} {e}",
+        out.status
+    );
+    assert!(!e.contains("panicked"), "{e}");
+    if out.status.code() == Some(2) {
+        assert!(e.contains("error: "), "{e}");
+    }
+}

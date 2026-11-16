@@ -9,6 +9,7 @@ use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::{NoProgress, Progress, TermProgress};
 use fileset::store::Backend;
 
+/// The engine options, and whether to draw the spinner.
 fn common_opts(a: CommonArgs) -> (CommonOpts, bool) {
     let jobs = a
         .jobs
@@ -24,7 +25,8 @@ fn common_opts(a: CommonArgs) -> (CommonOpts, bool) {
         builtin_excludes: !a.no_builtin_excludes,
         verbose: a.verbose,
     };
-    (opts, a.quiet)
+    let spinner = show_spinner(a.quiet, a.verbose, std::io::stderr().is_terminal());
+    (opts, spinner)
 }
 
 fn parse_fields(names: &[String]) -> Result<Vec<Field>, String> {
@@ -45,8 +47,14 @@ fn fail(msg: &str) -> ! {
     std::process::exit(2);
 }
 
-fn progress_for(quiet: bool) -> Box<dyn Progress> {
-    if !quiet && std::io::stderr().is_terminal() {
+/// The spinner is drawn on a terminal, unless `-q` asks for silence or `-v` prints a line
+/// per entry: the lines and the spinner would share the screen.
+fn show_spinner(quiet: bool, verbose: bool, stderr_is_terminal: bool) -> bool {
+    !quiet && !verbose && stderr_is_terminal
+}
+
+fn progress_for(spinner: bool) -> Box<dyn Progress> {
+    if spinner {
         Box::new(TermProgress::new())
     } else {
         Box::new(NoProgress)
@@ -59,7 +67,7 @@ fn main() {
     let mut err = std::io::stderr();
     let result: anyhow::Result<Outcome> = match cli.command {
         Command::Init(a) => {
-            let (common, quiet) = common_opts(a.common);
+            let (common, spinner) = common_opts(a.common);
             let backend = a.store.map(|b| match b {
                 BackendArg::Sqlite => Backend::Sqlite,
                 BackendArg::Fjall => Backend::Fjall,
@@ -68,10 +76,10 @@ fn main() {
                 common,
                 mode: Mode::Init { backend },
             };
-            update(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
+            update(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
         }
         Command::Update(a) => {
-            let (common, quiet) = common_opts(a.common);
+            let (common, spinner) = common_opts(a.common);
             let opts = UpdateOpts {
                 common,
                 mode: Mode::Update {
@@ -79,7 +87,7 @@ fn main() {
                     force_xattr_reads: a.force_xattr_reads,
                 },
             };
-            update(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
+            update(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
         }
         Command::Check(a) => {
             let tier = if a.relaxed {
@@ -91,14 +99,14 @@ fn main() {
             };
             let ignore = parse_fields(&a.ignore).unwrap_or_else(|m| fail(&m));
             let require = parse_fields(&a.require).unwrap_or_else(|m| fail(&m));
-            let (common, quiet) = common_opts(a.common);
+            let (common, spinner) = common_opts(a.common);
             let opts = CheckOpts {
                 common,
                 tier,
                 ignore,
                 require,
             };
-            check(&opts, &mut out, &mut err, progress_for(quiet).as_ref())
+            check(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
         }
     };
     let flushed = out.flush();
@@ -106,5 +114,18 @@ fn main() {
         Ok(outcome) if flushed.is_ok() => std::process::exit(outcome.exit_code()),
         Ok(_) => fail("cannot write to stdout"),
         Err(e) => fail(&format!("{e:#}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spinner_only_on_a_terminal_without_quiet_or_verbose() {
+        assert!(show_spinner(false, false, true));
+        assert!(!show_spinner(false, true, true));
+        assert!(!show_spinner(true, false, true));
+        assert!(!show_spinner(false, false, false));
     }
 }
