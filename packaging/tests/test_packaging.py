@@ -20,6 +20,10 @@ UPDATE = os.path.join(PKG, "update-repo.sh")
 REPO_VERSION = os.path.join(PKG, "repo-version.sh")
 UID = "irsync releases <releases@irsync.org>"
 TOOLS = ["nfpm", "apt-ftparchive", "createrepo_c", "rpm", "rpmsign", "gpg", "dpkg-deb"]
+MAN_TEXT = ".TH TEST 1\nshort page\n"
+MAN_PAGES = ["man/man1/irsync.1", "man/man1/fileset.1", "man/man5/irsync.toml.5"]
+MAN = ["usr/share/man/man1/fileset.1.gz", "usr/share/man/man1/irsync.1.gz",
+       "usr/share/man/man5/irsync.toml.5.gz"]
 ARCHES = {  # rust triple arch -> (deb arch, rpm arch)
     "x86_64": ("amd64", "x86_64"),
     "aarch64": ("arm64", "aarch64"),
@@ -77,6 +81,10 @@ class Base(unittest.TestCase):
             for name in ("LICENSE", "README.md"):
                 with open(os.path.join(d, name), "w") as f:
                     f.write(name + "\n")
+            for page in MAN_PAGES:
+                os.makedirs(os.path.dirname(os.path.join(d, page)), exist_ok=True)
+                with open(os.path.join(d, page), "w") as f:
+                    f.write(MAN_TEXT)
             with tarfile.open(os.path.join(cls.archives, triple + ".tar.xz"), "w:xz") as t:
                 t.add(d, arcname=triple)
         cls.built = {}
@@ -164,13 +172,53 @@ class Tests(Base):
             self.assertTrue(os.path.isfile(rpm), rpm)
             files = [l.split()[-1] for l in run("dpkg-deb", "-c", deb).stdout.splitlines()
                      if not l.startswith("d")]
-            self.assertEqual(sorted(files), ["./usr/bin/fileset", "./usr/bin/irsync"])
+            self.assertEqual(sorted(files), sorted(
+                ["./usr/bin/fileset", "./usr/bin/irsync"] + ["./" + m for m in MAN]))
             self.assertEqual(run("dpkg-deb", "-f", deb, "Version").stdout.strip(), "0.2.0")
             self.assertEqual(run("dpkg-deb", "-f", deb, "Architecture").stdout.strip(), deb_arch)
             self.assertEqual(run("dpkg-deb", "-f", deb, "Maintainer").stdout.strip(), UID)
             listed = run("rpm", "-qpl", rpm).stdout.split()
-            self.assertEqual(sorted(listed), ["/usr/bin/fileset", "/usr/bin/irsync"])
+            self.assertEqual(sorted(listed), sorted(
+                ["/usr/bin/fileset", "/usr/bin/irsync"] + ["/" + m for m in MAN]))
             self.assertEqual(run("rpm", "-qp", "--qf", "%{ARCH}", rpm).stdout, rpm_arch)
+
+    def extract_man(self, deb, dest):
+        os.makedirs(dest)
+        run("dpkg-deb", "-x", deb, dest)
+        return {m: os.path.join(dest, m) for m in MAN}
+
+    def test_man_pages_are_gzip_and_0644(self):
+        first = self.build("0.2.0")
+        second = os.path.join(self.root, "out-0.2.0-again")
+        run(BUILD, self.archives, "0.2.0", second, env=self.env)
+        for deb_arch, _ in ARCHES.values():
+            name = f"irsync_0.2.0_{deb_arch}.deb"
+            a = self.extract_man(f"{first}/{name}", os.path.join(self.root, "x1-" + deb_arch))
+            b = self.extract_man(f"{second}/{name}", os.path.join(self.root, "x2-" + deb_arch))
+            for m in MAN:
+                self.assertEqual(os.stat(a[m]).st_mode & 0o777, 0o644, m)
+                with gzip.open(a[m], "rt") as f:
+                    self.assertEqual(f.read(), MAN_TEXT)
+                with open(a[m], "rb") as fa, open(b[m], "rb") as fb:
+                    self.assertEqual(fa.read(), fb.read(), m)
+
+    def test_archive_without_man_pages_fails(self):
+        bare = os.path.join(self.root, "bare-archives")
+        os.mkdir(bare)
+        for arch in ARCHES:
+            triple = f"irsync-{arch}-unknown-linux-musl"
+            d = os.path.join(self.root, "bare-stage", triple)
+            os.makedirs(d)
+            for name in ("irsync", "fileset"):
+                with open(os.path.join(d, name), "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(os.path.join(d, name), 0o755)
+            with tarfile.open(os.path.join(bare, triple + ".tar.xz"), "w:xz") as t:
+                t.add(d, arcname=triple)
+        r = run(BUILD, bare, "0.2.0", os.path.join(self.root, "bare-out"),
+                env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("irsync.1", r.stderr)
 
     def test_apt_metadata_signed(self):
         repo = self.new_repo()

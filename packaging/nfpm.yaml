@@ -3,6 +3,8 @@
 #   IRSYNC_ARCH     amd64 or arm64
 #   IRSYNC_RELEASE  "1" for rpm, empty for deb (so the deb version is exactly the version)
 #   IRSYNC_BIN_DIR  directory holding the irsync and fileset binaries
+#   IRSYNC_MAN_DIR  directory holding the gzipped pages: man1/irsync.1.gz,
+#                   man1/fileset.1.gz and man5/irsync.toml.5.gz
 name: irsync
 version: ${IRSYNC_VERSION}
 release: ${IRSYNC_RELEASE}
@@ -29,3 +31,18 @@ contents:
     expand: true
     file_info:
       mode: 0755
+  - src: ${IRSYNC_MAN_DIR}/man1/irsync.1.gz
+    dst: /usr/share/man/man1/irsync.1.gz
+    expand: true
+    file_info:
+      mode: 0644
+  - src: ${IRSYNC_MAN_DIR}/man1/fileset.1.gz
+    dst: /usr/share/man/man1/fileset.1.gz
+    expand: true
+    file_info:
+      mode: 0644
+  - src: ${IRSYNC_MAN_DIR}/man5/irsync.toml.5.gz
+    dst: /usr/share/man/man5/irsync.toml.5.gz
+    expand: true
+    file_info:
+      mode: 0644
