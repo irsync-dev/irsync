@@ -10,6 +10,7 @@ name = "fileset"
 path = "src/main.rs"
 
 [dependencies]
+irsync-glob = { path = "../irsync-glob" }
 clap = { workspace = true }
 blake3 = { workspace = true }
 rusqlite = { workspace = true }

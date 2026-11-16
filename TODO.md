@@ -18,15 +18,6 @@
           not updated on its own
 - [ ] Adversarial fuzz testing / hardening for the daemon mode
 - [ ] Performance and resource measurements on daemon mode, potentially re-think execution model (fork vs. threads, ulimits)
-- [ ] Revisit the two pattern matchers before the beta ends. irsync matches
-      `--exclude` and `--include` patterns with its own code
-      (`crates/irsync/src/filter.rs`); `fileset list` (#29) adds a second,
-      smaller matcher inside fileset that follows the same rules. Decide
-      whether to keep both, move them into one shared crate, or use a
-      library such as `globset`, and settle the rules they share.
-    - Any change in what a pattern matches is a breaking change for users'
-      scripts and filter files. It can only be made during the beta, so
-      this has to be decided before the first stable release.
 
 # Open items found while working, 2026-10-28
 

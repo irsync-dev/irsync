@@ -1242,6 +1242,7 @@ dependencies = [
  "crossbeam-channel",
  "fjall",
  "indicatif",
+ "irsync-glob",
  "jiff",
  "libc",
  "prost",
@@ -2191,6 +2192,7 @@ dependencies = [
  "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
  "irsync",
+ "irsync-glob",
  "irsync-proto",
  "jwalk",
  "metrics",
@@ -2227,6 +2229,10 @@ dependencies = [
  "url",
  "vergen-gitcl",
 ]
+
+[[package]]
+name = "irsync-glob"
+version = "0.1.0-beta.3"
 
 [[package]]
 name = "irsync-proto"
