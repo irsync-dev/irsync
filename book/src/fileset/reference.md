@@ -1,17 +1,11 @@
 # fileset reference
 
 `fileset` records the state of a directory tree in a manifest and later
-verifies the tree against it. It lives in `crates/fileset` and shares no code
-with `irsync`. For an introduction, see [Introduction to fileset](introduction.md).
-The how-to pages are [Verify an rsync or rclone transfer](verify-other-tools.md),
+verifies the tree against it. For an introduction, see
+[Introduction to fileset](introduction.md). The how-to pages are
+[Verify an rsync or rclone transfer](verify-other-tools.md),
 [Verify an irsync transfer](verify-irsync.md), [Check data for bitrot](bitrot.md)
 and [Keep a manifest current](keep-current.md).
-
-Install it with:
-
-```sh
-cargo install --git https://github.com/irsync-dev/irsync fileset
-```
 
 ## Commands
 
