@@ -174,13 +174,6 @@ fn row_to_entry(row: &Row, base: usize) -> rusqlite::Result<Entry> {
     })
 }
 
-fn load_xattrs(conn: &Connection, path: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let mut st =
-        conn.prepare_cached("SELECT name, value FROM xattrs WHERE path = ? ORDER BY name")?;
-    let rows = st.query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
 /// The entry at `path` with its xattrs, in one query: a row per xattr, or one without.
 fn get_entry(conn: &Connection, path: &[u8]) -> Result<Option<Entry>> {
     let sql = format!(
@@ -334,14 +327,32 @@ impl Store for SqliteStore {
     }
 
     fn for_each(&self, f: &mut dyn FnMut(&[u8], &Entry) -> Result<()>) -> Result<()> {
-        let sql = format!("SELECT path, {ENTRY_COLS} FROM entries ORDER BY path");
+        // One statement for entries and their xattrs: a row per xattr, or one row
+        // without. Both tables are keyed by path, so nothing is sorted.
+        let sql = format!(
+            "SELECT e.path, {ENTRY_COLS}, x.name, x.value FROM entries e \
+             LEFT JOIN xattrs x ON x.path = e.path ORDER BY e.path, x.name"
+        );
         let mut st = self.conn.prepare(&sql)?;
         let mut rows = st.query([])?;
+        let mut current: Option<(Vec<u8>, Entry)> = None;
         while let Some(row) = rows.next()? {
             let path: Vec<u8> = row.get(0)?;
-            let mut e = row_to_entry(row, 1)?;
-            e.xattrs = load_xattrs(&self.conn, &path)?;
-            f(&path, &e)?;
+            if current.as_ref().is_some_and(|(p, _)| *p != path) {
+                if let Some((p, e)) = current.take() {
+                    f(&p, &e)?;
+                }
+            }
+            let (_, e) = match &mut current {
+                Some(c) => c,
+                None => current.insert((path, row_to_entry(row, 1)?)),
+            };
+            if let Some(name) = row.get::<_, Option<Vec<u8>>>(18)? {
+                e.xattrs.push((name, row.get(19)?));
+            }
+        }
+        if let Some((p, e)) = current {
+            f(&p, &e)?;
         }
         Ok(())
     }

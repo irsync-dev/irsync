@@ -75,6 +75,48 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
         vec![b"a".to_vec(), b"a/c".to_vec(), b"b".to_vec(), b"x".to_vec()]
     );
 
+    // for_each hands every entry its attributes. They are stored in name order (the
+    // walk sorts them when it reads an entry), and come back that way.
+    let mut none = entry(3);
+    none.xattrs = vec![];
+    let mut one = entry(3);
+    one.xattrs = vec![(b"user.a".to_vec(), b"1".to_vec())];
+    let mut three = entry(3);
+    three.xattrs = vec![
+        (b"user.a".to_vec(), vec![0, 255]),
+        (b"user.b".to_vec(), b"".to_vec()),
+        (b"user.c".to_vec(), b"3".to_vec()),
+    ];
+    s.put_batch(&[
+        (b"w/none".to_vec(), none),
+        (b"w/one".to_vec(), one),
+        (b"w/three".to_vec(), three),
+    ])
+    .unwrap();
+    let mut seen = Vec::new();
+    s.for_each(&mut |k, e| {
+        if k.starts_with(b"w/") {
+            seen.push((k.to_vec(), e.xattrs.clone()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            (b"w/none".to_vec(), vec![]),
+            (b"w/one".to_vec(), vec![(b"user.a".to_vec(), b"1".to_vec())]),
+            (
+                b"w/three".to_vec(),
+                vec![
+                    (b"user.a".to_vec(), vec![0, 255]),
+                    (b"user.b".to_vec(), b"".to_vec()),
+                    (b"user.c".to_vec(), b"3".to_vec()),
+                ]
+            ),
+        ]
+    );
+
     // sweep: only x was not seen
     assert_eq!(s.sweep(&|k| k != b"x").unwrap(), 1);
     assert_eq!(s.get(b"x").unwrap(), None);
