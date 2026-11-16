@@ -1,0 +1,188 @@
+#!/bin/sh
+# Install irsync @VERSION@ for this account: the irsync and fileset programs
+# into ~/.local/bin and their manual pages into ~/.local/share/man.
+#
+#   sh irsync-installer.sh               install
+#   sh irsync-installer.sh --uninstall   remove what the installer placed
+#   sh irsync-installer.sh --help
+#
+# It downloads the release tarball for this platform over HTTPS, checks its
+# SHA-256 against the value written in below, and changes nothing under your
+# home directory until that check has passed. It never edits shell startup
+# files. IRSYNC_NO_MODIFY_PATH is accepted and ignored, since there is nothing
+# to turn off.
+#
+# For tests only: IRSYNC_INSTALLER_ARCHIVE_DIR=DIR reads
+# DIR/irsync-<target>.tar.xz instead of downloading it.
+set -eu
+
+# Everything runs inside main, called on the last line, so a download cut short
+# under `curl | sh` runs nothing.
+main() {
+  version='@VERSION@'
+  base_url='@BASE_URL@'
+  page=https://github.com/irsync-dev/irsync/releases
+  cleanup=https://irsync.org/book/how-to/clean-up.html
+
+  say() { printf 'irsync: %s\n' "$*" >&2; }
+  die() { say "$*"; exit 1; }
+  usage() { printf 'usage: sh irsync-installer.sh [--uninstall | --help]\n'; }
+
+  mode=install
+  if [ $# -gt 1 ]; then
+    usage >&2; exit 2
+  fi
+  case ${1-} in
+    '') ;;
+    --uninstall) mode=uninstall ;;
+    --help)
+      usage
+      printf '\n%s\n' "Installs irsync $version into ~/.local/bin and its manual pages into
+~/.local/share/man. --uninstall removes them again; your config and state
+stay in place."
+      exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+
+  [ -n "${HOME-}" ] || die "HOME is not set"
+  bin=$HOME/.local/bin
+  man1=$HOME/.local/share/man/man1
+  man5=$HOME/.local/share/man/man5
+
+  if [ "$mode" = uninstall ]; then
+    # Missing files are fine. Directories stay: they may hold other things.
+    for f in "$bin/irsync" "$bin/fileset" "$man1/irsync.1" "$man1/fileset.1" \
+             "$man5/irsync.toml.5" "$HOME/.config/irsync/irsync-receipt.json"; do
+      if [ -e "$f" ] || [ -L "$f" ]; then
+        rm -f "$f" || die "could not remove $f"
+        say "removed $f"
+      fi
+    done
+    say "left your config (~/.config/irsync) and state (~/.local/state/irsync by
+  default) in place; to remove them too, see $cleanup"
+    if [ -f "$HOME/.config/irsync/env.sh" ]; then
+      say "an earlier installer wrote ~/.config/irsync/env.sh, and your shell startup
+  files (.profile, .bashrc, .zshrc, .zshenv and the like) still source it.
+  Remove those lines before you delete ~/.config/irsync."
+    fi
+    exit 0
+  fi
+
+  os=$(uname -s)
+  arch=$(uname -m)
+  case $os/$arch in
+    Darwin/arm64)
+      target=aarch64-apple-darwin
+      sha=@SHA256_AARCH64_APPLE_DARWIN@ ;;
+    Linux/aarch64 | Linux/arm64)
+      target=aarch64-unknown-linux-musl
+      sha=@SHA256_AARCH64_UNKNOWN_LINUX_MUSL@ ;;
+    Linux/x86_64 | Linux/amd64)
+      target=x86_64-unknown-linux-musl
+      sha=@SHA256_X86_64_UNKNOWN_LINUX_MUSL@ ;;
+    *)
+      die "there is no irsync build for $os $arch. Builds exist for
+  aarch64-apple-darwin (macOS on Apple silicon), aarch64-unknown-linux-musl
+  and x86_64-unknown-linux-musl (Linux). Releases are listed at $page" ;;
+  esac
+  name=irsync-$target.tar.xz
+  url=$base_url/$name
+
+  # Checked before the download, so a missing tool costs nothing.
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256() { sha256sum; }
+  elif command -v shasum >/dev/null 2>&1; then
+    sha256() { shasum -a 256; }
+  else
+    die "need sha256sum or shasum to check the download"
+  fi
+
+  # HTTPS only, also after a redirect: a redirect to plain HTTP would let
+  # anyone on the network path swap the download.
+  fetch() { # URL: print the body on stdout
+    if command -v curl >/dev/null 2>&1; then
+      curl --proto '=https' --tlsv1.2 -fsSL "$1"
+    elif command -v wget >/dev/null 2>&1; then
+      wget --https-only -qO- "$1"
+    else
+      die "need curl or wget to download releases"
+    fi
+  }
+
+  if [ -z "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
+    # BusyBox wget (Alpine's default) has no --https-only.
+    if ! command -v curl >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 &&
+       ! wget --help 2>&1 | grep -q -- --https-only; then
+      die "this wget cannot refuse plain HTTP downloads; install curl and run again"
+    fi
+  fi
+
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+
+  if [ -n "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
+    cp "$IRSYNC_INSTALLER_ARCHIVE_DIR/$name" "$tmp/$name" ||
+      die "could not read $IRSYNC_INSTALLER_ARCHIVE_DIR/$name"
+  else
+    say "downloading $url"
+    fetch "$url" >"$tmp/$name" || die "could not download $url"
+  fi
+
+  # Read from stdin, so the output is "HEX  -" whatever the path holds.
+  got=$(sha256 <"$tmp/$name") || die "could not compute the checksum of $name"
+  got=${got%% *}
+  if [ "$got" != "$sha" ]; then
+    die "checksum mismatch for $name: expected $sha, got $got.
+  Nothing was installed. Try again; if it keeps failing, report it at
+  https://github.com/irsync-dev/irsync/issues"
+  fi
+
+  mkdir "$tmp/x"
+  if ! tar -xJf "$tmp/$name" -C "$tmp/x" 2>"$tmp/tar.err"; then
+    cat "$tmp/tar.err" >&2
+    die "could not unpack $name. This tar may not read xz files (BusyBox tar
+  and old tars cannot); install xz, or GNU tar with xz, and run again"
+  fi
+  src=$tmp/x/irsync-$target
+  for f in irsync fileset man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+    [ -f "$src/$f" ] || die "$name has no $f; nothing was installed"
+  done
+
+  # Copy to a temporary name beside the target, then rename: a running irsync
+  # keeps its old file, and no one sees a half-written one.
+  place() { # SRC DIR NAME MODE
+    mkdir -p "$2" || die "could not create $2"
+    part=$2/.$3.irsync-installer.$$
+    if ! { cp "$1" "$part" && chmod "$4" "$part" && mv -f "$part" "$2/$3"; }; then
+      rm -f "$part"
+      die "could not install $2/$3"
+    fi
+  }
+  place "$src/irsync" "$bin" irsync 0755
+  place "$src/fileset" "$bin" fileset 0755
+  place "$src/man/man1/irsync.1" "$man1" irsync.1 0644
+  place "$src/man/man1/fileset.1" "$man1" fileset.1 0644
+  place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
+
+  case ":${PATH-}:" in
+    *":$bin:"* | *":$bin/:"*) ;;
+    *)
+      shell=${SHELL-}
+      case ${shell##*/} in
+        fish) say "$bin is not on your PATH. To add it, run: fish_add_path ~/.local/bin" ;;
+        *)
+          case ${shell##*/} in
+            zsh) rc='~/.zshrc' ;;
+            bash) rc='~/.bashrc' ;;
+            *) rc='~/.profile' ;;
+          esac
+          say "$bin is not on your PATH. To add it, put this line in $rc:
+  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+      esac ;;
+  esac
+
+  say "installed irsync $version"
+  say "the manual is in place: man irsync"
+}
+
+main "$@"
