@@ -174,12 +174,16 @@ local function link(el, chapter, state, notes)
     end
   end
   -- Another page of the book: the first link to it gives its URL, after
-  -- the block it is in. A URL is wider than most lines.
-  if not state.linked[path] then
-    state.linked[path] = true
-    local url = BOOK .. path:gsub("%.md$", ".html") .. (anchor ~= "" and "#" .. anchor or "")
-    table.insert(notes, { text = text:clone(), url = url })
+  -- the block it is in (a URL is wider than most lines). Later links say
+  -- it is in the book, as the explanations do.
+  if state.linked[path] then
+    text:extend({ pandoc.Space(), pandoc.Str("in"), pandoc.Space(),
+      pandoc.Str("the"), pandoc.Space(), pandoc.Str("book") })
+    return text
   end
+  state.linked[path] = true
+  local url = BOOK .. path:gsub("%.md$", ".html") .. (anchor ~= "" and "#" .. anchor or "")
+  table.insert(notes, { text = text:clone(), url = url })
   return text
 end
 
@@ -472,8 +476,8 @@ function Pandoc(doc)
       elseif b.t == "Table" then
         b = convert_table(b)
       end
-      local notes = {}
-      b = pandoc.walk_block(b, { Link = function(el) return link(el, nil, state, notes) end })
+      -- A header has no links into the book, only URLs.
+      b = pandoc.walk_block(b, { Link = function(el) return link(el, nil, state, {}) end })
       out:insert(b)
     end
   end

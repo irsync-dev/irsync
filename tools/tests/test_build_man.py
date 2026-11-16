@@ -231,14 +231,15 @@ class BuildManTests(unittest.TestCase):
             for line in render(page).splitlines():
                 if len(line) <= 80 or re.search(r"[0-9a-f]{64}|=\d{4}-\d\d-\d\dT[\d:.]+Z", line):
                     continue
-                if re.fullmatch(r"\s*(\S+: )?https://\S+", line):
+                if re.fullmatch(r"\s*([^:]+: )?https://\S+", line):
                     continue
                 self.fail(f"{os.path.basename(page)}: {len(line)} columns: {line!r}")
 
     def test_help_is_not_called_rsync_compatible(self):
         text = render(self.irsync)
         self.assertNotIn("-h, --help", section(text, "RSYNC-COMPATIBLE FLAGS", subsections=False))
-        self.assertIn("--human-readable", section(text, "RSYNC-COMPATIBLE FLAGS"))
+        flags = " ".join(section(text, "RSYNC-COMPATIBLE FLAGS").split())
+        self.assertIn("-h is --human-readable, except on its own, where it prints the help", flags)
 
     def test_rsync_options_irsync_lacks(self):
         text = section(render(self.irsync), "LIMITATIONS")
@@ -312,6 +313,17 @@ class BuildManTests(unittest.TestCase):
         self.assertIn("https://irsync.org/book/how-to/seed-the-index.html", text)
         self.assertNotIn("https://irsync.org/book/explanation/", text)
         self.assertIn("in the book", text)
+
+    def test_repeated_book_links_say_in_the_book(self):
+        # A book page's URL is given once; later links to it still say
+        # where the page is.
+        text = " ".join(render(self.irsync).split())
+        self.assertEqual(text.count("https://irsync.org/book/how-to/clean-up.html"), 1)
+        self.assertIn("Clean up state: https://irsync.org/book/how-to/clean-up.html", text)
+        self.assertIn("is in Clean up state in the book.", text)
+        self.assertIn("See Seed the index in the book.", text)
+        files = " ".join(section(render(self.irsync), "FILES").split())
+        self.assertEqual(files.count("Clean up state"), files.count("Clean up state in the book"))
         for page in self.pages:  # no raw Markdown link targets
             self.assertNotRegex(read(page), r"\w\.md[#)]")
 

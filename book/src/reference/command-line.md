@@ -59,12 +59,12 @@ irsync myserver:
 irsync myserver:/srv/photos/
 ```
 
-Push into the export named `photos` and delete what is gone from the source.
-Run it with `-n` first to see what would change:
+Push again and delete on the server what is gone from the source. Run it
+with `-n` first to see what would change:
 
 ```sh
-irsync -avn --delete ~/Photos/ myserver:photos/
-irsync -av --delete ~/Photos/ myserver:photos/
+irsync -avn --delete ~/Photos/ myserver:/srv/photos/
+irsync -av --delete ~/Photos/ myserver:/srv/photos/
 ```
 
 ## Operands
@@ -177,7 +177,7 @@ wins.
 | `--progress` | Draws the live progress block (see [Output](#output)) when stdout is a terminal. | Prints the progress of each file. |
 | `-P` | The same as `--progress`. irsync always keeps partial files. | The same as `--partial --progress`. |
 | `--info SPEC` | Only `progress1` and `progress2` are read, as `--progress`; the rest is ignored. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
-| `-h`, `--help` | Print the flags. | `-h` is `--human-readable`; only `--help` prints the help. |
+| `-h`, `--help` | Print the flags and exit, also when other flags or operands are given. | `-h` is `--human-readable`, except on its own, where it prints the help. |
 
 ### Deletions
 
