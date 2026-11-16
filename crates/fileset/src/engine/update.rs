@@ -187,7 +187,7 @@ pub fn update(
             Some(e) => warnings.emit(&format!("cannot hash {}: {e}", escape(&obs.path)))?,
             None if sent => {
                 summary.hashed += 1;
-                progress.hashed_bytes(obs.entry.size);
+                progress.hashed(obs.entry.size, obs.hash_cpu);
             }
             None => {}
         }

@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod compare;
+pub mod cpu;
 pub mod engine;
 pub mod escape;
 pub mod hash;

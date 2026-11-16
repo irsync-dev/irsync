@@ -83,7 +83,7 @@ pub fn check(
             WalkEvent::Entry(obs) => obs,
         };
         if obs.entry.blake3.is_some() {
-            progress.hashed_bytes(obs.entry.size);
+            progress.hashed(obs.entry.size, obs.hash_cpu);
         }
         progress.entry();
         let Some(stored) = store.borrow().get(&obs.path)? else {

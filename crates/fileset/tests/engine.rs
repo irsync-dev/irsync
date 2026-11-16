@@ -1140,7 +1140,7 @@ impl fileset::progress::Progress for Counting {
         self.entries
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    fn hashed_bytes(&self, n: u64) {
+    fn hashed(&self, n: u64, _cpu: std::time::Duration) {
         self.hashed
             .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
