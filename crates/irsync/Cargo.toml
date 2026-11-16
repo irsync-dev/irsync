@@ -92,3 +92,8 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 vergen-gitcl = "10"
+
+# Index throughput and lookups, and a whole pull: run by hand, see the file.
+[[bench]]
+name = "index"
+harness = false

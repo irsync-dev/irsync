@@ -1292,6 +1292,63 @@ fn index_and_gc_use_the_configured_state_dir() {
 }
 
 #[test]
+fn gc_removes_an_older_builds_index_file_unless_it_is_open() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let root = d.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let state = d.path().join("state");
+    let config = d.path().join("irsync.toml");
+    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    let c = config.to_str().unwrap();
+    let o = irsync(&home, &["index", "--config", c, root.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // A version 1 build's file for another root, in WAL mode.
+    let old = state.join("index/00000000000000000000000000000000.sqlite");
+    let held = rusqlite::Connection::open(&old).unwrap();
+    held.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE meta (key TEXT PRIMARY KEY, value);")
+        .unwrap();
+    let stdout = |o: &std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+
+    let o = irsync(&home, &["gc", "-n", "--config", c]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        stdout(&o).contains(&old.display().to_string()),
+        "{}",
+        stdout(&o)
+    );
+    assert!(
+        stdout(&o).contains("1 old index file(s) would be removed"),
+        "{}",
+        stdout(&o)
+    );
+    assert!(old.exists());
+
+    // Open (as an old daemon would hold it): kept.
+    let o = irsync(&home, &["gc", "--config", c]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("in use, kept"));
+    assert!(!stdout(&o).contains("old index file"), "{}", stdout(&o));
+    assert!(old.exists());
+
+    drop(held);
+    let o = irsync(&home, &["gc", "--config", c]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        stdout(&o).contains("1 old index file(s) removed"),
+        "{}",
+        stdout(&o)
+    );
+    let left: Vec<_> = std::fs::read_dir(state.join("index"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].ends_with(".v2.sqlite"), "{left:?}");
+}
+
+#[test]
 fn config_sets_and_checks_the_telemetry_keys() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");

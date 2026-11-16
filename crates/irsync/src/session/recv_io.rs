@@ -964,8 +964,9 @@ fn local_sources(
     wanted: &[(u32, [u8; 32])],
 ) -> io::Result<Vec<ChunkHit>> {
     let mut hits: Vec<_> = wanted.iter().map(|&(i, _)| (i, None)).collect();
-    // The chunks still without a source, each with the last path looked at.
-    let mut todo: Vec<(usize, Option<RelPath>)> = (0..wanted.len()).map(|k| (k, None)).collect();
+    // The chunks still without a source, each with the entry id of the
+    // last holder looked at (the index's cursor for the next page).
+    let mut todo: Vec<(usize, Option<i64>)> = (0..wanted.len()).map(|k| (k, None)).collect();
     // Whether each source looked at is still the file the index describes,
     // by the inode and size it described (a file this session records at a
     // path judged gone is looked at afresh).
@@ -977,7 +978,7 @@ fn local_sources(
                 todo.iter()
                     .map(|(k, after)| {
                         let len = if after.is_some() { SOURCES_PER_PAGE } else { 1 };
-                        let page = r.find_chunks(&wanted[*k].1, after.as_ref(), len)?;
+                        let page = r.find_chunks(&wanted[*k].1, *after, len)?;
                         Ok((*k, len, page))
                     })
                     .collect::<Result<Vec<_>, _>>()
@@ -1004,7 +1005,7 @@ fn local_sources(
             // Every candidate on the page is gone: the next page. The
             // cursor only moves forward, so this ends.
             if hits[k].1.is_none() && page.len() == len {
-                todo.push((k, page.last().map(|h| h.path.clone())));
+                todo.push((k, page.last().map(|h| h.entry_id)));
             }
         }
     }

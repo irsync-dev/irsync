@@ -39,9 +39,11 @@ fn open_creates_file_and_reopens() {
             .unwrap();
     }
     let files: Vec<_> = std::fs::read_dir(d.path().join("index")).unwrap().collect();
-    assert!(files
-        .iter()
-        .any(|f| f.as_ref().unwrap().path().extension().unwrap() == "sqlite"));
+    // One file per schema version: `<root hash>.v2.sqlite`.
+    assert!(files.iter().any(|f| {
+        let p = f.as_ref().unwrap().path();
+        p.to_str().unwrap().ends_with(".v2.sqlite") && Index::is_current_file(&p)
+    }));
     let ix = Index::open(d.path(), &root).unwrap();
     let pragma = |n: &str| -> String {
         let f = std::fs::read_dir(d.path().join("index"))
@@ -60,7 +62,7 @@ fn open_creates_file_and_reopens() {
         })
         .unwrap()
     };
-    assert_eq!(pragma("user_version"), "1");
+    assert_eq!(pragma("user_version"), "2");
     assert_eq!(pragma("journal_mode"), "wal");
     let got = ix.get_entry(&rp("a")).unwrap().unwrap();
     assert_eq!(got.ctime, (1, 2));
@@ -541,7 +543,7 @@ fn a_bad_entry_does_not_cost_its_batch() {
 }
 
 #[test]
-fn find_chunks_lists_each_file_once_by_path() {
+fn find_chunks_lists_each_file_once_by_entry_id() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     std::fs::create_dir(&root).unwrap();
@@ -556,21 +558,21 @@ fn find_chunks_lists_each_file_once_by_path() {
     }
     let h = digest.chunks[0].hash;
     let r = ix.reader();
-    let paths = |after: Option<&str>, limit| {
-        r.find_chunks(&h, after.map(rp).as_ref(), limit)
-            .unwrap()
-            .into_iter()
-            .map(|h| (h.path, h.offset, h.inode, h.size))
-            .collect::<Vec<_>>()
-    };
-    let (ino, size) = (e.inode, e.size);
-    assert_eq!(
-        paths(None, 2),
-        vec![(rp("a"), 0, ino, size), (rp("b"), 0, ino, size)]
-    );
-    assert_eq!(paths(Some("b"), 2), vec![(rp("c"), 0, ino, size)]);
-    assert_eq!(r.find_chunks(&h, None, 9).unwrap().len(), 3);
-    assert_eq!(ix.find_chunk(&h).unwrap(), Some((rp("a"), 0)));
+    let page = |after: Option<i64>, limit| r.find_chunks(&h, after, limit).unwrap();
+    // Each file once, at the chunk's first offset, in entry id order.
+    let all = page(None, 9);
+    let mut paths: Vec<_> = all.iter().map(|h| h.path.clone()).collect();
+    paths.sort();
+    assert_eq!(paths, vec![rp("a"), rp("b"), rp("c")]);
+    assert!(all.windows(2).all(|w| w[0].entry_id < w[1].entry_id));
+    assert!(all
+        .iter()
+        .all(|h| (h.offset, h.inode, h.size) == (0, e.inode, e.size)));
+    // Pages pick up after the last holder's id.
+    let first = page(None, 2);
+    assert_eq!(first, all[..2]);
+    assert_eq!(page(Some(first[1].entry_id), 2), all[2..]);
+    assert_eq!(ix.find_chunk(&h).unwrap(), Some((all[0].path.clone(), 0)));
 }
 
 #[test]
@@ -606,7 +608,7 @@ fn lookups_are_never_re_prepared() {
         let r = ix.reader();
         for limit in [1, 16] {
             r.find_chunks(&h, None, limit).unwrap();
-            r.find_chunks(&h, Some(p), limit).unwrap();
+            r.find_chunks(&h, Some(i as i64), limit).unwrap();
         }
         r.find_chunk(&digest.chunks[i % digest.chunks.len()].hash)
             .unwrap();
@@ -660,4 +662,134 @@ fn queued_removals_and_entries_land_in_order() {
     let found = h.read(|r| r.find_chunks(&chunk, None, 9)).unwrap();
     let found: Vec<_> = found.into_iter().map(|h| (h.path, h.inode)).collect();
     assert_eq!(found, vec![(rp("b"), 10)]);
+}
+
+/// The index file of `root` in `state` (this version's), and the name a
+/// version 1 build gave it.
+fn v2_and_v1_names(state: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let v2 = std::fs::read_dir(state.join("index"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_str().unwrap().ends_with(".v2.sqlite"))
+        .expect("a version 2 index file");
+    let v1 = std::path::PathBuf::from(v2.to_str().unwrap().replace(".v2.sqlite", ".sqlite"));
+    (v2, v1)
+}
+
+fn sidecars(file: &std::path::Path) -> Vec<std::path::PathBuf> {
+    ["", "-wal", "-shm"]
+        .iter()
+        .map(|s| std::path::PathBuf::from(format!("{}{s}", file.display())))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+#[test]
+fn a_new_index_takes_the_partials_and_sessions_of_the_version_1_file() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let digest = digest_bytes(&[5u8; 4096]);
+    let partial = Partial {
+        expected_hash: digest.hash,
+        size: 4096,
+        ranges: RangeSet {
+            ranges: vec![Range {
+                offset: 0,
+                length: 1024,
+            }],
+        },
+        updated_at: 30,
+    };
+    let session = SessionRow {
+        id: [7; 16],
+        key: b"k".to_vec(),
+        plan: vec![1],
+        progress: vec![2],
+        created_at: 10,
+        updated_at: 20,
+    };
+    // An index with an entry, a partial and a session, then renamed to the
+    // version 1 name: the copy reads only `partials` and `sessions`, whose
+    // columns version 2 kept.
+    {
+        let mut ix = Index::open(d.path(), &root).unwrap();
+        ix.put_entry(&rp("a"), &entry("a", None), (1, 2), None)
+            .unwrap();
+        ix.put_partial(&rp("p"), &partial).unwrap();
+        ix.save_session(&session).unwrap();
+    }
+    let (v2, v1) = v2_and_v1_names(d.path());
+    assert_eq!(sidecars(&v2), vec![v2.clone()], "closed: no WAL left");
+    std::fs::rename(&v2, &v1).unwrap();
+
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    assert!(v2.exists());
+    assert_eq!(ix.partial(&rp("p")).unwrap(), Some(partial));
+    assert_eq!(ix.load_session_by_id(&[7; 16]).unwrap(), Some(session));
+    // Entries are not taken: their files are hashed again.
+    assert!(ix.get_entry(&rp("a")).unwrap().is_none());
+    // Only a new file takes them: one reopened does not again.
+    ix.remove_partial(&rp("p")).unwrap();
+    drop(ix);
+    let ix = Index::open(d.path(), &root).unwrap();
+    assert!(ix.partial(&rp("p")).unwrap().is_none());
+    // The old file is left as it was.
+    let old = rusqlite::Connection::open(&v1).unwrap();
+    let n: i64 = old
+        .query_row("SELECT count(*) FROM partials", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn remove_unused_keeps_a_file_another_connection_has_open() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    drop(Index::open(d.path(), &root).unwrap());
+    let (v2, v1) = v2_and_v1_names(d.path());
+    std::fs::rename(&v2, &v1).unwrap();
+    // Another process's connection, idle after a read, as an old daemon's.
+    let other = rusqlite::Connection::open(&v1).unwrap();
+    let _: i64 = other
+        .query_row("SELECT count(*) FROM meta", [], |r| r.get(0))
+        .unwrap();
+    assert!(!Index::remove_unused(&v1).unwrap());
+    assert!(v1.exists());
+    drop(other);
+    assert!(Index::remove_unused(&v1).unwrap());
+    assert_eq!(sidecars(&v1), Vec::<std::path::PathBuf>::new());
+    assert!(!Index::is_current_file(&v1));
+}
+
+#[test]
+fn a_path_written_again_keeps_its_id_and_replaces_its_chunks() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    let (old, new) = (digest_bytes(&[1u8; 4096]), digest_bytes(&[2u8; 4096]));
+    let at = |ix: &Index, h: &[u8; 32]| ix.reader().find_chunks(h, None, 9).unwrap();
+    let mut e = entry("a", Some(old.hash));
+    e.size = old.size;
+    ix.put_entry(&rp("a"), &e, (1, 2), Some(&old)).unwrap();
+    ix.put_entry(&rp("b"), &e, (1, 2), Some(&old)).unwrap();
+    let id = at(&ix, &old.chunks[0].hash)[0].entry_id;
+
+    e.whole_hash = Some(Hash {
+        bytes: new.hash.to_vec(),
+    });
+    ix.put_entry(&rp("a"), &e, (3, 4), Some(&new)).unwrap();
+    let got = ix.get_entry(&rp("a")).unwrap().unwrap();
+    assert_eq!((got.ctime, got.digest), ((3, 4), Some(new.clone())));
+    // Only `b` still holds the old chunk; `a` holds the new one, same id.
+    let holders = at(&ix, &old.chunks[0].hash);
+    assert_eq!(
+        holders.iter().map(|h| &h.path).collect::<Vec<_>>(),
+        [&rp("b")]
+    );
+    let holders = at(&ix, &new.chunks[0].hash);
+    assert_eq!((holders.len(), holders[0].entry_id), (1, id));
+    assert_eq!(ix.entry_identities().unwrap().len(), 2);
 }
