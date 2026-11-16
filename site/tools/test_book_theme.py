@@ -75,6 +75,20 @@ class BookThemeTest(unittest.TestCase):
     def test_inline_code_takes_the_code_token(self):
         self.assertRegex(RULES, r":not\(pre\) > code\s*\{[^}]*font-size:\s*var\(--ir-text-code\)")
 
+    def test_highlight_classes_of_the_dark_theme_are_covered(self):
+        # tomorrow-night.css, mdbook's highlight sheet for Coal and Navy,
+        # colours these classes too; without an override they keep its
+        # hues (bash function names came out blue).
+        covered = set(re.findall(r"html \.(hljs-[\w-]+)", RULES))
+        dark_only = {
+            "hljs-cdata", "hljs-class", "hljs-constant", "hljs-decorator",
+            "hljs-doctype", "hljs-function", "hljs-header", "hljs-hexcolor",
+            "hljs-id", "hljs-inheritance", "hljs-pi", "hljs-pragma",
+            "hljs-preprocessor", "hljs-pseudo", "hljs-rule", "hljs-sub",
+            "hljs-value",
+        }
+        self.assertEqual(dark_only - covered, set())
+
     def test_warning_icon_is_readable(self):
         # mdbook colours the .warning icon with --warning-border, which is
         # the signal-yellow bar: too faint as an icon on the light ground.
@@ -92,6 +106,21 @@ class BookThemeTest(unittest.TestCase):
         hover = re.search(r"button\.clip-button:hover::before\s*\{([^}]*)\}", RULES)
         self.assertIsNotNone(hover)
         self.assertIn("background-color: var(--ir-aqua-ink)", hover.group(1))
+
+    def test_home_link_script_is_loaded(self):
+        toml = _read("book", "book.toml")
+        self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/home-link\.js"')
+        js = _read("book", "theme", "home-link.js")
+        self.assertIn("menu-title", js)
+        self.assertIn('"/"', js)
+
+    def test_home_link_looks_like_the_site_wordmark(self):
+        # The landing page's "irsync": Barlow semibold in ink, no underline.
+        rule = re.search(r"\.menu-title a(?:,\s*\.menu-title a:visited)?\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(rule)
+        self.assertIn("color: var(--ir-ink)", rule.group(1))
+        self.assertIn("text-decoration: none", rule.group(1))
+        self.assertRegex(RULES, r"\.menu-title a:hover\s*\{[^}]*text-decoration: underline")
 
     def test_picker_script_is_loaded(self):
         toml = _read("book", "book.toml")
