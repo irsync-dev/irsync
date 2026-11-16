@@ -1,4 +1,4 @@
-# Man pages for irsync and fileset
+# Man pages for irsync, fileset and irsync.toml
 
 Issue: https://github.com/irsync-dev/irsync/issues/51
 
@@ -9,14 +9,14 @@ reference is the website. That is a poor fit for a tool that runs on servers
 and over bad links, and the online book describes the newest release, not the
 one installed.
 
-Build `irsync(1)` and `fileset(1)` from the book's Markdown and ship them with
-the binaries, so the pages are available offline and always match the
+Build `irsync(1)`, `fileset(1)` and `irsync.toml(5)` (the configuration
+file) from the book's Markdown and ship them with the binaries, so the pages are available offline and always match the
 installed version.
 
 ## Goals
 
-- `man irsync` and `man fileset` work after a default install on Linux and
-  macOS, through the install script, Homebrew, apt and dnf.
+- `man irsync`, `man fileset` and `man irsync.toml` work after a default
+  install on Linux and macOS, through the install script, Homebrew, apt and dnf.
 - The book's Markdown is the single source. The pages cannot drift from it.
 - The installed pages name the installed version.
 - CI fails when the conversion fails or the pages render with warnings.
@@ -26,8 +26,8 @@ installed version.
 
 - Man pages for `cargo install`. It can only install binaries. A TODO entry
   records the follow-up: cargo-binstall packaging.
-- A page for the configuration file (`irsync.toml(5)`) or for the
-  contributor tools (`filegen`, `irsync-stress`, `irsync-netstress`).
+- Pages for the contributor tools (`filegen`, `irsync-stress`,
+  `irsync-netstress`).
 - An uninstall for Homebrew, apt or dnf. Their package managers do that.
 - Changing `site/install.sh`.
 
@@ -104,19 +104,25 @@ template was rejected as more to maintain for the same result.
 | --- | --- |
 | `irsync.1` | `book/src/reference/command-line.md`, then `book/src/reference/management.md` |
 | `fileset.1` | `book/src/fileset/reference.md` |
+| `irsync.toml.5` | `book/src/reference/configuration.md` |
 
-`tools/build-man.sh OUTDIR` builds both pages into `OUTDIR/man1/`. For each
+`irsync.toml(5)` was added at Mike's request. The issue names only the two
+command pages.
+
+`tools/build-man.sh OUTDIR` builds the pages into `OUTDIR/man1/` and
+`OUTDIR/man5/`. For each
 page it:
 
 1. Reads a small per-page header kept next to the script's inputs (for
-   example `packaging/man/irsync.md`, `packaging/man/fileset.md`). The header
+   example `packaging/man/irsync.md`, `packaging/man/fileset.md`,
+`packaging/man/irsync.toml.md`). The header
    holds the man-only framing: the NAME line and the SEE ALSO section. The
    SYNOPSIS, EXIT STATUS, ENVIRONMENT and FILES content already exists in the
    chapters (`Command line`'s opening block, `Exit codes`, `Environment`,
    fileset's `Commands`, `Files`, `Exit codes`) and comes from there.
 2. Concatenates the header and the chapters, in the order above, and runs
    pandoc from GitHub-flavoured Markdown to man format with a Lua filter.
-3. Sets the title block from pandoc variables: name, section 1, the version
+3. Sets the title block from pandoc variables: name, section (1 or 5), the version
    from `packaging/dist/dist.toml` (footer `irsync X.Y.Z`), and the date of
    the commit being built (`git log -1 --format=%cs`), so two builds of one
    commit give the same page.
@@ -145,14 +151,23 @@ fileset's chapter opens with a paragraph about where the crate lives and a
 the reference chapter (the fileset introduction already covers installing)
 instead of teaching the filter to cut them.
 
-SEE ALSO in each page names the other page and the book's URL.
+`irsync.toml(5)` follows the first-chapter heading rule. Its header gives
+the NAME line and a short DESCRIPTION saying where the file lives; the
+chapter's sections (`Values`, `The whole file`, `Client`, `Hosts`, `Daemon`,
+`Exports`, ...) become the page's sections.
+
+SEE ALSO in each page names the other pages and the book's URL. Where
+`irsync(1)` links to the configuration chapter, the filter writes
+`irsync.toml(5)` instead of the book URL; likewise links from
+`irsync.toml(5)` to the command-line and management chapters become
+`irsync(1)`.
 
 ### Tarball
 
 `packaging/dist/build.sh` calls `tools/build-man.sh` and places the result
-at `packaging/dist/man/man1/`. `packaging/dist/dist.toml` lists `man` under
-`include`, so each tarball holds `man/man1/irsync.1` and
-`man/man1/fileset.1` next to the binaries.
+under `packaging/dist/man/`. `packaging/dist/dist.toml` lists `man` under
+`include`, so each tarball holds `man/man1/irsync.1`, `man/man1/fileset.1`
+and `man/man5/irsync.toml.5` next to the binaries.
 
 pandoc is added to the release runners through `dist-workspace.toml`
 (`[dist.dependencies.apt]` and `[dist.dependencies.homebrew]`), then
@@ -190,6 +205,7 @@ The generated script, in order:
 5. Unpacks to a temporary directory and installs:
    - `irsync`, `fileset` to `~/.local/bin`
    - `man/man1/*.1` to `~/.local/share/man/man1`
+   - `man/man5/*.5` to `~/.local/share/man/man5`
 
    Files are copied to a temporary name in the target directory and renamed
    into place, so a running `irsync` is replaced safely.
@@ -214,8 +230,8 @@ As in `site/install.sh`, all work happens in a `main` function called on the
 last line, so a download cut short runs nothing.
 
 `--uninstall` removes `~/.local/bin/irsync`, `~/.local/bin/fileset`,
-`~/.local/share/man/man1/irsync.1`, `~/.local/share/man/man1/fileset.1` and
-an old receipt file if present. It downloads nothing. It leaves the config
+`~/.local/share/man/man1/irsync.1`, `~/.local/share/man/man1/fileset.1`,
+`~/.local/share/man/man5/irsync.toml.5` and an old receipt file if present. It downloads nothing. It leaves the config
 and state directories alone and prints where they are (the book's
 `Clean up state` page covers them). Missing files are not an error. Through
 the homepage it is `curl … https://irsync.org/install.sh | sh -s -- --uninstall`.
@@ -225,7 +241,8 @@ release, so the docs show `sh -s -- --beta --uninstall` until then.
 ### Homebrew
 
 `publish-homebrew.yml` runs a small script on the downloaded formula before
-committing it: it inserts `man1.install Dir["man/man1/*.1"]` ahead of the
+committing it: it inserts `man1.install Dir["man/man1/*.1"]` and
+`man5.install Dir["man/man5/*.5"]` ahead of the
 line that computes `leftover_contents`, so the pages leave the directory
 before the leftovers go to `pkgshare`. The script fails if the anchor line
 is missing or appears more than once, so a dist upgrade that reshapes the
@@ -233,13 +250,14 @@ formula is caught instead of silently shipping no pages. The workflow
 checks out only the tap today; it needs a second checkout of irsync at the
 tag to get the script.
 
-The tap's formula then differs by that line from the attested `irsync.rb`
+The tap's formula then differs by those two lines from the attested `irsync.rb`
 on the release. Record this in `docs/SUPPLY_CHAIN_DECISIONS.md`.
 
 ### deb and rpm
 
-`packaging/nfpm.yaml` gains two entries, `/usr/share/man/man1/irsync.1.gz`
-and `/usr/share/man/man1/fileset.1.gz`, mode 0644.
+`packaging/nfpm.yaml` gains three entries,
+`/usr/share/man/man1/irsync.1.gz`, `/usr/share/man/man1/fileset.1.gz` and
+`/usr/share/man/man5/irsync.toml.5.gz`, mode 0644.
 `packaging/build-packages.sh` takes the pages from the released tarball and
 gzips them (`gzip -9n`, so the result is reproducible).
 
@@ -257,14 +275,14 @@ gzips them (`gzip -9n`, so the result is reproducible).
   and `site/tools`:
   - the installer generator: checksums and version land in the output;
   - the installer, run against a local fake release with `HOME` set to a
-    temporary directory: install places four files, a bad checksum stops it,
+    temporary directory: install places five files, a bad checksum stops it,
     an unsupported platform stops it, `--uninstall` removes them and is safe
     to run twice;
-  - the formula edit: the line is inserted once, and a formula without the
+  - the formula edit: the lines are inserted once, and a formula without the
     anchor fails;
-  - the packages: the `.deb` lists both man pages.
+  - the packages: the `.deb` lists all three man pages.
 - `tools/ci.sh release-build` (Linux) checks that the built tarball holds
-  both pages.
+  all three pages.
 - `.github/scripts/tests/test_workflow_policy.py` mentions the installer
   only in a comment of the attestation test; update the comment.
 - `code-changed.sh` covers pull requests only, and `ci.yml`'s push trigger
@@ -276,7 +294,8 @@ gzips them (`gzip -9n`, so the result is reproducible).
   no `PATH` editing, the pages, `--uninstall`), and what the first release
   rehearsal should check (`man irsync` works).
 - README and the book's install sections: drop the receipt note, add
-  `--uninstall` and one line that `man irsync` and `man fileset` work.
+  `--uninstall` and one line that `man irsync`, `man fileset` and
+  `man irsync.toml` work.
 - `book/src/how-to/clean-up.md`: mention `--uninstall`.
 - `book/src/contributing/setup.md` and `AGENTS.md`: pandoc in the tool list.
 - `TODO.md`: add cargo-binstall packaging, which would also bring man pages
