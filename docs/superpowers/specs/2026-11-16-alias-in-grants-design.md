@@ -2,7 +2,8 @@
 
 Date: 2026-11-16
 
-Issue: #38 (and the `host remove` part of #37)
+Issue: #38, and from #37 the `host remove` fix and the removal of
+`hosts.toml` and `exports.toml`
 
 ## Intent
 
@@ -21,12 +22,14 @@ alias is named by it.
   `[hosts]` has an alias for is written as that alias. This covers new
   entries and ids already in the file.
 - `host remove` no longer leaves grants that point at nothing.
+- `irsync.toml` is the only config file. `hosts.toml` and `exports.toml`
+  are no longer read; one found on disk gets a warning that it is ignored.
 
 ## Non-goals
 
-- `irsync host rename`, and dropping `hosts.toml` and `exports.toml`. Both
-  stay in #37.
-- Rewriting `exports.toml`. irsync never edits it.
+- `irsync host rename`. It stays in #37.
+- Moving the content of a `hosts.toml` or `exports.toml` into
+  `irsync.toml`. The admin does that by hand.
 - Rewriting a config that irsync only reads. Nothing changes until the
   next save.
 - Changing an entry that is already an alias, even when another alias of
@@ -50,6 +53,8 @@ alias is named by it.
   written (#38).
 - `host remove` refuses while grants name the host. `--force` / `-f`
   removes those grants, then the host (#37, built here).
+- Support for `hosts.toml` and `exports.toml` is removed completely (#37,
+  built here). All that remains is a warning when such a file is found.
 
 ## Approaches
 
@@ -69,6 +74,41 @@ Michael picked 1, with the rewrite as a function of its own that other
 code can call.
 
 ## Design
+
+The work has two parts, built in this order. The removal comes first
+because it makes the rest simpler: there is then one file, and its
+`[hosts]` table is the only source of aliases.
+
+### Removing `hosts.toml` and `exports.toml`
+
+`Config::load` reads `irsync.toml` and nothing else. Everything that
+exists only for the split files goes:
+
+- the `hosts` and `exports` fields of `Paths`, and `split_hosts` and
+  `split_exports` of `Config`
+- the conflict check in `Config::load` ("hosts are in hosts.toml; remove
+  [hosts] from ...")
+- `ensure_editable`, `manage::Table` and `ManageError::SplitFile`, with
+  their calls in `main.rs`, `authz.rs` and `ssh/setup.rs`
+- the stand-alone parsers for a split file (`Hosts::parse`,
+  `Exports::parse`) and fields that say which file a table came from
+  (`Hosts::path`, `Snapshot::exports_file`), where nothing else needs them
+- the tests of split files, and every mention in the book and in `--help`
+
+Old specs and plans under `docs/superpowers/` are history and stay as
+they are.
+
+What remains is the warning. When `Config::load` finds `hosts.toml` or
+`exports.toml` beside the config file, it warns, naming the file: it is
+ignored, and its tables belong in `irsync.toml`. The warning comes once
+per file per process, so a daemon, which loads the config for every
+connection, does not fill its log. It goes out the way irsync's other
+warnings do (`tracing::warn!`).
+
+A machine that still uses a split file is not opened up by this. Ignored
+exports and grants mean nothing is served and nobody is let in; ignored
+hosts mean grants by alias match nobody. Access is lost until the admin
+moves the tables, never gained.
 
 ### The rewrite
 
@@ -107,10 +147,8 @@ write. `save` therefore takes the document mutably. `save_config` follows.
 
 The hosts it uses are those of the document being saved, so an alias
 added by `host add` in the same edit already counts, and the grants of
-that id are renamed in the same save. While `hosts.toml` is still
-supported, a `hosts.toml` beside the config is the source instead, as in
-`Config::load`. If the hosts cannot be read, the save fails as it does
-today for a file that would not load; nothing is written.
+that id are renamed in the same save. If the document would not load, the
+save fails as it does today and nothing is written.
 
 ### `host remove`
 
@@ -124,10 +162,6 @@ rewrite would pick. It then looks for the alias in every grant list.
   the grants or pass `--force`.
 - Some, with `--force` / `-f`: those entries are removed, then the host.
   The message says how many grants went.
-
-Grants kept in `exports.toml` cannot be edited. While that file is still
-supported, a grant there that names the alias makes `host remove` refuse,
-with or without `--force`, and the error names the file.
 
 ### Messages
 
@@ -147,15 +181,27 @@ renaming existing grants, an unrelated `config set` cleaning the file,
 ssh setup and the automatic export writing the alias, and `host remove`
 refused, forced, and with no grants.
 
+For the removal: a `hosts.toml` or `exports.toml` beside the config is
+ignored (its hosts and exports are not loaded), the warning names it, and
+it comes once per process. Tests that only set up a split file to get
+hosts or exports into a test move those tables into `irsync.toml`.
+
 ### Book
 
 `book/src/reference/management.md` for `host remove` and `--force`, and
 the configuration reference for the rule that a save writes aliases.
 
+Every page that mentions the split files loses that text
+(`reference/configuration.md`, `command-line.md`, `management.md`,
+`files-and-state.md`, `how-to/change-exports.md`, `run-the-daemon.md`).
+The configuration reference says once that the two files are ignored
+with a warning.
+
 ## Left to the builder
 
-- The function's name and exact signature, and how `save` gets at the
-  hosts of a split `hosts.toml`.
-- The wording of the messages and errors.
+- The rewrite function's name and exact signature.
+- The wording of the messages, errors and the warning.
+- How the once-per-process warning is kept (for example a `Once` per
+  file).
 - Whether `host remove` reuses `grant_remove` for `--force` or has its
   own small helper.
