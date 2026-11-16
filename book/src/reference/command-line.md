@@ -32,8 +32,8 @@ The terms used on this page:
   can, read-write. The daemon then makes an export for each new path the
   client uses.
 
-`irsync --help` prints the same flags with one line each; `irsync COMMAND
---help` does so for a subcommand.
+`irsync --help` lists irsync's flags, one line each; `irsync COMMAND --help`
+lists a subcommand's.
 
 ## Examples
 

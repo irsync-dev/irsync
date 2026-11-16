@@ -320,12 +320,39 @@ class BuildManTests(unittest.TestCase):
         text = " ".join(render(self.irsync).split())
         self.assertEqual(text.count("https://irsync.org/book/how-to/clean-up.html"), 1)
         self.assertIn("Clean up state: https://irsync.org/book/how-to/clean-up.html", text)
-        self.assertIn("is in Clean up state in the book.", text)
-        self.assertIn("See Seed the index in the book.", text)
+        self.assertIn("is in \u201cClean up state\u201d in the book.", text)
+        self.assertIn("See \u201cSeed the index\u201d in the book.", text)
         files = " ".join(section(render(self.irsync), "FILES").split())
-        self.assertEqual(files.count("Clean up state"), files.count("Clean up state in the book"))
+        self.assertEqual(files.count("Clean up state"),
+                         files.count("\u201cClean up state\u201d in the book"))
+        # The title is quoted, so "in the book" never reads as part of it, and
+        # no sentence makes the book do what the linked page does.
+        for page in self.pages:
+            text = " ".join(render(page).split())
+            self.assertNotRegex(text, r"[^\u201d] in the book", page)
+        files = " ".join(section(render(self.irsync), "FILES").split())
+        self.assertNotIn("in the book removes", files)
+        self.assertNotIn("setup in the book", files)
         for page in self.pages:  # no raw Markdown link targets
             self.assertNotRegex(read(page), r"\w\.md[#)]")
+
+    def test_help_sentence_stands_alone(self):
+        text = " ".join(section(render(self.irsync), "DESCRIPTION").split())
+        self.assertNotIn("the same flags", text)
+        self.assertIn("irsync --help lists irsync's flags, one line each", text)
+
+    def test_fileset_commands_do_not_repeat_the_synopsis(self):
+        text = render(self.fileset)
+        self.assertIn("fileset init [OPTIONS] PATH", " ".join(section(text, "SYNOPSIS").split()))
+        commands = section(text, "COMMANDS", subsections=False)
+        self.assertNotIn("fileset init", commands)
+        self.assertTrue(commands.strip().startswith("PATH is the root of the tree"), commands)
+
+    def test_required_keys_say_required(self):
+        text = " ".join(render(self.toml).split())
+        self.assertNotIn("Default: required", text)
+        self.assertIn("endpoint_id Required. The remote's EndpointId.", text)
+        self.assertRegex(text, r"\bpath Required\. The directory")
 
     def test_fileset_page_has_no_install_block(self):
         self.assertNotIn("cargo install", render(self.fileset))

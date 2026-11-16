@@ -166,20 +166,24 @@ local function link(el, chapter, state, notes)
     text:insert(pandoc.Str("(" .. spec.page .. ")"))
     return text
   end
+  -- "See [Seed the index](...)" becomes 'See "Seed the index" in the
+  -- book': the quotes keep "in the book" from reading as part of a title
+  -- such as "Seed the index".
+  local function in_book()
+    return pandoc.Inlines({ pandoc.Quoted("DoubleQuote", text), pandoc.Space(),
+      pandoc.Str("in"), pandoc.Space(), pandoc.Str("the"), pandoc.Space(),
+      pandoc.Str("book") })
+  end
   for _, part in ipairs(IN_BOOK) do
     if path:sub(1, #part) == part then
-      text:extend({ pandoc.Space(), pandoc.Str("in"), pandoc.Space(),
-        pandoc.Str("the"), pandoc.Space(), pandoc.Str("book") })
-      return text
+      return in_book()
     end
   end
   -- Another page of the book: the first link to it gives its URL, after
   -- the block it is in (a URL is wider than most lines). Later links say
   -- it is in the book, as the explanations do.
   if state.linked[path] then
-    text:extend({ pandoc.Space(), pandoc.Str("in"), pandoc.Space(),
-      pandoc.Str("the"), pandoc.Space(), pandoc.Str("book") })
-    return text
+    return in_book()
   end
   state.linked[path] = true
   local url = BOOK .. path:gsub("%.md$", ".html") .. (anchor ~= "" and "#" .. anchor or "")
@@ -263,6 +267,11 @@ local function as_list(t)
       local text = pandoc.Inlines({})
       if #cells == 2 then
         text:extend(cells[2])
+      elseif key_table and stringify(cells[2]):lower() == "required" then
+        -- A key with no default: "Required.", not "Default: required."
+        text:extend({ pandoc.Str("Required.") })
+        text:insert(pandoc.Space())
+        text:extend(cells[3])
       elseif key_table then
         text:extend({ pandoc.Str("Default:"), pandoc.Space() })
         text:extend(cells[2])
@@ -376,13 +385,22 @@ local function chapter_blocks(c, state)
   local out = pandoc.Blocks({})
   local intro = not spec.section -- before the first "##" of a first chapter
   local intro_section
+  -- With `synopsis`, the code block copied to SYNOPSIS is left out of its
+  -- own section, which would repeat it right under the SYNOPSIS. The book
+  -- keeps it.
+  local under_synopsis, synopsis_left_out = false, false
   if spec.synopsis then
     out:insert(pandoc.Header(1, "SYNOPSIS"))
     out:insert(synopsis(code_under(c.blocks, spec.synopsis)))
     intro_section = "SYNOPSIS"
   end
   for i, b in ipairs(c.blocks) do
-    if b.t == "Header" then
+    if b.t == "Header" and b.level == 2 then
+      under_synopsis = spec.synopsis ~= nil and slug(b.content) == spec.synopsis
+    end
+    if under_synopsis and not synopsis_left_out and b.t == "CodeBlock" then
+      synopsis_left_out = true
+    elseif b.t == "Header" then
       local level = spec.section and b.level or b.level - 1
       if i == 1 then
         if spec.section then
