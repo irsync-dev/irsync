@@ -900,8 +900,8 @@ fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
 }
 
 /// Recursion depth equals tree depth; the walk thread's stack must hold it. 2000 levels of
-/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096). macOS caps
-/// and FreeBSD cap paths at 1024, so there the tree goes as deep as that allows.
+/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096). macOS and
+/// FreeBSD cap paths at 1024, so there the tree goes as deep as that allows.
 #[test]
 fn deep_tree_does_not_overflow_the_stack() {
     let dir = tempfile::tempdir().unwrap();
