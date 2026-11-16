@@ -1,5 +1,6 @@
 """Tests for packaging/dist/build.sh, with fake cargo and rustup on PATH."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -57,13 +58,17 @@ class BuildScriptTests(unittest.TestCase):
         os.makedirs(os.path.join(repo, "tools"))
         shutil.copy(BUILD, pkg)
         shutil.copy(os.path.join(os.path.dirname(BUILD), "dist.toml"), pkg)
+        # The fake irsync reports the version in dist.toml, whatever it is:
+        # build.sh compares the two.
+        with open(os.path.join(pkg, "dist.toml")) as f:
+            version = re.search(r'^version = "(.*)"$', f.read(), re.M).group(1)
         target = "aarch64-apple-darwin"
         out = os.path.join(repo, "target", target, "dist")
         man_log = os.path.join(self.tmp, "man.log")
         write = lambda path, body: (open(path, "w").write(body), os.chmod(path, 0o755))
         write(os.path.join(self.tmp, "bin", "cargo"), f"""#!/bin/sh
 mkdir -p "{out}"
-printf '#!/bin/sh\necho "irsync 0.1.0-beta.3 (fake)"\n' > "{out}/irsync"
+printf '#!/bin/sh\necho "irsync {version} (fake)"\n' > "{out}/irsync"
 printf '#!/bin/sh\n' > "{out}/fileset"
 chmod +x "{out}/irsync" "{out}/fileset"
 """)
