@@ -28,7 +28,8 @@ irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
 `myserver` is not a saved alias yet, so irsync takes it as an ssh destination
-and sets the server up first. It says what it did:
+and sets the server up first. The account you log in to must not be root:
+irsync refuses to set up a daemon as root. It says what it did:
 
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh

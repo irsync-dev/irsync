@@ -1554,6 +1554,14 @@ fn file_paths(f: &FilesArgs) -> Paths {
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
 fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -> i32 {
+    // The client stops when its probe sees root; this holds when it did not.
+    if running_as_root() {
+        eprintln!(
+            "irsync: this account is root, and {}",
+            irsync::ssh::onboard::ROOT_ACCOUNT
+        );
+        return 1;
+    }
     let result = parse_endpoint_id(client)
         .with_context(|| format!("--client {client:?}"))
         .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht));

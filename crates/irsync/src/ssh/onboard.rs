@@ -12,6 +12,13 @@ use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
 use crate::manage::{self, hosts::HostFlags};
 
+/// Why a root account is refused, on the client and by `ssh-setup` on the
+/// server.
+pub const ROOT_ACCOUNT: &str = "irsync does not set up a daemon as root";
+
+/// Where the book explains running the daemon under its own account.
+const RUN_THE_DAEMON_URL: &str = "https://irsync.org/book/how-to/run-the-daemon.html";
+
 /// What onboarding `alias` did.
 #[derive(Debug, Clone)]
 pub struct Onboarded {
@@ -26,8 +33,6 @@ pub struct Onboarded {
     pub install: Install,
     /// The server's OS (`std::env::consts::OS` names), from the probe.
     pub os: Option<&'static str>,
-    /// The ssh user, and so the daemon it started, is root.
-    pub root: bool,
     /// This client's EndpointId, the one `ssh-setup` granted.
     pub client: EndpointId,
 }
@@ -62,6 +67,14 @@ pub fn onboard(
 ) -> anyhow::Result<Onboarded> {
     check(paths, alias, dest)?;
     let p = probe(rsh, dest)?;
+    // Before anything is installed or changed on the server.
+    if p.root {
+        anyhow::bail!(
+            "the ssh account on {dest} is root, and {ROOT_ACCOUNT}.\n  \
+             Use another account, or set the daemon up by hand:\n  \
+             {RUN_THE_DAEMON_URL}"
+        );
+    }
     let install = ensure_installed(rsh, dest, &p)?;
     let report = run_setup(rsh, dest, client, recheck, no_dht)?;
     let lock = manage::lock_config(&paths.config)?;
@@ -84,7 +97,6 @@ pub fn onboard(
         alias_existed,
         install,
         os: p.os,
-        root: p.root,
         client,
         report,
     })
@@ -149,11 +161,6 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         GrantOutcome::ImmediateOff => out.push(format!(
             "  immediate mode is off on {dest}: only exports granted to this client are reachable"
         )),
-    }
-    if o.root && matches!(r.grant, GrantOutcome::Added | GrantOutcome::Already) {
-        out.push(format!(
-            "  warning: the daemon runs as root and this client can reach every path on {dest}"
-        ));
     }
     if r.dht == Dht::TurnedOff {
         out.push(format!(
@@ -295,35 +302,6 @@ mod tests {
         iroh::SecretKey::from_bytes(&[b; 32]).public()
     }
 
-    /// As root, the immediate grant reaches every path on the server: the
-    /// summary warns, unless nothing was granted.
-    #[test]
-    fn root_daemon_gets_a_warning() {
-        let mut o = onboarded(Install::Current, DaemonOutcome::Running, Some("linux"));
-        o.root = true;
-        let warning =
-            "  warning: the daemon runs as root and this client can reach every path on myserver";
-        for grant in [GrantOutcome::Added, GrantOutcome::Already] {
-            o.report.grant = grant;
-            assert!(
-                summary(&o).iter().any(|l| l == warning),
-                "{:#?}",
-                summary(&o)
-            );
-        }
-        for grant in [GrantOutcome::ImmediateOff, GrantOutcome::Missing] {
-            o.report.grant = grant;
-            assert!(
-                !summary(&o).join("\n").contains("root"),
-                "{:#?}",
-                summary(&o)
-            );
-        }
-        o.report.grant = GrantOutcome::Added;
-        o.root = false;
-        assert!(!summary(&o).join("\n").contains("root"));
-    }
-
     /// ssh would read `-oProxyCommand=…` as an option: such a destination
     /// is refused before any ssh call, as alias or as `ssh` value.
     #[test]
@@ -356,7 +334,6 @@ mod tests {
             },
             install,
             os,
-            root: false,
             client: id(1),
         }
     }
