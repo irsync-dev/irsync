@@ -237,6 +237,34 @@ today.
 
 One end-to-end check that `irsync -v id show` prints the identity.
 
+## Found in review, and what was done
+
+The whole-branch review found these after the build. The fixes are part of
+the branch.
+
+- **A flag between a sync's paths.** Once a flag ends the run of paths,
+  clap looks for a command again, so `irsync host:photos/ -v gc` ran `gc`.
+  Now a line whose first operand is a path is read as a sync, as on
+  `main`: when the first parse finds a command but paths were given, the
+  line is parsed again with `args_conflicts_with_subcommands` on.
+- **`export add` generates the daemon's key too.** It ignored
+  `--passphrase-file`. It now uses the flag: it unlocks an encrypted
+  daemon key, and refuses to generate a missing one.
+- **`ssh-setup` run by hand with the flag** refuses in the same way. The
+  client never passes the flag, so ssh onboarding is unchanged.
+- **`daemon` checked for the key after taking its lock**, so a refusal
+  left a lock file. It now checks first and writes nothing.
+- **`show` reads both keys.** With `--passphrase-file` it fails when the
+  daemon's key is missing, also on a client-only machine, and names
+  `id generate --daemon`. Left as it is and documented: `show` generates
+  a missing daemon key today, and with the flag nothing is generated.
+- **An empty passphrase** is refused by the function that writes the key,
+  not only by `id generate`.
+
+Known leftovers, message quality only: when a line has a path first and
+neither reading parses (`irsync h:x -v gc --bogus`), the error shown is the
+command's; and some identity errors print the system error text twice.
+
 ## Left to the builder
 
 - The wording of the global flags' help text. It is now shared by every
