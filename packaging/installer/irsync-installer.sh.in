@@ -4,13 +4,18 @@
 #
 #   sh irsync-installer.sh               install
 #   sh irsync-installer.sh --uninstall   remove what the installer placed
-#   sh irsync-installer.sh --help
+#   sh irsync-installer.sh --help        (or -h)
 #
 # It downloads the release tarball for this platform over HTTPS, checks its
 # SHA-256 against the value written in below, and changes nothing under your
 # home directory until that check has passed. It never edits shell startup
-# files. --no-modify-path and IRSYNC_NO_MODIFY_PATH, which dist's installer
-# took, are accepted and ignored, since there is nothing to turn off.
+# files.
+#
+# dist's installer, which earlier releases shipped, took more. Its flags
+# --no-modify-path, --quiet (-q) and --verbose (-v), and IRSYNC_NO_MODIFY_PATH,
+# are accepted and ignored. Its install directory variables (IRSYNC_INSTALL_DIR,
+# CARGO_DIST_FORCE_INSTALL_DIR, IRSYNC_UNMANAGED_INSTALL) are refused, since
+# this installer always installs under ~/.local.
 #
 # For tests only: IRSYNC_INSTALLER_ARCHIVE_DIR=DIR reads
 # DIR/irsync-<target>.tar.xz instead of downloading it.
@@ -27,17 +32,25 @@ main() {
   say() { printf 'irsync: %s\n' "$*" >&2; }
   die() { say "$*"; exit 1; }
   usage() {
-    printf 'usage: sh irsync-installer.sh [--uninstall | --help] [--no-modify-path]\n'
+    printf 'usage: sh irsync-installer.sh [--uninstall | --help | -h] [--no-modify-path]\n'
+    printf '                                 [--quiet | -q] [--verbose | -v]\n'
+  }
+  set_mode() { # MODE: at most one of --uninstall and --help
+    if [ "$mode" != install ]; then usage >&2; exit 2; fi
+    mode=$1
   }
 
-  # At most one of --uninstall and --help, in any order with --no-modify-path.
+  # --no-modify-path, --quiet and --verbose do nothing. Short flags may be
+  # grouped, as dist's installer allowed: -qv.
   mode=install
   for arg in "$@"; do
     case $arg in
-      --no-modify-path) ;;
-      --uninstall | --help)
-        if [ "$mode" != install ]; then usage >&2; exit 2; fi
-        mode=${arg#--} ;;
+      --no-modify-path | --quiet | --verbose) ;;
+      --uninstall) set_mode uninstall ;;
+      --help) set_mode help ;;
+      -*[!hqv]* | -) usage >&2; exit 2 ;;
+      -*h*) set_mode help ;;
+      -*) ;;
       *) usage >&2; exit 2 ;;
     esac
   done
@@ -45,9 +58,19 @@ main() {
     usage
     printf '\n%s\n' "Installs irsync $version into ~/.local/bin and its manual pages into
 ~/.local/share/man. --uninstall removes them again; your config and state
-stay in place. --no-modify-path is accepted for compatibility with earlier
-installers and does nothing: this installer never edits shell startup files."
+stay in place. --no-modify-path, --quiet and --verbose are accepted for
+compatibility with earlier installers and do nothing: this installer never
+edits shell startup files."
     exit 0
+  fi
+
+  if [ "$mode" = install ]; then
+    for var in IRSYNC_INSTALL_DIR CARGO_DIST_FORCE_INSTALL_DIR IRSYNC_UNMANAGED_INSTALL; do
+      eval "value=\${$var-}"
+      [ -z "$value" ] ||
+        die "$var is set, but this installer always installs under ~/.local
+  and does not support it. Unset it and run again."
+    done
   fi
 
   [ -n "${HOME-}" ] || die "HOME is not set"
@@ -175,6 +198,27 @@ installers and does nothing: this installer never edits shell startup files."
     [ -f "$src/$f" ] || die "$name has no $f; nothing was installed"
   done
 
+  # Check every target directory before placing anything, so a directory we
+  # cannot write to never leaves half an install. The probe file is cleaned
+  # up like a half-placed one.
+  usable() { # DIR: create it and write a file in it
+    mkdir -p "$1" 2>/dev/null || return 1
+    part=$1/.irsync-installer-probe.$$
+    (true >"$part") 2>/dev/null || { part=; return 1; }
+    rm -f "$part"
+    part=
+  }
+  usable "$bin" || die "cannot write to $bin; nothing was installed.
+  Check that you own it and can write to it, then run again."
+  pages=yes
+  for dir in "$man1" "$man5"; do
+    if ! usable "$dir"; then
+      pages=no
+      unusable=$dir
+      break
+    fi
+  done
+
   # Copy to a temporary name beside the target, then rename: a running irsync
   # keeps its old file, and no one sees a half-written one.
   place() { # SRC DIR NAME MODE
@@ -188,9 +232,11 @@ installers and does nothing: this installer never edits shell startup files."
   }
   place "$src/irsync" "$bin" irsync 0755
   place "$src/fileset" "$bin" fileset 0755
-  place "$src/man/man1/irsync.1" "$man1" irsync.1 0644
-  place "$src/man/man1/fileset.1" "$man1" fileset.1 0644
-  place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
+  if [ "$pages" = yes ]; then
+    place "$src/man/man1/irsync.1" "$man1" irsync.1 0644
+    place "$src/man/man1/fileset.1" "$man1" fileset.1 0644
+    place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
+  fi
 
   on_path=yes
   case ":${PATH-}:" in
@@ -212,7 +258,11 @@ installers and does nothing: this installer never edits shell startup files."
   esac
 
   say "installed irsync $version"
-  if [ "$on_path" = yes ]; then
+  if [ "$pages" = no ]; then
+    say "warning: cannot write to $unusable,
+  so the manual pages were not installed. Check that you own that directory
+  and can write to it, then run again."
+  elif [ "$on_path" = yes ]; then
     say "the manual is in place: man irsync"
   else
     say "the manual is in place: man irsync finds it once ~/.local/bin is on your PATH"

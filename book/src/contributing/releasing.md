@@ -170,9 +170,19 @@ the programs in `~/.local/bin` and the three man pages in
 `~/.local/share/man/man1` and `man5`, and has no updater. It writes no
 receipt and never edits the shell's startup files. If `~/.local/bin` is not
 on `PATH`, it prints the line to add. `--uninstall` removes the two
-programs, the three pages and an old receipt file. It accepts
-`--no-modify-path` and `IRSYNC_NO_MODIFY_PATH` and ignores both, so scripts
-written for dist's installer keep working. On an Apple Silicon Mac under
+programs, the three pages and an old receipt file. Before it places
+anything, it checks that it can write to `~/.local/bin` and both man
+directories. If it cannot write to `~/.local/bin`, it stops and changes
+nothing. If it cannot write to a man directory, it installs the programs
+without the pages and prints a warning that names the directory.
+
+It accepts the flags dist's installer took (`--no-modify-path`, `--quiet`,
+`-q`, `--verbose`, `-v`) and `IRSYNC_NO_MODIFY_PATH`, and ignores them, so
+scripts written for dist's installer keep working; `-h` is `--help`. dist's
+install directory variables (`IRSYNC_INSTALL_DIR`,
+`CARGO_DIST_FORCE_INSTALL_DIR` and `IRSYNC_UNMANAGED_INSTALL`) are refused:
+when one is set, the installer stops before it does anything, since it
+always installs under `~/.local`. On an Apple Silicon Mac under
 Rosetta it installs the Apple Silicon build. Intel Macs are not supported.
 Its source is `packaging/installer/irsync-installer.sh.in`.
 

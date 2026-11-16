@@ -545,6 +545,131 @@ class InstallTests(Base):
         self.assertEqual(self.under_home(), set())
 
 
+@unittest.skipIf(os.geteuid() == 0, "root can write to a 0555 directory")
+class UnwritableTests(Base):
+    """A target directory the installer cannot write to."""
+
+    def lock(self, rel):
+        """Create HOME/rel and make it read-only for the rest of the test."""
+        path = os.path.join(self.home, rel)
+        os.makedirs(path, exist_ok=True)
+        os.chmod(path, 0o555)
+        # Cleanups run last first, so this runs before setUp's rmtree.
+        self.addCleanup(os.chmod, path, 0o755)
+        return path
+
+    def test_unwritable_share_installs_the_programs_only(self):
+        self.lock(".local/share")
+        man1 = os.path.join(self.home, ".local/share/man/man1")
+        on_path = os.path.join(self.home, ".local", "bin") + os.pathsep + self.bindir
+        for env in [None, {"PATH": on_path}]:
+            with self.subTest(env=env):
+                r = self.install(env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.under_home(), set(FILES[:2]))
+                self.assertIn(man1, r.stderr)
+                self.assertIn("manual pages were not installed", r.stderr)
+                self.assertNotIn("man irsync", r.stderr)
+                self.assertIn(f"installed irsync {VERSION}", r.stderr)
+
+    def test_one_unwritable_man_dir_skips_every_page(self):
+        man5 = self.lock(".local/share/man/man5")
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES[:2]))
+        self.assertIn(man5, r.stderr)
+        self.assertIn("manual pages were not installed", r.stderr)
+        self.assertNotIn("man irsync", r.stderr)
+
+    def test_unwritable_bin_changes_nothing(self):
+        for f in FILES:
+            self.put(f)
+        bindir = self.lock(".local/bin")
+        before = self.snapshot()
+        r = self.install()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(bindir, r.stderr)
+        self.assertNotIn("installed irsync", r.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")], [])
+
+    def test_unwritable_bin_in_a_fresh_home_installs_no_pages(self):
+        self.lock(".local/bin")
+        r = self.install()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.under_home(), set())
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local/share")))
+
+
+class CompatibilityTests(Base):
+    """What dist's installer took: its flags, and its install directory variables."""
+
+    INSTALL_DIR_VARS = ["IRSYNC_INSTALL_DIR", "CARGO_DIST_FORCE_INSTALL_DIR",
+                        "IRSYNC_UNMANAGED_INSTALL"]
+
+    def test_quiet_and_verbose_are_accepted(self):
+        for args in [("-q",), ("--quiet",), ("-v",), ("--verbose",), ("-qv",),
+                     ("--quiet", "--no-modify-path", "-v")]:
+            with self.subTest(args=args):
+                home = os.path.join(self.tmp, "home-" + "".join(args))
+                os.mkdir(home)
+                r = self.install(*args, home=home)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.under_home(home), set(FILES))
+
+    def test_short_help(self):
+        for args in [("-h",), ("-qh",), ("--quiet", "-h")]:
+            with self.subTest(args=args):
+                r = self.install(*args)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("--uninstall", r.stdout)
+                self.assertEqual(self.under_home(), set())
+
+    def test_help_lists_the_ignored_flags(self):
+        r = self.install("--help")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for flag in ["--quiet", "--verbose", "--no-modify-path", "-h"]:
+            self.assertIn(flag, r.stdout)
+
+    def test_bad_short_flags(self):
+        for args in [("-x",), ("-qx",), ("-",), ("--quiet=1",), ("-h", "--uninstall"),
+                     ("--help", "-h")]:
+            with self.subTest(args=args):
+                r = self.install(*args)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("usage", r.stderr)
+                self.assertEqual(self.under_home(), set())
+
+    def test_install_dir_variables_are_refused(self):
+        write_exe(os.path.join(self.bindir, "curl"), FAKE_FETCHER)
+        for var in self.INSTALL_DIR_VARS:
+            with self.subTest(var=var):
+                elsewhere = os.path.join(self.tmp, "elsewhere")
+                r = self.install(archives=False, env={var: elsewhere})
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(var, r.stderr)
+                self.assertIn("~/.local", r.stderr)
+                self.assertEqual(os.listdir(self.home), [])
+                self.assertFalse(os.path.exists(elsewhere))
+                self.assertFalse(os.path.exists(self.log), "nothing may be downloaded")
+
+    def test_empty_install_dir_variables_are_fine(self):
+        r = self.install(env={var: "" for var in self.INSTALL_DIR_VARS})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_install_dir_variables_do_not_block_help_or_uninstall(self):
+        self.assertEqual(self.install().returncode, 0)
+        for var in self.INSTALL_DIR_VARS:
+            with self.subTest(var=var):
+                r = self.install("--help", env={var: "/elsewhere"})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("--uninstall", r.stdout)
+        r = self.install("--uninstall", env={var: "/elsewhere" for var in self.INSTALL_DIR_VARS})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set())
+
+
 class KillTests(Base):
     def shells(self):
         found = [("sh", shutil.which("sh"))]
