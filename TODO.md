@@ -327,9 +327,9 @@ is `docs/superpowers/specs/2026-11-16-freebsd-manual-build-design.md`.
 
 ## Tests
 
-- [ ] Timing-sensitive tests fail on a slow FreeBSD VM. Of five full
-      runs, three took about 560 s of test time and passed; two took over
-      800 s and failed with "connection lost":
+- [ ] Timing-sensitive tests sometimes fail on a slow FreeBSD VM. Of six
+      full runs, three took about 560 s of test time and passed. Three
+      took over 800 s: one passed, two failed with "connection lost":
       `netsim::a_dead_zone_forces_a_reconnect_and_the_session_resumes` in
       both, and in one of them also
       `netsim::single_file_push_resumes_after_blackout` and
