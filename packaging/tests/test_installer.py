@@ -409,6 +409,26 @@ class InstallTests(Base):
         self.assertNotIn(".local/bin", r.stderr)
         self.assertEqual(self.under_home(home), set(FILES))
 
+    def test_path_hint_says_to_log_in_again_on_linux(self):
+        # Most Linux systems add ~/.local/bin at login once it exists; macOS
+        # does not.
+        for shell, add in [("/bin/bash", "put this line in ~/.bashrc:"),
+                           ("/usr/bin/fish", "run: fish_add_path ~/.local/bin")]:
+            with self.subTest(shell=shell):
+                home = os.path.join(self.tmp, "linux-" + os.path.basename(shell))
+                os.mkdir(home)
+                r = self.install(home=home, env={"SHELL": shell})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("Log out and in again first", r.stderr)
+                self.assertIn("If it is still missing then, " + add, r.stderr)
+
+                home = os.path.join(self.tmp, "mac-" + os.path.basename(shell))
+                os.mkdir(home)
+                r = self.install(home=home, uname=("Darwin", "arm64"), env={"SHELL": shell})
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertNotIn("Log out", r.stderr)
+                self.assertIn("is not on your PATH. To add it, " + add, r.stderr)
+
     def test_no_modify_path_is_accepted(self):
         r = self.install(env={"IRSYNC_NO_MODIFY_PATH": "1"})
         self.assertEqual(r.returncode, 0, r.stderr)

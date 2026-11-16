@@ -41,8 +41,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
 
 Until the first stable release, v0.1.0, is out, add `--beta` straight after
 `sh -s --`. The script puts the programs in `~/.local/bin` and the man pages
-in `~/.local/share/man`, so `man fileset` works. It prints the `PATH` line to
-add if `~/.local/bin` is not on `PATH`. To remove it all, run it with
+in `~/.local/share/man`, so `man fileset` works. If `~/.local/bin` is not on `PATH`, it says how to add it; on Linux, logging
+out and in again is usually enough. To remove it all, run it with
 `--uninstall` (and `--beta`, until v0.1.0).
 
 Homebrew (`brew install irsync-dev/tap/irsync`) and apt and dnf
