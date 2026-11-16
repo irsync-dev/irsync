@@ -1,6 +1,8 @@
 use irsync::config::exports::Exports;
 use irsync::config::hosts::Hosts;
-use irsync::manage::grants::{grant_add, grant_remove, list_all, list_export, list_peer};
+use irsync::manage::grants::{
+    canonicalize, grant_add, grant_remove, list_all, list_export, list_peer,
+};
 use irsync::manage::{ManageError, PeerSpec};
 use std::path::Path;
 use toml_edit::DocumentMut;
@@ -356,4 +358,220 @@ fn parse_exports(
     path: &std::path::Path,
 ) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
     irsync::config::file::Config::parse(text, path).map(|c| c.exports)
+}
+
+/// `[hosts.NAME]` tables for `(alias, id number)` pairs.
+fn host_tables(hosts: &[(&str, u8)]) -> String {
+    hosts
+        .iter()
+        .map(|(a, n)| format!("[hosts.{a}]\nendpoint_id = \"{}\"\n", id(*n)))
+        .collect()
+}
+
+/// Runs `canonicalize` on the hosts tables followed by `body`; the text of
+/// `body` afterwards, and whether anything changed.
+fn canon(hosts: &[(&str, u8)], body: &str) -> (String, bool) {
+    let head = host_tables(hosts);
+    let known = parse_hosts(&head, Path::new("irsync.toml")).unwrap();
+    let mut doc: DocumentMut = format!("{head}{body}").parse().unwrap();
+    let changed = canonicalize(&mut doc, &known);
+    let text = doc.to_string();
+    (text.strip_prefix(&head).unwrap().to_string(), changed)
+}
+
+const BOX: &[(&str, u8)] = &[("box", 1)];
+
+#[test]
+fn alias_of_is_the_first_alias_in_order() {
+    let h = parse_hosts(
+        &host_tables(&[("zed", 1), ("amy", 1), ("bob", 2)]),
+        Path::new("h"),
+    )
+    .unwrap();
+    assert_eq!(h.alias_of(&id(1)), Some("amy"));
+    assert_eq!(h.alias_of(&id(2)), Some("bob"));
+    assert_eq!(h.alias_of(&id(3)), None);
+}
+
+#[test]
+fn id_becomes_alias() {
+    let (text, changed) = canon(BOX, &format!("[all]\nrw = [\"{}\"]\n", id(1)));
+    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    assert!(changed);
+}
+
+#[test]
+fn every_grant_list_is_visited() {
+    let i = id(1);
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[all]\nro = [\"{i}\"]\n[immediate]\nrw = [\"{i}\"]\n\
+             [exports.p]\npath = \"/p\"\nrw = [\"{i}\"]\n\
+             [exports.q]\npath = \"/q\"\nro = [\"{i}\"]\n"
+        ),
+    );
+    assert_eq!(
+        text,
+        "[all]\nro = [\"box\"]\n[immediate]\nrw = [\"box\"]\n\
+         [exports.p]\npath = \"/p\"\nrw = [\"box\"]\n\
+         [exports.q]\npath = \"/q\"\nro = [\"box\"]\n"
+    );
+    // Inline tables count, as for the other editors.
+    let known = parse_hosts(&host_tables(BOX), Path::new("h")).unwrap();
+    let mut doc: DocumentMut = format!(
+        "exports = {{ p = {{ path = \"/p\", rw = [\"{i}\"] }} }}\nall = {{ ro = [\"{i}\"] }}\n"
+    )
+    .parse()
+    .unwrap();
+    assert!(canonicalize(&mut doc, &known));
+    assert_eq!(
+        doc.to_string(),
+        "exports = { p = { path = \"/p\", rw = [\"box\"] } }\nall = { ro = [\"box\"] }\n"
+    );
+}
+
+#[test]
+fn first_alias_in_order_wins() {
+    let (text, _) = canon(
+        &[("zed", 1), ("amy", 1)],
+        &format!("[all]\nrw = [\"{}\"]\n", id(1)),
+    );
+    assert_eq!(text, "[all]\nrw = [\"amy\"]\n");
+}
+
+#[test]
+fn existing_alias_is_left_alone() {
+    let body = "[all]\nrw = [\"zed\"]\n";
+    assert_eq!(
+        canon(&[("zed", 1), ("amy", 1)], body),
+        (body.to_string(), false)
+    );
+}
+
+#[test]
+fn unknown_entries_are_left_alone() {
+    let body = format!("[all]\nrw = [\"{}\", \"ghost\"]\n", id(2));
+    assert_eq!(canon(BOX, &body), (body.clone(), false));
+}
+
+#[test]
+fn duplicate_in_one_list_keeps_the_first() {
+    let (text, changed) = canon(BOX, &format!("[all]\nrw = [\"box\", \"{}\"]\n", id(1)));
+    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    assert!(changed);
+    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"{}\", \"box\"]\n", id(1)));
+    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    // Duplicates that were already there go too.
+    let (text, changed) = canon(BOX, "[all]\nrw = [\"box\", \"x\", \"box\"]\n");
+    assert_eq!(text, "[all]\nrw = [\"box\", \"x\"]\n");
+    assert!(changed);
+}
+
+#[test]
+fn rw_wins_over_ro() {
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[exports.p]\npath = \"/p\"\nro = [\"box\", \"x\"]\nrw = [\"{}\"]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(
+        text,
+        "[exports.p]\npath = \"/p\"\nro = [\"x\"]\nrw = [\"box\"]\n"
+    );
+    // Each table on its own: rw in [all] does not touch ro of an export.
+    let body = "[all]\nrw = [\"box\"]\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n";
+    assert_eq!(canon(BOX, body), (body.to_string(), false));
+}
+
+#[test]
+fn two_aliases_of_one_id_both_stay() {
+    let body = "[all]\nrw = [\"amy\", \"zed\"]\n";
+    assert_eq!(
+        canon(&[("zed", 1), ("amy", 1)], body),
+        (body.to_string(), false)
+    );
+}
+
+#[test]
+fn comment_and_layout_are_kept() {
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "# who may write\n[all]\nrw = [\n    \"{}\", # laptop\n    \"{}\",   # other\n] # end\n",
+            id(1),
+            id(2)
+        ),
+    );
+    assert_eq!(
+        text,
+        format!(
+            "# who may write\n[all]\nrw = [\n    \"box\", # laptop\n    \"{}\",   # other\n] # end\n",
+            id(2)
+        )
+    );
+}
+
+#[test]
+fn second_run_changes_nothing() {
+    let known = parse_hosts(&host_tables(BOX), Path::new("h")).unwrap();
+    let mut doc: DocumentMut = format!(
+        "[all]\nrw = [\"{0}\", \"box\"]\nro = [\"{0}\"]\n[immediate]\nrw = [\"{0}\"]\n",
+        id(1)
+    )
+    .parse()
+    .unwrap();
+    assert!(canonicalize(&mut doc, &known));
+    let once = doc.to_string();
+    assert!(!canonicalize(&mut doc, &known));
+    assert_eq!(doc.to_string(), once);
+}
+
+#[test]
+fn odd_shapes_do_not_panic() {
+    let (text, changed) = canon(
+        BOX,
+        &format!("[all]\nrw = [1, \"{}\"]\nro = \"x\"\n", id(1)),
+    );
+    assert_eq!(text, "[all]\nrw = [1, \"box\"]\nro = \"x\"\n");
+    assert!(changed);
+    for body in [
+        "all = 5\n",
+        "exports = \"x\"\n",
+        "[exports]\np = 1\n",
+        "immediate = []\n",
+        "[[all]]\nrw = []\n",
+    ] {
+        assert_eq!(canon(BOX, body), (body.to_string(), false), "{body:?}");
+    }
+}
+
+#[test]
+fn other_spelling_of_an_id_is_rewritten() {
+    let z32 = id(1).to_z32();
+    assert_ne!(z32, id(1).to_string());
+    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"{z32}\"]\n"));
+    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+}
+
+#[test]
+fn duplicate_removal_keeps_other_comments() {
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # one\n    \"{}\", # two\n    \"{}\", # three\n]\n",
+            id(2),
+            id(1)
+        ),
+    );
+    assert!(
+        text.contains("\"box\", # one") && text.contains("# two"),
+        "{text}"
+    );
+    assert_eq!(text.matches("box").count(), 1, "{text}");
+    assert!(!text.contains(&id(1).to_string()), "{text}");
+    let x = parse_exports(&text, Path::new("e")).unwrap();
+    assert_eq!(x.exports["p"].rw, ["box".to_string(), id(2).to_string()]);
 }

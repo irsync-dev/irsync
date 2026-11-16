@@ -126,6 +126,15 @@ impl Hosts {
         self.entries.get(alias)
     }
 
+    /// The alias that stands for `id`: the first in lexicographic order
+    /// when several entries have it.
+    pub fn alias_of(&self, id: &EndpointId) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(_, e)| e.endpoint_id == *id)
+            .map(|(alias, _)| alias.as_str())
+    }
+
     /// An alias first, then a literal EndpointId.
     pub fn resolve_peer(&self, s: &str) -> Result<EndpointId, ConfigError> {
         if let Some(e) = self.get(s) {
