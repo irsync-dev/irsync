@@ -6,6 +6,12 @@ These commands read and edit the config file, `~/.config/irsync/irsync.toml`
 `export update`; `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
+A noun on its own runs its `list`: `irsync host`, `irsync export`,
+`irsync grant`, `irsync id` and `irsync config` print what is there and
+leave the config file alone (`irsync id` creates the client's key when
+there is none). Arguments of `list`, such as a grant target, need `list`
+typed out.
+
 Every management command takes `--config PATH` to use another file. For a
 noun the flag may stand before or after the verb: `irsync export --config C
 add ...` and `irsync export add ... --config C` are the same.
@@ -82,6 +88,7 @@ refused as `WHO` in `grant add`.
 
 | Command | Effect |
 | --- | --- |
+| `irsync id list [--passphrase-file PATH]` | Print every identity this machine has: `client:` with the client's public key line and `EndpointId`, then `daemon:` with the daemon's when a daemon key exists. Generates the client's key if no key serves; never the daemon's. |
 | `irsync id show [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
 | `irsync id show --daemon` | The same for the daemon, under `daemon:`. Never generates the daemon's key: without one it fails and says how to make one. |
 | `irsync id show -a` | Both, each under its label. |

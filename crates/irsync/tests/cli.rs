@@ -222,7 +222,7 @@ fn export_update_takes_the_noun_file_flags_in_either_position() {
         };
         assert_eq!(e.files.config, Some(PathBuf::from("/c")));
         assert!(
-            matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["photos"])
+            matches!(e.cmd, Some(ExportCmd::Update { ref names, dry_run: false, .. }) if names == &["photos"])
         );
     }
     // The old spelling is gone: `index` has no --daemon and no --exports;
@@ -418,7 +418,7 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
     ])
     .unwrap();
     match a.cmd {
-        Some(Command::Host(h)) => match h.cmd {
+        Some(Command::Host(h)) => match h.cmd.unwrap() {
             irsync::cli::HostCmd::Add(add) => {
                 assert_eq!(add.relay_mode, Some(RelayMode::Disabled));
                 assert_eq!(add.dial_retries, Some(1));
@@ -461,7 +461,7 @@ fn export_update_parses_export_names_or_all() {
     use irsync::cli::ExportCmd;
     let a = parse(&["export", "update", "-n", "-v", "photos", "music"]);
     match a.cmd {
-        Some(Command::Export(e)) => match e.cmd {
+        Some(Command::Export(e)) => match e.cmd.unwrap() {
             ExportCmd::Update {
                 names,
                 dry_run,
@@ -478,7 +478,7 @@ fn export_update_parses_export_names_or_all() {
     let a = parse(&["export", "update", "all"]);
     assert!(matches!(
         a.cmd,
-        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Update { ref names, dry_run: false, .. } if names == &["all"])
+        Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::Update { ref names, dry_run: false, .. }) if names == &["all"])
     ));
     assert!(Args::try_parse_from(["irsync", "export", "update"]).is_err());
     assert!(Args::try_parse_from(["irsync", "export", "update", "-n"]).is_err());
@@ -491,40 +491,40 @@ fn nouns_share_add_remove_list() {
     assert!(matches!(
         parse(&["export", "add", "photos:/srv/photos", "--ro", "--warm-index"]).cmd,
         Some(Command::Export(ref e))
-            if matches!(e.cmd, ExportCmd::Add(ref a) if a.target == "photos:/srv/photos" && a.ro && a.warm_index)
+            if matches!(e.cmd, Some(ExportCmd::Add(ref a)) if a.target == "photos:/srv/photos" && a.ro && a.warm_index)
     ));
     assert!(matches!(
         parse(&["export", "remove", "photos"]).cmd,
-        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::Remove { ref name } if name == "photos")
+        Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::Remove { ref name }) if name == "photos")
     ));
     assert!(matches!(
         parse(&["grant", "add", "photos", "laptop", "--ro"]).cmd,
         Some(Command::Grant(ref g))
-            if matches!(g.cmd, GrantCmd::Add { ref export, ref who, ro: true } if export == "photos" && who == "laptop")
+            if matches!(g.cmd, Some(GrantCmd::Add { ref export, ref who, ro: true }) if export == "photos" && who == "laptop")
     ));
     assert!(matches!(
         parse(&["grant", "remove", "all", "all"]).cmd,
-        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::Remove { .. })
+        Some(Command::Grant(ref g)) if matches!(g.cmd, Some(GrantCmd::Remove { .. }))
     ));
     assert!(matches!(
         parse(&["host", "remove", "home"]).cmd,
-        Some(Command::Host(ref h)) if matches!(h.cmd, HostCmd::Remove { ref alias } if alias == "home")
+        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { ref alias }) if alias == "home")
     ));
     assert!(matches!(
         parse(&["host", "list"]).cmd,
-        Some(Command::Host(ref h)) if matches!(h.cmd, HostCmd::List)
+        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::List))
     ));
     assert!(matches!(
         parse(&["export", "list"]).cmd,
-        Some(Command::Export(ref e)) if matches!(e.cmd, ExportCmd::List)
+        Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::List))
     ));
     assert!(matches!(
         parse(&["grant", "list"]).cmd,
-        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::List { target: None })
+        Some(Command::Grant(ref g)) if matches!(g.cmd, Some(GrantCmd::List { target: None }))
     ));
     assert!(matches!(
         parse(&["grant", "list", "photos"]).cmd,
-        Some(Command::Grant(ref g)) if matches!(g.cmd, GrantCmd::List { target: Some(ref t) } if t == "photos")
+        Some(Command::Grant(ref g)) if matches!(g.cmd, Some(GrantCmd::List { target: Some(ref t) }) if t == "photos")
     ));
     assert!(Args::try_parse_from(["irsync", "grant", "list", "a", "b"]).is_err());
     // host add keeps every flag
@@ -551,7 +551,9 @@ fn nouns_share_add_remove_list() {
     let Some(Command::Host(h)) = a.cmd else {
         panic!()
     };
-    let HostCmd::Add(h) = h.cmd else { panic!() };
+    let Some(HostCmd::Add(h)) = h.cmd else {
+        panic!()
+    };
     assert!(
         h.alias == "home"
             && h.id == "abc"
@@ -619,15 +621,15 @@ fn id_and_show_parse() {
     use irsync::cli::IdCmd;
     assert!(matches!(
         parse(&["id", "show"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: false, .. })
+        Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Show { daemon: false, all: false, .. }))
     ));
     assert!(matches!(
         parse(&["id", "show", "--daemon"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: true, all: false, .. })
+        Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Show { daemon: true, all: false, .. }))
     ));
     assert!(matches!(
         parse(&["id", "show", "-a"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Show { daemon: false, all: true, .. })
+        Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Show { daemon: false, all: true, .. }))
     ));
     // The file flags belong to the noun, so they go on either side of the verb.
     for args in [
@@ -642,11 +644,11 @@ fn id_and_show_parse() {
     assert!(Args::try_parse_from(["irsync", "id", "show", "--daemon", "--all"]).is_err());
     assert!(matches!(
         parse(&["id", "generate"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: false, out: None, force: false })
+        Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Generate { daemon: false, out: None, force: false }))
     ));
     assert!(matches!(
         parse(&["id", "generate", "--daemon"]).cmd,
-        Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { daemon: true, out: None, force: false })
+        Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Generate { daemon: true, out: None, force: false }))
     ));
     for args in [
         &["id", "generate", "--force"][..],
@@ -655,7 +657,7 @@ fn id_and_show_parse() {
         assert!(
             matches!(
                 parse(args).cmd,
-                Some(Command::Id(ref i)) if matches!(i.cmd, IdCmd::Generate { force: true, .. })
+                Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Generate { force: true, .. }))
             ),
             "{args:?}"
         );
@@ -663,12 +665,22 @@ fn id_and_show_parse() {
     assert!(matches!(
         parse(&["id", "generate", "--out", "/k"]).cmd,
         Some(Command::Id(ref i))
-            if matches!(i.cmd, IdCmd::Generate { daemon: false, out: Some(ref p), .. } if p == &PathBuf::from("/k"))
+            if matches!(i.cmd, Some(IdCmd::Generate { daemon: false, out: Some(ref p), .. }) if p == &PathBuf::from("/k"))
     ));
+    assert!(matches!(
+        parse(&["id", "list", "--passphrase-file", "/p"]).cmd,
+        Some(Command::Id(ref i))
+            if matches!(i.cmd, Some(IdCmd::List { passphrase_file: Some(ref p) }) if p == &PathBuf::from("/p"))
+    ));
+    // `list` has no roles to pick from: it prints what there is.
+    assert!(Args::try_parse_from(["irsync", "id", "list", "--daemon"]).is_err());
     // `--out` names the file; `--daemon` picks the configured one.
     assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());
-    // `id` is a noun: it needs a verb.
-    assert!(Args::try_parse_from(["irsync", "id"]).is_err());
+    // A noun alone parses: it runs `list`.
+    for noun in ["id", "host", "export", "grant", "config"] {
+        assert!(Args::try_parse_from(["irsync", noun]).is_ok(), "{noun}");
+    }
+    assert!(matches!(parse(&["id"]).cmd, Some(Command::Id(ref i)) if i.cmd.is_none()));
     assert!(Args::try_parse_from(["irsync", "id", "--daemon"]).is_err());
     assert!(matches!(
         parse(&["show", "--config", "/c"]).cmd,
@@ -681,7 +693,7 @@ fn id_and_show_parse() {
     assert!(matches!(
         parse(&["id", "show", "--daemon", "--passphrase-file", "/p"]).cmd,
         Some(Command::Id(ref i))
-            if matches!(i.cmd, IdCmd::Show { daemon: true, passphrase_file: Some(ref p), .. } if p == &PathBuf::from("/p"))
+            if matches!(i.cmd, Some(IdCmd::Show { daemon: true, passphrase_file: Some(ref p), .. }) if p == &PathBuf::from("/p"))
     ));
     assert!(matches!(
         parse(&["show", "--passphrase-file", "/p"]).cmd,
@@ -725,25 +737,29 @@ fn config_noun_parses() {
     use irsync::cli::ConfigCmd;
     assert!(matches!(
         parse(&["config", "get", "daemon.listen"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Get { ref key } if key == "daemon.listen")
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::Get { ref key }) if key == "daemon.listen")
     ));
     assert!(matches!(
         parse(&["config", "set", "daemon.listen", "a:1", "b:2"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Set { ref values, .. } if values == &["a:1", "b:2"])
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::Set { ref values, .. }) if values == &["a:1", "b:2"])
     ));
     assert!(matches!(
         parse(&["config", "set", "all.rw"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Set { ref values, .. } if values.is_empty())
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::Set { ref values, .. }) if values.is_empty())
     ));
     assert!(matches!(
         parse(&["config", "unset", "x"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::Unset { ref key } if key == "x")
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::Unset { ref key }) if key == "x")
     ));
     assert!(matches!(
         parse(&["config", "--config", "/c", "list"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, ConfigCmd::List) && c.files.config == Some("/c".into())
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::List)) && c.files.config == Some("/c".into())
     ));
-    assert!(Args::try_parse_from(["irsync", "config"]).is_err());
+    // `config` alone is `config list`.
+    assert!(matches!(
+        parse(&["config"]).cmd,
+        Some(Command::Config(ref c)) if c.cmd.is_none()
+    ));
     assert!(Args::try_parse_from(["irsync", "config", "get"]).is_err());
 }
 

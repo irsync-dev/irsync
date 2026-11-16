@@ -400,6 +400,60 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
     assert!(!home.join(".config/irsync/irsync.toml").exists());
 }
 
+/// `id list` prints what the machine has: the client's identity (made
+/// when missing), and the daemon's only when there is one.
+#[test]
+fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    // Fresh machine: the client identity is created, the daemon's is not.
+    let o = irsync(&home, &["id", "list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(lines[0], "client:");
+    assert!(home.join(".config/irsync/id_ed25519").exists());
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    // With a daemon identity: both blocks, exactly what `show -a` prints,
+    // and no pointer on stderr.
+    ok(&home, &["id", "generate", "--daemon"]);
+    let o = irsync(&home, &["id", "list"]);
+    assert!(o.status.success());
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert_eq!(out, ok(&home, &["id", "show", "--all"]));
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!((lines.len(), lines[0], lines[3]), (6, "client:", "daemon:"));
+}
+
+/// A daemon key that exists but cannot be read is an error that names the
+/// file, not a daemon quietly left out.
+#[test]
+fn id_list_names_a_daemon_key_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    ok(&home, &["id", "generate", "--daemon"]);
+    let key = home.join(".config/irsync/daemon_ed25519");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&key).is_ok() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    let o = irsync(&home, &["id", "list"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains(key.to_str().unwrap()),
+        "{err}"
+    );
+}
+
 #[test]
 fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let d = tempfile::tempdir().unwrap();
@@ -1338,4 +1392,97 @@ fn help_points_at_the_last_line_of_id_show() {
     let help = String::from_utf8_lossy(&o.stdout);
     assert!(help.contains("print its id (the last line)"), "{help}");
     assert!(!help.contains("second line"), "{help}");
+}
+
+/// A noun typed alone runs its `list`: same output, same exit code.
+#[test]
+fn a_bare_noun_runs_its_list() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(&home, &["host", "add", "laptop", &id]);
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", "laptop"]);
+    // The client identity exists before the comparison, so neither run
+    // prints "generated identity".
+    ok(&home, &["id", "generate"]);
+    for noun in ["id", "host", "export", "grant", "config"] {
+        let bare = irsync(&home, &[noun]);
+        let list = irsync(&home, &[noun, "list"]);
+        assert!(bare.status.success(), "{noun}");
+        assert!(!list.stdout.is_empty(), "{noun}");
+        assert_eq!(bare.stdout, list.stdout, "{noun}");
+        assert_eq!(bare.stderr, list.stderr, "{noun}");
+    }
+    // The flag after a bare noun names the file.
+    let other = d.path().join("other.toml");
+    std::fs::write(&other, format!("[hosts.nas]\nendpoint_id = \"{id}\"\n")).unwrap();
+    let c = other.to_str().unwrap();
+    assert_eq!(
+        ok(&home, &["host", "--config", c]),
+        ok(&home, &["host", "list", "--config", c])
+    );
+    assert!(ok(&home, &["host", "--config", c]).contains("nas"));
+}
+
+/// A bare noun only lists: it writes nothing, `--help` is still help, and
+/// the arguments of `list` need `list` typed out.
+#[test]
+fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    for noun in ["host", "export", "grant", "config"] {
+        assert!(irsync(&home, &[noun]).status.success(), "{noun}");
+    }
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    let o = irsync(&home, &["id", "--help"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Usage: irsync id"));
+    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    for args in [
+        &["grant", "photos"][..],
+        &["id", "--passphrase-file", "/p"],
+        &["id", "--daemon"],
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+    }
+}
+
+/// A daemon key whose directory cannot be entered is not "no daemon
+/// identity": `id list` fails and names the path instead of leaving the
+/// daemon out.
+#[test]
+fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let locked = d.path().join("locked");
+    let key = locked.join("key");
+    std::fs::create_dir_all(home.join(".config/irsync")).unwrap();
+    std::fs::write(
+        home.join(".config/irsync/irsync.toml"),
+        format!("[daemon]\nidentity = \"{}\"\n", key.display()),
+    )
+    .unwrap();
+    ok(&home, &["id", "generate", "--daemon"]);
+    assert!(key.exists());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let skip = key.symlink_metadata().is_ok();
+    let o = irsync(&home, &["id", "list"]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if skip {
+        eprintln!("skipping: running as root, mode 0o000 does not stop lookups");
+        return;
+    }
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains(key.to_str().unwrap()),
+        "{err}"
+    );
 }

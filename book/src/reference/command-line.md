@@ -183,7 +183,7 @@ alias's table, then `[client]`, then the built-in default. See
 | `irsync daemon` | Run the daemon. See below. |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
-| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
+| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). Each of the first five alone runs its `list`. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
 
 ### irsync daemon
 
