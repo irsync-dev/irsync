@@ -10,9 +10,15 @@
    narrower Barlow Semi Condensed; running text in a book serif; commands in
    monospace. Barlow is the one family that ships (Latin only, from
    @fontsource; site/build.sh copies the files into fonts/). The serif and
-   the monospace are stacks of faces the systems already have. */
+   the monospace are stacks of faces the systems already have.
+
+   The colours, font stacks, text sizes and radii are not written here:
+   they come from site/tokens.json, which the book shares. site/build.sh
+   generates tokens.css from it (--ir-* custom properties, light by
+   default, dark by the system setting). */
 
 @import "tailwindcss" source(none);
+@import "./tokens.css";
 
 @font-face {
   font-family: "Barlow";
@@ -40,37 +46,9 @@
 @source "./index.html";
 @source "./404.html";
 
-/* The palette, light first, swapped for dark by the system setting. */
+/* The palette comes from tokens.css; light and dark follow the system. */
 :root {
   color-scheme: light dark;
-  --site-ground: #f2f5f6;
-  --site-raised: #ffffff;
-  --site-rule: #ccd6db;
-  --site-ink: #13222c;
-  --site-muted: #4f616c;
-  --site-aqua: #00a6b4;
-  --site-aqua-ink: #00707b;
-  --site-on-aqua: #ffffff;
-  --site-signal: #f6c700;
-  --site-on-signal: #13222c;
-  --site-term: #13222c;
-  --site-term-ink: #dde7eb;
-  --site-term-muted: #8da3ae;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --site-ground: #0e1920;
-    --site-raised: #15242d;
-    --site-rule: #263943;
-    --site-ink: #e2ebee;
-    --site-muted: #96a9b3;
-    --site-aqua: #2cc4d1;
-    --site-aqua-ink: #5ed6e0;
-    --site-on-aqua: #0e1920;
-    --site-term: #081116;
-    --site-term-muted: #7f949f;
-  }
 }
 
 @plugin "daisyui" {
@@ -78,7 +56,7 @@
   logs: false;
 }
 
-/* One daisyUI theme on the palette above; it needs no dark twin because
+/* One daisyUI theme on the palette from tokens.css; it needs no dark twin because
    the properties it refers to change with the system setting. */
 @plugin "daisyui/theme" {
   name: "irsync";
@@ -86,30 +64,30 @@
   prefersdark: false;
   color-scheme: light dark;
 
-  --color-base-100: var(--site-ground);
-  --color-base-200: var(--site-raised);
-  --color-base-300: var(--site-rule);
-  --color-base-content: var(--site-ink);
-  --color-primary: var(--site-aqua-ink);
-  --color-primary-content: var(--site-on-aqua);
-  --color-secondary: var(--site-aqua);
-  --color-secondary-content: var(--site-on-aqua);
-  --color-accent: var(--site-aqua);
-  --color-accent-content: var(--site-on-aqua);
-  --color-neutral: var(--site-term);
-  --color-neutral-content: var(--site-term-ink);
-  --color-info: var(--site-aqua-ink);
-  --color-info-content: var(--site-on-aqua);
-  --color-success: var(--site-aqua-ink);
-  --color-success-content: var(--site-on-aqua);
-  --color-warning: var(--site-signal);
-  --color-warning-content: var(--site-on-signal);
-  --color-error: #c8322b;
-  --color-error-content: #ffffff;
+  --color-base-100: var(--ir-ground);
+  --color-base-200: var(--ir-raised);
+  --color-base-300: var(--ir-rule);
+  --color-base-content: var(--ir-ink);
+  --color-primary: var(--ir-aqua-ink);
+  --color-primary-content: var(--ir-on-aqua);
+  --color-secondary: var(--ir-aqua);
+  --color-secondary-content: var(--ir-on-aqua);
+  --color-accent: var(--ir-aqua);
+  --color-accent-content: var(--ir-on-aqua);
+  --color-neutral: var(--ir-term);
+  --color-neutral-content: var(--ir-term-ink);
+  --color-info: var(--ir-aqua-ink);
+  --color-info-content: var(--ir-on-aqua);
+  --color-success: var(--ir-aqua-ink);
+  --color-success-content: var(--ir-on-aqua);
+  --color-warning: var(--ir-signal);
+  --color-warning-content: var(--ir-on-signal);
+  --color-error: var(--ir-error);
+  --color-error-content: var(--ir-on-error);
 
-  --radius-selector: 2px;
-  --radius-field: 2px;
-  --radius-box: 4px;
+  --radius-selector: var(--ir-radius-sm);
+  --radius-field: var(--ir-radius-sm);
+  --radius-box: var(--ir-radius-md);
   --size-selector: 0.25rem;
   --size-field: 0.25rem;
   --border: 1px;
@@ -118,35 +96,34 @@
 }
 
 @theme {
-  --font-display: Barlow, Bahnschrift, "DIN Alternate", "Franklin Gothic Medium", sans-serif;
-  --font-condensed: "Barlow Semi Condensed", Bahnschrift, "DIN Alternate", "Arial Narrow",
-    sans-serif;
-  --font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --font-display: var(--ir-font-display);
+  --font-condensed: var(--ir-font-condensed);
+  --font-serif: var(--ir-font-serif);
+  --font-mono: var(--ir-font-mono);
 
-  --color-muted: var(--site-muted);
-  --color-aqua: var(--site-aqua);
-  --color-link: var(--site-aqua-ink);
-  --color-signal: var(--site-signal);
-  --color-on-signal: var(--site-on-signal);
-  --color-term: var(--site-term);
-  --color-term-ink: var(--site-term-ink);
-  --color-term-muted: var(--site-term-muted);
+  --color-muted: var(--ir-muted);
+  --color-aqua: var(--ir-aqua);
+  --color-link: var(--ir-aqua-ink);
+  --color-signal: var(--ir-signal);
+  --color-on-signal: var(--ir-on-signal);
+  --color-term: var(--ir-term);
+  --color-term-ink: var(--ir-term-ink);
+  --color-term-muted: var(--ir-term-muted);
 
-  /* A scale on a perfect fourth (4:3) from a 17px body. */
-  --text-lede: 1.3125rem;
-  --text-lede--line-height: 1.5;
-  --text-body: 1.0625rem;
-  --text-body--line-height: 1.6;
-  --text-small: 0.9375rem;
-  --text-small--line-height: 1.55;
-  --text-label: 1rem;
-  --text-label--line-height: 1.25;
-  --text-heading: 1.75rem;
-  --text-heading--line-height: 1.15;
-  --text-display: clamp(2rem, 4vw, 3rem);
-  --text-display--line-height: 1.05;
-  --text-display--letter-spacing: -0.01em;
+  /* The type scale from tokens.json. */
+  --text-lede: var(--ir-text-lede);
+  --text-lede--line-height: var(--ir-text-lede-line);
+  --text-body: var(--ir-text-body);
+  --text-body--line-height: var(--ir-text-body-line);
+  --text-small: var(--ir-text-small);
+  --text-small--line-height: var(--ir-text-small-line);
+  --text-label: var(--ir-text-label);
+  --text-label--line-height: var(--ir-text-label-line);
+  --text-heading: var(--ir-text-heading);
+  --text-heading--line-height: var(--ir-text-heading-line);
+  --text-display: var(--ir-text-display);
+  --text-display--line-height: var(--ir-text-display-line);
+  --text-display--letter-spacing: var(--ir-text-display-tracking);
 }
 
 @layer base {
@@ -184,7 +161,7 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--site-aqua-ink);
+    outline: 2px solid var(--ir-aqua-ink);
     outline-offset: 3px;
   }
 }
@@ -199,7 +176,7 @@
   }
 
   .cmd pre {
-    @apply min-w-0 flex-1 py-1 text-[0.9375rem] leading-relaxed whitespace-pre-wrap wrap-anywhere;
+    @apply min-w-0 flex-1 py-1 text-(length:--ir-text-small) leading-relaxed whitespace-pre-wrap wrap-anywhere;
   }
 
   .cmd .prompt {

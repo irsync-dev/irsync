@@ -24,7 +24,10 @@ out=$parent/$base
 
 tokens() { python3 "$root/site/tools/gen_tokens.py" "$root/site/tokens.json" "$@"; }
 
-# The book takes its tokens from the theme class mdbook puts on <html>.
+# The landing page takes its tokens from the system's light or dark setting;
+# tailwind.css imports site/tokens.css. The book takes them from the theme
+# class mdbook puts on <html>.
+tokens -o "$root/site/tokens.css"
 tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
   -o "$root/book/theme/tokens.css"
 
