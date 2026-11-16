@@ -214,7 +214,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Tag or branch to test (default: the branch this run starts on)
+        description: 'Tag or branch to test. Empty means the branch this run starts on.'
         type: string
         required: false
       freebsd:
