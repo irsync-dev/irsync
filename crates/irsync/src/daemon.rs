@@ -998,6 +998,11 @@ pub async fn run_from_settings(
     if !listen.is_empty() {
         settings.daemon.listen = listen.clone();
     }
+    // With --passphrase-file and no key the daemon refuses below; refuse
+    // here instead, before the lock writes anything.
+    let identity = &settings.daemon.identity;
+    crate::identity::refuse_to_generate_with_passphrase_file(identity, pass)
+        .with_context(|| format!("identity {}", identity.display()))?;
     // Held until this function returns; a second daemon on the same state
     // dir fails here, before it binds anything.
     let _lock = crate::daemon_lock::acquire(&settings.state_dir)?;

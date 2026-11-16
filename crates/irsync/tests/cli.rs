@@ -201,10 +201,8 @@ fn subcommands_parse() {
 #[test]
 fn daemon_flags() {
     let a = parse(&["daemon", "--config", "/c"]);
-    let Some(Command::Daemon(d)) = a.cmd else {
-        panic!()
-    };
-    assert_eq!(d.config, Some("/c".into()));
+    assert!(matches!(a.cmd, Some(Command::Daemon(_))));
+    assert_eq!(a.files.config, Some("/c".into()));
     assert!(Args::try_parse_from(["irsync", "daemon", "--foreground"]).is_err());
     // `id --daemon` is the one way to print the daemon's id.
     assert!(Args::try_parse_from(["irsync", "daemon", "--show-id"]).is_err());
@@ -217,10 +215,11 @@ fn export_update_takes_the_noun_file_flags_in_either_position() {
         &["export", "update", "--config", "/c", "photos"][..],
         &["export", "--config", "/c", "update", "photos"][..],
     ] {
-        let Some(Command::Export(e)) = parse(args).cmd else {
+        let a = parse(args);
+        let Some(Command::Export(e)) = a.cmd else {
             panic!("{args:?}")
         };
-        assert_eq!(e.files.config, Some(PathBuf::from("/c")));
+        assert_eq!(a.files.config, Some(PathBuf::from("/c")));
         assert!(
             matches!(e.cmd, Some(ExportCmd::Update { ref names, dry_run: false, .. }) if names == &["photos"])
         );
@@ -229,10 +228,11 @@ fn export_update_takes_the_noun_file_flags_in_either_position() {
     // its --config names the file to read `state_dir` from, as elsewhere.
     assert!(Args::try_parse_from(["irsync", "index", "--daemon", "photos"]).is_err());
     assert!(Args::try_parse_from(["irsync", "index", "--exports", "/e", "photos"]).is_err());
-    let Some(Command::Index(ix)) = parse(&["index", "--config", "/c", "/srv/a"]).cmd else {
+    let a = parse(&["index", "--config", "/c", "/srv/a"]);
+    let Some(Command::Index(ix)) = a.cmd else {
         panic!("index --config")
     };
-    assert_eq!(ix.files.config, Some(PathBuf::from("/c")));
+    assert_eq!(a.files.config, Some(PathBuf::from("/c")));
     assert_eq!(ix.targets, [PathBuf::from("/srv/a")]);
 }
 
@@ -353,10 +353,8 @@ fn hosts_and_exports_flags_are_gone() {
             "{args:?}"
         );
     }
-    match parse(&["daemon"]).cmd {
-        Some(Command::Daemon(d)) => assert!(d.config.is_none()),
-        c => panic!("{c:?}"),
-    }
+    let a = parse(&["daemon"]);
+    assert!(matches!(a.cmd, Some(Command::Daemon(_))) && a.files.config.is_none());
 }
 
 #[test]
@@ -471,13 +469,9 @@ fn export_update_parses_export_names_or_all() {
     let a = parse(&["export", "update", "-n", "-v", "photos", "music"]);
     match a.cmd {
         Some(Command::Export(e)) => match e.cmd.unwrap() {
-            ExportCmd::Update {
-                names,
-                dry_run,
-                log,
-            } => {
+            ExportCmd::Update { names, dry_run } => {
                 assert_eq!(names, ["photos", "music"]);
-                assert!(dry_run && log.verbose == 1 && !log.quiet);
+                assert!(dry_run && a.log.verbose == 1 && !a.log.quiet);
             }
             c => panic!("{c:?}"),
         },
@@ -617,23 +611,16 @@ fn file_flags_are_accepted_after_the_noun_in_either_position() {
     let after_noun = parse(&["host", "--config", "/c", "list"]);
     let after_verb = parse(&["host", "list", "--config", "/c"]);
     for a in [after_noun, after_verb] {
-        let Some(Command::Host(h)) = a.cmd else {
-            panic!()
-        };
-        assert_eq!(h.files.config, Some("/c".into()));
+        assert!(matches!(a.cmd, Some(Command::Host(_))));
+        assert_eq!(a.files.config, Some("/c".into()));
     }
     let a = parse(&["grant", "add", "photos", "laptop", "--config", "/c"]);
-    let Some(Command::Grant(g)) = a.cmd else {
-        panic!()
-    };
-    assert_eq!(g.files.config, Some("/c".into()));
-    // Before the noun the flag belongs to a sync, and after a sync's flag
-    // `host list` is its two paths, not a command.
+    assert!(matches!(a.cmd, Some(Command::Grant(_))));
+    assert_eq!(a.files.config, Some("/c".into()));
+    // Before the noun it is the same flag.
     let a = parse(&["--config", "/c", "host", "list"]);
-    assert!(
-        a.cmd.is_none() && a.sync.paths == vec!["host", "list"],
-        "{a:?}"
-    );
+    assert!(matches!(a.cmd, Some(Command::Host(_))), "{a:?}");
+    assert_eq!(a.files.config, Some("/c".into()));
 }
 
 #[test]
@@ -656,10 +643,9 @@ fn id_and_show_parse() {
         &["id", "show", "--config", "/c"][..],
         &["id", "--config", "/c", "show"][..],
     ] {
-        let Some(Command::Id(i)) = parse(args).cmd else {
-            panic!("{args:?}")
-        };
-        assert_eq!(i.files.config, Some(PathBuf::from("/c")));
+        let a = parse(args);
+        assert!(matches!(a.cmd, Some(Command::Id(_))), "{args:?}");
+        assert_eq!(a.files.config, Some(PathBuf::from("/c")));
     }
     assert!(Args::try_parse_from(["irsync", "id", "show", "--daemon", "--all"]).is_err());
     assert!(matches!(
@@ -687,11 +673,9 @@ fn id_and_show_parse() {
         Some(Command::Id(ref i))
             if matches!(i.cmd, Some(IdCmd::Generate { daemon: false, out: Some(ref p), .. }) if p == &PathBuf::from("/k"))
     ));
-    assert!(matches!(
-        parse(&["id", "list", "--passphrase-file", "/p"]).cmd,
-        Some(Command::Id(ref i))
-            if matches!(i.cmd, Some(IdCmd::List { passphrase_file: Some(ref p) }) if p == &PathBuf::from("/p"))
-    ));
+    let a = parse(&["id", "list", "--passphrase-file", "/p"]);
+    assert!(matches!(a.cmd, Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::List))));
+    assert_eq!(a.files.passphrase_file, Some(PathBuf::from("/p")));
     // `list` has no roles to pick from: it prints what there is.
     assert!(Args::try_parse_from(["irsync", "id", "list", "--daemon"]).is_err());
     // `--out` names the file; `--daemon` picks the configured one.
@@ -702,43 +686,18 @@ fn id_and_show_parse() {
     }
     assert!(matches!(parse(&["id"]).cmd, Some(Command::Id(ref i)) if i.cmd.is_none()));
     assert!(Args::try_parse_from(["irsync", "id", "--daemon"]).is_err());
-    assert!(matches!(
-        parse(&["show", "--config", "/c"]).cmd,
-        Some(Command::Show {
-            passphrase_file: None,
-            ..
-        })
-    ));
+    let a = parse(&["show", "--config", "/c"]);
+    assert!(matches!(a.cmd, Some(Command::Show)));
+    assert_eq!(a.files.passphrase_file, None);
     // An encrypted identity can be unlocked from a file, as for a sync.
-    assert!(matches!(
-        parse(&["id", "show", "--daemon", "--passphrase-file", "/p"]).cmd,
-        Some(Command::Id(ref i))
-            if matches!(i.cmd, Some(IdCmd::Show { daemon: true, passphrase_file: Some(ref p), .. }) if p == &PathBuf::from("/p"))
-    ));
-    assert!(matches!(
-        parse(&["show", "--passphrase-file", "/p"]).cmd,
-        Some(Command::Show { passphrase_file: Some(ref p), .. }) if p == &PathBuf::from("/p")
-    ));
-}
-
-#[test]
-fn subcommands_take_verbose_and_quiet() {
-    match parse(&["daemon", "-vv"]).cmd {
-        Some(Command::Daemon(d)) => assert_eq!((d.log.verbose, d.log.quiet), (2, false)),
-        c => panic!("{c:?}"),
-    }
-    match parse(&["gc", "-n", "-q"]).cmd {
-        Some(Command::Gc { dry_run, log, .. }) => assert!(dry_run && log.quiet && log.verbose == 0),
-        c => panic!("{c:?}"),
-    }
-    match parse(&["index", "-v", "/srv/a"]).cmd {
-        Some(Command::Index(ix)) => assert_eq!(ix.log.verbose, 1),
-        c => panic!("{c:?}"),
-    }
-    // One or the other.
-    assert!(Args::try_parse_from(["irsync", "daemon", "-v", "-q"]).is_err());
-    // Top-level flags still belong to a sync, not to a subcommand.
-    assert!(Args::try_parse_from(["irsync", "-v", "gc"]).is_err());
+    let a = parse(&["id", "show", "--daemon", "--passphrase-file", "/p"]);
+    assert!(
+        matches!(a.cmd, Some(Command::Id(ref i)) if matches!(i.cmd, Some(IdCmd::Show { daemon: true, .. })))
+    );
+    assert_eq!(a.files.passphrase_file, Some(PathBuf::from("/p")));
+    let a = parse(&["show", "--passphrase-file", "/p"]);
+    assert!(matches!(a.cmd, Some(Command::Show)));
+    assert_eq!(a.files.passphrase_file, Some(PathBuf::from("/p")));
 }
 
 #[test]
@@ -773,8 +732,12 @@ fn config_noun_parses() {
     ));
     assert!(matches!(
         parse(&["config", "--config", "/c", "list"]).cmd,
-        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::List)) && c.files.config == Some("/c".into())
+        Some(Command::Config(ref c)) if matches!(c.cmd, Some(ConfigCmd::List))
     ));
+    assert_eq!(
+        parse(&["config", "--config", "/c", "list"]).files.config,
+        Some("/c".into())
+    );
     // `config` alone is `config list`.
     assert!(matches!(
         parse(&["config"]).cmd,
@@ -838,4 +801,173 @@ fn progress_block_is_asked_for_with_progress_p_or_info_progress() {
     assert!(opts(&["--info=flist0,progress1", "a/", "b/"]).progress);
     assert!(!opts(&["--info=progress0", "a/", "b/"]).progress);
     assert!(!opts(&["--info=stats2", "a/", "b/"]).progress);
+}
+
+fn err(a: &[&str]) -> String {
+    let mut v = vec!["irsync"];
+    v.extend_from_slice(a);
+    Args::try_parse_from(v).unwrap_err().to_string()
+}
+
+#[test]
+fn verbose_and_quiet_are_accepted_before_and_after_any_command() {
+    let a = parse(&["-v", "gc"]);
+    assert!(matches!(a.cmd, Some(Command::Gc { .. })));
+    assert_eq!((a.log.verbose, a.log.quiet), (1, false));
+    let a = parse(&["gc", "-n", "-q"]);
+    assert!(matches!(a.cmd, Some(Command::Gc { dry_run: true, .. })));
+    assert_eq!((a.log.verbose, a.log.quiet), (0, true));
+    for args in [
+        &["-vv", "id", "show"][..],
+        &["id", "-vv", "show"],
+        &["id", "show", "-vv"],
+        &["id", "show", "--verbose", "--verbose"],
+    ] {
+        let a = parse(args);
+        assert!(matches!(a.cmd, Some(Command::Id(_))), "{args:?}");
+        assert_eq!(a.log.verbose, 2, "{args:?}");
+    }
+    assert!(parse(&["--quiet", "host", "list"]).log.quiet);
+    assert_eq!(parse(&["daemon", "-vv"]).log.verbose, 2);
+    assert_eq!(parse(&["index", "-v", "/srv/a"]).log.verbose, 1);
+    assert_eq!(parse(&["-v", "show"]).log.verbose, 1);
+    assert_eq!(
+        parse(&["-v", "config", "get", "daemon.listen"]).log.verbose,
+        1
+    );
+}
+
+#[test]
+fn verbose_with_quiet_is_accepted_everywhere() {
+    for args in [
+        &["daemon", "-v", "-q"][..],
+        &["-q", "gc", "-v"],
+        &["-vq", "src", "h:m/"],
+    ] {
+        let a = parse(args);
+        assert_eq!((a.log.verbose, a.log.quiet), (1, true), "{args:?}");
+    }
+}
+
+#[test]
+fn a_sync_still_reads_verbose_and_quiet() {
+    let o = opts(&["-avv", "src", "h:m/"]);
+    assert_eq!((o.verbose, o.quiet), (2, false));
+    assert!(opts(&["-q", "src", "h:m/"]).quiet);
+    let a = parse(&["-v", "home:photos/"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["home:photos/"] && a.log.verbose == 1);
+}
+
+#[test]
+fn a_path_named_like_a_command_is_still_a_path() {
+    let a = parse(&["-a", "myserver:photos/", "config"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["myserver:photos/", "config"]);
+    let a = parse(&["src", "gc"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["src", "gc"]);
+    let a = parse(&["-v", "./gc", "h:m/"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["./gc", "h:m/"]);
+}
+
+#[test]
+fn config_is_accepted_before_and_after_any_command() {
+    let f = Some(PathBuf::from("f"));
+    for args in [
+        &["--config", "f", "host", "list"][..],
+        &["host", "--config", "f", "list"],
+        &["host", "list", "--config", "f"],
+        &["--config", "f", "daemon"],
+        &["daemon", "--config", "f"],
+        &["--config", "f", "gc"],
+        &["index", "--config", "f", "/srv/a"],
+        &["-v", "--config", "f", "id", "show"],
+        &["show", "--config=f"],
+    ] {
+        let a = parse(args);
+        assert!(a.cmd.is_some(), "{args:?}");
+        assert_eq!(a.files.config, f, "{args:?}");
+    }
+    assert_eq!(opts(&["--config", "f", "src", "h:m/"]).config, f);
+    assert_eq!(opts(&["src", "h:m/", "--config", "f"]).config, f);
+    assert_eq!(parse(&["host", "list"]).files.config, None);
+}
+
+#[test]
+fn passphrase_file_is_accepted_before_and_after_any_command() {
+    let f = Some(PathBuf::from("p"));
+    for args in [
+        &["--passphrase-file", "p", "id", "show"][..],
+        &["id", "--passphrase-file", "p", "show"],
+        &["id", "show", "--passphrase-file", "p"],
+        &["id", "list", "--passphrase-file", "p"],
+        &["id", "generate", "--passphrase-file", "p"],
+        &[
+            "id",
+            "generate",
+            "--daemon",
+            "--force",
+            "--passphrase-file=p",
+        ],
+        &["show", "--passphrase-file", "p"],
+        &["--passphrase-file", "p", "daemon"],
+        &["daemon", "--passphrase-file", "p"],
+        // Accepted and ignored where no key is loaded.
+        &["gc", "--passphrase-file", "p"],
+        &["--passphrase-file", "p", "host", "list"],
+    ] {
+        let a = parse(args);
+        assert!(a.cmd.is_some(), "{args:?}");
+        assert_eq!(a.files.passphrase_file, f, "{args:?}");
+    }
+    assert_eq!(
+        opts(&["--passphrase-file", "p", "src", "h:m/"]).passphrase_file,
+        f
+    );
+    assert_eq!(parse(&["id", "show"]).files.passphrase_file, None);
+}
+
+#[test]
+fn a_sync_option_with_a_command_is_rejected_by_name() {
+    assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
+    assert!(err(&["-n", "gc"]).contains("-n is a sync option and cannot be used with 'gc'"));
+    assert!(
+        err(&["-av", "id", "show"]).contains("-a is a sync option and cannot be used with 'id'")
+    );
+    assert!(err(&["--bwlimit", "5", "gc"])
+        .contains("--bwlimit is a sync option and cannot be used with 'gc'"));
+    let e = Args::try_parse_from(["irsync", "-a", "gc"]).unwrap_err();
+    assert_eq!(e.exit_code(), 2);
+    // After the command, the command's own flags are untouched.
+    assert!(matches!(
+        parse(&["gc", "-n"]).cmd,
+        Some(Command::Gc { dry_run: true, .. })
+    ));
+    // `-v gc host:path` is `gc` with an argument it does not take.
+    assert!(Args::try_parse_from(["irsync", "-v", "gc", "host:path"]).is_err());
+}
+
+#[test]
+fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
+    let a = parse(&["h:photos/", "-v", "gc"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "gc"]);
+    assert_eq!(a.log.verbose, 1);
+    let a = parse(&["h:photos/", "-q", "config"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(a.log.quiet);
+    let a = parse(&["h:photos/", "--config", "f", "show"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "show"]);
+    assert_eq!(a.files.config, Some(PathBuf::from("f")));
+    let a = parse(&["h:photos/", "-a", "config"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(SyncOptions::from_args(&a).preserve.recursive);
+    let a = parse(&["src", "-v", "gc", "h:m/"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["src", "gc", "h:m/"]);
+    // A path whose command would fail to parse is still a path.
+    let a = parse(&["h:photos/", "-v", "host", "add"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "host", "add"]);
+    // With no path first, a command name is the command.
+    assert!(matches!(parse(&["-v", "gc"]).cmd, Some(Command::Gc { .. })));
+    assert!(matches!(parse(&["gc", "-v"]).cmd, Some(Command::Gc { .. })));
+    let a = parse(&["--config", "f", "host", "list"]);
+    assert!(a.cmd.is_some() && a.sync.paths.is_empty());
+    assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
 }

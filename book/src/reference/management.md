@@ -12,9 +12,13 @@ leave the config file alone (`irsync id` creates the client's key when
 there is none). Arguments of `list`, such as a grant target, need `list`
 typed out.
 
+Every command here accepts `-v` and `-q`, before or after it; see the
+[command-line reference](command-line.md#flags-every-command-takes).
+
 Every management command takes `--config PATH` to use another file. For a
-noun the flag may stand before or after the verb: `irsync export --config C
-add ...` and `irsync export add ... --config C` are the same.
+noun the flag may stand before the noun, or before or after the verb:
+`irsync --config C export add ...`, `irsync export --config C add ...` and
+`irsync export add ... --config C` are the same.
 
 ## Editing rules
 
@@ -56,7 +60,7 @@ granted to.
 | `irsync export add PATH [--ro] [--warm-index]` | The same, named after the directory's last component. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
 | `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `warm_index` and `fsync` when set, then its grant lines. |
-| `irsync export update [-n] [-v\|-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
+| `irsync export update [-n] [-v] [-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
 
 `export add` joins a relative `PATH` onto the working directory, expands a
 leading `~` (`irsync export add home:~` exports the home directory), and
@@ -90,7 +94,14 @@ refused as `WHO` in `grant add`.
 | `irsync id show [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
 | `irsync id show --daemon` | The same for the daemon, under `daemon:`. Never generates the daemon's key: without one it fails and says how to make one. |
 | `irsync id show -a` | Both, each under its label. |
-| `irsync id generate [--daemon \| --out PATH] [-f]` | Write a new Ed25519 key pair at the client's path (default), the daemon's path, or `PATH`, with the public key beside it as `.pub`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. |
+| `irsync id generate [--daemon \| --out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair at the client's path (default), the daemon's path, or `PATH`, with the public key beside it as `.pub`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
+
+Some commands generate a missing key automatically: a sync, a listing,
+`id show`, `id list`, `show`, `export add` and the daemon. A key generated
+automatically is never encrypted. So with `--passphrase-file`, these commands
+do not generate a missing key. They fail, write nothing, and tell you to run
+`irsync id generate --passphrase-file PATH` first. Add `--daemon` for the
+daemon's key.
 
 The client's key is found the way ssh picks one; see
 [Configuration](configuration.md#identity-and-state). After `irsync id

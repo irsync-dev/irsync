@@ -1,7 +1,7 @@
 use irsync::identity::{
-    endpoint_id_of_public_key, generate_openssh, load_client_identity, load_identity_interactive,
-    load_or_generate, load_secret_key, parse_endpoint_id, write_new, IdentityError, KeySource,
-    PassphraseSource,
+    endpoint_id_of_public_key, generate_openssh, generate_openssh_with, load_client_identity,
+    load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
+    public_key_line, read_passphrase_file, write_new, IdentityError, KeySource, PassphraseSource,
 };
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -149,6 +149,18 @@ fn generate_refuses_existing_file() {
 }
 
 #[test]
+fn generate_refuses_an_empty_passphrase_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("id");
+    assert!(matches!(
+        generate_openssh_with(&path, "c", Some("")),
+        Err(IdentityError::EmptyPassphrase)
+    ));
+    assert!(!path.exists() && !dir.path().join("id.pub").exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn parse_endpoint_id_accepts_z32_and_hex() {
     let id = iroh::SecretKey::from_bytes(&[7u8; 32]).public();
     let hex: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
@@ -260,6 +272,17 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     // --passphrase-file, as for a sync and the daemon, on `id show` and `show`.
     let pf = dir.path().join("pass");
     std::fs::write(&pf, "s3cret\n").unwrap();
+    // `show` also needs the client key, which the flag will not generate on
+    // the side: make it (encrypted) first.
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["id", "generate", "--passphrase-file"])
+        .arg(&pf)
+        .env("HOME", &home)
+        .env_remove("IRSYNC_PASSPHRASE")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     for args in [&["id", "show", "--daemon"][..], &["show"][..]] {
         let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
             .args(args)
@@ -446,4 +469,144 @@ fn an_encrypted_ssh_key_without_a_passphrase_is_an_error_naming_it() {
         &key.public_key().key_data().ed25519().unwrap().0
     );
     assert!(!own.exists());
+}
+
+#[test]
+fn generate_with_a_passphrase_writes_an_encrypted_key_that_unlocks() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("id_ed25519");
+    let secret = generate_openssh_with(&path, "irsync", Some("hunter2")).unwrap();
+    assert!(PrivateKey::read_openssh_file(&path).unwrap().is_encrypted());
+    assert!(matches!(
+        load_secret_key(&path, None),
+        Err(IdentityError::PassphraseRequired)
+    ));
+    assert!(load_secret_key(&path, Some("wrong")).is_err());
+    assert_eq!(
+        load_secret_key(&path, Some("hunter2")).unwrap().public(),
+        secret.public()
+    );
+    // The .pub file is the public half of the same key.
+    let line = std::fs::read_to_string(d.path().join("id_ed25519.pub")).unwrap();
+    assert_eq!(line.trim(), public_key_line(&secret, "irsync"));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn generate_without_a_passphrase_is_unencrypted_as_before() {
+    let d = tempfile::tempdir().unwrap();
+    for (name, secret) in [
+        (
+            "a",
+            generate_openssh_with(&d.path().join("a"), "irsync", None).unwrap(),
+        ),
+        (
+            "b",
+            generate_openssh(&d.path().join("b"), "irsync").unwrap(),
+        ),
+    ] {
+        let path = d.path().join(name);
+        assert!(!PrivateKey::read_openssh_file(&path).unwrap().is_encrypted());
+        assert_eq!(
+            load_secret_key(&path, None).unwrap().public(),
+            secret.public()
+        );
+    }
+}
+
+#[test]
+fn nothing_is_generated_on_the_side_with_a_passphrase_file() {
+    let d = tempfile::tempdir().unwrap();
+    let pf = d.path().join("p");
+    std::fs::write(&pf, "hunter2\n").unwrap();
+    let with_file = PassphraseSource {
+        file: Some(pf.clone()),
+        ..PassphraseSource::default()
+    };
+    let path = d.path().join("sub/id_ed25519");
+    let e = load_or_generate(&path, &with_file, "irsync").unwrap_err();
+    assert!(matches!(e, IdentityError::NoKeyWithPassphraseFile(ref p) if p == &path));
+    let msg = e.to_string();
+    assert!(msg.contains("id generate --passphrase-file") && msg.contains("id_ed25519"));
+    assert!(!d.path().join("sub").exists());
+    // The same through the client's resolution, with and without an ssh path that is absent.
+    let absent = d.path().join("no-ssh-key");
+    for ssh in [None, Some(absent.as_path())] {
+        let e = load_client_identity(&path, ssh, &with_file, "irsync").unwrap_err();
+        assert!(matches!(e, IdentityError::NoKeyWithPassphraseFile(_)));
+    }
+    assert!(!path.exists());
+
+    // An existing key is loaded as before: encrypted with the file, or plain.
+    let enc = d.path().join("enc");
+    let secret = generate_openssh_with(&enc, "irsync", Some("hunter2")).unwrap();
+    let (k, generated) = load_or_generate(&enc, &with_file, "irsync").unwrap();
+    assert!(!generated && k.public() == secret.public());
+    let plain = d.path().join("plain");
+    let secret = generate_openssh(&plain, "irsync").unwrap();
+    let (k, generated) = load_or_generate(&plain, &with_file, "irsync").unwrap();
+    assert!(!generated && k.public() == secret.public());
+    // An ssh key serves the client when it has no irsync key: no refusal.
+    let (k, source) = load_client_identity(&path, Some(&plain), &with_file, "irsync").unwrap();
+    assert!(k.public() == secret.public() && source == KeySource::Ssh(plain.clone()));
+
+    // The environment variable alone does not refuse.
+    let env_only = PassphraseSource {
+        env: Some("hunter2".into()),
+        ..PassphraseSource::default()
+    };
+    let fresh = d.path().join("fresh");
+    assert!(load_or_generate(&fresh, &env_only, "irsync").unwrap().1);
+    assert!(!PrivateKey::read_openssh_file(&fresh)
+        .unwrap()
+        .is_encrypted());
+}
+
+#[test]
+fn the_passphrase_file_is_read_up_to_its_first_line_ending() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("p");
+    for (text, want) in [
+        ("hunter2", "hunter2"),
+        ("hunter2\n", "hunter2"),
+        ("hunter2\r\n", "hunter2"),
+        ("hunter2\nsecond line\n", "hunter2"),
+        ("hunter2\r\nsecond line\r\n", "hunter2"),
+        (" two words ", " two words "),
+        ("tab\there \n", "tab\there "),
+        ("\r\n", ""),
+        ("", ""),
+        ("\nhunter2\n", ""),
+    ] {
+        std::fs::write(&f, text).unwrap();
+        assert_eq!(read_passphrase_file(&f).unwrap(), want, "{text:?}");
+    }
+    assert!(read_passphrase_file(&d.path().join("missing")).is_err());
+}
+
+#[test]
+fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
+    let d = tempfile::tempdir().unwrap();
+    let (unix, windows) = (d.path().join("unix"), d.path().join("windows"));
+    std::fs::write(&unix, "hunter2\n").unwrap();
+    std::fs::write(&windows, "hunter2\r\n").unwrap();
+    for (made_with, opened_with) in [(&unix, &windows), (&windows, &unix)] {
+        let path = d.path().join(format!(
+            "key-{}",
+            made_with.file_name().unwrap().to_str().unwrap()
+        ));
+        let pass = read_passphrase_file(made_with).unwrap();
+        let secret = generate_openssh_with(&path, "irsync", Some(&pass)).unwrap();
+        let src = PassphraseSource {
+            file: Some(opened_with.to_path_buf()),
+            ..PassphraseSource::default()
+        };
+        assert_eq!(
+            load_identity_interactive(&path, &src).unwrap().public(),
+            secret.public()
+        );
+    }
 }

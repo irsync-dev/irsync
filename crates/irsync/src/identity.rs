@@ -25,6 +25,15 @@ pub enum IdentityError {
          use --passphrase-file, or run from a terminal"
     )]
     NoPassphraseSource(PathBuf),
+    #[error("passphrase file {0} is empty")]
+    EmptyPassphraseFile(PathBuf),
+    #[error(
+        "no key at {0}, and a key generated here would not be encrypted; run \
+         `irsync id generate --passphrase-file PATH` first (with --daemon for the daemon's key)"
+    )]
+    NoKeyWithPassphraseFile(PathBuf),
+    #[error("refusing to encrypt a key with an empty passphrase")]
+    EmptyPassphrase,
     #[error("wrong passphrase for {0}")]
     BadPassphrase(PathBuf),
     #[error("only Ed25519 keys can be used as irsync identities")]
@@ -48,6 +57,17 @@ pub fn load_secret_key(path: &Path, passphrase: Option<&str>) -> Result<SecretKe
         key = key.decrypt(pass)?;
     }
     secret_of(&key)
+}
+
+/// The passphrase in a `--passphrase-file`: its first line, without the
+/// line ending (LF or CR+LF), nothing else trimmed. An empty file or an
+/// empty first line gives `""`. Unlocking and generating both read it here.
+pub fn read_passphrase_file(path: &Path) -> Result<String, IdentityError> {
+    let text = std::fs::read_to_string(path).map_err(|source| IdentityError::File {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(text.lines().next().unwrap_or("").to_string())
 }
 
 /// Where the passphrase for an encrypted identity may come from, in order:
@@ -75,9 +95,7 @@ impl PassphraseSource {
 
     fn passphrase(&self, key: &Path) -> Result<String, IdentityError> {
         if let Some(f) = &self.file {
-            let text = std::fs::read_to_string(f)?;
-            let line = text.lines().next().unwrap_or("");
-            return Ok(line.to_string());
+            return read_passphrase_file(f);
         }
         if let Some(p) = &self.env {
             return Ok(p.clone());
@@ -135,6 +153,21 @@ pub fn write_new(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()>
 /// Refuses (`AlreadyExists`) when either file exists; the private key is
 /// created atomically and never written over a key that appeared meanwhile.
 pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, IdentityError> {
+    generate_openssh_with(path, comment, None)
+}
+
+/// Like [`generate_openssh`]; with `Some(passphrase)` the private key file is
+/// encrypted with it. The `.pub` file and the returned secret are the same
+/// either way.
+pub fn generate_openssh_with(
+    path: &Path,
+    comment: &str,
+    passphrase: Option<&str>,
+) -> Result<SecretKey, IdentityError> {
+    // An empty passphrase would look like protection and give none.
+    if passphrase == Some("") {
+        return Err(IdentityError::EmptyPassphrase);
+    }
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
     let pub_path = PathBuf::from(pub_path);
@@ -145,7 +178,10 @@ pub fn generate_openssh(path: &Path, comment: &str) -> Result<SecretKey, Identit
     }
     let mut key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)?;
     key.set_comment(comment);
-    let text = key.to_openssh(LineEnding::LF)?;
+    let text = match passphrase {
+        Some(p) => key.encrypt(&mut OsRng, p)?.to_openssh(LineEnding::LF)?,
+        None => key.to_openssh(LineEnding::LF)?,
+    };
     match write_new(path, text.as_bytes(), 0o600) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -185,6 +221,7 @@ pub fn load_or_generate(
     if path.symlink_metadata().is_ok() {
         return Ok((load_identity_interactive(path, src)?, false));
     }
+    refuse_to_generate_with_passphrase_file(path, src)?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|source| IdentityError::File {
             path: parent.to_path_buf(),
@@ -197,6 +234,20 @@ pub fn load_or_generate(
         }
         r => Ok((r?, true)),
     }
+}
+
+/// With `--passphrase-file` given and nothing at `path`, the key would have
+/// to be generated, unencrypted: refuse (`NoKeyWithPassphraseFile`).
+/// [`load_or_generate`] checks this, and so do commands that must refuse
+/// before they write anything else (the daemon's lock, a new export).
+pub fn refuse_to_generate_with_passphrase_file(
+    path: &Path,
+    src: &PassphraseSource,
+) -> Result<(), IdentityError> {
+    if src.file.is_some() && path.symlink_metadata().is_err() {
+        return Err(IdentityError::NoKeyWithPassphraseFile(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 /// Where a client identity came from.

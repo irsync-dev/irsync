@@ -373,3 +373,14 @@ fn a_client_with_an_alias_is_granted_by_alias() {
     // The alias is recognised as the client's grant on a second run.
     assert_eq!(home.setup(&client).grant, GrantOutcome::Already);
 }
+
+#[test]
+fn the_report_still_parses_with_logging_on() {
+    let home = Home::new("");
+    let client = client_id();
+    // The first run creates the identity and the grant and starts the daemon.
+    home.setup(&client);
+    let logged = home.setup_with(&client, &["-vv"]);
+    let plain = home.setup(&client);
+    assert_eq!(format!("{logged:?}"), format!("{plain:?}"));
+}
