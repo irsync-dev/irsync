@@ -183,13 +183,36 @@ alias's table, then `[client]`, then the built-in default. See
 | `irsync daemon` | Run the daemon. See below. |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
-| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). Each of the first five alone runs its `list`. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
+| `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). Each of the first five alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
+
+### Flags every command takes
+
+`-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before
+or after any command: `irsync -v gc` and `irsync id show -vv` both work.
+
+- `-v` asks for the command's own extra output. Where a command has none,
+  `-v` shows nothing more. `-vv` gives info logs, `-vvv` debug, `-vvvv`
+  trace, and `-vvvvv` trace plus every protocol message.
+- `-q` logs errors only and prints no summary. It wins over `-v`.
+- `RUST_LOG` overrides the log level.
+- `--config PATH` names the config file for every command:
+  `irsync --config f host list`.
+- `--passphrase-file PATH` gives the passphrase of an encrypted key to the
+  commands that load one. The passphrase is the first line of the file; its
+  line ending (LF or CR+LF) is not part of it, and nothing else is trimmed.
+  Commands that load no key ignore the flag. `irsync id generate` uses it to
+  write the new key encrypted. Every other command that would generate a
+  missing key fails instead and names `irsync id generate --passphrase-file
+  PATH`, because a key generated on the side is never encrypted.
+
+Any other sync option given with a command is an error, for example
+`-a is a sync option and cannot be used with 'gc'`.
 
 ### irsync daemon
 
 ```text
 irsync daemon [--config PATH] [--passphrase-file PATH] [--listen ADDR]...
-              [--run-as-root-i-know-what-i-am-doing] [-v|-q]
+              [--run-as-root-i-know-what-i-am-doing] [-v] [-q]
 ```
 
 Serves the exports in the config file to the peers they are granted to, until
@@ -206,32 +229,32 @@ first prints a banner with its version, relay and discovery settings.
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
 | `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or `allow_root = true` under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
-| `-v`, `--verbose` | Log more; repeat for more still (up to `-vvvvv`). |
+| `-v`, `--verbose` | Nothing extra; `-vv` and up log more. See [Flags every command takes](#flags-every-command-takes). |
 | `-q`, `--quiet` | Log errors only. |
 
 ### irsync index
 
 ```text
-irsync index [-n] [-v|-q] [--config PATH] ROOT...
+irsync index [-n] [-v] [-q] [--config PATH] ROOT...
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-n`, `--dry-run` | Walk and count what would be hashed; read nothing. |
-| `-v`, `--verbose` | Log more. |
+| `-v`, `--verbose` | Nothing extra; `-vv` and up log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
 | `--config PATH` | The config file, for `state_dir`. |
 
 ### irsync gc
 
 ```text
-irsync gc [-n] [-v|-q] [--config PATH]
+irsync gc [-n] [-v] [-q] [--config PATH]
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `-n`, `--dry-run` | List what would be removed without removing anything. |
-| `-v`, `--verbose` | Log more. |
+| `-v`, `--verbose` | Nothing extra; `-vv` and up log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
 | `--config PATH` | The config file, for `state_dir`. |
 
