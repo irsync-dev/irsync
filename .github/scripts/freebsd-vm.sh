@@ -77,4 +77,11 @@ cargo install --locked "cargo-nextest@$NEXTEST_VERSION"
 
 rsync --version | head -1
 
+# Temp files in a folder of this user's own, as on macOS. On FreeBSD a new
+# file takes its folder's group, and /tmp belongs to wheel, which this user
+# is not in: tests that set a file's group or its setgid bit would fail.
+mkdir -p "$HOME/tmp"
+TMPDIR=$HOME/tmp
+export TMPDIR
+
 tools/ci.sh check freebsd-build
