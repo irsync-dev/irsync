@@ -8,5 +8,6 @@ site-url = "/book/"
 default-theme = "light"
 preferred-dark-theme = "navy"
 additional-css = ["theme/tokens.css", "theme/irsync.css"]
+additional-js = ["theme/picker.js"]
 git-repository-url = "https://github.com/irsync-dev/irsync"
 edit-url-template = "https://github.com/irsync-dev/irsync/edit/main/book/{path}"
