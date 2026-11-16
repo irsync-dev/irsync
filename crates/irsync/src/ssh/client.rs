@@ -104,6 +104,7 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
     let os = match it.next() {
         Some("Linux") => Some("linux"),
         Some("Darwin") => Some("macos"),
+        Some("FreeBSD") => Some("freebsd"),
         _ => None,
     };
     let arch = match it.next() {
