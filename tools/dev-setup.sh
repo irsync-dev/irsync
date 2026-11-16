@@ -288,8 +288,9 @@ else
 fi
 
 # pandoc and mandoc build and check the man pages (tools/build-man.sh).
-if have pandoc; then ok "pandoc"; else warn "pandoc, for the man pages" "$(hint pandoc)"; fi
-if have mandoc; then ok "mandoc"; else warn "mandoc, for the man pages" "$(hint mandoc)"; fi
+# tools/ci.sh check stops without them.
+if have pandoc; then ok "pandoc"; else bad "pandoc, for the man pages" "$(hint pandoc)"; fi
+if have mandoc; then ok "mandoc"; else bad "mandoc, for the man pages" "$(hint mandoc)"; fi
 
 # Python 3.11+ (tomllib), for the release, packaging and site scripts.
 py_v=""
