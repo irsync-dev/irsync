@@ -22,10 +22,10 @@ fi
 
 site/build.sh
 
-# The build writes book/theme/tokens.css and may refresh site/node_modules;
-# watching them would rebuild forever.
+# The build writes site/tokens.css and book/theme/tokens.css and may
+# refresh site/node_modules; watching them would rebuild forever.
 npx -y "chokidar-cli@$CHOKIDAR_VERSION" 'book/**' 'site/**' \
-  -i '{book/theme/tokens.css,**/__pycache__/**,site/node_modules/**}' \
+  -i '{site/tokens.css,book/theme/tokens.css,**/__pycache__/**,site/node_modules/**}' \
   -c site/build.sh &
 
 npx -y "browser-sync@$BROWSER_SYNC_VERSION" start --server target/site \

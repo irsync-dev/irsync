@@ -67,6 +67,26 @@ class FontTests(TmpCase):
         write(self.d, "fonts/barlow-OFL.txt", "")
         self.assertEqual(check_fonts(self.d), [])
 
+    def test_inter_and_jetbrains_mono_in_top_level_fonts_pass(self):
+        for f in (
+            "inter-latin-400-normal.woff2",
+            "inter-latin-400-italic.woff2",
+            "inter-latin-600-normal.woff2",
+            "jetbrains-mono-latin-400-normal.woff2",
+            "jetbrains-mono-latin-400-italic.woff2",
+            "jetbrains-mono-latin-600-normal.woff2",
+            "inter-OFL.txt",
+            "jetbrains-mono-OFL.txt",
+        ):
+            write(self.d, f"fonts/{f}", "")
+        self.assertEqual(check_fonts(self.d), [])
+
+    def test_the_site_fonts_in_the_book_are_reported(self):
+        write(self.d, "book/fonts/inter-latin-400-normal.woff2", "")
+        problems = check_fonts(self.d)
+        # the book's fonts directory and the file in it
+        self.assertEqual(len(problems), 2, problems)
+
     def test_other_fonts_next_to_barlow_are_reported(self):
         write(self.d, "fonts/barlow-latin-400-normal.woff2", "")
         write(self.d, "fonts/open-sans.woff2", "")

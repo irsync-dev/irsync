@@ -4,6 +4,7 @@
 # fileset manifests from manual runs of the tool, anywhere in the tree
 .fileset*
 /book/theme/tokens.css
+/site/tokens.css
 # mdbook output of a plain `mdbook build book`; site/build.sh builds elsewhere
 /book/book
 # npm packages for the landing page build (site/package-lock.json pins them)

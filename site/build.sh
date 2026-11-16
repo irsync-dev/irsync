@@ -24,7 +24,10 @@ out=$parent/$base
 
 tokens() { python3 "$root/site/tools/gen_tokens.py" "$root/site/tokens.json" "$@"; }
 
-# The book takes its tokens from the theme class mdbook puts on <html>.
+# The landing page takes its tokens from the system's light or dark setting;
+# tailwind.css imports site/tokens.css. The book takes them from the theme
+# class mdbook puts on <html>.
+tokens -o "$root/site/tokens.css"
 tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
   -o "$root/book/theme/tokens.css"
 
@@ -54,14 +57,24 @@ if [ ! -f "$site/node_modules/.package-lock.json" ] ||
 fi
 "$site/node_modules/.bin/tailwindcss" --cwd "$site" -i tailwind.css -o "$out/style.css" --minify
 
-# Barlow, the landing page's one web font family: the faces tailwind.css
-# names, Latin only, and the licence (SIL Open Font License) that must ship
-# with them. Both packages carry the same Barlow Project licence.
+# The web fonts of the landing page and the book: Barlow for headings and
+# labels, Inter for running text, JetBrains Mono for code. Only the faces
+# tailwind.css and book/theme/irsync.css name, Latin only, and each
+# family's licence (SIL Open Font License), which must ship with it. The
+# two Barlow packages carry the same Barlow Project licence.
 fontsource=$site/node_modules/@fontsource
 mkdir -p "$out/fonts"
 for f in barlow/files/barlow-latin-400-normal.woff2 \
   barlow/files/barlow-latin-600-normal.woff2 \
-  barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2; do
+  barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2 \
+  inter/files/inter-latin-400-normal.woff2 \
+  inter/files/inter-latin-400-italic.woff2 \
+  inter/files/inter-latin-600-normal.woff2 \
+  jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2 \
+  jetbrains-mono/files/jetbrains-mono-latin-400-italic.woff2 \
+  jetbrains-mono/files/jetbrains-mono-latin-600-normal.woff2; do
   cp "$fontsource/$f" "$out/fonts/"
 done
 cp "$fontsource/barlow/LICENSE" "$out/fonts/barlow-OFL.txt"
+cp "$fontsource/inter/LICENSE" "$out/fonts/inter-OFL.txt"
+cp "$fontsource/jetbrains-mono/LICENSE" "$out/fonts/jetbrains-mono-OFL.txt"
