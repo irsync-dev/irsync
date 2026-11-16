@@ -271,3 +271,88 @@ runner divides by its cores.
       again on the push to `main`, macOS included. Option: run macOS on
       only one of the two. On `main` only, a macOS-only failure shows up
       after the merge instead of before.
+
+# Open items from the FreeBSD work, 2026-11-16
+
+irsync builds and passes its tests on FreeBSD 14 (x86_64), in a workflow
+started by hand (`.github/workflows/freebsd.yml`; see "Testing a version on
+FreeBSD" in `book/src/contributing/releasing.md`). What is left. The design
+is `docs/superpowers/specs/2026-11-16-freebsd-manual-build-design.md`.
+
+## irsync on FreeBSD
+
+- [ ] Socket files cannot be created on FreeBSD. `create_special`
+      (`crates/irsync/src/fs/meta.rs`) makes them with `mknod`, which
+      FreeBSD only allows for device nodes (`EINVAL`). A sync of a tree
+      that holds a socket file reports an error for that entry. FIFOs had
+      the same problem and now use `mkfifo`; a socket needs `bind`. No
+      test creates a socket, so nothing fails today.
+- [ ] Setting up a FreeBSD server over ssh is unchecked. irsync now
+      recognises the name "FreeBSD", so a FreeBSD client can copy its own
+      binary to a FreeBSD server. But the service hint it prints is the
+      Linux (systemd) one (`crates/irsync/src/ssh/onboard.rs` only knows
+      macOS apart from that); FreeBSD wants an `rc.d` script. From Linux
+      or macOS, setup stops with "no release binary for that platform",
+      because no FreeBSD binary is released.
+- [ ] The open-file count in the usage report is a few too high on
+      FreeBSD (8 against 5 in a test run). The `sysinfo` crate also counts
+      the current folder, the root folder and the program's binary there.
+      Accepted for now; the test in `telemetry/process.rs` allows up to
+      five too many on FreeBSD. Fix it in `sysinfo` (report it upstream),
+      or ask the kernel directly (`kern.proc.nfds`).
+
+## Releases and packaging
+
+- [ ] FreeBSD as a fourth release target, so the tarball is on the release
+      page, `curl | sh` works there and the ssh setup can download it.
+      Needs a way for dist to build it, and a decision on whether a
+      FreeBSD failure stops a release. Wait until a few betas have passed
+      the hand-started run.
+- [ ] A port in FreeBSD's ports collection. A port builds with the ports
+      tree's own Rust, not the one in `rust-toolchain.toml`, with no
+      network and vendored crates. None of that has been tried.
+- [ ] arm64 FreeBSD: not built or tested.
+- [ ] The tarball is built on the newest 14.x (14.5 today). It should run
+      on 15; nobody has tried it on an older 14.x.
+
+## Checks not yet run
+
+- [ ] Starting the workflow by hand, and its `ref` and `freebsd` inputs.
+      It was tried through a scratch branch with a temporary push
+      trigger, because a hand-started workflow only exists once it is on
+      `main`. After the merge: `gh workflow run freebsd.yml`, then once
+      more with `-f ref=<a tag>`.
+- [ ] A version from before the workflow: the run should stop with "This
+      version has no FreeBSD build". Try it with `-f ref=v0.1.0-beta.3`.
+
+## Tests
+
+- [ ] Three tests failed once on a slow FreeBSD VM with "connection lost"
+      (the tests took 800 s instead of about 560 s) and passed in the two
+      runs after it, on the same code:
+      `netsim::single_file_push_resumes_after_blackout`,
+      `netsim::a_dead_zone_forces_a_reconnect_and_the_session_resumes` and
+      `backpressure::the_daemon_waits_for_a_slow_client_to_finish_reading`.
+      The two netsim tests run on tokio's paused clock, so a slow machine
+      should not matter to them; why it did is not understood.
+- [ ] `posix_extras::links_to_files_placed_before_a_drop_are_checked`
+      failed once on Linux in a full local run (3 link checks instead of
+      4, pull) and passed 60 times alone and in every other full run. It
+      counts frames around a dropped connection, so it depends on timing.
+- [ ] A FreeBSD run builds everything from scratch: about 25 minutes, of
+      which 4 are building cargo-nextest. The VM action can cache the
+      prepared VM (`cache-after-prepare`); not tried.
+- [ ] The FreeBSD run keeps its temp files in the test user's home, not
+      `/tmp`: new files take their folder's group on FreeBSD, and `/tmp`
+      belongs to `wheel`. Whether that slows the tests was not measured.
+
+## Deferred review findings
+
+- [ ] `tools/ci.sh` with no job on FreeBSD arm64 adds `freebsd-build`,
+      which then refuses to run and stops everything.
+- [ ] `test_no_workflow_calls_it` only looks for the text `freebsd.yml`.
+      A FreeBSD job added straight into `ci.yml` would pass it; it could
+      also check that no other workflow uses `vmactions/freebsd-vm`.
+- [ ] A comment in `freebsd.yml` says a binary built on "the oldest
+      supported release" runs on newer ones, but `14` picks the newest
+      14.x.
