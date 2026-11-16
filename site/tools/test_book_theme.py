@@ -57,6 +57,24 @@ class BookThemeTest(unittest.TestCase):
             ],
         )
 
+    def test_warning_icon_is_readable(self):
+        # mdbook colours the .warning icon with --warning-border, which is
+        # the signal-yellow bar: too faint as an icon on the light ground.
+        self.assertRegex(RULES, r"\.warning::?before\s*\{[^}]*color:\s*var\(--ir-warn-ink\)")
+
+    def test_copy_button_takes_token_colours(self):
+        # mdbook tints the copy icon with per-theme CSS filters (blue on
+        # hover in Light); the book draws it as a mask in muted, aqua-ink
+        # on hover, so every theme looks the same.
+        rule = re.search(r"button\.clip-button::before\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(rule)
+        self.assertIn("filter: none", rule.group(1))
+        self.assertIn("background-color: var(--ir-muted)", rule.group(1))
+        self.assertRegex(rule.group(1), r"mask(-image)?:\s*url\(")
+        hover = re.search(r"button\.clip-button:hover::before\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(hover)
+        self.assertIn("background-color: var(--ir-aqua-ink)", hover.group(1))
+
     def test_picker_script_is_loaded(self):
         toml = _read("book", "book.toml")
         self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/picker\.js"')
