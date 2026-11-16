@@ -77,6 +77,11 @@ would break a release fails here, before anyone tags it. On your machine it
 builds the one musl target that matches it, on Linux only, and needs dist
 and `musl-gcc`.
 
+The `freebsd-build` job builds the FreeBSD tarball with the same build
+script. It runs on FreeBSD x86_64 only, and CI does not run it. GitHub runs
+it in a workflow you start by hand: see
+[Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
+
 The `deny` job checks the dependencies with `cargo deny`, and the
 `workflows` job runs the workflow rule tests and actionlint, which needs
 PyYAML and actionlint ([Supply chain](supply-chain.md)).
