@@ -41,7 +41,10 @@ if [ "$(id -u)" -eq 0 ]; then
     cp -R "$start" "$work"
     chown -R "$user" "$work"
 
-    su -l "$user" -c "cd '$work' && .github/scripts/freebsd-vm.sh"
+    # `su -l` starts with an empty environment, so set what the checks
+    # need. CI makes tests fail where they would otherwise skip (no usable
+    # rsync, say).
+    su -l "$user" -c "cd '$work' && env CI=true RUST_BACKTRACE=1 CARGO_TERM_COLOR=always .github/scripts/freebsd-vm.sh"
 
     mkdir -p "$start/freebsd-out"
     cp "$work/target/distrib/$tarball" "$work/target/distrib/$tarball.sha256" "$start/freebsd-out/"

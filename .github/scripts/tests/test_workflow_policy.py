@@ -391,6 +391,16 @@ class FreeBsdTests(unittest.TestCase):
         ci = re.search(r"cargo-nextest@([\d.]+)", read("ci.yml")).group(1)
         self.assertRegex(script, rf"(?m)^NEXTEST_VERSION={re.escape(ci)}$")
 
+    def test_checks_run_strict_in_the_vm(self):
+        # `su -l` drops the environment. Without CI set, tests that must not
+        # skip on CI (no usable rsync, say) would skip and the run go green.
+        with open(os.path.join(ROOT, ".github", "scripts", "freebsd-vm.sh")) as f:
+            script = f.read()
+        self.assertRegex(
+            script,
+            r"su -l .*env CI=true RUST_BACKTRACE=1 CARGO_TERM_COLOR=always "
+            r"\.github/scripts/freebsd-vm\.sh")
+
 
 class GateTests(unittest.TestCase):
     def gate(self):

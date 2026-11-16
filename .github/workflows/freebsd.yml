@@ -37,10 +37,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
 jobs:
   freebsd:
     name: FreeBSD ${{ inputs.freebsd }} x86_64
@@ -70,7 +66,6 @@ jobs:
           release: ${{ inputs.freebsd }}
           arch: x86_64
           sync: rsync
-          envs: 'CARGO_TERM_COLOR RUST_BACKTRACE'
           run: .github/scripts/freebsd-vm.sh
 
       # No `if:`: a failed test means no tarball.
