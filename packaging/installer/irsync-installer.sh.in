@@ -9,8 +9,8 @@
 # It downloads the release tarball for this platform over HTTPS, checks its
 # SHA-256 against the value written in below, and changes nothing under your
 # home directory until that check has passed. It never edits shell startup
-# files. IRSYNC_NO_MODIFY_PATH is accepted and ignored, since there is nothing
-# to turn off.
+# files. --no-modify-path and IRSYNC_NO_MODIFY_PATH, which dist's installer
+# took, are accepted and ignored, since there is nothing to turn off.
 #
 # For tests only: IRSYNC_INSTALLER_ARCHIVE_DIR=DIR reads
 # DIR/irsync-<target>.tar.xz instead of downloading it.
@@ -26,33 +26,41 @@ main() {
 
   say() { printf 'irsync: %s\n' "$*" >&2; }
   die() { say "$*"; exit 1; }
-  usage() { printf 'usage: sh irsync-installer.sh [--uninstall | --help]\n'; }
+  usage() {
+    printf 'usage: sh irsync-installer.sh [--uninstall | --help] [--no-modify-path]\n'
+  }
 
+  # At most one of --uninstall and --help, in any order with --no-modify-path.
   mode=install
-  if [ $# -gt 1 ]; then
-    usage >&2; exit 2
-  fi
-  case ${1-} in
-    '') ;;
-    --uninstall) mode=uninstall ;;
-    --help)
-      usage
-      printf '\n%s\n' "Installs irsync $version into ~/.local/bin and its manual pages into
+  for arg in "$@"; do
+    case $arg in
+      --no-modify-path) ;;
+      --uninstall | --help)
+        if [ "$mode" != install ]; then usage >&2; exit 2; fi
+        mode=${arg#--} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+  done
+  if [ "$mode" = help ]; then
+    usage
+    printf '\n%s\n' "Installs irsync $version into ~/.local/bin and its manual pages into
 ~/.local/share/man. --uninstall removes them again; your config and state
-stay in place."
-      exit 0 ;;
-    *) usage >&2; exit 2 ;;
-  esac
+stay in place. --no-modify-path is accepted for compatibility with earlier
+installers and does nothing: this installer never edits shell startup files."
+    exit 0
+  fi
 
   [ -n "${HOME-}" ] || die "HOME is not set"
-  bin=$HOME/.local/bin
-  man1=$HOME/.local/share/man/man1
-  man5=$HOME/.local/share/man/man5
+  # Without a trailing slash, so the PATH check below matches "$HOME/.local/bin".
+  home=${HOME%/}
+  bin=$home/.local/bin
+  man1=$home/.local/share/man/man1
+  man5=$home/.local/share/man/man5
 
   if [ "$mode" = uninstall ]; then
     # Missing files are fine. Directories stay: they may hold other things.
     for f in "$bin/irsync" "$bin/fileset" "$man1/irsync.1" "$man1/fileset.1" \
-             "$man5/irsync.toml.5" "$HOME/.config/irsync/irsync-receipt.json"; do
+             "$man5/irsync.toml.5" "$home/.config/irsync/irsync-receipt.json"; do
       if [ -e "$f" ] || [ -L "$f" ]; then
         rm -f "$f" || die "could not remove $f"
         say "removed $f"
@@ -60,7 +68,7 @@ stay in place."
     done
     say "left your config (~/.config/irsync) and state (~/.local/state/irsync by
   default) in place; to remove them too, see $cleanup"
-    if [ -f "$HOME/.config/irsync/env.sh" ]; then
+    if [ -f "$home/.config/irsync/env.sh" ]; then
       say "an earlier installer wrote ~/.config/irsync/env.sh, and your shell startup
   files (.profile, .bashrc, .zshrc, .zshenv and the like) still source it.
   Remove those lines before you delete ~/.config/irsync."
@@ -70,6 +78,13 @@ stay in place."
 
   os=$(uname -s)
   arch=$(uname -m)
+  # A shell under Rosetta on an Apple Silicon Mac reports x86_64. On an Intel
+  # Mac the sysctl key does not exist, so the check fails there.
+  if [ "$os/$arch" = Darwin/x86_64 ] &&
+     [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+    say "this shell runs under Rosetta, so installing the Apple Silicon build"
+    arch=arm64
+  fi
   case $os/$arch in
     Darwin/arm64)
       target=aarch64-apple-darwin
@@ -117,8 +132,20 @@ stay in place."
     fi
   fi
 
+  # On any exit, also from a signal, remove the work directory and a file
+  # half-placed under its temporary name. dash runs no EXIT trap when killed
+  # by a signal, hence the signal traps.
+  tmp=
+  part=
+  clean_up() {
+    [ -z "$tmp" ] || rm -rf "$tmp"
+    [ -z "$part" ] || rm -f "$part"
+  }
+  trap clean_up EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX")
-  trap 'rm -rf "$tmp"' EXIT
 
   if [ -n "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
     cp "$IRSYNC_INSTALLER_ARCHIVE_DIR/$name" "$tmp/$name" ||
@@ -157,6 +184,7 @@ stay in place."
       rm -f "$part"
       die "could not install $2/$3"
     fi
+    part=
   }
   place "$src/irsync" "$bin" irsync 0755
   place "$src/fileset" "$bin" fileset 0755
@@ -164,9 +192,11 @@ stay in place."
   place "$src/man/man1/fileset.1" "$man1" fileset.1 0644
   place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
 
+  on_path=yes
   case ":${PATH-}:" in
     *":$bin:"* | *":$bin/:"*) ;;
     *)
+      on_path=no
       shell=${SHELL-}
       case ${shell##*/} in
         fish) say "$bin is not on your PATH. To add it, run: fish_add_path ~/.local/bin" ;;
@@ -182,7 +212,11 @@ stay in place."
   esac
 
   say "installed irsync $version"
-  say "the manual is in place: man irsync"
+  if [ "$on_path" = yes ]; then
+    say "the manual is in place: man irsync"
+  else
+    say "the manual is in place: man irsync finds it once ~/.local/bin is on your PATH"
+  fi
 }
 
 main "$@"

@@ -80,6 +80,21 @@ exit 22
 """
 
 
+# sysctl for the Rosetta check: prints FAKE_SYSCTL for
+# `-n sysctl.proc_translated`, and fails when it is unset, as on an Intel Mac
+# where the key does not exist.
+FAKE_SYSCTL = """#!/bin/sh
+[ "$*" = "-n sysctl.proc_translated" ] || exit 1
+[ -n "${FAKE_SYSCTL-}" ] || { echo "sysctl: unknown oid" >&2; exit 1; }
+echo "$FAKE_SYSCTL"
+"""
+
+# Sends TERM to the shell that ran it, as a Ctrl-C or a kill would.
+KILL_PARENT = """#!/bin/sh
+kill -TERM $PPID
+"""
+
+
 def write_exe(path, body):
     with open(path, "w") as f:
         f.write(body)
@@ -164,12 +179,12 @@ class Base(unittest.TestCase):
         self.log = os.path.join(self.tmp, "calls.log")
         self.bindir = self.make_bindir("bin")
 
-    def make_bindir(self, name, sums=("sha256sum", "shasum")):
+    def make_bindir(self, name, sums=("sha256sum", "shasum"), shell=SHELL):
         """A directory of the installer's tools; `sums` are the checksum tools in it."""
         bindir = os.path.join(self.tmp, name)
         os.mkdir(bindir)
         for tool in TOOLS:
-            found = SHELL if tool == "sh" else shutil.which(tool)
+            found = shell if tool == "sh" else shutil.which(tool)
             if found:
                 os.symlink(found, os.path.join(bindir, tool))
         write_exe(os.path.join(bindir, "uname"), FAKE_UNAME)
@@ -259,6 +274,18 @@ class GeneratorTests(Base):
         r = build(self.archives, out)
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(os.path.exists(out))
+
+    def test_generator_ignores_cdpath(self):
+        # With CDPATH set, `cd packaging/installer` would go to the decoy and
+        # print its path, and the script would read the wrong template.
+        decoy = os.path.join(self.tmp, "decoy")
+        os.makedirs(os.path.join(decoy, "packaging", "installer"))
+        out = os.path.join(self.tmp, "irsync-installer.sh")
+        r = subprocess.run(["packaging/installer/build-installer.sh", self.archives, out],
+                           cwd=ROOT, env=dict(os.environ, CDPATH=decoy),
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(read(out), read(self.installer))
 
     def test_leaves_no_temporary_files(self):
         outdir = os.path.join(self.tmp, "out")
@@ -387,6 +414,79 @@ class InstallTests(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.under_home(), set(FILES))
 
+    def test_no_modify_path_flag_is_accepted(self):
+        startup = [".profile", ".zshrc", ".bashrc"]
+        for f in startup:
+            self.put(f, f"# {f}\n")
+        before = self.snapshot()
+        r = self.install("--no-modify-path")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = self.snapshot()
+        self.assertEqual(set(after), set(FILES) | set(startup))
+        for f in startup:
+            self.assertEqual(after[f], before[f], f)
+
+    def test_help_lists_no_modify_path(self):
+        r = self.install("--help")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--no-modify-path", r.stdout)
+        r = self.install("--no-modify-path", "--help")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--uninstall", r.stdout)
+        self.assertEqual(self.under_home(), set())
+
+    def test_rosetta_shell_gets_the_arm_build(self):
+        write_exe(os.path.join(self.bindir, "sysctl"), FAKE_SYSCTL)
+        r = self.install(uname=("Darwin", "x86_64"), env={"FAKE_SYSCTL": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Rosetta", r.stderr)
+        out = subprocess.run([os.path.join(self.home, ".local/bin/irsync")],
+                             capture_output=True, text=True).stdout
+        self.assertEqual(out, "irsync aarch64-apple-darwin\n")
+
+    def test_intel_mac_is_still_refused(self):
+        write_exe(os.path.join(self.bindir, "sysctl"), FAKE_SYSCTL)
+        for env in [{"FAKE_SYSCTL": "0"}, {}]:
+            with self.subTest(env=env):
+                r = self.install(uname=("Darwin", "x86_64"), env=env)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("https://github.com/irsync-dev/irsync/releases", r.stderr)
+                self.assertNotIn("Rosetta", r.stderr)
+                self.assertEqual(self.under_home(), set())
+
+    def test_rosetta_check_only_on_darwin_x86_64(self):
+        # A Linux x86_64 host with a sysctl that would say "translated".
+        write_exe(os.path.join(self.bindir, "sysctl"), FAKE_SYSCTL)
+        r = self.install(env={"FAKE_SYSCTL": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Rosetta", r.stderr)
+        out = subprocess.run([os.path.join(self.home, ".local/bin/irsync")],
+                             capture_output=True, text=True).stdout
+        self.assertEqual(out, "irsync x86_64-unknown-linux-musl\n")
+
+    def test_man_line_mentions_path_when_hint_shown(self):
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        last = r.stderr.rstrip("\n").split("\n")[-1]
+        self.assertIn("man irsync", last)
+        self.assertIn("PATH", last)
+
+        home = os.path.join(self.tmp, "home2")
+        os.mkdir(home)
+        path = os.path.join(home, ".local", "bin") + os.pathsep + self.bindir
+        r = self.install(home=home, env={"PATH": path})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        last = r.stderr.rstrip("\n").split("\n")[-1]
+        self.assertIn("man irsync", last)
+        self.assertNotIn("PATH", last)
+
+    def test_home_with_trailing_slash_no_false_hint(self):
+        path = os.path.join(self.home, ".local", "bin") + os.pathsep + self.bindir
+        r = self.install(home=self.home + "/", env={"PATH": path})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("not on your PATH", r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
     def test_does_not_edit_startup_files(self):
         startup = [".profile", ".zshrc", ".bashrc", ".bash_profile", ".zshenv"]
         for f in startup:
@@ -401,7 +501,8 @@ class InstallTests(Base):
         self.assertEqual(set(after), set(FILES) | set(startup))
 
     def test_unknown_argument(self):
-        for args in [("--frobnicate",), ("--no-modify-path",), ("--uninstall", "--help")]:
+        for args in [("--frobnicate",), ("--uninstall", "--help"),
+                     ("--no-modify-path", "--frobnicate"), ("--uninstall", "--uninstall")]:
             with self.subTest(args=args):
                 r = self.install(*args)
                 self.assertEqual(r.returncode, 2)
@@ -442,6 +543,43 @@ class InstallTests(Base):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("xz", r.stderr)
         self.assertEqual(self.under_home(), set())
+
+
+class KillTests(Base):
+    def shells(self):
+        found = [("sh", shutil.which("sh"))]
+        if shutil.which("dash"):
+            found.append(("dash", shutil.which("dash")))
+        return found
+
+    def temp_dirs(self):
+        return [n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")]
+
+    def test_killed_install_leaves_no_temp_files(self):
+        for name, shell in self.shells():
+            with self.subTest(shell=name):
+                bindir = self.make_bindir(f"bin-kill-{name}", shell=shell)
+                write_exe(os.path.join(bindir, "curl"), KILL_PARENT)
+                r = self.install(bindir=bindir, archives=False)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(self.temp_dirs(), [])
+                self.assertEqual(os.listdir(self.home), [])
+
+    def test_killed_while_placing_leaves_no_part_file(self):
+        # A chmod that kills the shell: the first file has been copied to its
+        # temporary name in ~/.local/bin but not yet renamed.
+        for name, shell in self.shells():
+            with self.subTest(shell=name):
+                home = os.path.join(self.tmp, f"home-{name}")
+                os.mkdir(home)
+                bindir = self.make_bindir(f"bin-chmod-{name}", shell=shell)
+                os.remove(os.path.join(bindir, "chmod"))
+                write_exe(os.path.join(bindir, "chmod"),
+                          KILL_PARENT + f'exec {shutil.which("chmod")} "$@"\n')
+                r = self.install(bindir=bindir, home=home)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(self.temp_dirs(), [])
+                self.assertEqual(self.under_home(home), set())
 
 
 class UninstallTests(Base):
@@ -486,6 +624,15 @@ class UninstallTests(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.under_home(), set())
         self.assertFalse(os.path.exists(self.log), "nothing may run a download or a checksum")
+
+    def test_no_modify_path_with_uninstall(self):
+        for args in [("--no-modify-path", "--uninstall"), ("--uninstall", "--no-modify-path")]:
+            with self.subTest(args=args):
+                self.assertEqual(self.install().returncode, 0)
+                r = self.install(*args)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("removed", r.stderr)
+                self.assertEqual(self.under_home(), set())
 
     def test_notes_old_env_file(self):
         self.put(ENV_SH, "# env\n")
