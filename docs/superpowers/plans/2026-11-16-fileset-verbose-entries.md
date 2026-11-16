@@ -134,7 +134,7 @@ impl<'a> Report<'a> {
     - stderr does not contain `INFO`.
   - `check_verbose_keeps_the_difference_lines`: set up as `check_reports_add_del_chg` does. Run check without `-v` and with it. Assert the lines of the `-v` run that do not start with `EQL ` or `SKP ` equal the lines of the plain run, in the same order, and that the `-v` run has at least one `EQL ` line.
   - `check_without_verbose_prints_no_eql_or_skp`: tree `[("f", "x"), (".Trashes/t", "y")]`; update; plain check. Assert stdout is `""`.
-  - `check_verbose_relaxed_has_no_checksum`: tree `[("f", "x")]`; update; check with `Tier::Relaxed` and `-v`. Assert the `EQL f ` line does not contain `blake3=`.
+  - `check_verbose_without_hashing_has_no_checksum`: tree `[("f", "x")]`; update; check with `--ignore blake3` and `-v`. Assert the `EQL f ` line does not contain `blake3=`.
   - `check_verbose_prints_skp_on_stdout`: tree `[("f", "x"), (".Trashes/t", "y")]`; update; check with `-v`. Assert stdout contains `"SKP .Trashes reason=builtin-exclude\n"`, no stdout line mentions `.Trashes/t`, and stderr does not contain `INFO`.
   - `check_verbose_flushes_every_line` (one backend is enough, plain `#[test]`): call `check` directly with a test writer that counts `flush` calls. With `-v` on tree `[("f", "x")]` after an update, flushes are at least the number of lines written. Without `-v`, the count is 0.
 

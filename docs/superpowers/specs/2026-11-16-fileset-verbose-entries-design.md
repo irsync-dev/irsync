@@ -76,7 +76,7 @@ DEL old.jpg
 
 - The entry form is `<path> kind= size= mtime= mode=`, then `blake3=` when the
   entry has a checksum. Directories, symlinks, and files not hashed in this
-  run (`check --relaxed`, `--ignore blake3`, a hash that failed) have none,
+  run (`check --ignore blake3`, a hash that failed) have none,
   and the field is left off. Values use the existing formatters in
   `report.rs`; the checksum is printed in full.
 - `check`: `EQL` uses the entry form with the values seen on disk. `CHG`,
