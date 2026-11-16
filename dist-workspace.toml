@@ -11,7 +11,7 @@ cargo-dist-version = "0.34.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "homebrew"]
+installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "irsync-dev/homebrew-tap"
 # Customize the Homebrew formula name
@@ -27,8 +27,6 @@ publish-jobs = []
 publish-prereleases = false
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
-# Path that installers should place binaries in
-install-path = "~/.local/bin"
 # Signed build provenance for every artifact, checkable with
 # `gh attestation verify <file> --repo irsync-dev/irsync`
 github-attestations = true
@@ -36,14 +34,24 @@ github-attestations = true
 # gets one: by default dist attests only the per-target archives, and the
 # installer, the Homebrew formula and the checksum files go without.
 github-attestations-phase = "host"
-# Whether to install an updater program
-install-updater = false
 # Don't run the release workflow on pull requests; PR CI stays as it was
 pr-run-mode = "skip"
 # release.yml only starts via workflow_dispatch. .github/workflows/release-gate.yml
 # launches it after the full test suite passed on the tagged commit. Never
 # launch release.yml by hand.
 dispatch-releases = true
+# Extra files for every archive. packaging/dist/build.sh writes this directory;
+# it lands in the tarball as irsync-<target>/man/.
+include = ["packaging/dist/man"]
+
+# Our own installer, in place of dist's shell installer, so it can install
+# the man pages too (packaging/installer). Built in build-global-artifacts,
+# where target/distrib holds the tarballs' checksums. On any error the
+# generator leaves no output file, so the release cannot carry a broken
+# installer, whichever way dist treats the exit status.
+[[dist.extra-artifacts]]
+artifacts = ["irsync-installer.sh"]
+build = ["packaging/installer/build-installer.sh", "target/distrib", "irsync-installer.sh"]
 
 [dist.github-custom-runners]
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
@@ -53,6 +61,13 @@ aarch64-apple-darwin = "macos-latest"
 # The musl C toolchain, for the C code in the dependencies (bundled SQLite, ring).
 [dist.dependencies.apt]
 musl-tools = "*"
+# For tools/build-man.sh, which builds the man pages.
+pandoc = "*"
+
+# For tools/build-man.sh. dist installs these on the build runners only; they
+# are not dependencies of the Homebrew formula.
+[dist.dependencies.homebrew]
+pandoc = "*"
 
 # Pin the Actions in the generated release.yml to commits; a version tag can
 # be moved by the Action's owner. Dependabot does not update this table: bump

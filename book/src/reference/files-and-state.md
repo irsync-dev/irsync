@@ -18,7 +18,8 @@ daemon run system-wide is given `--config` (see
 
 Generated private keys are written with mode 0600, in OpenSSH format. The
 `.pub` file beside each holds the public key line. `irsync id show` prints the
-`EndpointId` of either key, under a `client:` or `daemon:` label; see [Management commands](management.md#id).
+`EndpointId` of either key, under a `client:` or `daemon:` label; see
+[the `id` commands](management.md#id).
 
 ## State directory
 
@@ -46,13 +47,14 @@ Exports with the same path share one database.
 
 The whole directory is safe to delete. The next sync rebuilds what it needs,
 at the cost of hashing files again and of losing the sessions that could have
-resumed. [Clean up state](../how-to/clean-up.md) removes only what nobody is
-coming back for.
+resumed. To remove only what nobody is coming back for, see
+[Clean up state](../how-to/clean-up.md).
 
 ## On a server set up over ssh
 
-The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) puts its own
-copy of `irsync` on the server at `~/.local/share/irsync/bin/irsync`. It
+The ssh setup (see [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh))
+puts its own copy of `irsync` on the server at
+`~/.local/share/irsync/bin/irsync`. It
 replaces that copy when the client runs a different build, and leaves an
 `irsync` you installed elsewhere alone. Over ssh it then runs `irsync
 ssh-setup`, a hidden command that grants the client, makes the daemon's key

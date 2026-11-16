@@ -41,7 +41,8 @@ mostly unchanged tree cheap.
 
 Pick one way. Every package contains both `irsync` and `fileset`.
 
-The install script puts both in `~/.local/bin`:
+The install script puts both in `~/.local/bin` and the man pages in
+`~/.local/share/man`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
@@ -56,9 +57,18 @@ curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- -
 
 The first stable release will be v0.1.0. Until it is out, add `--beta`.
 
-The script also writes a small receipt file,
-`~/.config/irsync/irsync-receipt.json`. It only records what was installed.
-It is harmless, and you can delete it.
+Then `man irsync`, `man fileset` and `man irsync.toml` work. The script
+never edits your shell startup files. If `~/.local/bin` is not on your
+`PATH`, it prints the line to add. To remove what it installed (your config
+and state stay), run it with `--uninstall`. Drop `--beta` here too once
+v0.1.0 is out:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta --uninstall
+```
+
+The Homebrew, apt and dnf packages install the man pages too. `cargo
+install` installs none.
 
 Homebrew (Linux and macOS), from v0.1.0 on:
 

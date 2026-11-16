@@ -12,10 +12,9 @@
   to direct connections. Relays are a fallback and are much slower. When one
   end sits behind a symmetric NAT and the other behind a symmetric or
   port-restricted NAT, hole punching fails and the connection stays on the
-  relay; then run a self-hosted relay and point `relay` in
-  [`[client]`](configuration.md#client) and
-  [`[daemon]`](configuration.md#daemon) at it. See
-  [Connections](../explanation/connections.md#relays).
+  relay; then run a self-hosted relay and point `relay` in `[client]` and
+  `[daemon]` at it. [Configuration](configuration.md#client) has the keys,
+  and [Connections](../explanation/connections.md#relays) explains relays.
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data
   crosses the link as it is stored.
 - **Several sources with `--delete` can delete what an earlier source
@@ -24,8 +23,8 @@
   the `T/a.iso` that was just copied. rsync merges the sources into one list
   and does not. The same happens with `a/ b/`.
 - **Linux and macOS only**, on x86_64 and aarch64, as client and as daemon.
-- **No extended attributes or ACLs.** `irsync` copies neither; see the next
-  section.
+- **No extended attributes or ACLs.** `irsync` copies neither; see
+  [rsync options irsync does not have](#rsync-options-irsync-does-not-have).
 
 ## rsync options irsync does not have
 
@@ -45,5 +44,5 @@ only those an rsync user is likely to reach for.
 | `-W`, `--whole-file` | No switch to turn the delta off. |
 | `-z`, `--compress` | No compression. |
 | `-L`, `--copy-links` | Symlinks are copied as symlinks with `-l`, or skipped. |
-| `--partial`, `-P` | Partial files are kept and resumed without a flag; `--partial-dir` moves them. |
+| `--partial` | Partial files are kept and resumed without a flag; `--partial-dir` moves them. `-P` is accepted, as `--progress`. |
 | `--size-only`, `--ignore-existing`, `--existing`, `--remove-source-files`, `--chmod` | Not available. |

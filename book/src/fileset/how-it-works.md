@@ -2,6 +2,7 @@
 
 This page explains what a manifest holds, what a check compares, and what
 `fileset` cannot see. Commands and options are in the [reference](reference.md).
+`fileset` lives in `crates/fileset` and shares no code with `irsync`.
 
 ## What a manifest records
 

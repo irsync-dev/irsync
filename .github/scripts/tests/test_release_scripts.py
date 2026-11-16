@@ -17,6 +17,8 @@ BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
 START = os.path.join(SCRIPTS, "release-start-check.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
+FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
+FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
 REL = {"body": "", "isDraft": False, "isPrerelease": False}
 
@@ -563,6 +565,25 @@ class CodeChangedTests(unittest.TestCase):
         self.git("mv", "crates/x.rs", "README.md")
         self.assertEqual(self.changed(self.base, self.commit()), "code=true")
 
+    def test_man_page_sources_are_code(self):
+        # tools/build-man.sh builds the man pages from these, and CI checks it.
+        for path in ["book/src/reference/command-line.md",
+                     "book/src/reference/management.md",
+                     "book/src/reference/remote-addresses.md",
+                     "book/src/reference/files-and-state.md",
+                     "book/src/reference/limitations.md",
+                     "book/src/reference/configuration.md",
+                     "book/src/fileset/reference.md",
+                     "packaging/man/irsync.md"]:
+            # Each path on its own: a change from the previous commit.
+            base = self.git("rev-parse", "HEAD")
+            self.write(path, "changed\n")
+            self.assertEqual(self.changed(base, self.commit()), "code=true", path)
+
+    def test_other_book_chapter_is_not_code(self):
+        self.write("book/src/reference/metrics.md", "changed\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
     def test_zero_base_is_code(self):
         self.write("README.md", "hi\n")
         head = self.commit()
@@ -594,6 +615,98 @@ class CiResultTests(unittest.TestCase):
         r = self.run_result({"deny": {"result": "failure"}})
         self.assertEqual(r.returncode, 1)
         self.assertIn("deny", r.stderr)
+
+
+class FormulaManPagesTests(unittest.TestCase):
+    """formula-man-pages.sh: adds the man page lines to dist's formula."""
+
+    ANCHOR = 'leftover_contents = Dir["*"] - doc_files'
+    MAN1 = '    man1.install Dir["man/man1/*.1"]'
+    MAN5 = '    man5.install Dir["man/man5/*.5"]'
+
+    def setUp(self):
+        d = tempfile.mkdtemp(prefix="formula-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.path = os.path.join(d, "irsync.rb")
+        shutil.copy(FORMULA, self.path)
+
+    def text(self):
+        with open(self.path) as f:
+            return f.read()
+
+    def write(self, text):
+        with open(self.path, "w") as f:
+            f.write(text)
+
+    def run_script(self):
+        return subprocess.run([FORMULA_MAN, self.path], capture_output=True, text=True)
+
+    def test_inserts_before_leftovers(self):
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = self.text().splitlines()
+        for want in (self.MAN1, self.MAN5):
+            self.assertEqual(lines.count(want), 1)
+        anchor = next(i for i, l in enumerate(lines) if self.ANCHOR in l)
+        self.assertEqual(lines[anchor - 2:anchor], [self.MAN1, self.MAN5])
+        last_bin = max(i for i, l in enumerate(lines) if "bin.install " in l)
+        self.assertLess(last_bin, lines.index(self.MAN1))
+
+    def test_only_two_lines_added(self):
+        self.run_script()
+        with open(FORMULA) as f:
+            old = f.read().splitlines()
+        new = self.text().splitlines()
+        self.assertEqual(len(new), len(old) + 2)
+        self.assertEqual([l for l in new if l not in (self.MAN1, self.MAN5)], old)
+
+    def test_idempotent(self):
+        self.run_script()
+        once = self.text()
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.text(), once)
+
+    def test_already_present_with_other_indent_is_unchanged(self):
+        text = self.text().replace(
+            "    " + self.ANCHOR,
+            '  man1.install Dir["man/man1/*.1"]\n\tman5.install Dir["man/man5/*.5"]\n    ' + self.ANCHOR)
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.text(), text)
+
+    def test_only_one_line_present_fails(self):
+        text = self.text().replace("    " + self.ANCHOR, self.MAN1 + "\n    " + self.ANCHOR)
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("one of the two", r.stderr)
+        self.assertEqual(self.text(), text)
+
+    def test_missing_anchor_fails(self):
+        text = self.text().replace(self.ANCHOR, "leftovers = []")
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("leftover_contents", r.stderr)
+        self.assertEqual(self.text(), text)
+
+    def test_duplicate_anchor_fails(self):
+        text = self.text()
+        text = text.replace("  end\nend\n", "    " + self.ANCHOR + "\n  end\nend\n")
+        self.assertEqual(text.count(self.ANCHOR), 2)
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("leftover_contents", r.stderr)
+        self.assertEqual(self.text(), text)
+
+    @unittest.skipUnless(shutil.which("ruby"), "ruby is not installed")
+    def test_result_is_valid_ruby(self):
+        self.run_script()
+        r = subprocess.run(["ruby", "-c", self.path], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":
