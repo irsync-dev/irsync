@@ -326,10 +326,13 @@ pub struct HostArgs {
 pub enum HostCmd {
     /// Add a host alias, or update the keys given for an existing one.
     Add(HostAddArgs),
-    /// Remove a host alias.
+    /// Remove a host alias. Refused while grants name it.
     Remove {
         /// The alias.
         alias: String,
+        /// Also remove every grant that names the host.
+        #[arg(short, long)]
+        force: bool,
     },
     /// List host aliases.
     List,

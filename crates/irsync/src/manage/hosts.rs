@@ -1,6 +1,7 @@
 //! Edits of the `[hosts]` table in `irsync.toml` for `host add` and
 //! `host remove`. Pure on a parsed document; loading and saving belong to the caller.
 
+use super::grants::{lists_naming, remove_named};
 use super::ManageError;
 use crate::config::hosts::valid_alias;
 use crate::config::settings::RelayMode;
@@ -99,17 +100,34 @@ pub fn host_add(
     Ok(old)
 }
 
-/// Remove `[hosts.alias]`; only a host entry (a table) is removed.
-pub fn host_remove(doc: &mut DocumentMut, alias: &str) -> Result<(), ManageError> {
-    let hosts = doc.get_mut("hosts").and_then(Item::as_table_like_mut);
-    let Some(hosts) = hosts else {
-        return Err(ManageError::NotFound(alias.to_string()));
-    };
-    if !hosts.get(alias).is_some_and(Item::is_table_like) {
+/// Remove `[hosts.alias]`; only a host entry (a table) is removed. A host
+/// that grants still name is not removed: without it they would match
+/// nobody. With `force` those grants are removed first. The number of
+/// grants removed.
+///
+/// Grants are matched by the alias: run [`super::canonicalize_doc`] first
+/// so that an EndpointId written for this host counts too.
+pub fn host_remove(doc: &mut DocumentMut, alias: &str, force: bool) -> Result<usize, ManageError> {
+    let is_host = doc
+        .get("hosts")
+        .and_then(Item::as_table_like)
+        .and_then(|hosts| hosts.get(alias))
+        .is_some_and(Item::is_table_like);
+    if !is_host {
         return Err(ManageError::NotFound(alias.to_string()));
     }
-    hosts.remove(alias);
-    Ok(())
+    let lists = lists_naming(doc, alias);
+    if !lists.is_empty() && !force {
+        return Err(ManageError::HostInUse {
+            alias: alias.to_string(),
+            lists,
+        });
+    }
+    let removed = remove_named(doc, alias);
+    if let Some(hosts) = doc.get_mut("hosts").and_then(Item::as_table_like_mut) {
+        hosts.remove(alias);
+    }
+    Ok(removed)
 }
 
 /// The lines `host list` prints: `alias: id`, then one indented

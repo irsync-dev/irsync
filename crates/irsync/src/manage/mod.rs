@@ -35,6 +35,8 @@ pub enum ManageError {
     Exists(String),
     #[error("no such entry {0:?}")]
     NotFound(String),
+    #[error("host {alias:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
+    HostInUse { alias: String, lists: Vec<String> },
     #[error("{0:?} is not a table; fix the file by hand")]
     NotATable(String),
     #[error("{0:?} is not a valid export name")]

@@ -129,11 +129,19 @@ fn host_add_then_grant_add_by_alias_then_list() {
     );
     let o = irsync(&home, &["host", "add", &id, &id]);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("alias"));
-    assert!(irsync(&home, &["host", "remove", "laptop"])
-        .status
-        .success());
-    // The alias is gone; the export and its grant entry stay (host remove
-    // leaves grants alone).
+    // A grant names the host: it stays until the grant is gone.
+    let o = irsync(&home, &["host", "remove", "laptop"]);
+    assert_eq!(o.status.code(), Some(1));
+    ok(&home, &["grant", "remove", "p", "laptop"]);
+    let o = irsync(&home, &["host", "remove", "laptop"]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "removed host laptop from {}\n",
+            home.join(".config/irsync/irsync.toml").display()
+        )
+    );
     let text = std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap();
     assert!(
         !text.contains("[hosts.laptop]") && text.contains("[exports.p]"),
@@ -1488,4 +1496,43 @@ fn key_comment_stays_beside_the_alias() {
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("\"box\", # mike@laptop"), "{text}");
     assert_eq!(text.matches(&id).count(), 1, "{text}");
+}
+
+#[test]
+fn host_remove_counts_a_hand_written_id_as_a_grant() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let before = format!(
+        "[hosts.box]\nendpoint_id = \"{id}\"\n[all]\nrw = [\"{id}\"]\n[immediate]\nrw = [\"box\"]\n"
+    );
+    let (home, file) = home_with(&d, &before);
+    let o = irsync(&home, &["host", "remove", "box"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("named by grants in all, immediate") && err.contains("--force"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    let o = irsync(&home, &["host", "remove", "box", "-f"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert_eq!(
+        err,
+        format!("removed host box and 2 grants from {}\n", file.display())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "[all]\nrw = []\n[immediate]\nrw = []\n"
+    );
+    // One grant: singular.
+    let (home, file) = home_with(
+        &d,
+        &format!("[hosts.box]\nendpoint_id = \"{id}\"\n[all]\nro = [\"box\"]\n"),
+    );
+    let o = irsync(&home, &["host", "remove", "--force", "box"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!("removed host box and 1 grant from {}\n", file.display())
+    );
 }

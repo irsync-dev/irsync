@@ -206,6 +206,69 @@ pub fn canonicalize(doc: &mut DocumentMut, hosts: &Hosts) -> bool {
     changed
 }
 
+/// The tables with a grant entry whose text is `name`: `all`,
+/// `immediate`, then `exports.NAME` in file order, each once.
+pub fn lists_naming(doc: &DocumentMut, name: &str) -> Vec<String> {
+    let names = |table: &dyn TableLike| {
+        ["rw", "ro"].iter().any(|key| {
+            table
+                .get(key)
+                .and_then(Item::as_array)
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
+        })
+    };
+    let mut out = Vec::new();
+    for top in ["all", "immediate"] {
+        if doc
+            .get(top)
+            .and_then(Item::as_table_like)
+            .is_some_and(names)
+        {
+            out.push(top.to_string());
+        }
+    }
+    if let Some(exports) = doc.get("exports").and_then(Item::as_table_like) {
+        for (export, item) in exports.iter() {
+            if item.as_table_like().is_some_and(names) {
+                out.push(format!("exports.{export}"));
+            }
+        }
+    }
+    out
+}
+
+/// Removes every grant entry whose text is `name`, from `[all]`,
+/// `[immediate]` and every export; the count.
+pub fn remove_named(doc: &mut DocumentMut, name: &str) -> usize {
+    let mut n = 0;
+    let mut table = |table: &mut dyn TableLike| {
+        for key in ["rw", "ro"] {
+            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
+                continue;
+            };
+            for i in (0..arr.len()).rev() {
+                if arr.get(i).and_then(Value::as_str) == Some(name) {
+                    remove_entry(arr, i);
+                    n += 1;
+                }
+            }
+        }
+    };
+    for top in ["all", "immediate"] {
+        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
+            table(t);
+        }
+    }
+    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
+        for (_, item) in exports.iter_mut() {
+            if let Some(t) = item.as_table_like_mut() {
+                table(t);
+            }
+        }
+    }
+    n
+}
+
 /// Grant `who` access to `export` (`[all]` for `None`): read-only or
 /// read-write. Any earlier grant of the same peer there, under either
 /// spelling, is replaced.

@@ -517,8 +517,14 @@ fn nouns_share_add_remove_list() {
     ));
     assert!(matches!(
         parse(&["host", "remove", "home"]).cmd,
-        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { ref alias }) if alias == "home")
+        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { ref alias, force: false }) if alias == "home")
     ));
+    for flag in ["-f", "--force"] {
+        assert!(matches!(
+            parse(&["host", "remove", "home", flag]).cmd,
+            Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { force: true, .. }))
+        ));
+    }
     assert!(matches!(
         parse(&["host", "list"]).cmd,
         Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::List))

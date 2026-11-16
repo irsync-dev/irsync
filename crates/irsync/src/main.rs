@@ -1716,15 +1716,23 @@ fn run_host(h: &HostArgs) -> i32 {
     let list = HostCmd::List;
     match h.cmd.as_ref().unwrap_or(&list) {
         HostCmd::Add(a) => finish("host add", host_add(a, &paths)),
-        HostCmd::Remove { alias } => finish(
+        HostCmd::Remove { alias, force } => finish(
             "host remove",
             (|| {
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
-                manage::hosts::host_remove(&mut doc, alias)
+                // First, so an EndpointId written for this host is found
+                // as a grant that names it.
+                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                let grants = manage::hosts::host_remove(&mut doc, alias, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut doc)?;
-                eprintln!("removed host {alias} from {}", paths.config.display());
+                let also = match grants {
+                    0 => String::new(),
+                    1 => " and 1 grant".to_string(),
+                    n => format!(" and {n} grants"),
+                };
+                eprintln!("removed host {alias}{also} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
