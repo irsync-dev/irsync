@@ -311,11 +311,7 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
-        out.lines()
-            .any(|l| l == format!("hosts: {}", config.display()))
-            && out
-                .lines()
-                .any(|l| l == format!("exports: {}", config.display())),
+        out.lines().any(|l| l == "hosts:") && out.lines().any(|l| l == "exports:"),
         "{out}"
     );
     assert!(
@@ -901,9 +897,9 @@ fn host_list_prints_the_hosts_section_of_show() {
     let show = ok(&home, &["show"]);
     let section: Vec<&str> = show
         .lines()
-        .skip_while(|l| !l.starts_with("hosts: "))
+        .skip_while(|l| *l != "hosts:")
         .skip(1)
-        .take_while(|l| !l.starts_with("exports: "))
+        .take_while(|l| *l != "exports:")
         .collect();
     assert_eq!(list, section.join("\n") + "\n", "show:\n{show}");
 }
@@ -1011,20 +1007,18 @@ fn grant_remove_with_a_star_points_at_all() {
 }
 
 #[test]
-fn show_names_the_config_file_for_hosts_and_exports() {
+fn show_names_the_config_file_once() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let out = ok(&home, &["show"]);
+    let file = cfg.join("irsync.toml").display().to_string();
+    assert_eq!(out.matches(&file).count(), 1, "{out}");
+    assert!(out.starts_with(&format!("config: {file}")), "{out}");
+    // The hosts and exports sections are headed by their names alone.
     assert!(
-        out.lines()
-            .any(|l| l == format!("hosts: {}", cfg.join("irsync.toml").display())),
-        "{out}"
-    );
-    assert!(
-        out.lines()
-            .any(|l| l == format!("exports: {}", cfg.join("irsync.toml").display())),
+        out.lines().any(|l| l == "hosts:") && out.lines().any(|l| l == "exports:"),
         "{out}"
     );
 }
@@ -1574,4 +1568,95 @@ fn config_unset_does_not_remove_a_host_that_grants_name() {
     // A host no grant names goes as before.
     ok(&home, &["config", "unset", "hosts.free"]);
     assert!(!std::fs::read_to_string(&file).unwrap().contains("free"));
+}
+
+#[test]
+fn host_remove_on_a_file_that_does_not_load_gives_the_plain_error() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "[hosts.box]\nendpoint_id = 5\n");
+    let plain = String::from_utf8_lossy(&irsync(&home, &["host", "list"]).stderr)
+        .replace("irsync host list: ", "");
+    assert!(plain.contains(&file.display().to_string()), "{plain}");
+    for (args, cmd) in [
+        (&["host", "remove", "box"][..], "host remove"),
+        (&["config", "unset", "hosts.box"], "config unset"),
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1));
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(err, format!("irsync {cmd}: {plain}"), "{args:?}");
+    }
+}
+
+#[test]
+fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    // `amy` sorts first, so a plain save would write the id as `amy`.
+    let hosts = |names: &[&str]| -> String {
+        names
+            .iter()
+            .map(|n| format!("[hosts.{n}]\nendpoint_id = \"{id}\"\n"))
+            .collect()
+    };
+    let (home, file) = home_with(
+        &d,
+        &format!("{}[all]\nrw = [\"{id}\"]\n", hosts(&["amy", "zed"])),
+    );
+    // The id is not amy's alone: zed still names the peer.
+    ok(&home, &["host", "remove", "amy"]);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{}[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
+    );
+    // A grant that names amy itself still stops the removal.
+    std::fs::write(
+        &file,
+        format!("{}[all]\nrw = [\"amy\"]\n", hosts(&["amy", "zed"])),
+    )
+    .unwrap();
+    let o = irsync(&home, &["host", "remove", "amy"]);
+    assert_eq!(o.status.code(), Some(1));
+    // The same through config unset.
+    std::fs::write(
+        &file,
+        format!("{}[all]\nrw = [\"{id}\"]\n", hosts(&["amy", "zed"])),
+    )
+    .unwrap();
+    ok(&home, &["config", "unset", "hosts.amy"]);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{}[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
+    );
+}
+
+#[test]
+fn host_add_says_when_grants_move_to_a_new_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (old, new) = (peer_id(5), peer_id(6));
+    let (home, _) = home_with(
+        &d,
+        &format!(
+            "[hosts.box]\nendpoint_id = \"{old}\"\n[all]\nrw = [\"box\"]\n\
+             [exports.p]\npath = \"/p\"\nro = [\"{old}\"]\n"
+        ),
+    );
+    // The same id again, or another key of the host: nothing moves.
+    let o = irsync(&home, &["host", "add", "box", &old, "--parallel", "2"]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+    let o = irsync(&home, &["host", "add", "box", &new]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("box: {old} -> {new}\n")
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "irsync host add: note: the grants that name box (in all, exports.p) now apply to the new EndpointId\n"
+    );
+    // An alias no grant names moves without a note.
+    ok(&home, &["host", "add", "free", &old]);
+    let o = irsync(&home, &["host", "add", "free", &new]);
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
 }

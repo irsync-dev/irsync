@@ -144,6 +144,34 @@ pub fn canonicalize_doc(
     Ok(grants::canonicalize(doc, &config.hosts))
 }
 
+/// As [`canonicalize_doc`], for a document that the host `alias` is about
+/// to leave. When another alias has the same EndpointId, `alias` is not
+/// counted: an id written in a grant is then written as that other alias
+/// and so does not stand in the way of the removal. An id that only
+/// `alias` names is written as `alias`, and is found as a grant naming it.
+pub fn canonicalize_without(
+    doc: &mut toml_edit::DocumentMut,
+    path: &Path,
+    alias: &str,
+) -> Result<bool, ManageError> {
+    let mut hosts = Config::parse(&doc.to_string(), path)
+        .map_err(|reason| ManageError::Invalid {
+            path: path.to_path_buf(),
+            reason,
+        })?
+        .hosts;
+    let shared = hosts.get(alias).map(|e| e.endpoint_id).is_some_and(|id| {
+        hosts
+            .entries
+            .iter()
+            .any(|(other, e)| other != alias && e.endpoint_id == id)
+    });
+    if shared {
+        hosts.entries.remove(alias);
+    }
+    Ok(grants::canonicalize(doc, &hosts))
+}
+
 /// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
 /// [`ConfigLock::save`] so that two edits cannot lose each other's change.
 /// The lock is `<file>.lock` beside it, created exclusively, like git's: a
