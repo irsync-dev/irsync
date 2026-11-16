@@ -77,8 +77,10 @@ and metadata (see [Listing](#listing)). `fileset ls` is the same command.
 
 `list` reads only the manifest. It does not look at the tree, so it says what
 was recorded, not whether the tree still matches; that is `check`. It never
-changes the manifest's contents or the tree. With `--manifest`, `<PATH>` does
-not have to exist, so a copy of a manifest can be listed without its tree.
+changes the manifest's contents or the tree. As with `check`, opening a fjall
+manifest does touch its journal and lock files; a SQLite manifest is only
+read. With `--manifest`, `<PATH>` does not have to exist, so a copy of a
+manifest can be listed without its tree.
 
 With a `PATTERN`, only the entries whose path matches it are listed. Quote the
 pattern, or the shell expands it first.
@@ -307,7 +309,9 @@ So `'*.jpg'` lists the top level only, `'**/*.jpg'` every level below it,
 that matches a directory does not list what is inside it. Upper and lower
 case differ. Trailing slashes and a leading `./` are ignored, so `2026/`
 means `2026`. No pattern is an error; one that matches nothing prints
-nothing. The rules are those of irsync's `--exclude` patterns.
+nothing. The wildcards are those of irsync's `--exclude` patterns, but here
+a pattern always covers the whole path: there, `*.jpg` matches at every
+level and a leading `/` ties a pattern to the top.
 
 When its reader stops early, as in `fileset list ~/Photos | head`, `list`
 ends without an error.

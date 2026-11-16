@@ -13,8 +13,10 @@
 //! No pattern is an error. Trailing `/`s and one leading `./` are ignored, so `2026/`
 //! and `./2026` mean `2026`.
 //!
-//! The rules are those of irsync's `--exclude` patterns (`crates/irsync/src/filter.rs`);
+//! The wildcards are those of irsync's `--exclude` patterns (`crates/irsync/src/filter.rs`);
 //! this is a second, smaller implementation so that fileset needs no dependency for it.
+//! Unlike there, a pattern always covers the whole path: `*.jpg` is the top level only,
+//! and a leading `/` has no special meaning.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tok {
@@ -50,7 +52,11 @@ impl Pattern {
 
     /// Whether the whole of `path` (a stored relative path) matches.
     pub fn matches(&self, path: &[u8]) -> bool {
-        glob(&self.toks, path)
+        // One cell per (token, position in the path) that is known not to match from
+        // there on, so each pair is tried once: the work is bounded by pattern length
+        // times path length, however many stars there are.
+        let mut failed = vec![false; (self.toks.len() + 1) * (path.len() + 1)];
+        glob(&self.toks, 0, path, 0, &mut failed)
     }
 }
 
@@ -134,30 +140,67 @@ fn class(b: &[u8]) -> Option<(Tok, usize)> {
     }
 }
 
-fn glob(toks: &[Tok], s: &[u8]) -> bool {
-    match toks.split_first() {
-        None => s.is_empty(),
-        Some((Tok::Lit(c), rest)) => s.first() == Some(c) && glob(rest, &s[1..]),
-        Some((Tok::One, rest)) => matches!(s.first(), Some(&c) if c != b'/') && glob(rest, &s[1..]),
-        Some((Tok::Class { neg, items }, rest)) => match s.first() {
+/// Whether `toks[t..]` matches `s[i..]`. `failed` remembers the (t, i) pairs already
+/// found not to match; a pair that matches ends the whole search at once.
+fn glob(toks: &[Tok], t: usize, s: &[u8], i: usize, failed: &mut [bool]) -> bool {
+    let cell = t * (s.len() + 1) + i;
+    if failed[cell] {
+        return false;
+    }
+    let hit = match toks.get(t) {
+        None => i == s.len(),
+        Some(Tok::Lit(c)) => s.get(i) == Some(c) && glob(toks, t + 1, s, i + 1, failed),
+        Some(Tok::One) => {
+            matches!(s.get(i), Some(&c) if c != b'/') && glob(toks, t + 1, s, i + 1, failed)
+        }
+        Some(Tok::Class { neg, items }) => match s.get(i) {
             Some(&c) if c != b'/' => {
-                let hit = items.iter().any(|&(lo, hi)| lo <= c && c <= hi);
-                hit != *neg && glob(rest, &s[1..])
+                let in_class = items.iter().any(|&(lo, hi)| lo <= c && c <= hi);
+                in_class != *neg && glob(toks, t + 1, s, i + 1, failed)
             }
             _ => false,
         },
-        Some((Tok::Star, rest)) => {
+        Some(Tok::Star) => {
             // Every run up to the next `/`, shortest first.
-            let limit = s.iter().position(|&c| c == b'/').unwrap_or(s.len());
-            (0..=limit).any(|n| glob(rest, &s[n..]))
+            let limit = s[i..]
+                .iter()
+                .position(|&c| c == b'/')
+                .map_or(s.len(), |n| i + n);
+            (i..=limit).any(|j| glob(toks, t + 1, s, j, failed))
         }
-        Some((Tok::StarStar, rest)) => (0..=s.len()).any(|n| glob(rest, &s[n..])),
+        Some(Tok::StarStar) => (i..=s.len()).any(|j| glob(toks, t + 1, s, j, failed)),
+    };
+    if !hit {
+        failed[cell] = true;
     }
+    hit
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Many stars on a long repetitive name: the work must grow with pattern length
+    /// times path length, not double with every star.
+    #[test]
+    fn many_stars_do_not_take_exponential_time() {
+        let mut name = vec![b'a'; 200];
+        name.extend_from_slice(b".jpg");
+        let started = std::time::Instant::now();
+        for pat in [
+            &b"*a*a*a*a*a*a*a*a*a*a*a*a*b"[..],
+            b"**a**a**a**a**a**a**a**a**a**a**a**a**b",
+            b"*a*a*a*a*a*a*a*a*a*a*a*a?b",
+        ] {
+            assert!(!Pattern::new(pat).matches(&name));
+        }
+        assert!(Pattern::new(b"*a*a*a*a*a*a*a*a*a*a*a*a*.jpg").matches(&name));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn rules() {
