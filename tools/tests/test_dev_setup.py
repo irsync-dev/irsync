@@ -187,6 +187,8 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(calls, r"install --locked cargo-nextest --version")
         self.assertNotIn("mdbook", calls)
 
+    @unittest.skipUnless(os.uname().sysname in ("Linux", "Darwin"),
+                         "dev-setup.sh downloads actionlint on Linux and macOS only")
     def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
         out, calls = self.setup(curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
         self.assertRegex(out, r"refused +actionlint download: SHA-256 is")
