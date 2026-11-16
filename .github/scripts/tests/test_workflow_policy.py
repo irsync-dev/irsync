@@ -214,7 +214,7 @@ class AttestationTests(unittest.TestCase):
                 self.assertEqual(perms.get(k), v)
 
     def test_every_release_file_attested(self):
-        # By default dist attests only the per-target archives; the installer,
+        # By default dist attests only the per-target archives; our installer,
         # the Homebrew formula and the checksum files go unattested. In the
         # host phase it attests everything it is about to publish.
         self.assertEqual(dist_config()["dist"].get("github-attestations-phase"), "host")
@@ -222,6 +222,16 @@ class AttestationTests(unittest.TestCase):
         steps = [s for s in host["steps"] if step_uses(s, self.ATTEST)]
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0]["with"]["subject-path"].strip(), "artifacts/*")
+
+    def test_installer_is_ours(self):
+        # Our installer (packaging/installer) replaces dist's shell installer,
+        # so it can install the man pages too.
+        dist = dist_config()["dist"]
+        self.assertEqual(dist["installers"], ["homebrew"])
+        extra = dist["extra-artifacts"]
+        self.assertEqual(len(extra), 1)
+        self.assertEqual(extra[0]["artifacts"], ["irsync-installer.sh"])
+        self.assertEqual(extra[0]["build"][0], "packaging/installer/build-installer.sh")
 
     def test_packages_attested_not_uploaded(self):
         self.assertNotIn("gh release upload", read("packages.yml"))

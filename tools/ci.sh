@@ -142,6 +142,7 @@ job_workflows() {
 # release build shows up before a tag is pushed.
 job_release_build() {
     local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
+    local t standins=() tmp version
     # release.yml must be what dist generates from dist-workspace.toml.
     run dist generate --check
     run dist build --artifacts=local "--target=$target"
@@ -160,6 +161,35 @@ job_release_build() {
             exit 1
         fi
     done
+
+    printf '\n== our installer installs from the tarball\n'
+    tmp=$(mktemp -d)
+    # The release has all three checksums; here only $target was built, so
+    # stand-ins fill in the others, and are removed afterwards.
+    for t in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+        if [ ! -f "target/distrib/irsync-$t.tar.xz.sha256" ]; then
+            printf '%064d  irsync-%s.tar.xz\n' 0 "$t" >"target/distrib/irsync-$t.tar.xz.sha256"
+            standins+=("target/distrib/irsync-$t.tar.xz.sha256")
+        fi
+    done
+    packaging/installer/build-installer.sh target/distrib "$tmp/irsync-installer.sh" ||
+        { rm -rf "$tmp" ${standins[@]+"${standins[@]}"}; exit 1; }
+    rm -f ${standins[@]+"${standins[@]}"}
+    mkdir "$tmp/home"
+    HOME="$tmp/home" IRSYNC_INSTALLER_ARCHIVE_DIR="$PWD/target/distrib" sh "$tmp/irsync-installer.sh" ||
+        { rm -rf "$tmp"; exit 1; }
+    version=$(awk -F'"' '/^version = "/ { print $2; exit }' packaging/dist/dist.toml)
+    if ! "$tmp/home/.local/bin/irsync" --version | grep -F "$version" >/dev/null; then
+        echo "ci.sh: the installed irsync does not report version $version" >&2
+        rm -rf "$tmp"
+        exit 1
+    fi
+    if ! HOME="$tmp/home" MANPATH="$tmp/home/.local/share/man" man -w irsync >/dev/null; then
+        echo "ci.sh: man cannot find the installed irsync page" >&2
+        rm -rf "$tmp"
+        exit 1
+    fi
+    rm -rf "$tmp"
 }
 
 # Find every missing tool before the first job starts, not minutes in.

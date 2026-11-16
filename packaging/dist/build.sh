@@ -38,7 +38,8 @@ for bin in irsync fileset; do
 done
 
 # The man pages come from the book (tools/build-man.sh), into man/ here.
-# dist.toml's include = ["man"] puts that directory in the tarball.
+# include = ["packaging/dist/man"] in dist-workspace.toml puts that directory
+# in the tarball.
 rm -rf "$pkg_dir/man"
 "$repo_root/tools/build-man.sh" "$pkg_dir/man"
 

@@ -11,7 +11,7 @@ cargo-dist-version = "0.34.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "homebrew"]
+installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "irsync-dev/homebrew-tap"
 # Customize the Homebrew formula name
@@ -47,6 +47,14 @@ dispatch-releases = true
 # Extra files for every archive. packaging/dist/build.sh writes this directory;
 # it lands in the tarball as irsync-<target>/man/.
 include = ["packaging/dist/man"]
+
+# Our own installer, in place of dist's shell installer, so it can install
+# the man pages too (packaging/installer). Built in build-global-artifacts,
+# where target/distrib holds the tarballs' checksums. dist ignores a failing
+# exit status here and fails only when the file is missing.
+[[dist.extra-artifacts]]
+artifacts = ["irsync-installer.sh"]
+build = ["packaging/installer/build-installer.sh", "target/distrib", "irsync-installer.sh"]
 
 [dist.github-custom-runners]
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
