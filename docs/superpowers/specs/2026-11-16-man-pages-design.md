@@ -184,9 +184,12 @@ dist's `installers`; `homebrew` stays.
 
 Facts about that job, checked in dist 0.34.0's source:
 
-- dist ignores a non-zero exit from an extra-artifacts build. It fails only
-  when the output file is missing. So `build-installer.sh` must write
-  `irsync-installer.sh` as its last step and leave no file behind on error.
+- dist fails when the output file of an extra-artifacts build is missing.
+  (This said dist ignores a non-zero exit; in a real run dist 0.34.0
+  reported "failed to exec build" and stopped.) Either way,
+  `build-installer.sh` must write `irsync-installer.sh` as its last step
+  and leave no file behind on error, so a release never carries a broken
+  installer.
 - The job installs none of `[dist.dependencies]`. The generator may use only
   what a plain Ubuntu 22.04 runner has. It does not need pandoc.
 - The existing attestation step covers the file, like every other artifact.

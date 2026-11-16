@@ -163,6 +163,8 @@ class CiWorkflowTests(unittest.TestCase):
         self.ci_script_runs("workflows", "python3 -m unittest discover -s .github/scripts/tests")
         self.ci_script_runs("workflows", "actionlint -shellcheck= -pyflakes=")
         self.ci_script_runs("release-build", "dist generate --check")
+        # dist's side of our installer, which build-global-artifacts runs.
+        self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
@@ -324,6 +326,24 @@ class EnvironmentTests(unittest.TestCase):
     def test_homebrew_job_in_release_env(self):
         own = jobs(load_workflows()["publish-homebrew.yml"])["homebrew"]
         self.assertEqual(env_name(own), "release")
+
+    def test_formula_script_runs_before_the_tap_token(self):
+        # formula-man-pages.sh is repo code. It runs before the tap is checked
+        # out with HOMEBREW_TAP_TOKEN, so the token is never on disk while it
+        # runs, and the irsync checkout keeps no credentials either.
+        steps = jobs(load_workflows()["publish-homebrew.yml"])["homebrew"]["steps"]
+        script = [i for i, s in enumerate(steps)
+                  if "formula-man-pages.sh" in s.get("run", "")]
+        token = [i for i, s in enumerate(steps)
+                 if step_uses(s, "actions/checkout")
+                 and "secrets.HOMEBREW_TAP_TOKEN" in str((s.get("with") or {}).get("token", ""))]
+        self.assertEqual(len(script), 1)
+        self.assertEqual(len(token), 1)
+        self.assertLess(script[0], token[0])
+        irsync = [s for s in steps[:script[0]] if step_uses(s, "actions/checkout")
+                  and (s.get("with") or {}).get("path") == "irsync"]
+        self.assertEqual(len(irsync), 1)
+        self.assertIs(irsync[0]["with"].get("persist-credentials"), False)
 
     def test_resume_has_no_main_guard(self):
         text = read("release-resume.yml")

@@ -27,8 +27,6 @@ publish-jobs = []
 publish-prereleases = false
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
-# Path that installers should place binaries in
-install-path = "~/.local/bin"
 # Signed build provenance for every artifact, checkable with
 # `gh attestation verify <file> --repo irsync-dev/irsync`
 github-attestations = true
@@ -36,8 +34,6 @@ github-attestations = true
 # gets one: by default dist attests only the per-target archives, and the
 # installer, the Homebrew formula and the checksum files go without.
 github-attestations-phase = "host"
-# Whether to install an updater program
-install-updater = false
 # Don't run the release workflow on pull requests; PR CI stays as it was
 pr-run-mode = "skip"
 # release.yml only starts via workflow_dispatch. .github/workflows/release-gate.yml
@@ -50,8 +46,9 @@ include = ["packaging/dist/man"]
 
 # Our own installer, in place of dist's shell installer, so it can install
 # the man pages too (packaging/installer). Built in build-global-artifacts,
-# where target/distrib holds the tarballs' checksums. dist ignores a failing
-# exit status here and fails only when the file is missing.
+# where target/distrib holds the tarballs' checksums. On any error the
+# generator leaves no output file, so the release cannot carry a broken
+# installer, whichever way dist treats the exit status.
 [[dist.extra-artifacts]]
 artifacts = ["irsync-installer.sh"]
 build = ["packaging/installer/build-installer.sh", "target/distrib", "irsync-installer.sh"]

@@ -38,9 +38,11 @@ Full regression, before committing to `main` or pushing:
 tools/ci.sh check
 ```
 
-This is the script CI runs: formatting, the tests of `tools/dev-setup.sh`,
-clippy with and without OpenTelemetry, every test including those five slow
-ones (no other test is ignored), and the doc tests. It needs cargo-nextest.
+This is the script CI runs: formatting, the tests of `tools/dev-setup.sh`
+and of the man page build (it builds the pages and checks them), clippy
+with and without OpenTelemetry, every test including those five slow ones
+(no other test is ignored), and the doc tests. It needs cargo-nextest,
+pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
 `workflows` (after a change under `.github/`) and `release-build` (after a

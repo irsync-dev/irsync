@@ -11,7 +11,8 @@
 #                  the slow ones, and the doc tests
 #   deny           the dependency check (cargo deny, see deny.toml)
 #   workflows      the workflow rule tests and actionlint
-#   release-build  the release build for this machine's Linux musl target
+#   release-build  the release build for this machine's Linux musl target,
+#                  dist's global build, and our installer run on the result
 #
 # With no job it runs all of them, the quick ones first. release-build runs
 # on Linux only; a run of everything leaves it out elsewhere.
@@ -143,7 +144,7 @@ job_workflows() {
 # release build shows up before a tag is pushed.
 job_release_build() {
     local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
-    local t standins=() tmp version found
+    local t standins=() global=() tmp version found
     # release.yml must be what dist generates from dist-workspace.toml.
     run dist generate --check
     run dist build --artifacts=local "--target=$target"
@@ -166,16 +167,31 @@ job_release_build() {
     printf '\n== our installer installs from the tarball\n'
     tmp=$(mktemp -d)
     # The release has all three checksums; here only $target was built, so
-    # stand-ins fill in the others, and are removed afterwards.
+    # stand-ins fill in the others. dist's global build (the release's
+    # build-global-artifacts job) writes the installer, the formula, the
+    # source tarball and sha256.sum; with the stand-ins they are not the
+    # release's, so they go too.
     for t in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
         if [ ! -f "target/distrib/irsync-$t.tar.xz.sha256" ]; then
             printf '%064d  irsync-%s.tar.xz\n' 0 "$t" >"target/distrib/irsync-$t.tar.xz.sha256"
             standins+=("target/distrib/irsync-$t.tar.xz.sha256")
         fi
     done
+    global=(irsync-installer.sh target/distrib/irsync-installer.sh target/distrib/irsync.rb
+        target/distrib/source.tar.gz target/distrib/source.tar.gz.sha256 target/distrib/sha256.sum)
+    rm -f "${global[@]}"
+    clean_up() { rm -rf "$tmp" ${standins[@]+"${standins[@]}"} "${global[@]}"; }
     packaging/installer/build-installer.sh target/distrib "$tmp/irsync-installer.sh" ||
-        { rm -rf "$tmp" ${standins[@]+"${standins[@]}"}; exit 1; }
-    rm -f ${standins[@]+"${standins[@]}"}
+        { clean_up; exit 1; }
+    # dist runs the same generator, as an extra artifact. The copy it puts
+    # in target/distrib must be the one we built.
+    run dist build --artifacts=global || { clean_up; exit 1; }
+    if ! cmp -s target/distrib/irsync-installer.sh "$tmp/irsync-installer.sh"; then
+        echo "ci.sh: dist's global build did not produce our irsync-installer.sh" >&2
+        clean_up
+        exit 1
+    fi
+    rm -f ${standins[@]+"${standins[@]}"} "${global[@]}"
     mkdir "$tmp/home"
     HOME="$tmp/home" IRSYNC_INSTALLER_ARCHIVE_DIR="$PWD/target/distrib" sh "$tmp/irsync-installer.sh" ||
         { rm -rf "$tmp"; exit 1; }

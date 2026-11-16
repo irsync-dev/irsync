@@ -7,9 +7,10 @@
 # DISTRIB_DIR holds dist's irsync-<target>.tar.xz.sha256 files. The version
 # comes from packaging/dist/dist.toml.
 #
-# dist runs this as an extra-artifacts build. It ignores our exit status and
-# fails only when OUT_FILE is missing, so any error leaves no OUT_FILE: a stale
-# one is removed first, and the new one is renamed into place as the last step.
+# dist runs this as an extra-artifacts build. Any error leaves no OUT_FILE, so
+# the release cannot carry a broken installer, whichever way dist treats our
+# exit status: a stale OUT_FILE is removed first, and the new one is renamed
+# into place as the last step.
 set -eu
 
 die() { printf 'build-installer: %s\n' "$*" >&2; exit 1; }
