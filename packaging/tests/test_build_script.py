@@ -48,6 +48,42 @@ class BuildScriptTests(unittest.TestCase):
             self.assertIn(f"--target {target}", got["args"], target)
             self.assertIn("--locked", got["args"], target)
 
+    def test_builds_man_pages_into_package_dir(self):
+        # Run a copy of build.sh in a fake checkout, with a fake cargo that
+        # succeeds and a fake tools/build-man.sh that records its argument.
+        repo = os.path.realpath(os.path.join(self.tmp, "repo"))
+        pkg = os.path.join(repo, "packaging", "dist")
+        os.makedirs(pkg)
+        os.makedirs(os.path.join(repo, "tools"))
+        shutil.copy(BUILD, pkg)
+        shutil.copy(os.path.join(os.path.dirname(BUILD), "dist.toml"), pkg)
+        target = "aarch64-apple-darwin"
+        out = os.path.join(repo, "target", target, "dist")
+        man_log = os.path.join(self.tmp, "man.log")
+        write = lambda path, body: (open(path, "w").write(body), os.chmod(path, 0o755))
+        write(os.path.join(self.tmp, "bin", "cargo"), f"""#!/bin/sh
+mkdir -p "{out}"
+printf '#!/bin/sh\necho "irsync 0.1.0-beta.3 (fake)"\n' > "{out}/irsync"
+printf '#!/bin/sh\n' > "{out}/fileset"
+chmod +x "{out}/irsync" "{out}/fileset"
+""")
+        write(os.path.join(repo, "tools", "build-man.sh"), f"""#!/bin/sh
+echo "$1" > "{man_log}"
+ls "$1" > "{man_log}.before" 2>&1
+mkdir -p "$1/man1"
+touch "$1/man1/irsync.1"
+""")
+        # A leftover from an earlier build must not survive.
+        os.makedirs(os.path.join(pkg, "man"))
+        open(os.path.join(pkg, "man", "stale"), "w").close()
+        r = subprocess.run([os.path.join(pkg, "build.sh")], capture_output=True, text=True,
+                           env=dict(self.env, CARGO_DIST_TARGET=target))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(man_log) as f:
+            self.assertEqual(f.read().strip(), os.path.join(pkg, "man"))
+        self.assertFalse(os.path.exists(os.path.join(pkg, "man", "stale")))
+        self.assertTrue(os.path.exists(os.path.join(pkg, "man", "man1", "irsync.1")))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -82,7 +82,7 @@ jobs:
       - name: Install musl-tools and aim cargo at the target
         if: matrix.target != ''
         run: |
-          sudo apt-get update && sudo apt-get install -y musl-tools
+          sudo apt-get update && sudo apt-get install -y musl-tools pandoc
           # tools/ci.sh check builds for this target. It also makes the
           # netstress tests' nested fault build use it.
           echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"

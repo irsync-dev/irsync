@@ -4,7 +4,7 @@
 # cargo dist runs this from packaging/dist with CARGO_DIST_TARGET set to the
 # target triple. It builds the `irsync` and `fileset` crates from the repo
 # root, copies both binaries here (where dist picks up a generic package's
-# binaries), and refuses to hand over a broken binary.
+# binaries), builds the man pages, and refuses to hand over a broken binary.
 set -eu
 
 : "${CARGO_DIST_TARGET:?CARGO_DIST_TARGET must be set (dist sets it)}"
@@ -36,6 +36,11 @@ out="$repo_root/target/$CARGO_DIST_TARGET/dist"
 for bin in irsync fileset; do
     cp "$out/$bin" "$pkg_dir/$bin"
 done
+
+# The man pages come from the book (tools/build-man.sh), into man/ here.
+# dist.toml's include = ["man"] puts that directory in the tarball.
+rm -rf "$pkg_dir/man"
+"$repo_root/tools/build-man.sh" "$pkg_dir/man"
 
 cd "$pkg_dir"
 

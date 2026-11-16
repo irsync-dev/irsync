@@ -53,6 +53,13 @@ aarch64-apple-darwin = "macos-latest"
 # The musl C toolchain, for the C code in the dependencies (bundled SQLite, ring).
 [dist.dependencies.apt]
 musl-tools = "*"
+# For tools/build-man.sh, which builds the man pages.
+pandoc = "*"
+
+# For tools/build-man.sh. dist installs these on the build runners only; they
+# are not dependencies of the Homebrew formula.
+[dist.dependencies.homebrew]
+pandoc = "*"
 
 # Pin the Actions in the generated release.yml to commits; a version tag can
 # be moved by the Action's owner. Dependabot does not update this table: bump

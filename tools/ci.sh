@@ -88,6 +88,7 @@ needs_release_build() {
     fi
     need "dist (cargo-dist)" dist --version
     need musl-gcc musl-gcc --version
+    need pandoc pandoc --version
 }
 
 job_check() {
@@ -140,16 +141,22 @@ job_workflows() {
 # The release build itself (dist and packaging/dist/build.sh), so a broken
 # release build shows up before a tag is pushed.
 job_release_build() {
-    local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin
+    local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
     # release.yml must be what dist generates from dist-workspace.toml.
     run dist generate --check
     run dist build --artifacts=local "--target=$target"
-    printf '\n== the tarball holds both binaries\n'
+    printf '\n== the tarball holds both binaries and the man pages\n'
     contents=$(tar -tJf "target/distrib/irsync-$target.tar.xz")
     printf '%s\n' "$contents"
     for bin in irsync fileset; do
         if ! printf '%s\n' "$contents" | grep -x "irsync-$target/$bin" >/dev/null; then
             echo "ci.sh: irsync-$target/$bin is not in the tarball" >&2
+            exit 1
+        fi
+    done
+    for page in man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+        if ! printf '%s\n' "$contents" | grep -x "irsync-$target/$page" >/dev/null; then
+            echo "ci.sh: irsync-$target/$page is not in the tarball" >&2
             exit 1
         fi
     done
