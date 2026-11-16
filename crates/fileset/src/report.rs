@@ -61,11 +61,11 @@ pub fn line_chg(path: &[u8], diffs: &[FieldDiff]) -> String {
     s
 }
 
-/// One entry in full: `<prefix> <path> kind= size= mtime= mode=`, then `blake3=` when the
-/// entry has a checksum.
-pub fn line_entry(prefix: &str, path: &[u8], e: &Entry) -> String {
+/// `<path> kind= size= mtime= mode=`, then `blake3=` when the entry has a checksum: what
+/// every line that shows an entry in full has in common.
+fn entry_fields(path: &[u8], e: &Entry) -> String {
     let mut s = format!(
-        "{prefix} {} kind={} size={} mtime={} mode={}",
+        "{} kind={} size={} mtime={} mode={}",
         escape(path),
         e.kind.name(),
         e.size,
@@ -75,6 +75,38 @@ pub fn line_entry(prefix: &str, path: &[u8], e: &Entry) -> String {
     if let Some(h) = &e.blake3 {
         s.push_str(" blake3=");
         s.push_str(&fmt_blake3(h));
+    }
+    s
+}
+
+/// One entry in full: `<prefix> <path> kind= size= mtime= mode=`, then `blake3=` when the
+/// entry has a checksum.
+pub fn line_entry(prefix: &str, path: &[u8], e: &Entry) -> String {
+    format!("{prefix} {}", entry_fields(path, e))
+}
+
+/// The line `fileset list` prints for an entry: the fields of [`line_entry`] without a
+/// prefix, then `target=` for a symlink with a recorded target. With `verbose`, also
+/// `uid=`, `gid=`, `nlink=`, `rdev=` for a device, and one `xattr:<name>=<value>` per
+/// extended attribute in the order stored (values cut as in `CHG` lines).
+pub fn line_listed(path: &[u8], e: &Entry, verbose: bool) -> String {
+    let mut s = entry_fields(path, e);
+    if let Some(t) = &e.target {
+        s.push_str(" target=");
+        s.push_str(&escape(t));
+    }
+    if verbose {
+        s.push_str(&format!(" uid={} gid={} nlink={}", e.uid, e.gid, e.nlink));
+        if matches!(e.kind, Kind::CharDev | Kind::BlockDev) {
+            s.push_str(&format!(" rdev={}", e.rdev));
+        }
+        for (name, value) in &e.xattrs {
+            s.push_str(&format!(
+                " xattr:{}={}",
+                escape(name),
+                fmt_bytes_value(value)
+            ));
+        }
     }
     s
 }
@@ -145,6 +177,72 @@ mod tests {
             flags: Flags::default(),
             generation: 0,
         }
+    }
+
+    /// 2026-01-31T12:00:00.000000005Z
+    const NOON: Timespec = Timespec {
+        sec: 1769860800,
+        nsec: 5,
+    };
+
+    #[test]
+    fn listed_line_is_the_entry_line_without_a_prefix() {
+        let file = entry(Kind::File, 12, NOON, 0o644, Some([0x11; 32]));
+        assert_eq!(
+            line_listed(b"d/a.txt", &file, false),
+            format!(
+                "d/a.txt kind=file size=12 mtime=2026-01-31T12:00:00.000000005Z mode=0644 blake3={}",
+                "11".repeat(32)
+            )
+        );
+        assert_eq!(
+            format!("EQL {}", line_listed(b"d/a.txt", &file, false)),
+            line_entry("EQL", b"d/a.txt", &file)
+        );
+        let dir = entry(Kind::Dir, 4096, NOON, 0o755, None);
+        assert_eq!(
+            line_listed(b"d", &dir, false),
+            "d kind=dir size=4096 mtime=2026-01-31T12:00:00.000000005Z mode=0755"
+        );
+        let mut link = entry(Kind::Symlink, 4, NOON, 0o777, None);
+        assert!(!line_listed(b"l", &link, false).contains("target="));
+        link.target = Some(b"a b\n".to_vec());
+        let line = line_listed(b"l", &link, false);
+        assert!(line.ends_with(" mode=0777 target=a b\\x0a"), "{line}");
+    }
+
+    #[test]
+    fn listed_line_verbose_adds_everything_recorded() {
+        let mut file = entry(Kind::File, 12, NOON, 0o644, Some([0x11; 32]));
+        file.uid = 1000;
+        file.gid = 100;
+        file.nlink = 2;
+        file.rdev = 7;
+        file.xattrs = vec![
+            (b"user.a".to_vec(), b"1".to_vec()),
+            (b"user.b".to_vec(), vec![b'x'; 70]),
+        ];
+        let line = line_listed(b"a", &file, true);
+        assert!(
+            line.ends_with(&format!(
+                " uid=1000 gid=100 nlink=2 xattr:user.a=1 xattr:user.b={}…",
+                "x".repeat(64)
+            )),
+            "{line}"
+        );
+        // A device number means something only for a device.
+        assert!(!line.contains("rdev="), "{line}");
+        assert!(line.starts_with(&line_listed(b"a", &file, false)));
+        let mut dev = entry(Kind::CharDev, 0, NOON, 0o600, None);
+        dev.nlink = 1;
+        dev.rdev = 259;
+        let line = line_listed(b"dev", &dev, true);
+        assert!(line.contains(" nlink=1 rdev=259"), "{line}");
+        // The target comes before the verbose fields.
+        let mut link = entry(Kind::Symlink, 1, NOON, 0o777, None);
+        link.target = Some(b"t".to_vec());
+        let line = line_listed(b"l", &link, true);
+        assert!(line.contains(" mode=0777 target=t uid="), "{line}");
     }
 
     #[test]

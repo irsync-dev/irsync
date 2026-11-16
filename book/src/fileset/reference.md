@@ -19,6 +19,7 @@ cargo install --git https://github.com/irsync-dev/irsync fileset
 fileset init   [OPTIONS] <PATH>
 fileset update [OPTIONS] <PATH>
 fileset check  [OPTIONS] <PATH>
+fileset list   [-v] [--manifest <MPATH>] <PATH> [PATTERN]
 ```
 
 `<PATH>` is the root of the tree and must be a directory.
@@ -69,6 +70,21 @@ read when it was recorded) produces the warning
 `no stored checksum for <path>`. A manifest in a subdirectory produces the
 warning `nested manifest at <path>`.
 
+### list
+
+`list` prints what the manifest holds: one line per entry, with its checksum
+and metadata (see [Listing](#listing)). `fileset ls` is the same command.
+
+`list` reads only the manifest. It does not look at the tree, so it says what
+was recorded, not whether the tree still matches; that is `check`. It never
+changes the manifest's contents or the tree. As with `check`, opening a fjall
+manifest does touch its journal and lock files; a SQLite manifest is only
+read. With `--manifest`, `<PATH>` does not have to exist, so a copy of a
+manifest can be listed without its tree.
+
+With a `PATTERN`, only the entries whose path matches it are listed. Quote the
+pattern, or the shell expands it first.
+
 ## Options
 
 ### All commands
@@ -93,6 +109,9 @@ Without `--manifest`, `fileset` looks for `.fileset.sqlite` and
 `.fileset.fjall` at the root. If both exist, it stops and asks for
 `--manifest`.
 
+The options above are for the commands that walk a tree. Of them, `list`
+takes only `--manifest`.
+
 ### init only
 
 | Option | Effect |
@@ -114,6 +133,12 @@ Without `--manifest`, `fileset` looks for `.fileset.sqlite` and
 | `--paranoid` | Compare the paranoid tier (below). Conflicts with `--relaxed`. |
 | `--ignore <FIELD>` | Drop one field from the comparison. Repeatable. |
 | `--require <FIELD>` | Add one field to the comparison. Repeatable. |
+
+### list only
+
+| Option | Effect |
+| --- | --- |
+| `-v, --verbose` | Also print the owner, the link count, device numbers and extended attributes of each entry. |
 
 ## Comparison tiers
 
@@ -234,6 +259,63 @@ the same prefixes for what happened to the manifest:
 
 `grep -v '^EQL'` leaves what differs.
 
+### Listing
+
+`list` writes one line per manifest entry to stdout, and nothing to stderr:
+
+```text
+$ fileset list ~/Photos '2026/**'
+2026/01 kind=dir size=4096 mtime=2026-01-31T12:00:00.000000005Z mode=0755
+2026/01/IMG_0001.jpg kind=file size=48213 mtime=2026-01-15T12:00:00.000000000Z mode=0644 blake3=81c4b7f7e0549f1514e9cae97cf40cf133920418d3dc71bedbf60ec9bd6148cb
+2026/latest kind=symlink size=15 mtime=2026-01-31T12:00:00.000000005Z mode=0777 target=01/IMG_0001.jpg
+```
+
+The line is the one `check -v` prints for an entry, without a prefix:
+`<path> kind= size= mtime= mode=`, then `blake3=` when the entry has a
+checksum. A symlink also shows `target=`. The root of the tree is listed as
+`.`.
+
+With `-v`, each line continues with `uid=`, `gid=` and `nlink=`, then `rdev=`
+for a character or block device, then one `xattr:<name>=<value>` per extended
+attribute, in name order. A value longer than 64 bytes is cut and ends in
+`…`.
+
+Entries come in the order the manifest stores them: by path, compared byte by
+byte. Uppercase sorts before lowercase and `img10` before `img9`. A directory
+is followed by its contents, except that a neighbour whose name goes on with
+a character that sorts before `/` (a space, `-`, `.`, `+` or `,`) comes in
+between:
+
+```text
+2024
+2024-old
+2024.txt
+2024/a.jpg
+```
+
+The pattern is matched against the whole path below the root:
+
+| In the pattern | Matches |
+| --- | --- |
+| `*` | any run of characters except `/` |
+| `**` | any run of characters, `/` included |
+| `?` | one character except `/` |
+| `[abc]`, `[a-z]` | one of these characters; `[!a-z]` or `[^a-z]`: any other, except `/` |
+| `\` and a character | that character itself |
+| anything else | itself |
+
+So `'*.jpg'` lists the top level only, `'**/*.jpg'` every level below it,
+`'2026/**'` everything under `2026`, and `2026` that one entry: a pattern
+that matches a directory does not list what is inside it. Upper and lower
+case differ. Trailing slashes and a leading `./` are ignored, so `2026/`
+means `2026`. No pattern is an error; one that matches nothing prints
+nothing. The wildcards are those of irsync's `--exclude` patterns, but here
+a pattern always covers the whole path: there, `*.jpg` matches at every
+level and a leading `/` ties a pattern to the top.
+
+When its reader stops early, as in `fileset list ~/Photos | head`, `list`
+ends without an error.
+
 ### Warnings and summary
 
 Warnings go to stderr, prefixed `WARN `. Progress goes to stderr only when
@@ -275,7 +357,7 @@ next `update` folds it in.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Clean. |
+| `0` | Clean. For `list`: the entries were printed, also when none matched. |
 | `1` | `check` found differences; or, with `--fail-on-warnings`, the run produced warnings. The second is the only way `init` and `update` return 1. |
 | `2` | The run itself failed. |
 

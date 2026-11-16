@@ -169,33 +169,49 @@ fn class(b: &[u8]) -> Option<(Tok, usize)> {
     }
 }
 
+/// Whether the whole of `s` matches `toks`.
 fn glob(toks: &[Tok], s: &[u8]) -> bool {
-    match toks.split_first() {
-        None => s.is_empty(),
-        Some((Tok::Lit(c), rest)) => s.first() == Some(c) && glob(rest, &s[1..]),
-        Some((Tok::One, rest)) => matches!(s.first(), Some(&c) if c != b'/') && glob(rest, &s[1..]),
-        Some((Tok::Class { neg, items }, rest)) => match s.first() {
+    // One cell per (token, position in `s`) known not to match from there
+    // on, so each pair is tried once: the work is bounded by pattern length
+    // times path length, however many stars there are.
+    let mut failed = vec![false; (toks.len() + 1) * (s.len() + 1)];
+    glob_from(toks, 0, s, 0, &mut failed)
+}
+
+/// Whether `toks[t..]` matches `s[i..]`. `failed` remembers the (t, i) pairs
+/// already found not to match; a pair that matches ends the search at once.
+fn glob_from(toks: &[Tok], t: usize, s: &[u8], i: usize, failed: &mut [bool]) -> bool {
+    let cell = t * (s.len() + 1) + i;
+    if failed[cell] {
+        return false;
+    }
+    let hit = match toks.get(t) {
+        None => i == s.len(),
+        Some(Tok::Lit(c)) => s.get(i) == Some(c) && glob_from(toks, t + 1, s, i + 1, failed),
+        Some(Tok::One) => {
+            matches!(s.get(i), Some(&c) if c != b'/') && glob_from(toks, t + 1, s, i + 1, failed)
+        }
+        Some(Tok::Class { neg, items }) => match s.get(i) {
             Some(&c) if c != b'/' => {
-                let hit = items.iter().any(|&(lo, hi)| lo <= c && c <= hi);
-                hit != *neg && glob(rest, &s[1..])
+                let in_class = items.iter().any(|&(lo, hi)| lo <= c && c <= hi);
+                in_class != *neg && glob_from(toks, t + 1, s, i + 1, failed)
             }
             _ => false,
         },
-        Some((Tok::Star, rest)) => {
-            let mut n = 0;
-            loop {
-                if glob(rest, &s[n..]) {
-                    return true;
-                }
-                if n < s.len() && s[n] != b'/' {
-                    n += 1;
-                } else {
-                    return false;
-                }
-            }
+        Some(Tok::Star) => {
+            // Every run up to the next `/`, shortest first.
+            let limit = s[i..]
+                .iter()
+                .position(|&c| c == b'/')
+                .map_or(s.len(), |n| i + n);
+            (i..=limit).any(|j| glob_from(toks, t + 1, s, j, failed))
         }
-        Some((Tok::StarStar, rest)) => (0..=s.len()).any(|n| glob(rest, &s[n..])),
+        Some(Tok::StarStar) => (i..=s.len()).any(|j| glob_from(toks, t + 1, s, j, failed)),
+    };
+    if !hit {
+        failed[cell] = true;
     }
+    hit
 }
 
 /// One filter rule.

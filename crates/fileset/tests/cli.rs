@@ -456,3 +456,129 @@ fn cli_verbose_with_closed_stdout_exits_2() {
         assert!(!e.contains("panicked"), "{verb}: {e}");
     }
 }
+
+#[test]
+fn cli_ls_is_list() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let t = t.as_os_str();
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t]), 0);
+    let list = bin().args(["list".as_ref(), t]).output().unwrap();
+    let ls = bin().args(["ls".as_ref(), t]).output().unwrap();
+    assert_eq!(list.status.code(), Some(0));
+    assert!(list.stderr.is_empty(), "{:?}", list.stderr);
+    let out = String::from_utf8_lossy(&list.stdout);
+    assert!(out.contains("\nsub/b.txt kind=file size=5 "), "{out}");
+    assert_eq!(list.stdout, ls.stdout);
+    assert_eq!(ls.status.code(), Some(0));
+    let help = bin().arg("--help").output().unwrap();
+    assert!(String::from_utf8_lossy(&help.stdout).contains("list"));
+}
+
+#[test]
+fn cli_list_exit_codes() {
+    let d = tree();
+    let t = d.path().join("tree");
+    // No manifest yet, and a path that is not there: 2, with check's words.
+    for path in [t.clone(), d.path().join("gone")] {
+        let list = bin()
+            .args(["list".as_ref(), path.as_os_str()])
+            .output()
+            .unwrap();
+        let check = bin()
+            .args(["check".as_ref(), path.as_os_str()])
+            .output()
+            .unwrap();
+        assert_eq!(list.status.code(), Some(2), "{path:?}");
+        assert!(list.stdout.is_empty());
+        assert_eq!(list.stderr, check.stderr, "{path:?}");
+    }
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t.as_os_str()]), 0);
+    // Nothing matches: still 0.
+    let none = bin()
+        .args(["list".as_ref(), t.as_os_str(), "nope*".as_ref()])
+        .output()
+        .unwrap();
+    assert_eq!(none.status.code(), Some(0));
+    assert!(none.stdout.is_empty() && none.stderr.is_empty());
+    let some = bin()
+        .args(["list".as_ref(), t.as_os_str(), "**/*.txt".as_ref()])
+        .output()
+        .unwrap();
+    assert_eq!(some.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&some.stdout).starts_with("sub/b.txt kind=file "));
+    assert_eq!(some.stdout.iter().filter(|&&b| b == b'\n').count(), 1);
+}
+
+#[test]
+fn cli_list_takes_no_walk_options() {
+    let d = tree();
+    let t = d.path().join("tree");
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t.as_os_str()]), 0);
+    for flags in [
+        &["--jobs", "2"][..],
+        &["--walk-threads", "2"],
+        &["--cross-mount-points"],
+        &["--no-dir-sort"],
+        &["--no-builtin-excludes"],
+        &["--fail-on-warnings"],
+        &["-q"],
+    ] {
+        let out = bin().arg("list").args(flags).arg(&t).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{flags:?}");
+    }
+    // The two it has.
+    let out = bin()
+        .args(["list", "-v", "--manifest"])
+        .arg(t.join(".fileset.sqlite"))
+        .arg(&t)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(" uid="));
+}
+
+/// `fileset list tree *.txt`, unquoted: the shell hands over every name it matched.
+#[test]
+fn cli_list_says_to_quote_an_expanded_pattern() {
+    let d = tree();
+    let t = d.path().join("tree");
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t.as_os_str()]), 0);
+    let out = bin()
+        .arg("list")
+        .arg(&t)
+        .args(["a.txt", "b.txt", "c.txt"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("quote the pattern"), "{e}");
+}
+
+/// `fileset list tree | head -1`: the reader leaves, and that is fine.
+#[test]
+fn cli_list_stops_quietly_when_stdout_closes() {
+    use std::io::{BufRead, BufReader};
+    let d = tempfile::tempdir().unwrap();
+    for i in 0..3000 {
+        std::fs::write(d.path().join(format!("f{i:04}")), "x").unwrap();
+    }
+    let t = d.path().as_os_str();
+    assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t]), 0);
+    let mut child = bin()
+        .args(["list".as_ref(), t])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    reader.read_line(&mut first).unwrap();
+    assert!(first.starts_with(". kind=dir "), "{first}");
+    drop(reader);
+    let out = child.wait_with_output().unwrap();
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{e}");
+    assert!(e.is_empty(), "{e}");
+}

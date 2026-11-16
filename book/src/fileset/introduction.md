@@ -23,6 +23,7 @@ holds each file's checksum and metadata. Later you check a tree against it.
 fileset init  ~/Photos     record a manifest of the tree
 fileset check <copy>       compare a copy, or the same tree later, with it
 fileset update ~/Photos    bring the manifest up to date after real changes
+fileset list ~/Photos      print what the manifest holds
 ```
 
 The manifest is a file named `.fileset.sqlite` at the top of the tree. A
