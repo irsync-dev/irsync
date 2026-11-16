@@ -89,6 +89,7 @@ needs_release_build() {
     need "dist (cargo-dist)" dist --version
     need musl-gcc musl-gcc --version
     need pandoc pandoc --version
+    need man command -v man
 }
 
 job_check() {
@@ -142,7 +143,7 @@ job_workflows() {
 # release build shows up before a tag is pushed.
 job_release_build() {
     local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
-    local t standins=() tmp version
+    local t standins=() tmp version found
     # release.yml must be what dist generates from dist-workspace.toml.
     run dist generate --check
     run dist build --artifacts=local "--target=$target"
@@ -179,16 +180,26 @@ job_release_build() {
     HOME="$tmp/home" IRSYNC_INSTALLER_ARCHIVE_DIR="$PWD/target/distrib" sh "$tmp/irsync-installer.sh" ||
         { rm -rf "$tmp"; exit 1; }
     version=$(awk -F'"' '/^version = "/ { print $2; exit }' packaging/dist/dist.toml)
-    if ! "$tmp/home/.local/bin/irsync" --version | grep -F "$version" >/dev/null; then
-        echo "ci.sh: the installed irsync does not report version $version" >&2
+    if [ -z "$version" ] ||
+        ! "$tmp/home/.local/bin/irsync" --version | grep -F "$version" >/dev/null; then
+        echo "ci.sh: the installed irsync does not report version '$version'" >&2
         rm -rf "$tmp"
         exit 1
     fi
-    if ! HOME="$tmp/home" MANPATH="$tmp/home/.local/share/man" man -w irsync >/dev/null; then
-        echo "ci.sh: man cannot find the installed irsync page" >&2
-        rm -rf "$tmp"
-        exit 1
-    fi
+    # man finds the pages through the bin directory on PATH (the sibling
+    # ../share/man), as it does for a user. Each page must be under the temp
+    # home, so a system page cannot satisfy the check.
+    for page in irsync fileset irsync.toml; do
+        found=$(env -u MANPATH HOME="$tmp/home" PATH="$tmp/home/.local/bin:$PATH" man -w "$page" 2>&1) || found=
+        case $found in
+            "$tmp/home/"*) ;;
+            *)
+                echo "ci.sh: man -w $page does not find the installed page: '$found'" >&2
+                rm -rf "$tmp"
+                exit 1
+                ;;
+        esac
+    done
     rm -rf "$tmp"
 }
 
