@@ -82,7 +82,7 @@ jobs:
       - name: Install musl-tools and aim cargo at the target
         if: matrix.target != ''
         run: |
-          sudo apt-get update && sudo apt-get install -y musl-tools pandoc
+          sudo apt-get update && sudo apt-get install -y musl-tools
           # tools/ci.sh check builds for this target. It also makes the
           # netstress tests' nested fault build use it.
           echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> "$GITHUB_ENV"
@@ -152,8 +152,8 @@ jobs:
           rustup toolchain install
           rustup target add "${{ matrix.target }}"
           rustc --version
-      - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install musl-tools, pandoc and man-db
+        run: sudo apt-get update && sudo apt-get install -y musl-tools pandoc man-db
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-build-${{ matrix.target }}
