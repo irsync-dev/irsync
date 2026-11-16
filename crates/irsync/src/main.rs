@@ -1485,7 +1485,7 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
-                lock.save(&doc).with_context(|| key.to_string())?;
+                lock.save(&mut doc).with_context(|| key.to_string())?;
                 Ok(())
             })(),
         ),
@@ -1499,7 +1499,7 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
-                lock.save(&doc).with_context(|| key.to_string())?;
+                lock.save(&mut doc).with_context(|| key.to_string())?;
                 Ok(())
             })(),
         ),
@@ -1564,7 +1564,7 @@ fn run_export(e: &ExportArgs) -> i32 {
                 let settings = Config::load(&paths)?.settings;
                 let pass = PassphraseSource::from_env(None);
                 let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
                     path.display(),
@@ -1581,7 +1581,7 @@ fn run_export(e: &ExportArgs) -> i32 {
                 let mut doc = lock.load()?;
                 manage::exports::remove_export(&mut doc, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!("removed export {name} from {}", paths.config.display());
                 Ok(())
             })(),
@@ -1621,22 +1621,22 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 if export == "immediate" {
                     let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
                         .with_context(|| format!("in {}", paths.config.display()))?;
-                    lock.save(&doc)?;
+                    lock.save(&mut doc)?;
                     if added {
-                        eprintln!("{}: immediate access", spec.entry());
+                        eprintln!("{}: immediate access", spec.written(&hosts));
                     } else {
-                        eprintln!("{}: already has immediate access", spec.entry());
+                        eprintln!("{}: already has immediate access", spec.written(&hosts));
                     }
                     return Ok(());
                 }
                 let target = (export != "all").then_some(export.as_str());
                 manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 let mode = if *ro { "ro" } else { "rw" };
                 match target {
-                    Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
-                    None => eprintln!("{}: {mode} on all exports", spec.entry()),
+                    Some(e) => eprintln!("{}: {mode} on {e}", spec.written(&hosts)),
+                    None => eprintln!("{}: {mode} on all exports", spec.written(&hosts)),
                 }
                 Ok(())
             })(),
@@ -1674,7 +1674,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
                     manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
                 }
                 .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
                 Ok(())
             })(),
@@ -1723,7 +1723,7 @@ fn run_host(h: &HostArgs) -> i32 {
                 let mut doc = lock.load()?;
                 manage::hosts::host_remove(&mut doc, alias)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!("removed host {alias} from {}", paths.config.display());
                 Ok(())
             })(),
@@ -2012,7 +2012,7 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
-    lock.save(&doc)?;
+    lock.save(&mut doc)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),

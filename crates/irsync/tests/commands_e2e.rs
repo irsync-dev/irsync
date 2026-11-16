@@ -1407,3 +1407,85 @@ fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
         "{err}"
     );
 }
+
+/// A home whose config is `text`; the home and the config file.
+fn home_with(d: &tempfile::TempDir, text: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let file = cfg.join("irsync.toml");
+    if !text.is_empty() {
+        std::fs::write(&file, text).unwrap();
+    }
+    (home, file)
+}
+
+fn peer_id(n: u8) -> String {
+    iroh::SecretKey::from_bytes(&[n; 32]).public().to_string()
+}
+
+#[test]
+fn grant_add_by_id_writes_and_prints_the_alias() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    let id = peer_id(5);
+    ok(&home, &["host", "add", "box", &id]);
+    let o = irsync(&home, &["grant", "add", "all", &id]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(err.starts_with("box: rw on all exports"), "{err}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("rw = [\"box\"]"), "{text}");
+    let o = irsync(&home, &["grant", "add", "immediate", &id]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.starts_with("box: immediate access"), "{err}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(text.matches(&id).count(), 1, "only the host entry: {text}");
+}
+
+#[test]
+fn host_add_renames_existing_grants() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
+    ok(&home, &["host", "add", "box", &id]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("[all]\nrw = [\"box\"]\n"), "{text}");
+}
+
+#[test]
+fn unrelated_config_set_cleans_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let (home, file) = home_with(
+        &d,
+        &format!("[hosts.box]\nendpoint_id = \"{id}\"\n[all]\nrw = [\"{id}\"]\n"),
+    );
+    ok(&home, &["config", "set", "client.parallel", "4"]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("[all]\nrw = [\"box\"]\n"), "{text}");
+}
+
+#[test]
+fn alias_set_through_config_renames_grants() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
+    ok(&home, &["config", "set", "hosts.box.endpoint_id", &id]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("[all]\nrw = [\"box\"]\n"), "{text}");
+}
+
+#[test]
+fn key_comment_stays_beside_the_alias() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    let secret = iroh::SecretKey::from_bytes(&[5; 32]);
+    let id = secret.public().to_string();
+    ok(&home, &["host", "add", "box", &id]);
+    let line = irsync::identity::public_key_line(&secret, "mike@laptop");
+    ok(&home, &["grant", "add", "all", &line]);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("\"box\", # mike@laptop"), "{text}");
+    assert_eq!(text.matches(&id).count(), 1, "{text}");
+}

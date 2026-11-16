@@ -357,3 +357,19 @@ fn setup_leaves_foreign_daemon() {
     assert!(helper.0.try_wait().unwrap().is_none(), "helper was stopped");
     assert_eq!(probe(&home.state()).unwrap().pid, helper.0.id());
 }
+
+#[test]
+fn a_client_with_an_alias_is_granted_by_alias() {
+    let home = Home::new("");
+    let client = client_id();
+    let mut text = std::fs::read_to_string(home.config()).unwrap();
+    text.push_str(&format!("[hosts.laptop]\nendpoint_id = \"{client}\"\n"));
+    std::fs::write(home.config(), text).unwrap();
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
+    let doc = read_config(&home);
+    let rw = doc["immediate"]["rw"].as_array().unwrap();
+    assert_eq!(rw.len(), 1);
+    assert_eq!(rw[0].as_str().unwrap(), "laptop");
+    // The alias is recognised as the client's grant on a second run.
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Already);
+}

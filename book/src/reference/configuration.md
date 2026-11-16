@@ -265,6 +265,12 @@ How grants combine:
 - `read_only` caps everyone at read-only.
 - An entry that names no alias and is no `EndpointId` matches nobody; the
   daemon logs a warning for it.
+- Whenever `irsync` saves the file, it writes a peer by its `[hosts]` alias:
+  an `EndpointId` in a grant list that has an alias becomes that alias, also
+  one that was already in the file. With two aliases for one `EndpointId` it
+  writes the first in alphabetical order. An entry named twice is kept once.
+- A grant by alias follows the alias. If the host entry later gets another
+  `EndpointId`, the grant is for that one.
 
 How a remote path finds its export, nested exports included, is described in
 [Remote addresses](remote-addresses.md#exports-decide-access).

@@ -291,7 +291,7 @@ pub fn run(
             // Not saved: the edit is dropped with the lock.
             (true, true) => GrantOutcome::Missing,
             (true, false) => {
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 GrantOutcome::Added
             }
         }
@@ -308,7 +308,7 @@ pub fn run(
         let key = ["daemon", "discovery", "dht"].map(String::from);
         manage::config::set(&mut doc, &key, toml_edit::Value::from(false))
             .with_context(|| format!("in {}", paths.config.display()))?;
-        lock.save(&doc)?;
+        lock.save(&mut doc)?;
         Dht::TurnedOff
     } else {
         Dht::On

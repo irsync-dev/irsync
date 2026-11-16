@@ -160,15 +160,15 @@ fn save_config_refuses_an_export_document_that_does_not_parse() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
     std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
-    let doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
-    let e = irsync::manage::save_config(&path, &doc).unwrap_err();
+    let mut doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
+    let e = irsync::manage::save_config(&path, &mut doc).unwrap_err();
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[exports.p]\npath = \"/p\"\n"
     );
-    let ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
-    irsync::manage::save_config(&path, &ok).unwrap();
+    let mut ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
+    irsync::manage::save_config(&path, &mut ok).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[exports.q]\npath = \"/q\"\n"

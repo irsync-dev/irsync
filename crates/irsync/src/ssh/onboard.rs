@@ -89,7 +89,7 @@ pub fn onboard(
         .is_some_and(toml_edit::Item::is_table_like);
     let previous_id = manage::hosts::host_add(&mut doc, alias, report.endpoint_id, &flags)
         .with_context(|| format!("saving host alias {alias}"))?;
-    lock.save(&doc)?;
+    lock.save(&mut doc)?;
     Ok(Onboarded {
         alias: alias.to_string(),
         endpoint_id: report.endpoint_id,

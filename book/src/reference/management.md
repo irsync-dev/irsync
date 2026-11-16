@@ -77,7 +77,8 @@ everyone; `--warm-index` sets `warm_index`.
 
 `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
 line, or the path of a `.pub` file holding one. A key's comment is kept as a
-TOML comment beside the entry. There is no open access: `all` and `*` are
+TOML comment beside the entry. A peer that `[hosts]` has an alias for is stored
+by that alias, however it was named. There is no open access: `all` and `*` are
 refused as `WHO` in `grant add`.
 
 ## id

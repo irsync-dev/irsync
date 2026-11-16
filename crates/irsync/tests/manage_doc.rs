@@ -91,14 +91,14 @@ fn peer_spec_forms() {
 fn save_config_refuses_a_document_that_does_not_load() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
-    let doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
-    let e = save_config(&path, &doc).unwrap_err();
+    let mut doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
+    let e = save_config(&path, &mut doc).unwrap_err();
     assert!(e.to_string().contains("refusing to save"), "{e}");
     assert!(!path.exists());
-    let doc: DocumentMut = "[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n"
+    let mut doc: DocumentMut = "[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n"
         .parse()
         .unwrap();
-    save_config(&path, &doc).unwrap();
+    save_config(&path, &mut doc).unwrap();
     assert!(path.exists());
 }
 
@@ -121,7 +121,7 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     );
     let mut doc = lock.load().unwrap();
     doc["client"]["parallel"] = toml_edit::value(8);
-    lock.save(&doc).unwrap();
+    lock.save(&mut doc).unwrap();
     assert!(!lock_file.exists(), "save releases the lock");
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
@@ -141,7 +141,10 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     let lock = lock_config(&p).unwrap();
     let mut doc = lock.load().unwrap();
     doc["client"]["bogus"] = toml_edit::value(1);
-    assert!(matches!(lock.save(&doc), Err(ManageError::Invalid { .. })));
+    assert!(matches!(
+        lock.save(&mut doc),
+        Err(ManageError::Invalid { .. })
+    ));
     assert!(!lock_file.exists());
 }
 
@@ -150,4 +153,64 @@ fn parse_hosts(
     path: &std::path::Path,
 ) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
     irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+}
+
+#[test]
+fn save_writes_aliases_for_ids() {
+    use irsync::manage::lock_config;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("irsync.toml");
+    let mut doc: DocumentMut = format!(
+        "[hosts.box]\nendpoint_id = \"{0}\"\n[all]\nrw = [\"{0}\"]\n",
+        id(1)
+    )
+    .parse()
+    .unwrap();
+    lock_config(&path).unwrap().save(&mut doc).unwrap();
+    let want = format!(
+        "[hosts.box]\nendpoint_id = \"{}\"\n[all]\nrw = [\"box\"]\n",
+        id(1)
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
+    // The caller's document is the one that was written.
+    assert_eq!(doc.to_string(), want);
+}
+
+#[test]
+fn canonicalize_doc_uses_the_hosts_of_the_document() {
+    use irsync::manage::canonicalize_doc;
+    let path = Path::new("irsync.toml");
+    let mut doc: DocumentMut = format!(
+        "[hosts.box]\nendpoint_id = \"{0}\"\n[immediate]\nrw = [\"{0}\"]\n",
+        id(1)
+    )
+    .parse()
+    .unwrap();
+    assert!(canonicalize_doc(&mut doc, path).unwrap());
+    assert!(doc.to_string().ends_with("rw = [\"box\"]\n"));
+    assert!(!canonicalize_doc(&mut doc, path).unwrap());
+    let mut bad: DocumentMut = "[hosts.box]\nendpoint_id = \"nonsense\"\n".parse().unwrap();
+    assert!(matches!(
+        canonicalize_doc(&mut bad, path),
+        Err(ManageError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn written_is_the_alias_of_an_id_that_has_one() {
+    let hosts = parse_hosts(
+        &format!(
+            "[hosts.zed]\nendpoint_id = \"{0}\"\n[hosts.amy]\nendpoint_id = \"{0}\"\n",
+            id(1)
+        ),
+        Path::new("h"),
+    )
+    .unwrap();
+    let spec = |n| PeerSpec::Id {
+        id: id(n),
+        comment: None,
+    };
+    assert_eq!(spec(1).written(&hosts), "amy");
+    assert_eq!(spec(2).written(&hosts), id(2).to_string());
+    assert_eq!(PeerSpec::Alias("zed".into()).written(&hosts), "zed");
 }
