@@ -30,6 +30,10 @@ GOOD = {
 esac""",
 }
 
+# Fake `uname`s, so a test of one OS's branch runs on every OS.
+LINUX = 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac'
+FREEBSD = 'case "$1" in -m) echo amd64 ;; *) echo FreeBSD ;; esac'
+
 
 class DevSetupCheckTests(unittest.TestCase):
     def setUp(self):
@@ -168,7 +172,7 @@ class DevSetupCheckTests(unittest.TestCase):
         for name, body in {**GOOD, **tools}.items():
             self.fake(name, body)
         self.fake("cargo", f'echo "$*" >> {log}\n' + tools.get("cargo", "") + "\nexit 0")
-        for u in ["sha256sum", "shasum", "mkdir"]:
+        for u in ["sha256sum", "shasum", "sha256", "mkdir"]:
             if shutil.which(u):
                 os.symlink(shutil.which(u), os.path.join(self.bin, u))
         r = subprocess.run([SCRIPT], env={"PATH": self.bin, "HOME": self.tmp},
@@ -187,13 +191,35 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(calls, r"install --locked cargo-nextest --version")
         self.assertNotIn("mdbook", calls)
 
-    @unittest.skipUnless(os.uname().sysname in ("Linux", "Darwin"),
-                         "dev-setup.sh downloads actionlint on Linux and macOS only")
-    def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
-        out, calls = self.setup(curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+    def refuses_a_tampered_actionlint(self, uname, plat):
+        out, calls = self.setup(
+            uname=uname,
+            curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+        self.assertRegex(out, rf"running +download actionlint \S+ \({plat}\)")
         self.assertRegex(out, r"refused +actionlint download: SHA-256 is")
         self.assertRegex(out, r"missing +actionlint")
         self.assertFalse(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", "actionlint")))
+
+    def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
+        self.refuses_a_tampered_actionlint(LINUX, "linux_amd64")
+
+    def test_setup_refuses_a_tampered_actionlint_on_freebsd(self):
+        self.refuses_a_tampered_actionlint(FREEBSD, "freebsd_amd64")
+
+    def test_freebsd_names_pkg_packages(self):
+        r, out = self.check(
+            uname=FREEBSD, rsync=None, cc=None,
+            python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("pkg install rsync", out)
+        self.assertIn("pkg install llvm", out)
+        self.assertIn("pkg install node npm", out)
+        self.assertIn("pkg install py312-pyyaml", out)
+        self.assertNotIn("apt install", out)
+        self.assertNotIn("brew install", out)
+        # Linux-only tools are not asked for.
+        self.assertNotIn("musl", out)
+        self.assertNotIn("nfpm", out)
 
     def test_install_commands_get_their_own_line(self):
         r, out = self.check(cc=None)

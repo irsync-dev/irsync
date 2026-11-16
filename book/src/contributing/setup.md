@@ -27,6 +27,9 @@ rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
 it again whenever you like.
 
+It works on Linux, macOS and FreeBSD, and names the package for each one's
+package manager (`apt`, `brew`, `pkg`).
+
 - **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
   picks up; CI and releases use the same file. To move to a newer Rust, change
   the version there and run the full regression.
