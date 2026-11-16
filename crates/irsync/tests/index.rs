@@ -762,3 +762,34 @@ fn remove_unused_keeps_a_file_another_connection_has_open() {
     assert_eq!(sidecars(&v1), Vec::<std::path::PathBuf>::new());
     assert!(!Index::is_current_file(&v1));
 }
+
+#[test]
+fn a_path_written_again_keeps_its_id_and_replaces_its_chunks() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let mut ix = Index::open(d.path(), &root).unwrap();
+    let (old, new) = (digest_bytes(&[1u8; 4096]), digest_bytes(&[2u8; 4096]));
+    let at = |ix: &Index, h: &[u8; 32]| ix.reader().find_chunks(h, None, 9).unwrap();
+    let mut e = entry("a", Some(old.hash));
+    e.size = old.size;
+    ix.put_entry(&rp("a"), &e, (1, 2), Some(&old)).unwrap();
+    ix.put_entry(&rp("b"), &e, (1, 2), Some(&old)).unwrap();
+    let id = at(&ix, &old.chunks[0].hash)[0].entry_id;
+
+    e.whole_hash = Some(Hash {
+        bytes: new.hash.to_vec(),
+    });
+    ix.put_entry(&rp("a"), &e, (3, 4), Some(&new)).unwrap();
+    let got = ix.get_entry(&rp("a")).unwrap().unwrap();
+    assert_eq!((got.ctime, got.digest), ((3, 4), Some(new.clone())));
+    // Only `b` still holds the old chunk; `a` holds the new one, same id.
+    let holders = at(&ix, &old.chunks[0].hash);
+    assert_eq!(
+        holders.iter().map(|h| &h.path).collect::<Vec<_>>(),
+        [&rp("b")]
+    );
+    let holders = at(&ix, &new.chunks[0].hash);
+    assert_eq!((holders.len(), holders[0].entry_id), (1, id));
+    assert_eq!(ix.entry_identities().unwrap().len(), 2);
+}
