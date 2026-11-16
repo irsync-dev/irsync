@@ -1767,6 +1767,7 @@ fn identity_of(
 
 fn run_id(i: &IdArgs) -> i32 {
     match &i.cmd {
+        IdCmd::List { passphrase_file } => id_list(&i.files, passphrase_file.clone()),
         IdCmd::Show {
             daemon,
             all,
@@ -1849,59 +1850,82 @@ impl IdRole {
     }
 }
 
+/// One identity under its role's label, so a server's client ID is not
+/// mistaken for its daemon's.
+fn print_identity(secret: &iroh::SecretKey, role: IdRole) {
+    println!("{}:", role.label());
+    println!(
+        "{}",
+        irsync::identity::public_key_line(secret, role.comment())
+    );
+    println!("{}", secret.public());
+}
+
+/// The client's identity, generated when no key serves.
+fn print_client_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow::Result<()> {
+    let (secret, source) = client_identity(None, settings, pass)?;
+    if let KeySource::Generated(p) = &source {
+        eprintln!("generated identity {}", p.display());
+    }
+    print_identity(&secret, IdRole::Client);
+    Ok(())
+}
+
+/// Whether this machine has a daemon identity (the file, readable or not).
+fn has_daemon_identity(settings: &Settings) -> bool {
+    settings.daemon.identity.symlink_metadata().is_ok()
+}
+
+/// The daemon's identity. Showing is read-only: it is never created.
+fn print_daemon_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow::Result<()> {
+    let path = &settings.daemon.identity;
+    if !has_daemon_identity(settings) {
+        anyhow::bail!(
+            "no daemon identity at {}; run the daemon once or `irsync id generate --daemon`",
+            path.display()
+        );
+    }
+    let comment = IdRole::Daemon.comment();
+    print_identity(&identity_of(path, comment, pass)?, IdRole::Daemon);
+    Ok(())
+}
+
 fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathBuf>) -> i32 {
     finish(
         "id show",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
-            // Each identity comes under its role's label, so a server's
-            // client ID is not mistaken for its daemon's.
-            let print = |secret: &iroh::SecretKey, role: IdRole| {
-                println!("{}:", role.label());
-                println!(
-                    "{}",
-                    irsync::identity::public_key_line(secret, role.comment())
-                );
-                println!("{}", secret.public());
-            };
-            let client = || -> anyhow::Result<()> {
-                let (secret, source) = client_identity(None, &settings, &pass)?;
-                if let KeySource::Generated(p) = &source {
-                    eprintln!("generated identity {}", p.display());
-                }
-                print(&secret, IdRole::Client);
-                Ok(())
-            };
-            let show_daemon = || -> anyhow::Result<()> {
-                // Showing is read-only: never create the daemon identity.
-                let path = &settings.daemon.identity;
-                if path.symlink_metadata().is_err() {
-                    anyhow::bail!(
-                        "no daemon identity at {}; run the daemon once or `irsync id generate --daemon`",
-                        path.display()
-                    );
-                }
-                let comment = IdRole::Daemon.comment();
-                print(
-                    &identity_of(&settings.daemon.identity, comment, &pass)?,
-                    IdRole::Daemon,
-                );
-                Ok(())
-            };
             if all {
-                client()?;
-                show_daemon()?;
+                print_client_identity(&settings, &pass)?;
+                print_daemon_identity(&settings, &pass)?;
             } else if daemon {
-                show_daemon()?;
+                print_daemon_identity(&settings, &pass)?;
             } else {
-                client()?;
-                if settings.daemon.identity.symlink_metadata().is_ok() {
+                print_client_identity(&settings, &pass)?;
+                if has_daemon_identity(&settings) {
                     eprintln!(
                         "irsync: this machine also has a daemon identity; clients connect \
                          to the daemon, whose id irsync id show --daemon prints"
                     );
                 }
+            }
+            Ok(())
+        })(),
+    )
+}
+
+/// `irsync id list`: every identity this machine has. The client's is
+/// generated when missing; the daemon's is printed only when it exists.
+fn id_list(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
+    finish(
+        "id list",
+        (|| {
+            let settings = Config::load(&file_paths(f))?.settings;
+            let pass = PassphraseSource::from_env(passphrase_file);
+            print_client_identity(&settings, &pass)?;
+            if has_daemon_identity(&settings) {
+                print_daemon_identity(&settings, &pass)?;
             }
             Ok(())
         })(),

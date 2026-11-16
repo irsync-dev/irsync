@@ -400,6 +400,60 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
     assert!(!home.join(".config/irsync/irsync.toml").exists());
 }
 
+/// `id list` prints what the machine has: the client's identity (made
+/// when missing), and the daemon's only when there is one.
+#[test]
+fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    // Fresh machine: the client identity is created, the daemon's is not.
+    let o = irsync(&home, &["id", "list"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    let out = String::from_utf8(o.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(lines[0], "client:");
+    assert!(home.join(".config/irsync/id_ed25519").exists());
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    // With a daemon identity: both blocks, exactly what `show -a` prints,
+    // and no pointer on stderr.
+    ok(&home, &["id", "generate", "--daemon"]);
+    let o = irsync(&home, &["id", "list"]);
+    assert!(o.status.success());
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert_eq!(out, ok(&home, &["id", "show", "--all"]));
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!((lines.len(), lines[0], lines[3]), (6, "client:", "daemon:"));
+}
+
+/// A daemon key that exists but cannot be read is an error that names the
+/// file, not a daemon quietly left out.
+#[test]
+fn id_list_names_a_daemon_key_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    ok(&home, &["id", "generate", "--daemon"]);
+    let key = home.join(".config/irsync/daemon_ed25519");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&key).is_ok() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    let o = irsync(&home, &["id", "list"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains(key.to_str().unwrap()),
+        "{err}"
+    );
+}
+
 #[test]
 fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let d = tempfile::tempdir().unwrap();

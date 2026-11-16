@@ -665,6 +665,13 @@ fn id_and_show_parse() {
         Some(Command::Id(ref i))
             if matches!(i.cmd, IdCmd::Generate { daemon: false, out: Some(ref p), .. } if p == &PathBuf::from("/k"))
     ));
+    assert!(matches!(
+        parse(&["id", "list", "--passphrase-file", "/p"]).cmd,
+        Some(Command::Id(ref i))
+            if matches!(i.cmd, IdCmd::List { passphrase_file: Some(ref p) } if p == &PathBuf::from("/p"))
+    ));
+    // `list` has no roles to pick from: it prints what there is.
+    assert!(Args::try_parse_from(["irsync", "id", "list", "--daemon"]).is_err());
     // `--out` names the file; `--daemon` picks the configured one.
     assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());
     // `id` is a noun: it needs a verb.

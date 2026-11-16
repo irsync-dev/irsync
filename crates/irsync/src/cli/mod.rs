@@ -264,6 +264,16 @@ pub struct IdArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum IdCmd {
+    /// List the identities this machine has: the client's, then the
+    /// daemon's when there is one, each under a `client:` or `daemon:`
+    /// label. A missing client identity is generated as for a sync; the
+    /// daemon's is never generated.
+    List {
+        /// Read an encrypted identity's passphrase from the first line of
+        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
+        #[arg(long, value_name = "PATH")]
+        passphrase_file: Option<PathBuf>,
+    },
     /// Print the public key line and EndpointId of the client (default),
     /// the daemon, or both, each under a `client:` or `daemon:` label. A
     /// missing client identity is generated as for a sync; a missing daemon
