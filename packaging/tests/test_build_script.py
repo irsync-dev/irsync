@@ -89,6 +89,18 @@ touch "$1/man1/irsync.1"
         self.assertFalse(os.path.exists(os.path.join(pkg, "man", "stale")))
         self.assertTrue(os.path.exists(os.path.join(pkg, "man", "man1", "irsync.1")))
 
+    def test_brewfile_lists_dists_homebrew_dependencies(self):
+        # dist runs "brew bundle exec" in packaging/dist, so the Brewfile
+        # there must name what [dist.dependencies.homebrew] does.
+        with open(os.path.join(ROOT, "dist-workspace.toml")) as f:
+            table = re.search(r"^\[dist\.dependencies\.homebrew\]\n(.*?)(?=^\[|\Z)",
+                              f.read(), re.M | re.S).group(1)
+        wanted = sorted(re.findall(r'^"?([\w@.+-]+)"? *=', table, re.M))
+        with open(os.path.join(os.path.dirname(BUILD), "Brewfile")) as f:
+            got = sorted(re.findall(r'^brew "([^"]+)"$', f.read(), re.M))
+        self.assertTrue(wanted)
+        self.assertEqual(got, wanted)
+
 
 if __name__ == "__main__":
     unittest.main()

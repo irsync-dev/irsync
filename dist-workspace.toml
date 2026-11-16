@@ -65,7 +65,8 @@ musl-tools = "*"
 pandoc = "*"
 
 # For tools/build-man.sh. dist installs these on the build runners only; they
-# are not dependencies of the Homebrew formula.
+# are not dependencies of the Homebrew formula. Keep packaging/dist/Brewfile
+# the same: dist needs one there too.
 [dist.dependencies.homebrew]
 pandoc = "*"
 
