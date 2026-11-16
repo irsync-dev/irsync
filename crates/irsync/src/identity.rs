@@ -32,6 +32,8 @@ pub enum IdentityError {
          `irsync id generate --passphrase-file PATH` first (with --daemon for the daemon's key)"
     )]
     NoKeyWithPassphraseFile(PathBuf),
+    #[error("refusing to encrypt a key with an empty passphrase")]
+    EmptyPassphrase,
     #[error("wrong passphrase for {0}")]
     BadPassphrase(PathBuf),
     #[error("only Ed25519 keys can be used as irsync identities")]
@@ -162,6 +164,10 @@ pub fn generate_openssh_with(
     comment: &str,
     passphrase: Option<&str>,
 ) -> Result<SecretKey, IdentityError> {
+    // An empty passphrase would look like protection and give none.
+    if passphrase == Some("") {
+        return Err(IdentityError::EmptyPassphrase);
+    }
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
     let pub_path = PathBuf::from(pub_path);
@@ -215,9 +221,7 @@ pub fn load_or_generate(
     if path.symlink_metadata().is_ok() {
         return Ok((load_identity_interactive(path, src)?, false));
     }
-    if src.file.is_some() {
-        return Err(IdentityError::NoKeyWithPassphraseFile(path.to_path_buf()));
-    }
+    refuse_to_generate_with_passphrase_file(path, src)?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|source| IdentityError::File {
             path: parent.to_path_buf(),
@@ -230,6 +234,20 @@ pub fn load_or_generate(
         }
         r => Ok((r?, true)),
     }
+}
+
+/// With `--passphrase-file` given and nothing at `path`, the key would have
+/// to be generated, unencrypted: refuse (`NoKeyWithPassphraseFile`).
+/// [`load_or_generate`] checks this, and so do commands that must refuse
+/// before they write anything else (the daemon's lock, a new export).
+pub fn refuse_to_generate_with_passphrase_file(
+    path: &Path,
+    src: &PassphraseSource,
+) -> Result<(), IdentityError> {
+    if src.file.is_some() && path.symlink_metadata().is_err() {
+        return Err(IdentityError::NoKeyWithPassphraseFile(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 /// Where a client identity came from.

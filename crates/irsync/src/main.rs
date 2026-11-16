@@ -1585,7 +1585,18 @@ fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -
     }
     let result = parse_endpoint_id(client)
         .with_context(|| format!("--client {client:?}"))
-        .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht));
+        .and_then(|id| {
+            // The client never passes --passphrase-file, and setup never
+            // asks for a passphrase. Given by hand with no daemon key, refuse
+            // rather than generate an unencrypted one.
+            if files.passphrase_file.is_some() {
+                let key = Config::load(&file_paths(files))?.settings.daemon.identity;
+                let pass = PassphraseSource::from_env(files.passphrase_file.clone());
+                irsync::identity::refuse_to_generate_with_passphrase_file(&key, &pass)
+                    .with_context(|| format!("identity {}", key.display()))?;
+            }
+            irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht)
+        });
     match result {
         Ok(report) => {
             print!("{}", report.to_lines());
@@ -1608,14 +1619,19 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
             (|| {
                 let (name, path) =
                     manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
+                let settings = Config::load(&paths)?.settings;
+                let pass = PassphraseSource::from_env(files.passphrase_file.clone());
+                let daemon_key = &settings.daemon.identity;
+                // With --passphrase-file and no daemon key, refuse before the
+                // config lock creates anything.
+                irsync::identity::refuse_to_generate_with_passphrase_file(daemon_key, &pass)
+                    .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
-                let settings = Config::load(&paths)?.settings;
-                let pass = PassphraseSource::from_env(None);
-                let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
+                let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
                 lock.save(&mut doc)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
@@ -1876,8 +1892,13 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
             let passphrase = match &f.passphrase_file {
                 None => None,
                 Some(p) => {
-                    let pass = irsync::identity::read_passphrase_file(p)
-                        .with_context(|| format!("reading passphrase file {}", p.display()))?;
+                    // `File` already names the path; say it once.
+                    let pass = irsync::identity::read_passphrase_file(p).map_err(|e| match e {
+                        irsync::identity::IdentityError::File { path, source } => {
+                            anyhow::anyhow!("reading passphrase file: {}: {source}", path.display())
+                        }
+                        e => e.into(),
+                    })?;
                     if pass.is_empty() {
                         return Err(irsync::identity::IdentityError::EmptyPassphraseFile(
                             p.clone(),

@@ -1947,6 +1947,26 @@ fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
         assert!(!key.exists() && !pub_key.exists(), "{f:?}");
         assert!(o.stdout.is_empty());
     }
+    // The error names the missing file once.
+    let o = irsync(
+        &home,
+        &[
+            "id",
+            "generate",
+            "--passphrase-file",
+            missing.to_str().unwrap(),
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(
+        err.contains(&format!(
+            "reading passphrase file: {}: No such file",
+            missing.display()
+        )),
+        "{err}"
+    );
+    assert_eq!(err.matches(missing.to_str().unwrap()).count(), 1, "{err}");
+    assert_eq!(err.matches("No such file").count(), 1, "{err}");
     // With --force the existing key survives a bad passphrase file.
     assert!(irsync(&home, &["id", "generate"]).status.success());
     let before = std::fs::read(&key).unwrap();
@@ -1963,6 +1983,57 @@ fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(std::fs::read(&key).unwrap(), before);
     assert!(pub_key.exists());
+}
+
+#[test]
+fn export_add_unlocks_an_encrypted_daemon_key_with_the_passphrase_file() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, pf) = passphrase_home(&d, "hunter2\n");
+    let pf_s = pf.to_str().unwrap();
+    std::fs::create_dir_all(home.join("srv/p")).unwrap();
+    let gen = irsync(
+        &home,
+        &["id", "generate", "--daemon", "--passphrase-file", pf_s],
+    );
+    assert!(
+        gen.status.success(),
+        "{}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
+    let show = irsync(
+        &home,
+        &["id", "show", "--daemon", "--passphrase-file", pf_s],
+    );
+    assert!(show.status.success());
+    let show = String::from_utf8_lossy(&show.stdout).to_string();
+    let id = show.lines().last().unwrap().trim().to_string();
+    let target = format!("p:{}", home.join("srv/p").display());
+    let o = irsync(
+        &home,
+        &["export", "add", &target, "--passphrase-file", pf_s],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), id);
+}
+
+#[test]
+fn rust_log_overrides_the_level_the_flags_give() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let run = |rust_log: &str, args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+            .args(args)
+            .env("HOME", &home)
+            .env("XDG_STATE_HOME", home.join("xdg"))
+            .env("RUST_LOG", rust_log)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stderr).to_string()
+    };
+    assert!(run("info", &["gc"]).contains("starting irsync"));
+    assert!(!run("error", &["gc", "-vv"]).contains("starting irsync"));
 }
 
 #[test]
@@ -2007,12 +2078,16 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
     std::fs::create_dir_all(home.join("src")).unwrap();
     let dest = format!("{id}:photos/");
     let listing = format!("{id}:");
+    let export = format!("photos:{}", home.join("src").display());
+    let config = home.join(".config/irsync/irsync.toml");
     for args in [
         &["id", "show", "--passphrase-file", pf_s][..],
         &["--passphrase-file", pf_s, "id", "show"],
         &["id", "list", "--passphrase-file", pf_s],
         &["show", "--passphrase-file", pf_s],
         &["daemon", "--passphrase-file", pf_s],
+        &["export", "add", &export, "--passphrase-file", pf_s],
+        &["ssh-setup", "--client", &id, "--passphrase-file", pf_s],
         &["--passphrase-file", pf_s, "-a", &src, &dest],
         &["--passphrase-file", pf_s, &listing],
     ] {
@@ -2028,6 +2103,11 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
             !key.exists() && !pub_key.exists() && !daemon_key.exists(),
             "{args:?}"
         );
+        // The daemon takes no lock and the export is not added: the
+        // refusing commands write nothing at all.
+        assert!(!home.join("xdg/irsync").exists(), "{args:?}");
+        assert!(!home.join(".config").exists(), "{args:?}");
+        assert!(!config.exists(), "{args:?}");
     }
     // The full form makes the protected key, and then the same commands work.
     assert!(

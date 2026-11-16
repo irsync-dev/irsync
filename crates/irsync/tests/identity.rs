@@ -149,6 +149,18 @@ fn generate_refuses_existing_file() {
 }
 
 #[test]
+fn generate_refuses_an_empty_passphrase_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("id");
+    assert!(matches!(
+        generate_openssh_with(&path, "c", Some("")),
+        Err(IdentityError::EmptyPassphrase)
+    ));
+    assert!(!path.exists() && !dir.path().join("id.pub").exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn parse_endpoint_id_accepts_z32_and_hex() {
     let id = iroh::SecretKey::from_bytes(&[7u8; 32]).public();
     let hex: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
