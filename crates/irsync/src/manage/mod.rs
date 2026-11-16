@@ -191,6 +191,8 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 impl ConfigLock {
     /// The file as it is now (empty when missing).
     pub fn load(&self) -> Result<toml_edit::DocumentMut, ManageError> {
+        // An edit must not pass a split file by in silence either.
+        crate::config::file::warn_ignored_split_files(&self.path);
         load_doc(&self.path)
     }
 

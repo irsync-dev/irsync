@@ -1498,7 +1498,26 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 }
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                // Unsetting a host's table or its id removes the host: like
+                // `host remove`, not while grants name it.
+                let hosts = if path[0] == "hosts" {
+                    manage::canonicalize_doc(&mut doc, &paths.config)?;
+                    manage::hosts::host_aliases(&doc)
+                } else {
+                    Vec::new()
+                };
                 cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
+                let left = manage::hosts::host_aliases(&doc);
+                for alias in hosts.iter().filter(|a| !left.contains(a)) {
+                    let lists = manage::grants::lists_naming(&doc, alias);
+                    if !lists.is_empty() {
+                        bail!(
+                            "host {alias:?} is named by grants in {}: remove those grants \
+                             first, or use `irsync host remove {alias} --force`",
+                            lists.join(", ")
+                        );
+                    }
+                }
                 lock.save(&mut doc).with_context(|| key.to_string())?;
                 Ok(())
             })(),

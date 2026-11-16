@@ -1063,6 +1063,20 @@ fn host_add_works_beside_a_split_hosts_file() {
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    // The editing commands warn too: the new table lands in irsync.toml
+    // while whatever hosts.toml held stays ignored.
+    let warning = format!("ignoring {}", cfg.join("hosts.toml").display());
+    for args in [
+        &["host", "add", "box", &id][..],
+        &["config", "set", "client.parallel", "2"],
+        &["config", "unset", "client.parallel"],
+        &["host", "remove", "box"],
+    ] {
+        let o = irsync(&home, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(o.status.success(), "{args:?}: {err}");
+        assert_eq!(err.matches(&warning).count(), 1, "{args:?}: {err}");
+    }
     ok(&home, &["host", "add", "box", &id]);
     assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
         .unwrap()
@@ -1535,4 +1549,29 @@ fn host_remove_counts_a_hand_written_id_as_a_grant() {
         String::from_utf8_lossy(&o.stderr),
         format!("removed host box and 1 grant from {}\n", file.display())
     );
+}
+
+#[test]
+fn config_unset_does_not_remove_a_host_that_grants_name() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let before = format!(
+        "[hosts.box]\nendpoint_id = \"{id}\"\n[hosts.free]\nendpoint_id = \"{}\"\n[all]\nrw = [\"{id}\"]\n",
+        peer_id(6)
+    );
+    let (home, file) = home_with(&d, &before);
+    for key in ["hosts.box.endpoint_id", "hosts.box", "hosts"] {
+        let o = irsync(&home, &["config", "unset", key]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{key}: {err}");
+        assert!(
+            err.contains("host \"box\" is named by grants in all")
+                && err.contains("irsync host remove"),
+            "{key}: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "{key}");
+    }
+    // A host no grant names goes as before.
+    ok(&home, &["config", "unset", "hosts.free"]);
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("free"));
 }

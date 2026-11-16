@@ -34,6 +34,23 @@ pub fn ignored_split_files(config: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Says on stderr that a `hosts.toml` or `exports.toml` beside `config` is
+/// ignored, the first time this process finds it. Every read of the config
+/// calls this, for use and for editing alike. Printed, not logged, so that
+/// neither `-q` nor a command that does not log hides it: the file may
+/// hold the grants a server ran on.
+pub fn warn_ignored_split_files(config: &Path) {
+    for split in ignored_split_files(config) {
+        if first_sighting(&split) {
+            eprintln!(
+                "irsync: warning: ignoring {}: hosts.toml and exports.toml are no longer read; move its tables into {}",
+                split.display(),
+                config.display()
+            );
+        }
+    }
+}
+
 /// True the first time this process asks about `path`, false after: a
 /// daemon loads the config for every connection and warns only once.
 pub fn first_sighting(path: &Path) -> bool {
@@ -149,20 +166,10 @@ impl Config {
     }
 
     /// `paths.config`, or the defaults when it is missing. A `hosts.toml`
-    /// or `exports.toml` beside it is not read: the first load that finds
-    /// one says so on stderr. Printed, not logged, so that neither `-q`
-    /// nor a command that does not log hides it: the file may hold the
-    /// grants a server ran on.
+    /// or `exports.toml` beside it is not read; see
+    /// [`warn_ignored_split_files`].
     pub fn load(paths: &Paths) -> Result<Config, ConfigError> {
-        for split in ignored_split_files(&paths.config) {
-            if first_sighting(&split) {
-                eprintln!(
-                    "irsync: warning: ignoring {}: hosts.toml and exports.toml are no longer read; move its tables into {}",
-                    split.display(),
-                    paths.config.display()
-                );
-            }
-        }
+        warn_ignored_split_files(&paths.config);
         let text = read_optional(&paths.config)?.unwrap_or_default();
         Self::parse(&text, &paths.config)
     }

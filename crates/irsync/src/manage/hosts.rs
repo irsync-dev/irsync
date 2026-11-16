@@ -130,6 +130,17 @@ pub fn host_remove(doc: &mut DocumentMut, alias: &str, force: bool) -> Result<us
     Ok(removed)
 }
 
+/// The aliases of `doc`: the tables under `[hosts]`, in file order.
+pub fn host_aliases(doc: &DocumentMut) -> Vec<String> {
+    doc.get("hosts")
+        .and_then(Item::as_table_like)
+        .into_iter()
+        .flat_map(|hosts| hosts.iter())
+        .filter(|(_, item)| item.is_table_like())
+        .map(|(alias, _)| alias.to_string())
+        .collect()
+}
+
 /// The lines `host list` prints: `alias: id`, then one indented
 /// `key = value` per other key, in file order.
 pub fn host_list(doc: &DocumentMut) -> Vec<String> {
