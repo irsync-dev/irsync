@@ -118,7 +118,21 @@ impl Args {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        let m = Args::command_tree().try_get_matches_from(it)?;
+        let argv: Vec<OsString> = it.into_iter().map(Into::into).collect();
+        let m = match Args::command_tree().try_get_matches_from(&argv) {
+            // A path came first, so the line is a sync, as it always was:
+            // clap only took a later path for a command because a flag
+            // (`h:photos/ -v gc`) ended the run of paths.
+            Ok(m) if m.subcommand_name().is_some() && paths_given(&m) => sync_reading(&argv)?,
+            Ok(m) => m,
+            // The same when the would-be command fails to parse
+            // (`h:photos/ -v host add`). A line that starts with a command
+            // name after the flags (`-v gc host:path`) keeps its error.
+            Err(e) => match sync_reading(&argv) {
+                Ok(m) if paths_given(&m) && !names_a_command(&m) => m,
+                _ => return Err(e),
+            },
+        };
         reject_sync_args_with_command(&m)?;
         let mut args = Args::from_arg_matches(&m)?;
         // One operand is a listing when it is remote (`irsync HOST:` or
@@ -141,6 +155,30 @@ impl Args {
     }
 }
 
+/// The paths of a sync were given on the command line.
+fn paths_given(m: &clap::ArgMatches) -> bool {
+    m.value_source("paths") == Some(clap::parser::ValueSource::CommandLine)
+}
+
+/// The line read as a sync, the way irsync read every line before the
+/// global flags: once any argument is seen, no command is looked for.
+fn sync_reading(argv: &[OsString]) -> Result<clap::ArgMatches, clap::Error> {
+    Args::command_tree()
+        .args_conflicts_with_subcommands(true)
+        .try_get_matches_from(argv)
+}
+
+/// The first path of a sync reading is the name of a command, so the line
+/// was meant as that command (`-v gc host:path`), not as a sync.
+fn names_a_command(m: &clap::ArgMatches) -> bool {
+    let Some(first) = m.get_many::<String>("paths").and_then(|mut p| p.next()) else {
+        return false;
+    };
+    Args::command()
+        .get_subcommands()
+        .any(|c| c.get_name() == first || c.get_all_aliases().any(|a| a == first))
+}
+
 /// With a command, every sync argument set on the command line is an
 /// error: clap no longer rejects it once `-v`/`-q` may come first.
 fn reject_sync_args_with_command(m: &clap::ArgMatches) -> Result<(), clap::Error> {
@@ -156,6 +194,8 @@ fn reject_sync_args_with_command(m: &clap::ArgMatches) -> Result<(), clap::Error
         let flag = match (arg.get_short(), arg.get_long()) {
             (Some(c), _) => format!("-{c}"),
             (None, Some(l)) => format!("--{l}"),
+            // The paths. Not reached: a line with a path and a command is
+            // re-read as a sync in `Args::try_parse_from` before this check.
             (None, None) => continue,
         };
         return Err(Args::command().error(

@@ -939,3 +939,30 @@ fn a_sync_option_with_a_command_is_rejected_by_name() {
     // `-v gc host:path` is `gc` with an argument it does not take.
     assert!(Args::try_parse_from(["irsync", "-v", "gc", "host:path"]).is_err());
 }
+
+#[test]
+fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
+    let a = parse(&["h:photos/", "-v", "gc"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "gc"]);
+    assert_eq!(a.log.verbose, 1);
+    let a = parse(&["h:photos/", "-q", "config"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(a.log.quiet);
+    let a = parse(&["h:photos/", "--config", "f", "show"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "show"]);
+    assert_eq!(a.files.config, Some(PathBuf::from("f")));
+    let a = parse(&["h:photos/", "-a", "config"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(SyncOptions::from_args(&a).preserve.recursive);
+    let a = parse(&["src", "-v", "gc", "h:m/"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["src", "gc", "h:m/"]);
+    // A path whose command would fail to parse is still a path.
+    let a = parse(&["h:photos/", "-v", "host", "add"]);
+    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "host", "add"]);
+    // With no path first, a command name is the command.
+    assert!(matches!(parse(&["-v", "gc"]).cmd, Some(Command::Gc { .. })));
+    assert!(matches!(parse(&["gc", "-v"]).cmd, Some(Command::Gc { .. })));
+    let a = parse(&["--config", "f", "host", "list"]);
+    assert!(a.cmd.is_some() && a.sync.paths.is_empty());
+    assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
+}
