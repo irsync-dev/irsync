@@ -109,3 +109,32 @@ fn from_files_keep_non_utf8_bytes() {
     assert_eq!(s.matches(&p, false), Verdict::Exclude);
     assert_eq!(s.rules()[0].pattern(), b"caf\xe9.txt");
 }
+
+/// Many stars on a long repetitive name: the work must grow with pattern
+/// length times path length, not multiply with every star.
+#[test]
+fn many_stars_do_not_take_exponential_time() {
+    let name = format!("{}.jpg", "a".repeat(200));
+    let deep = format!("d/e/{name}");
+    let started = std::time::Instant::now();
+    for pat in [
+        "*a*a*a*a*a*a*a*a*a*a*a*a*b",
+        "*a*a*a*a*a*a*a*a*a*a*a*a?b",
+        "**a**a**a**a**a**a**a**a**a**a**a**a**b",
+        "/**a**a**a**a**a**a**a**a**a**a**a**a**b",
+    ] {
+        let s = set(&[ex(pat)]);
+        assert_eq!(v(&s, &name, false), Verdict::Include, "{pat}");
+        assert_eq!(v(&s, &deep, false), Verdict::Include, "{pat}");
+    }
+    let s = set(&[ex("*a*a*a*a*a*a*a*a*a*a*a*a*.jpg")]);
+    assert_eq!(v(&s, &name, false), Verdict::Exclude);
+    assert_eq!(v(&s, &deep, false), Verdict::Exclude);
+    let s = set(&[ex("d/**a**a**a**a**a**a**a**a**.jpg")]);
+    assert_eq!(v(&s, &deep, false), Verdict::Exclude);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
