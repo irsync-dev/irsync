@@ -41,6 +41,7 @@ ssh-key = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
+sysinfo = { workspace = true }
 metrics-util = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true, optional = true }

@@ -28,15 +28,26 @@ fn timeval(t: nix::sys::time::TimeVal) -> Duration {
     Duration::from_micros(u64::try_from(t.num_microseconds()).unwrap_or(0))
 }
 
+/// The number of descriptors this process has open, from the `sysinfo`
+/// crate, which knows how each OS reports it (a folder under `/proc` on
+/// Linux, a kernel call on macOS and FreeBSD).
 fn open_fds() -> Option<u64> {
-    let dir = if cfg!(target_os = "macos") {
-        "/dev/fd"
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let pid = sysinfo::get_current_pid().ok()?;
+    let mut sys = System::new().ok()?;
+    // Only finds the process: the count itself is read by `open_files`.
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing(),
+    );
+    let n = sys.process(pid)?.open_files()? as u64;
+    if cfg!(target_os = "linux") {
+        // Reading the folder itself holds one descriptor.
+        Some(n.saturating_sub(1))
     } else {
-        "/proc/self/fd"
-    };
-    let n = std::fs::read_dir(dir).ok()?.count() as u64;
-    // The directory read itself holds one descriptor.
-    Some(n.saturating_sub(1))
+        Some(n)
+    }
 }
 
 /// Reads the current process usage.
