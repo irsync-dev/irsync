@@ -334,7 +334,28 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 .collect();
             files.sort();
             let mut roots = Vec::new();
+            let mut old = 0usize;
             for file in files {
+                // An older build's index: this one never reads it. Removed
+                // unless a process (that build's daemon) still has it open.
+                if !Index::is_current_file(&file) {
+                    let gone = if dry_run {
+                        Ok(true)
+                    } else {
+                        Index::remove_unused(&file)
+                    };
+                    match gone {
+                        Ok(true) => {
+                            old += 1;
+                            if !log.quiet {
+                                println!("{}", file.display());
+                            }
+                        }
+                        Ok(false) => eprintln!("irsync: {}: in use, kept", file.display()),
+                        Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                    }
+                    continue;
+                }
                 match Index::root_of_file(&file) {
                     Ok(Some(r)) => roots.push(r),
                     Ok(None) => {}
@@ -371,8 +392,13 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 }
             }
             if !log.quiet {
+                let old = if old > 0 {
+                    format!(", {old} old index file(s)")
+                } else {
+                    String::new()
+                };
                 println!(
-                    "{parts} part file(s), {sessions} session(s), {entries} index entr{} {}",
+                    "{parts} part file(s), {sessions} session(s), {entries} index entr{}{old} {}",
                     if entries == 1 { "y" } else { "ies" },
                     verb(dry_run)
                 );

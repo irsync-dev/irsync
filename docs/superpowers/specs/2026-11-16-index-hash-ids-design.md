@@ -240,17 +240,14 @@ only pay for the upgrade.
 - On the same machine, otherwise idle. The page cache is not dropped
   between runs: that needs root, and the flush writes rather than reads.
 
-My calls, not yet confirmed:
-
-- The benchmark is a Cargo example (`crates/irsync/examples/index_bench.rs`)
-  taking the tree, the file count and the repetitions as arguments, and
-  printing one line per run. It is not a test: AGENTS.md allows no ignored
-  tests besides the slow netsim ones, and its timings would fail a normal
-  test run on a slow machine. `cargo test` still builds it, so it keeps
-  compiling. It needs `test-hooks` only if the whole-sync case uses the
-  harness.
-- Results go into `docs/IRSYNC_DECISIONS.md`, next to the earlier
-  blocking-pool measurements.
+As built: the benchmark is a Cargo bench target, `crates/irsync/benches/index.rs`
+(`harness = false`), not an example. The whole-sync case uses the test
+harness in `tests/common`, which needs `CARGO_BIN_EXE_irsync`, and Cargo
+sets that only for tests and benches. A bench is also built with the
+release settings, as users run it, and `clippy --all-targets` in CI keeps
+it compiling. It is not a test: AGENTS.md allows no ignored tests besides
+the slow netsim ones, and its timings would fail a normal test run on a
+slow machine.
 
 ### Decision rule
 
@@ -264,6 +261,72 @@ Merge if, in release on the real disk:
 If `typical` shows no gain and `long` is the only win, we decide again
 whether long paths are worth an upgrade that makes every user's first sync
 afterwards hash everything again.
+
+## Results (2026-11-16): fails the bar, not merged
+
+Measured with `benches/index.rs` in a release build, on ZFS (`/home`), on
+an 8-core Linux machine that was otherwise idle. There were five rounds,
+alternating today's schema (`main` at 32f1ecc) and hash ids, with one run
+of each tree per round. Each cell is the median, with the range of the
+five runs:
+
+| tree | measure | today | hash ids | change |
+|---|---|---|---|---|
+| short | flush (s) | 0.39 (0.38–0.42) | 0.86 (0.84–0.92) | +122% |
+| short | database + WAL (MB) | 9.9 | 12.1 | +22% |
+| short | `get_entry` (µs) | 7.59 (7.26–8.46) | 7.30 (7.03–8.12) | −4% |
+| short | `find_chunk` (µs) | 6.35 (6.23–6.60) | 6.03 (5.91–6.57) | −5% |
+| short | first pull (s) | 3.10 (2.94–3.13) | 3.31 (3.23–3.48) | +7% |
+| short | pull, nothing changed (s) | 0.41 (0.41–0.44) | 0.39 (0.39–0.39) | −4% |
+| typical | flush (s) | 3.46 (3.41–3.60) | 6.62 (6.58–6.65) | +92% |
+| typical | database + WAL (MB) | 43.4 | 27.3 | −37% |
+| typical | `get_entry` (µs) | 8.49 (8.33–8.99) | 7.33 (7.22–7.51) | −14% |
+| typical | `find_chunk` (µs) | 7.06 (6.90–7.36) | 6.20 (6.03–6.36) | −12% |
+| typical | first pull (s) | 9.87 (9.61–10.22) | 13.43 (13.13–13.73) | +36% |
+| typical | pull, nothing changed (s) | 1.38 (1.33–1.48) | 1.22 (1.19–1.29) | −11% |
+| long | flush (s) | 4.64 (4.61–4.70) | 2.70 (2.63–2.72) | −42% |
+| long | database + WAL (MB) | 111.7 | 35.5 | −68% |
+| long | `get_entry` (µs) | 13.78 (13.51–14.62) | 8.35 (8.23–8.80) | −39% |
+| long | `find_chunk` (µs) | 8.86 (8.79–9.01) | 6.02 (5.83–6.09) | −32% |
+| long | first pull (s) | 7.22 (7.12–7.42) | 5.59 (5.57–5.80) | −23% |
+| long | pull, nothing changed (s) | 0.69 (0.69–0.71) | 0.48 (0.43–0.52) | −30% |
+
+`short` is 20,000 files named `dNN/fNNNNN`. `typical` is the 58,520 file
+paths of a `~/.cargo/registry/src` (79 bytes on average), listed in sorted
+order. `long` is 20,000 files with the 783-byte paths of
+`tests/blocking_pool.rs`. Every file holds 8 bytes, so each has one chunk.
+
+Against the decision rule:
+
+- `long`: the database is 32% of today's size (met), but the flush takes
+  58% of today's time (the bar was 50%: missed).
+- `short`, `typical`: the flush is 122% and 92% slower, and the first pull
+  of `typical` 36% slower (the bar was 10%: missed by far).
+
+Lookups and the unchanged pull are faster everywhere. Only writing gets
+slower, and it is slower for the common case.
+
+**Why: hash ids throw away the order the writes come in.** The walk sorts
+each directory (`scan.rs`), so files are hashed, and their rows queued, in
+path order. Today's tables are keyed by path or by an increasing row
+number, so a batch of 1,024 writes lands on a few neighbouring pages, and
+those pages end up full. A hash id puts each file's row, and its chunks,
+on a random page: a batch touches about 1,024 pages, each written to the
+WAL in full, and pages split at random positions are left partly empty.
+Shuffling the input order shows it. For `typical`, today's schema takes
+3.5 s in walk order and 7.7 s shuffled; hash ids take 6.5 s and 6.6 s.
+Hash ids always behave like shuffled input. This comes from what a hash is,
+so tuning cannot fix it.
+
+The `long` tree gains anyway: writing three copies fewer of a 783-byte
+path outweighs losing the order. With paths of about 79 bytes it does not.
+
+**What this suggests:** approach 2 (a counter id) keeps the order. New
+files get increasing ids in walk order, and the unique index on `path`
+grows in walk order too. The path would be stored twice instead of five
+times, about 38 MB instead of 112 for `long` by the estimate above, and
+the write order would be today's. It needs the same benchmark before any
+decision.
 
 ## Tests
 
