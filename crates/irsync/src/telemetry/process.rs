@@ -69,11 +69,18 @@ mod tests {
 
     #[test]
     fn sample_sees_cpu_and_fds() {
+        let cpu = |s: &ProcessSample| s.cpu_user + s.cpu_sys;
         let before = sample();
+        // Spin until the sampled CPU time grows, not for a fixed wall time: on a
+        // busy machine the thread may be off the CPU for much of any interval.
         let t = Instant::now();
         let mut x = 1u64;
-        while t.elapsed() < Duration::from_millis(50) {
-            x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+        while cpu(&sample()) < cpu(&before) + Duration::from_millis(30)
+            && t.elapsed() < Duration::from_secs(10)
+        {
+            for _ in 0..10_000 {
+                x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
         }
         let dir = tempfile::tempdir().unwrap();
         // Other tests in this process open and close descriptors too, so retry the count.
@@ -88,7 +95,6 @@ mod tests {
         });
         assert!(grew, "open_fds never grew by 3");
         let after = sample();
-        let cpu = |s: &ProcessSample| s.cpu_user + s.cpu_sys;
         assert!(
             cpu(&after) >= cpu(&before) + Duration::from_millis(30),
             "{:?} -> {:?}",
