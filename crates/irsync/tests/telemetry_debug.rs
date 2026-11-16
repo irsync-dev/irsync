@@ -100,8 +100,8 @@ fn start_daemon(tmp: &Path, debug_addr: Option<&str>) -> Daemon {
         ),
     )
     .unwrap();
-    std::fs::write(
-        tmp.join("exports.toml"),
+    append_config(
+        &tmp.join("irsync.toml"),
         format!(
             "[exports.m]\npath = {:?}\nrw = [\"{client_id}\"]\n",
             tmp.join("dst")
@@ -260,4 +260,13 @@ fn daemon_debug_port() {
         assert!(Instant::now() < deadline, "no daemon-side metrics:\n{m}");
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Appends `text` to the config file at `path`.
+fn append_config(path: &std::path::Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)?
+        .write_all(text.as_ref())
 }

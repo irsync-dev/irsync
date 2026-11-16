@@ -1,5 +1,4 @@
 use irsync::authz::{Access, Authorizer, FileAuthorizer, Snapshot};
-use irsync::config::{exports::Exports, hosts::Hosts};
 use std::path::Path;
 
 fn id(n: u8) -> iroh::EndpointId {
@@ -7,8 +6,8 @@ fn id(n: u8) -> iroh::EndpointId {
 }
 fn snap(hosts: &str, exports: &str) -> Snapshot {
     Snapshot::from_files(
-        &Hosts::parse(hosts, Path::new("h")).unwrap(),
-        &Exports::parse(exports, Path::new("e")).unwrap(),
+        &parse_hosts(hosts, Path::new("h")).unwrap(),
+        &parse_exports(exports, Path::new("e")).unwrap(),
         true,
     )
 }
@@ -49,7 +48,7 @@ fn unresolvable_entry_matches_nobody() {
 #[test]
 fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     let d = tempfile::tempdir().unwrap();
-    let (h, e) = (d.path().join("hosts.toml"), d.path().join("irsync.toml"));
+    let e = d.path().join("irsync.toml");
     let a = FileAuthorizer::new(irsync::config::paths::Paths::resolve(Some(&e)));
     assert!(a.snapshot().unwrap().exports.is_empty()); // missing = empty
     std::fs::write(
@@ -60,16 +59,22 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
     std::fs::write(&e, "[x\n").unwrap();
     assert!(a.snapshot().is_err()); // broken = error, not stale
-    std::fs::write(&e, "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n").unwrap();
-    std::fs::write(&h, format!("[hosts.lap]\nendpoint_id = \"{}\"\n", id(1))).unwrap();
+    std::fs::write(
+        &e,
+        format!(
+            "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n[hosts.lap]\nendpoint_id = \"{}\"\n",
+            id(1)
+        ),
+    )
+    .unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
 }
 
 #[test]
 fn immediate_grant_reaches() {
     let s = Snapshot::from_files(
-        &Hosts::parse("", Path::new("h")).unwrap(),
-        &Exports::parse(
+        &parse_hosts("", Path::new("h")).unwrap(),
+        &parse_exports(
             &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
             Path::new("e"),
         )
@@ -83,8 +88,8 @@ fn immediate_grant_reaches() {
 #[test]
 fn immediate_off_ignores_grant() {
     let s = Snapshot::from_files(
-        &Hosts::parse("", Path::new("h")).unwrap(),
-        &Exports::parse(
+        &parse_hosts("", Path::new("h")).unwrap(),
+        &parse_exports(
             &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
             Path::new("e"),
         )
@@ -110,9 +115,9 @@ fn auto_export_grant_needs_the_immediate_grant() {
         if immediate {
             t = format!("[immediate]\nrw = [\"{}\"]\n{t}", id(1));
         }
-        Exports::parse(&t, Path::new("e")).unwrap()
+        parse_exports(&t, Path::new("e")).unwrap()
     };
-    let hosts = Hosts::parse("", Path::new("h")).unwrap();
+    let hosts = parse_hosts("", Path::new("h")).unwrap();
     let on = Snapshot::from_files(&hosts, &exports(true), true);
     assert!(on.grants(&id(1)).allows("home-auto", true));
     for (s, why) in [
@@ -130,4 +135,18 @@ fn auto_export_grant_needs_the_immediate_grant() {
         assert!(g.allows("x", true), "{why}");
         assert!(!g.immediate, "{why}");
     }
+}
+
+fn parse_hosts(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+}
+
+fn parse_exports(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
 }

@@ -1,7 +1,7 @@
 //! The `[exports]` and `[all]` tables: what the daemon shares and who may
-//! use it, in `irsync.toml` or a split `exports.toml` beside it.
+//! use it, in `irsync.toml`.
 
-use super::{expand_tilde, line_of, toml_err, ConfigError};
+use super::{expand_tilde, line_of, ConfigError};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -146,62 +146,4 @@ pub(crate) fn exports_from_raw(
         immediate_rw: immediate.rw,
         exports,
     })
-}
-
-/// The typed shape of the file, read once the top-level keys are known
-/// to be `all` and `exports`.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawFile {
-    all: AllGrants,
-    immediate: ImmediateGrants,
-    exports: RawExports,
-}
-
-impl Exports {
-    pub fn parse(text: &str, path: &Path) -> Result<Exports, ConfigError> {
-        let at = |offset: usize, message: String| ConfigError::File {
-            path: path.to_path_buf(),
-            line: Some(line_of(text, offset)),
-            message,
-        };
-        // Shape pass: every top-level key is `all` or `exports`, both tables.
-        let shape: BTreeMap<String, Spanned<toml::Value>> =
-            toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        // In file order, so the first offender is the one reported.
-        let mut keys: Vec<_> = shape.iter().collect();
-        keys.sort_by_key(|(_, v)| v.span().start);
-        for (name, value) in keys {
-            let start = value.span().start;
-            let value = value.get_ref();
-            let message = match name.as_str() {
-                "immediate" => match immediate_problem(value) {
-                    Some(m) => m,
-                    None => continue,
-                },
-                "all" | "exports" if value.is_table() => continue,
-                "all" | "exports" => {
-                    format!("{name}: expected a table, found {}", value.type_str())
-                }
-                _ if value.is_table() => {
-                    format!("unknown table {name:?}; exports live under [exports.{name}]")
-                }
-                "rw" | "ro" => {
-                    format!("unknown key {name:?}; grants for every export live under [all]")
-                }
-                _ => format!("unknown key {name:?}"),
-            };
-            return Err(at(start, message));
-        }
-        // Typed pass over the same text, so the spans match.
-        let raw: RawFile = toml::from_str(text).map_err(|e| {
-            let line = e
-                .span()
-                .map(|s| s.start)
-                .or_else(|| shape.get("all").map(|v| v.span().start))
-                .unwrap_or(0);
-            at(line, format!("[all]: {}", e.message()))
-        })?;
-        exports_from_raw(raw.all, raw.immediate, raw.exports, text, path)
-    }
 }

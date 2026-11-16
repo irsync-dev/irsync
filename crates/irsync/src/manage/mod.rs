@@ -9,7 +9,6 @@ pub mod show;
 
 use crate::config::file::Config;
 use crate::config::hosts::Hosts;
-use crate::config::paths::Paths;
 use crate::config::ConfigError;
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
@@ -36,6 +35,8 @@ pub enum ManageError {
     Exists(String),
     #[error("no such entry {0:?}")]
     NotFound(String),
+    #[error("host {alias:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
+    HostInUse { alias: String, lists: Vec<String> },
     #[error("{0:?} is not a table; fix the file by hand")]
     NotATable(String),
     #[error("{0:?} is not a valid export name")]
@@ -66,14 +67,6 @@ pub enum ManageError {
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
-    #[error("{table} are kept in {}; irsync edits {} only: move the {tables} into {1}, or edit {0} by hand", file.display(), config.display())]
-    SplitFile {
-        table: &'static str,
-        /// `[hosts] table` or `[exports] and [all] tables`.
-        tables: &'static str,
-        file: PathBuf,
-        config: PathBuf,
-    },
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -130,9 +123,25 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
 }
 
 /// Save the config file, refusing a document that would not load; takes
-/// and releases the file's lock (see [`lock_config`]).
-pub fn save_config(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
+/// and releases the file's lock (see [`lock_config`]). Like
+/// [`ConfigLock::save`], it first writes peers by their aliases.
+pub fn save_config(path: &Path, doc: &mut toml_edit::DocumentMut) -> Result<(), ManageError> {
     lock_config(path)?.save(doc)
+}
+
+/// Puts the grants of `doc` into their canonical form (see
+/// [`grants::canonicalize`]) with the `[hosts]` table of `doc` itself, so
+/// an alias added in the same edit already counts. True when `doc`
+/// changed. A document that would not load is an error naming `path`.
+pub fn canonicalize_doc(
+    doc: &mut toml_edit::DocumentMut,
+    path: &Path,
+) -> Result<bool, ManageError> {
+    let config = Config::parse(&doc.to_string(), path).map_err(|reason| ManageError::Invalid {
+        path: path.to_path_buf(),
+        reason,
+    })?;
+    Ok(grants::canonicalize(doc, &config.hosts))
 }
 
 /// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
@@ -182,16 +191,25 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 impl ConfigLock {
     /// The file as it is now (empty when missing).
     pub fn load(&self) -> Result<toml_edit::DocumentMut, ManageError> {
+        // An edit must not pass a split file by in silence either.
+        crate::config::file::warn_ignored_split_files(&self.path);
         load_doc(&self.path)
     }
 
-    /// Writes `doc` over the file and releases the lock. A document that
-    /// would not load is refused and the file left as it was.
-    pub fn save(mut self, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-        Config::parse(&doc.to_string(), &self.path).map_err(|reason| ManageError::Invalid {
+    /// Writes `doc` over the file and releases the lock. Peers that
+    /// `[hosts]` has an alias for are written by it first (see
+    /// [`canonicalize_doc`]), so every save leaves the file in one form.
+    /// A document that would not load is refused and the file left as it
+    /// was.
+    pub fn save(mut self, doc: &mut toml_edit::DocumentMut) -> Result<(), ManageError> {
+        let invalid = |reason| ManageError::Invalid {
             path: self.path.clone(),
             reason,
-        })?;
+        };
+        if canonicalize_doc(doc, &self.path)? {
+            // The rewrite only renames and drops entries; checked all the same.
+            Config::parse(&doc.to_string(), &self.path).map_err(invalid)?;
+        }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),
             source,
@@ -217,34 +235,6 @@ impl Drop for ConfigLock {
             let _ = std::fs::remove_file(&self.lock);
         }
     }
-}
-
-/// A table group an editing command touches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Table {
-    /// `[hosts]`.
-    Hosts,
-    /// `[exports]` and `[all]`.
-    Exports,
-}
-
-/// irsync edits the config file only: when a split file beside it holds
-/// `table`, editing is refused and the user told to move the table or
-/// edit the split file by hand.
-pub fn ensure_editable(paths: &Paths, table: Table) -> Result<(), ManageError> {
-    let (word, tables, file) = match table {
-        Table::Hosts => ("hosts", "[hosts] table", &paths.hosts),
-        Table::Exports => ("exports", "[exports] and [all] tables", &paths.exports),
-    };
-    if file.exists() {
-        return Err(ManageError::SplitFile {
-            table: word,
-            tables,
-            file: file.clone(),
-            config: paths.config.clone(),
-        });
-    }
-    Ok(())
 }
 
 /// How a command-line "who" argument is understood.
@@ -297,6 +287,17 @@ impl PeerSpec {
             Some(comment.to_string())
         };
         Ok(Some(PeerSpec::Id { id, comment }))
+    }
+
+    /// What a save writes for this peer: the alias, also for an id that
+    /// `hosts` has an alias for; else the id in hex.
+    pub fn written(&self, hosts: &Hosts) -> String {
+        match self {
+            PeerSpec::Id { id, .. } => hosts
+                .alias_of(id)
+                .map_or_else(|| id.to_string(), str::to_string),
+            PeerSpec::Alias(a) => a.clone(),
+        }
     }
 
     /// The text stored in a config entry: the alias, or the id in hex.

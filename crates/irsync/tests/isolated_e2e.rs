@@ -154,8 +154,8 @@ fn start_daemon(tmp: &Path) -> Daemon {
         ),
     )
     .unwrap();
-    std::fs::write(
-        tmp.join("exports.toml"),
+    append_config(
+        &tmp.join("irsync.toml"),
         format!(
             "[exports.m]\npath = {:?}\nrw = [\"{}\"]\n",
             tmp.join("dst"),
@@ -479,7 +479,6 @@ fn unknown_alias_error_names_hosts_file() {
     );
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    // Without a hosts.toml beside it, the config file is where aliases live.
     assert!(
         err.contains("\"home\" is not an alias in")
             && err.contains("irsync.toml")
@@ -506,8 +505,8 @@ fn no_listening_line_when_startup_fails_after_bind() {
         ),
     )
     .unwrap();
-    std::fs::write(
-        tmp.join("exports.toml"),
+    append_config(
+        &tmp.join("irsync.toml"),
         format!("[exports.m]\npath = {:?}\n", tmp.join("dst")),
     )
     .unwrap();
@@ -528,7 +527,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
 }
 
 #[test]
-fn no_exports_warning_names_the_split_file_that_holds_them() {
+fn no_exports_warning_names_the_config_file() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     std::fs::create_dir_all(tmp.join("state")).unwrap();
@@ -543,8 +542,6 @@ fn no_exports_warning_names_the_split_file_that_holds_them() {
         ),
     )
     .unwrap();
-    // The exports live in a split file, and there are none.
-    std::fs::write(tmp.join("exports.toml"), "[all]\n").unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
@@ -565,7 +562,7 @@ fn no_exports_warning_names_the_split_file_that_holds_them() {
         l.contains("no exports defined in")
     });
     assert!(
-        warn.contains(&tmp.join("exports.toml").display().to_string()),
+        warn.contains(&tmp.join("irsync.toml").display().to_string()),
         "{warn}"
     );
 }
@@ -820,4 +817,13 @@ fn verbose_lists_files_and_the_trailer_but_no_session_summary() {
     );
     assert!(!out.contains("session 1/"), "{out}");
     assert_eq!(bad_bin_lines(&err), 1, "{err}");
+}
+
+/// Appends `text` to the config file at `path`.
+fn append_config(path: &std::path::Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)?
+        .write_all(text.as_ref())
 }

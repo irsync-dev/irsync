@@ -128,3 +128,28 @@ fn auto_root_missing_parent_is_not_found() {
         Err(AutoRootError::NotFound)
     );
 }
+
+#[test]
+fn auto_export_names_the_peer_by_its_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("irsync.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[hosts.laptop]\nendpoint_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            id(1)
+        ),
+    )
+    .unwrap();
+    let authz = FileAuthorizer::new(Paths::resolve(Some(&config)));
+    let root = dir.path().join("data");
+    std::fs::create_dir(&root).unwrap();
+    authz.add_auto_export(&root, id(1)).unwrap();
+    let snap = authz.snapshot().unwrap();
+    let auto: Vec<_> = snap.exports.values().filter(|e| e.auto).collect();
+    assert_eq!(auto.len(), 1, "{:?}", snap.exports);
+    assert_eq!(auto[0].rw, ["laptop"]);
+    assert!(!std::fs::read_to_string(&config)
+        .unwrap()
+        .contains(&format!("rw = [\"{}\"]", id(1))));
+}

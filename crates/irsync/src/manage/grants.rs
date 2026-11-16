@@ -109,6 +109,166 @@ fn push_entry(table: &mut dyn TableLike, key: &str, text: &str, comment: Option<
     }
 }
 
+/// Removes entry `i` of `arr` together with the comment after it, which
+/// toml_edit keeps in front of the next entry (or, for the last entry,
+/// before the closing bracket). The comment after the entry before `i`
+/// sits in front of `i` and stays.
+fn remove_entry(arr: &mut Array, i: usize) {
+    let text = |raw: Option<&toml_edit::RawString>| {
+        raw.and_then(|r| r.as_str()).unwrap_or_default().to_string()
+    };
+    let before = text(arr.get(i).and_then(|v| v.decor().prefix()));
+    let last = i + 1 == arr.len();
+    let after = if last {
+        text(Some(arr.trailing()))
+    } else {
+        text(arr.get(i + 1).and_then(|v| v.decor().prefix()))
+    };
+    // The removed entry's own comment is the rest of its line.
+    let rest = match after.split_once('\n') {
+        Some((line, rest)) if line.contains('#') => rest,
+        _ => after.as_str(),
+    };
+    let joined = format!("{}{rest}", before.trim_end_matches([' ', '\t']));
+    arr.remove(i);
+    if last {
+        arr.set_trailing(joined);
+    } else if let Some(next) = arr.get_mut(i) {
+        // Do not leave `[ "b"]` behind when the first entry went.
+        let joined = if i == 0 && joined == " " {
+            String::new()
+        } else {
+            joined
+        };
+        next.decor_mut().set_prefix(joined);
+    }
+}
+
+/// Writes every grant entry in its canonical form: an EndpointId that
+/// `hosts` has an alias for becomes that alias (the first in
+/// lexicographic order when there are several). An entry that is already
+/// an alias, an id without an alias and text that names nobody are left
+/// alone. Then, per table, an entry named twice in one list keeps its
+/// first place, and an entry in both `rw` and `ro` leaves `ro`: `rw` wins
+/// when the file is read, so nobody's access changes.
+///
+/// Covers `[all]`, `[immediate]` and every table under `[exports]`.
+/// Comments and layout are kept. True when the document changed; a second
+/// run changes nothing.
+pub fn canonicalize(doc: &mut DocumentMut, hosts: &Hosts) -> bool {
+    let mut changed = false;
+    let mut table = |table: &mut dyn TableLike| {
+        // What this table already names, `rw` before `ro`.
+        let mut seen: Vec<String> = Vec::new();
+        for key in ["rw", "ro"] {
+            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
+                continue;
+            };
+            let mut i = 0;
+            while i < arr.len() {
+                let Some(text) = arr.get(i).and_then(Value::as_str) else {
+                    i += 1;
+                    continue;
+                };
+                let alias = parse_endpoint_id(text)
+                    .ok()
+                    .and_then(|id| hosts.alias_of(&id));
+                let name = alias.unwrap_or(text).to_string();
+                if seen.contains(&name) {
+                    remove_entry(arr, i);
+                    changed = true;
+                    continue;
+                }
+                if alias.is_some() {
+                    let v = arr.get_mut(i).expect("in range");
+                    let decor = v.decor().clone();
+                    *v = Value::from(name.as_str());
+                    *v.decor_mut() = decor;
+                    changed = true;
+                }
+                seen.push(name);
+                i += 1;
+            }
+        }
+    };
+    for name in ["all", "immediate"] {
+        if let Some(t) = doc.get_mut(name).and_then(Item::as_table_like_mut) {
+            table(t);
+        }
+    }
+    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
+        for (_, item) in exports.iter_mut() {
+            if let Some(t) = item.as_table_like_mut() {
+                table(t);
+            }
+        }
+    }
+    changed
+}
+
+/// The tables with a grant entry whose text is `name`: `all`,
+/// `immediate`, then `exports.NAME` in file order, each once.
+pub fn lists_naming(doc: &DocumentMut, name: &str) -> Vec<String> {
+    let names = |table: &dyn TableLike| {
+        ["rw", "ro"].iter().any(|key| {
+            table
+                .get(key)
+                .and_then(Item::as_array)
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
+        })
+    };
+    let mut out = Vec::new();
+    for top in ["all", "immediate"] {
+        if doc
+            .get(top)
+            .and_then(Item::as_table_like)
+            .is_some_and(names)
+        {
+            out.push(top.to_string());
+        }
+    }
+    if let Some(exports) = doc.get("exports").and_then(Item::as_table_like) {
+        for (export, item) in exports.iter() {
+            if item.as_table_like().is_some_and(names) {
+                out.push(format!("exports.{export}"));
+            }
+        }
+    }
+    out
+}
+
+/// Removes every grant entry whose text is `name`, from `[all]`,
+/// `[immediate]` and every export; the count.
+pub fn remove_named(doc: &mut DocumentMut, name: &str) -> usize {
+    let mut n = 0;
+    let mut table = |table: &mut dyn TableLike| {
+        for key in ["rw", "ro"] {
+            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
+                continue;
+            };
+            for i in (0..arr.len()).rev() {
+                if arr.get(i).and_then(Value::as_str) == Some(name) {
+                    remove_entry(arr, i);
+                    n += 1;
+                }
+            }
+        }
+    };
+    for top in ["all", "immediate"] {
+        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
+            table(t);
+        }
+    }
+    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
+        for (_, item) in exports.iter_mut() {
+            if let Some(t) = item.as_table_like_mut() {
+                table(t);
+            }
+        }
+    }
+    n
+}
+
 /// Grant `who` access to `export` (`[all]` for `None`): read-only or
 /// read-write. Any earlier grant of the same peer there, under either
 /// spelling, is replaced.

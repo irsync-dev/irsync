@@ -82,13 +82,10 @@ impl From<ManageError> for AuthzError {
     }
 }
 
-/// Who may use which export, as of one read of the config and any split
-/// file beside it.
+/// Who may use which export, as of one read of the config.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub exports: BTreeMap<String, Export>,
-    /// The file the exports were read from: the config, or a split file.
-    pub exports_file: std::path::PathBuf,
     grants: HashMap<EndpointId, Grants>,
 }
 
@@ -147,7 +144,6 @@ impl Snapshot {
         }
         Snapshot {
             exports: exports.exports.clone(),
-            exports_file: exports.path.clone(),
             grants,
         }
     }
@@ -179,7 +175,7 @@ fn covered(snap: &Snapshot, root: &Path, peer: &EndpointId) -> bool {
     crate::resolve::containing(root, &snap.exports, &snap.grants(peer), None).is_some()
 }
 
-/// Reads the config (and any split file beside it) afresh on every
+/// Reads the config afresh on every
 /// [`Authorizer::snapshot`].
 pub struct FileAuthorizer {
     paths: Paths,
@@ -207,8 +203,7 @@ impl Authorizer for FileAuthorizer {
     /// same lock. A lock held by someone else is waited for, up to
     /// [`LOCK_WAIT`]. Blocks: call it off the async runtime.
     fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
-        use crate::manage::{ensure_editable, exports, lock_config, Table};
-        ensure_editable(&self.paths, Table::Exports)?;
+        use crate::manage::{exports, lock_config};
         let deadline = std::time::Instant::now() + LOCK_WAIT;
         let lock = loop {
             match lock_config(&self.paths.config) {
@@ -223,7 +218,7 @@ impl Authorizer for FileAuthorizer {
         }
         let mut doc = lock.load()?;
         let name = exports::add_auto_export(&mut doc, root, peer)?;
-        lock.save(&doc)?;
+        lock.save(&mut doc)?;
         tracing::info!(
             export = %name,
             path = %root.display(),

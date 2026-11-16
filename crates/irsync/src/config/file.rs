@@ -1,5 +1,6 @@
-//! `irsync.toml` as one file: settings, host aliases, exports and grants,
-//! with `hosts.toml` and `exports.toml` still read when they sit beside it.
+//! `irsync.toml` as one file: settings, host aliases, exports and grants.
+//! A `hosts.toml` or `exports.toml` beside it, once read as part of it, is
+//! ignored with a warning.
 
 use super::exports::{
     exports_from_raw, immediate_problem, AllGrants, Exports, ImmediateGrants, RawExports,
@@ -9,22 +10,54 @@ use super::paths::Paths;
 use super::settings::{ClientSettings, DaemonSettings, Settings, TelemetrySettings};
 use super::{expand_tilde, line_of, read_optional, toml_err, ConfigError};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use toml::Spanned;
 
 /// Everything irsync is configured with, as of one read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub settings: Settings,
-    /// `Hosts::path` is the file that holds `[hosts]`.
     pub hosts: Hosts,
-    /// `Exports::path` is the file that holds `[exports]` and `[all]`.
     pub exports: Exports,
-    /// `hosts.toml`, when it was read.
-    pub split_hosts: Option<PathBuf>,
-    /// `exports.toml`, when it was read.
-    pub split_exports: Option<PathBuf>,
+}
+
+/// Those of `hosts.toml` and `exports.toml` that exist beside `config`, in
+/// that order. They were split files once; nothing reads them now.
+pub fn ignored_split_files(config: &Path) -> Vec<PathBuf> {
+    let dir = config.parent().unwrap_or(Path::new(""));
+    ["hosts.toml", "exports.toml"]
+        .into_iter()
+        .map(|name| dir.join(name))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+/// Says on stderr that a `hosts.toml` or `exports.toml` beside `config` is
+/// ignored, the first time this process finds it. Every read of the config
+/// calls this, for use and for editing alike. Printed, not logged, so that
+/// neither `-q` nor a command that does not log hides it: the file may
+/// hold the grants a server ran on.
+pub fn warn_ignored_split_files(config: &Path) {
+    for split in ignored_split_files(config) {
+        if first_sighting(&split) {
+            eprintln!(
+                "irsync: warning: ignoring {}: hosts.toml and exports.toml are no longer read; move its tables into {}",
+                split.display(),
+                config.display()
+            );
+        }
+    }
+}
+
+/// True the first time this process asks about `path`, false after: a
+/// daemon loads the config for every connection and warns only once.
+pub fn first_sighting(path: &Path) -> bool {
+    static SEEN: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf())
 }
 
 /// The typed shape of the merged file.
@@ -42,21 +75,10 @@ struct RawMerged {
     immediate: ImmediateGrants,
 }
 
-/// Which top-level tables the merged text has, for the one-home rule.
-struct Shape {
-    hosts: Option<usize>,
-    exports: Option<usize>,
-}
-
 impl Config {
-    /// Parses the merged text alone: a shape pass over the top-level keys
-    /// (with the old-layout hints), then the typed pass. Split files are
-    /// not consulted; see [`Config::load`].
+    /// Parses the text of the config file: a shape pass over the top-level
+    /// keys (with the old-layout hints), then the typed pass.
     pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
-        Self::parse_merged(text, path).map(|(c, _)| c)
-    }
-
-    fn parse_merged(text: &str, path: &Path) -> Result<(Config, Shape), ConfigError> {
         let at = |offset: usize, message: String| ConfigError::File {
             path: path.to_path_buf(),
             line: Some(line_of(text, offset)),
@@ -136,64 +158,19 @@ impl Config {
             entries: hosts_from_raw(raw.hosts, text, path)?,
         };
         let exports = exports_from_raw(raw.all, raw.immediate, raw.exports, text, path)?;
-        let line = |k: &str| shape.get(k).map(|v| line_of(text, v.span().start));
-        let shape = Shape {
-            hosts: line("hosts"),
-            exports: line("exports")
-                .or_else(|| line("all"))
-                .or_else(|| line("immediate")),
-        };
-        Ok((
-            Config {
-                settings,
-                hosts,
-                exports,
-                split_hosts: None,
-                split_exports: None,
-            },
-            shape,
-        ))
+        Ok(Config {
+            settings,
+            hosts,
+            exports,
+        })
     }
 
-    /// `paths.config` (defaults when missing), then `hosts.toml` and
-    /// `exports.toml` beside it when they exist. Each table has one home:
-    /// a split file present means its tables must not be in the config
-    /// file.
+    /// `paths.config`, or the defaults when it is missing. A `hosts.toml`
+    /// or `exports.toml` beside it is not read; see
+    /// [`warn_ignored_split_files`].
     pub fn load(paths: &Paths) -> Result<Config, ConfigError> {
-        let (mut config, shape) = match read_optional(&paths.config)? {
-            Some(text) => Self::parse_merged(&text, &paths.config)?,
-            None => Self::parse_merged("", &paths.config)?,
-        };
-        let conflict = |line: Option<usize>, what: &str, table: &str, split: &Path| {
-            line.map(|line| ConfigError::File {
-                path: paths.config.clone(),
-                line: Some(line),
-                message: format!(
-                    "{what} are in {}; remove [{table}] from {}, or delete {0}",
-                    split.display(),
-                    paths.config.display()
-                ),
-            })
-        };
-        if let Some(text) = read_optional(&paths.hosts)? {
-            if let Some(e) = conflict(shape.hosts, "hosts", "hosts", &paths.hosts) {
-                return Err(e);
-            }
-            config.hosts = Hosts::parse(&text, &paths.hosts)?;
-            config.split_hosts = Some(paths.hosts.clone());
-        }
-        if let Some(text) = read_optional(&paths.exports)? {
-            if let Some(e) = conflict(
-                shape.exports,
-                "exports and grants",
-                "exports] and [all",
-                &paths.exports,
-            ) {
-                return Err(e);
-            }
-            config.exports = Exports::parse(&text, &paths.exports)?;
-            config.split_exports = Some(paths.exports.clone());
-        }
-        Ok(config)
+        warn_ignored_split_files(&paths.config);
+        let text = read_optional(&paths.config)?.unwrap_or_default();
+        Self::parse(&text, &paths.config)
     }
 }

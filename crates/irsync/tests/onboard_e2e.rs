@@ -352,15 +352,6 @@ fn unsavable_alias_stops_before_ssh() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(!err.contains("over ssh"), "{err}");
-    // A split hosts.toml can't take the alias either.
-    let cfg = w.client.path().join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("hosts.toml"), "{err}");
-    assert!(!err.contains("over ssh"), "{err}");
     assert_eq!(w.ssh_calls(), 0);
     assert!(!w.server.path().join(".local").exists());
 }

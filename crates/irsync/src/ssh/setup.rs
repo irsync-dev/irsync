@@ -277,7 +277,6 @@ pub fn run(
 
     // 2. The grant.
     let grant = if settings.daemon.immediate {
-        manage::ensure_editable(paths, manage::Table::Exports)?;
         let lock = manage::lock_config(&paths.config)?;
         let mut doc = lock.load()?;
         let spec = PeerSpec::Id {
@@ -292,7 +291,7 @@ pub fn run(
             // Not saved: the edit is dropped with the lock.
             (true, true) => GrantOutcome::Missing,
             (true, false) => {
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 GrantOutcome::Added
             }
         }
@@ -309,7 +308,7 @@ pub fn run(
         let key = ["daemon", "discovery", "dht"].map(String::from);
         manage::config::set(&mut doc, &key, toml_edit::Value::from(false))
             .with_context(|| format!("in {}", paths.config.display()))?;
-        lock.save(&doc)?;
+        lock.save(&mut doc)?;
         Dht::TurnedOff
     } else {
         Dht::On

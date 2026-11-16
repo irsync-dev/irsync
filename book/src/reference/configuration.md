@@ -9,14 +9,9 @@ hand.
 Every command takes `--config PATH` to use another file. Unknown keys and
 tables are errors that name the file, the line and the key.
 
-## Split files
-
-To keep the aliases or the exports apart, put a `hosts.toml` holding the
-`[hosts.*]` tables, or an `exports.toml` holding `[all]` and `[exports.*]`,
-beside the config file. They are read as if they were part of it. A table must
-then live in only one of the two files. `irsync` never edits a split file:
-`host`, `export`, `grant` and `config set` refuse a table it holds. `irsync
-show` names any split file it read.
+A `hosts.toml` or `exports.toml` beside the config file is ignored, with a
+warning. Earlier versions read them as part of the config. Move their tables
+into `irsync.toml`.
 
 ## Values
 
@@ -270,6 +265,12 @@ How grants combine:
 - `read_only` caps everyone at read-only.
 - An entry that names no alias and is no `EndpointId` matches nobody; the
   daemon logs a warning for it.
+- Whenever `irsync` saves the file, it writes a peer by its `[hosts]` alias:
+  an `EndpointId` in a grant list that has an alias becomes that alias, also
+  one that was already in the file. With two aliases for one `EndpointId` it
+  writes the first in alphabetical order. An entry named twice is kept once.
+- A grant by alias follows the alias. If the host entry later gets another
+  `EndpointId`, the grant is for that one.
 
 How a remote path finds its export, nested exports included, is described in
 [Remote addresses](remote-addresses.md#exports-decide-access).

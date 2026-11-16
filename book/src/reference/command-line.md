@@ -161,7 +161,7 @@ These have no rsync counterpart.
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the host entry, else from `[client]`. |
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
-| `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. A `hosts.toml` or `exports.toml` beside it is read too. |
+| `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
 | `--rsh CMD` | The remote shell for the ssh setup, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--ssh` | Go through ssh even for a saved host: install or update irsync on the server, check its daemon and the grant, then sync. Uses the host's `ssh` destination, else the alias. Default: off; a saved host is reached over iroh only. |
 | `--no-remote-dht` | When setting the server up over ssh, turn its DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Goes through ssh for a saved host too, like `--ssh`. Without it the server's setting is left alone, and new servers publish. |
@@ -202,7 +202,7 @@ first prints a banner with its version, relay and discovery settings.
 
 | Flag | Meaning |
 | --- | --- |
-| `--config PATH` | The config file. A `hosts.toml` or `exports.toml` beside it is read too. |
+| `--config PATH` | The config file. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
 | `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or `allow_root = true` under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |

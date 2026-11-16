@@ -1,4 +1,3 @@
-use irsync::config::exports::Exports;
 use irsync::manage::exports::{add_export, parse_add_target, remove_export};
 use irsync::manage::{ManageError, PeerSpec};
 use std::path::Path;
@@ -13,7 +12,7 @@ fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
     let mut doc = DocumentMut::new();
     add_export(&mut doc, "photos", Path::new("/srv/photos"), false, false).unwrap();
     add_export(&mut doc, "docs", Path::new("/srv/docs"), true, true).unwrap();
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(!x.exports["photos"].read_only && !x.exports["photos"].warm_index);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
     assert!(
@@ -52,7 +51,7 @@ fn remove_last_export_leaves_a_loadable_file() {
         .parse()
         .unwrap();
     remove_export(&mut doc, "a").unwrap();
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(x.exports.is_empty() && x.rw == vec!["x"]);
     assert!(matches!(
         remove_export(&mut doc, "all"),
@@ -139,7 +138,7 @@ const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
 
 #[test]
 fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
-    let hosts = irsync::config::hosts::Hosts::parse("", Path::new("h")).unwrap();
+    let hosts = parse_hosts("", Path::new("h")).unwrap();
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
     let key = line.rsplit_once(' ').unwrap().0;
     let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &hosts);
@@ -159,17 +158,17 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
 #[test]
 fn save_config_refuses_an_export_document_that_does_not_parse() {
     let d = tempfile::tempdir().unwrap();
-    let path = d.path().join("exports.toml");
+    let path = d.path().join("irsync.toml");
     std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
-    let doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
-    let e = irsync::manage::save_config(&path, &doc).unwrap_err();
+    let mut doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
+    let e = irsync::manage::save_config(&path, &mut doc).unwrap_err();
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[exports.p]\npath = \"/p\"\n"
     );
-    let ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
-    irsync::manage::save_config(&path, &ok).unwrap();
+    let mut ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
+    irsync::manage::save_config(&path, &mut ok).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[exports.q]\npath = \"/q\"\n"
@@ -209,7 +208,7 @@ fn add_and_remove_keep_an_inline_exports_table() {
         .parse()
         .unwrap();
     add_export(&mut doc, "q", Path::new("/q"), false, false).unwrap();
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert_eq!(x.exports["photos"].rw, vec!["x"], "{doc}");
     assert_eq!(x.exports["q"].path, Path::new("/q"));
     assert!(matches!(
@@ -217,7 +216,7 @@ fn add_and_remove_keep_an_inline_exports_table() {
         Err(ManageError::Exists(_))
     ));
     remove_export(&mut doc, "photos").unwrap();
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(
         !x.exports.contains_key("photos") && x.exports.contains_key("q"),
         "{doc}"
@@ -257,6 +256,20 @@ fn auto_export_names() {
         t["rw"].as_array().unwrap().get(0).unwrap().as_str(),
         Some(id(1).to_string().as_str())
     );
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(x.exports["auto-srv-photos"].auto);
+}
+
+fn parse_hosts(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+}
+
+fn parse_exports(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
 }

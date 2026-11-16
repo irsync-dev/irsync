@@ -185,8 +185,7 @@ syntax; from fish or tcsh, run them under `sh`.
    `KillSignal=SIGINT` makes `systemctl stop` send the signal the daemon
    shuts down cleanly on (see [Stop it](#stop-it)). The `User=` account needs
    read access to the export paths, write access to the read-write ones, read
-   access to the key and to `irsync.toml`, `hosts.toml` and `exports.toml`, and
-   write access to `state_dir`.
+   access to the key and to `irsync.toml`, and write access to `state_dir`.
 
 2. Start it, and start it at boot:
 

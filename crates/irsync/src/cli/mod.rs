@@ -326,10 +326,13 @@ pub struct HostArgs {
 pub enum HostCmd {
     /// Add a host alias, or update the keys given for an existing one.
     Add(HostAddArgs),
-    /// Remove a host alias.
+    /// Remove a host alias. Refused while grants name it.
     Remove {
         /// The alias.
         alias: String,
+        /// Also remove every grant that names the host.
+        #[arg(short, long)]
+        force: bool,
     },
     /// List host aliases.
     List,
@@ -497,8 +500,7 @@ pub struct LogArgs {
 /// noun accepts them before or after its verb.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
-    /// The config file (default: irsync.toml in the config directory). A
-    /// hosts.toml or exports.toml beside it is read too, but never edited.
+    /// The config file (default: irsync.toml in the config directory).
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 }
@@ -532,8 +534,7 @@ pub struct IndexArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DaemonArgs {
-    /// The config file (default: irsync.toml in the config directory). A
-    /// hosts.toml or exports.toml beside it is read too.
+    /// The config file (default: irsync.toml in the config directory).
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// Read the identity's passphrase from the first line of this file
@@ -784,8 +785,7 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The config file (default: irsync.toml in the config directory). A
-    /// hosts.toml beside it is read too.
+    /// The config file (default: irsync.toml in the config directory).
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
     /// The private key to connect with (default: `identity` in irsync.toml,

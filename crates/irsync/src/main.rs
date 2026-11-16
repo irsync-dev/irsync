@@ -488,7 +488,7 @@ async fn connect_for(
             .and_then(|h| h.ssh.clone())
             .unwrap_or_else(|| host.to_string());
         // No ssh call yet: these errors need no "over ssh failed" context.
-        irsync::ssh::onboard::check(&paths, host, &dest)?;
+        irsync::ssh::onboard::check(host, &dest)?;
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
         log.eprintln(&if unknown {
@@ -1429,31 +1429,6 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
     }
 }
 
-/// The document a key lives in: a split file when one holds the table.
-fn doc_for(
-    paths: &Paths,
-    config: &Config,
-    key: &[String],
-) -> anyhow::Result<toml_edit::DocumentMut> {
-    let owner = match key.first().map(String::as_str) {
-        Some("hosts") => config.split_hosts.as_ref(),
-        Some("exports") | Some("all") => config.split_exports.as_ref(),
-        _ => None,
-    };
-    Ok(manage::load_doc(owner.unwrap_or(&paths.config))?)
-}
-
-/// A `hosts.*`, `exports.*` or `all.*` key is refused when a split file
-/// owns the table, like the nouns.
-fn config_editable(paths: &Paths, key: &[String]) -> anyhow::Result<()> {
-    let table = match key.first().map(String::as_str) {
-        Some("hosts") => manage::Table::Hosts,
-        Some("exports") | Some("all") => manage::Table::Exports,
-        _ => return Ok(()),
-    };
-    Ok(manage::ensure_editable(paths, table)?)
-}
-
 fn run_config(c: &ConfigArgs) -> i32 {
     use irsync::manage::config::{self as cfg, Got};
     let paths = file_paths(&c.files);
@@ -1466,8 +1441,9 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 if cfg::kind_of(&path).is_none() {
                     bail!("unknown key {key:?}");
                 }
-                let config = Config::load(&paths)?;
-                let doc = doc_for(&paths, &config, &path)?;
+                // Load first: a file that would not load is an error.
+                Config::load(&paths)?;
+                let doc = manage::load_doc(&paths.config)?;
                 let lines = match cfg::get(&doc, &path)? {
                     Got::Lines(lines) => lines,
                     Got::Unset => match cfg::default_of(&path) {
@@ -1492,18 +1468,9 @@ fn run_config(c: &ConfigArgs) -> i32 {
         ConfigCmd::List => finish(
             "config list",
             (|| {
-                let config = Config::load(&paths)?;
-                let mut docs = vec![manage::load_doc(&paths.config)?];
-                for split in [&config.split_hosts, &config.split_exports]
-                    .into_iter()
-                    .flatten()
-                {
-                    docs.push(manage::load_doc(split)?);
-                }
-                for doc in &docs {
-                    for line in cfg::list(doc) {
-                        println!("{line}");
-                    }
+                Config::load(&paths)?;
+                for line in cfg::list(&manage::load_doc(&paths.config)?) {
+                    println!("{line}");
                 }
                 Ok(())
             })(),
@@ -1514,12 +1481,11 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 let path = cfg::parse_key(key)?;
                 let kind =
                     cfg::kind_of(&path).ok_or_else(|| anyhow::anyhow!("unknown key {key:?}"))?;
-                config_editable(&paths, &path)?;
                 let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
-                lock.save(&doc).with_context(|| key.to_string())?;
+                lock.save(&mut doc).with_context(|| key.to_string())?;
                 Ok(())
             })(),
         ),
@@ -1530,11 +1496,29 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 if cfg::kind_of(&path).is_none() {
                     bail!("unknown key {key:?}");
                 }
-                config_editable(&paths, &path)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                // Unsetting a host's table or its id removes the host: like
+                // `host remove`, not while grants name it.
+                let hosts = if path[0] == "hosts" {
+                    manage::canonicalize_doc(&mut doc, &paths.config)?;
+                    manage::hosts::host_aliases(&doc)
+                } else {
+                    Vec::new()
+                };
                 cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
-                lock.save(&doc).with_context(|| key.to_string())?;
+                let left = manage::hosts::host_aliases(&doc);
+                for alias in hosts.iter().filter(|a| !left.contains(a)) {
+                    let lists = manage::grants::lists_naming(&doc, alias);
+                    if !lists.is_empty() {
+                        bail!(
+                            "host {alias:?} is named by grants in {}: remove those grants \
+                             first, or use `irsync host remove {alias} --force`",
+                            lists.join(", ")
+                        );
+                    }
+                }
+                lock.save(&mut doc).with_context(|| key.to_string())?;
                 Ok(())
             })(),
         ),
@@ -1591,7 +1575,6 @@ fn run_export(e: &ExportArgs) -> i32 {
             (|| {
                 let (name, path) =
                     manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
-                manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
@@ -1600,7 +1583,7 @@ fn run_export(e: &ExportArgs) -> i32 {
                 let settings = Config::load(&paths)?.settings;
                 let pass = PassphraseSource::from_env(None);
                 let secret = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
                     path.display(),
@@ -1613,12 +1596,11 @@ fn run_export(e: &ExportArgs) -> i32 {
         ExportCmd::Remove { name } => finish(
             "export remove",
             (|| {
-                manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 manage::exports::remove_export(&mut doc, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!("removed export {name} from {}", paths.config.display());
                 Ok(())
             })(),
@@ -1653,28 +1635,27 @@ fn run_grant(g: &GrantArgs) -> i32 {
                 let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
-                manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 if export == "immediate" {
                     let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
                         .with_context(|| format!("in {}", paths.config.display()))?;
-                    lock.save(&doc)?;
+                    lock.save(&mut doc)?;
                     if added {
-                        eprintln!("{}: immediate access", spec.entry());
+                        eprintln!("{}: immediate access", spec.written(&hosts));
                     } else {
-                        eprintln!("{}: already has immediate access", spec.entry());
+                        eprintln!("{}: already has immediate access", spec.written(&hosts));
                     }
                     return Ok(());
                 }
                 let target = (export != "all").then_some(export.as_str());
                 manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 let mode = if *ro { "ro" } else { "rw" };
                 match target {
-                    Some(e) => eprintln!("{}: {mode} on {e}", spec.entry()),
-                    None => eprintln!("{}: {mode} on all exports", spec.entry()),
+                    Some(e) => eprintln!("{}: {mode} on {e}", spec.written(&hosts)),
+                    None => eprintln!("{}: {mode} on all exports", spec.written(&hosts)),
                 }
                 Ok(())
             })(),
@@ -1704,7 +1685,6 @@ fn run_grant(g: &GrantArgs) -> i32 {
                     )) => Some(PeerSpec::Alias(w.to_string())),
                     Some((_, Err(e))) => return Err(e.into()),
                 };
-                manage::ensure_editable(&paths, manage::Table::Exports)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 let n = if is_immediate {
@@ -1713,7 +1693,7 @@ fn run_grant(g: &GrantArgs) -> i32 {
                     manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
                 }
                 .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
+                lock.save(&mut doc)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
                 Ok(())
             })(),
@@ -1755,16 +1735,23 @@ fn run_host(h: &HostArgs) -> i32 {
     let list = HostCmd::List;
     match h.cmd.as_ref().unwrap_or(&list) {
         HostCmd::Add(a) => finish("host add", host_add(a, &paths)),
-        HostCmd::Remove { alias } => finish(
+        HostCmd::Remove { alias, force } => finish(
             "host remove",
             (|| {
-                manage::ensure_editable(&paths, manage::Table::Hosts)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
-                manage::hosts::host_remove(&mut doc, alias)
+                // First, so an EndpointId written for this host is found
+                // as a grant that names it.
+                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                let grants = manage::hosts::host_remove(&mut doc, alias, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&doc)?;
-                eprintln!("removed host {alias} from {}", paths.config.display());
+                lock.save(&mut doc)?;
+                let also = match grants {
+                    0 => String::new(),
+                    1 => " and 1 grant".to_string(),
+                    n => format!(" and {n} grants"),
+                };
+                eprintln!("removed host {alias}{also} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
@@ -2049,11 +2036,10 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
         mdns: a.mdns,
         ssh: None,
     };
-    manage::ensure_editable(paths, manage::Table::Hosts)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
-    lock.save(&doc)?;
+    lock.save(&mut doc)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),

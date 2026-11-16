@@ -1,5 +1,5 @@
 //! `irsync export add` and `irsync grant add` against a running daemon: the daemon
-//! re-reads exports.toml per connection, so no restart is needed.
+//! re-reads the config per connection, so no restart is needed.
 
 mod common;
 

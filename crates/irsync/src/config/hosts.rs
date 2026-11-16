@@ -1,8 +1,7 @@
-//! The `[hosts]` table: aliases for daemons, in `irsync.toml` or a split
-//! `hosts.toml` beside it.
+//! The `[hosts]` table of `irsync.toml`: aliases for daemons.
 
 use super::settings::de_opt_duration;
-use super::{line_of, toml_err, ConfigError};
+use super::{line_of, ConfigError};
 use crate::config::settings::{Congestion, RelayMode};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
@@ -67,13 +66,6 @@ pub struct Hosts {
 /// The `[hosts]` table as deserialized: alias -> entry, with spans.
 pub(crate) type RawHosts = BTreeMap<String, Spanned<RawHost>>;
 
-/// The typed shape of the split file: every alias lives under `[hosts]`.
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawFile {
-    hosts: RawHosts,
-}
-
 /// Validates the `[hosts]` table: alias rules and endpoint ids. `text` is
 /// the document the spans point into, `path` the file named in errors.
 pub(crate) fn hosts_from_raw(
@@ -130,42 +122,17 @@ pub fn valid_alias(s: &str) -> bool {
 }
 
 impl Hosts {
-    pub fn parse(text: &str, path: &Path) -> Result<Hosts, ConfigError> {
-        let at = |offset: usize, message: String| ConfigError::File {
-            path: path.to_path_buf(),
-            line: Some(line_of(text, offset)),
-            message,
-        };
-        // Shape pass: the only top-level key is `hosts`, a table.
-        let shape: BTreeMap<String, Spanned<toml::Value>> =
-            toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        // In file order, so the first offender is the one reported.
-        let mut keys: Vec<_> = shape.iter().collect();
-        keys.sort_by_key(|(_, v)| v.span().start);
-        for (name, value) in keys {
-            let start = value.span().start;
-            let value = value.get_ref();
-            let message = match name.as_str() {
-                "hosts" if value.is_table() => continue,
-                "hosts" => format!("hosts: expected a table, found {}", value.type_str()),
-                _ if value.is_table() => {
-                    format!("unknown table {name:?}; hosts live under [hosts.{name}]")
-                }
-                _ => format!("unknown key {name:?}"),
-            };
-            return Err(at(start, message));
-        }
-        // Typed pass over the same text, so the spans match.
-        let raw: RawFile = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let entries = hosts_from_raw(raw.hosts, text, path)?;
-        Ok(Hosts {
-            path: path.to_path_buf(),
-            entries,
-        })
-    }
-
     pub fn get(&self, alias: &str) -> Option<&HostEntry> {
         self.entries.get(alias)
+    }
+
+    /// The alias that stands for `id`: the first in lexicographic order
+    /// when several entries have it.
+    pub fn alias_of(&self, id: &EndpointId) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(_, e)| e.endpoint_id == *id)
+            .map(|(alias, _)| alias.as_str())
     }
 
     /// An alias first, then a literal EndpointId.
