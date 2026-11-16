@@ -21,6 +21,8 @@ GOOD = {
     "git": 'if [ "$1" = -C ]; then echo .githooks; else echo "git version 2.50.0"; fi',
     "rsync": "echo 'rsync  version 3.4.1  protocol version 32'",
     "python3": "echo 'Python 3.12.3'",
+    "pandoc": "echo pandoc 3.1.3",
+    "mandoc": "echo mandoc",
     # The pinned toolchain, whatever its version, with rustfmt, clippy and both musl targets.
     "rustup": """case "$1 $2" in
   "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
@@ -104,18 +106,21 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(out, r"ok +GNU rsync 3\.4\.1", out)
         self.assertIn("Ready.", out)
 
-    def test_man_page_tools_are_optional_and_named(self):
+    def test_man_page_tools_are_required_and_named(self):
+        # tools/ci.sh check stops without either, so neither is optional.
         r, out = self.check()
         self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"ok +pandoc\n")
+        self.assertRegex(out, r"ok +mandoc\n")
         for tool, install in [
             ("pandoc", "brew install pandoc|apt install pandoc|pkg install hs-pandoc"),
             ("mandoc", "brew install mandoc|apt install mandoc|pkg install mandoc"),
         ]:
-            self.assertRegex(out, rf"missing +{tool}, for the man pages.*\(optional\)")
+            r, out = self.check(**{tool: None})
+            self.assertNotEqual(r.returncode, 0, tool)
+            self.assertRegex(out, rf"missing +{tool}, for the man pages \(required\)")
             self.assertRegex(out, install)
-        r, out = self.check(pandoc="echo pandoc 3.1.3", mandoc="echo mandoc")
-        self.assertRegex(out, r"ok +pandoc\n")
-        self.assertRegex(out, r"ok +mandoc\n")
+            self.assertNotIn("Ready.", out)
 
     def test_old_python_is_refused(self):
         r, out = self.check(python3="echo 'Python 3.10.12'")
