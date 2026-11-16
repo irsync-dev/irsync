@@ -6,31 +6,74 @@ irsync [OPTIONS] HOST:[PATH]
 irsync COMMAND ...
 ```
 
-`irsync --help` prints the same flags with one line each; `irsync COMMAND
---help` does so for a subcommand.
+`irsync` copies directory trees from one machine to another, in one
+direction, in the mould of rsync. It runs on both ends: the client runs
+`irsync`, and the server runs `irsync daemon`, the *daemon*, which serves its
+directories. A push copies from the client to the server, a pull the other
+way. If you can log in to the server with ssh, the first sync sets the server
+up for you (see [Setup over ssh](#setup-over-ssh)).
+
+The terms used on this page:
+
+- **iroh** is the network library `irsync` connects through. With it, two
+  machines find each other and get through NATs and firewalls without port
+  forwarding, dynamic DNS or ssh tunnels.
+- An **`EndpointId`** is the public half of a machine's key, printed as 64
+  hexadecimal digits. The client and the daemon each have one. A client
+  reaches a daemon by its `EndpointId`, not by an address. A host alias in the
+  config file gives an `EndpointId` a name, such as `myserver`.
+- A **relay** is a server both sides can reach. A connection starts through a
+  relay and moves to a direct path when it can. The relay passes on encrypted
+  packets that it cannot read. n0 runs public relays, which are the default.
+- An **export** is a directory the daemon shares under a name.
+- A **grant** lets a client use an export, read-write or read-only. The daemon
+  refuses every client that no grant names.
+- An **immediate grant** lets a client reach any path the daemon's account
+  can, read-write. The daemon then makes an export for each new path the
+  client uses.
+
+`irsync --help` lists irsync's flags, one line each; `irsync COMMAND --help`
+lists a subcommand's.
+
+## Examples
+
+The first sync to a server you can log in to with `ssh myserver` sets the
+server up over ssh, then pushes the contents of `~/Photos`:
+
+```sh
+irsync -av ~/Photos/ myserver:/srv/photos/
+```
+
+Later runs of the same command go over iroh and send only what changed.
+
+Pull the copy back into a new directory:
+
+```sh
+irsync -av myserver:/srv/photos/ ~/Photos-copy/
+```
+
+List the exports this client may reach, then the files a pull would fetch:
+
+```sh
+irsync myserver:
+irsync myserver:/srv/photos/
+```
+
+Push again and delete on the server what is gone from the source. Run it
+with `-n` first to see what would change:
+
+```sh
+irsync -avn --delete ~/Photos/ myserver:/srv/photos/
+irsync -av --delete ~/Photos/ myserver:/srv/photos/
+```
 
 ## Operands
 
 Each operand is a local path or `HOST:PATH`. `HOST` is a host alias from the
 [configuration](configuration.md#hosts) or an `EndpointId`; `PATH` is resolved
 on the daemon's machine, as described in
-[Remote addresses](remote-addresses.md).
-
-A `HOST` that is neither is taken as an ssh destination, such as `myserver` or
-`me@myserver`. `irsync` then sets that machine up over ssh before it syncs: it
-copies itself there when the server has no matching build, grants this client
-access to any path (`[immediate]`), starts the daemon and saves `HOST` as an
-alias with `ssh = "HOST"`. It prints what it did. Later runs dial the alias
-over iroh and do not use ssh. A sync to an alias with `ssh` dials once and
-waits at most 15 seconds (`--dial-retries` sets how often it retries first).
-When the daemon does not answer, `irsync` checks the server over ssh once,
-starts the daemon again or updates the alias, and retries with the usual
-`--dial-retries` and `--reconnect` settings. That check never adds back an
-immediate grant removed on the server. When ssh itself fails, `irsync` says
-so and tries the daemon once more with the usual settings; if that fails too,
-it reports both errors. A daemon that answers and refuses the client is never
-handled over ssh. See
-[the quick way](../tutorial/first-sync.md#the-quick-way-over-ssh).
+[Remote addresses](remote-addresses.md). A `HOST` that is neither is taken as
+an ssh destination; see [Setup over ssh](#setup-over-ssh).
 
 - A `:` before the first `/` makes an operand remote, as in rsync. To name a
   local file whose name has a colon, write `./name:with:colons`.
@@ -53,11 +96,31 @@ handled over ssh. See
 
 The daemon honours the client's flags in both directions, filters included.
 
+### Setup over ssh
+
+A `HOST` that is neither an alias nor an `EndpointId` is taken as an ssh
+destination, such as `myserver` or `me@myserver`. `irsync` then sets that
+machine up over ssh before it syncs: it copies itself there when the server
+has no matching build, grants this client access to any path
+(`[immediate]`), starts the daemon and saves `HOST` as an alias with
+`ssh = "HOST"`. It prints what it did. Later runs dial the alias over iroh
+and do not use ssh.
+
+A sync to an alias with `ssh` dials once and waits at most 15 seconds
+(`--dial-retries` sets how often it retries first). When the daemon does not
+answer, `irsync` checks the server over ssh once, starts the daemon again or
+updates the alias, and retries with the usual `--dial-retries` and
+`--reconnect` settings. That check never adds back an immediate grant removed
+on the server. When ssh itself fails, `irsync` says so and tries the daemon
+once more with the usual settings; if that fails too, it reports both errors.
+A daemon that answers and refuses the client is never handled over ssh. See
+[Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
+
 ## rsync-compatible flags
 
-These have rsync's spelling and meaning. The flags that have rsync's spelling
-and a different meaning follow in
-[the next table](#rsync-spelling-different-meaning).
+These have rsync's spelling and meaning. Flags with rsync's spelling and a
+different meaning have a section of their own:
+[rsync spelling, different meaning](#rsync-spelling-different-meaning).
 
 | Flag | Meaning |
 | --- | --- |
@@ -94,11 +157,10 @@ and a different meaning follow in
 | `--append` | Extend a destination file that is shorter than the source with the source's tail, trusting what is already there. A destination that is not shorter is skipped. |
 | `--append-verify` | Like `--append`, but the existing prefix is verified too. |
 | `--fsync` | Flush each received file to disk before renaming it into place, on whichever side receives (the daemon, on a push). Off by default, as in rsync: a power loss or kernel crash in the seconds after a run can then leave a file at its name with the right size and time but not its content, which the next run's quick check does not notice (`-c` does). An export's `fsync = true` turns it on for every push into it. |
-| `--paranoid` | Guard against source files that change during the sync, including writers that leave the times alone (memory-mapped databases; tested on ZFS 2.4 clones only, see the page linked below). The sending side (on a pull, the daemon) sends each file from a reflink clone where the filesystem can make one (btrfs, xfs, ZFS 2.2 and newer with block cloning, bcachefs, APFS), and otherwise hashes the file a second time before the receiver places it. At the end it checks every listed file again and sends those that changed. Files that vanished give exit 24. Cost: one clone and one delete per sent file where cloning works; an extra full read per sent file elsewhere; one `stat` per listed file at the end. Clones live in `.irsync-clones-<uid>` in a writable directory on the file's filesystem. See [Files that change during a sync](../explanation/correctness.md#files-that-change-during-a-sync). |
+| `--paranoid` | Guard against source files that change during the sync, including writers that leave the times alone (memory-mapped databases; tested on ZFS 2.4 clones only). The sending side (on a pull, the daemon) sends each file from a reflink clone where the filesystem can make one (btrfs, xfs, ZFS 2.2 and newer with block cloning, bcachefs, APFS), and otherwise hashes the file a second time before the receiver places it. At the end it checks every listed file again and sends those that changed. Files that vanished give exit 24. Cost: one clone and one delete per sent file where cloning works; an extra full read per sent file elsewhere; one `stat` per listed file at the end. Clones live in `.irsync-clones-<uid>` in a writable directory on the file's filesystem. See [Files that change during a sync](../explanation/correctness.md#files-that-change-during-a-sync). |
 | `--ignore-errors` | Run the deletion pass even when a listing was cut short by I/O errors. |
 | `--stats` | Print a block of transfer statistics at the end. |
 | `-i`, `--itemize-changes` | Print rsync's per-file change summary, the itemize codes. |
-| `-h`, `--help` | Print the flags. |
 | `-V`, `--version` | Print the version and the commit it was built from. |
 
 Filter rules apply in command-line order, and the first rule that matches
@@ -115,6 +177,7 @@ wins.
 | `--progress` | Draws the live progress block (see [Output](#output)) when stdout is a terminal. | Prints the progress of each file. |
 | `-P` | The same as `--progress`. irsync always keeps partial files. | The same as `--partial --progress`. |
 | `--info SPEC` | Only `progress1` and `progress2` are read, as `--progress`; the rest is ignored. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
+| `-h`, `--help` | Print the flags and exit, also when other flags or operands are given. | `-h` is `--human-readable`, except on its own, where it prints the help. |
 
 ### Deletions
 
@@ -155,7 +218,7 @@ These have no rsync counterpart.
 | Flag | Meaning |
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the host entry, else from `[client]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
-| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `<N>[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the host entry, else from `[client]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
+| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the host entry, else from `[client]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
 | `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the host entry, else from `[client]`, else 4. |
 | `--relay URL` | Use this relay server instead of the host entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the host entry, else from `[client]`. |
@@ -180,7 +243,7 @@ alias's table, then `[client]`, then the built-in default. See
 
 | Command | What it does |
 | --- | --- |
-| `irsync daemon` | Run the daemon. See below. |
+| `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
 | `irsync host`, `export`, `grant`, `id`, `config`, `show` | Manage aliases, exports, grants, identities and settings. See [Management commands](management.md). Each of the first five alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
@@ -218,8 +281,9 @@ Any other sync option given with a command is an error, for example
 ### irsync daemon
 
 ```text
-irsync daemon [--config PATH] [--passphrase-file PATH] [--listen ADDR]...
-              [--run-as-root-i-know-what-i-am-doing] [-v] [-q]
+irsync daemon [--config PATH] [--passphrase-file PATH]
+              [--listen ADDR]... [-v] [-q]
+              [--run-as-root-i-know-what-i-am-doing]
 ```
 
 Serves the exports in the config file to the peers they are granted to, until

@@ -1,0 +1,77 @@
+# Tests one version of irsync in a FreeBSD VM and, if everything passes,
+# hands back a tarball laid out like the release ones. FreeBSD is not a
+# release target yet; this is how a beta or a stable release is checked
+# there, and how a binary gets onto a FreeBSD machine to try.
+#
+# It only starts by hand:
+#
+#   gh workflow run freebsd.yml -f ref=v1.2.3
+#   gh run download <run-id> -n irsync-x86_64-unknown-freebsd
+#
+# It must never start on a push or a pull request, and never become part of
+# `CI result` (ci.yml) or of a release: a red FreeBSD run blocks nothing.
+# test_workflow_policy.py checks this.
+#
+# The commands are in .github/scripts/freebsd-vm.sh and tools/ci.sh (jobs
+# check and freebsd-build), so they also run on a FreeBSD machine by hand.
+# They are the scripts of the version under test, so a version from before
+# this workflow cannot be tested.
+
+name: FreeBSD
+run-name: FreeBSD ${{ inputs.freebsd }}, ${{ inputs.ref || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag or branch to test. Empty means the branch this run starts on.'
+        type: string
+        required: false
+      freebsd:
+        # 14 by default: a binary built on the oldest supported release
+        # also runs on newer ones, and not the other way round.
+        description: 'FreeBSD release'
+        type: string
+        default: '14'
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    name: FreeBSD ${{ inputs.freebsd }} x86_64
+    runs-on: ubuntu-latest
+    # Nothing is cached in the VM, so every run builds from scratch.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          # The whole history, so the build can bake in the commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check that this version has the FreeBSD build
+        run: |
+          if [ ! -x .github/scripts/freebsd-vm.sh ]; then
+            echo "::error::This version has no FreeBSD build (.github/scripts/freebsd-vm.sh is missing). Test a version from after it was added."
+            exit 1
+          fi
+
+      # Boots the VM, copies the checkout in, runs the script as root, and
+      # copies the folder back (freebsd-out/ with the tarball).
+      - name: Test and build in a FreeBSD VM
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b # v1.6.0
+        with:
+          release: ${{ inputs.freebsd }}
+          arch: x86_64
+          sync: rsync
+          run: .github/scripts/freebsd-vm.sh
+
+      # No `if:`: a failed test means no tarball.
+      - name: Upload the tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: irsync-x86_64-unknown-freebsd
+          path: freebsd-out/
+          if-no-files-found: error

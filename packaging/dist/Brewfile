@@ -1,0 +1,5 @@
+# dist (0.34.0) runs "brew bundle exec" in this directory on the macOS build
+# runner when dist-workspace.toml has [dist.dependencies.homebrew], and that
+# fails without a Brewfile here. The one release.yml writes is at the top of
+# the checkout. Keep the two tables the same; packaging/tests checks it.
+brew "pandoc"

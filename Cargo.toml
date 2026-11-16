@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2021"
 rust-version = "1.96"
 license = "MIT"
@@ -27,6 +27,8 @@ iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
 fastcdc = "5"
 blake3 = "1"
+# Only for the count of this process's open files (telemetry).
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 metrics = "0.24"
 metrics-util = "0.20"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

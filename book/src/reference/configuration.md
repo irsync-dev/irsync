@@ -15,7 +15,7 @@ into `irsync.toml`.
 
 ## Values
 
-- A **duration** is `<N>[s|m|h|d]`, such as `90s`, `30m`, `1h` or `7d`; a
+- A **duration** is `N[s|m|h|d]`, such as `90s`, `30m`, `1h` or `7d`; a
   number without a unit, as a string or as a TOML integer, is seconds.
 - A **path** may start with `~`, which stands for the home directory.
 - An **`EndpointId`** is hex or z-base-32, as iroh prints it.
@@ -36,14 +36,15 @@ dial_retries = 4
 dht = true
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
-relay_mode = "default"       # or "disabled": direct connections only
+relay_mode = "default"       # or "disabled": no relay
 congestion = "bbr"           # or "cubic", for pushes
 
 [daemon]
 identity = "~/.config/irsync/daemon_ed25519"
 idle_timeout = "30m"         # "0" disables
 dormant_session_timeout = "7d"
-listen = ["0.0.0.0:4000", "[::]:4000"]   # no default: any address, a port picked at start
+# No default: any address, on a port picked at start.
+listen = ["0.0.0.0:4000", "[::]:4000"]
 portmap = true               # UPnP, PCP and NAT-PMP
 relay = "https://relay.example.net"      # no default: n0's relays
 relay_mode = "default"       # or "disabled"
@@ -61,8 +62,8 @@ mdns = true
 otlp_endpoint = "http://localhost:4318"  # no default: off
 otlp_protocol = "http"       # or "grpc"
 
-# One [hosts.ALIAS] table per remote. On a daemon's machine the same tables
-# name the clients that exports are granted to.
+# One [hosts.ALIAS] table per remote. On a daemon's machine the
+# same tables name the clients that exports are granted to.
 [hosts.myserver]
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 relay = "https://relay.example.net"   # the rest is optional
@@ -74,13 +75,13 @@ reconnect = "1h"
 dial_retries = 2
 dht = false
 mdns = false
-ssh = "myserver"             # set by the SSH setup: the ssh destination
+ssh = "myserver"             # set by the SSH setup
 
 [hosts.myclient]
 endpoint_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 
-# What the daemon shares and with whom. Entries in rw and ro are aliases
-# from [hosts.*] or EndpointIds.
+# What the daemon shares and with whom. Entries in rw and ro are
+# aliases from [hosts.*] or EndpointIds.
 [all]                        # grants for every export
 rw = []
 ro = []
@@ -96,12 +97,12 @@ path = "/srv/docs"
 read_only = true
 ro = ["myclient"]
 
-# Peers that may reach any path this account can, read-write. The SSH
-# setup adds the client here.
+# Peers that may reach any path this account can, read-write.
+# The SSH setup adds the client here.
 [immediate]
 rw = ["myclient"]
 
-# Made by the daemon the first time an [immediate] peer used /srv/music.
+# Made by the daemon when an [immediate] peer first used it.
 [exports.auto-srv-music]
 path = "/srv/music"
 auto = true
@@ -191,8 +192,8 @@ take effect at the next start.
 | `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
-| `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |
 | `immediate` | `true` | Honour the `[immediate]` grants. `false`: the daemon ignores `[immediate]` and makes no automatic exports, so peers reach only the exports granted to them. |
+| `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |
 
 `[daemon.discovery]` says how clients may find the daemon:
 
@@ -226,7 +227,7 @@ be `all`.
 | `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
 | `rw` | `[]` | Peers with read-write access: aliases or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
-| `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer (see below). |
+| `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer; see [Immediate grants](#immediate-grants). |
 
 `[all]` has `rw` and `ro` too; its grants apply to every export except
 automatic ones (`auto = true`).

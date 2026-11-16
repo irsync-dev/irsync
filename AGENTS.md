@@ -14,7 +14,11 @@ and checks the system tools;
 ## Tests
 
 A change that touches only Markdown files, `book/` or `site/` needs no
-tests, clippy or fmt; CI skips them too. The site workflow
+tests, clippy or fmt; CI skips them too. The exception is what the man
+pages are built from: the book chapters named in `tools/build-man.sh` and
+`packaging/man/`. Run `python3 -m unittest discover -s tools/tests` for those;
+they need pandoc and mandoc. `tools/build-man.sh OUTDIR` builds the three
+pages into `OUTDIR` to look at. The site workflow
 (`.github/workflows/site.yml`) still builds and checks the book and site
 after the push to `main`.
 
@@ -34,13 +38,19 @@ Full regression, before committing to `main` or pushing:
 tools/ci.sh check
 ```
 
-This is the script CI runs: formatting, the tests of `tools/dev-setup.sh`,
-clippy with and without OpenTelemetry, every test including those five slow
-ones (no other test is ignored), and the doc tests. It needs cargo-nextest.
+This is the script CI runs: formatting, the tests of `tools/dev-setup.sh`
+and of the man page build (it builds the pages and checks them), clippy
+with and without OpenTelemetry, every test including those five slow ones
+(no other test is ignored), and the doc tests. It needs cargo-nextest,
+pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
 `workflows` (after a change under `.github/`) and `release-build` (after a
 change to the release build or packaging; Linux only).
+
+`tools/ci.sh freebsd-build` builds the FreeBSD tarball, on FreeBSD x86_64
+only. CI does not run it; the hand-started FreeBSD workflow does (see
+`book/src/contributing/releasing.md`).
 
 A new test of irsync through the fault layer should run in-process on
 tokio's paused clock (`with_netsim` in `crates/irsync/tests/common`, as

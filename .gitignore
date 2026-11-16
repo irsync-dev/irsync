@@ -9,3 +9,5 @@
 /book/book
 # npm packages for the landing page build (site/package-lock.json pins them)
 /site/node_modules
+# the installer a local `dist build --artifacts=global` writes here
+/irsync-installer.sh

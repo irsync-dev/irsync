@@ -108,6 +108,28 @@ differ, the code is what shipped.
     settings changed by hand drift unseen. The org's two-factor requirement
     has no API, so the script only reports it.
 
+15. **The tap formula is the attested `irsync.rb` plus two lines.**
+    `publish-homebrew.yml` runs `.github/scripts/formula-man-pages.sh` on the
+    formula it downloads from the release, before it pushes to the tap. It
+    runs before the tap is checked out, so no repo code runs while
+    `HOMEBREW_TAP_TOKEN` is on disk. The
+    script inserts `man1.install` and `man5.install` lines ahead of dist's
+    `leftover_contents` line. Why: dist has no hook for this, and its
+    formula puts every leftover file in `pkgshare`, where `man` doesn't look.
+    The script comes from the release's own tag. It fails if dist's template
+    changes and the anchor line goes missing. Cost if wrong: someone
+    comparing the tap to the release's `irsync.rb` sees a difference. The
+    script and its test show exactly which lines.
+
+16. **`irsync-installer.sh` is ours, not dist's.** Since the release after
+    0.1.0-beta.3, `packaging/installer/build-installer.sh` generates it,
+    run by dist through `extra-artifacts` in the `build-global-artifacts`
+    job. It has the SHA-256 checksums of the three tarballs written into
+    it, and it is attested with the other release files like before. Why:
+    dist's installer can't install the man pages. Cost if wrong: we maintain a small POSIX
+    shell script ourselves, and a change to the tarball names must change it
+    too.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the

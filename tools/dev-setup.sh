@@ -9,8 +9,8 @@
 # are held to the versions CI uses: another version is replaced. (mdbook is
 # not: any version builds the book.) Points git at the repo's hooks. Checks
 # the rest, which comes from the system package manager, and says which
-# package to install. Safe to run again. With all of it in place,
-# tools/ci.sh runs the CI checks here.
+# package to install (apt, brew, or pkg on FreeBSD). Safe to run again. With
+# all of it in place, tools/ci.sh runs the CI checks here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
 # something required is missing, else 0. Missing optional tools, and ones
@@ -62,6 +62,13 @@ hint() {
             python3) echo "brew install python" ;;
             node) echo "brew install node" ;;
             *) echo "brew install $1" ;;
+        esac
+    elif [ "$os" = FreeBSD ]; then
+        case $1 in
+            cc) echo "pkg install llvm" ;;
+            node) echo "pkg install node npm" ;;
+            pandoc) echo "pkg install hs-pandoc" ;;
+            *) echo "pkg install $1" ;;
         esac
     else
         case $1 in
@@ -209,16 +216,24 @@ actionlint_sha256() {
         linux_arm64) echo 401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0 ;;
         darwin_amd64) echo 28e5de5a05fc558474f638323d736d822fff183d2d492f0aecb2b73cc44584f5 ;;
         darwin_arm64) echo 2693315b9093aeacb4ebd91a993fea54fc215057bf0da2659056b4bc033873db ;;
+        freebsd_amd64) echo f6eec0e5efd17183a954f0d88280885b7a58f39808050cdfcd7f068fc1734bc8 ;;
     esac
 }
 sha256_of() {
-    if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
+    # sha256 is FreeBSD's own; -q prints only the digest.
+    if have sha256sum; then
+        sha256sum "$1"
+    elif have shasum; then
+        shasum -a 256 "$1"
+    else
+        sha256 -q "$1"
+    fi | awk '{print $1}'
 }
 # Prints nothing and returns 1 if it cannot install; the caller reports.
 install_actionlint() {
     local plat want d got rc=0
     case $(uname -m) in
-        x86_64) plat=amd64 ;;
+        x86_64 | amd64) plat=amd64 ;; # FreeBSD says amd64
         aarch64 | arm64) plat=arm64 ;;
         *) return 1 ;;
     esac
@@ -272,6 +287,10 @@ else
     bad "GNU rsync 3.1 or newer${rsync_v:+, have $rsync_v}" "$(hint rsync)"
 fi
 
+# pandoc and mandoc build and check the man pages (tools/build-man.sh).
+if have pandoc; then ok "pandoc"; else warn "pandoc, for the man pages" "$(hint pandoc)"; fi
+if have mandoc; then ok "mandoc"; else warn "mandoc, for the man pages" "$(hint mandoc)"; fi
+
 # Python 3.11+ (tomllib), for the release, packaging and site scripts.
 py_v=""
 if have python3; then
@@ -288,6 +307,10 @@ if have python3 && python3 -c 'import yaml' >/dev/null 2>&1; then
     ok "PyYAML"
 elif [ "$os" = Darwin ]; then
     warn "PyYAML, for tools/ci.sh workflows" "python3 -m pip install pyyaml"
+elif [ "$os" = FreeBSD ]; then
+    # The package is named after the Python it is for: py311-pyyaml.
+    py_pkg=$(echo "${py_v:-3.11}" | awk -F. '{print "py" $1 $2 "-pyyaml"}')
+    warn "PyYAML, for tools/ci.sh workflows" "pkg install $py_pkg"
 else
     warn "PyYAML, for tools/ci.sh workflows" "apt install python3-yaml"
 fi

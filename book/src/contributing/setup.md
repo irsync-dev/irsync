@@ -27,6 +27,9 @@ rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
 it again whenever you like.
 
+It works on Linux, macOS and FreeBSD, and names the package for each one's
+package manager (`apt`, `brew`, `pkg`).
+
 - **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
   picks up; CI and releases use the same file. To move to a newer Rust, change
   the version there and run the full regression.
@@ -40,6 +43,13 @@ it again whenever you like.
   `crates/irsync/tests/ssh_release.rs`, which builds a small release
   tarball and downloads it from a local directory. GNU tar needs the `xz`
   program for that (`apt install xz-utils`); macOS's tar has xz built in.
+- **pandoc and mandoc**, for the man pages: `tools/build-man.sh OUTDIR`
+  builds them from the book with pandoc, and the tests in `tools/tests`
+  check them with mandoc. `tools/dev-setup.sh` checks both and says how to
+  install them. The `check` job fails without them.
+- **groff**, optional. `test_groff_renders_without_warnings` renders each
+  page with it and skips without it. It runs on Linux CI. On a Mac,
+  `nix-shell -p groff` is one way to get it.
 
 ## Continuous integration
 
@@ -60,7 +70,7 @@ The `check` job installs GNU rsync and runs, in this order:
 
 ```sh
 cargo fmt --all --check
-python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh
+python3 -m unittest discover -s tools/tests    # tests tools/dev-setup.sh and the man pages
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings
 cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all
@@ -72,10 +82,18 @@ build would.
 
 The `release-build` job runs the release build itself for the two
 Linux targets (x86_64 and arm64 musl): `dist build`, which runs
-`packaging/dist/build.sh`, on the same runners as a release. A change that
+`packaging/dist/build.sh`, on the same runners as a release. It checks that `release.yml` is what
+`dist generate` makes, that each tarball holds the three man pages, and
+that our installer, run on the tarball with a temporary home, installs a
+working `irsync` and pages that `man` finds. A change that
 would break a release fails here, before anyone tags it. On your machine it
 builds the one musl target that matches it, on Linux only, and needs dist
 and `musl-gcc`.
+
+The `freebsd-build` job builds the FreeBSD tarball with the same build
+script. It runs on FreeBSD x86_64 only, and CI does not run it. GitHub runs
+it in a workflow you start by hand: see
+[Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
 
 The `deny` job checks the dependencies with `cargo deny`, and the
 `workflows` job runs the workflow rule tests and actionlint, which needs

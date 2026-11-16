@@ -602,7 +602,8 @@ fn sweep_at(root: &OwnedFd) -> io::Result<usize> {
         // Only real directories: a symlink is never opened.
         let dir = match openat(root, name.as_os_str(), dir_flags(), Mode::empty()) {
             Ok(fd) => fd,
-            Err(nix::Error::ENOENT | nix::Error::ENOTDIR | nix::Error::ELOOP) => continue,
+            Err(nix::Error::ENOENT | nix::Error::ENOTDIR) => continue,
+            Err(e) if crate::fs::safe::is_symlink_errno(e) => continue,
             Err(e) => return Err(errno(e)),
         };
         // Held while the folder goes, so no session takes it meanwhile;

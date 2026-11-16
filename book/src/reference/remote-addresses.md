@@ -72,10 +72,11 @@ copies the directory's contents; one without copies the directory itself.
 ## Copying one file
 
 A source may be a single file, in either direction. It lands where rsync
-would put it. `T` is the destination as typed, and `L` the local destination
-on a pull.
+would put it, which depends on what the destination is before the copy. `T`
+is the destination as typed on a push, and `L` the local destination on a
+pull:
 
-| Command | `T` is a directory | `T` does not exist | `T` is a file |
+| Command | If a directory | If missing | If a file |
 | --- | --- | --- | --- |
 | `irsync f.iso myserver:T` | `T/f.iso` | a file named `T` | `T` is updated |
 | `irsync f.iso myserver:T/` | `T/f.iso` | directory `T` is created, then `T/f.iso` | error |

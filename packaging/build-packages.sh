@@ -30,7 +30,17 @@ for pair in x86_64:amd64:x86_64 aarch64:arm64:aarch64; do
     [ -f "$bin/irsync" ] && [ -f "$bin/fileset" ] || {
         echo "$archive: irsync and fileset not found" >&2; exit 1; }
 
-    export IRSYNC_VERSION="$version" IRSYNC_ARCH="$deb_arch" IRSYNC_BIN_DIR="$bin"
+    # The man pages sit next to the binaries. Compress them here, without a
+    # name or timestamp, so the same input gives the same bytes.
+    mandir="$work/$triple_arch/man-gz"
+    for page in man1/irsync.1 man1/fileset.1 man5/irsync.toml.5; do
+        [ -f "$bin/man/$page" ] || { echo "$archive: man/$page not found" >&2; exit 1; }
+        mkdir -p "$mandir/$(dirname "$page")"
+        gzip -9n -c "$bin/man/$page" > "$mandir/$page.gz"
+    done
+
+    export IRSYNC_VERSION="$version" IRSYNC_ARCH="$deb_arch" IRSYNC_BIN_DIR="$bin" \
+        IRSYNC_MAN_DIR="$mandir"
     IRSYNC_RELEASE= nfpm package --config "$here/nfpm.yaml" --packager deb \
         --target "$out/irsync_${version}_${deb_arch}.deb"
     IRSYNC_RELEASE=1 nfpm package --config "$here/nfpm.yaml" --packager rpm \

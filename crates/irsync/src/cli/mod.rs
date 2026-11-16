@@ -376,6 +376,13 @@ pub enum HostCmd {
         #[arg(short, long)]
         force: bool,
     },
+    /// Rename a host alias, and every grant that names it.
+    Rename {
+        /// The current alias.
+        old: String,
+        /// The new alias.
+        new: String,
+    },
     /// List host aliases.
     List,
 }
