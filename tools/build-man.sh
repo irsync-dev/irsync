@@ -8,7 +8,8 @@
 # OUTDIR/man5/irsync.toml.5, and fails on any pandoc warning. Each page is a
 # header from packaging/man (NAME, SEE ALSO and what else the book does not
 # say) around one or more book chapters; packaging/man/filter.lua turns the
-# chapters into man sections.
+# chapters into man sections, and packaging/man/normalize.awk makes the
+# result the same from an old pandoc as from a new one.
 #
 # The footer names the version in packaging/dist/dist.toml. The date is that
 # of the last commit, or IRSYNC_MAN_DATE=YYYY-MM-DD when set (for tests and
@@ -87,9 +88,8 @@ echo "$pages" | while read -r file section title header chapters; do
         -V title="$title" -V section="$section" -V footer="irsync $version" \
         -V date="$date" -V header="irsync manual" \
         -o "$tmp/$file" "$tmp/$file.md"
-    # pandoc starts every section with a paragraph macro, which mandoc warns
-    # about.
+    # Old and new pandoc write fonts and code blocks differently; this makes
+    # the page the same from both.
     mkdir -p "$out/man$section"
-    awk '!($0 == ".PP" && prev ~ /^\.S[HS]( |$)/) { print } { prev = $0 }' \
-        "$tmp/$file" >"$out/man$section/$file"
+    awk -f "$man/normalize.awk" "$tmp/$file" >"$out/man$section/$file"
 done
