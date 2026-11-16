@@ -44,7 +44,8 @@ The first stable release will be v0.1.0. Until it is out, add `--beta`.
 
 Then `man irsync`, `man fileset` and `man irsync.toml` work. The script
 never edits your shell startup files. If `~/.local/bin` is not on your
-`PATH`, it prints the line to add. To remove what it installed (your config
+`PATH`, it says how to add it; on Linux, logging out and in again is
+usually enough. To remove what it installed (your config
 and state stay), run it with `--uninstall`. Drop `--beta` here too once
 v0.1.0 is out:
 

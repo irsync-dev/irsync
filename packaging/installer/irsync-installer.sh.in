@@ -243,17 +243,47 @@ edits shell startup files."
     *":$bin:"* | *":$bin/:"*) ;;
     *)
       on_path=no
+      # Most Linux systems put ~/.local/bin on PATH at login, but only when
+      # it exists by then (Debian's and Ubuntu's ~/.profile, Fedora's
+      # ~/.bashrc, systemd's user environment). So a new login is often all
+      # it takes. macOS does not do this.
+      case $os in
+        Linux)
+          missing="$bin is not on your PATH. Log out and in again first: most Linux
+  systems add it at login once it exists. If it is still missing then," ;;
+        *) missing="$bin is not on your PATH. To add it," ;;
+      esac
+      # SHELL is the login shell, which is the best guess at the shell the
+      # next terminal starts. The parent process is no better: it is the
+      # install script's sh.
       shell=${SHELL-}
+      export_line="  export PATH=\"\$HOME/.local/bin:\$PATH\""
       case ${shell##*/} in
-        fish) say "$bin is not on your PATH. To add it, run: fish_add_path ~/.local/bin" ;;
-        *)
-          case ${shell##*/} in
-            zsh) rc='~/.zshrc' ;;
-            bash) rc='~/.bashrc' ;;
-            *) rc='~/.profile' ;;
+        fish) say "$missing run: fish_add_path ~/.local/bin" ;;
+        zsh) say "$missing put this line in ~/.zshrc:
+$export_line" ;;
+        bash)
+          # Terminals on macOS start a login shell, which does not read
+          # ~/.bashrc.
+          case $os in
+            Darwin) rc='~/.bash_profile' ;;
+            *) rc='~/.bashrc' ;;
           esac
-          say "$bin is not on your PATH. To add it, put this line in $rc:
-  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+          say "$missing put this line in $rc:
+$export_line" ;;
+        sh | dash | ash | ksh | ksh93 | mksh) say "$missing put this line in ~/.profile:
+$export_line" ;;
+        csh | tcsh) say "$missing put this line in ~/.cshrc:
+  set path = (~/.local/bin \$path)" ;;
+        *)
+          if [ -n "$shell" ]; then
+            unknown="this script does not know your shell, ${shell##*/}"
+          else
+            unknown="SHELL is not set, so this script cannot tell which shell you use"
+          fi
+          say "$missing add it in your shell's startup file
+  ($unknown). In sh, bash or zsh the line is:
+$export_line" ;;
       esac ;;
   esac
 
