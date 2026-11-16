@@ -107,8 +107,10 @@ class DevSetupCheckTests(unittest.TestCase):
     def test_man_page_tools_are_optional_and_named(self):
         r, out = self.check()
         self.assertEqual(r.returncode, 0, out)
-        for tool, install in [("pandoc", "brew install pandoc|apt install pandoc"),
-                              ("mandoc", "brew install mandoc|apt install mandoc")]:
+        for tool, install in [
+            ("pandoc", "brew install pandoc|apt install pandoc|pkg install hs-pandoc"),
+            ("mandoc", "brew install mandoc|apt install mandoc|pkg install mandoc"),
+        ]:
             self.assertRegex(out, rf"missing +{tool}, for the man pages.*\(optional\)")
             self.assertRegex(out, install)
         r, out = self.check(pandoc="echo pandoc 3.1.3", mandoc="echo mandoc")

@@ -96,6 +96,8 @@ needs_release_build() {
     need musl-gcc musl-gcc --version
     need pandoc pandoc --version
     need man command -v man
+    need mandoc mandoc -T ascii /dev/null
+    need groff groff --version
 }
 needs_freebsd_build() {
     # FreeBSD calls x86_64 amd64.
@@ -158,7 +160,7 @@ job_workflows() {
 # release build shows up before a tag is pushed.
 job_release_build() {
     local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
-    local t standins=() global=() tmp version found
+    local t standins=() global=() tmp version found pages warnings
     # release.yml must be what dist generates from dist-workspace.toml.
     run dist generate --check
     run dist build --artifacts=local "--target=$target"
@@ -177,6 +179,29 @@ job_release_build() {
             exit 1
         fi
     done
+
+    # The pages as this runner's pandoc built them: its version differs
+    # from runner to runner, and tools/ci.sh check does not run on all of
+    # them for a pull request. The same checks as tools/tests.
+    printf '\n== the pages in the tarball are clean for mandoc and groff\n'
+    pages=$(mktemp -d)
+    tar -xJf "target/distrib/irsync-$target.tar.xz" -C "$pages"
+    for page in man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+        page=$pages/irsync-$target/$page
+        if ! mandoc -T lint -W warning "$page"; then
+            echo "ci.sh: mandoc warns about $page" >&2
+            rm -rf "$pages"
+            exit 1
+        fi
+        warnings=$(groff -k -t -man -Tutf8 -ww -z "$page" 2>&1 | grep -v 'cannot adjust line' || true)
+        if [ -n "$warnings" ]; then
+            printf '%s\n' "$warnings" | head -20 >&2
+            echo "ci.sh: groff warns about $page" >&2
+            rm -rf "$pages"
+            exit 1
+        fi
+    done
+    rm -rf "$pages"
 
     printf '\n== our installer installs from the tarball\n'
     tmp=$(mktemp -d)
