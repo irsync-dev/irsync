@@ -5,18 +5,70 @@
 -- "<!-- end of chapters -->" before the rest of the header. Blocks before the
 -- first marker and after the last one are the header's, and stay as written.
 
--- The man page each chapter is part of, by its path under book/src, and the
--- chapter's title.
+-- Each chapter that goes into a man page, by its path under book/src: the
+-- page, the chapter's title, and how its headings become sections.
+--
+-- A page's first chapter has no `section`: its title is dropped, its "##"
+-- headings become sections and "###" subsections. What comes before its
+-- first "##" is the page's SYNOPSIS (a code block) and DESCRIPTION; with
+-- `synopsis`, the SYNOPSIS is a copy of the first code block under the "##"
+-- heading of that anchor instead. Any other chapter becomes the one section
+-- `section`, and its "##" headings its subsections.
+--
+-- The titles are checked against the chapters: a link whose text is a
+-- chapter's title is rewritten to name the page or section instead.
 local PAGE = {
-  ["reference/command-line.md"] = { "irsync(1)", "Command line" },
-  ["reference/management.md"] = { "irsync(1)", "Management commands" },
-  ["reference/configuration.md"] = { "irsync.toml(5)", "Configuration" },
-  ["fileset/reference.md"] = { "fileset(1)", "fileset reference" },
+  ["reference/command-line.md"] = { page = "irsync(1)", title = "Command line" },
+  ["reference/management.md"] = {
+    page = "irsync(1)", title = "Management commands", section = "MANAGEMENT COMMANDS" },
+  ["reference/remote-addresses.md"] = {
+    page = "irsync(1)", title = "Remote addresses", section = "REMOTE ADDRESSES" },
+  ["reference/files-and-state.md"] = {
+    page = "irsync(1)", title = "Files and state", section = "FILES" },
+  ["reference/limitations.md"] = {
+    page = "irsync(1)", title = "Known limitations", section = "LIMITATIONS" },
+  ["reference/configuration.md"] = { page = "irsync.toml(5)", title = "Configuration" },
+  ["fileset/reference.md"] = {
+    page = "fileset(1)", title = "fileset reference", synopsis = "commands" },
 }
+
+-- Sections of irsync(1) that move to the end of the page, in this order,
+-- before SEE ALSO, where man readers look for them. The book keeps its
+-- chapter order.
+local TAIL = { "ENVIRONMENT", "FILES", "EXIT STATUS", "LIMITATIONS" }
+
 local BOOK = "https://irsync.org/book/"
 
+-- Parts of the book that explain rather than instruct. A man page names
+-- their pages as pages of the book, without a URL, so that the few URLs it
+-- gives are the how-to guides and tutorials a reader acts on.
+local IN_BOOK = { "explanation/", "contributing/" }
+
+-- Tables whose first column holds one of these become tagged lists, the
+-- man layout for options, commands, variables and configuration keys.
+local TERMS = {
+  ["Flag"] = true, ["Option"] = true, ["Command"] = true,
+  ["Variable"] = true, ["Key"] = true, ["rsync option"] = true,
+}
+
+-- Where text starts at an 80-column terminal, and the last column it may
+-- use: groff's line is 78 columns, man indents a section's text by 7.
+local INDENT, LINE = 7, 78
+
+-- pandoc writes a table column of width w as w * 70 columns.
+local PANDOC_WIDTH = 70
+
+local stringify = pandoc.utils.stringify
+
 local function upper(inlines)
-  return pandoc.text.upper(pandoc.utils.stringify(inlines))
+  return pandoc.text.upper(stringify(inlines))
+end
+
+-- The anchor mdbook gives a heading.
+local function slug(inlines)
+  local s = pandoc.text.lower(stringify(inlines))
+  s = s:gsub("%s", "-"):gsub("[^%w_%-\128-\255]", "")
+  return s
 end
 
 -- Resolves a relative link path against a chapter's directory.
@@ -32,55 +84,106 @@ local function resolve(dir, path)
   return table.concat(parts, "/")
 end
 
--- Rewrites one link found in `chapter` (nil in the header) of `page`.
--- Inside a table, `notes` is a list: a link into the book then keeps only
--- its text, and its text and URL are added to `notes` for a paragraph after
--- the table. A URL is wider than most columns, and mandoc widens a column to
--- its longest word, which pushes the table past the right edge.
-local function link(el, chapter, page, notes)
+-- The man heading of each heading of the page's chapters, by chapter and
+-- anchor. "" stands for the chapter itself.
+local function headings(chapters)
+  local map = {}
+  for _, c in ipairs(chapters) do
+    local spec = PAGE[c.path]
+    local m = { [""] = spec.section }
+    for _, b in ipairs(c.blocks) do
+      if b.t == "Header" and b.level > 1 then
+        local man
+        if spec.section or b.level > 2 then
+          man = stringify(b.content)
+        elseif stringify(b.content) == "Exit codes" then
+          man = "EXIT STATUS"
+        else
+          man = upper(b.content)
+        end
+        m[slug(b.content)] = man
+      end
+    end
+    map[c.path] = m
+  end
+  return map
+end
+
+-- A section of this page by its man heading. A link whose text names the
+-- section in other words, such as "the id commands" for "id", keeps it.
+local function section_ref(text, man)
+  local s = stringify(text)
+  if pandoc.text.lower(s) ~= pandoc.text.lower(man)
+      and (" " .. pandoc.text.lower(s) .. " "):find(" " .. pandoc.text.lower(man) .. " ", 1, true) then
+    return text
+  end
+  return pandoc.Inlines({ pandoc.Str(man) })
+end
+
+-- Rewrites the links of one page. `state` holds the page, the headings of
+-- its chapters and the book pages whose URL it has already given.
+local function link(el, chapter, state, notes)
   local target = el.target
   if target:match("^%a[%w+.-]*:") then
     -- An absolute URL stays. An autolink is written as plain text: as a
     -- link with no text of its own, mandoc warns about an empty block.
-    if pandoc.utils.stringify(el.content) == target then
+    if stringify(el.content) == target then
       return pandoc.Str(target)
     end
     return el
   end
-  if target:match("^#") then
-    return el.content
-  end
-  local path, anchor = target:match("^([^#]*)(.*)$")
-  if not chapter or not path:match("%.md$") then
+  local path, anchor = target:match("^([^#]*)#?(.*)$")
+  if not chapter then
     return el
+  elseif path == "" then
+    path = chapter
+  elseif not path:match("%.md$") then
+    return el
+  else
+    path = resolve(chapter:match("^(.*/)") or "", path)
   end
-  path = resolve(chapter:match("^(.*/)") or "", path)
   local text = el.content
-  local other = PAGE[path] and PAGE[path][1]
-  if other == page then
-    return text
-  end
-  -- "See [Configuration](configuration.md)" becomes "See irsync.toml(5)";
-  -- other text is followed by the page or the book's URL.
-  if other and pandoc.utils.stringify(text) == PAGE[path][2] then
-    return pandoc.Inlines({ pandoc.Str(other) })
-  end
-  local where = other or BOOK .. path:gsub("%.md$", ".html") .. anchor
-  if notes and not other then
-    for _, note in ipairs(notes) do
-      if note.url == where then
-        return text
-      end
+  local spec = PAGE[path]
+  if spec and spec.page == state.page then
+    local man = state.headings[path] and state.headings[path][anchor]
+    if not man then
+      error("filter.lua: book/src/" .. chapter .. " links to " .. target
+        .. ", which is not a heading of " .. state.page)
     end
-    table.insert(notes, { text = text:clone(), url = where })
+    return section_ref(text, man)
+  end
+  if spec then
+    -- "See [Configuration](configuration.md)" becomes "See irsync.toml(5)",
+    -- "[Remote addresses](remote-addresses.md#x)" "REMOTE ADDRESSES in
+    -- irsync(1)"; other text is followed by the page.
+    if stringify(text) == spec.title then
+      if spec.section then
+        return pandoc.Inlines({ pandoc.Str(spec.section .. " in " .. spec.page) })
+      end
+      return pandoc.Inlines({ pandoc.Str(spec.page) })
+    end
+    text:insert(pandoc.Space())
+    text:insert(pandoc.Str("(" .. spec.page .. ")"))
     return text
   end
-  text:insert(pandoc.Space())
-  text:insert(pandoc.Str("(" .. where .. ")"))
+  for _, part in ipairs(IN_BOOK) do
+    if path:sub(1, #part) == part then
+      text:extend({ pandoc.Space(), pandoc.Str("in"), pandoc.Space(),
+        pandoc.Str("the"), pandoc.Space(), pandoc.Str("book") })
+      return text
+    end
+  end
+  -- Another page of the book: the first link to it gives its URL, after
+  -- the block it is in. A URL is wider than most lines.
+  if not state.linked[path] then
+    state.linked[path] = true
+    local url = BOOK .. path:gsub("%.md$", ".html") .. (anchor ~= "" and "#" .. anchor or "")
+    table.insert(notes, { text = text:clone(), url = url })
+  end
   return text
 end
 
--- The paragraph after a table that gives the URLs of its links.
+-- The paragraph after a block that gives the URLs of its links.
 local function link_notes(notes)
   local para = pandoc.Inlines({})
   for i, note in ipairs(notes) do
@@ -95,11 +198,6 @@ local function link_notes(notes)
   return pandoc.Para(para)
 end
 
--- Text width of a man page's body at 80 columns, in characters, which is
--- what pandoc makes of a table column width of 1.0. A table takes 3 more
--- between columns and 1 at the end.
-local WIDTH = 70
-
 -- The inlines of a table cell, or nil when it holds more than one paragraph.
 local function cell_inlines(cell)
   if #cell.contents == 0 then
@@ -110,58 +208,15 @@ local function cell_inlines(cell)
   end
 end
 
--- A table as a list of its rows: the first cell is the term, then one line
--- "Header: value" per middle cell, then the last cell. This is the usual
--- man page layout for a list of options.
-local function as_list(t)
-  local labels = {}
-  for i, cell in ipairs(t.head.rows[1].cells) do
-    labels[i] = pandoc.utils.stringify(cell.contents)
-  end
-  local items = {}
-  for _, body in ipairs(t.bodies) do
-    for _, row in ipairs(body.body) do
-      local term = cell_inlines(row.cells[1])
-      if not term then
-        return nil
-      end
-      local defn = pandoc.Blocks({})
-      for i = 2, #row.cells - 1 do
-        local value = cell_inlines(row.cells[i])
-        if not value then
-          return nil
-        end
-        local line = pandoc.Inlines({ pandoc.Str(labels[i] .. ":"), pandoc.Space() })
-        line:extend(value)
-        defn:insert(pandoc.Plain(line))
-      end
-      defn:extend(row.cells[#row.cells].contents)
-      table.insert(items, { term, { defn } })
-    end
-  end
-  return pandoc.DefinitionList(items)
-end
-
--- Gives every table column a width, so that a table fits in 80 columns.
--- Without widths, a column of long text runs off the right edge. Each
--- column gets what its longest cell needs, or an equal share of what is
--- left when that is not enough, and never less than its longest word.
--- mandoc does not break a word, so a table whose longest words alone are
--- too wide becomes a list instead.
-function Table(t)
-  local n = #t.colspecs
-  local need, word = {}, {}
-  for i = 1, n do
-    need[i], word[i] = 1, 1
-  end
+-- The width of each column of a table, its longest cell, and whether
+-- every row fits on one line: tbl puts 3 columns between table columns
+-- and 1 after the last.
+local function measure_table(t)
+  local width = {}
   local function measure(rows)
     for _, row in ipairs(rows) do
       for i, cell in ipairs(row.cells) do
-        local text = pandoc.utils.stringify(cell.contents)
-        need[i] = math.max(need[i], utf8.len(text))
-        for w in text:gmatch("%S+") do
-          word[i] = math.max(word[i], utf8.len(w))
-        end
+        width[i] = math.max(width[i] or 0, utf8.len(stringify(cell.contents)))
       end
     end
   end
@@ -169,62 +224,229 @@ function Table(t)
   for _, body in ipairs(t.bodies) do
     measure(body.body)
   end
-  local left, open = WIDTH - 1 - 3 * (n - 2), n
-  local words = 0
-  for i = 1, n do
-    words = words + word[i]
+  local total = INDENT + 3 * (#width - 1) + 1
+  for _, w in ipairs(width) do
+    total = total + w
   end
-  if words > left and #t.head.rows == 1 then
-    local list = as_list(t)
-    if list then
-      return list
+  return width, total <= LINE
+end
+
+-- A table as a tagged list: the first cell of a row is the tag. In a
+-- table of keys, the default comes first in the text ("Default: 30m.");
+-- in another table of more than two columns, each further cell is a line
+-- of its own under its column's header ("irsync: ...", "rsync: ...").
+-- A line break in a list item is .br: pandoc's would end the item.
+local function as_list(t)
+  local head = t.head.rows[1].cells
+  local label = {}
+  for i, cell in ipairs(head) do
+    label[i] = cell_inlines(cell)
+    if not label[i] then
+      return nil
     end
   end
-  local width = {}
-  -- Settle the narrow columns first, so the wide ones share the rest.
-  local order = {}
-  for i = 1, n do
-    order[i] = i
+  local key_table = #head == 3 and stringify(label[2]) == "Default"
+  local items = {}
+  for _, body in ipairs(t.bodies) do
+    for _, row in ipairs(body.body) do
+      local cells = {}
+      for i, cell in ipairs(row.cells) do
+        cells[i] = cell_inlines(cell)
+        if not cells[i] then
+          return nil
+        end
+      end
+      local text = pandoc.Inlines({})
+      if #cells == 2 then
+        text:extend(cells[2])
+      elseif key_table then
+        text:extend({ pandoc.Str("Default:"), pandoc.Space() })
+        text:extend(cells[2])
+        if not stringify(cells[2]):match("%.$") then
+          text:insert(pandoc.Str("."))
+        end
+        text:insert(pandoc.Space())
+        text:extend(cells[3])
+      else
+        for i = 2, #cells do
+          if i > 2 then
+            text:insert(pandoc.RawInline("man", "\n.br\n"))
+          end
+          text:extend(label[i])
+          text:extend({ pandoc.Str(":"), pandoc.Space() })
+          text:extend(cells[i])
+        end
+      end
+      table.insert(items, { cells[1], { { pandoc.Para(text) } } })
+    end
   end
-  table.sort(order, function(a, b) return need[a] < need[b] or (need[a] == need[b] and a < b) end)
-  for _, i in ipairs(order) do
-    width[i] = math.max(word[i], math.min(need[i], left // open))
-    left, open = left - width[i], open - 1
+  return pandoc.DefinitionList(items)
+end
+
+-- A table of options, commands, variables or keys becomes a tagged list,
+-- and so does any other table too wide for one line per row. A table
+-- that stays gets each column as wide as its longest cell: without a
+-- width, tbl wraps a cell at a fraction of the line.
+local function convert_table(t)
+  local width, fits = measure_table(t)
+  if #t.head.rows == 1 then
+    local first = stringify(t.head.rows[1].cells[1].contents)
+    if TERMS[first] or not fits then
+      local list = as_list(t)
+      if list then
+        return list
+      end
+    end
   end
-  for i = 1, n do
-    t.colspecs[i][2] = width[i] / WIDTH
+  if not fits then
+    error("filter.lua: a table too wide for a man page: " .. stringify(t.head))
+  end
+  for i, spec in ipairs(t.colspecs) do
+    t.colspecs[i] = { spec[1], width[i] / PANDOC_WIDTH }
   end
   return t
 end
 
-local function section(title)
-  return pandoc.Header(1, title)
+-- Roff for a synopsis: its lines as they are, at the section's indent.
+local function synopsis(code)
+  local lines = {}
+  for line in (code.text .. "\n"):gmatch("(.-)\n") do
+    line = line:gsub("\\", "\\e"):gsub("%-", "\\-")
+    if line:match("^[.']") then
+      line = "\\&" .. line
+    end
+    table.insert(lines, line)
+  end
+  return pandoc.RawBlock("man", ".nf\n" .. table.concat(lines, "\n") .. "\n.fi")
 end
 
--- Moves the named level 1 sections, in their order, to just before SEE ALSO.
+-- Splits the blocks at the script's markers: the header before the
+-- chapters, the chapters, and the header after them.
+local function split(blocks)
+  local before, chapters, after = pandoc.Blocks({}), {}, pandoc.Blocks({})
+  local current = before
+  for _, b in ipairs(blocks) do
+    local path = b.t == "RawBlock" and b.text:match("^<!%-%- chapter: book/src/(%S+) %-%->%s*$")
+    if path then
+      if not PAGE[path] then
+        error("filter.lua: no man page for chapter book/src/" .. path)
+      end
+      current = pandoc.Blocks({})
+      table.insert(chapters, { path = path, blocks = current })
+    elseif b.t == "RawBlock" and b.text:match("^<!%-%- end of chapters %-%->%s*$") then
+      current = after
+    else
+      current:insert(b)
+    end
+  end
+  for _, c in ipairs(chapters) do
+    local title = c.blocks[1]
+    local want = PAGE[c.path].title
+    if not (title and title.t == "Header" and title.level == 1) then
+      error("filter.lua: book/src/" .. c.path .. " does not start with its title")
+    end
+    if stringify(title.content) ~= want then
+      error("filter.lua: book/src/" .. c.path .. " is titled '" .. stringify(title.content)
+        .. "', not '" .. want .. "'; update PAGE in packaging/man/filter.lua")
+    end
+  end
+  return before, chapters, after
+end
+
+-- The first code block under the "##" heading with this anchor.
+local function code_under(blocks, anchor)
+  local inside = false
+  for _, b in ipairs(blocks) do
+    if b.t == "Header" and b.level == 2 then
+      inside = slug(b.content) == anchor
+    elseif inside and b.t == "CodeBlock" then
+      return b
+    end
+  end
+  error("filter.lua: no code block under ## " .. anchor)
+end
+
+-- One chapter as man blocks.
+local function chapter_blocks(c, state)
+  local spec = PAGE[c.path]
+  local out = pandoc.Blocks({})
+  local intro = not spec.section -- before the first "##" of a first chapter
+  local intro_section
+  if spec.synopsis then
+    out:insert(pandoc.Header(1, "SYNOPSIS"))
+    out:insert(synopsis(code_under(c.blocks, spec.synopsis)))
+    intro_section = "SYNOPSIS"
+  end
+  for i, b in ipairs(c.blocks) do
+    if b.t == "Header" then
+      local level = spec.section and b.level or b.level - 1
+      if i == 1 then
+        if spec.section then
+          out:insert(pandoc.Header(1, spec.section))
+        end
+      else
+        intro = false
+        b.level = level
+        if level == 1 then
+          b.content = { pandoc.Str(state.headings[c.path][slug(b.content)]) }
+        end
+        out:insert(b)
+      end
+    else
+      local notes = {}
+      b = pandoc.walk_block(b, { Link = function(el) return link(el, c.path, state, notes) end })
+      if b.t == "Table" then
+        b = convert_table(b)
+      end
+      if intro then
+        if not intro_section and b.t == "CodeBlock" then
+          intro_section = "SYNOPSIS"
+          out:insert(pandoc.Header(1, "SYNOPSIS"))
+        elseif intro_section ~= "DESCRIPTION" and not (intro_section == "SYNOPSIS"
+            and b.t == "CodeBlock" and not spec.synopsis) then
+          intro_section = "DESCRIPTION"
+          out:insert(pandoc.Header(1, "DESCRIPTION"))
+        end
+        if intro_section == "SYNOPSIS" then
+          b = synopsis(b)
+        end
+      end
+      out:insert(b)
+      if #notes > 0 then
+        out:insert(link_notes(notes))
+      end
+    end
+  end
+  return out
+end
+
+-- Moves the named level 1 sections, in the given order, to just before
+-- SEE ALSO.
 local function move_before_see_also(blocks, names)
-  local sections, moved = {}, {}
+  local sections, by_name = {}, {}
   local current = {}
   for _, b in ipairs(blocks) do
     if b.t == "Header" and b.level == 1 then
-      current = {}
-      table.insert(sections, { title = pandoc.utils.stringify(b.content), blocks = current })
+      current = { title = stringify(b.content), blocks = pandoc.Blocks({}) }
+      table.insert(sections, current)
+      by_name[current.title] = current
     end
-    table.insert(current, b)
+    current.blocks:insert(b)
+  end
+  local moved = {}
+  for _, name in ipairs(names) do
+    moved[name] = true
   end
   local result = pandoc.Blocks({})
   for _, s in ipairs(sections) do
-    if names[s.title] then
-      table.insert(moved, s)
-    end
-  end
-  for _, s in ipairs(sections) do
     if s.title == "SEE ALSO" then
-      for _, m in ipairs(moved) do
-        result:extend(m.blocks)
+      for _, name in ipairs(names) do
+        if by_name[name] then
+          result:extend(by_name[name].blocks)
+        end
       end
     end
-    if not names[s.title] then
+    if not moved[s.title] then
       result:extend(s.blocks)
     end
   end
@@ -232,60 +454,42 @@ local function move_before_see_also(blocks, names)
 end
 
 function Pandoc(doc)
+  local before, chapters, after = split(doc.blocks)
+  local state = {
+    page = PAGE[chapters[1].path].page,
+    headings = headings(chapters),
+    linked = {},
+  }
   local out = pandoc.Blocks({})
-  local chapter, first, page
-  local intro = false -- in the first chapter, before its first ##
-  local intro_section -- the section the intro text went under
-  for _, b in ipairs(doc.blocks) do
-    local marker = b.t == "RawBlock" and b.text:match("^<!%-%- chapter: book/src/(%S+) %-%->%s*$")
-    if marker then
-      chapter = marker
-      first = page == nil
-      page = page or (PAGE[chapter] or {})[1]
-      if not PAGE[chapter] then
-        error("filter.lua: no man page for chapter " .. chapter)
+  -- The header's own blocks; a code block in its SYNOPSIS is a synopsis.
+  local function header(blocks)
+    local in_synopsis = false
+    for _, b in ipairs(blocks) do
+      if b.t == "Header" and b.level == 1 then
+        in_synopsis = stringify(b.content) == "SYNOPSIS"
+      elseif in_synopsis and b.t == "CodeBlock" then
+        b = synopsis(b)
+      elseif b.t == "Table" then
+        b = convert_table(b)
       end
-      intro = first
-    elseif b.t == "RawBlock" and b.text:match("^<!%-%- end of chapters %-%->%s*$") then
-      chapter = nil
-    else
-      local c, notes = chapter, b.t == "Table" and {} or nil
-      b = pandoc.walk_block(b, { Link = function(el) return link(el, c, page, notes) end })
-      if chapter and b.t == "Header" then
-        local level = first and b.level - 1 or b.level
-        if level >= 1 then
-          intro = false
-          b.level = level
-          if pandoc.utils.stringify(b.content) == "Exit codes" then
-            b.content = { pandoc.Str("EXIT STATUS") }
-          end
-          out:insert(b)
-        end
-      elseif intro then
-        if not intro_section and b.t == "CodeBlock" then
-          intro_section = "SYNOPSIS"
-          out:insert(section("SYNOPSIS"))
-        elseif intro_section ~= "DESCRIPTION" and not (intro_section and b.t == "CodeBlock") then
-          intro_section = "DESCRIPTION"
-          out:insert(section("DESCRIPTION"))
-        end
-        out:insert(b)
-      else
-        out:insert(b)
-        if notes and #notes > 0 then
-          out:insert(link_notes(notes))
-        end
-      end
+      local notes = {}
+      b = pandoc.walk_block(b, { Link = function(el) return link(el, nil, state, notes) end })
+      out:insert(b)
     end
   end
+  header(before)
+  for _, c in ipairs(chapters) do
+    out:extend(chapter_blocks(c, state))
+  end
+  header(after)
   -- Man section titles are upper case.
   for _, b in ipairs(out) do
     if b.t == "Header" and b.level == 1 then
       b.content = { pandoc.Str(upper(b.content)) }
     end
   end
-  if page == "irsync(1)" then
-    out = move_before_see_also(out, { ["ENVIRONMENT"] = true, ["EXIT STATUS"] = true })
+  if state.page == "irsync(1)" then
+    out = move_before_see_also(out, TAIL)
   end
   doc.blocks = out
   return doc

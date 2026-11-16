@@ -1,33 +1,36 @@
 # fileset reference
 
 `fileset` records the state of a directory tree in a manifest and later
-verifies the tree against it. For an introduction, see
-[Introduction to fileset](introduction.md). The how-to pages are
-[Verify an rsync or rclone transfer](verify-other-tools.md),
-[Verify an irsync transfer](verify-irsync.md), [Check data for bitrot](bitrot.md)
-and [Keep a manifest current](keep-current.md).
+verifies the tree against it. A manifest is a small database that holds each
+file's checksum and metadata, so that a copy of the tree, or the same tree
+later, can be checked against it. It is a SQLite file by default; fjall is the
+other storage backend, which keeps the manifest in a directory.
+
+[Introduction to fileset](introduction.md) explains the idea and leads to the
+how-to guides: verifying an rsync, rclone or irsync transfer, checking data
+for bitrot, and keeping a manifest current.
 
 ## Commands
 
 ```text
-fileset init   [OPTIONS] <PATH>
-fileset update [OPTIONS] <PATH>
-fileset check  [OPTIONS] <PATH>
-fileset list   [-v] [--manifest <MPATH>] <PATH> [PATTERN]
+fileset init   [OPTIONS] PATH
+fileset update [OPTIONS] PATH
+fileset check  [OPTIONS] PATH
+fileset list   [-v] [--manifest MPATH] PATH [PATTERN]
 ```
 
-`<PATH>` is the root of the tree and must be a directory.
+`PATH` is the root of the tree and must be a directory.
 
 ### init
 
-`init` scans the tree and creates its manifest, at `<PATH>/.fileset.sqlite`
+`init` scans the tree and creates its manifest, at `PATH/.fileset.sqlite`
 by default. It refuses to run when:
 
 - a manifest already exists. The exception is a manifest left by an `init`
   that was interrupted (killed, or the machine went down): it holds nothing,
   so `init` replaces it with a warning.
 - the tree lies inside another fileset: a `.fileset.sqlite` or
-  `.fileset.fjall` exists in a parent directory of `<PATH>`. This is checked
+  `.fileset.fjall` exists in a parent directory of `PATH`. This is checked
   before anything is written.
 - the tree holds a manifest in a subdirectory. This is found when the scan
   reaches it; `init` then removes the manifest it had begun.
@@ -73,7 +76,7 @@ and metadata (see [Listing](#listing)). `fileset ls` is the same command.
 was recorded, not whether the tree still matches; that is `check`. It never
 changes the manifest's contents or the tree. As with `check`, opening a fjall
 manifest does touch its journal and lock files; a SQLite manifest is only
-read. With `--manifest`, `<PATH>` does not have to exist, so a copy of a
+read. With `--manifest`, `PATH` does not have to exist, so a copy of a
 manifest can be listed without its tree.
 
 With a `PATTERN`, only the entries whose path matches it are listed. Quote the
@@ -85,12 +88,12 @@ pattern, or the shell expands it first.
 
 | Option | Effect |
 | --- | --- |
-| `--manifest <MPATH>` | Use the manifest at `MPATH` instead of `<PATH>/.fileset.sqlite` or `<PATH>/.fileset.fjall`. It may lie outside the tree. A directory is read as fjall, a file as SQLite. |
+| `--manifest MPATH` | Use the manifest at `MPATH` instead of `PATH/.fileset.sqlite` or `PATH/.fileset.fjall`. It may lie outside the tree. A directory is read as fjall, a file as SQLite. |
 | `--fail-on-warnings` | Exit 1 instead of 0 when the run produced warnings. |
 | `--cross-mount-points` | Descend into directories on other filesystems. |
 | `--no-dir-sort` | Do not sort directory entries before iterating. |
-| `-j, --jobs <N>` | Threads that hash file contents. Default: the number of CPUs. `N` is at least 1. |
-| `--walk-threads <N>` | Threads that list directories and read metadata. Default: 4. `N` is at least 1. |
+| `-j, --jobs N` | Threads that hash file contents. Default: the number of CPUs. `N` is at least 1. |
+| `--walk-threads N` | Threads that list directories and read metadata. Default: 4. `N` is at least 1. |
 | `--no-builtin-excludes` | Walk the [built-in excludes](#built-in-excludes) like any other directory. |
 | `-q, --quiet` | Suppress progress. |
 | `-v, --verbose` | Print one line per entry on stdout as it is handled (see [Every entry, with `-v`](#every-entry-with--v)), and turn progress off. Conflicts with `--quiet`. |
@@ -110,7 +113,7 @@ takes only `--manifest`.
 
 | Option | Effect |
 | --- | --- |
-| `--store <sqlite\|fjall>` | Backend to create. Default: `sqlite`. |
+| `--store sqlite\|fjall` | Backend to create. Default: `sqlite`. |
 
 ### update only
 
@@ -123,10 +126,10 @@ takes only `--manifest`.
 
 | Option | Effect |
 | --- | --- |
-| `--relaxed` | Compare the relaxed tier (below). Conflicts with `--paranoid`. |
-| `--paranoid` | Compare the paranoid tier (below). Conflicts with `--relaxed`. |
-| `--ignore <FIELD>` | Drop one field from the comparison. Repeatable. |
-| `--require <FIELD>` | Add one field to the comparison. Repeatable. |
+| `--relaxed` | Compare the relaxed tier; see [Comparison tiers](#comparison-tiers). Conflicts with `--paranoid`. |
+| `--paranoid` | Compare the paranoid tier; see [Comparison tiers](#comparison-tiers). Conflicts with `--relaxed`. |
+| `--ignore FIELD` | Drop one field from the comparison. Repeatable. |
+| `--require FIELD` | Add one field to the comparison. Repeatable. |
 
 ### list only
 
@@ -317,8 +320,8 @@ stderr is a terminal and neither `-q` nor `-v` is given. A summary line goes to 
 the end:
 
 ```text
-added=1 deleted=1 changed=1 unchanged=40 warnings=0     (check)
-entries=43 hashed=3 reused=40 warnings=0                (init, update)
+added=1 deleted=1 changed=1 unchanged=40 warnings=0 (check)
+entries=43 hashed=3 reused=40 warnings=0            (init, update)
 ```
 
 ## Built-in excludes
@@ -340,8 +343,8 @@ drops them.
 
 | Path | Contents |
 | --- | --- |
-| `<PATH>/.fileset.sqlite` | The manifest, SQLite backend (default). Its `-wal`, `-shm` and `-journal` sidecars are skipped by the scan. |
-| `<PATH>/.fileset.fjall` | The manifest, fjall backend: a directory. |
+| `PATH/.fileset.sqlite` | The manifest, SQLite backend (default). Its `-wal`, `-shm` and `-journal` sidecars are skipped by the scan. |
+| `PATH/.fileset.fjall` | The manifest, fjall backend: a directory. |
 
 An `update` that finishes leaves the SQLite manifest as a single file. If
 another process holds it open, the `-wal` sidecar stays, with a warning; the
@@ -364,7 +367,11 @@ already has a manifest, lies inside a fileset or contains a nested one;
 
 ## Read-only media
 
-See [Check data for bitrot](bitrot.md#read-only-media-and-snapshots).
+`check` never changes the tree. But a manifest inside a read-only tree, such
+as a snapshot, may fail to open: `fileset` exits 2 with a message that
+suggests `--manifest`. Copy the manifest somewhere writable and point
+`--manifest` at the copy. [Check data for bitrot](bitrot.md#read-only-media-and-snapshots)
+shows how.
 
 ## Known limitations
 

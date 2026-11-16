@@ -569,11 +569,16 @@ class CodeChangedTests(unittest.TestCase):
         # tools/build-man.sh builds the man pages from these, and CI checks it.
         for path in ["book/src/reference/command-line.md",
                      "book/src/reference/management.md",
+                     "book/src/reference/remote-addresses.md",
+                     "book/src/reference/files-and-state.md",
+                     "book/src/reference/limitations.md",
                      "book/src/reference/configuration.md",
                      "book/src/fileset/reference.md",
                      "packaging/man/irsync.md"]:
+            # Each path on its own: a change from the previous commit.
+            base = self.git("rev-parse", "HEAD")
             self.write(path, "changed\n")
-            self.assertEqual(self.changed(self.base, self.commit()), "code=true", path)
+            self.assertEqual(self.changed(base, self.commit()), "code=true", path)
 
     def test_other_book_chapter_is_not_code(self):
         self.write("book/src/reference/metrics.md", "changed\n")

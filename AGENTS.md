@@ -15,7 +15,7 @@ and checks the system tools;
 
 A change that touches only Markdown files, `book/` or `site/` needs no
 tests, clippy or fmt; CI skips them too. The exception is what the man
-pages are built from: the four chapters named in `tools/build-man.sh` and
+pages are built from: the book chapters named in `tools/build-man.sh` and
 `packaging/man/`. Run `python3 -m unittest discover -s tools/tests` for those. The site workflow
 (`.github/workflows/site.yml`) still builds and checks the book and site
 after the push to `main`.

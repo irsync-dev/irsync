@@ -6,8 +6,9 @@
 #
 # Writes OUTDIR/man1/irsync.1, OUTDIR/man1/fileset.1 and
 # OUTDIR/man5/irsync.toml.5, and fails on any pandoc warning. Each page is a
-# header from packaging/man (NAME and SEE ALSO) around one or more book
-# chapters; packaging/man/filter.lua turns the chapters into man sections.
+# header from packaging/man (NAME, SEE ALSO and what else the book does not
+# say) around one or more book chapters; packaging/man/filter.lua turns the
+# chapters into man sections.
 #
 # The footer names the version in packaging/dist/dist.toml. The date is that
 # of the last commit, or IRSYNC_MAN_DATE=YYYY-MM-DD when set (for tests and
@@ -40,7 +41,8 @@ case $date in
 esac
 
 # One line per page: file, section, title, header, chapters under book/src.
-pages="irsync.1 1 IRSYNC irsync.md reference/command-line.md reference/management.md
+# packaging/man/filter.lua knows each chapter too.
+pages="irsync.1 1 IRSYNC irsync.md reference/command-line.md reference/management.md reference/remote-addresses.md reference/files-and-state.md reference/limitations.md
 fileset.1 1 FILESET fileset.md fileset/reference.md
 irsync.toml.5 5 IRSYNC.TOML irsync.toml.md reference/configuration.md"
 # A change to one of these chapters or to packaging/man/ must run CI even
