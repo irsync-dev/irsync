@@ -124,9 +124,11 @@ release starts. It does this, in order:
    going.
 4. **Release.** It launches `release.yml` on the pinned branch and waits for
    it. `release.yml` builds `irsync` and `fileset` for Linux x86_64, Linux
-   arm64 and macOS on Apple Silicon. It publishes the GitHub Release with
-   the tarballs, checksums, the install script and the Homebrew formula,
-   each with an attestation. As its last step it creates the tag `vX.Y.Z`,
+   arm64 and macOS on Apple Silicon. Each tarball also holds the man pages
+   `irsync(1)`, `fileset(1)` and `irsync.toml(5)`, built from the book with
+   pandoc. It publishes the GitHub Release with the tarballs, checksums,
+   our installer `irsync-installer.sh` and the Homebrew formula, each with
+   an attestation. As its last step it creates the tag `vX.Y.Z`,
    together with the release. That is the point of no return: the release
    is immutable from then on, and no file on it can be replaced or added.
    The gate then deletes the `pinned/` branch.
@@ -148,7 +150,12 @@ release starts. It does this, in order:
        result at `dist.irsync.org`. The packages get attestations, but are
        not attached to the release.
      - `.github/workflows/publish-homebrew.yml` pushes the formula from the
-       release to `irsync-dev/homebrew-tap`.
+       release to `irsync-dev/homebrew-tap`. First it runs
+       `.github/scripts/formula-man-pages.sh`, which adds two lines to the
+       formula (`man1.install` and `man5.install`), so brew puts the man
+       pages where `man` looks. This happens before the tap is checked out
+       with its token. The script fails if dist's formula template changed,
+       so look at the formula then.
    - **Notes.** It adds GitHub's list of changes to the release notes, under
      the heading `## What's changed`. For a stable release the list starts
      at the previous stable release, so it covers the betas in between too.
@@ -157,11 +164,17 @@ The release tag is a lightweight tag made by GitHub, not an annotated one.
 
 The install script `site/install.sh` (served as `irsync.org/install.sh`)
 picks the newest release for its channel: stable by default, `--beta` for
-betas and stable, `--alpha` for all. Other arguments go to the installer that
-`release.yml` built. The installer puts the programs in `~/.local/bin`, and
-has no updater. It writes a small receipt file,
-`~/.config/irsync/irsync-receipt.json`; it is harmless. To stop it editing
-the shell's `PATH` setup, set `IRSYNC_NO_MODIFY_PATH=1`.
+betas and stable, `--alpha` for all. Other arguments go to the installer
+`irsync-installer.sh` that `release.yml` attached to the release. It puts
+the programs in `~/.local/bin` and the three man pages in
+`~/.local/share/man/man1` and `man5`, and has no updater. It writes no
+receipt and never edits the shell's startup files. If `~/.local/bin` is not
+on `PATH`, it prints the line to add. `--uninstall` removes the two
+programs, the three pages and an old receipt file. It accepts
+`--no-modify-path` and `IRSYNC_NO_MODIFY_PATH` and ignores both, so scripts
+written for dist's installer keep working. On an Apple Silicon Mac under
+Rosetta it installs the Apple Silicon build. Intel Macs are not supported.
+Its source is `packaging/installer/irsync-installer.sh.in`.
 
 ## The release workflow is generated
 
@@ -175,6 +188,16 @@ dist generate
 ```
 
 and commit the result.
+
+The installer is not dist's. `dist-workspace.toml` lists
+`irsync-installer.sh` under `extra-artifacts`, and dist builds it with
+`packaging/installer/build-installer.sh`, which fills in the version and the
+checksums of the three tarballs. The man pages get into the tarballs through
+`packaging/dist/build.sh`, which runs `tools/build-man.sh`. The build
+runners need pandoc, which `dist-workspace.toml` lists as a dependency.
+`dist generate` needed no change to `release.yml` for this: the workflow
+reads the runners' packages and the extra artifact from `dist plan` when it
+runs.
 
 `release.yml` only starts when the gate launches it. **Never launch it by
 hand from the Actions tab.** That skips the tests.
@@ -372,6 +395,10 @@ Do the one-time setup first. Then:
    - its notes end with `## What's changed`;
    - the install script with `--alpha` installs it, and without `--alpha`
      says there is no stable release yet;
+   - after that install, `man irsync` shows the released version in its
+     footer, and `man fileset` and `man irsync.toml` work;
+   - `--uninstall` (with `--alpha`) removes the programs and the three
+     pages;
    - nothing went to Homebrew, apt or dnf.
 4. **Dry-run the packages on the pre-release.** A pre-release skips
    Homebrew, apt and dnf, so the steps only stable releases run have not
@@ -385,7 +412,7 @@ Do the one-time setup first. Then:
    This uses the GPG secrets, the packages repo token, nfpm and Ubuntu's
    rpm. Check that the run passes. Download its two artifacts and look at
    them: the `.deb` files list `/usr/bin/irsync` and `/usr/bin/fileset`
-   (`dpkg-deb -c`), and the `.rpm` files are signed (`rpm -Kv`, after
+   and the three man pages under `/usr/share/man` (`dpkg-deb -c`), and the `.rpm` files are signed (`rpm -Kv`, after
    `rpm --import` of `irsync.asc` from the repo artifact).
 5. **Check the Homebrew token.** Nothing has used `HOMEBREW_TAP_TOKEN` yet.
    Push a throwaway branch to the tap with it, then delete the branch. When
@@ -651,6 +678,7 @@ key may see signature errors on those files.
 ## The user-facing install steps
 
 The README, the book's introduction and the fileset introduction list the
-ways to install. The apt and dnf commands are in `packaging/repo/index.html`
+ways to install, and what the install script does and how to uninstall.
+Keep the three in step. The apt and dnf commands are in `packaging/repo/index.html`
 (the page at `dist.irsync.org`). If you change them there, change them in
 the docs too.
