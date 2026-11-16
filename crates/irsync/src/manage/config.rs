@@ -46,7 +46,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap"] | ["daemon", "immediate"] => Bool,
+        ["daemon", "portmap"] | ["daemon", "immediate"] | ["daemon", "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode"] | ["daemon", "congestion"] => Str,
         ["daemon", "debug_addr"] => Str,

@@ -360,6 +360,15 @@ fn hosts_and_exports_flags_are_gone() {
 }
 
 #[test]
+fn daemon_root_flag_parses() {
+    assert!(matches!(parse(&["daemon"]).cmd, Some(Command::Daemon(ref d)) if !d.run_as_root));
+    assert!(matches!(
+        parse(&["daemon", "--run-as-root-i-know-what-i-am-doing"]).cmd,
+        Some(Command::Daemon(ref d)) if d.run_as_root
+    ));
+}
+
+#[test]
 fn daemon_listen_flag_repeats() {
     match parse(&["daemon", "--listen", "127.0.0.1:0", "--listen", "[::1]:0"]).cmd {
         Some(Command::Daemon(d)) => assert_eq!(d.listen.len(), 2),

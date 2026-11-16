@@ -188,7 +188,8 @@ alias's table, then `[client]`, then the built-in default. See
 ### irsync daemon
 
 ```text
-irsync daemon [--config PATH] [--passphrase-file PATH] [--listen ADDR]... [-v|-q]
+irsync daemon [--config PATH] [--passphrase-file PATH] [--listen ADDR]...
+              [--run-as-root-i-know-what-i-am-doing] [-v|-q]
 ```
 
 Serves the exports in the config file to the peers they are granted to, until
@@ -204,6 +205,7 @@ first prints a banner with its version, relay and discovery settings.
 | `--config PATH` | The config file. A `hosts.toml` or `exports.toml` beside it is read too. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
+| `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or `allow_root = true` under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
 | `-v`, `--verbose` | Log more; repeat for more still (up to `-vvvvv`). |
 | `-q`, `--quiet` | Log errors only. |
 

@@ -55,6 +55,7 @@ relay_mode = "default"       # or "disabled"
 congestion = "bbr"           # or "cubic", for pulls
 debug_addr = "127.0.0.1:9464"            # no default: off
 immediate = true             # false: ignore [immediate]
+allow_root = false           # true: let the daemon run as root
 
 [daemon.discovery]
 dht = true
@@ -194,6 +195,7 @@ take effect at the next start.
 | `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
+| `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |
 | `immediate` | `true` | Honour the `[immediate]` grants. `false`: the daemon ignores `[immediate]` and makes no automatic exports, so peers reach only the exports granted to them. |
 
 `[daemon.discovery]` says how clients may find the daemon:

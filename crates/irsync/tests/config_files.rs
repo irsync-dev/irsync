@@ -512,6 +512,19 @@ fn daemon_immediate_defaults_on() {
 }
 
 #[test]
+fn daemon_allow_root_defaults_off() {
+    let c = Config::parse("", Path::new("c")).unwrap();
+    assert!(!c.settings.daemon.allow_root);
+    let c = Config::parse("[daemon]\nallow_root = true\n", Path::new("c")).unwrap();
+    assert!(c.settings.daemon.allow_root);
+    let e = Config::parse("[daemon]\nallow_root = \"yes\"\n", Path::new("c"))
+        .unwrap_err()
+        .to_string();
+    // Not a silent `false`: the error points at the line, as for every key.
+    assert!(e.contains("c:2") && e.contains("expected a boolean"), "{e}");
+}
+
+#[test]
 fn export_named_immediate_is_reserved() {
     assert!(Exports::parse("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
 }
