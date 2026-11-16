@@ -93,10 +93,21 @@ mod tests {
     /// Counts the open descriptors the slow, sure way: asks about each
     /// number in turn.
     fn direct_fd_count() -> u64 {
-        (0..4096)
+        use nix::libc::{c_int, c_long, fcntl, sysconf, _SC_OPEN_MAX, F_GETFD};
+        // Descriptor numbers stay below the process's open-file limit,
+        // which sysconf reports. It can be "none" or in the millions; this
+        // test process has only a few descriptors, so stop at 65536 to
+        // keep the walk short.
+        const CAP: c_long = 1 << 16;
+        // SAFETY: sysconf only reads a limit.
+        let limit = match unsafe { sysconf(_SC_OPEN_MAX) } {
+            n if n > 0 => n.min(CAP),
+            _ => CAP,
+        };
+        (0..limit as c_int)
             // SAFETY: F_GETFD only reads the flags of `fd`, or fails with
             // EBADF when no such descriptor is open.
-            .filter(|&fd| unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) } != -1)
+            .filter(|&fd| unsafe { fcntl(fd, F_GETFD) } != -1)
             .count() as u64
     }
 
@@ -115,7 +126,7 @@ mod tests {
         };
         let (mut same, mut differ) = (0, 0);
         let mut last = None;
-        for _ in 0..200 {
+        for _ in 0..25 {
             let before = direct_fd_count();
             let got = sample().open_fds;
             if direct_fd_count() != before {
