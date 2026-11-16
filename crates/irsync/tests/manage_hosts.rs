@@ -1,4 +1,4 @@
-use irsync::manage::hosts::{host_add, host_list, host_remove, HostFlags};
+use irsync::manage::hosts::{host_add, host_list, host_remove, host_rename, HostFlags};
 use irsync::manage::ManageError;
 use toml_edit::DocumentMut;
 
@@ -224,4 +224,89 @@ fn lists_naming_and_remove_named_match_the_text_only() {
     assert_eq!(remove_named(&mut doc, "y"), 2);
     assert!(lists_naming(&doc, "y").is_empty());
     assert_eq!(remove_named(&mut doc, "y"), 0);
+}
+
+#[test]
+fn rename_renames_the_host_and_every_grant() {
+    let mut doc: DocumentMut = named_everywhere().parse().unwrap();
+    assert_eq!(host_rename(&mut doc, "box", "crate").unwrap(), 3);
+    assert_eq!(doc.to_string(), named_everywhere().replace("box", "crate"));
+}
+
+#[test]
+fn rename_keeps_the_hosts_place_keys_and_comments() {
+    let text = format!(
+        "[hosts.a]\nendpoint_id = \"{a}\"\n\n\
+         # the old box\n[hosts.box] # header\nendpoint_id = \"{b}\" # id\nparallel = 2\n\n\
+         [hosts.c]\nendpoint_id = \"{c}\"\n\
+         [all]\nrw = [\n  \"x\",\n  \"box\", # mine\n]\n",
+        a = id(1),
+        b = id(2),
+        c = id(3)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(host_rename(&mut doc, "box", "crate").unwrap(), 1);
+    assert_eq!(
+        doc.to_string(),
+        text.replace("box", "crate").replace("old crate", "old box")
+    );
+}
+
+#[test]
+fn rename_keeps_the_place_of_an_entry_in_a_hosts_table() {
+    let text = format!(
+        "[hosts]\na = {{ endpoint_id = \"{a}\" }}\n\
+         box = {{ endpoint_id = \"{b}\" }} # mine\n\
+         c = {{ endpoint_id = \"{c}\" }}\n",
+        a = id(1),
+        b = id(2),
+        c = id(3)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(host_rename(&mut doc, "box", "crate").unwrap(), 0);
+    assert_eq!(doc.to_string(), text.replace("box", "crate"));
+}
+
+#[test]
+fn rename_refuses_a_missing_host_a_taken_name_and_a_bad_alias() {
+    let text = format!(
+        "{}[hosts.taken]\nendpoint_id = \"{}\"\n",
+        named_everywhere(),
+        id(2)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert!(matches!(
+        host_rename(&mut doc, "nobody", "crate"),
+        Err(ManageError::NotFound(a)) if a == "nobody"
+    ));
+    // `x` is named by a grant, but is no host.
+    assert!(matches!(
+        host_rename(&mut doc, "x", "crate"),
+        Err(ManageError::NotFound(_))
+    ));
+    let e = host_rename(&mut doc, "box", "taken").unwrap_err();
+    assert!(matches!(&e, ManageError::HostExists(a) if a == "taken"));
+    assert_eq!(e.to_string(), "host \"taken\" already exists");
+    for bad in ["a:b", "a/b", "all", "*", "", &id(5).to_string()] {
+        assert!(
+            matches!(
+                host_rename(&mut doc, "box", bad),
+                Err(ManageError::BadAlias(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(doc.to_string(), text);
+}
+
+#[test]
+fn rename_to_the_same_name_changes_nothing() {
+    let text = named_everywhere();
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert_eq!(host_rename(&mut doc, "box", "box").unwrap(), 0);
+    assert_eq!(doc.to_string(), text);
+    assert!(matches!(
+        host_rename(&mut doc, "nobody", "nobody"),
+        Err(ManageError::NotFound(_))
+    ));
 }

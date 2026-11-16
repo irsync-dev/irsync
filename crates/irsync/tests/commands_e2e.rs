@@ -1717,3 +1717,48 @@ fn host_add_says_when_grants_move_to_a_new_id() {
     let o = irsync(&home, &["host", "add", "free", &new]);
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
 }
+
+#[test]
+fn host_rename_renames_the_host_and_its_grants_in_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+    // `[all]` names the host by its id and `[immediate]` by its alias;
+    // the export also names `work`, which is no host yet.
+    let text = format!(
+        "[hosts.laptop]\nendpoint_id = \"{id}\"\n\
+         [all]\nro = [\"{id}\"]\n\
+         [immediate]\nrw = [\"laptop\"]\n\
+         [exports.p]\npath = \"/p\"\nrw = [\"laptop\", \"work\"]\n"
+    );
+    std::fs::write(cfg.join("irsync.toml"), &text).unwrap();
+    let o = irsync(&home, &["host", "rename", "laptop", "work"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "renamed host laptop to work; updated 3 grants in {}\n",
+            cfg.join("irsync.toml").display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(cfg.join("irsync.toml")).unwrap(),
+        format!(
+            "[hosts.work]\nendpoint_id = \"{id}\"\n\
+             [all]\nro = [\"work\"]\n\
+             [immediate]\nrw = [\"work\"]\n\
+             [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n"
+        )
+    );
+    // A second rename of the old name fails and changes nothing.
+    let before = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
+    let o = irsync(&home, &["host", "rename", "laptop", "other"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no such entry \"laptop\""));
+    assert_eq!(
+        std::fs::read_to_string(cfg.join("irsync.toml")).unwrap(),
+        before
+    );
+}
