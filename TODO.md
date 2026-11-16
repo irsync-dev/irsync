@@ -27,6 +27,11 @@
     - Any change in what a pattern matches is a breaking change for users'
       scripts and filter files. It can only be made during the beta, so
       this has to be decided before the first stable release.
+    - irsync's matcher (`glob` in `filter.rs`) retries every split for every
+      `*`, so its time multiplies with each extra star. fileset's matcher
+      was written the same way and took over a minute for a pattern with
+      eight stars on one 64-byte name; it now remembers failed positions
+      (`glob.rs`). irsync's has not been measured and needs the same fix.
 
 # Open items found while working, 2026-10-28
 
