@@ -238,10 +238,12 @@ fn apply_fd(
 }
 
 /// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
-/// `mknod` is umask-subject, so callers follow with `apply_metadata` to set exact mode.
+/// `mkfifo` and `mknod` are umask-subject, so callers follow with `apply_metadata` to set exact mode.
 pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
+    let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
     let kind = match e.kind() {
-        Kind::Fifo => SFlag::S_IFIFO,
+        // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
+        Kind::Fifo => return nix::unistd::mkfifo(path, perm).map_err(errno),
         Kind::CharDev => SFlag::S_IFCHR,
         Kind::BlockDev => SFlag::S_IFBLK,
         Kind::Socket => SFlag::S_IFSOCK,
@@ -252,6 +254,5 @@ pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
             ))
         }
     };
-    let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
     mknod(path, kind, perm, e.rdev as _).map_err(errno)
 }

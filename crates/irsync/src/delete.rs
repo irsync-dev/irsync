@@ -356,7 +356,8 @@ fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
         let file = match opened {
             Ok(fd) => std::fs::File::from(fd),
             // A symlink is no writer's: removed below, never followed.
-            Err(nix::Error::ELOOP | nix::Error::ENOENT) => continue,
+            Err(nix::Error::ENOENT) => continue,
+            Err(e) if crate::fs::safe::is_symlink_errno(e) => continue,
             Err(e) => return Err(errno(e)),
         };
         match file.try_lock() {

@@ -17,9 +17,18 @@ pub(crate) fn errno(e: nix::Error) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
 
-/// `ELOOP` from an `O_NOFOLLOW` open means the final component is a symlink.
+/// True for the error an `O_NOFOLLOW` open gives when the final component
+/// is a symlink: `ELOOP`, except on FreeBSD, which says `EMLINK`.
+pub(crate) fn is_symlink_errno(e: nix::Error) -> bool {
+    e == nix::Error::ELOOP || (cfg!(target_os = "freebsd") && e == nix::Error::EMLINK)
+}
+
+/// Turns the error of an `O_NOFOLLOW` open of a symlink (see
+/// [`is_symlink_errno`]) into one that says so.
 pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
-    if e.raw_os_error() == Some(nix::libc::ELOOP) {
+    if e.raw_os_error()
+        .is_some_and(|n| is_symlink_errno(nix::Error::from_raw(n)))
+    {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("refusing to follow symlink {}", what.display()),
@@ -100,7 +109,7 @@ pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
     for c in dir.components() {
         let name = std::ffi::OsStr::from_bytes(c);
         fd = openat(&fd, name, flags | OFlag::O_NOFOLLOW, Mode::empty()).map_err(|e| {
-            if matches!(e, nix::Error::ELOOP | nix::Error::ENOTDIR) {
+            if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
