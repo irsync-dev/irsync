@@ -5,11 +5,12 @@
    class (light, rust: light; coal, navy, ayu: dark). Written against
    mdbook v0.5.4. */
 
-/* Barlow, the landing page's one web font. The files are the site's own,
+/* The landing page's web fonts: Barlow for headings and controls, Inter
+   for running text, JetBrains Mono for code. The files are the site's own,
    in its top-level fonts/ directory: this stylesheet is served from
    book/theme/, so ../../fonts/ is that directory. None are copied into the
    book. A bare `mdbook serve` has no fonts/ and falls back to the next
-   faces in the stack. */
+   faces in each stack. */
 @font-face {
   font-family: "Barlow";
   font-style: normal;
@@ -32,6 +33,54 @@
   font-weight: 600;
   font-display: fallback;
   src: url("../../fonts/barlow-semi-condensed-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("../../fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("../../fonts/inter-latin-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("../../fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("../../fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("../../fonts/jetbrains-mono-latin-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: fallback;
+  src: url("../../fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
 }
 
 /* mdbook sets the root font size to 62.5%, so 1rem is 10px here, not 16px
@@ -100,10 +149,10 @@ html.ayu {
   --color-scheme: dark;
 }
 
-/* Type: running text in the serif, headings and the book's controls in
-   Barlow, code in monospace, as on the landing page. */
+/* Type: running text in Inter, headings and the book's controls in Barlow,
+   code in JetBrains Mono, as on the landing page. */
 body {
-  font-family: var(--ir-font-serif);
+  font-family: var(--ir-font-body);
   font-size: calc(var(--ir-text-body) * var(--ir-book-rem));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -126,6 +175,12 @@ h1, h2, h3, h4, h5, h6,
 }
 
 h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+}
+
+/* Bold is the semibold that ships; 700 would be synthesised. */
+strong,
+b {
   font-weight: 600;
 }
 

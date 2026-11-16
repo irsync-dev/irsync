@@ -43,22 +43,25 @@ from network cabling: deep navy ink, aqua (the jacket colour of multimode
 fibre) for the route through the steps and for every link and button, and
 single-mode yellow kept for the beta warning only.
 
-- **Colours** come from `site/tokens.json` (see
-  [The design tokens](#the-design-tokens)), light first and swapped for
-  dark by the system setting. One daisyUI theme, `irsync`, refers to them, so it needs no dark
-  twin. Colours with no daisyUI name are Tailwind colours of their own:
-  `muted`, `aqua`, `link`, `signal`, `on-signal` and the `term` colours of
-  the command strips. Write `text-muted` or `bg-base-200`, not a raw colour.
-- **Type** is three families. [Barlow](https://github.com/jpt/barlow)
-  (`font-display`), a typeface modelled on road signs, for the headline,
-  buttons, the header and the footer, in regular (400) and semibold (600);
-  its narrower Barlow Semi Condensed (`font-condensed`, semibold only) for
-  the small labels in running text: the fact labels, the step headings and
-  "Beta.". Barlow is the one family that ships, Latin only. A book serif
-  (`font-serif`: Charter, Sitka Text, Cambria) for running text, and
-  monospace for commands; both are system font stacks. The stacks and
-  the text sizes are in `site/tokens.json`. Text sizes are the named steps `text-display`, `text-heading`, `text-lede`, `text-body`,
-  `text-small` and `text-label`.
+- **Colours** come from `site/tokens.json` (see [The design
+  tokens](#the-design-tokens)), light first and swapped for dark by the
+  system setting. One daisyUI theme, `irsync`, refers to them, so it needs
+  no dark twin. Colours with no daisyUI name are Tailwind colours of their
+  own: `muted`, `aqua`, `link`, `signal`, `on-signal` and the `term`
+  colours of the command strips. Write `text-muted` or `bg-base-200`, not
+  a raw colour.
+- **Type** is three families, all shipped as web fonts, Latin only.
+  [Barlow](https://github.com/jpt/barlow) (`font-display`), a typeface
+  modelled on road signs, for the headline, buttons, the header and the
+  footer, in regular (400) and semibold (600); its narrower Barlow Semi
+  Condensed (`font-condensed`, semibold only) for the labels in running
+  text, at the size of the text around them ("No open ports.", "Beta."),
+  and for the step headings. [Inter](https://rsms.me/inter/)
+  (`font-body`) for running text, and
+  [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (`font-mono`) for
+  commands. The stacks and the text sizes are in `site/tokens.json`. Text
+  sizes are the named steps `text-display`, `text-heading`, `text-lede`,
+  `text-body`, `text-small` and `text-label`.
 - **The route.** The steps under Get started are stations on one aqua line
   (the `station` utility); keep it for content that really is a sequence.
 
@@ -70,26 +73,29 @@ The build needs mdbook, Python 3 and Node.js with npm:
 site/build.sh
 ```
 
-It empties `target/site/`, generates the token CSS for both, builds the book into
-`target/site/book/`, copies the landing page files into `target/site/` and
-compiles `site/tailwind.css` into `target/site/style.css`. Tailwind keeps
-only the classes that `site/index.html` and `site/404.html` use. The
-Tailwind CLI, daisyUI and Barlow (`@fontsource/barlow` and
-`@fontsource/barlow-semi-condensed`) come from
-`site/node_modules/` (git-ignored); the
-build runs `npm ci` there first when it is missing or older than
+It empties `target/site/`, generates the token CSS for both, builds the book
+into `target/site/book/`, copies the landing page files into `target/site/`
+and compiles `site/tailwind.css` into `target/site/style.css`. Tailwind
+keeps only the classes that `site/index.html` and `site/404.html` use. The
+Tailwind CLI, daisyUI and the fonts (`@fontsource/barlow`,
+`@fontsource/barlow-semi-condensed`, `@fontsource/inter` and
+`@fontsource/jetbrains-mono`) come from `site/node_modules/` (git-ignored);
+the build runs `npm ci` there first when it is missing or older than
 `site/package-lock.json`. To move to newer versions, change them in
 `site/package.json` and run `npm install` in `site/`, which updates the lock
 file.
 
-The build copies Barlow's three WOFF2 files and its licence (the SIL Open Font
-License, which must ship with the fonts) into `target/site/fonts/`. They are
-the only font files on the site. The book uses the same files:
-`book/theme/irsync.css` loads them from `../../fonts/`, the site's
-`fonts/`, so a bare `mdbook serve` (which has no `fonts/`) falls back to
-the next faces in each stack. The empty `book/theme/fonts/fonts.css` keeps
-mdbook from copying its own web fonts, and the build removes that
-stylesheet and its link from every book page.
+The build copies the WOFF2 files that the stylesheets name, nine in all,
+and each family's licence (the SIL Open Font License, which must ship
+with the fonts) into `target/site/fonts/`. They are the only font files on
+the site. The book shares them: `book/theme/irsync.css` loads them from
+`../../fonts/`, the site's `fonts/`. A bare `mdbook serve` has no `fonts/`
+and falls back to the next faces in each stack. The empty
+`book/theme/fonts/fonts.css` keeps mdbook from copying its own web fonts,
+and the build removes that stylesheet and its link from every book page.
+To use another weight or style, add its `@font-face` rule, the file to
+the copy list in `site/build.sh`, and, for the landing page, a preload
+link if it shows on the first screen.
 
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,
 because the build deletes it first. The check is on the resolved path, so a
@@ -99,8 +105,9 @@ because the build deletes it first. The check is on the resolved path, so a
 
 The book takes the landing page's design from the same tokens:
 `book/theme/irsync.css` maps mdbook's variables onto them. Running text
-is in the serif, headings and the book's controls (sidebar, menu bar,
-search) in Barlow, code in monospace. mdbook sets the root font size to
+is in Inter, headings and the book's controls (sidebar, menu bar, search)
+in Barlow, code in JetBrains Mono; bold is semibold (600), the weight
+that ships. mdbook sets the root font size to
 62.5%, so the token sizes, in `rem`, are multiplied by `--ir-book-rem`
 (1.6). Page titles use the landing page's `heading` size.
 
@@ -123,8 +130,9 @@ It enforces four things:
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
   resolves to a file, and every `#fragment` to an `id` on the target page.
   External links are not fetched.
-- **No fonts but Barlow.** No font file and no `fonts/` directory is in the
-  build, except the landing page's Barlow files in the top-level `fonts/`.
+- **No fonts but the site's own.** No font file and no `fonts/` directory
+  is in the build, except Barlow, Inter and JetBrains Mono in the
+  top-level `fonts/`.
 - **Moved files.** Documents that moved into the book (the list is
   `MOVED_FILES` in `check.py`) are not referred to, by path or by bare name,
   from any tracked file once they are gone. `docs/superpowers/` is history

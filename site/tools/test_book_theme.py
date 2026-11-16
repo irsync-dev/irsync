@@ -29,7 +29,7 @@ RULES = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
 
 class BookThemeTest(unittest.TestCase):
     def test_no_old_token_names(self):
-        old = r"--ir-(surface|accent|line|space-|focus-ring|font-sans|shadow|ink-muted|code-|body-|display-|heading-|(?:link|warn|danger)(?![\w-]))"
+        old = r"--ir-(font-serif|surface|accent|line|space-|focus-ring|font-sans|shadow|ink-muted|code-|body-|display-|heading-|(?:link|warn|danger)(?![\w-]))"
         self.assertEqual(re.findall(old, RULES), [])
 
     def test_every_ir_var_is_defined(self):
@@ -46,7 +46,7 @@ class BookThemeTest(unittest.TestCase):
             line = RULES[RULES.rfind("\n", 0, m.start()) + 1:RULES.find("\n", m.end())]
             self.assertRegex(line, r"calc\(var\(--ir-text-[a-z]+\) \* var\(--ir-book-rem\)\)", line)
 
-    def test_barlow_from_site_fonts(self):
+    def test_web_fonts_from_site_fonts(self):
         urls = re.findall(r'url\("([^"]+)"\)', RULES)
         self.assertEqual(
             sorted(urls),
@@ -54,8 +54,19 @@ class BookThemeTest(unittest.TestCase):
                 "../../fonts/barlow-latin-400-normal.woff2",
                 "../../fonts/barlow-latin-600-normal.woff2",
                 "../../fonts/barlow-semi-condensed-latin-600-normal.woff2",
+                "../../fonts/inter-latin-400-italic.woff2",
+                "../../fonts/inter-latin-400-normal.woff2",
+                "../../fonts/inter-latin-600-normal.woff2",
+                "../../fonts/jetbrains-mono-latin-400-italic.woff2",
+                "../../fonts/jetbrains-mono-latin-400-normal.woff2",
+                "../../fonts/jetbrains-mono-latin-600-normal.woff2",
             ],
         )
+
+    def test_bold_is_the_shipped_semibold(self):
+        # Inter and JetBrains Mono ship 600, not 700, so bold text uses 600
+        # rather than a weight the browser would have to fake.
+        self.assertRegex(RULES, r"strong,\s*b\s*\{[^}]*font-weight:\s*600")
 
     def test_warning_icon_is_readable(self):
         # mdbook colours the .warning icon with --warning-border, which is
