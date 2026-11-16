@@ -106,6 +106,7 @@ mod tests {
         // the direct count was the same before and after, and ask that
         // most of them agree: a count that is off by one never would.
         let (mut same, mut differ) = (0, 0);
+        let mut last = None;
         for _ in 0..200 {
             let before = direct_fd_count();
             let got = sample().open_fds;
@@ -116,9 +117,13 @@ mod tests {
                 same += 1;
             } else {
                 differ += 1;
+                last = Some((got, before));
             }
         }
-        assert!(same > differ, "agreed {same} times, differed {differ}");
+        assert!(
+            same > differ,
+            "agreed {same} times, differed {differ}; last (open_fds, direct count): {last:?}"
+        );
     }
 
     #[test]
