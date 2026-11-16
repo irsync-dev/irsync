@@ -121,8 +121,8 @@ exists; else `~/.ssh/id_ed25519` when it exists, read as it is and never
 written; else a key generated at `~/.config/irsync/id_ed25519`. A key named by
 `--identity` or `identity` is the whole answer: when it is missing, a key is
 generated there. An encrypted key needs a passphrase, from
-`--passphrase-file`, `IRSYNC_PASSPHRASE` or a prompt on a terminal. `irsync id generate --passphrase-file PATH` makes
-one. Only
+`--passphrase-file`, `IRSYNC_PASSPHRASE` or a prompt on a terminal. To make
+an encrypted key, run `irsync id generate --passphrase-file PATH`. Only
 file-based Ed25519 keys work.
 
 The client and the daemon use different keys, so both can run in one account

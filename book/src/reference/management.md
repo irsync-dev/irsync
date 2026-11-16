@@ -95,7 +95,12 @@ refused as `WHO` in `grant add`.
 | `irsync id show -a` | Both, each under its label. |
 | `irsync id generate [--daemon \| --out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair at the client's path (default), the daemon's path, or `PATH`, with the public key beside it as `.pub`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
 
-Keys generated on the side (by a sync, `id show`, `id list` or the daemon) are never encrypted. So with `--passphrase-file`, those commands do not generate a missing key: they fail and name `irsync id generate`.
+Some commands generate a missing key automatically: a sync, a listing,
+`id show`, `id list`, `show`, `export add` and the daemon. A key generated
+automatically is never encrypted. So with `--passphrase-file`, these commands
+do not generate a missing key. They fail, write nothing, and tell you to run
+`irsync id generate --passphrase-file PATH` first. Add `--daemon` for the
+daemon's key.
 
 The client's key is found the way ssh picks one; see
 [Configuration](configuration.md#identity-and-state). After `irsync id

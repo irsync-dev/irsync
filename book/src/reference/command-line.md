@@ -188,7 +188,9 @@ alias's table, then `[client]`, then the built-in default. See
 ### Flags every command takes
 
 `-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before
-or after any command: `irsync -v gc` and `irsync id show -vv` both work.
+or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
+command name right after these flags is the command. So a directory called
+`gc` is written `./gc`: `irsync -v ./gc host:path`.
 
 - `-v` asks for the command's own extra output. Where a command has none,
   `-v` shows nothing more. `-vv` gives info logs, `-vvv` debug, `-vvvv`
@@ -201,9 +203,14 @@ or after any command: `irsync -v gc` and `irsync id show -vv` both work.
   commands that load one. The passphrase is the first line of the file; its
   line ending (LF or CR+LF) is not part of it, and nothing else is trimmed.
   Commands that load no key ignore the flag. `irsync id generate` uses it to
-  write the new key encrypted. Every other command that would generate a
-  missing key fails instead and names `irsync id generate --passphrase-file
-  PATH`, because a key generated on the side is never encrypted.
+  write the new key encrypted. A key generated automatically is never
+  encrypted. So the commands that would generate a missing key (a sync, a
+  listing, `id show`, `id list`, `show`, `export add` and the daemon) fail
+  instead. They write nothing and name `irsync id generate --passphrase-file
+  PATH`.
+- `irsync show --passphrase-file PATH` reads both the client's and the
+  daemon's key. Both must exist already: without the flag it would generate
+  the missing one.
 
 Any other sync option given with a command is an error, for example
 `-a is a sync option and cannot be used with 'gc'`.
