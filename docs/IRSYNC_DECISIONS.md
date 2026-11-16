@@ -73,7 +73,7 @@ cross-referenced from commit messages and review notes.
 
 - SSH Ed25519 keys are iroh identities (32-byte seed → `SecretKey`);
   grants as `exports="photos:rw,docs:ro"` lines in a key list file.
-  (Superseded: grants now live in `exports.toml`; see
+  (Superseded: grants now live in `irsync.toml`; see
   `docs/superpowers/specs/2026-10-23-zero-config-cli-design.md`.)
 - The daemon rejects unknown keys and keys with an empty grant set before
   reading a single byte of the stream (close code 1).
