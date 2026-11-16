@@ -110,7 +110,9 @@ differ, the code is what shipped.
 
 15. **The tap formula is the attested `irsync.rb` plus two lines.**
     `publish-homebrew.yml` runs `.github/scripts/formula-man-pages.sh` on the
-    formula it downloads from the release, before it pushes to the tap. The
+    formula it downloads from the release, before it pushes to the tap. It
+    runs before the tap is checked out, so no repo code runs while
+    `HOMEBREW_TAP_TOKEN` is on disk. The
     script inserts `man1.install` and `man5.install` lines ahead of dist's
     `leftover_contents` line. Why: dist has no hook for this, and its
     formula puts every leftover file in `pkgshare`, where `man` doesn't look.

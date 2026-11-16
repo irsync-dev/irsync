@@ -662,6 +662,23 @@ class FormulaManPagesTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.text(), once)
 
+    def test_already_present_with_other_indent_is_unchanged(self):
+        text = self.text().replace(
+            "    " + self.ANCHOR,
+            '  man1.install Dir["man/man1/*.1"]\n\tman5.install Dir["man/man5/*.5"]\n    ' + self.ANCHOR)
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.text(), text)
+
+    def test_only_one_line_present_fails(self):
+        text = self.text().replace("    " + self.ANCHOR, self.MAN1 + "\n    " + self.ANCHOR)
+        self.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("one of the two", r.stderr)
+        self.assertEqual(self.text(), text)
+
     def test_missing_anchor_fails(self):
         text = self.text().replace(self.ANCHOR, "leftovers = []")
         self.write(text)
