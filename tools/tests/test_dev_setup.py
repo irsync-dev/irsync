@@ -80,7 +80,7 @@ class DevSetupCheckTests(unittest.TestCase):
         r, out = self.check(tar="exit 2")
         self.assertNotEqual(r.returncode, 0)
         self.assertRegex(out, r"missing +xz, so tar can write and read \.tar\.xz.*\(required\)")
-        self.assertRegex(out, r"xz-utils|brew install xz")
+        self.assertRegex(out, r"xz-utils|brew install xz|pkg install xz")
 
     def test_missing_tar_and_curl_are_required(self):
         os.remove(os.path.join(self.bin, "curl"))
@@ -113,7 +113,7 @@ class DevSetupCheckTests(unittest.TestCase):
         r, out = self.check(cc=None)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("C compiler", out)
-        self.assertRegex(out, r"build-essential|xcode-select")
+        self.assertRegex(out, r"build-essential|xcode-select|pkg install llvm")
 
     def test_missing_rustup_is_reported_not_installed(self):
         r, out = self.check(rustup=None)
@@ -226,7 +226,7 @@ class DevSetupCheckTests(unittest.TestCase):
         lines = out.splitlines()
         i = next(n for n, l in enumerate(lines) if "C compiler" in l)
         self.assertRegex(lines[i], r"^  missing  C compiler \(cc\) \(required\)$")
-        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install)$")
+        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install|pkg install llvm)$")
         self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"
                               r" {15}cargo install --locked cargo-deny --version \S+\n")
         # No version for mdbook: any will do.
