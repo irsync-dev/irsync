@@ -73,6 +73,36 @@ impl<'a> Warnings<'a> {
     }
 }
 
+/// Report lines on stdout. With `verbose`, every line is flushed as it is written, so the
+/// lines show up while the run is going.
+pub struct Report<'a> {
+    out: &'a mut dyn Write,
+    verbose: bool,
+}
+
+impl<'a> Report<'a> {
+    pub fn new(out: &'a mut dyn Write, verbose: bool) -> Self {
+        Report { out, verbose }
+    }
+
+    /// A line printed with or without `-v`.
+    pub fn line(&mut self, text: &str) -> io::Result<()> {
+        writeln!(self.out, "{text}")?;
+        if self.verbose {
+            self.out.flush()?;
+        }
+        Ok(())
+    }
+
+    /// A line printed only with `-v`; `text` is not called otherwise.
+    pub fn verbose_line(&mut self, text: impl FnOnce() -> String) -> io::Result<()> {
+        if self.verbose {
+            self.line(&text())?;
+        }
+        Ok(())
+    }
+}
+
 /// Canonicalizes `path` and requires it to be a directory.
 pub fn canonical_root(path: &Path) -> anyhow::Result<PathBuf> {
     let root = std::fs::canonicalize(path)

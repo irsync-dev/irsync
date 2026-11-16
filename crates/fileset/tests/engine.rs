@@ -2,6 +2,7 @@ mod common;
 
 use common::*;
 use fileset::compare::{Field, Tier};
+use fileset::engine::check::check;
 use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
@@ -1186,4 +1187,150 @@ fn update_stops_at_the_first_failed_lookup() {
     // Stopped at the root: nothing recorded, nothing hashed.
     assert_eq!(counted.entries.load(Ordering::Relaxed), 0);
     assert_eq!(counted.hashed.load(Ordering::Relaxed), 0);
+}
+
+fn verbose_check(root: &Path, tier: Tier) -> (Outcome, String, String) {
+    let mut opts = check_opts(root, tier, &[], &[], false);
+    opts.common.verbose = true;
+    run_check_opts(&opts).unwrap()
+}
+
+/// `unchanged=N` (check) or `entries=N` (update) from a summary line.
+fn summary_count(err: &str, key: &str) -> usize {
+    let summary = err.lines().last().unwrap();
+    let field = summary
+        .split(' ')
+        .find_map(|f| f.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("no {key}= in {summary}"));
+    field.parse().unwrap()
+}
+
+fn check_verbose_prints_eql_per_entry(b: Backend) {
+    let dir = tree(&[("f", "x"), ("d/g", "y")]);
+    let f = dir.path().join("f");
+    chmod(&f, 0o644);
+    set_mtime(&f, 1_000_000_000, 5);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    let want = format!(
+        "EQL f kind=file size=1 mtime=2001-09-09T01:46:40.000000005Z mode=0644 blake3={}\n",
+        blake3::hash(b"x").to_hex()
+    );
+    assert!(out.contains(&want), "{out}");
+    let l = lines(&out);
+    for dir_prefix in ["EQL . kind=dir size=", "EQL d kind=dir size="] {
+        let line = l.iter().find(|x| x.starts_with(dir_prefix));
+        let line = line.unwrap_or_else(|| panic!("no {dir_prefix} line in {out}"));
+        assert!(!line.contains("blake3="), "{line}");
+    }
+    assert!(l.iter().all(|x| x.starts_with("EQL ")), "{out}");
+    assert_eq!(l.len(), summary_count(&err, "unchanged"), "{out}{err}");
+    assert!(!err.contains("INFO"), "{err}");
+}
+
+fn check_verbose_keeps_the_difference_lines(b: Backend) {
+    let dir = tree(&[("d/f", "x"), ("m", "m"), ("x", "1")]);
+    let m = dir.path().join("m");
+    chmod(&m, 0o644);
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("n"), "new").unwrap();
+    let d = dir.path().join("d");
+    let d_mtime = std::fs::metadata(&d).unwrap().modified().unwrap();
+    std::fs::remove_file(d.join("f")).unwrap();
+    set_mtime_ro(&d, d_mtime);
+    std::fs::write(dir.path().join("x"), "12").unwrap();
+    set_mtime(&dir.path().join("x"), 1_000_000, 0);
+    chmod(&m, 0o600);
+
+    let (_, plain, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    let (outcome, verbose, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Differences, "{verbose}{err}");
+    let all = lines(&verbose);
+    let differences: Vec<_> = all
+        .iter()
+        .filter(|x| !x.starts_with("EQL ") && !x.starts_with("SKP "))
+        .cloned()
+        .collect();
+    assert_eq!(differences, lines(&plain));
+    assert_eq!(differences.len(), 4, "{verbose}");
+    assert!(all.iter().any(|x| x.starts_with("EQL ")), "{verbose}");
+}
+
+fn check_without_verbose_prints_no_eql_or_skp(b: Backend) {
+    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    assert_eq!(out, "");
+}
+
+fn check_verbose_without_hashing_has_no_checksum(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let mut opts = check_opts(dir.path(), Tier::Default, &[Field::Blake3], &[], false);
+    opts.common.verbose = true;
+    let (_, out, _) = run_check_opts(&opts).unwrap();
+    let l = lines(&out);
+    let line = l.iter().find(|x| x.starts_with("EQL f "));
+    let line = line.unwrap_or_else(|| panic!("no EQL f line in {out}"));
+    assert!(!line.contains("blake3="), "{line}");
+}
+
+fn check_verbose_prints_skp_on_stdout(b: Backend) {
+    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    assert!(
+        out.contains("SKP .Trashes reason=builtin-exclude\n"),
+        "{out}"
+    );
+    assert!(!out.contains(".Trashes/t"), "{out}");
+    assert!(!err.contains("INFO"), "{err}");
+}
+
+for_both_backends! {
+    check_verbose_prints_eql_per_entry => check_verbose_prints_eql_per_entry_sqlite, check_verbose_prints_eql_per_entry_fjall;
+    check_verbose_keeps_the_difference_lines => check_verbose_keeps_the_difference_lines_sqlite, check_verbose_keeps_the_difference_lines_fjall;
+    check_without_verbose_prints_no_eql_or_skp => check_without_verbose_prints_no_eql_or_skp_sqlite, check_without_verbose_prints_no_eql_or_skp_fjall;
+    check_verbose_without_hashing_has_no_checksum => check_verbose_without_hashing_has_no_checksum_sqlite, check_verbose_without_hashing_has_no_checksum_fjall;
+    check_verbose_prints_skp_on_stdout => check_verbose_prints_skp_on_stdout_sqlite, check_verbose_prints_skp_on_stdout_fjall;
+}
+
+/// Counts the bytes' lines and the flushes it is asked for.
+#[derive(Default)]
+struct FlushCounter {
+    lines: usize,
+    flushes: usize,
+}
+
+impl std::io::Write for FlushCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.lines += buf.iter().filter(|&&b| b == b'\n').count();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn check_verbose_flushes_every_line() {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), Backend::Sqlite, false, false);
+    let mut opts = check_opts(dir.path(), Tier::Default, &[], &[], false);
+    for verbose in [true, false] {
+        opts.common.verbose = verbose;
+        let mut out = FlushCounter::default();
+        let mut err = Vec::new();
+        check(&opts, &mut out, &mut err, &NoProgress).unwrap();
+        if verbose {
+            assert!(out.lines > 0);
+            assert!(out.flushes >= out.lines, "{} < {}", out.flushes, out.lines);
+        } else {
+            assert_eq!((out.lines, out.flushes), (0, 0));
+        }
+    }
 }
