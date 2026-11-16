@@ -428,8 +428,8 @@ fn cli_verbose_help_names_the_entry_lines() {
     assert!(o.contains("one line per entry"), "{o}");
 }
 
-#[test]
-fn cli_check_verbose_survives_closed_stdout() {
+/// Runs `verb -v` on a tree of 2000 files with stdout already closed.
+fn verbose_with_closed_stdout(verb: &str) -> std::process::Output {
     let d = tempfile::tempdir().unwrap();
     for i in 0..2000 {
         std::fs::write(d.path().join(format!("f{i:04}")), "x").unwrap();
@@ -437,22 +437,22 @@ fn cli_check_verbose_survives_closed_stdout() {
     let t = d.path().as_os_str();
     assert_eq!(code(&["init".as_ref(), "-q".as_ref(), t]), 0);
     let mut child = bin()
-        .args(["check".as_ref(), "-v".as_ref(), t])
+        .args([verb.as_ref(), "-v".as_ref(), t])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     drop(child.stdout.take());
-    let out = child.wait_with_output().unwrap();
-    let e = String::from_utf8_lossy(&out.stderr);
-    // 0 when the run finished before the pipe closed.
-    assert!(
-        matches!(out.status.code(), Some(0 | 2)),
-        "{:?} {e}",
-        out.status
-    );
-    assert!(!e.contains("panicked"), "{e}");
-    if out.status.code() == Some(2) {
-        assert!(e.contains("error: "), "{e}");
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn cli_verbose_with_closed_stdout_exits_2() {
+    for verb in ["check", "update"] {
+        let out = verbose_with_closed_stdout(verb);
+        let e = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{verb}: {:?} {e}", out.status);
+        assert!(e.contains("error: "), "{verb}: {e}");
+        assert!(!e.contains("panicked"), "{verb}: {e}");
     }
 }
