@@ -3,7 +3,9 @@
 #
 # Prints "code=true" if the change from <base> to <head> touches anything CI
 # has to build and test, "code=false" if it only touches Markdown files,
-# book/ or site/ (the site workflow checks those). Ready for $GITHUB_OUTPUT.
+# book/ or site/ (the site workflow checks those). The exception is what the
+# man pages are built from: the four book chapters and packaging/man/, which
+# tools/build-man.sh reads and CI checks. Ready for $GITHUB_OUTPUT.
 #
 # An all-zero or unknown <base> (a new branch, a shallow clone) prints
 # "code=true": when in doubt, test.
@@ -20,6 +22,12 @@ fi
 
 while IFS= read -r path; do
     case $path in
+        # The inputs of tools/build-man.sh. Keep this list and the one there
+        # together.
+        book/src/reference/command-line.md | book/src/reference/management.md | \
+            book/src/reference/configuration.md | book/src/fileset/reference.md | \
+            packaging/man/*)
+            echo "code=true"; exit 0 ;;
         *.md | book/* | site/*) ;;
         *) echo "code=true"; exit 0 ;;
     esac

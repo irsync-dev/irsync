@@ -104,6 +104,15 @@ jobs:
           fi
       - name: Show rsync version the tests will use
         run: rsync --version | head -1
+      - name: Install pandoc and mandoc (to build the man pages)
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # macOS ships /usr/bin/mandoc.
+            brew install pandoc
+          else
+            sudo apt-get update && sudo apt-get install -y pandoc mandoc
+          fi
+          pandoc --version | head -1
       # Format, the dev-setup tests, clippy twice, the tests with nextest
       # and the doc tests. On macOS it leaves out slow tests that Linux
       # covers (the ci-macos profile).

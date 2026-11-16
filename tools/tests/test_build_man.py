@@ -110,6 +110,16 @@ class BuildManTests(unittest.TestCase):
         for sub in ("HOST", "EXPORT", "GRANT"):  # subsections, not sections
             self.assertNotIn(sub, heads)
 
+    @unittest.skipUnless(shutil.which("groff"), "groff not installed")
+    def test_groff_renders_without_warnings(self):
+        # Linux man-db renders with groff. -ww turns on every warning, -z
+        # drops the output, -t runs tbl for the tables. Not run on a Mac
+        # without groff; Linux CI runs it.
+        for page in self.pages:
+            r = subprocess.run(["groff", "-t", "-man", "-Tutf8", "-ww", "-z", page],
+                               capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stderr), (0, ""), page)
+
     def test_cross_references(self):
         self.assertIn("irsync.toml(5)", render(self.irsync))
         self.assertIn("irsync(1)", render(self.toml))

@@ -563,6 +563,20 @@ class CodeChangedTests(unittest.TestCase):
         self.git("mv", "crates/x.rs", "README.md")
         self.assertEqual(self.changed(self.base, self.commit()), "code=true")
 
+    def test_man_page_sources_are_code(self):
+        # tools/build-man.sh builds the man pages from these, and CI checks it.
+        for path in ["book/src/reference/command-line.md",
+                     "book/src/reference/management.md",
+                     "book/src/reference/configuration.md",
+                     "book/src/fileset/reference.md",
+                     "packaging/man/irsync.md"]:
+            self.write(path, "changed\n")
+            self.assertEqual(self.changed(self.base, self.commit()), "code=true", path)
+
+    def test_other_book_chapter_is_not_code(self):
+        self.write("book/src/reference/metrics.md", "changed\n")
+        self.assertEqual(self.changed(self.base, self.commit()), "code=false")
+
     def test_zero_base_is_code(self):
         self.write("README.md", "hi\n")
         head = self.commit()

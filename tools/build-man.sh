@@ -43,6 +43,8 @@ esac
 pages="irsync.1 1 IRSYNC irsync.md reference/command-line.md reference/management.md
 fileset.1 1 FILESET fileset.md fileset/reference.md
 irsync.toml.5 5 IRSYNC.TOML irsync.toml.md reference/configuration.md"
+# A change to one of these chapters or to packaging/man/ must run CI even
+# when it is only Markdown: keep .github/scripts/code-changed.sh in step.
 
 # mdbook expands {{#include}} and friends; pandoc would print them as they
 # are. Check every input before writing anything.

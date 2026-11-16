@@ -6,9 +6,9 @@
 # .github/workflows/ci.yml runs this script, one job per name below, so a
 # local run and CI run the same commands.
 #
-#   check          formatting, the dev-setup tests, clippy with and without
-#                  OpenTelemetry, every test including the slow ones, and
-#                  the doc tests
+#   check          formatting, the dev-setup and man page tests, clippy
+#                  with and without OpenTelemetry, every test including
+#                  the slow ones, and the doc tests
 #   deny           the dependency check (cargo deny, see deny.toml)
 #   workflows      the workflow rule tests and actionlint
 #   release-build  the release build for this machine's Linux musl target
@@ -71,6 +71,9 @@ needs_check() {
     need cargo-nextest cargo nextest --version
     need rsync rsync --version
     need python3 python3 --version
+    need pandoc pandoc --version
+    # Presence only: it reads an empty file and succeeds.
+    need mandoc mandoc -T ascii /dev/null
 }
 needs_deny() { need cargo-deny cargo deny --version; }
 needs_workflows() {
@@ -104,8 +107,10 @@ job_check() {
     touch crates/irsync/build.rs
 
     run cargo fmt --all --check
-    # Tests tools/dev-setup.sh. It is Python, so no cargo command runs it.
-    run python3 -m unittest discover -s tools/tests
+    # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
+    # cargo command runs them. A missing pandoc or mandoc fails here instead
+    # of skipping the man page tests.
+    MAN_TESTS_REQUIRED=1 run python3 -m unittest discover -s tools/tests
     run cargo clippy --locked --workspace --all-targets --all-features ${target[@]+"${target[@]}"} -- -D warnings
     # Keeps the build without the otel feature compiling.
     run cargo clippy --locked --workspace --all-targets --no-default-features ${target[@]+"${target[@]}"} -- -D warnings
