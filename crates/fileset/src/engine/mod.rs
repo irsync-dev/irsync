@@ -1,6 +1,7 @@
-//! Engines behind the `update` and `check` verbs.
+//! Engines behind the `update`, `check` and `list` verbs.
 
 pub mod check;
+pub mod list;
 pub mod update;
 
 use std::io::{self, Write};

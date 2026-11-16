@@ -1,9 +1,11 @@
 use std::io::{BufWriter, IsTerminal, Write};
+use std::os::unix::ffi::OsStrExt;
 
 use clap::Parser;
 use fileset::cli::{BackendArg, Cli, Command, CommonArgs};
 use fileset::compare::{Field, Tier};
 use fileset::engine::check::{check, CheckOpts};
+use fileset::engine::list::{list, ListOpts};
 use fileset::engine::update::{update, Mode, UpdateOpts};
 use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::{NoProgress, Progress, TermProgress};
@@ -66,6 +68,8 @@ fn main() {
     let cli = Cli::parse();
     let mut out = BufWriter::new(std::io::stdout().lock());
     let mut err = std::io::stderr();
+    // A listing cut short by its reader (`fileset list ... | head`) is not a failure.
+    let listing = matches!(cli.command, Command::List(_));
     let result: anyhow::Result<Outcome> = match cli.command {
         Command::Init(a) => {
             let (common, spinner) = common_opts(a.common);
@@ -124,8 +128,23 @@ fn main() {
                 progress_for(spinner, opts.common.jobs).as_ref(),
             )
         }
+        Command::List(a) => {
+            if !a.extra.is_empty() {
+                fail("more than one pattern; quote the pattern so the shell does not expand it");
+            }
+            let opts = ListOpts {
+                root: a.path,
+                manifest: a.manifest,
+                pattern: a.pattern.map(|p| p.as_bytes().to_vec()),
+                verbose: a.verbose,
+            };
+            list(&opts, &mut out)
+        }
     };
-    let flushed = out.flush();
+    let flushed = match out.flush() {
+        Err(e) if listing && e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    };
     match result {
         Ok(outcome) if flushed.is_ok() => std::process::exit(outcome.exit_code()),
         Ok(_) => fail("cannot write to stdout"),

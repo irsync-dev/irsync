@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::builder::TypedValueParser;
@@ -22,6 +23,9 @@ pub enum Command {
     Update(UpdateArgs),
     /// Verify a directory tree against its manifest
     Check(CheckArgs),
+    /// List the entries recorded in a manifest
+    #[command(visible_alias = "ls")]
+    List(ListArgs),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -100,4 +104,21 @@ pub struct CheckArgs {
     /// Add one field to the comparison (repeatable)
     #[arg(long, value_name = "FIELD")]
     pub require: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ListArgs {
+    /// Root of the tree
+    pub path: PathBuf,
+    /// List only entries whose path matches this glob (quote it): `*` and `?` stop at `/`, `**` crosses it
+    pub pattern: Option<OsString>,
+    /// Location of the manifest instead of <PATH>/.fileset.sqlite or <PATH>/.fileset.fjall; with it, <PATH> need not exist
+    #[arg(long, value_name = "MPATH")]
+    pub manifest: Option<PathBuf>,
+    /// Also print owner, link count, device numbers and extended attributes
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+    /// More than one pattern: what an unquoted glob becomes once the shell expanded it.
+    #[arg(hide = true, trailing_var_arg = true)]
+    pub extra: Vec<OsString>,
 }
