@@ -89,15 +89,17 @@ def check_links(site_dir):
 
 _FONT_SUFFIXES = {".woff", ".woff2", ".ttf", ".otf", ".eot"}
 
-# The one web font that ships: the landing page's Barlow, in the top-level
-# fonts/ directory (see site/build.sh).
-_ALLOWED_FONT = re.compile(r"fonts/barlow(-semi-condensed)?-latin-\d{3}-normal\.woff2")
+# The web fonts that ship: Barlow, Inter and JetBrains Mono, in the
+# top-level fonts/ directory (see site/build.sh), which the book shares.
+_ALLOWED_FONT = re.compile(
+    r"fonts/(barlow|barlow-semi-condensed|inter|jetbrains-mono)-latin-\d{3}-(normal|italic)\.woff2"
+)
 
 
 def check_fonts(site_dir):
-    """No font files and no `fonts/` directory ship, except the landing
-    page's Barlow in the top-level `fonts/`. The book uses system font
-    stacks; this keeps mdbook's web fonts out."""
+    """No font files and no `fonts/` directory ship, except the site's own
+    web fonts in the top-level `fonts/`. The book loads those from there;
+    this keeps mdbook's web fonts out."""
     site_dir = Path(site_dir).resolve()
     problems = []
     for p in sorted(site_dir.rglob("*")):

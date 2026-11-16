@@ -334,7 +334,28 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 .collect();
             files.sort();
             let mut roots = Vec::new();
+            let mut old = 0usize;
             for file in files {
+                // An older build's index: this one never reads it. Removed
+                // unless a process (that build's daemon) still has it open.
+                if !Index::is_current_file(&file) {
+                    let gone = if dry_run {
+                        Ok(true)
+                    } else {
+                        Index::remove_unused(&file)
+                    };
+                    match gone {
+                        Ok(true) => {
+                            old += 1;
+                            if !log.quiet {
+                                println!("{}", file.display());
+                            }
+                        }
+                        Ok(false) => eprintln!("irsync: {}: in use, kept", file.display()),
+                        Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                    }
+                    continue;
+                }
                 match Index::root_of_file(&file) {
                     Ok(Some(r)) => roots.push(r),
                     Ok(None) => {}
@@ -371,8 +392,13 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 }
             }
             if !log.quiet {
+                let old = if old > 0 {
+                    format!(", {old} old index file(s)")
+                } else {
+                    String::new()
+                };
                 println!(
-                    "{parts} part file(s), {sessions} session(s), {entries} index entr{} {}",
+                    "{parts} part file(s), {sessions} session(s), {entries} index entr{}{old} {}",
                     if entries == 1 { "y" } else { "ies" },
                     verb(dry_run)
                 );
@@ -1501,7 +1527,15 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 // Unsetting a host's table or its id removes the host: like
                 // `host remove`, not while grants name it.
                 let hosts = if path[0] == "hosts" {
-                    manage::canonicalize_doc(&mut doc, &paths.config)?;
+                    // A file that does not load is that error, not a
+                    // refused save.
+                    Config::load(&paths)?;
+                    match path.get(1) {
+                        Some(alias) => {
+                            manage::canonicalize_without(&mut doc, &paths.config, alias)?
+                        }
+                        None => manage::canonicalize_doc(&mut doc, &paths.config)?,
+                    };
                     manage::hosts::host_aliases(&doc)
                 } else {
                     Vec::new()
@@ -1738,11 +1772,13 @@ fn run_host(h: &HostArgs) -> i32 {
         HostCmd::Remove { alias, force } => finish(
             "host remove",
             (|| {
+                // A file that does not load is that error, not a refused save.
+                Config::load(&paths)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 // First, so an EndpointId written for this host is found
                 // as a grant that names it.
-                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                manage::canonicalize_without(&mut doc, &paths.config, alias)?;
                 let grants = manage::hosts::host_remove(&mut doc, alias, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut doc)?;
@@ -1752,6 +1788,31 @@ fn run_host(h: &HostArgs) -> i32 {
                     n => format!(" and {n} grants"),
                 };
                 eprintln!("removed host {alias}{also} from {}", paths.config.display());
+                Ok(())
+            })(),
+        ),
+        HostCmd::Rename { old, new } => finish(
+            "host rename",
+            (|| {
+                // A file that does not load is that error, not a refused save.
+                Config::load(&paths)?;
+                let lock = manage::lock_config(&paths.config)?;
+                let mut doc = lock.load()?;
+                // First, so an EndpointId written for this host is found
+                // as a grant that names it.
+                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                let grants = manage::hosts::host_rename(&mut doc, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut doc)?;
+                let also = match grants {
+                    0 => String::new(),
+                    1 => "; updated 1 grant".to_string(),
+                    n => format!("; updated {n} grants"),
+                };
+                eprintln!(
+                    "renamed host {old} to {new}{also} in {}",
+                    paths.config.display()
+                );
                 Ok(())
             })(),
         ),
@@ -1994,8 +2055,7 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
             let paths = file_paths(f);
             let config = Config::load(&paths)?;
             let settings = &config.settings;
-            // The hosts section is `host list`, line for line, from the
-            // file that holds the table.
+            // The hosts section is `host list`, line for line.
             let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
             let pass = PassphraseSource::from_env(passphrase_file);
             let (client, source) = client_identity(None, settings, &pass)?;
@@ -2041,7 +2101,18 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
     lock.save(&mut doc)?;
     match old {
-        Some(old) => println!("{}: {old} -> {id}", a.alias),
+        Some(old) => {
+            println!("{}: {old} -> {id}", a.alias);
+            // A grant by alias follows the alias: say that it moved.
+            let lists = manage::grants::lists_naming(&doc, &a.alias);
+            if !lists.is_empty() {
+                eprintln!(
+                    "irsync host add: note: the grants that name {} (in {}) now apply to the new EndpointId",
+                    a.alias,
+                    lists.join(", ")
+                );
+            }
+        }
         None => println!("{}: {id}", a.alias),
     }
     Ok(())

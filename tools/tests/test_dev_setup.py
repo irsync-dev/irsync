@@ -104,6 +104,17 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(out, r"ok +GNU rsync 3\.4\.1", out)
         self.assertIn("Ready.", out)
 
+    def test_man_page_tools_are_optional_and_named(self):
+        r, out = self.check()
+        self.assertEqual(r.returncode, 0, out)
+        for tool, install in [("pandoc", "brew install pandoc|apt install pandoc"),
+                              ("mandoc", "brew install mandoc|apt install mandoc")]:
+            self.assertRegex(out, rf"missing +{tool}, for the man pages.*\(optional\)")
+            self.assertRegex(out, install)
+        r, out = self.check(pandoc="echo pandoc 3.1.3", mandoc="echo mandoc")
+        self.assertRegex(out, r"ok +pandoc\n")
+        self.assertRegex(out, r"ok +mandoc\n")
+
     def test_old_python_is_refused(self):
         r, out = self.check(python3="echo 'Python 3.10.12'")
         self.assertNotEqual(r.returncode, 0)

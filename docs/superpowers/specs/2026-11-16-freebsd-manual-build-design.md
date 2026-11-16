@@ -19,6 +19,7 @@ must not slow down or block everyday work.
 - A passing run hands back `irsync-x86_64-unknown-freebsd.tar.xz`, laid
   out like the release tarballs (`irsync`, `fileset`, `README.md`,
   `LICENSE` in a folder named after the target), with a SHA-256 file.
+  (Since the man pages landed on `main`, that layout also has `man/`.)
 - irsync builds and its tests pass on FreeBSD.
 
 ## Non-goals

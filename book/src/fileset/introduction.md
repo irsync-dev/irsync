@@ -40,7 +40,10 @@ curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
 ```
 
 Until the first stable release, v0.1.0, is out, add `--beta` straight after
-`sh -s --`.
+`sh -s --`. The script puts the programs in `~/.local/bin` and the man pages
+in `~/.local/share/man`, so `man fileset` works. It prints the `PATH` line to
+add if `~/.local/bin` is not on `PATH`. To remove it all, run it with
+`--uninstall` (and `--beta`, until v0.1.0).
 
 Homebrew (`brew install irsync-dev/tap/irsync`) and apt and dnf
 ([dist.irsync.org](https://dist.irsync.org)) work the same way from v0.1.0
@@ -54,6 +57,8 @@ On other machines, build `fileset` from source. This needs Rust; get it from
 ```sh
 cargo install --git https://github.com/irsync-dev/irsync fileset
 ```
+
+`cargo install` installs no man pages.
 
 Install it on every machine where you want to run a check.
 

@@ -111,27 +111,43 @@ fn push_entry(table: &mut dyn TableLike, key: &str, text: &str, comment: Option<
 
 /// Removes entry `i` of `arr` together with the comment after it, which
 /// toml_edit keeps in front of the next entry (or, for the last entry,
-/// before the closing bracket). The comment after the entry before `i`
-/// sits in front of `i` and stays.
+/// before the closing bracket, or behind the entry itself when no comma
+/// follows it). The comment after the entry before `i` sits in front of
+/// `i` and stays, and so do comment lines below a last entry.
 fn remove_entry(arr: &mut Array, i: usize) {
     let text = |raw: Option<&toml_edit::RawString>| {
         raw.and_then(|r| r.as_str()).unwrap_or_default().to_string()
     };
+    // What follows the first line of `s`; that line itself when it holds
+    // no comment and `keep_plain` is set.
+    let below = |s: &str, keep_plain: bool| -> String {
+        match s.split_once('\n') {
+            Some((line, rest)) if line.contains('#') || !keep_plain => rest.to_string(),
+            Some(_) => s.to_string(),
+            None if s.contains('#') || !keep_plain => String::new(),
+            None => s.to_string(),
+        }
+    };
     let before = text(arr.get(i).and_then(|v| v.decor().prefix()));
+    // Behind the entry: the rest of its line is its own, lines below are not.
+    let behind = below(&text(arr.get(i).and_then(|v| v.decor().suffix())), false);
     let last = i + 1 == arr.len();
     let after = if last {
         text(Some(arr.trailing()))
     } else {
         text(arr.get(i + 1).and_then(|v| v.decor().prefix()))
     };
-    // The removed entry's own comment is the rest of its line.
-    let rest = match after.split_once('\n') {
-        Some((line, rest)) if line.contains('#') => rest,
-        _ => after.as_str(),
-    };
-    let joined = format!("{}{rest}", before.trim_end_matches([' ', '\t']));
+    // After the comma, the rest of the line is the removed entry's comment.
+    let after = below(&after, true);
+    let joined = format!("{}{behind}{after}", before.trim_end_matches([' ', '\t']));
     arr.remove(i);
     if last {
+        // On one line nothing but blanks can be left before the bracket.
+        let joined = if joined.trim().is_empty() && !joined.contains('\n') {
+            String::new()
+        } else {
+            joined
+        };
         arr.set_trailing(joined);
     } else if let Some(next) = arr.get_mut(i) {
         // Do not leave `[ "b"]` behind when the first entry went.
@@ -249,6 +265,40 @@ pub fn remove_named(doc: &mut DocumentMut, name: &str) -> usize {
             for i in (0..arr.len()).rev() {
                 if arr.get(i).and_then(Value::as_str) == Some(name) {
                     remove_entry(arr, i);
+                    n += 1;
+                }
+            }
+        }
+    };
+    for top in ["all", "immediate"] {
+        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
+            table(t);
+        }
+    }
+    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
+        for (_, item) in exports.iter_mut() {
+            if let Some(t) = item.as_table_like_mut() {
+                table(t);
+            }
+        }
+    }
+    n
+}
+
+/// Writes every grant entry whose text is `old` as `new`, in `[all]`,
+/// `[immediate]` and every export, keeping its comments; the count.
+pub fn rename_named(doc: &mut DocumentMut, old: &str, new: &str) -> usize {
+    let mut n = 0;
+    let mut table = |table: &mut dyn TableLike| {
+        for key in ["rw", "ro"] {
+            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
+                continue;
+            };
+            for v in arr.iter_mut() {
+                if v.as_str() == Some(old) {
+                    let decor = v.decor().clone();
+                    *v = Value::from(new);
+                    *v.decor_mut() = decor;
                     n += 1;
                 }
             }

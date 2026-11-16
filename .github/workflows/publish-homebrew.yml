@@ -7,8 +7,11 @@
 # 0.34.0 can't call a local custom publish job: it writes
 # `uses: $/.github/...`.)
 #
-# The formula is the irsync.rb that dist built and attached to the release.
-# Safe to run again: if the tap already has that formula, it pushes nothing.
+# The formula is the irsync.rb that dist built and attached to the release,
+# plus two lines that install the man pages (formula-man-pages.sh, taken from
+# the release's own tag and run before the tap, and its token, is checked
+# out). Safe to run again: if the tap already has that
+# formula, it pushes nothing.
 
 name: Publish Homebrew formula
 
@@ -33,18 +36,40 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag }}
     steps:
+      # The script comes from the release's tag, so a release is always
+      # published with the script as it was then. It runs before the tap is
+      # checked out, so repo code never runs while HOMEBREW_TAP_TOKEN is on
+      # disk.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+          path: irsync
+
+      - name: Download the formula and add the man page lines
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --pattern '*.rb' --dir formula --clobber
+          for f in formula/*.rb; do
+            irsync/.github/scripts/formula-man-pages.sh "$f"
+          done
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: true
           repository: irsync-dev/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
 
-      - name: Download the formula from the release
-        run: gh release download "$TAG" --pattern '*.rb' --dir Formula --clobber
+      - name: Copy the formula into the tap
+        run: |
+          mkdir -p tap/Formula
+          cp formula/*.rb tap/Formula/
 
       # The formula name may differ from the app name, so publish each *.rb
       # under its own file name.
       - name: Commit and push
+        working-directory: tap
         run: |
           set -euo pipefail
           export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"

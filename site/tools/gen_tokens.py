@@ -1,46 +1,43 @@
 #!/usr/bin/env python3
-"""Generate CSS custom properties from the design tokens (site/tokens.json)."""
+"""Generate CSS custom properties from the design tokens (site/tokens.json).
+
+Without selectors it writes the landing page's form: light on :root, dark
+under prefers-color-scheme. With --light and --dark it writes the book's
+form, keyed on mdbook's theme classes."""
 
 import argparse
 import json
-import re
 import sys
 
 HEADER = "/* generated from site/tokens.json by site/tools/gen_tokens.py; do not edit */"
-ALIAS = re.compile(r"^\{([^}]+)\}$")
 
 
-def _resolve(value):
-    m = ALIAS.match(value)
-    return f"var(--ir-{m.group(1)})" if m else value
-
-
-def _declarations(tokens, theme):
+def _declarations(tokens, mode):
     """Return (themed, plain) lists of (name, value) declarations.
 
-    Themed tokens take their value for `theme`; plain tokens (the same in
-    every theme) are returned separately so they are emitted only once.
+    Themed colours take their value for `mode` ("light" or "dark"); plain
+    tokens (the same in both) are returned separately so they are emitted
+    only once.
     """
     themed, plain = [], []
-    for family in (tokens["color"], tokens["spacing"], tokens["radius"], tokens["shadow"]):
-        for tok in family["tokens"]:
-            name = f"--ir-{tok['name']}"
-            value = tok["value"]
-            if isinstance(value, dict):
-                themed.append((name, _resolve(value[theme])))
-            else:
-                plain.append((name, _resolve(value)))
+    for tok in tokens["color"]["tokens"]:
+        name, value = f"--ir-{tok['name']}", tok["value"]
+        if isinstance(value, dict):
+            themed.append((name, value[mode]))
+        else:
+            plain.append((name, value))
     typ = tokens["type"]
     for fam, stack in typ["families"].items():
         plain.append((f"--ir-font-{fam}", stack))
-    for group in typ["groups"]:
-        for style in group["styles"]:
-            base = f"--ir-{style['name']}"
-            plain.append((f"{base}-size", style["fontSize"]))
+    for style in typ["scale"]:
+        base = f"--ir-text-{style['name']}"
+        plain.append((base, style["size"]))
+        if "lineHeight" in style:
             plain.append((f"{base}-line", style["lineHeight"]))
-            plain.append((f"{base}-weight", str(style["fontWeight"])))
-            if "letterSpacing" in style:
-                plain.append((f"{base}-tracking", style["letterSpacing"]))
+        if "letterSpacing" in style:
+            plain.append((f"{base}-tracking", style["letterSpacing"]))
+    for tok in tokens["radius"]["tokens"]:
+        plain.append((f"--ir-{tok['name']}", tok["value"]))
     return themed, plain
 
 
@@ -51,34 +48,48 @@ def _block(selector, decls, indent=""):
     return "\n".join(lines)
 
 
-def tokens_css(tokens, light_selector, dark_selector):
-    """CSS with dark as the :root default and light under `light_selector`
-    and, absent an explicit dark choice, under prefers-color-scheme: light."""
-    default, other = (t["id"] for t in tokens["color"]["themes"][:2])
-    dark_themed, plain = _declarations(tokens, default)
-    light_themed, _ = _declarations(tokens, other)
-    parts = [
-        HEADER,
-        _block(f":root, {dark_selector}", dark_themed + plain),
-        _block(light_selector, light_themed),
-        "@media (prefers-color-scheme: light) {\n"
-        + _block(f":root:not({dark_selector})", light_themed, "  ")
-        + "\n}",
-    ]
-    return "\n\n".join(parts) + "\n"
+def _media_dark(selector, decls):
+    return "@media (prefers-color-scheme: dark) {\n" + _block(selector, decls, "  ") + "\n}"
+
+
+def tokens_css(tokens, light=None, dark=None):
+    """CSS for the tokens. Light is the default on :root.
+
+    With no selectors (the landing page), dark applies under
+    prefers-color-scheme: dark. With both (the book), light also applies
+    under `light`, dark under `dark`, and, when neither class is set (no
+    JavaScript), under prefers-color-scheme: dark.
+    """
+    if (light is None) != (dark is None):
+        raise ValueError("give both the light and the dark selector, or neither")
+    light_themed, plain = _declarations(tokens, "light")
+    dark_themed, _ = _declarations(tokens, "dark")
+    if light is None:
+        parts = [_block(":root", light_themed + plain), _media_dark(":root", dark_themed)]
+    else:
+        parts = [
+            _block(f":root, {light}", light_themed + plain),
+            _block(dark, dark_themed),
+            _media_dark(f":root:not({light})", dark_themed),
+        ]
+    return "\n\n".join([HEADER] + parts) + "\n"
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("tokens", help="path to tokens.json")
-    ap.add_argument("--light", required=True, help="selector for the light theme")
-    ap.add_argument("--dark", required=True, help="selector for the dark theme")
+    ap.add_argument("--light", help="selector for the light theme (the book)")
+    ap.add_argument("--dark", help="selector for the dark theme (the book)")
     ap.add_argument("-o", "--output", required=True, help="output CSS file")
     args = ap.parse_args(argv)
     with open(args.tokens, encoding="utf-8") as f:
         tokens = json.load(f)
+    try:
+        css = tokens_css(tokens, args.light, args.dark)
+    except ValueError as e:
+        ap.error(str(e))
     with open(args.output, "w", encoding="utf-8") as f:
-        f.write(tokens_css(tokens, args.light, args.dark))
+        f.write(css)
     return 0
 
 

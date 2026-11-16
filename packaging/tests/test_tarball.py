@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SCRIPT = os.path.join(ROOT, "packaging", "tarball.sh")
 
 T = "x86_64-unknown-freebsd"
+PAGES = ["man/man1/fileset.1", "man/man1/irsync.1", "man/man5/irsync.toml.5"]
 
 
 class TarballTests(unittest.TestCase):
@@ -24,6 +25,12 @@ class TarballTests(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(f"#!/bin/sh\necho {name}\n")
             os.chmod(path, 0o755)
+        # The man pages, where packaging/dist/build.sh leaves them.
+        for page in PAGES:
+            path = os.path.join(self.bin, page)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(".TH TEST 1\n")
         # Not created here: the script makes it.
         self.out = os.path.join(self.tmp, "out")
 
@@ -40,7 +47,7 @@ class TarballTests(unittest.TestCase):
         with tarfile.open(os.path.join(self.out, f"irsync-{T}.tar.xz")) as tar:
             files = sorted(m.name for m in tar.getmembers() if m.isfile())
             self.assertEqual(files, [f"irsync-{T}/{n}" for n in
-                                     ["LICENSE", "README.md", "fileset", "irsync"]])
+                                     ["LICENSE", "README.md", "fileset", "irsync"] + PAGES])
             for n in ["irsync", "fileset"]:
                 self.assertTrue(tar.getmember(f"irsync-{T}/{n}").mode & 0o111)
 
@@ -54,6 +61,13 @@ class TarballTests(unittest.TestCase):
 
     def test_missing_binary_fails_and_leaves_nothing(self):
         os.remove(os.path.join(self.bin, "fileset"))
+        r = self.run_script(T, self.bin, self.out)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("tarball.sh:", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.out, f"irsync-{T}.tar.xz")))
+
+    def test_missing_man_pages_fail_and_leave_nothing(self):
+        shutil.rmtree(os.path.join(self.bin, "man"))
         r = self.run_script(T, self.bin, self.out)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("tarball.sh:", r.stderr)

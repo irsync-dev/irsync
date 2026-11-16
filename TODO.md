@@ -11,6 +11,9 @@
 
 # Collection of open TODO items, in no particular order
 
+- [ ] cargo-binstall packaging, so `cargo binstall irsync` installs the
+      release binaries. `cargo install` builds from source and installs no
+      man pages; see whether binstall can bring them.
 - [ ] OpenTelemetry instrumentation, export on the daemon side, stats printing after a run
 - [ ] Auto-update irsync on the remote side, with the correct architecture
     - [ ] Only happens when a run goes through ssh (first sync, `--ssh`, or the

@@ -27,9 +27,10 @@ if [ "$(id -u)" -eq 0 ]; then
     start=$(pwd)
 
     # bash: tools/ci.sh. git: the build bakes in the commit. python3: the
-    # dev-setup tests. rsync: the comparison test. If the build asks for
-    # another package, add it here.
-    pkg install -y bash curl git python3 rsync rustup-init
+    # dev-setup tests. rsync: the comparison test. hs-pandoc: the man pages
+    # (mandoc, which checks them, is part of FreeBSD). If the build asks
+    # for another package, add it here.
+    pkg install -y bash curl git hs-pandoc python3 rsync rustup-init
 
     if ! pw usershow "$user" >/dev/null 2>&1; then
         pw useradd "$user" -m

@@ -1,14 +1,14 @@
-//! Edits of the `[hosts]` table in `irsync.toml` for `host add` and
-//! `host remove`. Pure on a parsed document; loading and saving belong to the caller.
+//! Edits of the `[hosts]` table in `irsync.toml` for `host add`,
+//! `host remove` and `host rename`. Pure on a parsed document; loading and saving belong to the caller.
 
-use super::grants::{lists_naming, remove_named};
+use super::grants::{lists_naming, remove_named, rename_named};
 use super::ManageError;
 use crate::config::hosts::valid_alias;
 use crate::config::settings::RelayMode;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
-use toml_edit::{Array, DocumentMut, Item, Table, TableLike};
+use toml_edit::{Array, DocumentMut, Item, Key, Table, TableLike};
 use url::Url;
 
 /// The optional keys `host add` writes; `None` leaves a key untouched.
@@ -128,6 +128,65 @@ pub fn host_remove(doc: &mut DocumentMut, alias: &str, force: bool) -> Result<us
         hosts.remove(alias);
     }
     Ok(removed)
+}
+
+/// Rename `[hosts.old]` to `[hosts.new]`, keeping its place in the file,
+/// its keys and its comments, and write every grant entry naming `old` as
+/// `new`. The number of grant entries renamed. Refused, with `doc`
+/// unchanged, when `old` is no host, `new` is not a valid alias or `new`
+/// is a host already. Renaming a host to its own name changes nothing.
+///
+/// Grants are matched by the alias: run [`super::canonicalize_doc`] first
+/// so that an EndpointId written for this host counts too. A list that
+/// named both `old` and `new` names `new` twice until the next canonical
+/// rewrite, which every save does.
+pub fn host_rename(doc: &mut DocumentMut, old: &str, new: &str) -> Result<usize, ManageError> {
+    let hosts = doc.get("hosts").and_then(Item::as_table_like);
+    let is_host = |alias: &str| {
+        hosts
+            .and_then(|h| h.get(alias))
+            .is_some_and(Item::is_table_like)
+    };
+    if !is_host(old) {
+        return Err(ManageError::NotFound(old.to_string()));
+    }
+    if old == new {
+        return Ok(0);
+    }
+    if !valid_alias(new) {
+        return Err(ManageError::BadAlias(new.to_string()));
+    }
+    // Any key, not only a host table: the new entry would replace it.
+    if hosts.is_some_and(|h| h.contains_key(new)) {
+        return Err(ManageError::HostExists(new.to_string()));
+    }
+    let renamed = |key: Key| {
+        Key::new(new)
+            .with_leaf_decor(key.leaf_decor().clone())
+            .with_dotted_decor(key.dotted_decor().clone())
+    };
+    // Every entry is taken out and put back in order, so the renamed one
+    // keeps its place among the others.
+    match doc.get_mut("hosts").expect("checked above") {
+        Item::Table(t) => {
+            let keys: Vec<String> = t.iter().map(|(k, _)| k.to_string()).collect();
+            for k in keys {
+                let (key, item) = t.remove_entry(&k).expect("listed");
+                let key = if k == old { renamed(key) } else { key };
+                t.insert_formatted(&key, item);
+            }
+        }
+        Item::Value(toml_edit::Value::InlineTable(t)) => {
+            let keys: Vec<String> = t.iter().map(|(k, _)| k.to_string()).collect();
+            for k in keys {
+                let (key, value) = t.remove_entry(&k).expect("listed");
+                let key = if k == old { renamed(key) } else { key };
+                t.insert_formatted(&key, value);
+            }
+        }
+        _ => unreachable!("hosts is table-like"),
+    }
+    Ok(rename_named(doc, old, new))
 }
 
 /// The aliases of `doc`: the tables under `[hosts]`, in file order.

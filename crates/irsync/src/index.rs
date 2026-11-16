@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
@@ -48,7 +48,8 @@ impl Reader<'_> {
             .conn
             .prepare_cached(
                 "SELECT kind, size, mtime_sec, mtime_nsec, ctime_sec, ctime_nsec, inode, dev,
-                        mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash, has_digest
+                        mode, uid, gid, nlink, rdev, link_target, sparse, whole_hash, has_digest,
+                        id
                  FROM entries WHERE path = ?1",
             )?
             .query_row([p], |r| {
@@ -78,20 +79,21 @@ impl Reader<'_> {
                     (r.get::<_, i64>(4)?, r.get::<_, u32>(5)?),
                     whole,
                     has_digest,
+                    r.get::<_, i64>(17)?,
                 ))
             })
             .optional()?;
-        let Some((entry, ctime, whole, has_digest)) = row else {
+        let Some((entry, ctime, whole, has_digest, id)) = row else {
             return Ok(None);
         };
         let digest = match whole.filter(|_| has_digest) {
             None => None,
             Some(w) => {
                 let mut st = self.conn.prepare_cached(
-                    "SELECT offset, len, hash FROM chunks WHERE path = ?1 ORDER BY idx",
+                    "SELECT offset, len, hash FROM chunks WHERE entry_id = ?1 ORDER BY idx",
                 )?;
                 let chunks = st
-                    .query_map([p], |r| {
+                    .query_map([id], |r| {
                         Ok((
                             r.get::<_, i64>(0)? as u64,
                             r.get::<_, u32>(1)?,
@@ -166,12 +168,13 @@ impl Reader<'_> {
         out
     }
 
-    /// Up to `limit` files holding a chunk with this hash, by path; with
-    /// `after`, only paths sorting after it (the next page).
+    /// Up to `limit` files holding a chunk with this hash, by entry id;
+    /// with `after`, only ids above it (the next page: the last holder's
+    /// [`ChunkHolder::entry_id`]).
     pub fn find_chunks(
         &self,
         hash: &[u8; 32],
-        after: Option<&RelPath>,
+        after: Option<i64>,
         limit: usize,
     ) -> Result<Vec<ChunkHolder>> {
         // The cursor and limit are spelled into the statement (one cached
@@ -179,15 +182,15 @@ impl Reader<'_> {
         // on a bound parameter (`?2 IS NULL OR ...`, `LIMIT ?3`) on every
         // new binding, which costs more than the lookup.
         let cursor = if after.is_some() {
-            "AND c.path > ?2"
+            "AND c.entry_id > ?2"
         } else {
             ""
         };
         let mut st = self.conn.prepare_cached(&format!(
-            "SELECT c.path, MIN(c.offset), e.inode, e.size FROM chunks c
-             JOIN entries e ON e.path = c.path
+            "SELECT e.path, MIN(c.offset), e.inode, e.size, c.entry_id FROM chunks c
+             JOIN entries e ON e.id = c.entry_id
              WHERE c.hash = ?1 {cursor}
-             GROUP BY c.path ORDER BY c.path LIMIT {limit}"
+             GROUP BY c.entry_id ORDER BY c.entry_id LIMIT {limit}"
         ))?;
         let row = |r: &rusqlite::Row<'_>| {
             Ok((
@@ -195,20 +198,22 @@ impl Reader<'_> {
                 r.get::<_, i64>(1)? as u64,
                 r.get::<_, i64>(2)? as u64,
                 r.get::<_, i64>(3)? as u64,
+                r.get::<_, i64>(4)?,
             ))
         };
         let rows: Vec<_> = match after {
-            Some(p) => st.query_map(params![&hash[..], p.as_bytes()], row)?,
+            Some(id) => st.query_map(params![&hash[..], id], row)?,
             None => st.query_map(params![&hash[..]], row)?,
         }
         .collect::<rusqlite::Result<_>>()?;
         rows.into_iter()
-            .map(|(p, offset, inode, size)| {
+            .map(|(p, offset, inode, size, entry_id)| {
                 Ok(ChunkHolder {
                     path: relpath(&p)?,
                     offset,
                     inode,
                     size,
+                    entry_id,
                 })
             })
             .collect()
@@ -276,38 +281,53 @@ fn write_entry(
             ));
         }
     }
-    conn.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
-        .execute([p])?;
-    let insert = "INSERT OR REPLACE INTO entries (path, kind, size, mtime_sec, mtime_nsec,
+    // An upsert, not a replace: a path already indexed keeps its row and
+    // id, so its chunk rows stay where they are; a new one takes the next
+    // id, after the last, which keeps the walk's order on disk.
+    let upsert = "INSERT INTO entries (path, kind, size, mtime_sec, mtime_nsec,
           ctime_sec, ctime_nsec, inode, dev, mode, uid, gid, nlink, rdev, link_target, sparse,
           whole_hash, has_digest)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)";
-    conn.prepare_cached(insert)?.execute(params![
-        p,
-        entry.kind,
-        entry.size as i64,
-        entry.mtime_sec,
-        entry.mtime_nsec,
-        ctime.0,
-        ctime.1,
-        entry.inode as i64,
-        entry.dev as i64,
-        entry.mode,
-        entry.uid,
-        entry.gid,
-        entry.nlink,
-        entry.rdev as i64,
-        entry.link_target,
-        entry.sparse,
-        whole,
-        digest.is_some(),
-    ])?;
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+        ON CONFLICT (path) DO UPDATE SET kind = excluded.kind, size = excluded.size,
+          mtime_sec = excluded.mtime_sec, mtime_nsec = excluded.mtime_nsec,
+          ctime_sec = excluded.ctime_sec, ctime_nsec = excluded.ctime_nsec,
+          inode = excluded.inode, dev = excluded.dev, mode = excluded.mode,
+          uid = excluded.uid, gid = excluded.gid, nlink = excluded.nlink,
+          rdev = excluded.rdev, link_target = excluded.link_target,
+          sparse = excluded.sparse, whole_hash = excluded.whole_hash,
+          has_digest = excluded.has_digest
+        RETURNING id";
+    let id: i64 = conn.prepare_cached(upsert)?.query_row(
+        params![
+            p,
+            entry.kind,
+            entry.size as i64,
+            entry.mtime_sec,
+            entry.mtime_nsec,
+            ctime.0,
+            ctime.1,
+            entry.inode as i64,
+            entry.dev as i64,
+            entry.mode,
+            entry.uid,
+            entry.gid,
+            entry.nlink,
+            entry.rdev as i64,
+            entry.link_target,
+            entry.sparse,
+            whole,
+            digest.is_some(),
+        ],
+        |r| r.get(0),
+    )?;
+    conn.prepare_cached("DELETE FROM chunks WHERE entry_id = ?1")?
+        .execute([id])?;
     if let Some(d) = digest {
         let mut st = conn.prepare_cached(
-            "INSERT INTO chunks (path, idx, offset, len, hash) VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO chunks (entry_id, idx, offset, len, hash) VALUES (?1,?2,?3,?4,?5)",
         )?;
         for (i, c) in d.chunks.iter().enumerate() {
-            st.execute(params![p, i as i64, c.offset as i64, c.len, &c.hash[..]])?;
+            st.execute(params![id, i as i64, c.offset as i64, c.len, &c.hash[..]])?;
         }
     }
     Ok(())
@@ -445,8 +465,10 @@ fn apply(conn: &Connection, w: &Write) -> Result<()> {
 /// The statements of [`Index::remove_entry`].
 fn remove_entry(conn: &Connection, path: &RelPath) -> Result<()> {
     let p = path.as_bytes();
-    conn.prepare_cached("DELETE FROM chunks WHERE path = ?1")?
-        .execute([p])?;
+    conn.prepare_cached(
+        "DELETE FROM chunks WHERE entry_id = (SELECT id FROM entries WHERE path = ?1)",
+    )?
+    .execute([p])?;
     conn.prepare_cached("DELETE FROM entries WHERE path = ?1")?
         .execute([p])?;
     Ok(())
@@ -456,8 +478,8 @@ fn remove_entry(conn: &Connection, path: &RelPath) -> Result<()> {
 fn remove_entry_if(conn: &Connection, path: &RelPath, inode: u64, size: u64) -> Result<()> {
     let args = params![path.as_bytes(), inode as i64, size as i64];
     conn.prepare_cached(
-        "DELETE FROM chunks WHERE path = ?1 AND EXISTS
-           (SELECT 1 FROM entries WHERE path = ?1 AND inode = ?2 AND size = ?3)",
+        "DELETE FROM chunks WHERE entry_id =
+           (SELECT id FROM entries WHERE path = ?1 AND inode = ?2 AND size = ?3)",
     )?
     .execute(args)?;
     conn.prepare_cached("DELETE FROM entries WHERE path = ?1 AND inode = ?2 AND size = ?3")?
@@ -648,6 +670,8 @@ pub struct ChunkHolder {
     pub offset: u64,
     pub inode: u64,
     pub size: u64,
+    /// The cursor for [`Reader::find_chunks`]' next page.
+    pub entry_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -724,6 +748,35 @@ fn relpath(b: &[u8]) -> Result<RelPath> {
     RelPath::new(b).map_err(|_| IndexError::Corrupt("invalid path"))
 }
 
+/// Attaches the version 1 index `file` as `v1`; false (logged) if it cannot
+/// be. Read only: nothing is written to it.
+fn attach_v1(conn: &Connection, file: &Path) -> bool {
+    let Some(name) = file.to_str() else {
+        return false;
+    };
+    match conn.execute("ATTACH DATABASE ?1 AS v1", [name]) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(file = %file.display(), error = %e, "cannot read the old index");
+            false
+        }
+    }
+}
+
+/// Copies the partial files and sessions of the attached `v1` index into
+/// the new one, inside its creating transaction, so a transfer cut off
+/// before an upgrade still resumes. A failure is logged: the copy is a
+/// convenience, and the new index is complete without it.
+fn copy_from_v1(tx: &rusqlite::Transaction<'_>) {
+    let copy = "INSERT OR IGNORE INTO partials (path, expected_hash, size, ranges, updated_at)
+          SELECT path, expected_hash, size, ranges, updated_at FROM v1.partials;
+        INSERT OR IGNORE INTO sessions (id, key, plan, progress, created_at, updated_at)
+          SELECT id, key, plan, progress, created_at, updated_at FROM v1.sessions;";
+    if let Err(e) = tx.execute_batch(copy) {
+        tracing::warn!(error = %e, "copying partial files and sessions from the old index failed");
+    }
+}
+
 impl Index {
     /// The read-only queries on this connection.
     pub fn reader(&self) -> Reader<'_> {
@@ -752,7 +805,10 @@ impl Index {
             .collect();
         let dir = state_dir.join("index");
         std::fs::create_dir_all(&dir)?;
-        let file = dir.join(format!("{name}.sqlite"));
+        // One file per schema version: an older build keeps its own, and
+        // the two never see each other's tables.
+        let file = dir.join(format!("{name}.v{SCHEMA_VERSION}.sqlite"));
+        let v1 = dir.join(format!("{name}.sqlite"));
         let mut conn = Connection::open(&file)?;
         // First: switching to WAL takes a lock another process may hold.
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -767,7 +823,7 @@ impl Index {
         // Every statement is cached; this many are in use.
         conn.set_prepared_statement_cache_capacity(64);
         let mut ix = Index { conn, file };
-        ix.init()?;
+        ix.init(v1.is_file().then_some(v1.as_path()))?;
         // `meta.value` is declared INTEGER but SQLite is dynamically typed:
         // `root_path` is stored (and read back) as a BLOB of the path bytes.
         // Remember which root this (hash-named) file belongs to, so `irsync gc` can find it.
@@ -775,6 +831,46 @@ impl Index {
             .prepare_cached("INSERT OR IGNORE INTO meta (key, value) VALUES ('root_path', ?1)")?
             .execute([canon.as_os_str().as_bytes()])?;
         Ok(ix)
+    }
+
+    /// Whether `file` is an index file of this schema version; any other
+    /// `*.sqlite` file in the index directory is one an older build wrote.
+    pub fn is_current_file(file: &Path) -> bool {
+        file.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(&format!(".v{SCHEMA_VERSION}.sqlite")))
+    }
+
+    /// Deletes the index file `file`, with its WAL and shared-memory files,
+    /// unless a connection has it open (another process's too): false then.
+    /// For files of other schema versions, which this build never opens.
+    pub fn remove_unused(file: &Path) -> Result<bool> {
+        let conn = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        // In WAL mode an exclusive transaction alone lets readers in; in
+        // exclusive locking mode it is refused while any other connection
+        // has the file open, idle ones included. Held until `conn` closes.
+        conn.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+        match conn.execute_batch("BEGIN EXCLUSIVE") {
+            Ok(()) => {}
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(
+                    e.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = file.as_os_str().to_owned();
+            name.push(suffix);
+            match std::fs::remove_file(&name) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(true)
     }
 
     /// The canonical root recorded in the index file at `file`, if any
@@ -826,26 +922,38 @@ impl Index {
         IndexHandle::new(self)
     }
 
-    fn init(&mut self) -> Result<()> {
+    /// Creates the tables if they are missing. A new file takes the partial
+    /// files and sessions of `v1`, the root's index of schema version 1, if
+    /// there is one (its entries are not taken: they are hashed again).
+    fn init(&mut self, v1: Option<&Path>) -> Result<()> {
+        // Attached outside the transaction, as SQLite requires; read only
+        // when this file turns out to be new.
+        let attached = v1.is_some_and(|f| attach_v1(&self.conn, f));
+        let res = self.create(attached);
+        if attached {
+            let _ = self.conn.execute_batch("DETACH DATABASE v1");
+        }
+        res
+    }
+
+    fn create(&mut self, v1_attached: bool) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS entries (
-               path BLOB PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL,
+               id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE,
+               kind INTEGER NOT NULL, size INTEGER NOT NULL,
                mtime_sec INTEGER NOT NULL, mtime_nsec INTEGER NOT NULL,
                ctime_sec INTEGER NOT NULL, ctime_nsec INTEGER NOT NULL,
                inode INTEGER NOT NULL, dev INTEGER NOT NULL, mode INTEGER NOT NULL,
                uid INTEGER NOT NULL, gid INTEGER NOT NULL, nlink INTEGER NOT NULL,
                rdev INTEGER NOT NULL, link_target BLOB NOT NULL, sparse INTEGER NOT NULL,
                whole_hash BLOB, has_digest INTEGER NOT NULL);
-             DROP INDEX IF EXISTS entries_whole_hash;
-             DROP INDEX IF EXISTS entries_whole_hash_path;
              CREATE TABLE IF NOT EXISTS chunks (
-               path BLOB NOT NULL REFERENCES entries(path) ON DELETE CASCADE,
+               entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
                idx INTEGER NOT NULL, offset INTEGER NOT NULL, len INTEGER NOT NULL,
-               hash BLOB NOT NULL, PRIMARY KEY (path, idx));
-             DROP INDEX IF EXISTS chunks_hash;
-             CREATE INDEX IF NOT EXISTS chunks_hash_path ON chunks(hash, path);
+               hash BLOB NOT NULL, PRIMARY KEY (entry_id, idx)) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS chunks_hash_entry ON chunks(hash, entry_id);
              CREATE TABLE IF NOT EXISTS partials (
                path BLOB PRIMARY KEY, expected_hash BLOB NOT NULL, size INTEGER NOT NULL,
                ranges BLOB NOT NULL, updated_at INTEGER NOT NULL);
@@ -861,6 +969,9 @@ impl Index {
             None => {
                 tx.prepare_cached("INSERT INTO meta (key, value) VALUES ('schema_version', ?1)")?
                     .execute([SCHEMA_VERSION])?;
+                if v1_attached {
+                    copy_from_v1(&tx);
+                }
             }
             Some(v) if v != SCHEMA_VERSION => return Err(IndexError::SchemaVersionChanged),
             Some(_) => {}
