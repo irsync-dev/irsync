@@ -1438,11 +1438,7 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stdout).contains("Usage: irsync id"));
     assert!(!home.join(".config/irsync/id_ed25519").exists());
-    for args in [
-        &["grant", "photos"][..],
-        &["id", "--passphrase-file", "/p"],
-        &["id", "--daemon"],
-    ] {
+    for args in [&["grant", "photos"][..], &["id", "--daemon"]] {
         let o = irsync(&home, args);
         assert_eq!(o.status.code(), Some(2), "{args:?}");
     }

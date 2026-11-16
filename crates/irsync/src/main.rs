@@ -52,28 +52,21 @@ fn main() {
         let opts = SyncOptions::from_args(&args);
         exit_after_capture(run_list(args, &opts));
     }
+    let (log, files) = (args.log, &args.files);
     match &args.cmd {
-        Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d)),
-        Some(Command::Gc {
-            dry_run,
-            log,
-            files,
-        }) => std::process::exit(run_gc(*dry_run, *log, files)),
-        Some(Command::Index(ix)) => std::process::exit(run_index(ix)),
-        Some(Command::Host(h)) => std::process::exit(run_host(h)),
-        Some(Command::Export(e)) => std::process::exit(run_export(e)),
-        Some(Command::Grant(g)) => std::process::exit(run_grant(g)),
-        Some(Command::Id(i)) => std::process::exit(run_id(i)),
-        Some(Command::Config(c)) => std::process::exit(run_config(c)),
-        Some(Command::Show {
-            passphrase_file,
-            files,
-        }) => std::process::exit(run_show(files, passphrase_file.clone())),
+        Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
+        Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
+        Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
+        Some(Command::Host(h)) => std::process::exit(run_host(h, files)),
+        Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
+        Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
+        Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
+        Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
+        Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::SshSetup {
             client,
             recheck,
             no_dht,
-            files,
         }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
         None => {
             let opts = SyncOptions::from_args(&args);
@@ -1229,9 +1222,9 @@ async fn session(
 /// `irsync index`: hashes every regular file under each target into its
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
-fn run_index(a: &IndexArgs) -> i32 {
-    init_logging(a.log.verbose, a.log.quiet, LogWriter::new());
-    let state = match Config::load(&file_paths(&a.files)) {
+fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    init_logging(log.verbose, log.quiet, LogWriter::new());
+    let state = match Config::load(&file_paths(files)) {
         Ok(c) => c.settings.state_dir,
         Err(e) => {
             eprintln!("irsync index: {e:#}");
@@ -1243,7 +1236,7 @@ fn run_index(a: &IndexArgs) -> i32 {
         .iter()
         .map(|t| (state.clone(), t.clone()))
         .collect();
-    match index_roots(targets, a.dry_run, a.log.quiet) {
+    match index_roots(targets, a.dry_run, log.quiet) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync index: {e:#}");
@@ -1341,7 +1334,7 @@ fn running_as_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
-fn run_daemon(d: &DaemonArgs) -> i32 {
+fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -1353,7 +1346,7 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
     // unless the server's owner said so.
     let as_root = running_as_root();
     if as_root && !d.run_as_root {
-        match Config::load(&Paths::resolve(d.config.as_deref())) {
+        match Config::load(&Paths::resolve(files.config.as_deref())) {
             // The key may be in a file that does not load: say that.
             Err(e) => {
                 eprintln!("irsync daemon: {e:#}");
@@ -1366,14 +1359,14 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             Ok(_) => {}
         }
     }
-    let settings = early_settings(d.config.as_deref());
+    let settings = early_settings(files.config.as_deref());
     let debug_addr = settings.daemon.debug_addr;
     let mut telemetry = {
         let _rt = rt.enter();
         init_telemetry(
             TelemetryConfig {
                 side: Side::Daemon,
-                log_default: log_default(d.log.verbose.saturating_sub(1), d.log.quiet).to_string(),
+                log_default: log_default(log.verbose.saturating_sub(1), log.quiet).to_string(),
                 summary: false,
                 debug_addr,
                 otlp: OtlpConfig::resolve(&settings.telemetry),
@@ -1392,8 +1385,8 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
     }
 
     let result = {
-        let paths = Paths::resolve(d.config.as_deref());
-        let pass = PassphraseSource::from_env(d.passphrase_file.clone());
+        let paths = Paths::resolve(files.config.as_deref());
+        let pass = PassphraseSource::from_env(files.passphrase_file.clone());
         rt.block_on(async {
             let debug = match telemetry.start().await {
                 Ok(bound) => bound,
@@ -1455,9 +1448,9 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
     }
 }
 
-fn run_config(c: &ConfigArgs) -> i32 {
+fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
     use irsync::manage::config::{self as cfg, Got};
-    let paths = file_paths(&c.files);
+    let paths = file_paths(files);
     // A noun alone lists.
     let list = ConfigCmd::List;
     match c.cmd.as_ref().unwrap_or(&list) {
@@ -1599,8 +1592,8 @@ fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -
     }
 }
 
-fn run_export(e: &ExportArgs) -> i32 {
-    let paths = file_paths(&e.files);
+fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    let paths = file_paths(files);
     // A noun alone lists.
     let list = ExportCmd::List;
     match e.cmd.as_ref().unwrap_or(&list) {
@@ -1639,11 +1632,7 @@ fn run_export(e: &ExportArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ExportCmd::Update {
-            dry_run,
-            log,
-            names,
-        } => export_update(&paths, names, *dry_run, *log),
+        ExportCmd::Update { dry_run, names } => export_update(&paths, names, *dry_run, log),
         ExportCmd::List => finish(
             "export list",
             (|| {
@@ -1655,8 +1644,8 @@ fn run_export(e: &ExportArgs) -> i32 {
     }
 }
 
-fn run_grant(g: &GrantArgs) -> i32 {
-    let paths = file_paths(&g.files);
+fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
+    let paths = file_paths(files);
     // A noun alone lists.
     let list = GrantCmd::List { target: None };
     match g.cmd.as_ref().unwrap_or(&list) {
@@ -1763,8 +1752,8 @@ fn run_grant(g: &GrantArgs) -> i32 {
     }
 }
 
-fn run_host(h: &HostArgs) -> i32 {
-    let paths = file_paths(&h.files);
+fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
+    let paths = file_paths(files);
     // A noun alone lists.
     let list = HostCmd::List;
     match h.cmd.as_ref().unwrap_or(&list) {
@@ -1845,20 +1834,13 @@ fn identity_of(
     Ok(secret)
 }
 
-fn run_id(i: &IdArgs) -> i32 {
+fn run_id(i: &IdArgs, files: &FilesArgs) -> i32 {
     // A noun alone lists.
-    let list = IdCmd::List {
-        passphrase_file: None,
-    };
-    match i.cmd.as_ref().unwrap_or(&list) {
-        IdCmd::List { passphrase_file } => id_list(&i.files, passphrase_file.clone()),
-        IdCmd::Show {
-            daemon,
-            all,
-            passphrase_file,
-        } => id_show(&i.files, *daemon, *all, passphrase_file.clone()),
+    match i.cmd.as_ref().unwrap_or(&IdCmd::List) {
+        IdCmd::List => id_list(files),
+        IdCmd::Show { daemon, all } => id_show(files, *daemon, *all),
         IdCmd::Generate { daemon, out, force } => {
-            id_generate(&i.files, *daemon, out.as_deref(), *force)
+            id_generate(files, *daemon, out.as_deref(), *force)
         }
     }
 }
@@ -1974,12 +1956,12 @@ fn print_daemon_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow
     Ok(())
 }
 
-fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathBuf>) -> i32 {
+fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
     finish(
         "id show",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
-            let pass = PassphraseSource::from_env(passphrase_file);
+            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
             if all {
                 print_client_identity(&settings, &pass)?;
                 print_daemon_identity(&settings, &pass)?;
@@ -2001,12 +1983,12 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool, passphrase_file: Option<PathB
 
 /// `irsync id list`: every identity this machine has. The client's is
 /// generated when missing; the daemon's is printed only when it exists.
-fn id_list(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
+fn id_list(f: &FilesArgs) -> i32 {
     finish(
         "id list",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
-            let pass = PassphraseSource::from_env(passphrase_file);
+            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
             print_client_identity(&settings, &pass)?;
             // Only a missing file means "no daemon here". A key that
             // cannot be looked at is an error, not a daemon left out.
@@ -2023,7 +2005,7 @@ fn id_list(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
     )
 }
 
-fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
+fn run_show(f: &FilesArgs) -> i32 {
     finish(
         "show",
         (|| {
@@ -2032,7 +2014,7 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
             let settings = &config.settings;
             // The hosts section is `host list`, line for line.
             let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
-            let pass = PassphraseSource::from_env(passphrase_file);
+            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
             let (client, source) = client_identity(None, settings, &pass)?;
             if let KeySource::Generated(p) = &source {
                 eprintln!("generated identity {}", p.display());

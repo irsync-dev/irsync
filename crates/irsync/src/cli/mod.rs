@@ -4,7 +4,7 @@ pub mod progress;
 use crate::config::duration;
 use crate::config::settings::parse_debug_addr;
 use crate::net::addr::HostPort;
-use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgAction, Args as _, CommandFactory, FromArgMatches, Parser, Subcommand};
 use location::Location;
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -51,10 +51,14 @@ pub fn validate(src: &[Location], dest: &Location) -> Result<Direction, UsageErr
     after_help = AFTER_HELP,
     propagate_version = true
 )]
-#[command(args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
+#[command(disable_help_subcommand = true)]
 pub struct Args {
     #[command(subcommand)]
     pub cmd: Option<Command>,
+    #[command(flatten)]
+    pub log: LogArgs,
+    #[command(flatten)]
+    pub files: FilesArgs,
     #[command(flatten)]
     pub sync: SyncArgs,
 }
@@ -115,6 +119,7 @@ impl Args {
         T: Into<OsString> + Clone,
     {
         let m = Args::command_tree().try_get_matches_from(it)?;
+        reject_sync_args_with_command(&m)?;
         let mut args = Args::from_arg_matches(&m)?;
         // One operand is a listing when it is remote (`irsync HOST:` or
         // `irsync HOST:PATH`); a lone local path is still a usage error.
@@ -134,6 +139,31 @@ impl Args {
     pub fn parse() -> Args {
         Args::try_parse_from(std::env::args_os()).unwrap_or_else(|e| e.exit())
     }
+}
+
+/// With a command, every sync argument set on the command line is an
+/// error: clap no longer rejects it once `-v`/`-q` may come first.
+fn reject_sync_args_with_command(m: &clap::ArgMatches) -> Result<(), clap::Error> {
+    let Some(cmd) = m.subcommand_name() else {
+        return Ok(());
+    };
+    let sync = SyncArgs::augment_args(clap::Command::new("sync"));
+    for arg in sync.get_arguments() {
+        let id = arg.get_id().as_str();
+        if m.value_source(id) != Some(clap::parser::ValueSource::CommandLine) {
+            continue;
+        }
+        let flag = match (arg.get_short(), arg.get_long()) {
+            (Some(c), _) => format!("-{c}"),
+            (None, Some(l)) => format!("--{l}"),
+            (None, None) => continue,
+        };
+        return Err(Args::command().error(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!("{flag} is a sync option and cannot be used with '{cmd}'"),
+        ));
+    }
+    Ok(())
 }
 
 fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
@@ -157,8 +187,8 @@ pub enum Command {
     ///
     /// Serves the exports in the config file to the peers they are granted to
     /// until interrupted, and prints its EndpointId at start. Logs go to
-    /// stderr at info level (-v: debug, -vv: trace, -q: errors only;
-    /// RUST_LOG overrides).
+    /// stderr at warning level (-vv: info, -vvv: debug, -vvvv: trace, -q:
+    /// errors only; RUST_LOG overrides).
     Daemon(DaemonArgs),
     /// Garbage-collect resume state.
     ///
@@ -170,10 +200,6 @@ pub enum Command {
         /// List what would be removed without removing anything.
         #[arg(short = 'n', long)]
         dry_run: bool,
-        #[command(flatten)]
-        log: LogArgs,
-        #[command(flatten)]
-        files: FilesArgs,
     },
     /// Hash the files under local roots into their index, so a
     /// destination irsync did not create contributes chunks and rename
@@ -198,14 +224,7 @@ pub enum Command {
     /// With no subcommand, runs `list`.
     Config(ConfigArgs),
     /// Show the config files, identities, host aliases and exports.
-    Show {
-        /// Read an encrypted identity's passphrase from the first line of
-        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
-        #[arg(long, value_name = "PATH")]
-        passphrase_file: Option<PathBuf>,
-        #[command(flatten)]
-        files: FilesArgs,
-    },
+    Show,
     /// The server side of SSH onboarding, run by the client over ssh:
     /// makes sure the daemon identity exists, grants the client immediate
     /// access, gets this copy's daemon running and prints a report.
@@ -222,8 +241,6 @@ pub enum Command {
         /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
         #[arg(long)]
         no_dht: bool,
-        #[command(flatten)]
-        files: FilesArgs,
     },
 }
 
@@ -231,8 +248,6 @@ pub enum Command {
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub cmd: Option<ConfigCmd>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -263,8 +278,6 @@ pub enum ConfigCmd {
 pub struct IdArgs {
     #[command(subcommand)]
     pub cmd: Option<IdCmd>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -273,12 +286,7 @@ pub enum IdCmd {
     /// daemon's when there is one, each under a `client:` or `daemon:`
     /// label. A missing client identity is generated as for a sync; the
     /// daemon's is never generated.
-    List {
-        /// Read an encrypted identity's passphrase from the first line of
-        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
-        #[arg(long, value_name = "PATH")]
-        passphrase_file: Option<PathBuf>,
-    },
+    List,
     /// Print the public key line and EndpointId of the client (default),
     /// the daemon, or both, each under a `client:` or `daemon:` label. A
     /// missing client identity is generated as for a sync; a missing daemon
@@ -290,10 +298,6 @@ pub enum IdCmd {
         /// Both identities.
         #[arg(short = 'a', long)]
         all: bool,
-        /// Read an encrypted identity's passphrase from the first line of
-        /// this file (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
-        #[arg(long, value_name = "PATH")]
-        passphrase_file: Option<PathBuf>,
     },
     /// Generate an Ed25519 identity and print its public key line and
     /// EndpointId. Refuses to overwrite an existing key or .pub file
@@ -318,8 +322,6 @@ pub enum IdCmd {
 pub struct HostArgs {
     #[command(subcommand)]
     pub cmd: Option<HostCmd>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -342,8 +344,6 @@ pub enum HostCmd {
 pub struct ExportArgs {
     #[command(subcommand)]
     pub cmd: Option<ExportCmd>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -365,8 +365,6 @@ pub enum ExportCmd {
         /// Walk and count what would be hashed; read nothing.
         #[arg(short = 'n', long)]
         dry_run: bool,
-        #[command(flatten)]
-        log: LogArgs,
         /// Export names, or `all` for every export.
         #[arg(value_name = "NAME", required = true)]
         names: Vec<String>,
@@ -377,8 +375,6 @@ pub enum ExportCmd {
 pub struct GrantArgs {
     #[command(subcommand)]
     pub cmd: Option<GrantCmd>,
-    #[command(flatten)]
-    pub files: FilesArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -485,24 +481,32 @@ fn parse_yes_no(s: &str) -> Result<bool, String> {
     }
 }
 
-/// How much the commands that log (`daemon`, `gc`, `index`) say on stderr.
+/// How much any command says. Global: accepted before or after the command.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
 pub struct LogArgs {
-    /// Log more; repeat for more still (up to -vvvvv).
-    #[arg(short, long, action = ArgAction::Count, conflicts_with = "quiet")]
+    /// More output. -v: the command's own extra output (a sync lists each
+    /// file transferred and ends with a transfer summary). -vv adds info
+    /// logging (and a sync's summary per session), -vvv debug, -vvvv trace,
+    /// -vvvvv trace plus every protocol message.
+    #[arg(short, long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
-    /// Log errors only, and print no summary.
-    #[arg(short, long)]
+    /// Print errors only, and no summary or progress. Wins over -v.
+    #[arg(short, long, global = true)]
     pub quiet: bool,
 }
 
-/// The config files the management commands read and edit. Global, so a
-/// noun accepts them before or after its verb.
+/// The config file every command reads. Global: accepted before or after the
+/// command.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
     /// The config file (default: irsync.toml in the config directory).
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
+    /// Read an identity's passphrase from the first line of this file (else
+    /// IRSYNC_PASSPHRASE, else a prompt on a terminal). id generate encrypts
+    /// the new key with it.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -523,10 +527,6 @@ pub struct IndexArgs {
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
-    #[command(flatten)]
-    pub log: LogArgs,
-    #[command(flatten)]
-    pub files: FilesArgs,
     /// Local roots to index.
     #[arg(value_name = "ROOT", required = true)]
     pub targets: Vec<PathBuf>,
@@ -534,13 +534,6 @@ pub struct IndexArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct DaemonArgs {
-    /// The config file (default: irsync.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
-    pub config: Option<PathBuf>,
-    /// Read the identity's passphrase from the first line of this file
-    /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
-    #[arg(long, value_name = "PATH")]
-    pub passphrase_file: Option<PathBuf>,
     /// Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 =
     /// pick one) instead of the config's `listen` list. Repeatable, at most
     /// one IPv4 and one IPv6.
@@ -551,8 +544,6 @@ pub struct DaemonArgs {
     /// device nodes. The config key `daemon.allow_root` does the same.
     #[arg(long = "run-as-root-i-know-what-i-am-doing")]
     pub run_as_root: bool,
-    #[command(flatten)]
-    pub log: LogArgs,
 }
 
 /// rsync's rate syntax: a number, decimals allowed (`1.5M`), then an optional
@@ -660,14 +651,6 @@ pub struct SyncArgs {
     /// are sparse in the source are written sparse.
     #[arg(short = 'S', long = "sparse")]
     pub sparse: bool,
-    /// List each file transferred and end with a transfer summary; -vv adds
-    /// a summary per session and info logging, -vvv debug, -vvvv trace,
-    /// -vvvvv trace plus every protocol message.
-    #[arg(short, long, action = ArgAction::Count)]
-    pub verbose: u8,
-    /// Print errors only; also turns the live progress block off.
-    #[arg(short, long)]
-    pub quiet: bool,
     /// Change nothing on either side; with -v or -i, list what would be
     /// done.
     #[arg(short = 'n', long)]
@@ -785,17 +768,10 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The config file (default: irsync.toml in the config directory).
-    #[arg(long, value_name = "PATH")]
-    pub config: Option<PathBuf>,
     /// The private key to connect with (default: `identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
-    /// Read the identity's passphrase from the first line of this file
-    /// (else IRSYNC_PASSPHRASE, else a prompt on a terminal).
-    #[arg(long, value_name = "PATH")]
-    pub passphrase_file: Option<PathBuf>,
     /// The remote shell for SSH onboarding (default: IRSYNC_RSH, else `ssh`);
     /// split on whitespace like rsync's `-e`.
     #[arg(long, value_name = "CMD")]
@@ -1016,10 +992,10 @@ impl SyncOptions {
             no_relay: a.no_relay,
             no_dht: a.no_dht,
             addresses: a.address.clone(),
-            config: a.config.clone(),
+            config: args.files.config.clone(),
             state_dir: None,
             identity: a.identity.clone(),
-            passphrase_file: a.passphrase_file.clone(),
+            passphrase_file: args.files.passphrase_file.clone(),
             rsh: a.rsh.clone(),
             force_ssh: a.ssh,
             no_remote_dht: a.no_remote_dht,
@@ -1037,8 +1013,8 @@ impl SyncOptions {
             },
             debug_addr: a.debug_addr,
             debug_no_wait: a.debug_port_no_wait,
-            verbose: a.verbose,
-            quiet: a.quiet,
+            verbose: args.log.verbose,
+            quiet: args.log.quiet,
         }
     }
 }
