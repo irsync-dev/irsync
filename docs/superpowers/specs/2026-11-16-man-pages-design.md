@@ -311,3 +311,60 @@ gzips them (`gzip -9n`, so the result is reproducible).
 - The pandoc version CI and the release runners use, as long as CI and the
   release build agree closely enough that a page that passes CI builds in a
   release.
+
+## Addendum, 2026-11-16: after the first build of the pages
+
+Mike read the built pages and a review of them from a user's point of view,
+and decided the following. They extend the design above.
+
+### Installer
+
+- `--no-modify-path` is accepted and ignored, like `IRSYNC_NO_MODIFY_PATH`.
+  dist's installer took it, and scripts may pass it.
+- A shell running under Rosetta on an Apple Silicon Mac reports `x86_64`.
+  The installer detects that (`sysctl -n sysctl.proc_translated` prints 1)
+  and installs the `aarch64-apple-darwin` build. An Intel Mac is still
+  refused.
+
+### The pages
+
+All of these were asked for. Where text is missing, add it to the book's
+chapters when it helps the book too, otherwise to the per-page header.
+
+1. **Less reliance on the website.** `irsync(1)` also includes
+   `reference/remote-addresses.md`, `reference/files-and-state.md` (as
+   FILES) and `reference/limitations.md` (with its list of rsync options
+   irsync does not have). Links among the chapters of one page become
+   references to that page's sections. fileset's READ-ONLY MEDIA section
+   and its opening paragraph say what they need to in words; URLs remain
+   only as further reading.
+2. **Options as tagged lists.** Tables of options, commands and
+   configuration keys become the usual man layout: the term on its own
+   line, the text indented below, so they reflow with the terminal. Small
+   lookup tables whose rows fit on one line at 80 columns stay tables.
+3. **No book phrasing.** No "the next table", "the page linked below",
+   "see below". A reference to a section of the same page names the
+   section.
+4. **Line length.** No line of running text or synopsis is longer than 80
+   columns at an 80-column terminal. Literal examples that cannot be
+   shortened (a 64-digit hash) are exempt.
+5. **`irsync(1)` DESCRIPTION** says what irsync is, that it runs on both
+   ends, that the remote side runs a daemon, and introduces the terms the
+   page uses: iroh, EndpointId, relay, export, grant, immediate grant.
+6. **`irsync(1)` EXAMPLES**: a push, a pull, a listing, and a first sync
+   over ssh.
+7. **OPERANDS** gives the basic rules first; the ssh setup and its fallback
+   follow under their own heading.
+8. **`-h, --help`** moves out of the rsync-compatible table: in rsync `-h`
+   is `--human-readable`. (Checked: `irsync -h` prints help.)
+9. **FILES** in `irsync(1)`, from `files-and-state.md`.
+10. **The rsync options irsync lacks**, from `limitations.md`.
+11. **SYNOPSIS** uses the normal synopsis layout in all three pages.
+    `fileset(1)` and `irsync.toml(5)` get a SYNOPSIS section.
+12. **fileset terms.** The page says what a manifest is for and that fjall
+    is a storage backend.
+13. **Placeholders** are written the same way in all pages: `PATH`, `N`,
+    not `<PATH>`, `<N>`.
+14. **`irsync.toml(5)`**: every table of keys is laid out the same way, the
+    `[daemon]` keys come in the order of the sample file, and the page has
+    a FILES section.
