@@ -1434,7 +1434,66 @@ fn update_verbose_drops_old_builtin_exclude_rows(b: Backend) {
     }
 }
 
+fn update_verbose_root_and_manifest_are_eql(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    // A new file changes the root's mtime, and recording it rewrites the manifest.
+    std::fs::write(dir.path().join("n"), "y").unwrap();
+    let (_, out, _) = verbose_update(dir.path(), b, false);
+    let l = lines(&out);
+    assert!(l.iter().any(|x| x.starts_with("EQL . kind=dir ")), "{out}");
+    let manifest = format!("EQL {} ", store_name(b));
+    assert!(l.iter().any(|x| x.starts_with(&manifest)), "{out}");
+    assert!(l.iter().any(|x| x.starts_with("ADD n ")), "{out}");
+
+    // What check would report for the root still shows as a change.
+    chmod(dir.path(), 0o750);
+    let (_, out, _) = verbose_update(dir.path(), b, false);
+    assert!(
+        lines(&out).iter().any(|x| x.starts_with("CHG . kind=dir ")),
+        "{out}"
+    );
+}
+
+/// Fails every write of a `DEL` line, as a closed stdout would.
+struct FailOnDel;
+
+impl std::io::Write for FailOnDel {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.starts_with(b"DEL ") {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written(b: Backend) {
+    let dir = tree(&[("f", "x"), ("gone", "y")]);
+    run_update(dir.path(), b, false, false);
+    let path = dir.path().join(store_name(b));
+    let mut s = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let mut meta = s.meta().unwrap();
+    meta.updated_at = 0;
+    s.set_meta(&meta).unwrap();
+    s.close().unwrap();
+
+    std::fs::remove_file(dir.path().join("gone")).unwrap();
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.common.verbose = true;
+    let mut err = Vec::new();
+    let result = update(&opts, &mut FailOnDel, &mut err, &NoProgress);
+    assert!(result.is_err(), "the write error is reported");
+    let s = open_ro(dir.path(), b);
+    assert!(!keys(&*s).contains(&"gone".to_string()));
+    assert_ne!(s.meta().unwrap().updated_at, 0, "the run was recorded");
+}
+
 for_both_backends! {
+    update_verbose_root_and_manifest_are_eql => update_verbose_root_and_manifest_are_eql_sqlite, update_verbose_root_and_manifest_are_eql_fjall;
+    update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written => update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_sqlite, update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_fjall;
     init_verbose_prints_add_per_entry => init_verbose_prints_add_per_entry_sqlite, init_verbose_prints_add_per_entry_fjall;
     update_verbose_prints_eql_chg_add_del => update_verbose_prints_eql_chg_add_del_sqlite, update_verbose_prints_eql_chg_add_del_fjall;
     update_verbose_rehash_prints_eql => update_verbose_rehash_prints_eql_sqlite, update_verbose_rehash_prints_eql_fjall;

@@ -209,24 +209,28 @@ the same prefixes for what happened to the manifest:
 | Prefix | Meaning |
 | --- | --- |
 | `ADD` | new entry recorded |
-| `CHG` | entry rewritten because something changed |
-| `EQL` | entry already up to date |
-| `DEL` | entry dropped, the path is gone |
+| `CHG` | entry changed in a way `check` could report |
+| `EQL` | nothing `check` could report changed |
+| `DEL` | entry dropped: the path is gone or is no longer walked |
 | `SKP` | skipped on purpose |
 
 - `EQL` in `check`, and `ADD`, `CHG` and `EQL` in `init` and `update`, show
   the entry in full: `<path> kind= size= mtime= mode=`, then `blake3=` when
   the entry has a checksum. `check` shows what is on disk; `init` and
   `update` show the entry as now recorded.
-- `blake3=` is left off for anything that is not a regular file, for a file
-  that could not be read, and in a `check` that does not compare content
-  (`--ignore blake3`).
+- `blake3=` is left off for anything that is not a regular file, for the
+  manifest itself, for a file that could not be read, and in a `check` that
+  does not compare content (`--ignore blake3`).
 - `SKP <path> reason=builtin-exclude`: one of the
   [built-in excludes](#built-in-excludes) was skipped.
 - `DEL` lines come after the walk, in `check` and in `update`.
-- `update` rewrites the entries of the root and of a manifest inside the
-  tree on most runs, because writing the manifest changes both, so those
-  two usually show as `CHG`.
+- In `update`, `CHG` covers every field `check --paranoid` compares, and a
+  checksum gained or lost. The root's mtime and a manifest inside the tree
+  change whenever the manifest is written; `check` does not report that, so
+  both show as `EQL`.
+- In `update`, `DEL` is also printed for entries that are still on disk but
+  no longer walked: those below a built-in exclude, and those below a
+  directory that could not be read.
 
 `grep -v '^EQL'` leaves what differs.
 

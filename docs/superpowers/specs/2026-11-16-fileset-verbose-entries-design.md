@@ -57,12 +57,18 @@ the same in every command. One space follows the prefix.
 | Prefix | Meaning |
 | --- | --- |
 | `ADD` | new entry recorded |
-| `CHG` | entry rewritten because something changed |
-| `EQL` | entry already up to date |
-| `DEL` | entry dropped, the path is gone |
+| `CHG` | entry changed in a way `check` could report |
+| `EQL` | nothing `check` could report changed |
+| `DEL` | entry dropped: the path is gone or is no longer walked |
 | `SKP` | skipped on purpose |
 
 `init` only ever prints `ADD` and `SKP`.
+
+In `update`, `CHG` covers every field `check --paranoid` compares, and a
+checksum gained or lost. A row rewritten for anything else is `EQL`: the
+root's mtime and an in-tree manifest change on every manifest write, and
+`check` does not report either. This keeps `CHG` meaning the same in both
+commands and the same for both backends.
 
 ### Line formats
 

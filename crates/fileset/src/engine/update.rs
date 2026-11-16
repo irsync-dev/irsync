@@ -7,7 +7,8 @@ use std::collections::{HashSet, VecDeque};
 use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{canonical_root, walk_config, CommonOpts, Outcome, Report, Warnings};
+use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
+use crate::compare::{diff, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
@@ -117,6 +118,7 @@ pub fn update(
 
     let mut cfg = walk_config(common, &root, &loc);
     cfg.force_xattr_reads = force_xattr_reads;
+    let store_parent = store_parent(&cfg, &root);
     // The walk threads look every entry up themselves; a new manifest has nothing to find.
     let reader = match opts.mode {
         Mode::Init { .. } => None,
@@ -191,7 +193,12 @@ pub fn update(
         }
         // A row equal but for its generation stays as it is: rewriting it would only
         // churn the manifest.
-        let is_new = stored.is_none();
+        let prefix = if common.verbose {
+            let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
+            entry_prefix(stored.as_ref(), &obs.entry, mtime_exempt)
+        } else {
+            ""
+        };
         let unchanged = stored.is_some_and(|s| {
             obs.entry.generation = s.generation;
             obs.entry == s
@@ -200,11 +207,6 @@ pub fn update(
         summary.entries += 1;
         progress.entry();
         seen.insert(&obs.path);
-        let prefix = match (is_new, unchanged) {
-            (true, _) => "ADD",
-            (false, true) => "EQL",
-            (false, false) => "CHG",
-        };
         report
             .borrow_mut()
             .verbose_line(|| line_entry(prefix, &obs.path, &obs.entry))?;
@@ -254,9 +256,6 @@ pub fn update(
         }
         keep
     })?;
-    if let Some(e) = del_error.into_inner() {
-        return Err(e.into());
-    }
     store.set_meta(&Meta {
         generation,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -268,6 +267,10 @@ pub fn update(
         warnings.emit(&note)?;
     }
     progress.finish();
+    // Only now: the sweep has run, so the manifest is finished and closed first.
+    if let Some(e) = del_error.into_inner() {
+        return Err(e.into());
+    }
 
     summary.warnings = warnings.count();
     writeln!(err, "{summary}")?;
@@ -276,6 +279,24 @@ pub fn update(
     } else {
         Outcome::Clean
     })
+}
+
+/// The prefix of an entry's `-v` line. `CHG` is for what `check` could report, and for a
+/// checksum gained or lost. A row rewritten for anything else (the root's mtime, the
+/// manifest's own size, a ctime) is `EQL`.
+fn entry_prefix(stored: Option<&Entry>, new: &Entry, mtime_exempt: bool) -> &'static str {
+    let Some(stored) = stored else {
+        return "ADD";
+    };
+    let everything = Selection::new(Tier::Paranoid, &[], &[]);
+    // `diff` compares checksums only where both sides have one.
+    if stored.blake3.is_some() == new.blake3.is_some()
+        && diff(mtime_exempt, stored, new, &everything).is_empty()
+    {
+        "EQL"
+    } else {
+        "CHG"
+    }
 }
 
 /// The paths a walk saw, kept as 128-bit hashes: 16 bytes an entry, whatever the path's
@@ -357,4 +378,58 @@ fn unix_now() -> anyhow::Result<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| anyhow::anyhow!("the system clock is set before 1970"))?;
     Ok(d.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Timespec;
+
+    fn file() -> Entry {
+        Entry {
+            kind: Kind::File,
+            mode: 0o644,
+            uid: 1,
+            gid: 1,
+            size: 1,
+            nlink: 1,
+            ino: 1,
+            dev: 1,
+            rdev: 0,
+            mtime: Timespec { sec: 1, nsec: 0 },
+            ctime: Timespec { sec: 1, nsec: 0 },
+            blake3: Some([7; 32]),
+            target: None,
+            xattrs: vec![],
+            flags: Flags::default(),
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn prefix_is_add_for_a_new_entry() {
+        assert_eq!(entry_prefix(None, &file(), false), "ADD");
+    }
+
+    #[test]
+    fn prefix_is_eql_for_changes_check_does_not_report() {
+        let stored = file();
+        let mut new = file();
+        new.ctime.sec = 2;
+        new.ino = 2;
+        new.generation = 2;
+        assert_eq!(entry_prefix(Some(&stored), &new, false), "EQL");
+        new.mtime.sec = 2;
+        assert_eq!(entry_prefix(Some(&stored), &new, true), "EQL");
+        assert_eq!(entry_prefix(Some(&stored), &new, false), "CHG");
+    }
+
+    #[test]
+    fn prefix_is_chg_for_a_checksum_gained_or_lost() {
+        let with = file();
+        let mut without = file();
+        without.blake3 = None;
+        assert_eq!(entry_prefix(Some(&without), &with, false), "CHG");
+        assert_eq!(entry_prefix(Some(&with), &without, false), "CHG");
+    }
 }

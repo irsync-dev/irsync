@@ -60,6 +60,20 @@ impl<'a> Warnings<'a> {
     }
 }
 
+/// The tree-relative path of the directory holding an in-tree store. Its mtime, like the
+/// root's, is not compared: writing the manifest (and its sidecars) changes both.
+pub fn store_parent(cfg: &WalkConfig, root: &Path) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    cfg.store_path
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|p| p.strip_prefix(root).ok())
+        .map(|rel| match rel.as_os_str().as_bytes() {
+            b"" => b".".to_vec(),
+            r => r.to_vec(),
+        })
+}
+
 /// Report lines on stdout. With `verbose`, every line is flushed as it is written, so the
 /// lines show up while the run is going.
 pub struct Report<'a> {

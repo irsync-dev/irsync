@@ -6,11 +6,10 @@ use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 
 use anyhow::Context;
 
-use super::{canonical_root, walk_config, CommonOpts, Outcome, Report, Warnings};
+use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
@@ -47,17 +46,7 @@ pub fn check(
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
     let cfg = walk_config(common, &root, &loc);
-    // The root's mtime is not compared, nor that of the directory holding an in-tree store:
-    // writing the manifest (and its sidecars) changes both.
-    let store_parent: Option<Vec<u8>> = cfg
-        .store_path
-        .as_deref()
-        .and_then(Path::parent)
-        .and_then(|p| p.strip_prefix(&root).ok())
-        .map(|rel| match rel.as_os_str().as_bytes() {
-            b"" => b".".to_vec(),
-            r => r.to_vec(),
-        });
+    let store_parent = store_parent(&cfg, &root);
 
     let mut warnings = Warnings::new(err);
     let mut report = Report::new(out, common.verbose);
