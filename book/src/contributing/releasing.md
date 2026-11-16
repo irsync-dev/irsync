@@ -266,6 +266,43 @@ updated repo are kept as artifacts of the run, for you to look at. Use it
 on a pre-release to check the key and tokens before the first stable
 release.
 
+## Testing a version on FreeBSD
+
+FreeBSD is not a release target yet. Until it is, one workflow checks a
+version there by hand and gives you a tarball to try. It never blocks a
+pull request or a release, and nothing starts it for you.
+
+Start it with the tag or branch to test, then fetch the result:
+
+```sh
+gh workflow run freebsd.yml -f ref=v0.1.0-beta.4
+gh run watch
+gh run download <run-id> -n irsync-x86_64-unknown-freebsd
+```
+
+Without `-f ref=...` it tests the branch the run starts on, `main` by
+default. The download holds `irsync-x86_64-unknown-freebsd.tar.xz`, laid out
+like the release tarballs, and its `.sha256` file.
+
+The run builds on FreeBSD 14: a binary built on 14 also runs on newer
+releases, and not the other way round. `-f freebsd=15` picks another
+release.
+
+Inside the VM it runs `tools/ci.sh check freebsd-build` as an ordinary
+user, with the Rust version in `rust-toolchain.toml`. That is the full
+regression, then the release build. A failing test means no tarball.
+Nothing is cached in the VM, so a run takes a while.
+
+The limits:
+
+- x86_64 only.
+- A version from before this workflow existed can't be tested. The run
+  uses the scripts of the version under test, and stops with a message
+  when they are missing.
+- The tarball is not on the release page, and it has no attestation.
+- irsync does not upload itself to a FreeBSD server over ssh. Install the
+  two programs there by hand.
+
 ## One-time setup
 
 Do this once, before the first release.
