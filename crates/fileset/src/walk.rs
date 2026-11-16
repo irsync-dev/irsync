@@ -52,6 +52,8 @@ pub struct Observed {
     pub abs: PathBuf,
     pub entry: Entry,
     pub hash_error: Option<String>,
+    /// CPU time the hasher spent on this entry; zero if it was not hashed.
+    pub hash_cpu: std::time::Duration,
     /// What the manifest holds for this path, when the walk was given a reader.
     pub stored: Option<Entry>,
     /// Why the manifest could not be asked; `stored` is then `None`.
@@ -151,6 +153,7 @@ fn observe(
         abs,
         entry,
         hash_error: None,
+        hash_cpu: std::time::Duration::ZERO,
         stored,
         lookup_error,
     };

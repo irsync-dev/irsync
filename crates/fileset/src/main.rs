@@ -53,9 +53,10 @@ fn show_spinner(quiet: bool, verbose: bool, stderr_is_terminal: bool) -> bool {
     !quiet && !verbose && stderr_is_terminal
 }
 
-fn progress_for(spinner: bool) -> Box<dyn Progress> {
+/// `jobs` is the number of hasher threads, shown when busy cores cannot be measured.
+fn progress_for(spinner: bool, jobs: usize) -> Box<dyn Progress> {
     if spinner {
-        Box::new(TermProgress::new())
+        Box::new(TermProgress::new(jobs))
     } else {
         Box::new(NoProgress)
     }
@@ -76,7 +77,12 @@ fn main() {
                 common,
                 mode: Mode::Init { backend },
             };
-            update(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
+            update(
+                &opts,
+                &mut out,
+                &mut err,
+                progress_for(spinner, opts.common.jobs).as_ref(),
+            )
         }
         Command::Update(a) => {
             let (common, spinner) = common_opts(a.common);
@@ -87,7 +93,12 @@ fn main() {
                     force_xattr_reads: a.force_xattr_reads,
                 },
             };
-            update(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
+            update(
+                &opts,
+                &mut out,
+                &mut err,
+                progress_for(spinner, opts.common.jobs).as_ref(),
+            )
         }
         Command::Check(a) => {
             let tier = if a.relaxed {
@@ -106,7 +117,12 @@ fn main() {
                 ignore,
                 require,
             };
-            check(&opts, &mut out, &mut err, progress_for(spinner).as_ref())
+            check(
+                &opts,
+                &mut out,
+                &mut err,
+                progress_for(spinner, opts.common.jobs).as_ref(),
+            )
         }
     };
     let flushed = out.flush();

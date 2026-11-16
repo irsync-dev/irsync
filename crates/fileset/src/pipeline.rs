@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 
+use crate::cpu::thread_cpu_time;
 use crate::hash::hash_file;
 use crate::model::Flags;
 use crate::walk::{Observed, WalkEvent};
@@ -87,6 +88,7 @@ fn hasher<H: Fn(&std::path::Path) -> std::io::Result<[u8; 32]>>(
     for (seq, mut obs) in job_rx {
         // A panic in the hash is reported like a read error; letting it unwind the
         // thread would leave the consumer waiting for this job forever.
+        let cpu_before = thread_cpu_time();
         let hashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hash(&obs.abs)))
             .unwrap_or_else(|panic| {
                 let msg = panic
@@ -96,6 +98,9 @@ fn hasher<H: Fn(&std::path::Path) -> std::io::Result<[u8; 32]>>(
                     .unwrap_or_default();
                 Err(std::io::Error::other(format!("hasher panicked: {msg}")))
             });
+        if let (Some(before), Some(after)) = (cpu_before, thread_cpu_time()) {
+            obs.hash_cpu = after.saturating_sub(before);
+        }
         match hashed {
             Ok(h) => obs.entry.blake3 = Some(h),
             Err(e) => {
@@ -198,6 +203,7 @@ mod tests {
             abs: abs.to_path_buf(),
             entry: Entry::from_path(abs).unwrap().0,
             hash_error: None,
+            hash_cpu: std::time::Duration::ZERO,
             stored: None,
             lookup_error: None,
         }

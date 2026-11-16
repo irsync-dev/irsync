@@ -20,6 +20,7 @@ crossbeam-channel = { workspace = true }
 indicatif = { workspace = true }
 jiff = { workspace = true }
 anyhow = { workspace = true }
+libc = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
