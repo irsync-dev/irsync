@@ -44,6 +44,9 @@ pr-run-mode = "skip"
 # launches it after the full test suite passed on the tagged commit. Never
 # launch release.yml by hand.
 dispatch-releases = true
+# Extra files for every archive. packaging/dist/build.sh writes this directory;
+# it lands in the tarball as irsync-<target>/man/.
+include = ["packaging/dist/man"]
 
 [dist.github-custom-runners]
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"

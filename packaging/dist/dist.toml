@@ -15,5 +15,3 @@ homepage = "https://irsync.org"
 description = "irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for today's networks."
 binaries = ["irsync", "fileset"]
 build-command = ["./build.sh"]
-# The man pages that build.sh writes to man/.
-include = ["man"]
