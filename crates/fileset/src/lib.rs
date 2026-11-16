@@ -3,6 +3,7 @@ pub mod compare;
 pub mod cpu;
 pub mod engine;
 pub mod escape;
+pub mod glob;
 pub mod hash;
 pub mod model;
 pub mod pipeline;
