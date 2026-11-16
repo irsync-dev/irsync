@@ -1936,8 +1936,15 @@ fn id_list(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
             let settings = Config::load(&file_paths(f))?.settings;
             let pass = PassphraseSource::from_env(passphrase_file);
             print_client_identity(&settings, &pass)?;
-            if has_daemon_identity(&settings) {
-                print_daemon_identity(&settings, &pass)?;
+            // Only a missing file means "no daemon here". A key that
+            // cannot be looked at is an error, not a daemon left out.
+            let path = &settings.daemon.identity;
+            match path.symlink_metadata() {
+                Ok(_) => print_daemon_identity(&settings, &pass)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("daemon identity {}", path.display()))
+                }
             }
             Ok(())
         })(),

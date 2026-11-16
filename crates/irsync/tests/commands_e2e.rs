@@ -1453,3 +1453,36 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
         assert_eq!(o.status.code(), Some(2), "{args:?}");
     }
 }
+
+/// A daemon key whose directory cannot be entered is not "no daemon
+/// identity": `id list` fails and names the path instead of leaving the
+/// daemon out.
+#[test]
+fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let locked = d.path().join("locked");
+    let key = locked.join("key");
+    std::fs::create_dir_all(home.join(".config/irsync")).unwrap();
+    std::fs::write(
+        home.join(".config/irsync/irsync.toml"),
+        format!("[daemon]\nidentity = \"{}\"\n", key.display()),
+    )
+    .unwrap();
+    ok(&home, &["id", "generate", "--daemon"]);
+    assert!(key.exists());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let skip = key.symlink_metadata().is_ok();
+    let o = irsync(&home, &["id", "list"]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if skip {
+        eprintln!("skipping: running as root, mode 0o000 does not stop lookups");
+        return;
+    }
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains(key.to_str().unwrap()),
+        "{err}"
+    );
+}

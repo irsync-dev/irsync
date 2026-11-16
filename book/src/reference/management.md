@@ -8,7 +8,8 @@ path; and `show` for an overview.
 
 A noun on its own runs its `list`: `irsync host`, `irsync export`,
 `irsync grant`, `irsync id` and `irsync config` print what is there and
-change nothing. Arguments of `list`, such as a grant target, need `list`
+leave the config file alone (`irsync id` creates the client's key when
+there is none). Arguments of `list`, such as a grant target, need `list`
 typed out.
 
 Every management command takes `--config PATH` to use another file. For a
