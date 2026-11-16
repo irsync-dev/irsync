@@ -1,5 +1,5 @@
 use irsync::config::exports::Exports;
-use irsync::config::file::Config;
+use irsync::config::file::{first_sighting, ignored_split_files, Config};
 use irsync::config::hosts::{valid_alias, Hosts};
 use irsync::config::paths::Paths;
 use irsync::config::settings::{RelayMode, Settings};
@@ -9,6 +9,12 @@ use std::time::Duration;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
+}
+fn parse_hosts(text: &str, path: &Path) -> Result<Hosts, ConfigError> {
+    Config::parse(text, path).map(|c| c.hosts)
+}
+fn parse_exports(text: &str, path: &Path) -> Result<Exports, ConfigError> {
+    Config::parse(text, path).map(|c| c.exports)
 }
 fn p() -> &'static Path {
     Path::new("/x/f.toml")
@@ -87,7 +93,7 @@ fn settings_missing_file_is_default() {
 #[test]
 fn hosts_parse_and_resolve_alias_before_id() {
     let t = format!("[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1), id(2));
-    let h = Hosts::parse(&t, p()).unwrap();
+    let h = parse_hosts(&t, p()).unwrap();
     assert_eq!(h.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(h.get("home").unwrap().parallel, Some(4));
     assert_eq!(h.get("home").unwrap().address.len(), 1);
@@ -104,7 +110,7 @@ fn hosts_parse_and_resolve_alias_before_id() {
 
 #[test]
 fn hosts_entry_without_endpoint_id_is_error_with_line() {
-    let e = Hosts::parse("[hosts.home]\nparallel = 4\n", p())
+    let e = parse_hosts("[hosts.home]\nparallel = 4\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -123,18 +129,18 @@ fn alias_validity() {
 
 #[test]
 fn hosts_old_layout_names_the_new_location() {
-    let e = Hosts::parse("\n[home]\nendpoint_id = \"x\"\n", p())
+    let e = parse_hosts("\n[home]\nendpoint_id = \"x\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(
         e.contains("unknown table \"home\"; hosts live under [hosts.home]") && e.contains(":2:"),
         "{e}"
     );
-    let e = Hosts::parse("x = 1\n", p()).unwrap_err().to_string();
+    let e = parse_hosts("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
-    assert!(Hosts::parse("[hosts]\n", p()).unwrap().entries.is_empty());
+    assert!(parse_hosts("[hosts]\n", p()).unwrap().entries.is_empty());
     // The first offender in the file is reported, not the first by name.
-    let e = Hosts::parse(
+    let e = parse_hosts(
         "[zzz]\nendpoint_id = \"x\"\n[aaa]\nendpoint_id = \"x\"\n",
         p(),
     )
@@ -149,26 +155,26 @@ fn hosts_old_layout_names_the_new_location() {
 #[test]
 fn exports_parse_all_table_and_exports_tables() {
     let t = "[all]\nrw = [\"admin\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\nfsync = true\n";
-    let x = Exports::parse(t, p()).unwrap();
+    let x = parse_exports(t, p()).unwrap();
     assert_eq!(x.rw, vec!["admin"]);
     assert_eq!(x.exports["photos"].rw, vec!["laptop"]);
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
     assert!(x.exports["docs"].fsync && !x.exports["photos"].fsync);
     assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
-    assert!(Exports::parse("[all]\n", p()).unwrap().rw.is_empty());
+    assert!(parse_exports("[all]\n", p()).unwrap().rw.is_empty());
 }
 
 #[test]
 fn exports_rw_and_ro_are_valid_export_names() {
     for name in ["rw", "ro"] {
-        assert!(Exports::parse(&format!("[exports.{name}]\npath = \"/x\"\n"), p()).is_ok());
+        assert!(parse_exports(&format!("[exports.{name}]\npath = \"/x\"\n"), p()).is_ok());
     }
 }
 
 #[test]
 fn exports_all_is_the_only_reserved_name() {
-    let e = Exports::parse("\n[exports.all]\npath = \"/x\"\n", p()).unwrap_err();
+    let e = parse_exports("\n[exports.all]\npath = \"/x\"\n", p()).unwrap_err();
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
     assert!(
@@ -180,7 +186,7 @@ fn exports_all_is_the_only_reserved_name() {
 
 #[test]
 fn exports_old_layout_names_the_new_location() {
-    let e = Exports::parse("\n[photos]\npath = \"/x\"\n", p())
+    let e = parse_exports("\n[photos]\npath = \"/x\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -188,7 +194,7 @@ fn exports_old_layout_names_the_new_location() {
             && e.contains(":2:"),
         "{e}"
     );
-    let e = Exports::parse("rw = [\"a\"]\n", p())
+    let e = parse_exports("rw = [\"a\"]\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -196,14 +202,14 @@ fn exports_old_layout_names_the_new_location() {
             && e.contains(":1:"),
         "{e}"
     );
-    let e = Exports::parse("[all]\npath = \"/x\"\n", p())
+    let e = parse_exports("[all]\npath = \"/x\"\n", p())
         .unwrap_err()
         .to_string();
-    assert!(e.contains("[all]") && e.contains("path"), "{e}");
-    let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
+    assert!(e.contains(":2:") && e.contains("path"), "{e}");
+    let e = parse_exports("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
     // The first offender in the file is reported, not the first by name.
-    let e = Exports::parse("[zzz]\npath = \"/x\"\n[aaa]\npath = \"/x\"\n", p())
+    let e = parse_exports("[zzz]\npath = \"/x\"\n[aaa]\npath = \"/x\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -214,7 +220,7 @@ fn exports_old_layout_names_the_new_location() {
 
 #[test]
 fn exports_relative_path_is_error_with_file_and_line() {
-    let e = Exports::parse(
+    let e = parse_exports(
         "[exports.a]\npath = \"/a\"\n[exports.b]\npath = \"srv/b\"\n",
         p(),
     )
@@ -226,7 +232,7 @@ fn exports_relative_path_is_error_with_file_and_line() {
         "{e}"
     );
     // `~` expands to an absolute path and is accepted.
-    assert!(Exports::parse("[exports.c]\npath = \"~/c\"\n", p())
+    assert!(parse_exports("[exports.c]\npath = \"~/c\"\n", p())
         .unwrap()
         .exports["c"]
         .path
@@ -235,12 +241,12 @@ fn exports_relative_path_is_error_with_file_and_line() {
 
 #[test]
 fn exports_missing_path_and_unknown_key_are_errors_with_file() {
-    assert!(Exports::parse("[exports.a]\nread_only = true\n", p())
+    assert!(parse_exports("[exports.a]\nread_only = true\n", p())
         .unwrap_err()
         .to_string()
         .contains("/x/f.toml"));
     assert!(
-        Exports::parse("[exports.a]\npath = \"/x\"\nbogus = 1\n", p())
+        parse_exports("[exports.a]\npath = \"/x\"\nbogus = 1\n", p())
             .unwrap_err()
             .to_string()
             .contains("bogus")
@@ -257,7 +263,7 @@ fn exports_missing_file_is_empty() {
 
 #[test]
 fn syntax_error_carries_its_line() {
-    let e = Hosts::parse("[hosts.a]\nendpoint_id = \n", p())
+    let e = parse_hosts("[hosts.a]\nendpoint_id = \n", p())
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("/x/f.toml:2:"), "{e}");
@@ -270,10 +276,10 @@ fn hosts_invalid_alias_in_file_is_error_with_line() {
         id(1),
         id(2)
     );
-    let e = Hosts::parse(&t, p()).unwrap_err().to_string();
+    let e = parse_hosts(&t, p()).unwrap_err().to_string();
     assert!(e.contains("/x/f.toml:3:") && e.contains("a:b"), "{e}");
     let t = format!("[hosts.{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
-    assert!(Hosts::parse(&t, p())
+    assert!(parse_hosts(&t, p())
         .unwrap_err()
         .to_string()
         .contains("invalid host alias"));
@@ -281,7 +287,7 @@ fn hosts_invalid_alias_in_file_is_error_with_line() {
 
 #[test]
 fn hosts_bad_endpoint_id_has_line() {
-    let e = Hosts::parse("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
+    let e = parse_hosts("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("/x/f.toml:2:"), "{e}");
@@ -289,18 +295,18 @@ fn hosts_bad_endpoint_id_has_line() {
 
 #[test]
 fn exports_schema_errors_have_lines() {
-    let e = Exports::parse(
+    let e = parse_exports(
         "[exports.a]\npath = \"/x\"\n[exports.b]\npath = \"/y\"\nbogus = 1\n",
         p(),
     )
     .unwrap_err()
     .to_string();
     assert!(e.contains("/x/f.toml:") && e.contains("bogus"), "{e}");
-    let e = Exports::parse("[all]\nrw = 5\n", p())
+    let e = parse_exports("[all]\nrw = 5\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("/x/f.toml:2:"), "{e}");
-    let e = Exports::parse("x = 1\n", p()).unwrap_err().to_string();
+    let e = parse_exports("x = 1\n", p()).unwrap_err().to_string();
     assert!(
         e.contains("/x/f.toml:1:") && e.contains("unknown key \"x\""),
         "{e}"
@@ -333,7 +339,6 @@ fn merged_file_holds_every_table() {
         (c.hosts.path.clone(), c.exports.path.clone()),
         (d.path().join("irsync.toml"), d.path().join("irsync.toml"))
     );
-    assert!(c.split_hosts.is_none() && c.split_exports.is_none());
 }
 
 #[test]
@@ -372,63 +377,49 @@ fn merged_shape_errors_keep_the_old_layout_hints() {
 }
 
 #[test]
-fn split_files_beside_the_config_are_read() {
-    let d = tempfile::tempdir().unwrap();
+fn split_files_are_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("irsync.toml");
+    std::fs::write(&config, "").unwrap();
     std::fs::write(
-        d.path().join("hosts.toml"),
-        format!("[hosts.home]\nendpoint_id = \"{}\"\n", id(1)),
+        dir.path().join("hosts.toml"),
+        format!("[hosts.box]\nendpoint_id = \"{}\"\n", id(1)),
     )
     .unwrap();
     std::fs::write(
-        d.path().join("exports.toml"),
+        dir.path().join("exports.toml"),
         "[exports.p]\npath = \"/p\"\n",
     )
     .unwrap();
-    let c = merged(d.path(), "[client]\nparallel = 2\n").unwrap();
-    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, id(1));
-    assert!(c.exports.exports.contains_key("p"));
-    assert_eq!(c.hosts.path, d.path().join("hosts.toml"));
-    assert_eq!(c.exports.path, d.path().join("exports.toml"));
-    assert_eq!(c.split_hosts, Some(d.path().join("hosts.toml")));
-    assert_eq!(c.split_exports, Some(d.path().join("exports.toml")));
-    // A missing config file with split files present still works.
-    std::fs::remove_file(d.path().join("irsync.toml")).unwrap();
-    let c = Config::load(&Paths::resolve(Some(&d.path().join("irsync.toml")))).unwrap();
-    assert!(c.hosts.get("home").is_some());
+    let c = Config::load(&Paths::resolve(Some(&config))).unwrap();
+    assert!(c.hosts.entries.is_empty());
+    assert!(c.exports.exports.is_empty());
+    assert_eq!(
+        ignored_split_files(&config),
+        vec![
+            dir.path().join("hosts.toml"),
+            dir.path().join("exports.toml")
+        ]
+    );
+    // A split file that would not parse is ignored all the same.
+    std::fs::write(dir.path().join("hosts.toml"), "not toml [").unwrap();
+    assert!(Config::load(&Paths::resolve(Some(&config))).is_ok());
 }
 
 #[test]
-fn one_home_rule_names_both_files() {
-    let d = tempfile::tempdir().unwrap();
-    std::fs::write(d.path().join("hosts.toml"), "").unwrap();
-    let e = merged(d.path(), "[hosts]\n").unwrap_err().to_string();
-    assert!(
-        e.contains("hosts are in")
-            && e.contains("hosts.toml")
-            && e.contains("remove [hosts] from")
-            && e.contains("irsync.toml"),
-        "{e}"
-    );
-    std::fs::remove_file(d.path().join("hosts.toml")).unwrap();
-    std::fs::write(d.path().join("exports.toml"), "").unwrap();
-    for text in ["[all]\nrw = []\n", "[exports.p]\npath = \"/p\"\n"] {
-        let e = merged(d.path(), text).unwrap_err().to_string();
-        assert!(
-            e.contains("exports.toml") && e.contains("irsync.toml"),
-            "{text:?}: {e}"
-        );
-    }
+fn no_split_files_nothing_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(ignored_split_files(&dir.path().join("irsync.toml")).is_empty());
 }
 
 #[test]
-fn a_split_file_accepts_only_its_own_tables() {
-    let d = tempfile::tempdir().unwrap();
-    std::fs::write(d.path().join("hosts.toml"), "[client]\nparallel = 1\n").unwrap();
-    let e = merged(d.path(), "").unwrap_err().to_string();
-    assert!(
-        e.contains("hosts.toml") && e.contains("unknown table \"client\""),
-        "{e}"
-    );
+fn a_split_file_is_reported_once_per_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("hosts.toml");
+    let b = dir.path().join("exports.toml");
+    assert!(first_sighting(&a));
+    assert!(!first_sighting(&a));
+    assert!(first_sighting(&b));
 }
 
 #[test]
@@ -444,7 +435,7 @@ fn export_names_are_one_path_segment() {
     // An export is reached as the first segment of HOST:PATH, so its name
     // can hold neither a slash nor nothing at all.
     for (name, bad) in [("a/b", "/"), ("", "empty")] {
-        let e = Exports::parse(&format!("[exports.{name:?}]\npath = \"/x\"\n"), p())
+        let e = parse_exports(&format!("[exports.{name:?}]\npath = \"/x\"\n"), p())
             .unwrap_err()
             .to_string();
         assert!(
@@ -452,7 +443,7 @@ fn export_names_are_one_path_segment() {
             "{name:?}: {e}"
         );
     }
-    assert!(Exports::parse("[exports.\"a:b\"]\npath = \"/x\"\n", p()).is_ok());
+    assert!(parse_exports("[exports.\"a:b\"]\npath = \"/x\"\n", p()).is_ok());
 }
 
 #[test]
@@ -491,9 +482,9 @@ fn daemon_debug_addr_bare_port() {
 #[test]
 fn immediate_table_parses() {
     let a = iroh::SecretKey::from_bytes(&[1; 32]).public();
-    let x = Exports::parse(&format!("[immediate]\nrw = [\"{a}\"]\n"), Path::new("e")).unwrap();
+    let x = parse_exports(&format!("[immediate]\nrw = [\"{a}\"]\n"), Path::new("e")).unwrap();
     assert_eq!(x.immediate_rw, vec![a.to_string()]);
-    let e = Exports::parse(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("e"))
+    let e = parse_exports(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("e"))
         .unwrap_err()
         .to_string();
     assert!(e.contains("immediate"), "{e}");
@@ -526,5 +517,5 @@ fn daemon_allow_root_defaults_off() {
 
 #[test]
 fn export_named_immediate_is_reserved() {
-    assert!(Exports::parse("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
+    assert!(parse_exports("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
 }

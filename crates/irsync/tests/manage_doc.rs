@@ -1,8 +1,4 @@
-use irsync::config::hosts::Hosts;
-use irsync::config::paths::Paths;
-use irsync::manage::{
-    ensure_editable, load_doc, save_config, save_doc, ManageError, PeerSpec, Table,
-};
+use irsync::manage::{load_doc, save_config, save_doc, ManageError, PeerSpec};
 use std::path::Path;
 use toml_edit::DocumentMut;
 
@@ -13,7 +9,7 @@ fn id(n: u8) -> iroh::EndpointId {
 #[test]
 fn load_missing_is_empty_and_save_creates_parent_atomically() {
     let d = tempfile::tempdir().unwrap();
-    let p = d.path().join("sub/exports.toml");
+    let p = d.path().join("sub/irsync.toml");
     let mut doc = load_doc(&p).unwrap();
     assert!(doc.as_table().is_empty());
     doc["x"] = toml_edit::table();
@@ -46,7 +42,7 @@ fn save_preserves_comments_and_order() {
 
 #[test]
 fn peer_spec_forms() {
-    let hosts = Hosts::parse(
+    let hosts = parse_hosts(
         &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
@@ -107,44 +103,6 @@ fn save_config_refuses_a_document_that_does_not_load() {
 }
 
 #[test]
-fn ensure_editable_refuses_a_table_a_split_file_owns() {
-    let d = tempfile::tempdir().unwrap();
-    let paths = Paths::resolve(Some(&d.path().join("irsync.toml")));
-    assert!(ensure_editable(&paths, Table::Hosts).is_ok());
-    std::fs::write(&paths.hosts, "").unwrap();
-    let e = ensure_editable(&paths, Table::Hosts)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("hosts are kept in")
-            && e.contains("hosts.toml")
-            && e.contains("edit")
-            && e.contains("by hand"),
-        "{e}"
-    );
-    assert!(ensure_editable(&paths, Table::Exports).is_ok());
-    std::fs::write(&paths.exports, "").unwrap();
-    let e = ensure_editable(&paths, Table::Exports)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("exports are kept in") && e.contains("exports.toml"),
-        "{e}"
-    );
-    assert!(e.contains("[exports] and [all]"), "{e}");
-    // The message names the config file actually in use, not a fixed name.
-    let paths = Paths::resolve(Some(&d.path().join("daemon.toml")));
-    let e = ensure_editable(&paths, Table::Hosts)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains(&format!("into {}", d.path().join("daemon.toml").display()))
-            && !e.contains("irsync.toml"),
-        "{e}"
-    );
-}
-
-#[test]
 fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     use irsync::manage::lock_config;
     let d = tempfile::tempdir().unwrap();
@@ -185,4 +143,11 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     doc["client"]["bogus"] = toml_edit::value(1);
     assert!(matches!(lock.save(&doc), Err(ManageError::Invalid { .. })));
     assert!(!lock_file.exists());
+}
+
+fn parse_hosts(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
 }

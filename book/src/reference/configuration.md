@@ -9,14 +9,9 @@ hand.
 Every command takes `--config PATH` to use another file. Unknown keys and
 tables are errors that name the file, the line and the key.
 
-## Split files
-
-To keep the aliases or the exports apart, put a `hosts.toml` holding the
-`[hosts.*]` tables, or an `exports.toml` holding `[all]` and `[exports.*]`,
-beside the config file. They are read as if they were part of it. A table must
-then live in only one of the two files. `irsync` never edits a split file:
-`host`, `export`, `grant` and `config set` refuse a table it holds. `irsync
-show` names any split file it read.
+A `hosts.toml` or `exports.toml` beside the config file is ignored, with a
+warning. Earlier versions read them as part of the config. Move their tables
+into `irsync.toml`.
 
 ## Values
 

@@ -531,7 +531,6 @@ mod tests {
                 config: cfg.join("irsync.toml"),
             }
         );
-        assert!(!cfg.join("exports.toml").exists(), "one file, no split");
         let read =
             |p: &Path| -> toml::Table { std::fs::read_to_string(p).unwrap().parse().unwrap() };
         let s = |p: PathBuf| toml::Value::String(p.to_str().unwrap().to_string());

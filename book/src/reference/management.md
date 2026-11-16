@@ -25,10 +25,6 @@ add ...` and `irsync export add ... --config C` are the same.
   running.
 - The edited file is checked before it is written. An edit that would leave a
   file `irsync` cannot load is refused, and the file stays as it was.
-- When a `hosts.toml` or `exports.toml` sits beside the config file, `irsync`
-  reads it but never edits it. `host`, `export`, `grant` and `config set` refuse
-  a table that such a file holds, and tell you to move the table into
-  `irsync.toml` or to edit that file by hand.
 - An export name may not be empty, contain `/`, or be `all`. An alias may not
   be empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
 
@@ -129,5 +125,5 @@ irsync show [--passphrase-file PATH]
 Prints the config file's path, the client's `EndpointId` and public key line,
 the file that holds the aliases and the aliases as `host list` prints them, the
 file that holds the exports, the daemon's `EndpointId`, and the exports as
-`export list` prints them, followed by the `[all]` grants. A split file is
-marked `(also read)`. `show` generates either key if it does not exist yet.
+`export list` prints them, followed by the `[all]` grants. `show` generates
+either key if it does not exist yet.

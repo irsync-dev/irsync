@@ -9,7 +9,6 @@ pub mod show;
 
 use crate::config::file::Config;
 use crate::config::hosts::Hosts;
-use crate::config::paths::Paths;
 use crate::config::ConfigError;
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
@@ -66,14 +65,6 @@ pub enum ManageError {
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
-    #[error("{table} are kept in {}; irsync edits {} only: move the {tables} into {1}, or edit {0} by hand", file.display(), config.display())]
-    SplitFile {
-        table: &'static str,
-        /// `[hosts] table` or `[exports] and [all] tables`.
-        tables: &'static str,
-        file: PathBuf,
-        config: PathBuf,
-    },
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -217,34 +208,6 @@ impl Drop for ConfigLock {
             let _ = std::fs::remove_file(&self.lock);
         }
     }
-}
-
-/// A table group an editing command touches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Table {
-    /// `[hosts]`.
-    Hosts,
-    /// `[exports]` and `[all]`.
-    Exports,
-}
-
-/// irsync edits the config file only: when a split file beside it holds
-/// `table`, editing is refused and the user told to move the table or
-/// edit the split file by hand.
-pub fn ensure_editable(paths: &Paths, table: Table) -> Result<(), ManageError> {
-    let (word, tables, file) = match table {
-        Table::Hosts => ("hosts", "[hosts] table", &paths.hosts),
-        Table::Exports => ("exports", "[exports] and [all] tables", &paths.exports),
-    };
-    if file.exists() {
-        return Err(ManageError::SplitFile {
-            table: word,
-            tables,
-            file: file.clone(),
-            config: paths.config.clone(),
-        });
-    }
-    Ok(())
 }
 
 /// How a command-line "who" argument is understood.

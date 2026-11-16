@@ -12,7 +12,6 @@ daemon run system-wide is given `--config` (see
 | File | Holds |
 | --- | --- |
 | `irsync.toml` | The whole configuration: `identity`, `state_dir`, `[client]`, `[daemon]`, `[telemetry]`, the `[hosts.*]` aliases, the `[exports.*]` tables and the `[all]` grants. `--config PATH` names another file; the files below are then looked up beside it. See [Configuration](configuration.md). |
-| `hosts.toml`, `exports.toml` | Optional split files, read as part of `irsync.toml`. `irsync` never edits them. See [Configuration](configuration.md#split-files). |
 | `irsync.toml.lock` | Present only while a management command edits the file. See [Management commands](management.md#editing-rules). |
 | `id_ed25519`, `id_ed25519.pub` | The client's key, generated when no other key serves. See [Configuration](configuration.md#identity-and-state). |
 | `daemon_ed25519`, `daemon_ed25519.pub` | The daemon's key, `[daemon] identity`, generated when missing by the daemon, `irsync export add` or `irsync show`, or on demand by `irsync id generate --daemon`. |

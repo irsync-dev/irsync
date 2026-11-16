@@ -978,8 +978,8 @@ async fn endpoint_from_settings(settings: &Settings, pass: &PassphraseSource) ->
 }
 
 /// Runs the daemon: hosts, exports and grants are re-read from the config
-/// file (and any split file beside it) on every connection; the `[daemon]`
-/// settings are re-read and applied when `reload` is signalled (`SIGHUP`).
+/// file on every connection; the `[daemon]` settings are re-read and
+/// applied when `reload` is signalled (`SIGHUP`).
 /// `listen` is the command line's override of the file's `listen`; `debug`
 /// is the debug port's bound address, announced with the listening ones.
 pub async fn run_from_settings(

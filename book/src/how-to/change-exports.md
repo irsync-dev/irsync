@@ -18,9 +18,8 @@ irsync grant add music myclient
 irsync grant remove photos phone
 ```
 
-Nothing else is needed. The daemon reads `irsync.toml`, and any `hosts.toml`
-or `exports.toml` beside it, afresh on every accepted connection, once the
-handshake has proved the peer's `EndpointId`. It takes the aliases, exports
+Nothing else is needed. The daemon reads `irsync.toml` afresh on every
+accepted connection, once the handshake has proved the peer's `EndpointId`. It takes the aliases, exports
 and grants from that read.
 
 - A `grant remove` or `export remove` does not end a session already in

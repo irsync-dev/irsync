@@ -15,24 +15,24 @@ fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn grant_remove_all_removes_an_alias_that_left_hosts_toml() {
+fn grant_remove_all_removes_an_alias_that_left_the_hosts_table() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/p")).unwrap();
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    std::fs::write(
-        cfg.join("hosts.toml"),
-        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
-    )
-    .unwrap();
+    let host = format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n");
+    std::fs::write(cfg.join("irsync.toml"), &host).unwrap();
     let target = format!("p:{}", home.join("srv/p").display());
     assert!(irsync(&home, &["export", "add", &target]).status.success());
     assert!(irsync(&home, &["grant", "add", "p", "laptop"])
         .status
         .success());
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    // The host entry goes by hand; the grant still names it.
+    let text = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
+    assert!(text.contains(&host), "{text}");
+    std::fs::write(cfg.join("irsync.toml"), text.replace(&host, "")).unwrap();
     let o = irsync(&home, &["grant", "remove", "all", "laptop"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!std::fs::read_to_string(cfg.join("irsync.toml"))
@@ -535,15 +535,12 @@ fn config_flag_after_the_noun_names_the_file() {
         ],
     );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    // The table lands in the named file or, until the nouns move, in the
-    // exports.toml beside it; never under the default directory.
-    let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
-    let text = read(&c) + &read(&c.with_file_name("exports.toml"));
+    // The table lands in the named file, never under the default directory.
+    let text = std::fs::read_to_string(&c).unwrap();
     assert!(
         text.contains("[exports.p]\n") && text.contains("[exports.p2]\n"),
         "{text}"
     );
-    assert!(!home.join(".config/irsync/exports.toml").exists());
     assert!(!home.join(".config/irsync/irsync.toml").exists());
 }
 
@@ -662,7 +659,7 @@ fn host_list_refuses_an_old_layout_file() {
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     std::fs::write(
-        cfg.join("hosts.toml"),
+        cfg.join("irsync.toml"),
         format!("[home]\nendpoint_id = \"{id}\"\n"),
     )
     .unwrap();
@@ -1006,30 +1003,17 @@ fn grant_remove_with_a_star_points_at_all() {
 }
 
 #[test]
-fn show_names_split_files_it_read() {
+fn show_names_the_config_file_for_hosts_and_exports() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     let out = ok(&home, &["show"]);
     assert!(
         out.lines()
             .any(|l| l == format!("hosts: {}", cfg.join("irsync.toml").display())),
         "{out}"
     );
-    std::fs::write(
-        cfg.join("hosts.toml"),
-        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
-    )
-    .unwrap();
-    let out = ok(&home, &["show"]);
-    assert!(
-        out.lines()
-            .any(|l| l == format!("hosts: {} (also read)", cfg.join("hosts.toml").display())),
-        "{out}"
-    );
-    assert!(out.contains(&format!("laptop: {id}")), "{out}");
     assert!(
         out.lines()
             .any(|l| l == format!("exports: {}", cfg.join("irsync.toml").display())),
@@ -1038,54 +1022,44 @@ fn show_names_split_files_it_read() {
 }
 
 #[test]
-fn nouns_refuse_a_table_kept_in_a_split_file() {
+fn split_file_warns_on_stderr_and_is_not_read() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::create_dir_all(home.join("p")).unwrap();
-    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
-    let o = irsync(&home, &["host", "add", "laptop", &id]);
-    assert_eq!(o.status.code(), Some(1));
-    let err = String::from_utf8_lossy(&o.stderr);
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
+    std::fs::write(
+        cfg.join("hosts.toml"),
+        format!("[hosts.box]\nendpoint_id = \"{id}\"\n"),
+    )
+    .unwrap();
+    let o = irsync(&home, &["host", "list"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert!(o.status.success(), "{err}");
+    assert!(!out.contains("box"), "{out}");
+    let path = cfg.join("hosts.toml").display().to_string();
     assert!(
-        err.contains("hosts are kept in") && err.contains("hosts.toml"),
+        err.contains(&format!("ignoring {path}")) && err.contains("no longer read"),
         "{err}"
     );
-    assert!(!cfg.join("irsync.toml").exists());
-    // Exports are not split: the export lands in irsync.toml.
-    ok(
-        &home,
-        &["export", "add", &format!("p:{}", home.join("p").display())],
-    );
+}
+
+#[test]
+fn host_add_works_beside_a_split_hosts_file() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    ok(&home, &["host", "add", "box", &id]);
     assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
         .unwrap()
-        .contains("[exports.p]"));
-    // Now exports are split too: every grant and export edit is refused.
-    std::fs::remove_file(cfg.join("hosts.toml")).unwrap();
-    let text = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
-    std::fs::write(cfg.join("exports.toml"), &text).unwrap();
-    std::fs::write(cfg.join("irsync.toml"), "").unwrap();
-    for args in [
-        &["grant", "add", "p", &id][..],
-        &["export", "remove", "p"],
-        &["export", "add", &format!("q:{}", home.join("p").display())],
-    ] {
-        let o = irsync(&home, args);
-        assert_eq!(o.status.code(), Some(1), "{args:?}");
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            err.contains("exports are kept in") && err.contains("exports.toml"),
-            "{args:?}: {err}"
-        );
-    }
-    assert_eq!(
-        std::fs::read_to_string(cfg.join("exports.toml")).unwrap(),
-        text
-    );
-    // Reading still works across the split.
-    assert!(ok(&home, &["export", "list"]).starts_with("p: "));
+        .contains("[hosts.box]"));
+    assert_eq!(std::fs::read_to_string(cfg.join("hosts.toml")).unwrap(), "");
 }
 
 #[test]
@@ -1121,30 +1095,6 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
     );
     let o = irsync(&home, &["config", "get", "hosts.desk"]);
     assert_eq!(o.status.code(), Some(1));
-}
-
-#[test]
-fn list_covers_the_config_and_split_files() {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    std::fs::write(cfg.join("irsync.toml"), "[client]\nparallel = 3\n").unwrap();
-    std::fs::write(
-        cfg.join("hosts.toml"),
-        format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        ok(&home, &["config", "list"]),
-        format!("client.parallel = 3\nhosts.laptop.endpoint_id = \"{id}\"\n")
-    );
-    // get reads across the split too.
-    assert_eq!(
-        ok(&home, &["config", "get", "hosts.laptop.endpoint_id"]),
-        format!("{id}\n")
-    );
 }
 
 #[test]
@@ -1222,19 +1172,6 @@ fn set_unset_and_the_nouns_share_one_file() {
     assert_eq!(ok(&home, &["config", "get", "client.reconnect"]), "2h\n");
     ok(&home, &["config", "unset", "exports.p"]);
     assert_eq!(ok(&home, &["export", "list"]), "");
-    // A hosts table kept in a split file is refused for set and unset too.
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
-    for args in [
-        &["config", "set", "hosts.laptop.endpoint_id", &id][..],
-        &["config", "unset", "hosts.laptop"],
-    ] {
-        let o = irsync(&home, args);
-        assert_eq!(o.status.code(), Some(1), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&o.stderr).contains("hosts are kept in"),
-            "{args:?}"
-        );
-    }
 }
 
 #[test]
@@ -1260,22 +1197,6 @@ fn dotted_names_round_trip_quoted() {
         format!("{w}\n")
     );
     assert!(ok(&home, &["export", "list"]).starts_with("www.example.com: "));
-}
-
-#[test]
-fn unset_reports_an_unknown_key_before_a_split_file() {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
-    let o = irsync(&home, &["config", "unset", "hosts.laptop.bogus"]);
-    assert_eq!(o.status.code(), Some(1));
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("unknown key \"hosts.laptop.bogus\"") && !err.contains("kept in"),
-        "{err}"
-    );
 }
 
 #[test]

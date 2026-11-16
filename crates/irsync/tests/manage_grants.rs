@@ -127,7 +127,7 @@ fn a_second_grant_add_after_a_comment_keeps_the_comment_and_valid_toml() {
     .unwrap();
     grant_add(&mut doc, Some("p"), &peer(2), false, &none).unwrap();
     let text = doc.to_string();
-    let x = Exports::parse(&text, Path::new("e")).unwrap();
+    let x = parse_exports(&text, Path::new("e")).unwrap();
     assert_eq!(x.exports["p"].rw.len(), 2, "{text}");
     assert!(text.contains(&format!("\"{}\", # c1\n", id(1))), "{text}");
 }
@@ -169,16 +169,16 @@ fn grant_add_to_all_creates_the_all_table() {
         s.contains("[all]\nrw = [") && s.contains(&id(1).to_string()),
         "{s}"
     );
-    assert!(Exports::parse(&s, Path::new("e")).unwrap().rw == vec![id(1).to_string()]);
+    assert!(parse_exports(&s, Path::new("e")).unwrap().rw == vec![id(1).to_string()]);
 }
 
 fn fixture() -> (Hosts, Exports) {
-    let h = Hosts::parse(
+    let h = parse_hosts(
         &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
     .unwrap();
-    let e = Exports::parse(
+    let e = parse_exports(
         &format!(
             "[all]\nrw = [\"laptop\"]\n[exports.backups]\npath = \"/b\"\n[exports.docs]\npath = \"/d\"\nread_only = true\nrw = [\"laptop\"]\n[exports.photos]\npath = \"/p\"\nro = [\"{}\"]\n",
             id(2)
@@ -216,12 +216,12 @@ fn list_all_names_every_export_and_the_all_table() {
 /// is not shown as reaching an automatic export.
 #[test]
 fn grant_list_shows_immediate_grants() {
-    let h = Hosts::parse(
+    let h = parse_hosts(
         &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
     .unwrap();
-    let e = Exports::parse(
+    let e = parse_exports(
         &format!(
             "[all]\nrw = [\"{o}\"]\n[immediate]\nrw = [\"laptop\"]\n\
              [exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"laptop\"]\n",
@@ -277,7 +277,7 @@ fn grant_remove_all_all_empties_every_array_in_the_file() {
     .parse()
     .unwrap();
     assert_eq!(grant_remove(&mut doc, None, None, &|_| None).unwrap(), 4);
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(x.rw.is_empty() && x.ro.is_empty());
     assert!(
         x.exports
@@ -304,14 +304,14 @@ fn grant_edits_reach_inline_tables() {
         grant_remove(&mut doc, None, Some(&peer(1)), &|_| None).unwrap(),
         2
     );
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert!(
         x.rw.is_empty() && x.exports["photos"].rw.is_empty(),
         "{doc}"
     );
     grant_add(&mut doc, Some("photos"), &peer(2), true, &|_| None).unwrap();
     grant_add(&mut doc, None, &peer(2), false, &|_| None).unwrap();
-    let x = Exports::parse(&doc.to_string(), Path::new("e")).unwrap();
+    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
     assert_eq!(x.exports["photos"].ro, vec![id(2).to_string()]);
     assert_eq!(x.rw, vec![id(2).to_string()]);
     let mut doc: DocumentMut = format!(
@@ -342,4 +342,18 @@ fn grant_immediate_adds_once() {
     let n =
         irsync::manage::grants::grant_remove_immediate(&mut doc, Some(&peer(1)), &resolve).unwrap();
     assert_eq!(n, 1);
+}
+
+fn parse_hosts(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+}
+
+fn parse_exports(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
 }

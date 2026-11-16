@@ -65,7 +65,7 @@ pub fn onboard(
     recheck: bool,
     no_dht: bool,
 ) -> anyhow::Result<Onboarded> {
-    check(paths, alias, dest)?;
+    check(alias, dest)?;
     let p = probe(rsh, dest)?;
     // Before anything is installed or changed on the server.
     if p.root {
@@ -102,18 +102,16 @@ pub fn onboard(
     })
 }
 
-/// Whether `alias` can be saved here and `dest` is a host name ssh will
-/// not take for an option. Checked before any ssh call, so the server is
+/// Whether `alias` can be saved and `dest` is a host name ssh will not
+/// take for an option. Checked before any ssh call, so the server is
 /// never changed for an alias that can't be saved.
-pub fn check(paths: &Paths, alias: &str, dest: &str) -> anyhow::Result<()> {
+pub fn check(alias: &str, dest: &str) -> anyhow::Result<()> {
     if dest.starts_with('-') {
         anyhow::bail!("{dest:?} is not a host name");
     }
     if !valid_alias(alias) {
         return Err(manage::ManageError::BadAlias(alias.to_string()).into());
     }
-    // A split hosts file can't take the alias.
-    manage::ensure_editable(paths, manage::Table::Hosts)?;
     Ok(())
 }
 
@@ -306,13 +304,11 @@ mod tests {
     /// is refused before any ssh call, as alias or as `ssh` value.
     #[test]
     fn dash_destination_is_not_a_host_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::resolve(Some(&dir.path().join("irsync.toml")));
         for (alias, dest) in [("-oProxyCommand=x", "-oProxyCommand=x"), ("nas", "-x")] {
-            let e = check(&paths, alias, dest).unwrap_err();
+            let e = check(alias, dest).unwrap_err();
             assert_eq!(e.to_string(), format!("{dest:?} is not a host name"));
         }
-        check(&paths, "nas", "me@myserver").unwrap();
+        check("nas", "me@myserver").unwrap();
     }
 
     fn onboarded(install: Install, daemon: DaemonOutcome, os: Option<&'static str>) -> Onboarded {

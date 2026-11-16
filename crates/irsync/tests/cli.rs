@@ -773,7 +773,7 @@ fn config_noun_parses() {
 }
 
 #[test]
-fn help_no_longer_names_the_old_files_as_the_ones_edited() {
+fn help_does_not_name_the_old_split_files() {
     use clap::CommandFactory;
     fn render(cmd: &mut clap::Command, out: &mut String) {
         out.push_str(&cmd.render_long_help().to_string());
@@ -783,12 +783,7 @@ fn help_no_longer_names_the_old_files_as_the_ones_edited() {
     }
     let mut help = String::new();
     render(&mut Args::command(), &mut help);
-    for stale in [
-        "in exports.toml",
-        "from hosts.toml",
-        "edits hosts.toml",
-        "edits exports.toml",
-    ] {
+    for stale in ["exports.toml", "hosts.toml"] {
         assert!(!help.contains(stale), "{stale:?} still in help");
     }
 }

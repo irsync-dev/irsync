@@ -84,7 +84,7 @@ fn host_add_writes_a_dotted_header_and_refuses_all() {
 #[test]
 fn save_config_refuses_a_hosts_document_that_does_not_parse() {
     let d = tempfile::tempdir().unwrap();
-    let path = d.path().join("hosts.toml");
+    let path = d.path().join("irsync.toml");
     let doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
     let e = irsync::manage::save_config(&path, &doc).unwrap_err();
     assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
@@ -119,8 +119,7 @@ fn host_add_keeps_the_other_keys_of_an_inline_table() {
         ..Default::default()
     };
     assert_eq!(host_add(&mut doc, "home", id(2), &f).unwrap(), Some(id(1)));
-    let h =
-        irsync::config::hosts::Hosts::parse(&doc.to_string(), std::path::Path::new("h")).unwrap();
+    let h = parse_hosts(&doc.to_string(), std::path::Path::new("h")).unwrap();
     let e = h.get("home").unwrap();
     assert_eq!(
         (e.endpoint_id, e.parallel, e.dial_retries, e.mdns),
@@ -138,7 +137,13 @@ fn host_add_writes_ssh() {
     };
     host_add(&mut doc, "h", id(1), &f).unwrap();
     assert!(doc.to_string().contains("ssh = \"u@h\""));
-    let h =
-        irsync::config::hosts::Hosts::parse(&doc.to_string(), std::path::Path::new("h")).unwrap();
+    let h = parse_hosts(&doc.to_string(), std::path::Path::new("h")).unwrap();
     assert_eq!(h.get("h").unwrap().ssh.as_deref(), Some("u@h"));
+}
+
+fn parse_hosts(
+    text: &str,
+    path: &std::path::Path,
+) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
 }

@@ -277,7 +277,6 @@ pub fn run(
 
     // 2. The grant.
     let grant = if settings.daemon.immediate {
-        manage::ensure_editable(paths, manage::Table::Exports)?;
         let lock = manage::lock_config(&paths.config)?;
         let mut doc = lock.load()?;
         let spec = PeerSpec::Id {
