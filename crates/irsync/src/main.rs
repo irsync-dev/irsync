@@ -1791,6 +1791,31 @@ fn run_host(h: &HostArgs) -> i32 {
                 Ok(())
             })(),
         ),
+        HostCmd::Rename { old, new } => finish(
+            "host rename",
+            (|| {
+                // A file that does not load is that error, not a refused save.
+                Config::load(&paths)?;
+                let lock = manage::lock_config(&paths.config)?;
+                let mut doc = lock.load()?;
+                // First, so an EndpointId written for this host is found
+                // as a grant that names it.
+                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                let grants = manage::hosts::host_rename(&mut doc, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut doc)?;
+                let also = match grants {
+                    0 => String::new(),
+                    1 => "; updated 1 grant".to_string(),
+                    n => format!("; updated {n} grants"),
+                };
+                eprintln!(
+                    "renamed host {old} to {new}{also} in {}",
+                    paths.config.display()
+                );
+                Ok(())
+            })(),
+        ),
         HostCmd::List => finish(
             "host list",
             (|| {

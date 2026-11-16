@@ -526,6 +526,11 @@ fn nouns_share_add_remove_list() {
         ));
     }
     assert!(matches!(
+        parse(&["host", "rename", "home", "work"]).cmd,
+        Some(Command::Host(ref h))
+            if matches!(h.cmd, Some(HostCmd::Rename { ref old, ref new }) if old == "home" && new == "work")
+    ));
+    assert!(matches!(
         parse(&["host", "list"]).cmd,
         Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::List))
     ));

@@ -285,6 +285,40 @@ pub fn remove_named(doc: &mut DocumentMut, name: &str) -> usize {
     n
 }
 
+/// Writes every grant entry whose text is `old` as `new`, in `[all]`,
+/// `[immediate]` and every export, keeping its comments; the count.
+pub fn rename_named(doc: &mut DocumentMut, old: &str, new: &str) -> usize {
+    let mut n = 0;
+    let mut table = |table: &mut dyn TableLike| {
+        for key in ["rw", "ro"] {
+            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
+                continue;
+            };
+            for v in arr.iter_mut() {
+                if v.as_str() == Some(old) {
+                    let decor = v.decor().clone();
+                    *v = Value::from(new);
+                    *v.decor_mut() = decor;
+                    n += 1;
+                }
+            }
+        }
+    };
+    for top in ["all", "immediate"] {
+        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
+            table(t);
+        }
+    }
+    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
+        for (_, item) in exports.iter_mut() {
+            if let Some(t) = item.as_table_like_mut() {
+                table(t);
+            }
+        }
+    }
+    n
+}
+
 /// Grant `who` access to `export` (`[all]` for `None`): read-only or
 /// read-write. Any earlier grant of the same peer there, under either
 /// spelling, is replaced.
