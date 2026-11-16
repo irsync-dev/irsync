@@ -1,7 +1,7 @@
 //! Formatting of report lines and summaries.
 
 use crate::escape::escape;
-use crate::model::{Kind, Timespec};
+use crate::model::{Entry, Kind, Timespec};
 use std::fmt;
 
 /// One changed field of a `CHG` line.
@@ -61,6 +61,29 @@ pub fn line_chg(path: &[u8], diffs: &[FieldDiff]) -> String {
     s
 }
 
+/// One entry in full: `<prefix> <path> kind= size= mtime= mode=`, then `blake3=` when the
+/// entry has a checksum.
+pub fn line_entry(prefix: &str, path: &[u8], e: &Entry) -> String {
+    let mut s = format!(
+        "{prefix} {} kind={} size={} mtime={} mode={}",
+        escape(path),
+        e.kind.name(),
+        e.size,
+        fmt_mtime(e.mtime),
+        fmt_mode(e.mode)
+    );
+    if let Some(h) = &e.blake3 {
+        s.push_str(" blake3=");
+        s.push_str(&fmt_blake3(h));
+    }
+    s
+}
+
+/// The `SKP` line of a built-in exclude the walk skipped.
+pub fn line_skp(path: &[u8]) -> String {
+    format!("SKP {} reason=builtin-exclude", escape(path))
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckSummary {
     pub added: u64,
@@ -101,7 +124,59 @@ impl fmt::Display for UpdateSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Kind, Timespec};
+    use crate::model::{Entry, Flags, Kind, Timespec};
+
+    fn entry(kind: Kind, size: u64, mtime: Timespec, mode: u32, blake3: Option<[u8; 32]>) -> Entry {
+        Entry {
+            kind,
+            mode,
+            uid: 0,
+            gid: 0,
+            size,
+            nlink: 0,
+            ino: 0,
+            dev: 0,
+            rdev: 0,
+            mtime,
+            ctime: Timespec { sec: 0, nsec: 0 },
+            blake3,
+            target: None,
+            xattrs: vec![],
+            flags: Flags::default(),
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn entry_line_with_checksum() {
+        let mut h = [0u8; 32];
+        h[0] = 0xab;
+        let e = entry(Kind::File, 13, Timespec { sec: 0, nsec: 5 }, 0o644, Some(h));
+        assert_eq!(
+            line_entry("EQL", b"a/b", &e),
+            format!(
+                "EQL a/b kind=file size=13 mtime=1970-01-01T00:00:00.000000005Z mode=0644 blake3=ab{}",
+                "00".repeat(31)
+            )
+        );
+    }
+    #[test]
+    fn entry_line_without_checksum_has_no_blake3_field() {
+        let e = entry(Kind::Dir, 96, Timespec { sec: 0, nsec: 0 }, 0o755, None);
+        assert_eq!(
+            line_entry("ADD", b"d", &e),
+            "ADD d kind=dir size=96 mtime=1970-01-01T00:00:00.000000000Z mode=0755"
+        );
+    }
+    #[test]
+    fn entry_and_skip_lines_escape_the_path() {
+        let e = entry(Kind::File, 0, Timespec { sec: 0, nsec: 0 }, 0o600, None);
+        let l = line_entry("CHG", b"a\nb\xff", &e);
+        assert!(l.starts_with("CHG a\\x0ab\\xff kind=file "), "{l}");
+        assert!(!l.contains('\n'));
+        assert_eq!(line_skp(b".Trashes"), "SKP .Trashes reason=builtin-exclude");
+        assert_eq!(line_skp(b"a\nb"), "SKP a\\x0ab reason=builtin-exclude");
+    }
 
     #[test]
     fn mode_is_four_octal_digits() {

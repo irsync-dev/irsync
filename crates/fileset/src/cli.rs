@@ -58,7 +58,7 @@ pub struct CommonArgs {
     /// Suppress progress output
     #[arg(short = 'q', long, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Also report what is skipped on purpose
+    /// Print one line per entry on stdout, without progress output
     #[arg(short = 'v', long)]
     pub verbose: bool,
 }

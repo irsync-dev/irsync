@@ -2,6 +2,7 @@ mod common;
 
 use common::*;
 use fileset::compare::{Field, Tier};
+use fileset::engine::check::check;
 use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
@@ -1073,12 +1074,13 @@ fn update_skips_unreadable_builtin_exclude(b: Backend) {
 
     let mut opts = update_opts(dir.path(), b, false, true);
     opts.common.verbose = true;
-    let (outcome, err) = run_update_opts(&opts).unwrap();
+    let (outcome, out, err) = run_update_out(&opts).unwrap();
     assert_eq!(outcome, Outcome::Clean, "{err}");
     assert!(
-        err.starts_with("INFO skipping built-in exclude .Spotlight-V100\n"),
-        "{err}"
+        out.contains("SKP .Spotlight-V100 reason=builtin-exclude\n"),
+        "{out}"
     );
+    assert!(!err.contains("INFO"), "{err}");
     assert!(err.ends_with(" warnings=0\n"), "{err}");
 }
 
@@ -1186,4 +1188,315 @@ fn update_stops_at_the_first_failed_lookup() {
     // Stopped at the root: nothing recorded, nothing hashed.
     assert_eq!(counted.entries.load(Ordering::Relaxed), 0);
     assert_eq!(counted.hashed.load(Ordering::Relaxed), 0);
+}
+
+fn verbose_check(root: &Path, tier: Tier) -> (Outcome, String, String) {
+    let mut opts = check_opts(root, tier, &[], &[], false);
+    opts.common.verbose = true;
+    run_check_opts(&opts).unwrap()
+}
+
+/// `unchanged=N` (check) or `entries=N` (update) from a summary line.
+fn summary_count(err: &str, key: &str) -> usize {
+    let summary = err.lines().last().unwrap();
+    let field = summary
+        .split(' ')
+        .find_map(|f| f.strip_prefix(&format!("{key}=")))
+        .unwrap_or_else(|| panic!("no {key}= in {summary}"));
+    field.parse().unwrap()
+}
+
+fn check_verbose_prints_eql_per_entry(b: Backend) {
+    let dir = tree(&[("f", "x"), ("d/g", "y")]);
+    let f = dir.path().join("f");
+    chmod(&f, 0o644);
+    set_mtime(&f, 1_000_000_000, 5);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    let want = format!(
+        "EQL f kind=file size=1 mtime=2001-09-09T01:46:40.000000005Z mode=0644 blake3={}\n",
+        blake3::hash(b"x").to_hex()
+    );
+    assert!(out.contains(&want), "{out}");
+    let l = lines(&out);
+    for dir_prefix in ["EQL . kind=dir size=", "EQL d kind=dir size="] {
+        let line = l.iter().find(|x| x.starts_with(dir_prefix));
+        let line = line.unwrap_or_else(|| panic!("no {dir_prefix} line in {out}"));
+        assert!(!line.contains("blake3="), "{line}");
+    }
+    assert!(l.iter().all(|x| x.starts_with("EQL ")), "{out}");
+    assert_eq!(l.len(), summary_count(&err, "unchanged"), "{out}{err}");
+    assert!(!err.contains("INFO"), "{err}");
+}
+
+fn check_verbose_keeps_the_difference_lines(b: Backend) {
+    let dir = tree(&[("d/f", "x"), ("m", "m"), ("x", "1")]);
+    let m = dir.path().join("m");
+    chmod(&m, 0o644);
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("n"), "new").unwrap();
+    let d = dir.path().join("d");
+    let d_mtime = std::fs::metadata(&d).unwrap().modified().unwrap();
+    std::fs::remove_file(d.join("f")).unwrap();
+    set_mtime_ro(&d, d_mtime);
+    std::fs::write(dir.path().join("x"), "12").unwrap();
+    set_mtime(&dir.path().join("x"), 1_000_000, 0);
+    chmod(&m, 0o600);
+
+    let (_, plain, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    let (outcome, verbose, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Differences, "{verbose}{err}");
+    let all = lines(&verbose);
+    let differences: Vec<_> = all
+        .iter()
+        .filter(|x| !x.starts_with("EQL ") && !x.starts_with("SKP "))
+        .cloned()
+        .collect();
+    assert_eq!(differences, lines(&plain));
+    assert_eq!(differences.len(), 4, "{verbose}");
+    assert!(all.iter().any(|x| x.starts_with("EQL ")), "{verbose}");
+}
+
+fn check_without_verbose_prints_no_eql_or_skp(b: Backend) {
+    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    assert_eq!(out, "");
+}
+
+fn check_verbose_without_hashing_has_no_checksum(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let mut opts = check_opts(dir.path(), Tier::Default, &[Field::Blake3], &[], false);
+    opts.common.verbose = true;
+    let (_, out, _) = run_check_opts(&opts).unwrap();
+    let l = lines(&out);
+    let line = l.iter().find(|x| x.starts_with("EQL f "));
+    let line = line.unwrap_or_else(|| panic!("no EQL f line in {out}"));
+    assert!(!line.contains("blake3="), "{line}");
+}
+
+fn check_verbose_prints_skp_on_stdout(b: Backend) {
+    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    run_update(dir.path(), b, false, false);
+    let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    assert!(
+        out.contains("SKP .Trashes reason=builtin-exclude\n"),
+        "{out}"
+    );
+    assert!(!out.contains(".Trashes/t"), "{out}");
+    assert!(!err.contains("INFO"), "{err}");
+}
+
+for_both_backends! {
+    check_verbose_prints_eql_per_entry => check_verbose_prints_eql_per_entry_sqlite, check_verbose_prints_eql_per_entry_fjall;
+    check_verbose_keeps_the_difference_lines => check_verbose_keeps_the_difference_lines_sqlite, check_verbose_keeps_the_difference_lines_fjall;
+    check_without_verbose_prints_no_eql_or_skp => check_without_verbose_prints_no_eql_or_skp_sqlite, check_without_verbose_prints_no_eql_or_skp_fjall;
+    check_verbose_without_hashing_has_no_checksum => check_verbose_without_hashing_has_no_checksum_sqlite, check_verbose_without_hashing_has_no_checksum_fjall;
+    check_verbose_prints_skp_on_stdout => check_verbose_prints_skp_on_stdout_sqlite, check_verbose_prints_skp_on_stdout_fjall;
+}
+
+/// Counts the bytes' lines and the flushes it is asked for.
+#[derive(Default)]
+struct FlushCounter {
+    lines: usize,
+    flushes: usize,
+}
+
+impl std::io::Write for FlushCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.lines += buf.iter().filter(|&&b| b == b'\n').count();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn check_verbose_flushes_every_line() {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), Backend::Sqlite, false, false);
+    let mut opts = check_opts(dir.path(), Tier::Default, &[], &[], false);
+    for verbose in [true, false] {
+        opts.common.verbose = verbose;
+        let mut out = FlushCounter::default();
+        let mut err = Vec::new();
+        check(&opts, &mut out, &mut err, &NoProgress).unwrap();
+        if verbose {
+            assert!(out.lines > 0);
+            assert!(out.flushes >= out.lines, "{} < {}", out.flushes, out.lines);
+        } else {
+            assert_eq!((out.lines, out.flushes), (0, 0));
+        }
+    }
+}
+
+fn verbose_update(root: &Path, b: Backend, rehash: bool) -> (Outcome, String, String) {
+    let mut opts = update_opts(root, b, rehash, false);
+    opts.common.verbose = true;
+    run_update_out(&opts).unwrap()
+}
+
+fn hex(content: &[u8]) -> String {
+    blake3::hash(content).to_hex().to_string()
+}
+
+fn init_verbose_prints_add_per_entry(b: Backend) {
+    let dir = tree(&[("f", "x"), ("d/g", "y")]);
+    let f = dir.path().join("f");
+    chmod(&f, 0o644);
+    set_mtime(&f, 1_000_000_000, 5);
+    let (outcome, out, err) = verbose_update(dir.path(), b, false);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    let want = format!(
+        "ADD f kind=file size=1 mtime=2001-09-09T01:46:40.000000005Z mode=0644 blake3={}\n",
+        hex(b"x")
+    );
+    assert!(out.contains(&want), "{out}");
+    let l = lines(&out);
+    assert!(l.iter().all(|x| x.starts_with("ADD ")), "{out}");
+    assert_eq!(l.len(), summary_count(&err, "entries"), "{out}{err}");
+}
+
+fn update_verbose_prints_eql_chg_add_del(b: Backend) {
+    let dir = tree(&[("same", "x"), ("edit", "x"), ("gone", "x")]);
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("edit"), "xy").unwrap();
+    std::fs::remove_file(dir.path().join("gone")).unwrap();
+    std::fs::write(dir.path().join("new"), "z").unwrap();
+    let (outcome, out, err) = verbose_update(dir.path(), b, false);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    let l = lines(&out);
+    let starting = |p: &str| {
+        let found = l.iter().find(|x| x.starts_with(p));
+        *found.unwrap_or_else(|| panic!("no line starting {p:?} in {out}"))
+    };
+    starting("EQL same kind=file size=1 ");
+    let chg = starting("CHG edit kind=file size=2 ");
+    assert!(chg.ends_with(&format!(" blake3={}", hex(b"xy"))), "{chg}");
+    starting("ADD new kind=file size=1 ");
+    let del = l.iter().position(|x| *x == "DEL gone");
+    let del = del.unwrap_or_else(|| panic!("no DEL gone line in {out}"));
+    let last_entry = l
+        .iter()
+        .rposition(|x| ["EQL ", "CHG ", "ADD "].iter().any(|p| x.starts_with(p)));
+    assert!(last_entry.unwrap() < del, "{out}");
+}
+
+fn update_verbose_rehash_prints_eql(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let (_, out, err) = verbose_update(dir.path(), b, true);
+    assert_eq!(summary_count(&err, "hashed"), 1, "{err}");
+    let l = lines(&out);
+    let line = l.iter().find(|x| x.starts_with("EQL f "));
+    let line = line.unwrap_or_else(|| panic!("no EQL f line in {out}"));
+    assert!(line.ends_with(&format!(" blake3={}", hex(b"x"))), "{line}");
+}
+
+fn update_verbose_unreadable_file_has_no_checksum(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    let f = dir.path().join("f");
+    chmod(&f, 0o000);
+    if std::fs::File::open(&f).is_ok() {
+        eprintln!("skipping: running with privileges that bypass file permissions");
+        return;
+    }
+    let (_, out, err) = verbose_update(dir.path(), b, false);
+    chmod(&f, 0o644);
+    assert!(err.contains("WARN cannot hash f"), "{err}");
+    let l = lines(&out);
+    let line = l.iter().find(|x| x.starts_with("ADD f "));
+    let line = line.unwrap_or_else(|| panic!("no ADD f line in {out}"));
+    assert!(!line.contains("blake3="), "{line}");
+}
+
+fn update_verbose_drops_old_builtin_exclude_rows(b: Backend) {
+    let dir = tree(&[("f", "x"), (".Trashes/501/old", "y")]);
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.common.builtin_excludes = false;
+    run_update_opts(&opts).unwrap();
+    let (outcome, out, err) = verbose_update(dir.path(), b, false);
+    assert_eq!(outcome, Outcome::Clean, "{out}{err}");
+    let l = lines(&out);
+    for want in [
+        "SKP .Trashes reason=builtin-exclude",
+        "DEL .Trashes",
+        "DEL .Trashes/501",
+        "DEL .Trashes/501/old",
+    ] {
+        assert!(l.contains(&want), "no {want:?} line in {out}");
+    }
+}
+
+fn update_verbose_root_and_manifest_are_eql(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    // A new file changes the root's mtime, and recording it rewrites the manifest.
+    std::fs::write(dir.path().join("n"), "y").unwrap();
+    let (_, out, _) = verbose_update(dir.path(), b, false);
+    let l = lines(&out);
+    assert!(l.iter().any(|x| x.starts_with("EQL . kind=dir ")), "{out}");
+    let manifest = format!("EQL {} ", store_name(b));
+    assert!(l.iter().any(|x| x.starts_with(&manifest)), "{out}");
+    assert!(l.iter().any(|x| x.starts_with("ADD n ")), "{out}");
+
+    // What check would report for the root still shows as a change.
+    chmod(dir.path(), 0o750);
+    let (_, out, _) = verbose_update(dir.path(), b, false);
+    assert!(
+        lines(&out).iter().any(|x| x.starts_with("CHG . kind=dir ")),
+        "{out}"
+    );
+}
+
+/// Fails every write of a `DEL` line, as a closed stdout would.
+struct FailOnDel;
+
+impl std::io::Write for FailOnDel {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.starts_with(b"DEL ") {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written(b: Backend) {
+    let dir = tree(&[("f", "x"), ("gone", "y")]);
+    run_update(dir.path(), b, false, false);
+    let path = dir.path().join(store_name(b));
+    let mut s = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let mut meta = s.meta().unwrap();
+    meta.updated_at = 0;
+    s.set_meta(&meta).unwrap();
+    s.close().unwrap();
+
+    std::fs::remove_file(dir.path().join("gone")).unwrap();
+    let mut opts = update_opts(dir.path(), b, false, false);
+    opts.common.verbose = true;
+    let mut err = Vec::new();
+    let result = update(&opts, &mut FailOnDel, &mut err, &NoProgress);
+    assert!(result.is_err(), "the write error is reported");
+    let s = open_ro(dir.path(), b);
+    assert!(!keys(&*s).contains(&"gone".to_string()));
+    assert_ne!(s.meta().unwrap().updated_at, 0, "the run was recorded");
+}
+
+for_both_backends! {
+    update_verbose_root_and_manifest_are_eql => update_verbose_root_and_manifest_are_eql_sqlite, update_verbose_root_and_manifest_are_eql_fjall;
+    update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written => update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_sqlite, update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_fjall;
+    init_verbose_prints_add_per_entry => init_verbose_prints_add_per_entry_sqlite, init_verbose_prints_add_per_entry_fjall;
+    update_verbose_prints_eql_chg_add_del => update_verbose_prints_eql_chg_add_del_sqlite, update_verbose_prints_eql_chg_add_del_fjall;
+    update_verbose_rehash_prints_eql => update_verbose_rehash_prints_eql_sqlite, update_verbose_rehash_prints_eql_fjall;
+    update_verbose_unreadable_file_has_no_checksum => update_verbose_unreadable_file_has_no_checksum_sqlite, update_verbose_unreadable_file_has_no_checksum_fjall;
+    update_verbose_drops_old_builtin_exclude_rows => update_verbose_drops_old_builtin_exclude_rows_sqlite, update_verbose_drops_old_builtin_exclude_rows_fjall;
 }

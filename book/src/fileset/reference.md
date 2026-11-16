@@ -83,7 +83,7 @@ warning `nested manifest at <path>`.
 | `--walk-threads <N>` | Threads that list directories and read metadata. Default: 4. `N` is at least 1. |
 | `--no-builtin-excludes` | Walk the [built-in excludes](#built-in-excludes) like any other directory. |
 | `-q, --quiet` | Suppress progress. |
-| `-v, --verbose` | Also print an `INFO` line for each built-in exclude skipped. Conflicts with `--quiet`. |
+| `-v, --verbose` | Print one line per entry on stdout as it is handled (see [Every entry, with `-v`](#every-entry-with--v)), and turn progress off. Conflicts with `--quiet`. |
 
 More walk threads are often slower. On a 16-core machine with an APFS SSD, a
 no-change `update` of a 1.7 million entry tree took 24 s with 4 threads and
@@ -182,8 +182,62 @@ UTF-8 and the space pass through, `\` becomes `\\`, control bytes, DEL and
 bytes that are not valid UTF-8 become `\xNN`, and C1 controls and the bidi
 formatting characters become `\u{...}`.
 
+### Every entry, with `-v`
+
+With `-v`, every entry gets a line on stdout, in the order it is walked and
+as soon as it is handled. `check` adds two kinds of line to the ones above:
+
+| Prefix | Meaning | Printed |
+| --- | --- | --- |
+| `EQL` | in both, every compared field matches | `-v` only |
+| `CHG` | in both, something differs | always |
+| `ADD` | on disk, not in the manifest | always |
+| `DEL` | in the manifest, not on disk | always |
+| `SKP` | skipped on purpose | `-v` only |
+
+```text
+EQL 2026/01/IMG_0001.jpg kind=file size=48213 mtime=2026-01-15T12:00:00.000000000Z mode=0644 blake3=81c4b7f7e0549f1514e9cae97cf40cf133920418d3dc71bedbf60ec9bd6148cb
+CHG 2026/01/IMG_0002.jpg mode=0644→0600
+ADD new.jpg kind=file
+SKP .Spotlight-V100 reason=builtin-exclude
+DEL old.jpg
+```
+
+`init` and `update` print nothing on stdout without `-v`. With it, they use
+the same prefixes for what happened to the manifest:
+
+| Prefix | Meaning |
+| --- | --- |
+| `ADD` | new entry recorded |
+| `CHG` | entry changed in a way `check` could report |
+| `EQL` | nothing `check` could report changed |
+| `DEL` | entry dropped: the path is gone or is no longer walked |
+| `SKP` | skipped on purpose |
+
+- `EQL` in `check`, and `ADD`, `CHG` and `EQL` in `init` and `update`, show
+  the entry in full: `<path> kind= size= mtime= mode=`, then `blake3=` when
+  the entry has a checksum. `check` shows what is on disk; `init` and
+  `update` show the entry as now recorded.
+- `blake3=` is left off for anything that is not a regular file, for the
+  manifest itself, for a file that could not be read, and in a `check` that
+  does not compare content (`--ignore blake3`).
+- `SKP <path> reason=builtin-exclude`: one of the
+  [built-in excludes](#built-in-excludes) was skipped.
+- `DEL` lines come after the walk, in `check` and in `update`.
+- In `update`, `CHG` covers every field `check --paranoid` compares, and a
+  checksum gained or lost. The root's mtime and a manifest inside the tree
+  change whenever the manifest is written; `check` does not report that, so
+  both show as `EQL`.
+- In `update`, `DEL` is also printed for entries that are still on disk but
+  no longer walked: those below a built-in exclude, and those below a
+  directory that could not be read.
+
+`grep -v '^EQL'` leaves what differs.
+
+### Warnings and summary
+
 Warnings go to stderr, prefixed `WARN `. Progress goes to stderr only when
-stderr is a terminal and `-q` is not given. A summary line goes to stderr at
+stderr is a terminal and neither `-q` nor `-v` is given. A summary line goes to stderr at
 the end:
 
 ```text

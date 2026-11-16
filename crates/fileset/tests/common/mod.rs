@@ -96,6 +96,18 @@ pub fn run_update_opts(opts: &UpdateOpts) -> anyhow::Result<(Outcome, String)> {
     Ok((outcome, String::from_utf8(err).unwrap()))
 }
 
+/// Runs `update`; returns the outcome, captured stdout and captured stderr.
+pub fn run_update_out(opts: &UpdateOpts) -> anyhow::Result<(Outcome, String, String)> {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let outcome = update(opts, &mut out, &mut err, &NoProgress)?;
+    Ok((
+        outcome,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    ))
+}
+
 pub fn run_update(
     root: &Path,
     backend: Backend,

@@ -4,15 +4,16 @@
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
-use std::io::Write;
+use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{canonical_root, walk_config, CommonOpts, Outcome, Warnings};
+use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
+use crate::compare::{diff, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
-use crate::report::UpdateSummary;
+use crate::report::{line_del, line_entry, line_skp, UpdateSummary};
 use crate::store::{self, Backend, Meta, OpenMode};
 use crate::walk::{self, Observed, WalkEvent};
 
@@ -40,7 +41,7 @@ pub struct UpdateOpts {
 
 pub fn update(
     opts: &UpdateOpts,
-    _out: &mut dyn Write,
+    out: &mut dyn Write,
     err: &mut dyn Write,
     progress: &dyn Progress,
 ) -> anyhow::Result<Outcome> {
@@ -54,7 +55,8 @@ pub fn update(
         } => (None, rehash, force_xattr_reads),
     };
     let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
-    let mut warnings = Warnings::new(err, common.verbose);
+    let mut warnings = Warnings::new(err);
+    let report = RefCell::new(Report::new(out, common.verbose));
     let mode = match (opts.mode, loc.exists) {
         (Mode::Init { .. }, true) if unfinished_manifest(&loc) => {
             warnings.emit(&format!(
@@ -116,6 +118,7 @@ pub fn update(
 
     let mut cfg = walk_config(common, &root, &loc);
     cfg.force_xattr_reads = force_xattr_reads;
+    let store_parent = store_parent(&cfg, &root);
     // The walk threads look every entry up themselves; a new manifest has nothing to find.
     let reader = match opts.mode {
         Mode::Init { .. } => None,
@@ -166,7 +169,9 @@ pub fn update(
             // Already warned; the sweep drops what the walk did not see, as for any absence.
             WalkEvent::NotDescended(_) => return Ok(()),
             // The sweep also drops what an older manifest recorded at or below it.
-            WalkEvent::Excluded(path) => return Ok(warnings.info(&walk::excluded_info(&path))?),
+            WalkEvent::Excluded(path) => {
+                return Ok(report.borrow_mut().verbose_line(|| line_skp(&path))?)
+            }
             WalkEvent::Entry(obs) => obs,
         };
         let (sent, stored) = looked_up
@@ -188,6 +193,12 @@ pub fn update(
         }
         // A row equal but for its generation stays as it is: rewriting it would only
         // churn the manifest.
+        let prefix = if common.verbose {
+            let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
+            entry_prefix(stored.as_ref(), &obs.entry, mtime_exempt)
+        } else {
+            ""
+        };
         let unchanged = stored.is_some_and(|s| {
             obs.entry.generation = s.generation;
             obs.entry == s
@@ -196,6 +207,9 @@ pub fn update(
         summary.entries += 1;
         progress.entry();
         seen.insert(&obs.path);
+        report
+            .borrow_mut()
+            .verbose_line(|| line_entry(prefix, &obs.path, &obs.entry))?;
         if unchanged {
             return Ok(());
         }
@@ -231,7 +245,17 @@ pub fn update(
     if !batch.is_empty() {
         store.put_batch(&batch)?;
     }
-    store.sweep(&|path| seen.contains(path))?;
+    // `keep` cannot fail, so the first error writing a `DEL` line waits for the sweep to end.
+    let del_error: RefCell<Option<io::Error>> = RefCell::new(None);
+    store.sweep(&|path| {
+        let keep = seen.contains(path);
+        if !keep {
+            if let Err(e) = report.borrow_mut().verbose_line(|| line_del(path)) {
+                del_error.borrow_mut().get_or_insert(e);
+            }
+        }
+        keep
+    })?;
     store.set_meta(&Meta {
         generation,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -243,6 +267,10 @@ pub fn update(
         warnings.emit(&note)?;
     }
     progress.finish();
+    // Only now: the sweep has run, so the manifest is finished and closed first.
+    if let Some(e) = del_error.into_inner() {
+        return Err(e.into());
+    }
 
     summary.warnings = warnings.count();
     writeln!(err, "{summary}")?;
@@ -251,6 +279,24 @@ pub fn update(
     } else {
         Outcome::Clean
     })
+}
+
+/// The prefix of an entry's `-v` line. `CHG` is for what `check` could report, and for a
+/// checksum gained or lost. A row rewritten for anything else (the root's mtime, the
+/// manifest's own size, a ctime) is `EQL`.
+fn entry_prefix(stored: Option<&Entry>, new: &Entry, mtime_exempt: bool) -> &'static str {
+    let Some(stored) = stored else {
+        return "ADD";
+    };
+    let everything = Selection::new(Tier::Paranoid, &[], &[]);
+    // `diff` compares checksums only where both sides have one.
+    if stored.blake3.is_some() == new.blake3.is_some()
+        && diff(mtime_exempt, stored, new, &everything).is_empty()
+    {
+        "EQL"
+    } else {
+        "CHG"
+    }
 }
 
 /// The paths a walk saw, kept as 128-bit hashes: 16 bytes an entry, whatever the path's
@@ -332,4 +378,58 @@ fn unix_now() -> anyhow::Result<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| anyhow::anyhow!("the system clock is set before 1970"))?;
     Ok(d.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Timespec;
+
+    fn file() -> Entry {
+        Entry {
+            kind: Kind::File,
+            mode: 0o644,
+            uid: 1,
+            gid: 1,
+            size: 1,
+            nlink: 1,
+            ino: 1,
+            dev: 1,
+            rdev: 0,
+            mtime: Timespec { sec: 1, nsec: 0 },
+            ctime: Timespec { sec: 1, nsec: 0 },
+            blake3: Some([7; 32]),
+            target: None,
+            xattrs: vec![],
+            flags: Flags::default(),
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn prefix_is_add_for_a_new_entry() {
+        assert_eq!(entry_prefix(None, &file(), false), "ADD");
+    }
+
+    #[test]
+    fn prefix_is_eql_for_changes_check_does_not_report() {
+        let stored = file();
+        let mut new = file();
+        new.ctime.sec = 2;
+        new.ino = 2;
+        new.generation = 2;
+        assert_eq!(entry_prefix(Some(&stored), &new, false), "EQL");
+        new.mtime.sec = 2;
+        assert_eq!(entry_prefix(Some(&stored), &new, true), "EQL");
+        assert_eq!(entry_prefix(Some(&stored), &new, false), "CHG");
+    }
+
+    #[test]
+    fn prefix_is_chg_for_a_checksum_gained_or_lost() {
+        let with = file();
+        let mut without = file();
+        without.blake3 = None;
+        assert_eq!(entry_prefix(Some(&without), &with, false), "CHG");
+        assert_eq!(entry_prefix(Some(&with), &without, false), "CHG");
+    }
 }

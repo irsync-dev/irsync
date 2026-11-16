@@ -6,17 +6,16 @@ use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 
 use anyhow::Context;
 
-use super::{canonical_root, walk_config, CommonOpts, Outcome, Warnings};
+use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
-use crate::report::{line_add, line_chg, line_del, CheckSummary, FieldDiff};
+use crate::report::{line_add, line_chg, line_del, line_entry, line_skp, CheckSummary, FieldDiff};
 use crate::store::{self, OpenMode, Store};
 use crate::walk::{self, Observed, WalkEvent};
 
@@ -47,19 +46,10 @@ pub fn check(
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
     let cfg = walk_config(common, &root, &loc);
-    // The root's mtime is not compared, nor that of the directory holding an in-tree store:
-    // writing the manifest (and its sidecars) changes both.
-    let store_parent: Option<Vec<u8>> = cfg
-        .store_path
-        .as_deref()
-        .and_then(Path::parent)
-        .and_then(|p| p.strip_prefix(&root).ok())
-        .map(|rel| match rel.as_os_str().as_bytes() {
-            b"" => b".".to_vec(),
-            r => r.to_vec(),
-        });
+    let store_parent = store_parent(&cfg, &root);
 
-    let mut warnings = Warnings::new(err, common.verbose);
+    let mut warnings = Warnings::new(err);
+    let mut report = Report::new(out, common.verbose);
     let mut summary = CheckSummary::default();
     let mut lookup_error: Option<anyhow::Error> = None;
     // Prefixes (see `unobserved_prefix`) of what the walk could not observe; one per
@@ -85,7 +75,7 @@ pub fn check(
                 return Ok(());
             }
             WalkEvent::Excluded(path) => {
-                warnings.info(&walk::excluded_info(&path))?;
+                report.verbose_line(|| line_skp(&path))?;
                 excluded_below.insert(unobserved_prefix(&path));
                 excluded.insert(path);
                 return Ok(());
@@ -97,7 +87,7 @@ pub fn check(
         }
         progress.entry();
         let Some(stored) = store.borrow().get(&obs.path)? else {
-            writeln!(out, "{}", line_add(&obs.path, obs.entry.kind))?;
+            report.line(&line_add(&obs.path, obs.entry.kind))?;
             summary.added += 1;
             return Ok(());
         };
@@ -115,9 +105,10 @@ pub fn check(
         let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
         let diffs = diff(mtime_exempt, &stored, &obs.entry, &sel);
         if diffs.is_empty() {
+            report.verbose_line(|| line_entry("EQL", &obs.path, &obs.entry))?;
             summary.unchanged += 1;
         } else {
-            writeln!(out, "{}", line_chg(&obs.path, &diffs))?;
+            report.line(&line_chg(&obs.path, &diffs))?;
             summary.changed += 1;
         }
         Ok(())
@@ -140,23 +131,23 @@ pub fn check(
         }
         let unverified = || line_chg(path, &[unverified_diff(stored.kind)]);
         if is_under(&not_descended, path) {
-            writeln!(out, "{}", unverified())?;
+            report.line(&unverified())?;
             summary.changed += 1;
             return Ok(());
         }
         if is_under(&replaced, path) {
-            writeln!(out, "{}", line_del(path))?;
+            report.line(&line_del(path))?;
             summary.deleted += 1;
             return Ok(());
         }
         match root.join(OsStr::from_bytes(path)).symlink_metadata() {
             Ok(_) => {}
             Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-                writeln!(out, "{}", line_del(path))?;
+                report.line(&line_del(path))?;
                 summary.deleted += 1;
             }
             Err(_) => {
-                writeln!(out, "{}", unverified())?;
+                report.line(&unverified())?;
                 summary.changed += 1;
             }
         }

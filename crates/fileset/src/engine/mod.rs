@@ -39,28 +39,15 @@ pub struct CommonOpts {
     pub verbose: bool,
 }
 
-/// Writes `WARN <text>` lines to `err` and counts them; with `verbose`, also uncounted
-/// `INFO <text>` lines.
+/// Writes `WARN <text>` lines to `err` and counts them.
 pub struct Warnings<'a> {
     err: &'a mut dyn Write,
     count: u64,
-    verbose: bool,
 }
 
 impl<'a> Warnings<'a> {
-    pub fn new(err: &'a mut dyn Write, verbose: bool) -> Self {
-        Warnings {
-            err,
-            count: 0,
-            verbose,
-        }
-    }
-
-    pub fn info(&mut self, text: &str) -> io::Result<()> {
-        if self.verbose {
-            writeln!(self.err, "INFO {text}")?;
-        }
-        Ok(())
+    pub fn new(err: &'a mut dyn Write) -> Self {
+        Warnings { err, count: 0 }
     }
 
     pub fn emit(&mut self, text: &str) -> io::Result<()> {
@@ -70,6 +57,50 @@ impl<'a> Warnings<'a> {
 
     pub fn count(&self) -> u64 {
         self.count
+    }
+}
+
+/// The tree-relative path of the directory holding an in-tree store. Its mtime, like the
+/// root's, is not compared: writing the manifest (and its sidecars) changes both.
+pub fn store_parent(cfg: &WalkConfig, root: &Path) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    cfg.store_path
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|p| p.strip_prefix(root).ok())
+        .map(|rel| match rel.as_os_str().as_bytes() {
+            b"" => b".".to_vec(),
+            r => r.to_vec(),
+        })
+}
+
+/// Report lines on stdout. With `verbose`, every line is flushed as it is written, so the
+/// lines show up while the run is going.
+pub struct Report<'a> {
+    out: &'a mut dyn Write,
+    verbose: bool,
+}
+
+impl<'a> Report<'a> {
+    pub fn new(out: &'a mut dyn Write, verbose: bool) -> Self {
+        Report { out, verbose }
+    }
+
+    /// A line printed with or without `-v`.
+    pub fn line(&mut self, text: &str) -> io::Result<()> {
+        writeln!(self.out, "{text}")?;
+        if self.verbose {
+            self.out.flush()?;
+        }
+        Ok(())
+    }
+
+    /// A line printed only with `-v`; `text` is not called otherwise.
+    pub fn verbose_line(&mut self, text: impl FnOnce() -> String) -> io::Result<()> {
+        if self.verbose {
+            self.line(&text())?;
+        }
+        Ok(())
     }
 }
 
