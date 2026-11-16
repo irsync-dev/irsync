@@ -709,12 +709,15 @@ impl Harness {
         irsync::net::tap::ConnTap::of(&conn).set_local_id(self.client.id());
         let out = irsync::session::engine::run_client(conn.clone(), hello, local, opts).await;
         conn.close(0u32.into(), b"done");
-        // The daemon's side ends right after ours; wait for its bookkeeping.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // The daemon's side ends after ours, once it has written what it
+        // queued for its index: seconds for a large tree on a busy disk
+        // (over 10 s for two 20,000-file pulls on a CI runner).
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while self.daemon.sessions.load(Ordering::SeqCst) == before {
             assert!(
                 std::time::Instant::now() < deadline,
-                "daemon session did not finish"
+                "daemon session did not finish (client side: {:?})",
+                out.as_ref().map(|_| "ok")
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
