@@ -32,9 +32,18 @@ fn timeval(t: nix::sys::time::TimeVal) -> Duration {
 /// crate, which knows how each OS reports it (a folder under `/proc` on
 /// Linux, a kernel call on macOS and FreeBSD).
 fn open_fds() -> Option<u64> {
+    use std::sync::{Mutex, OnceLock, PoisonError};
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    // One `System` for the life of the process, not one per sample: on
+    // macOS each new one takes a kernel handle that sysinfo never gives
+    // back. `None` if it could not be made.
+    static SYSTEM: OnceLock<Option<Mutex<System>>> = OnceLock::new();
+    let mut sys = SYSTEM
+        .get_or_init(|| System::new().ok().map(Mutex::new))
+        .as_ref()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let pid = sysinfo::get_current_pid().ok()?;
-    let mut sys = System::new().ok()?;
     // Only finds the process: the count itself is read by `open_files`.
     sys.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
@@ -43,9 +52,11 @@ fn open_fds() -> Option<u64> {
     );
     let n = sys.process(pid)?.open_files()? as u64;
     if cfg!(target_os = "linux") {
-        // Reading the folder itself holds one descriptor.
+        // Reading the folder itself holds one descriptor for a moment.
         Some(n.saturating_sub(1))
     } else {
+        // On FreeBSD the kept `System` holds one descriptor of its own.
+        // It is open for as long as the process runs, so it counts.
         Some(n)
     }
 }
@@ -76,6 +87,38 @@ mod tests {
         } else {
             assert_eq!(rss_bytes(2048), 2048 * 1024);
         }
+    }
+
+    /// Counts the open descriptors the slow, sure way: asks about each
+    /// number in turn.
+    fn direct_fd_count() -> u64 {
+        (0..4096)
+            // SAFETY: F_GETFD only reads the flags of `fd`, or fails with
+            // EBADF when no such descriptor is open.
+            .filter(|&fd| unsafe { nix::libc::fcntl(fd, nix::libc::F_GETFD) } != -1)
+            .count() as u64
+    }
+
+    #[test]
+    fn open_fds_matches_a_direct_count() {
+        // Other tests in this process open and close descriptors too, even
+        // in the middle of a sample. So take many samples, keep those where
+        // the direct count was the same before and after, and ask that
+        // most of them agree: a count that is off by one never would.
+        let (mut same, mut differ) = (0, 0);
+        for _ in 0..200 {
+            let before = direct_fd_count();
+            let got = sample().open_fds;
+            if direct_fd_count() != before {
+                continue;
+            }
+            if got == Some(before) {
+                same += 1;
+            } else {
+                differ += 1;
+            }
+        }
+        assert!(same > differ, "agreed {same} times, differed {differ}");
     }
 
     #[test]
