@@ -376,11 +376,10 @@ fn cli_builtin_excludes_flags() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
+    let o = String::from_utf8_lossy(&out.stdout);
+    assert!(o.contains("SKP .Trashes reason=builtin-exclude\n"), "{o}");
     let e = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        e.contains("INFO skipping built-in exclude .Trashes\n"),
-        "{e}"
-    );
+    assert!(!e.contains("INFO"), "{e}");
     let out = bin()
         .args([
             "check".as_ref(),

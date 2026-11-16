@@ -59,7 +59,7 @@ pub fn check(
             r => r.to_vec(),
         });
 
-    let mut warnings = Warnings::new(err, common.verbose);
+    let mut warnings = Warnings::new(err);
     let mut report = Report::new(out, common.verbose);
     let mut summary = CheckSummary::default();
     let mut lookup_error: Option<anyhow::Error> = None;

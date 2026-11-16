@@ -4,15 +4,15 @@
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
-use std::io::Write;
+use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{canonical_root, walk_config, CommonOpts, Outcome, Warnings};
+use super::{canonical_root, walk_config, CommonOpts, Outcome, Report, Warnings};
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
-use crate::report::UpdateSummary;
+use crate::report::{line_del, line_entry, line_skp, UpdateSummary};
 use crate::store::{self, Backend, Meta, OpenMode};
 use crate::walk::{self, Observed, WalkEvent};
 
@@ -40,7 +40,7 @@ pub struct UpdateOpts {
 
 pub fn update(
     opts: &UpdateOpts,
-    _out: &mut dyn Write,
+    out: &mut dyn Write,
     err: &mut dyn Write,
     progress: &dyn Progress,
 ) -> anyhow::Result<Outcome> {
@@ -54,7 +54,8 @@ pub fn update(
         } => (None, rehash, force_xattr_reads),
     };
     let loc = store::locate(&root, common.manifest.as_deref(), requested, true)?;
-    let mut warnings = Warnings::new(err, common.verbose);
+    let mut warnings = Warnings::new(err);
+    let report = RefCell::new(Report::new(out, common.verbose));
     let mode = match (opts.mode, loc.exists) {
         (Mode::Init { .. }, true) if unfinished_manifest(&loc) => {
             warnings.emit(&format!(
@@ -166,7 +167,9 @@ pub fn update(
             // Already warned; the sweep drops what the walk did not see, as for any absence.
             WalkEvent::NotDescended(_) => return Ok(()),
             // The sweep also drops what an older manifest recorded at or below it.
-            WalkEvent::Excluded(path) => return Ok(warnings.info(&walk::excluded_info(&path))?),
+            WalkEvent::Excluded(path) => {
+                return Ok(report.borrow_mut().verbose_line(|| line_skp(&path))?)
+            }
             WalkEvent::Entry(obs) => obs,
         };
         let (sent, stored) = looked_up
@@ -188,6 +191,7 @@ pub fn update(
         }
         // A row equal but for its generation stays as it is: rewriting it would only
         // churn the manifest.
+        let is_new = stored.is_none();
         let unchanged = stored.is_some_and(|s| {
             obs.entry.generation = s.generation;
             obs.entry == s
@@ -196,6 +200,14 @@ pub fn update(
         summary.entries += 1;
         progress.entry();
         seen.insert(&obs.path);
+        let prefix = match (is_new, unchanged) {
+            (true, _) => "ADD",
+            (false, true) => "EQL",
+            (false, false) => "CHG",
+        };
+        report
+            .borrow_mut()
+            .verbose_line(|| line_entry(prefix, &obs.path, &obs.entry))?;
         if unchanged {
             return Ok(());
         }
@@ -231,7 +243,20 @@ pub fn update(
     if !batch.is_empty() {
         store.put_batch(&batch)?;
     }
-    store.sweep(&|path| seen.contains(path))?;
+    // `keep` cannot fail, so the first error writing a `DEL` line waits for the sweep to end.
+    let del_error: RefCell<Option<io::Error>> = RefCell::new(None);
+    store.sweep(&|path| {
+        let keep = seen.contains(path);
+        if !keep {
+            if let Err(e) = report.borrow_mut().verbose_line(|| line_del(path)) {
+                del_error.borrow_mut().get_or_insert(e);
+            }
+        }
+        keep
+    })?;
+    if let Some(e) = del_error.into_inner() {
+        return Err(e.into());
+    }
     store.set_meta(&Meta {
         generation,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),

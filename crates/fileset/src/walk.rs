@@ -84,11 +84,6 @@ pub fn nested_manifest_warning(rel: &[u8]) -> String {
     format!("nested manifest at {}", escape(rel))
 }
 
-/// The info text for a `WalkEvent::Excluded`.
-pub fn excluded_info(rel: &[u8]) -> String {
-    format!("skipping built-in exclude {}", escape(rel))
-}
-
 /// Walks the tree at `cfg.root`. With a `reader` over the manifest, each entry carries what
 /// the manifest holds for it, and xattrs the manifest holds as current are not read again.
 pub fn walk(

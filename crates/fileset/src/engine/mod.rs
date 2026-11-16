@@ -39,28 +39,15 @@ pub struct CommonOpts {
     pub verbose: bool,
 }
 
-/// Writes `WARN <text>` lines to `err` and counts them; with `verbose`, also uncounted
-/// `INFO <text>` lines.
+/// Writes `WARN <text>` lines to `err` and counts them.
 pub struct Warnings<'a> {
     err: &'a mut dyn Write,
     count: u64,
-    verbose: bool,
 }
 
 impl<'a> Warnings<'a> {
-    pub fn new(err: &'a mut dyn Write, verbose: bool) -> Self {
-        Warnings {
-            err,
-            count: 0,
-            verbose,
-        }
-    }
-
-    pub fn info(&mut self, text: &str) -> io::Result<()> {
-        if self.verbose {
-            writeln!(self.err, "INFO {text}")?;
-        }
-        Ok(())
+    pub fn new(err: &'a mut dyn Write) -> Self {
+        Warnings { err, count: 0 }
     }
 
     pub fn emit(&mut self, text: &str) -> io::Result<()> {
