@@ -1871,6 +1871,22 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                     }
                 }
             };
+            // Read the passphrase before touching any file: a bad file must
+            // leave nothing written and nothing removed.
+            let passphrase = match &f.passphrase_file {
+                None => None,
+                Some(p) => {
+                    let pass = irsync::identity::read_passphrase_file(p)
+                        .with_context(|| format!("reading passphrase file {}", p.display()))?;
+                    if pass.is_empty() {
+                        return Err(irsync::identity::IdentityError::EmptyPassphraseFile(
+                            p.clone(),
+                        )
+                        .into());
+                    }
+                    Some(pass)
+                }
+            };
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
@@ -1886,7 +1902,8 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                     }
                 }
             }
-            let secret = irsync::identity::generate_openssh(&path, comment)?;
+            let secret =
+                irsync::identity::generate_openssh_with(&path, comment, passphrase.as_deref())?;
             let line = std::fs::read_to_string(&pub_path)
                 .with_context(|| format!("reading {}", pub_path.display()))?;
             eprintln!("wrote {} and {}", path.display(), pub_path.display());

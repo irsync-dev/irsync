@@ -1808,3 +1808,245 @@ fn a_sync_option_before_a_command_exits_2() {
     assert!(String::from_utf8_lossy(&o.stderr)
         .contains("-a is a sync option and cannot be used with 'gc'"));
 }
+
+/// A temp home with a passphrase file `pf` in it.
+fn passphrase_home(d: &tempfile::TempDir, text: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let pf = home.join("pf");
+    std::fs::write(&pf, text).unwrap();
+    (home, pf)
+}
+
+#[test]
+fn id_generate_encrypts_the_key_with_the_passphrase_file() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, pf) = passphrase_home(&d, "hunter2\nnot part of it\n");
+    let pf_s = pf.to_str().unwrap();
+    let key = home.join(".config/irsync/id_ed25519");
+    let gen = irsync(&home, &["id", "generate", "--passphrase-file", pf_s]);
+    assert!(
+        gen.status.success(),
+        "{}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
+    assert!(ssh_key::PrivateKey::read_openssh_file(&key)
+        .unwrap()
+        .is_encrypted());
+    assert!(String::from_utf8_lossy(&gen.stderr).contains("wrote "));
+    // stdout: the public key line, then the id, as without the flag.
+    let out = String::from_utf8_lossy(&gen.stdout).to_string();
+    let id = out.lines().last().unwrap().to_string();
+    assert_eq!(out.lines().count(), 2);
+    assert!(out.starts_with("ssh-ed25519 "));
+
+    // The same flag and file unlock it, before or after the command.
+    for args in [
+        &["id", "show", "--passphrase-file", pf_s][..],
+        &["--passphrase-file", pf_s, "id", "show"],
+    ] {
+        let o = irsync(&home, args);
+        assert!(o.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stdout).contains(&id), "{args:?}");
+    }
+    // Without a passphrase it does not load.
+    let o = irsync(&home, &["id", "show"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("is encrypted"));
+    // A wrong passphrase is refused.
+    let wrong = home.join("wrong");
+    std::fs::write(&wrong, "hunter3\n").unwrap();
+    assert!(!irsync(
+        &home,
+        &["id", "show", "--passphrase-file", wrong.to_str().unwrap()]
+    )
+    .status
+    .success());
+    // A bare `id` with the flag and an existing key lists; it is not a usage error.
+    let o = irsync(&home, &["id", "--passphrase-file", pf_s]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains(&id));
+}
+
+#[test]
+fn id_generate_encrypts_with_daemon_out_and_force() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, pf) = passphrase_home(&d, "s3cret\r\n");
+    let pf_s = pf.to_str().unwrap();
+    let o = irsync(
+        &home,
+        &["id", "generate", "--daemon", "--passphrase-file", pf_s],
+    );
+    assert!(o.status.success());
+    let daemon_key = home.join(".config/irsync/daemon_ed25519");
+    assert!(ssh_key::PrivateKey::read_openssh_file(&daemon_key)
+        .unwrap()
+        .is_encrypted());
+    assert!(irsync(
+        &home,
+        &["id", "show", "--daemon", "--passphrase-file", pf_s]
+    )
+    .status
+    .success());
+
+    let out = home.join("elsewhere/key");
+    let out_s = out.to_str().unwrap();
+    assert!(irsync(
+        &home,
+        &["--passphrase-file", pf_s, "id", "generate", "--out", out_s]
+    )
+    .status
+    .success());
+    let first = std::fs::read(&out).unwrap();
+    assert!(ssh_key::PrivateKey::read_openssh_file(&out)
+        .unwrap()
+        .is_encrypted());
+    // --force replaces it, encrypted again.
+    assert!(irsync(
+        &home,
+        &[
+            "id",
+            "generate",
+            "--out",
+            out_s,
+            "--force",
+            "--passphrase-file",
+            pf_s
+        ]
+    )
+    .status
+    .success());
+    assert_ne!(std::fs::read(&out).unwrap(), first);
+    assert!(ssh_key::PrivateKey::read_openssh_file(&out)
+        .unwrap()
+        .is_encrypted());
+}
+
+#[test]
+fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, _pf) = passphrase_home(&d, "x\n");
+    let key = home.join(".config/irsync/id_ed25519");
+    let pub_key = home.join(".config/irsync/id_ed25519.pub");
+    let empty = home.join("empty");
+    std::fs::write(&empty, "").unwrap();
+    let blank_first = home.join("blank");
+    std::fs::write(&blank_first, "\nhunter2\n").unwrap();
+    let missing = home.join("missing");
+    for (f, msg) in [
+        (&empty, "is empty"),
+        (&blank_first, "is empty"),
+        (&missing, "missing"),
+    ] {
+        let o = irsync(
+            &home,
+            &["id", "generate", "--passphrase-file", f.to_str().unwrap()],
+        );
+        assert_eq!(o.status.code(), Some(1), "{f:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains(msg), "{f:?}");
+        assert!(!key.exists() && !pub_key.exists(), "{f:?}");
+        assert!(o.stdout.is_empty());
+    }
+    // With --force the existing key survives a bad passphrase file.
+    assert!(irsync(&home, &["id", "generate"]).status.success());
+    let before = std::fs::read(&key).unwrap();
+    let o = irsync(
+        &home,
+        &[
+            "id",
+            "generate",
+            "--force",
+            "--passphrase-file",
+            empty.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(std::fs::read(&key).unwrap(), before);
+    assert!(pub_key.exists());
+}
+
+#[test]
+fn only_id_generate_with_the_file_encrypts() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let key = home.join(".config/irsync/id_ed25519");
+    // IRSYNC_PASSPHRASE alone never encrypts a new key (the helper removes
+    // the variable, so build this Command by hand).
+    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["id", "generate"])
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("xdg"))
+        .env("IRSYNC_PASSPHRASE", "hunter2")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!ssh_key::PrivateKey::read_openssh_file(&key)
+        .unwrap()
+        .is_encrypted());
+}
+
+#[test]
+fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
+    let d = tempfile::tempdir().unwrap();
+    // A fresh home with no key of any kind (no ~/.ssh/id_ed25519 either).
+    let (home, pf) = passphrase_home(&d, "hunter2\r\n");
+    let pf_s = pf.to_str().unwrap();
+    let key = home.join(".config/irsync/id_ed25519");
+    let pub_key = home.join(".config/irsync/id_ed25519.pub");
+    let daemon_key = home.join(".config/irsync/daemon_ed25519");
+    // Any valid endpoint id: the sync and the listing must fail on the key
+    // before they dial.
+    let other = d.path().join("other");
+    let id = irsync::identity::generate_openssh(&other, "x")
+        .unwrap()
+        .public()
+        .to_string();
+    let src = format!("{}/", home.join("src").display());
+    std::fs::create_dir_all(home.join("src")).unwrap();
+    let dest = format!("{id}:photos/");
+    let listing = format!("{id}:");
+    for args in [
+        &["id", "show", "--passphrase-file", pf_s][..],
+        &["--passphrase-file", pf_s, "id", "show"],
+        &["id", "list", "--passphrase-file", pf_s],
+        &["show", "--passphrase-file", pf_s],
+        &["daemon", "--passphrase-file", pf_s],
+        &["--passphrase-file", pf_s, "-a", &src, &dest],
+        &["--passphrase-file", pf_s, &listing],
+    ] {
+        let o = irsync(&home, args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        assert!(
+            err.contains("id generate --passphrase-file"),
+            "{args:?}: {err}"
+        );
+        assert!(!String::from_utf8_lossy(&o.stdout).contains("endpoint id:"));
+        assert!(
+            !key.exists() && !pub_key.exists() && !daemon_key.exists(),
+            "{args:?}"
+        );
+    }
+    // The full form makes the protected key, and then the same commands work.
+    assert!(
+        irsync(&home, &["id", "generate", "--passphrase-file", pf_s])
+            .status
+            .success()
+    );
+    assert!(irsync(&home, &["id", "show", "--passphrase-file", pf_s])
+        .status
+        .success());
+
+    // Without the flag a missing key is still generated, unencrypted
+    // (second fresh home).
+    let home2 = d.path().join("home2");
+    let key2 = home2.join(".config/irsync/id_ed25519");
+    let o = irsync(&home2, &["id", "show"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
+    assert!(!ssh_key::PrivateKey::read_openssh_file(&key2)
+        .unwrap()
+        .is_encrypted());
+}
