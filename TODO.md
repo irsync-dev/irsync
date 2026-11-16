@@ -327,14 +327,18 @@ is `docs/superpowers/specs/2026-11-16-freebsd-manual-build-design.md`.
 
 ## Tests
 
-- [ ] Three tests failed once on a slow FreeBSD VM with "connection lost"
-      (the tests took 800 s instead of about 560 s) and passed in the two
-      runs after it, on the same code:
-      `netsim::single_file_push_resumes_after_blackout`,
-      `netsim::a_dead_zone_forces_a_reconnect_and_the_session_resumes` and
+- [ ] Timing-sensitive tests fail on a slow FreeBSD VM. Of five full
+      runs, three took about 560 s of test time and passed; two took over
+      800 s and failed with "connection lost":
+      `netsim::a_dead_zone_forces_a_reconnect_and_the_session_resumes` in
+      both, and in one of them also
+      `netsim::single_file_push_resumes_after_blackout` and
       `backpressure::the_daemon_waits_for_a_slow_client_to_finish_reading`.
       The two netsim tests run on tokio's paused clock, so a slow machine
-      should not matter to them; why it did is not understood.
+      should not matter to them; why it does is not understood. A guess,
+      not checked: work on other threads takes real time while the paused
+      clock jumps ahead, and the reconnect budget runs out. Until this is
+      fixed, a red FreeBSD run with only these tests means "run it again".
 - [ ] `posix_extras::links_to_files_placed_before_a_drop_are_checked`
       failed once on Linux in a full local run (3 link checks instead of
       4, pull) and passed 60 times alone and in every other full run. It
