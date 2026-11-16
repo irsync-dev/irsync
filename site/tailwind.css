@@ -175,7 +175,7 @@
 
   code,
   pre {
-    @apply font-mono text-[0.875em];
+    @apply font-mono text-(length:--ir-text-code);
   }
 
   /* An inline flag or path is never split across lines. */

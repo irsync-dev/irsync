@@ -40,9 +40,13 @@ class BookThemeTest(unittest.TestCase):
 
     def test_book_scales_rem_sizes(self):
         # mdbook's root font size is 62.5%, so a rem from the tokens is
-        # scaled by --ir-book-rem wherever it is used.
+        # scaled by --ir-book-rem wherever it is used. Sizes in em are
+        # relative to the text around them and are used as they are.
         self.assertRegex(RULES, r"--ir-book-rem:\s*1\.6;")
-        for m in re.finditer(r"var\((--ir-text-[a-z]+)\)", RULES):
+        sizes = {f"--ir-text-{s['name']}": s["size"] for s in TOKENS["type"]["scale"]}
+        for m in re.finditer(r"var\((--ir-text-[a-z-]+)\)", RULES):
+            if m.group(1).endswith(("-line", "-tracking")) or "rem" not in sizes[m.group(1)]:
+                continue
             line = RULES[RULES.rfind("\n", 0, m.start()) + 1:RULES.find("\n", m.end())]
             self.assertRegex(line, r"calc\(var\(--ir-text-[a-z]+\) \* var\(--ir-book-rem\)\)", line)
 
@@ -67,6 +71,9 @@ class BookThemeTest(unittest.TestCase):
         # Inter and JetBrains Mono ship 600, not 700, so bold text uses 600
         # rather than a weight the browser would have to fake.
         self.assertRegex(RULES, r"strong,\s*b\s*\{[^}]*font-weight:\s*600")
+
+    def test_inline_code_takes_the_code_token(self):
+        self.assertRegex(RULES, r":not\(pre\) > code\s*\{[^}]*font-size:\s*var\(--ir-text-code\)")
 
     def test_warning_icon_is_readable(self):
         # mdbook colours the .warning icon with --warning-border, which is

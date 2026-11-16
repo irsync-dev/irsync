@@ -32,7 +32,8 @@ def _declarations(tokens, mode):
     for style in typ["scale"]:
         base = f"--ir-text-{style['name']}"
         plain.append((base, style["size"]))
-        plain.append((f"{base}-line", style["lineHeight"]))
+        if "lineHeight" in style:
+            plain.append((f"{base}-line", style["lineHeight"]))
         if "letterSpacing" in style:
             plain.append((f"{base}-tracking", style["letterSpacing"]))
     for tok in tokens["radius"]["tokens"]:

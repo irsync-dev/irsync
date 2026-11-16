@@ -134,7 +134,8 @@ html.ayu {
   --blockquote-warning-color: var(--ir-warn-ink);
   --blockquote-caution-color: var(--ir-danger-ink);
   --mono-font: var(--ir-font-mono);
-  /* As on the landing page: code at 0.875 of the surrounding text. */
+  /* Code blocks at 0.875 of the text size; inline code takes the
+     landing page's code size, below. */
   --code-font-size: 0.875em;
 }
 
@@ -241,6 +242,7 @@ pre > code.hljs {
 }
 
 :not(pre) > code {
+  font-size: var(--ir-text-code);
   background: var(--ir-raised);
   border: 1px solid var(--ir-rule);
   padding: 0 0.25em;

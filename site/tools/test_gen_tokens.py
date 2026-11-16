@@ -72,6 +72,8 @@ class SiteFormTest(unittest.TestCase):
         self.assertIn("--ir-font-body: Inter, ", root)
         self.assertIn('--ir-font-mono: "JetBrains Mono", ', root)
         self.assertNotIn("--ir-font-serif", root)
+        self.assertIn("--ir-text-code: 0.9em;", root)
+        self.assertNotIn("--ir-text-code-line", root)
         self.assertIn("--ir-text-body: 1.0625rem;", root)
         self.assertIn("--ir-text-body-line: 1.6;", root)
         self.assertIn("--ir-text-display: clamp(2rem, 4vw, 3rem);", root)

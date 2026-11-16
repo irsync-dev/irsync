@@ -61,7 +61,8 @@ single-mode yellow kept for the beta warning only.
   [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (`font-mono`) for
   commands. The stacks and the text sizes are in `site/tokens.json`. Text
   sizes are the named steps `text-display`, `text-heading`, `text-lede`,
-  `text-body`, `text-small` and `text-label`.
+  `text-body`, `text-small` and `text-label`; inline code is 0.9 of the
+  text around it (`code` in the scale, in `em`).
 - **The route.** The steps under Get started are stations on one aqua line
   (the `station` utility); keep it for content that really is a sequence.
 
