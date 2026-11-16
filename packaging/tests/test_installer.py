@@ -409,25 +409,53 @@ class InstallTests(Base):
         self.assertNotIn(".local/bin", r.stderr)
         self.assertEqual(self.under_home(home), set(FILES))
 
+    def path_hint(self, name, **kwargs):
+        home = os.path.join(self.tmp, name)
+        os.mkdir(home)
+        r = self.install(home=home, **kwargs)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stderr
+
     def test_path_hint_says_to_log_in_again_on_linux(self):
         # Most Linux systems add ~/.local/bin at login once it exists; macOS
         # does not.
-        for shell, add in [("/bin/bash", "put this line in ~/.bashrc:"),
-                           ("/usr/bin/fish", "run: fish_add_path ~/.local/bin")]:
-            with self.subTest(shell=shell):
-                home = os.path.join(self.tmp, "linux-" + os.path.basename(shell))
-                os.mkdir(home)
-                r = self.install(home=home, env={"SHELL": shell})
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn("Log out and in again first", r.stderr)
-                self.assertIn("If it is still missing then, " + add, r.stderr)
+        err = self.path_hint("linux", env={"SHELL": "/bin/zsh"})
+        self.assertIn("Log out and in again first", err)
+        self.assertIn("If it is still missing then, put this line in ~/.zshrc:", err)
+        err = self.path_hint("mac", uname=("Darwin", "arm64"), env={"SHELL": "/bin/zsh"})
+        self.assertNotIn("Log out", err)
+        self.assertIn("is not on your PATH. To add it, put this line in ~/.zshrc:", err)
 
-                home = os.path.join(self.tmp, "mac-" + os.path.basename(shell))
-                os.mkdir(home)
-                r = self.install(home=home, uname=("Darwin", "arm64"), env={"SHELL": shell})
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertNotIn("Log out", r.stderr)
-                self.assertIn("is not on your PATH. To add it, " + add, r.stderr)
+    def test_path_hint_names_the_shells_startup_file(self):
+        export = '\n  export PATH="$HOME/.local/bin:$PATH"\n'
+        for shell, uname, want in [
+            ("/bin/zsh", "Linux", "put this line in ~/.zshrc:" + export),
+            ("/usr/bin/bash", "Linux", "put this line in ~/.bashrc:" + export),
+            # A terminal on macOS starts a login shell.
+            ("/bin/bash", "Darwin", "put this line in ~/.bash_profile:" + export),
+            ("/bin/sh", "Linux", "put this line in ~/.profile:" + export),
+            ("/usr/bin/dash", "Linux", "put this line in ~/.profile:" + export),
+            ("/bin/ksh", "Linux", "put this line in ~/.profile:" + export),
+            ("/usr/bin/fish", "Linux", "run: fish_add_path ~/.local/bin\n"),
+            ("/bin/tcsh", "Darwin", "put this line in ~/.cshrc:\n  set path = (~/.local/bin $path)\n"),
+        ]:
+            with self.subTest(shell=shell, uname=uname):
+                arch = "arm64" if uname == "Darwin" else "x86_64"
+                err = self.path_hint(f"{uname}-{os.path.basename(shell)}",
+                                     uname=(uname, arch), env={"SHELL": shell})
+                self.assertIn(want, err)
+                if "fish" in shell or "csh" in shell:
+                    self.assertNotIn("export PATH", err)
+
+    def test_path_hint_for_an_unknown_shell(self):
+        err = self.path_hint("nu", env={"SHELL": "/usr/bin/nu"})
+        self.assertIn("add it in your shell's startup file", err)
+        self.assertIn("does not know your shell, nu)", err)
+        self.assertIn('In sh, bash or zsh the line is:\n  export PATH="$HOME/.local/bin:$PATH"\n', err)
+        # Empty, not unset: bash as sh sets a missing SHELL itself.
+        err = self.path_hint("empty", env={"SHELL": ""})
+        self.assertIn("SHELL is not set", err)
+        self.assertIn("In sh, bash or zsh the line is:", err)
 
     def test_no_modify_path_is_accepted(self):
         r = self.install(env={"IRSYNC_NO_MODIFY_PATH": "1"})
