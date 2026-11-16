@@ -75,6 +75,20 @@ class BookThemeTest(unittest.TestCase):
     def test_inline_code_takes_the_code_token(self):
         self.assertRegex(RULES, r":not\(pre\) > code\s*\{[^}]*font-size:\s*var\(--ir-text-code\)")
 
+    def test_highlight_classes_of_the_dark_theme_are_covered(self):
+        # tomorrow-night.css, mdbook's highlight sheet for Coal and Navy,
+        # colours these classes too; without an override they keep its
+        # hues (bash function names came out blue).
+        covered = set(re.findall(r"html \.(hljs-[\w-]+)", RULES))
+        dark_only = {
+            "hljs-cdata", "hljs-class", "hljs-constant", "hljs-decorator",
+            "hljs-doctype", "hljs-function", "hljs-header", "hljs-hexcolor",
+            "hljs-id", "hljs-inheritance", "hljs-pi", "hljs-pragma",
+            "hljs-preprocessor", "hljs-pseudo", "hljs-rule", "hljs-sub",
+            "hljs-value",
+        }
+        self.assertEqual(dark_only - covered, set())
+
     def test_warning_icon_is_readable(self):
         # mdbook colours the .warning icon with --warning-border, which is
         # the signal-yellow bar: too faint as an icon on the light ground.

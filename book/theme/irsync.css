@@ -328,7 +328,9 @@ input:focus-visible,
 
 /* Highlighting: ink for code, aqua for keywords, muted comments, yellow
    for literals, red for deletions; no further hues. These beat the
-   per-theme highlight.js sheets by specificity. */
+   per-theme highlight.js sheets by specificity. Every class one of those
+   sheets colours is listed here, including the older names only
+   tomorrow-night.css (Coal and Navy) still uses. */
 html .hljs-comment,
 html .hljs-quote {
   color: var(--ir-muted);
@@ -354,7 +356,14 @@ html .hljs-number,
 html .hljs-literal,
 html .hljs-meta,
 html .hljs-type,
-html .hljs-params {
+html .hljs-params,
+html .hljs-constant,
+html .hljs-hexcolor,
+html .hljs-preprocessor,
+html .hljs-pragma,
+html .hljs-pi,
+html .hljs-doctype,
+html .hljs-cdata {
   color: var(--ir-warn-ink);
 }
 
@@ -365,7 +374,17 @@ html .hljs-attr,
 html .hljs-link,
 html .hljs-title,
 html .hljs-selector-id,
-html .hljs-selector-class {
+html .hljs-selector-class,
+html .hljs-function,
+html .hljs-class,
+html .hljs-id,
+html .hljs-inheritance,
+html .hljs-header,
+html .hljs-sub,
+html .hljs-pseudo,
+html .hljs-rule,
+html .hljs-value,
+html .hljs-decorator {
   color: var(--ir-ink);
 }
 
