@@ -28,15 +28,38 @@ fn timeval(t: nix::sys::time::TimeVal) -> Duration {
     Duration::from_micros(u64::try_from(t.num_microseconds()).unwrap_or(0))
 }
 
+/// The number of descriptors this process has open, from the `sysinfo`
+/// crate, which knows how each OS reports it (a folder under `/proc` on
+/// Linux, a kernel call on macOS and FreeBSD).
 fn open_fds() -> Option<u64> {
-    let dir = if cfg!(target_os = "macos") {
-        "/dev/fd"
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    // One `System` for the life of the process, not one per sample: on
+    // macOS each new one takes a kernel handle that sysinfo never gives
+    // back. `None` if it could not be made.
+    static SYSTEM: OnceLock<Option<Mutex<System>>> = OnceLock::new();
+    let mut sys = SYSTEM
+        .get_or_init(|| System::new().ok().map(Mutex::new))
+        .as_ref()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let pid = sysinfo::get_current_pid().ok()?;
+    // Only finds the process: the count itself is read by `open_files`.
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing(),
+    );
+    let n = sys.process(pid)?.open_files()? as u64;
+    if cfg!(target_os = "linux") {
+        // Reading the folder itself holds one descriptor for a moment.
+        Some(n.saturating_sub(1))
     } else {
-        "/proc/self/fd"
-    };
-    let n = std::fs::read_dir(dir).ok()?.count() as u64;
-    // The directory read itself holds one descriptor.
-    Some(n.saturating_sub(1))
+        // On FreeBSD the count is a few too high: sysinfo also counts the
+        // current folder, the root folder, the program's own binary and the
+        // terminal, which the kernel lists next to the open descriptors.
+        Some(n)
+    }
 }
 
 /// Reads the current process usage.
@@ -65,6 +88,61 @@ mod tests {
         } else {
             assert_eq!(rss_bytes(2048), 2048 * 1024);
         }
+    }
+
+    /// Counts the open descriptors the slow, sure way: asks about each
+    /// number in turn.
+    fn direct_fd_count() -> u64 {
+        use nix::libc::{c_int, c_long, fcntl, sysconf, _SC_OPEN_MAX, F_GETFD};
+        // Descriptor numbers stay below the process's open-file limit,
+        // which sysconf reports. It can be "none" or in the millions; this
+        // test process has only a few descriptors, so stop at 65536 to
+        // keep the walk short.
+        const CAP: c_long = 1 << 16;
+        // SAFETY: sysconf only reads a limit.
+        let limit = match unsafe { sysconf(_SC_OPEN_MAX) } {
+            n if n > 0 => n.min(CAP),
+            _ => CAP,
+        };
+        (0..limit as c_int)
+            // SAFETY: F_GETFD only reads the flags of `fd`, or fails with
+            // EBADF when no such descriptor is open.
+            .filter(|&fd| unsafe { fcntl(fd, F_GETFD) } != -1)
+            .count() as u64
+    }
+
+    #[test]
+    fn open_fds_matches_a_direct_count() {
+        // Other tests in this process open and close descriptors too, even
+        // in the middle of a sample. So take many samples, keep those where
+        // the direct count was the same before and after, and ask that
+        // most of them agree: a count that is off by one never would
+        // (except on FreeBSD, where the count is only roughly right).
+        let agrees = |got: Option<u64>, direct: u64| match got {
+            // Not exact on FreeBSD (see `open_fds`): three too high in a
+            // test run, more with a terminal or in a jail.
+            Some(n) if cfg!(target_os = "freebsd") => (direct..=direct + 5).contains(&n),
+            got => got == Some(direct),
+        };
+        let (mut same, mut differ) = (0, 0);
+        let mut last = None;
+        for _ in 0..25 {
+            let before = direct_fd_count();
+            let got = sample().open_fds;
+            if direct_fd_count() != before {
+                continue;
+            }
+            if agrees(got, before) {
+                same += 1;
+            } else {
+                differ += 1;
+                last = Some((got, before));
+            }
+        }
+        assert!(
+            same > differ,
+            "agreed {same} times, differed {differ}; last (open_fds, direct count): {last:?}"
+        );
     }
 
     #[test]

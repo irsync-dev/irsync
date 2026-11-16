@@ -48,6 +48,10 @@ pandoc and mandoc.
 `workflows` (after a change under `.github/`) and `release-build` (after a
 change to the release build or packaging; Linux only).
 
+`tools/ci.sh freebsd-build` builds the FreeBSD tarball, on FreeBSD x86_64
+only. CI does not run it; the hand-started FreeBSD workflow does (see
+`book/src/contributing/releasing.md`).
+
 A new test of irsync through the fault layer should run in-process on
 tokio's paused clock (`with_netsim` in `crates/irsync/tests/common`, as
 in `tests/netsim.rs`), which takes seconds, rather than be ignored. Mark

@@ -27,6 +27,9 @@ rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
 it again whenever you like.
 
+It works on Linux, macOS and FreeBSD, and names the package for each one's
+package manager (`apt`, `brew`, `pkg`).
+
 - **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
   picks up; CI and releases use the same file. To move to a newer Rust, change
   the version there and run the full regression.
@@ -86,6 +89,11 @@ working `irsync` and pages that `man` finds. A change that
 would break a release fails here, before anyone tags it. On your machine it
 builds the one musl target that matches it, on Linux only, and needs dist
 and `musl-gcc`.
+
+The `freebsd-build` job builds the FreeBSD tarball with the same build
+script. It runs on FreeBSD x86_64 only, and CI does not run it. GitHub runs
+it in a workflow you start by hand: see
+[Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
 
 The `deny` job checks the dependencies with `cargo deny`, and the
 `workflows` job runs the workflow rule tests and actionlint, which needs

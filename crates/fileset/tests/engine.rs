@@ -28,10 +28,10 @@ macro_rules! for_both_backends {
     };
 }
 
-/// macOS also refuses to read the xattrs of an unreadable file or directory, which adds a
-/// warning Linux doesn't give. Drops those lines and takes them off the `warnings=` count.
+/// macOS and FreeBSD also refuse to read the xattrs of an unreadable file or directory, which
+/// adds a warning Linux doesn't give. Drops those lines and takes them off the `warnings=` count.
 fn without_macos_xattr_warnings(err: &str) -> String {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "freebsd")) {
         return err.to_string();
     }
     let mut dropped = 0;
@@ -900,12 +900,12 @@ fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
 }
 
 /// Recursion depth equals tree depth; the walk thread's stack must hold it. 2000 levels of
-/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096). macOS caps
-/// paths at 1024, so there the tree goes as deep as that allows.
+/// one-letter names is as deep as an absolute path stays under PATH_MAX (4096). macOS and
+/// FreeBSD cap paths at 1024, so there the tree goes as deep as that allows.
 #[test]
 fn deep_tree_does_not_overflow_the_stack() {
     let dir = tempfile::tempdir().unwrap();
-    let depth = if cfg!(target_os = "macos") {
+    let depth = if cfg!(any(target_os = "macos", target_os = "freebsd")) {
         // Room for the base path, "/f" and the manifest name next to the deepest dir.
         (1024 - dir.path().as_os_str().len() - 32) / 2
     } else {

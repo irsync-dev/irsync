@@ -21,11 +21,11 @@ use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry, PlanItem};
 const MIB: usize = 1024 * 1024;
 
 /// How many times shorter the long paths and symlink targets below are
-/// than the 3.6 KB the tests were sized for. macOS refuses any path over
-/// 1 KB, so there they are a fifth as long.
-#[cfg(target_os = "macos")]
+/// than the 3.6 KB the tests were sized for. macOS and FreeBSD refuse any
+/// path over 1 KB, so there they are a fifth as long.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 const SHORTER: u32 = 5;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 const SHORTER: u32 = 1;
 
 /// A harness whose streams buffer 8 MiB / [`SHORTER`]: with paths that

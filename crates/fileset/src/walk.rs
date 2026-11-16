@@ -820,8 +820,8 @@ mod tests {
         }
         let (e, mut w, skipped) = run_all(&cfg(&r, None));
         mode(0o755).unwrap();
-        // macOS also refuses to read the xattrs of an unreadable directory.
-        if cfg!(target_os = "macos") {
+        // macOS and FreeBSD also refuse to read the xattrs of an unreadable directory.
+        if cfg!(any(target_os = "macos", target_os = "freebsd")) {
             w.retain(|m| !m.starts_with("cannot read xattrs of d: "));
         }
         assert_eq!(paths(&e), strs(&[".", "d", "e"]));
@@ -881,7 +881,7 @@ mod tests {
         }
         let (e, mut w, skipped) = run_all(&cfg(&r, None));
         mode(0o755).unwrap();
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "freebsd")) {
             w.retain(|m| !m.starts_with("cannot read xattrs of "));
         }
         assert_eq!(paths(&e), strs(&[".", "d"]));

@@ -351,6 +351,101 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("refs/heads/", text)
 
 
+class FreeBsdTests(unittest.TestCase):
+    """freebsd.yml: the FreeBSD test run and build, started by hand."""
+
+    def wf(self):
+        return load_workflows()["freebsd.yml"]
+
+    def steps(self):
+        return jobs(self.wf())["freebsd"]["steps"]
+
+    def step_using(self, action):
+        (s,) = [s for s in self.steps() if s.get("uses", "").startswith(action + "@")]
+        return s
+
+    def test_starts_only_by_hand(self):
+        on = triggers(self.wf())
+        self.assertEqual(set(on), {"workflow_dispatch"})
+        self.assertEqual(set(on["workflow_dispatch"]["inputs"]), {"ref", "freebsd"})
+        self.assertEqual(on["workflow_dispatch"]["inputs"]["freebsd"]["default"], "14")
+
+    def test_no_workflow_calls_it(self):
+        # It must never become part of `CI result` or of a release.
+        for name in workflow_files():
+            if name != "freebsd.yml":
+                self.assertNotIn("freebsd.yml", read(name), name)
+
+    def test_read_only_and_time_limited(self):
+        self.assertEqual(self.wf()["permissions"], {"contents": "read"})
+        job = jobs(self.wf())["freebsd"]
+        self.assertNotIn("permissions", job)
+        self.assertEqual(job["timeout-minutes"], 120)
+
+    def test_ref_defaults_to_the_started_branch(self):
+        with_ = self.step_using("actions/checkout")["with"]
+        self.assertEqual(with_["ref"], "${{ inputs.ref || github.ref }}")
+        self.assertIs(with_["persist-credentials"], False)
+
+    def test_old_versions_stop_with_a_message(self):
+        # A version from before this workflow has no script to run.
+        steps = self.steps()
+        vm = steps.index(self.step_using("vmactions/freebsd-vm"))
+        guards = [i for i, s in enumerate(steps)
+                  if "This version has no FreeBSD build" in s.get("run", "")]
+        self.assertEqual(len(guards), 1)
+        self.assertLess(guards[0], vm)
+
+    def test_vm_runs_the_script(self):
+        with_ = self.step_using("vmactions/freebsd-vm")["with"]
+        self.assertEqual(with_["run"].strip(), ".github/scripts/freebsd-vm.sh")
+        self.assertEqual(with_["release"], "${{ inputs.freebsd }}")
+        self.assertEqual(with_["arch"], "x86_64")
+
+    def test_upload_only_after_success(self):
+        up = self.step_using("actions/upload-artifact")
+        self.assertNotIn("if", up)
+        self.assertEqual(self.steps()[-1], up)
+        self.assertEqual(up["with"]["if-no-files-found"], "error")
+        self.assertEqual(up["with"]["path"].rstrip("/"), "freebsd-out")
+
+    def test_inputs_never_expand_in_scripts(self):
+        # An input pasted into a script could run as shell.
+        for s in self.steps():
+            self.assertNotIn("${{", s.get("run", ""))
+
+    def test_script_runs_the_ci_jobs_with_cis_nextest(self):
+        with open(os.path.join(ROOT, ".github", "scripts", "freebsd-vm.sh")) as f:
+            script = f.read()
+        self.assertRegex(script, r"(?m)^\s*tools/ci\.sh check freebsd-build$")
+        ci = re.search(r"cargo-nextest@([\d.]+)", read("ci.yml")).group(1)
+        self.assertRegex(script, rf"(?m)^NEXTEST_VERSION={re.escape(ci)}$")
+
+    def test_checks_run_strict_in_the_vm(self):
+        # `su -l` drops the environment. Without CI set, tests that must not
+        # skip on CI (no usable rsync, say) would skip and the run go green.
+        with open(os.path.join(ROOT, ".github", "scripts", "freebsd-vm.sh")) as f:
+            script = f.read()
+        self.assertRegex(
+            script,
+            r"su -l .*env CI=true RUST_BACKTRACE=1 CARGO_TERM_COLOR=always "
+            r"\.github/scripts/freebsd-vm\.sh")
+
+    def test_script_does_not_lean_on_rustup_extras(self):
+        with open(os.path.join(ROOT, ".github", "scripts", "freebsd-vm.sh")) as f:
+            script = f.read()
+        # rustup may not write ~/.cargo/env when told to leave PATH alone.
+        self.assertNotIn(".cargo/env", script)
+        self.assertRegex(script, r'(?m)^PATH="\$HOME/\.cargo/bin:\$PATH"$')
+        # `rustup toolchain install` with no name needs rustup 1.28, so the
+        # script names the version from rust-toolchain.toml itself.
+        self.assertNotRegex(script, r"(?m)^rustup toolchain install$")
+        self.assertRegex(
+            script,
+            r'(?m)^rustup toolchain install "\$channel" --profile minimal '
+            r"--component rustfmt --component clippy$")
+
+
 class GateTests(unittest.TestCase):
     def gate(self):
         return load_workflows()["release-gate.yml"]

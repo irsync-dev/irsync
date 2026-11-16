@@ -167,11 +167,16 @@ class BuildManTests(unittest.TestCase):
             self.assertRegex(fileset, r"fileset " + command + r"\b")
         self.assertIn("~/.config/irsync/irsync.toml", section(render(self.toml), "SYNOPSIS"))
         # The normal synopsis layout: at the section's indent, not indented
-        # further as a code example is.
+        # further as a code example is. That indent is 7 columns in most
+        # mandoc versions and 5 in FreeBSD's, so take it from the NAME line.
         for page in self.pages:
-            for line in section(render(page), "SYNOPSIS").splitlines():
+            text = render(page)
+            name = next(l for l in section(text, "NAME").splitlines() if l.strip())
+            indent = len(name) - len(name.lstrip())
+            self.assertIn(indent, (5, 7), page)
+            for line in section(text, "SYNOPSIS").splitlines():
                 if line.strip():
-                    self.assertRegex(line, r"^ {7}\S", page)
+                    self.assertRegex(line, rf"^ {{{indent}}}\S", page)
 
     def test_description_introduces_the_terms(self):
         text = section(render(self.irsync), "DESCRIPTION")

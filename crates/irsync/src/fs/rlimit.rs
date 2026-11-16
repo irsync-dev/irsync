@@ -4,7 +4,7 @@
 
 use std::io;
 
-use nix::sys::resource::{getrlimit, setrlimit, Resource};
+use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
 
 /// `OPEN_MAX` from macOS's `<sys/syslimits.h>`: the soft `RLIMIT_NOFILE`
 /// its `setrlimit(2)` man page says to stay within (`min(OPEN_MAX,
@@ -13,14 +13,22 @@ use nix::sys::resource::{getrlimit, setrlimit, Resource};
 /// in-flight window, so a higher soft limit (which a shell may already
 /// have set) is left as it is rather than lowered.
 #[cfg(target_os = "macos")]
-const OPEN_MAX: u64 = 10240;
+const OPEN_MAX: rlim_t = 10240;
 
 /// The soft limit a raise aims for: the hard limit, or on macOS at most
 /// [`OPEN_MAX`].
-fn nofile_target(hard: u64) -> u64 {
+fn nofile_target(hard: rlim_t) -> rlim_t {
     #[cfg(target_os = "macos")]
     let hard = hard.min(OPEN_MAX);
     hard
+}
+
+/// A limit as a `u64`. `rlim_t` is `u64` on Linux and macOS but `i64` on
+/// FreeBSD, where a limit is never negative ("no limit" is `i64::MAX`).
+// On Linux and macOS this converts a type to itself.
+#[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
+fn as_u64(limit: rlim_t) -> u64 {
+    u64::try_from(limit).unwrap_or(u64::MAX)
 }
 
 /// Raises the soft open-file limit to [`nofile_target`] and returns the
@@ -30,20 +38,20 @@ pub fn raise_nofile() -> io::Result<u64> {
     let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE)?;
     let target = nofile_target(hard);
     if target <= soft {
-        return Ok(soft);
+        return Ok(as_u64(soft));
     }
     match setrlimit(Resource::RLIMIT_NOFILE, target, hard) {
-        Ok(()) => Ok(target),
+        Ok(()) => Ok(as_u64(target)),
         Err(e) => {
             tracing::debug!(soft, hard, error = %e, "open-file limit not raised");
-            Ok(soft)
+            Ok(as_u64(soft))
         }
     }
 }
 
 /// The current soft open-file limit.
 pub fn nofile_soft() -> u64 {
-    getrlimit(Resource::RLIMIT_NOFILE).map_or(u64::MAX, |(soft, _)| soft)
+    getrlimit(Resource::RLIMIT_NOFILE).map_or(u64::MAX, |(soft, _)| as_u64(soft))
 }
 
 #[cfg(test)]
@@ -60,12 +68,12 @@ mod tests {
         // may already sit above `OPEN_MAX`, where there is nothing to raise.
         let lowered = target - 1;
         setrlimit(Resource::RLIMIT_NOFILE, lowered, hard).unwrap();
-        assert_eq!(nofile_soft(), lowered);
+        assert_eq!(nofile_soft(), as_u64(lowered));
         let raised = raise_nofile().unwrap();
-        assert_eq!(raised, target);
-        assert_eq!(nofile_soft(), target);
+        assert_eq!(raised, as_u64(target));
+        assert_eq!(nofile_soft(), as_u64(target));
         // A soft limit already at or above the target is left alone.
-        assert_eq!(raise_nofile().unwrap(), target);
+        assert_eq!(raise_nofile().unwrap(), as_u64(target));
         setrlimit(Resource::RLIMIT_NOFILE, soft, hard).unwrap();
     }
 }

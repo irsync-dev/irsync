@@ -13,9 +13,11 @@
 #   workflows      the workflow rule tests and actionlint
 #   release-build  the release build for this machine's Linux musl target,
 #                  dist's global build, and our installer run on the result
+#   freebsd-build  the FreeBSD tarball; FreeBSD x86_64 only
 #
 # With no job it runs all of them, the quick ones first. release-build runs
-# on Linux only; a run of everything leaves it out elsewhere.
+# on Linux only and freebsd-build on FreeBSD only; a run of everything
+# leaves each out elsewhere.
 #
 # tools/dev-setup.sh installs or names the tools this needs. Two things only
 # GitHub does: the macOS and arm64 runs, and the dependency review of a pull
@@ -39,13 +41,16 @@ jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | workflows | release-build) jobs="$jobs $arg" ;;
-        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs)" >&2; exit 2 ;;
+        check | deny | workflows | release-build | freebsd-build) jobs="$jobs $arg" ;;
+        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
     jobs=$all_jobs
-    if [ "$os" != Linux ]; then
+    if [ "$os" = FreeBSD ]; then
+        jobs="workflows deny check freebsd-build"
+        echo "ci.sh: leaving out release-build, which runs on Linux only"
+    elif [ "$os" != Linux ]; then
         jobs="workflows deny check"
         echo "ci.sh: leaving out release-build, which runs on Linux only"
     fi
@@ -93,6 +98,15 @@ needs_release_build() {
     need man command -v man
     need mandoc mandoc -T ascii /dev/null
     need groff groff --version
+}
+needs_freebsd_build() {
+    # FreeBSD calls x86_64 amd64.
+    if [ "$os" != FreeBSD ] || [ "$(uname -m)" != amd64 ]; then
+        echo "ci.sh: freebsd-build runs on FreeBSD x86_64 only" >&2
+        missing=1
+        return
+    fi
+    need pandoc pandoc --version
 }
 
 job_check() {
@@ -242,6 +256,24 @@ job_release_build() {
         esac
     done
     rm -rf "$tmp"
+}
+
+# The FreeBSD tarball. dist cannot build on FreeBSD yet, so this runs the
+# release build script itself and packs its two binaries the way dist would.
+# GitHub runs it in the hand-started FreeBSD workflow (freebsd.yml).
+job_freebsd_build() {
+    local target=x86_64-unknown-freebsd contents file
+    run env CARGO_DIST_TARGET=x86_64-unknown-freebsd packaging/dist/build.sh
+    run packaging/tarball.sh x86_64-unknown-freebsd packaging/dist target/distrib
+    printf '\n== the tarball holds both binaries and the man pages\n'
+    contents=$(tar -tJf "target/distrib/irsync-$target.tar.xz")
+    printf '%s\n' "$contents"
+    for file in irsync fileset man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+        if ! printf '%s\n' "$contents" | grep -x "irsync-$target/$file" >/dev/null; then
+            echo "ci.sh: irsync-$target/$file is not in the tarball" >&2
+            exit 1
+        fi
+    done
 }
 
 # Find every missing tool before the first job starts, not minutes in.

@@ -30,6 +30,10 @@ GOOD = {
 esac""",
 }
 
+# Fake `uname`s, so a test of one OS's branch runs on every OS.
+LINUX = 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac'
+FREEBSD = 'case "$1" in -m) echo amd64 ;; *) echo FreeBSD ;; esac'
+
 
 class DevSetupCheckTests(unittest.TestCase):
     def setUp(self):
@@ -76,7 +80,7 @@ class DevSetupCheckTests(unittest.TestCase):
         r, out = self.check(tar="exit 2")
         self.assertNotEqual(r.returncode, 0)
         self.assertRegex(out, r"missing +xz, so tar can write and read \.tar\.xz.*\(required\)")
-        self.assertRegex(out, r"xz-utils|brew install xz")
+        self.assertRegex(out, r"xz-utils|brew install xz|pkg install xz")
 
     def test_missing_tar_and_curl_are_required(self):
         os.remove(os.path.join(self.bin, "curl"))
@@ -103,8 +107,10 @@ class DevSetupCheckTests(unittest.TestCase):
     def test_man_page_tools_are_optional_and_named(self):
         r, out = self.check()
         self.assertEqual(r.returncode, 0, out)
-        for tool, install in [("pandoc", "brew install pandoc|apt install pandoc"),
-                              ("mandoc", "brew install mandoc|apt install mandoc")]:
+        for tool, install in [
+            ("pandoc", "brew install pandoc|apt install pandoc|pkg install hs-pandoc"),
+            ("mandoc", "brew install mandoc|apt install mandoc|pkg install mandoc"),
+        ]:
             self.assertRegex(out, rf"missing +{tool}, for the man pages.*\(optional\)")
             self.assertRegex(out, install)
         r, out = self.check(pandoc="echo pandoc 3.1.3", mandoc="echo mandoc")
@@ -120,7 +126,7 @@ class DevSetupCheckTests(unittest.TestCase):
         r, out = self.check(cc=None)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("C compiler", out)
-        self.assertRegex(out, r"build-essential|xcode-select")
+        self.assertRegex(out, r"build-essential|xcode-select|pkg install llvm")
 
     def test_missing_rustup_is_reported_not_installed(self):
         r, out = self.check(rustup=None)
@@ -179,7 +185,7 @@ class DevSetupCheckTests(unittest.TestCase):
         for name, body in {**GOOD, **tools}.items():
             self.fake(name, body)
         self.fake("cargo", f'echo "$*" >> {log}\n' + tools.get("cargo", "") + "\nexit 0")
-        for u in ["sha256sum", "shasum", "mkdir"]:
+        for u in ["sha256sum", "shasum", "sha256", "mkdir"]:
             if shutil.which(u):
                 os.symlink(shutil.which(u), os.path.join(self.bin, u))
         r = subprocess.run([SCRIPT], env={"PATH": self.bin, "HOME": self.tmp},
@@ -198,18 +204,42 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(calls, r"install --locked cargo-nextest --version")
         self.assertNotIn("mdbook", calls)
 
-    def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
-        out, calls = self.setup(curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+    def refuses_a_tampered_actionlint(self, uname, plat):
+        out, calls = self.setup(
+            uname=uname,
+            curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+        self.assertRegex(out, rf"running +download actionlint \S+ \({plat}\)")
         self.assertRegex(out, r"refused +actionlint download: SHA-256 is")
         self.assertRegex(out, r"missing +actionlint")
         self.assertFalse(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", "actionlint")))
+
+    def test_setup_refuses_an_actionlint_download_with_the_wrong_hash(self):
+        self.refuses_a_tampered_actionlint(LINUX, "linux_amd64")
+
+    def test_setup_refuses_a_tampered_actionlint_on_freebsd(self):
+        self.refuses_a_tampered_actionlint(FREEBSD, "freebsd_amd64")
+
+    def test_freebsd_names_pkg_packages(self):
+        r, out = self.check(
+            uname=FREEBSD, rsync=None, cc=None,
+            python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("pkg install rsync", out)
+        self.assertIn("pkg install llvm", out)
+        self.assertIn("pkg install node npm", out)
+        self.assertIn("pkg install py312-pyyaml", out)
+        self.assertNotIn("apt install", out)
+        self.assertNotIn("brew install", out)
+        # Linux-only tools are not asked for.
+        self.assertNotIn("musl", out)
+        self.assertNotIn("nfpm", out)
 
     def test_install_commands_get_their_own_line(self):
         r, out = self.check(cc=None)
         lines = out.splitlines()
         i = next(n for n, l in enumerate(lines) if "C compiler" in l)
         self.assertRegex(lines[i], r"^  missing  C compiler \(cc\) \(required\)$")
-        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install)$")
+        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install|pkg install llvm)$")
         self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"
                               r" {15}cargo install --locked cargo-deny --version \S+\n")
         # No version for mdbook: any will do.

@@ -57,7 +57,12 @@ fn parse_uname_maps() {
         (Some("macos"), Some("aarch64"))
     );
     assert_eq!(parse_uname("Linux amd64"), (Some("linux"), Some("x86_64")));
-    assert_eq!(parse_uname("FreeBSD x86_64"), (None, Some("x86_64")));
+    // FreeBSD calls x86_64 amd64.
+    assert_eq!(
+        parse_uname("FreeBSD amd64"),
+        (Some("freebsd"), Some("x86_64"))
+    );
+    assert_eq!(parse_uname("SunOS x86_64"), (None, Some("x86_64")));
 }
 
 #[test]
