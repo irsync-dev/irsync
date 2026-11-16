@@ -401,6 +401,20 @@ class FreeBsdTests(unittest.TestCase):
             r"su -l .*env CI=true RUST_BACKTRACE=1 CARGO_TERM_COLOR=always "
             r"\.github/scripts/freebsd-vm\.sh")
 
+    def test_script_does_not_lean_on_rustup_extras(self):
+        with open(os.path.join(ROOT, ".github", "scripts", "freebsd-vm.sh")) as f:
+            script = f.read()
+        # rustup may not write ~/.cargo/env when told to leave PATH alone.
+        self.assertNotIn(".cargo/env", script)
+        self.assertRegex(script, r'(?m)^PATH="\$HOME/\.cargo/bin:\$PATH"$')
+        # `rustup toolchain install` with no name needs rustup 1.28, so the
+        # script names the version from rust-toolchain.toml itself.
+        self.assertNotRegex(script, r"(?m)^rustup toolchain install$")
+        self.assertRegex(
+            script,
+            r'(?m)^rustup toolchain install "\$channel" --profile minimal '
+            r"--component rustfmt --component clippy$")
+
 
 class GateTests(unittest.TestCase):
     def gate(self):

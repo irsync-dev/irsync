@@ -59,8 +59,16 @@ uname -a
 # rustup, then the Rust version in rust-toolchain.toml: the one every other
 # platform is tested with.
 rustup-init -y --default-toolchain none --no-modify-path
-. "$HOME/.cargo/env"
-rustup toolchain install
+PATH="$HOME/.cargo/bin:$PATH"
+export PATH
+# Named here, with the components from rust-toolchain.toml: a bare
+# `rustup toolchain install` reads that file only from rustup 1.28 on.
+channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+if [ -z "$channel" ]; then
+    echo "freebsd-vm.sh: no channel found in rust-toolchain.toml" >&2
+    exit 1
+fi
+rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
 rustc --version
 
 # No ready-made binary is fetched here; this builds it, which takes a few
