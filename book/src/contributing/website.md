@@ -14,7 +14,7 @@ landing page at `/` and this book at `/book/`.
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
-| `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`, and `picker.js`, which trims the theme picker). |
+| `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`; `picker.js`, which trims the theme picker; `home-link.js`, which links the title to the landing page). |
 
 ## The design tokens
 
@@ -116,6 +116,12 @@ The theme picker offers Auto (follow the system setting, the default),
 Light and Dark; `book/theme/picker.js` removes Rust, Coal and Ayu and
 shows Navy as Dark. A reader who chose one of the removed themes earlier
 still gets the light or dark look.
+
+The book's title in the menu bar ("irsync") links to the landing page at
+`/`, as the landing page's own "irsync" links home; mdbook has no setting
+for this, so `book/theme/home-link.js` adds the link. A click on the bar
+around the title still scrolls to the top. A bare `mdbook serve` has no
+landing page, so the link leads nowhere there.
 
 ## The checker
 

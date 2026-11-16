@@ -319,6 +319,21 @@ input:focus-visible,
   text-decoration-thickness: 2px;
 }
 
+/* The title in the menu bar links to the landing page (theme/home-link.js)
+   and looks like the landing page's "irsync": Barlow semibold in ink. */
+.menu-title a,
+.menu-title a:visited {
+  color: var(--ir-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.menu-title a:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
 /* Headings are links to themselves; they keep the text colour. */
 .content a.header:link,
 .content a.header:visited {

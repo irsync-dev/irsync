@@ -107,6 +107,21 @@ class BookThemeTest(unittest.TestCase):
         self.assertIsNotNone(hover)
         self.assertIn("background-color: var(--ir-aqua-ink)", hover.group(1))
 
+    def test_home_link_script_is_loaded(self):
+        toml = _read("book", "book.toml")
+        self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/home-link\.js"')
+        js = _read("book", "theme", "home-link.js")
+        self.assertIn("menu-title", js)
+        self.assertIn('"/"', js)
+
+    def test_home_link_looks_like_the_site_wordmark(self):
+        # The landing page's "irsync": Barlow semibold in ink, no underline.
+        rule = re.search(r"\.menu-title a(?:,\s*\.menu-title a:visited)?\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(rule)
+        self.assertIn("color: var(--ir-ink)", rule.group(1))
+        self.assertIn("text-decoration: none", rule.group(1))
+        self.assertRegex(RULES, r"\.menu-title a:hover\s*\{[^}]*text-decoration: underline")
+
     def test_picker_script_is_loaded(self):
         toml = _read("book", "book.toml")
         self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/picker\.js"')
