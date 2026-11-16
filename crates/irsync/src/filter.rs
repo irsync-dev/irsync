@@ -2,6 +2,7 @@
 
 use crate::cli::FilterRule;
 use crate::fs::paths::RelPath;
+use irsync_glob::Glob;
 use std::io;
 
 /// Outcome of filtering a path.
@@ -9,21 +10,6 @@ use std::io;
 pub enum Verdict {
     Include,
     Exclude,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Tok {
-    Lit(u8),
-    /// `?`: one byte except `/`.
-    One,
-    /// `*`: any run of bytes without `/`.
-    Star,
-    /// `**`: any run of bytes.
-    StarStar,
-    Class {
-        neg: bool,
-        items: Vec<(u8, u8)>,
-    },
 }
 
 /// A compiled rsync pattern.
@@ -37,7 +23,8 @@ pub struct Pattern {
     /// Matched against the full path (a `/` or `**` in it), not the last
     /// component.
     full_path: bool,
-    toks: Vec<Tok>,
+    /// The wildcards, matched by the matcher `fileset list` uses too.
+    glob: Glob,
 }
 
 impl Pattern {
@@ -52,16 +39,16 @@ impl Pattern {
         if dir_only {
             b = &b[..b.len() - 1];
         }
-        let toks = compile(b);
+        let glob = Glob::new(b);
         // rsync: a pattern with a `/` (not counting a trailing one) or a
         // `**` is matched against the full path, not the last component.
-        let full_path = b.contains(&b'/') || toks.contains(&Tok::StarStar);
+        let full_path = b.contains(&b'/') || glob.crosses_separators();
         Pattern {
             text,
             anchored,
             dir_only,
             full_path,
-            toks,
+            glob,
         }
     }
 
@@ -70,16 +57,16 @@ impl Pattern {
             return false;
         }
         if self.anchored {
-            return glob(&self.toks, path);
+            return self.glob.matches(path);
         }
         if !self.full_path {
             let last = path.rsplit(|&c| c == b'/').next().unwrap_or(path);
-            return glob(&self.toks, last);
+            return self.glob.matches(last);
         }
         // Unanchored, on the full path: match any trailing run of whole components.
         let mut start = 0;
         loop {
-            if glob(&self.toks, &path[start..]) {
+            if self.glob.matches(&path[start..]) {
                 return true;
             }
             match path[start..].iter().position(|&c| c == b'/') {
@@ -88,130 +75,6 @@ impl Pattern {
             }
         }
     }
-}
-
-fn compile(b: &[u8]) -> Vec<Tok> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'\\' if i + 1 < b.len() => {
-                out.push(Tok::Lit(b[i + 1]));
-                i += 2;
-            }
-            b'?' => {
-                out.push(Tok::One);
-                i += 1;
-            }
-            b'*' => {
-                if b.get(i + 1) == Some(&b'*') {
-                    out.push(Tok::StarStar);
-                    while b.get(i) == Some(&b'*') {
-                        i += 1;
-                    }
-                } else {
-                    out.push(Tok::Star);
-                    i += 1;
-                }
-            }
-            b'[' => match class(&b[i + 1..]) {
-                Some((tok, used)) => {
-                    out.push(tok);
-                    i += 1 + used;
-                }
-                None => {
-                    out.push(Tok::Lit(b'['));
-                    i += 1;
-                }
-            },
-            c => {
-                out.push(Tok::Lit(c));
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
-/// Parse a class body (after `[`); returns the token and bytes consumed through `]`.
-fn class(b: &[u8]) -> Option<(Tok, usize)> {
-    let mut i = 0;
-    let neg = matches!(b.first(), Some(b'!') | Some(b'^'));
-    if neg {
-        i = 1;
-    }
-    let mut items = Vec::new();
-    let mut first = true;
-    loop {
-        let c = *b.get(i)?;
-        if c == b']' && !first {
-            return Some((Tok::Class { neg, items }, i + 1));
-        }
-        first = false;
-        let lo = if c == b'\\' {
-            i += 1;
-            *b.get(i)?
-        } else {
-            c
-        };
-        i += 1;
-        if b.get(i) == Some(&b'-') && b.get(i + 1).is_some_and(|&n| n != b']') {
-            let mut hi = b[i + 1];
-            i += 2;
-            if hi == b'\\' {
-                hi = *b.get(i)?;
-                i += 1;
-            }
-            items.push((lo, hi));
-        } else {
-            items.push((lo, lo));
-        }
-    }
-}
-
-/// Whether the whole of `s` matches `toks`.
-fn glob(toks: &[Tok], s: &[u8]) -> bool {
-    // One cell per (token, position in `s`) known not to match from there
-    // on, so each pair is tried once: the work is bounded by pattern length
-    // times path length, however many stars there are.
-    let mut failed = vec![false; (toks.len() + 1) * (s.len() + 1)];
-    glob_from(toks, 0, s, 0, &mut failed)
-}
-
-/// Whether `toks[t..]` matches `s[i..]`. `failed` remembers the (t, i) pairs
-/// already found not to match; a pair that matches ends the search at once.
-fn glob_from(toks: &[Tok], t: usize, s: &[u8], i: usize, failed: &mut [bool]) -> bool {
-    let cell = t * (s.len() + 1) + i;
-    if failed[cell] {
-        return false;
-    }
-    let hit = match toks.get(t) {
-        None => i == s.len(),
-        Some(Tok::Lit(c)) => s.get(i) == Some(c) && glob_from(toks, t + 1, s, i + 1, failed),
-        Some(Tok::One) => {
-            matches!(s.get(i), Some(&c) if c != b'/') && glob_from(toks, t + 1, s, i + 1, failed)
-        }
-        Some(Tok::Class { neg, items }) => match s.get(i) {
-            Some(&c) if c != b'/' => {
-                let in_class = items.iter().any(|&(lo, hi)| lo <= c && c <= hi);
-                in_class != *neg && glob_from(toks, t + 1, s, i + 1, failed)
-            }
-            _ => false,
-        },
-        Some(Tok::Star) => {
-            // Every run up to the next `/`, shortest first.
-            let limit = s[i..]
-                .iter()
-                .position(|&c| c == b'/')
-                .map_or(s.len(), |n| i + n);
-            (i..=limit).any(|j| glob_from(toks, t + 1, s, j, failed))
-        }
-        Some(Tok::StarStar) => (i..=s.len()).any(|j| glob_from(toks, t + 1, s, j, failed)),
-    };
-    if !hit {
-        failed[cell] = true;
-    }
-    hit
 }
 
 /// One filter rule.

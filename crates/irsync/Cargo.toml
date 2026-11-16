@@ -28,6 +28,7 @@ otel = [
 ]
 
 [dependencies]
+irsync-glob = { path = "../irsync-glob" }
 irsync-proto = { path = "../irsync-proto" }
 nix = { workspace = true, features = ["dir", "fs", "resource", "user", "time", "signal", "process"] }
 iroh = { workspace = true }
