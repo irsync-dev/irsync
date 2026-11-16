@@ -1527,7 +1527,15 @@ fn run_config(c: &ConfigArgs) -> i32 {
                 // Unsetting a host's table or its id removes the host: like
                 // `host remove`, not while grants name it.
                 let hosts = if path[0] == "hosts" {
-                    manage::canonicalize_doc(&mut doc, &paths.config)?;
+                    // A file that does not load is that error, not a
+                    // refused save.
+                    Config::load(&paths)?;
+                    match path.get(1) {
+                        Some(alias) => {
+                            manage::canonicalize_without(&mut doc, &paths.config, alias)?
+                        }
+                        None => manage::canonicalize_doc(&mut doc, &paths.config)?,
+                    };
                     manage::hosts::host_aliases(&doc)
                 } else {
                     Vec::new()
@@ -1764,11 +1772,13 @@ fn run_host(h: &HostArgs) -> i32 {
         HostCmd::Remove { alias, force } => finish(
             "host remove",
             (|| {
+                // A file that does not load is that error, not a refused save.
+                Config::load(&paths)?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 // First, so an EndpointId written for this host is found
                 // as a grant that names it.
-                manage::canonicalize_doc(&mut doc, &paths.config)?;
+                manage::canonicalize_without(&mut doc, &paths.config, alias)?;
                 let grants = manage::hosts::host_remove(&mut doc, alias, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut doc)?;
@@ -2020,8 +2030,7 @@ fn run_show(f: &FilesArgs, passphrase_file: Option<PathBuf>) -> i32 {
             let paths = file_paths(f);
             let config = Config::load(&paths)?;
             let settings = &config.settings;
-            // The hosts section is `host list`, line for line, from the
-            // file that holds the table.
+            // The hosts section is `host list`, line for line.
             let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
             let pass = PassphraseSource::from_env(passphrase_file);
             let (client, source) = client_identity(None, settings, &pass)?;
@@ -2067,7 +2076,18 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
     lock.save(&mut doc)?;
     match old {
-        Some(old) => println!("{}: {old} -> {id}", a.alias),
+        Some(old) => {
+            println!("{}: {old} -> {id}", a.alias);
+            // A grant by alias follows the alias: say that it moved.
+            let lists = manage::grants::lists_naming(&doc, &a.alias);
+            if !lists.is_empty() {
+                eprintln!(
+                    "irsync host add: note: the grants that name {} (in {}) now apply to the new EndpointId",
+                    a.alias,
+                    lists.join(", ")
+                );
+            }
+        }
         None => println!("{}: {id}", a.alias),
     }
     Ok(())

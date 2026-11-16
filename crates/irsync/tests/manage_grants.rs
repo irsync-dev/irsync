@@ -575,3 +575,28 @@ fn duplicate_removal_keeps_other_comments() {
     let x = parse_exports(&text, Path::new("e")).unwrap();
     assert_eq!(x.exports["p"].rw, ["box".to_string(), id(2).to_string()]);
 }
+
+#[test]
+fn a_comment_line_after_a_removed_last_entry_stays() {
+    // Without a trailing comma the comment lines belong to the last entry.
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[all]\nrw = [\n    \"box\",\n    \"{}\"\n    # tail\n]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(text, "[all]\nrw = [\n    \"box\"\n    # tail\n]\n");
+    // The removed entry's own comment goes with it; the line after stays.
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[all]\nrw = [\n    \"box\", # one\n    \"{}\" # two\n    # tail\n]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(text, "[all]\nrw = [\n    \"box\" # one\n    # tail\n]\n");
+    // On one line there is nothing to keep.
+    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"box\", \"{}\" ]\n", id(1)));
+    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+}

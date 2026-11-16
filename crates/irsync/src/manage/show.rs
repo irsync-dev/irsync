@@ -69,8 +69,7 @@ pub fn all_block(exports: &Exports, hosts: &Hosts) -> String {
 
 /// The report: the config file, identities (`client` is the id and the
 /// public key line), hosts (`host_lines`, what `host list` prints) and
-/// exports. The hosts and exports lines name the file that holds each
-/// table.
+/// exports, each section under its name.
 pub fn report(
     paths: &Paths,
     config: &Config,
@@ -80,14 +79,13 @@ pub fn report(
 ) -> String {
     let hosts = &config.hosts;
     let exports = &config.exports;
-    let owner = |label: &str, path: &Path| format!("{label}: {}\n", path.display());
     let mut out = file_line("config", &paths.config);
     let _ = writeln!(out, "client identity: {}\n{}", client.0, client.1);
-    out.push_str(&owner("hosts", &hosts.path));
+    out.push_str("hosts:\n");
     for line in host_lines {
         let _ = writeln!(out, "{line}");
     }
-    out.push_str(&owner("exports", &exports.path));
+    out.push_str("exports:\n");
     let _ = writeln!(out, "daemon identity: {daemon}");
     out.push_str(&export_blocks(exports, hosts));
     out.push_str(&all_block(exports, hosts));
