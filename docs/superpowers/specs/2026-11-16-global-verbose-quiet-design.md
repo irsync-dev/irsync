@@ -1,4 +1,4 @@
-# `-v` and `-q` work on every command
+# `-v`, `-q` and `--config` work on every command
 
 Date: 2026-11-16
 
@@ -14,6 +14,12 @@ errors do not say why.
 `-v` and `-q` should be accepted before or after any command, and mean the
 same kind of thing everywhere.
 
+`--config PATH` gets the same treatment (decided later in the same
+discussion). It names the same `irsync.toml` for every command, but it is
+defined three times today: once for a sync, once for the daemon, and once
+for the other commands. Only the last works on both sides of a verb, and
+none works before a command.
+
 ## Goals
 
 - `-v`, `--verbose`, `-q` and `--quiet` are accepted before the command,
@@ -26,12 +32,18 @@ same kind of thing everywhere.
     trace, `-vvvvv` trace plus every protocol message.
   - `-q` logs errors only and drops summaries.
 - `RUST_LOG` still overrides the level, as today.
+- `--config PATH` is accepted before the command, after it, and after a
+  nested command, and means the same file everywhere:
+  `irsync --config f host list`, `irsync daemon --config f`,
+  `irsync host list --config f`.
 
 ## Non-goals
 
 - New `-v` output for `gc`, `index`, `export update` or the management
   commands. They get the flag; what it could show is for later issues.
 - Making other sync flags work before a command (`irsync -n gc`).
+- Making `--passphrase-file` global. Only a sync, `daemon`, `id` and
+  `show` use it, so most commands would accept and ignore it.
 - Any change to what a sync prints.
 
 ## Anti-goals
@@ -74,10 +86,15 @@ In `crates/irsync/src/cli/mod.rs`:
   the top level. Remove them from `SyncArgs`, and remove `LogArgs` from
   `daemon`, `gc`, `index` and `export update`. Every command reads the
   global pair.
+- Define `--config` once, with `global = true`, on the top level (the
+  existing `FilesArgs`). Remove the sync's own `--config`, the daemon's
+  own, and the `files` field of every command. Every command reads the
+  global one.
 - `-v` together with `-q` is accepted everywhere and `-q` wins, as in a
   sync today. (My call. Today the four logging commands reject the pair.)
 - After parsing, when a command was given, reject any sync flag or path
-  that was set on the command line. The error names the flag and the
+  that was set on the command line (`-v`, `-q` and `--config` are no
+  longer sync flags, so they pass). The error names the flag and the
   command, for example: `-a is a sync option and cannot be used with
   'gc'`. It exits 2 like other usage errors.
 
@@ -106,6 +123,7 @@ is info level and stays hidden without `-vv`.
   It now runs `gc` and fails on the extra argument, as `irsync gc
   host:path` already does. Write `./gc` for the directory.
 - `-v -q` together is no longer an error on the four logging commands.
+- `--config` before a command used to be an error and now works.
 
 ### Help and docs
 
@@ -114,8 +132,10 @@ is info level and stays hidden without `-vv`.
 - The usage line of `irsync --help` changes once the setting is gone.
   Check that it still reads well.
 - Update `book/src/reference/command-line.md` (the `-v`/`-q` rows of
-  `daemon`, `index`, `gc`, and a note that both flags work on every
-  command, before or after it) and `book/src/reference/management.md`.
+  `daemon`, `index`, `gc`, and a note that the three flags work on every
+  command, before or after it) and `book/src/reference/management.md`
+  (its paragraph on `--config` says the flag may stand before or after the
+  verb; it may now stand before the noun too).
 
 ### Tests
 
@@ -124,14 +144,17 @@ Parser tests next to the existing ones in `cli/mod.rs`:
 - each form in the goals parses to the right command, count and quiet;
 - a sync flag before or after a command is rejected, with the flag named;
 - `irsync -a host:photos/ config` and `irsync src gc` are still syncs;
-- `irsync -v host:` is still a listing.
+- `irsync -v host:` is still a listing;
+- `--config f` before a command, after it and after a nested command
+  gives the same path, for a sync, `daemon` and a management command.
 
 One end-to-end check that `irsync -v id show` prints the identity.
 
 ## Left to the builder
 
 - The wording of the global flags' help text. It is now shared by every
-  command, so it has to describe the rule, not only the sync.
+  command, so it has to describe the rule, not only the sync. The
+  `--config` text loses its per-command notes ("for `state_dir`").
 - How to find "a sync flag was set on the command line" (for example the
   value source in clap's matches).
 - Whether `LogArgs` survives as the type that holds the global pair.

@@ -1,10 +1,10 @@
-# Global `-v` and `-q` Implementation Plan
+# Global `-v`, `-q` and `--config` Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `-v` and `-q` are accepted before or after any irsync command and follow one rule: `-v` is the command's own extra output, `-vv` and up raise the log level.
+**Goal:** `-v`, `-q` and `--config PATH` are accepted before or after any irsync command. `-v`/`-q` follow one rule: `-v` is the command's own extra output, `-vv` and up raise the log level. `--config` names the same file everywhere.
 
-**Architecture:** The two flags become clap global arguments on the top-level `Args`, and `args_conflicts_with_subcommands` is removed so clap finds a command after them. A check after parsing rejects every other sync flag given with a command. `main` hands the one global pair to every command, and every command passes the count minus one to `log_default`.
+**Architecture:** The three flags become clap global arguments on the top-level `Args` (each defined once), and `args_conflicts_with_subcommands` is removed so clap finds a command after them. A check after parsing rejects every other sync flag given with a command. `main` hands the global values to every command, and every command passes the count minus one to `log_default`.
 
 **Tech Stack:** Rust, clap 4.6.7 (derive), tracing. Tests with `cargo test`.
 
@@ -26,11 +26,12 @@
 
 Each line has a test in the task named.
 
-1. A flag the command also has, given before it (`irsync -n gc`, `irsync --config f host list`): must fail with the flag named, not run with the flag dropped. Task 1.
+1. A flag the command also has, given before it (`irsync -n gc`): must fail with the flag named, not run with the flag dropped. Task 1.
 2. A sync option with a value before a command (`irsync --bwlimit 5 gc`): must fail the same way. Task 1.
 3. A management command run with no flag, on a config that works today: same stdout, same exit code, nothing new on stderr. Task 2.
 4. `irsync gc -v` in a script that expected info logs: stderr is now empty; `-vv` brings them back. Task 2.
-5. `ssh-setup` now sets up logging. The client reads its report over ssh. Its stdout must not change with `-vv`. Task 2.
+5. `--config` used to be three separate flags. Every command must read the one global value wherever it was typed; a command that silently falls back to the default file would edit the wrong config. Task 1 (parser) and Task 2 (`--config` before a management command, on the real binary).
+6. `ssh-setup` now sets up logging. The client reads its report over ssh. Its stdout must not change with `-vv`. Task 2.
 
 ## Files
 
@@ -42,7 +43,7 @@ Each line has a test in the task named.
 
 ---
 
-### Task 1: The flags are global and the parser accepts them anywhere
+### Task 1: The three flags are global and the parser accepts them anywhere
 
 **Files:**
 - Modify: `crates/irsync/src/cli/mod.rs`
@@ -50,11 +51,11 @@ Each line has a test in the task named.
 - Test: `crates/irsync/tests/cli.rs`
 
 **Interfaces:**
-- Produces: `Args { cmd: Option<Command>, log: LogArgs, sync: SyncArgs }`, with `LogArgs { verbose: u8, quiet: bool }` (`Copy`). `SyncArgs` has no `verbose`/`quiet`. `Command::Gc { dry_run, files }`, `ExportCmd::Update { dry_run, names }`, `IndexArgs` and `DaemonArgs` have no `log` field. `SyncOptions.verbose`/`.quiet` are unchanged for their users.
+- Produces: `Args { cmd: Option<Command>, log: LogArgs, files: FilesArgs, sync: SyncArgs }`, with `LogArgs { verbose: u8, quiet: bool }` (`Copy`) and `FilesArgs { config: Option<PathBuf> }`. `SyncArgs` has no `verbose`, `quiet` or `config`. No command struct or variant has a `log`, `files` or `config` field: `Command::Gc { dry_run }`, `Command::Show { passphrase_file }`, `Command::SshSetup { client, recheck, no_dht }`, `ExportCmd::Update { dry_run, names }`. `SyncOptions.verbose`, `.quiet` and `.config` are unchanged for their users.
 
 - [ ] **Step 1: Replace the old test and write the failing tests**
 
-In `tests/cli.rs`, delete `subcommands_take_verbose_and_quiet`, and in the `export update` test near line 470 drop `log` from the pattern and assert `a.log.verbose == 1 && !a.log.quiet` instead. Add:
+In `tests/cli.rs`, delete `subcommands_take_verbose_and_quiet`, and in the `export update` test near line 470 drop `log` from the pattern and assert `a.log.verbose == 1 && !a.log.quiet` instead. The existing assertions on `d.config`, `e.files.config`, `ix.files.config`, `h.files.config`, `g.files.config`, `i.files.config` and `c.files.config` (near lines 207, 223, 235, 357, 618, 624, 657, 771) become assertions on `a.files.config` of the parsed `Args`. Add:
 
 ```rust
 fn err(a: &[&str]) -> String {
@@ -116,14 +117,35 @@ fn a_path_named_like_a_command_is_still_a_path() {
 }
 
 #[test]
+fn config_is_accepted_before_and_after_any_command() {
+    let f = Some(PathBuf::from("f"));
+    for args in [
+        &["--config", "f", "host", "list"][..],
+        &["host", "--config", "f", "list"],
+        &["host", "list", "--config", "f"],
+        &["--config", "f", "daemon"],
+        &["daemon", "--config", "f"],
+        &["--config", "f", "gc"],
+        &["index", "--config", "f", "/srv/a"],
+        &["-v", "--config", "f", "id", "show"],
+        &["show", "--config=f"],
+    ] {
+        let a = parse(args);
+        assert!(a.cmd.is_some(), "{args:?}");
+        assert_eq!(a.files.config, f, "{args:?}");
+    }
+    assert_eq!(opts(&["--config", "f", "src", "h:m/"]).config, f);
+    assert_eq!(opts(&["src", "h:m/", "--config", "f"]).config, f);
+    assert_eq!(parse(&["host", "list"]).files.config, None);
+}
+
+#[test]
 fn a_sync_option_with_a_command_is_rejected_by_name() {
     assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
     assert!(err(&["-n", "gc"]).contains("-n is a sync option and cannot be used with 'gc'"));
     assert!(err(&["-av", "id", "show"]).contains("-a is a sync option and cannot be used with 'id'"));
     assert!(err(&["--bwlimit", "5", "gc"])
         .contains("--bwlimit is a sync option and cannot be used with 'gc'"));
-    assert!(err(&["--config", "f", "host", "list"])
-        .contains("--config is a sync option and cannot be used with 'host'"));
     let e = Args::try_parse_from(["irsync", "-a", "gc"]).unwrap_err();
     assert_eq!(e.exit_code(), 2);
     // After the command, the command's own flags are untouched.
@@ -147,7 +169,9 @@ Expected: does not compile (`no field log on Args`).
   - `quiet`: `Print errors only, and no summary or progress. Wins over -v.`
   - The struct's own comment: `How much any command says. Global: accepted before or after the command.`
 - Remove `verbose` and `quiet` from `SyncArgs`, and the `log` field from `Command::Gc`, `ExportCmd::Update`, `IndexArgs` and `DaemonArgs`.
-- `SyncOptions::from_args`: `verbose: args.log.verbose, quiet: args.log.quiet`.
+- Add `#[command(flatten)] pub files: FilesArgs` to `Args`, after `log`. `FilesArgs` keeps `global = true`; its comment becomes `The config file every command reads. Global: accepted before or after the command.` and the flag's help stays `The config file (default: irsync.toml in the config directory).`
+- Remove `config` from `SyncArgs` and `DaemonArgs`, and the `files` field from `Command::Gc`, `Command::Show`, `Command::SshSetup`, `IndexArgs`, `ConfigArgs`, `IdArgs`, `HostArgs`, `ExportArgs` and `GrantArgs`.
+- `SyncOptions::from_args`: `verbose: args.log.verbose, quiet: args.log.quiet, config: args.files.config.clone()`.
 - The `Daemon` doc comment: replace `Logs go to stderr at info level (-v: debug, -vv: trace, -q: errors only; RUST_LOG overrides).` with `Logs go to stderr at warning level (-vv: info, -vvv: debug, -vvvv: trace, -q: errors only; RUST_LOG overrides).`
 
 - [ ] **Step 4: Add the check**
@@ -164,7 +188,7 @@ For each argument of `SyncArgs` (take the ids from `SyncArgs::augment_args(clap:
 
 - [ ] **Step 5: Make `main.rs` compile without changing behaviour**
 
-`main` copies `args.log` and passes it on: `run_daemon(d, log)`, `run_gc(*dry_run, log, files)`, `run_index(ix, log)`, and `run_export(e, log)` which passes it to `export_update`. Inside, `d.log`/`a.log` become `log`. Nothing else changes in this task.
+`main` copies `args.log` and passes it on: `run_daemon(d, log, files)`, `run_gc(*dry_run, log, files)`, `run_index(ix, log, files)`, and `run_export(e, log, files)` which passes `log` to `export_update`. Inside, `d.log`/`a.log` become `log`. `files` is `&args.files`: every `run_*` function that read its own `files` field (`run_host`, `run_export`, `run_grant`, `run_id`, `run_config`, `run_show`, `run_ssh_setup`, `run_gc`, `run_index`) takes it as a `&FilesArgs` parameter instead, and `run_daemon` reads `files.config` where it read `d.config`. Nothing else changes in this task.
 
 - [ ] **Step 6: Run the tests**
 
@@ -175,10 +199,11 @@ Expected: all pass. If a test of `--help` output fails, read the new usage line 
 
 ```bash
 git add crates/irsync/src/cli/mod.rs crates/irsync/src/main.rs crates/irsync/tests/cli.rs
-git commit -m "Accept -v and -q before or after any command
+git commit -m "Accept -v, -q and --config before or after any command
 
-irsync -v id show was read as a sync of two paths (#31). The flags are
-now global, and a sync option given with a command is rejected by name."
+irsync -v id show was read as a sync of two paths (#31). The three
+flags are now global and defined once, and a sync option given with a
+command is rejected by name."
 ```
 
 ---
@@ -210,6 +235,21 @@ fn verbose_before_a_management_command_runs_the_command() {
     assert!(plain.stderr.is_empty());
     let o = irsync(&home, &["host", "list", "-v"]);
     assert!(o.status.success() && o.stderr.is_empty());
+}
+
+#[test]
+fn config_before_a_command_names_the_file_the_command_uses() {
+    // other = home.join("other.toml"); it does not exist yet.
+    let other_s = other.to_str().unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    assert!(irsync(&home, &["--config", other_s, "host", "add", "laptop", &id]).status.success());
+    assert!(std::fs::read_to_string(&other).unwrap().contains("[hosts.laptop]"));
+    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    let before = irsync(&home, &["--config", other_s, "host", "list"]);
+    let after = irsync(&home, &["host", "list", "--config", other_s]);
+    assert!(before.status.success() && before.stdout == after.stdout);
+    assert!(String::from_utf8_lossy(&before.stdout).contains("laptop"));
+    assert!(!String::from_utf8_lossy(&irsync(&home, &["host", "list"]).stdout).contains("laptop"));
 }
 
 #[test]
@@ -262,7 +302,7 @@ If the two reports differ for a reason other than logging (the daemon was starte
 - [ ] **Step 2: Run them and see them fail**
 
 Run: `cargo test -p irsync --test commands_e2e 2>&1 | tail -20` and `cargo test -p irsync --test ssh_setup the_report_still 2>&1 | tail`
-Expected: `vv_turns_logging_on_for_every_command` fails for `id show` (no log line), `one_v_on_gc_logs_nothing_and_quiet_drops_the_summary` fails (`gc -v` logs `starting irsync`).
+Expected: `config_before_a_command_names_the_file_the_command_uses` already passes (Task 1 did the work; this pins it on the real binary). `vv_turns_logging_on_for_every_command` fails for `id show` (no log line), `one_v_on_gc_logs_nothing_and_quiet_drops_the_summary` fails (`gc -v` logs `starting irsync`).
 
 - [ ] **Step 3: Implement**
 
@@ -306,14 +346,15 @@ No tests: a book-only change.
 
 - [ ] **Step 1: `command-line.md`**
 
-- Add a short section before `### irsync daemon`, titled `### -v and -q on every command`, that says: both flags are accepted before or after any command (`irsync -v gc`, `irsync id show -vv`); `-v` asks for the command's own extra output and shows nothing more where a command has none; `-vv` gives info logs, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message; `-q` logs errors only and drops summaries, and wins over `-v`; `RUST_LOG` overrides the level; any other sync option before a command is an error.
+- Add a short section before `### irsync daemon`, titled `### -v, -q and --config on every command`, that says: the three flags are accepted before or after any command (`irsync -v gc`, `irsync id show -vv`); `-v` asks for the command's own extra output and shows nothing more where a command has none; `-vv` gives info logs, `-vvv` debug, `-vvvv` trace, `-vvvvv` trace plus every protocol message; `-q` logs errors only and drops summaries, and wins over `-v`; `RUST_LOG` overrides the level; `--config PATH` names the config file for every command (`irsync --config f host list`); any other sync option before a command is an error.
 - `irsync daemon`: in the usage block `[-v|-q]` becomes `[-v] [-q]`; the two table rows point at the new section (`-v`: "Nothing extra; `-vv` and up log more.").
 - `irsync index` and `irsync gc`: same usage change; `-v` row becomes "Nothing extra; `-vv` and up log more."; `-q` row stays.
-- The row for `host`, `export`, `grant`, `id`, `config`, `show` in the commands table: add that they take `-v` and `-q` too.
+- The `--config PATH` rows of the sync, `daemon`, `index` and `gc` tables stay; no wording change is needed.
+- The row for `host`, `export`, `grant`, `id`, `config`, `show` in the commands table: add that they take `-v`, `-q` and `--config` too.
 
 - [ ] **Step 2: `management.md`**
 
-`irsync export update [-n] [-v\|-q] NAME...` becomes `irsync export update [-n] [-v] [-q] NAME...`. Add one sentence near the top of the page: every command here accepts `-v` and `-q`, before or after it; see the command-line reference.
+`irsync export update [-n] [-v\|-q] NAME...` becomes `irsync export update [-n] [-v] [-q] NAME...`. Add one sentence near the top of the page: every command here accepts `-v` and `-q`, before or after it; see the command-line reference. The paragraph on `--config` (lines 15 to 17) says the flag may stand before or after the verb; add that it may stand before the noun too: `irsync --config C export add ...`.
 
 - [ ] **Step 3: Full check and commit**
 
@@ -322,5 +363,5 @@ Expected: passes.
 
 ```bash
 git add book/src/reference/command-line.md book/src/reference/management.md
-git commit -m "Document -v and -q on every command"
+git commit -m "Document -v, -q and --config on every command"
 ```
