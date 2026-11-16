@@ -193,6 +193,8 @@ pub struct DaemonSettings {
     pub debug_addr: Option<SocketAddr>,
     /// Honour `[immediate]` grants (and create auto exports for them).
     pub immediate: bool,
+    /// Let the daemon run as root (see `irsync daemon`'s refusal).
+    pub allow_root: bool,
 }
 
 /// How OTLP export talks to the collector.
@@ -225,6 +227,7 @@ impl Default for DaemonSettings {
             discovery: Discovery::default(),
             debug_addr: None,
             immediate: true,
+            allow_root: false,
         }
     }
 }

@@ -1299,6 +1299,22 @@ fn index_roots(
     })
 }
 
+/// What `irsync daemon` says when it will not run as root.
+const ROOT_REFUSAL: &str = "refusing to run as root: the daemon has not had a security audit,
+  and as root any client with write access can create setuid files and device nodes.
+  Run it as an unprivileged account. To run as root anyway, pass
+  --run-as-root-i-know-what-i-am-doing or set `allow_root = true` under [daemon].";
+
+/// Whether this process runs as root (effective user id 0). A test-hooks
+/// build also says yes when `IRSYNC_TEST_EUID_ROOT` is `1`.
+fn running_as_root() -> bool {
+    #[cfg(feature = "test-hooks")]
+    if std::env::var("IRSYNC_TEST_EUID_ROOT").as_deref() == Ok("1") {
+        return true;
+    }
+    nix::unistd::geteuid().is_root()
+}
+
 fn run_daemon(d: &DaemonArgs) -> i32 {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -1307,6 +1323,23 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             return 1;
         }
     };
+    // Before any key, socket, lock or state file is touched: not as root,
+    // unless the server's owner said so.
+    let as_root = running_as_root();
+    if as_root && !d.run_as_root {
+        match Config::load(&Paths::resolve(d.config.as_deref())) {
+            // The key may be in a file that does not load: say that.
+            Err(e) => {
+                eprintln!("irsync daemon: {e:#}");
+                return 1;
+            }
+            Ok(c) if !c.settings.daemon.allow_root => {
+                eprintln!("irsync daemon: {ROOT_REFUSAL}");
+                return 1;
+            }
+            Ok(_) => {}
+        }
+    }
     let settings = early_settings(d.config.as_deref());
     let debug_addr = settings.daemon.debug_addr;
     let mut telemetry = {
@@ -1323,6 +1356,14 @@ fn run_daemon(d: &DaemonArgs) -> i32 {
             std::io::stderr,
         )
     };
+
+    // Printed, not logged: -q and RUST_LOG must not hide it.
+    if as_root {
+        eprintln!(
+            "irsync daemon: warning: running as root: any client with write access can \
+             create setuid files and device nodes"
+        );
+    }
 
     let result = {
         let paths = Paths::resolve(d.config.as_deref());
@@ -1517,6 +1558,14 @@ fn file_paths(f: &FilesArgs) -> Paths {
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
 fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -> i32 {
+    // The client stops when its probe sees root; this holds when it did not.
+    if running_as_root() {
+        eprintln!(
+            "irsync: this account is root, and {}",
+            irsync::ssh::onboard::ROOT_ACCOUNT
+        );
+        return 1;
+    }
     let result = parse_endpoint_id(client)
         .with_context(|| format!("--client {client:?}"))
         .and_then(|id| irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht));

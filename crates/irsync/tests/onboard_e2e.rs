@@ -46,6 +46,11 @@ struct World {
     uname: Option<String>,
     /// Where the client downloads a release from, instead of GitHub.
     release_url: Option<String>,
+    /// The ssh probe's `id -u` prints 0.
+    probe_root: bool,
+    /// The server's irsync believes it runs as root (the probe does not
+    /// say so).
+    server_root: bool,
 }
 
 impl World {
@@ -57,6 +62,8 @@ impl World {
             port: free_port(),
             uname: None,
             release_url: None,
+            probe_root: false,
+            server_root: false,
         };
         w.server_config("", "");
         std::fs::write(w.src.path().join("a.txt"), "hello\n").unwrap();
@@ -129,6 +136,18 @@ impl World {
             Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
+        if self.probe_root {
+            cmd.env("FAKE_SSH_ID_U", "0");
+        } else {
+            cmd.env_remove("FAKE_SSH_ID_U");
+        }
+        // The fake ssh hands the client's environment on to the server
+        // commands.
+        if self.server_root {
+            cmd.env("IRSYNC_TEST_EUID_ROOT", "1");
+        } else {
+            cmd.env_remove("IRSYNC_TEST_EUID_ROOT");
+        }
         let mut child = cmd.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(180);
         while child.try_wait().unwrap().is_none() {
@@ -740,4 +759,91 @@ fn first_push_dials_the_address_setup_reports() {
     let o = w.irsync_bare(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
     ok(&o);
     same_tree(w.src.path(), &dest);
+}
+
+/// A root account is refused right after the probe: nothing is installed,
+/// granted, started or saved.
+#[test]
+fn a_root_account_is_refused_before_anything_is_installed() {
+    let mut w = World::new();
+    w.probe_root = true;
+    std::fs::remove_dir_all(w.server.path().join(".config")).unwrap();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(
+            "the ssh account on myserver is root, and irsync does not set up a daemon as root"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("https://irsync.org/book/how-to/run-the-daemon.html"),
+        "{err}"
+    );
+    assert_eq!(w.ssh_calls(), 1, "only the probe");
+    assert!(
+        !w.client_config().contains("[hosts"),
+        "{}",
+        w.client_config()
+    );
+    assert!(!w.server.path().join(".config/irsync").exists());
+    assert!(!w.server.path().join(".local").exists());
+    assert!(!w.server.path().join("xdg").exists());
+    assert!(!dest.exists());
+}
+
+/// The probe did not see root, but the server command does: it refuses
+/// before it writes a grant or an identity.
+#[test]
+fn ssh_setup_itself_refuses_root_and_grants_nothing() {
+    let mut w = World::new();
+    w.server_root = true;
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("irsync does not set up a daemon as root"),
+        "{err}"
+    );
+    assert!(
+        !w.server_toml().contains("[immediate]"),
+        "{}",
+        w.server_toml()
+    );
+    assert!(!w
+        .server
+        .path()
+        .join(".config/irsync/daemon_ed25519")
+        .exists());
+    assert!(
+        !w.client_config().contains("[hosts"),
+        "{}",
+        w.client_config()
+    );
+}
+
+/// The automatic check of a saved host goes through the same probe: a
+/// daemon that died is not started again through a root account.
+#[test]
+fn a_dead_daemon_is_not_restarted_through_a_root_account() {
+    let mut w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.kill_daemon();
+    w.probe_root = true;
+    // As after any failed check over ssh, the client tries the daemon once
+    // more; no retries, so that try is short.
+    let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("checking myserver over ssh failed")
+            && err.contains("irsync does not set up a daemon as root"),
+        "{err}"
+    );
+    assert!(probe(&w.server.path().join("xdg/irsync")).is_none());
 }

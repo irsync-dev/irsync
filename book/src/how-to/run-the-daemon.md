@@ -85,9 +85,16 @@ other users, and device nodes in it. Run the daemon as an unprivileged account
 that owns the export trees. Ownership is then applied only where that account
 may change it, to its own groups, as rsync does without privilege.
 
-The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) warns when
-you sign in as root: the daemon it starts then runs as root, and the client's
-immediate grant reaches every path on the server.
+The daemon enforces this: started as root, it prints why and exits. It has
+not had a security audit, so running it as root must be your own choice. To
+make that choice, start it with `--run-as-root-i-know-what-i-am-doing`, or
+set `allow_root = true` under `[daemon]` in its config file. It then logs a
+warning at every start.
+
+The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) never
+starts a daemon as root. When the ssh account is root it stops before it
+installs or changes anything, whatever the server's config says. Use another
+account, or set the daemon up by hand as described above.
 
 ## Keep a daemon started over ssh running
 

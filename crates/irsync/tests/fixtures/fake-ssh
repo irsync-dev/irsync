@@ -1,14 +1,21 @@
 #!/bin/sh
 # Stands in for ssh in tests: runs the remote command locally under a fake HOME.
-# Env: FAKE_SSH_HOME, FAKE_SSH_LOG, FAKE_SSH_UNAME (optional).
+# Env: FAKE_SSH_HOME, FAKE_SSH_LOG, FAKE_SSH_UNAME (optional: what `uname`
+# prints), FAKE_SSH_ID_U (optional: what `id` prints, as for `id -u`).
 echo "$1" >> "$FAKE_SSH_LOG"
 shift
 cmd="$*"
-if [ -n "$FAKE_SSH_UNAME" ]; then
-    # A `uname` first on PATH, so a nested `/bin/sh -c` sees it too.
+if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_ID_U" ]; then
+    # The stand-ins come first on PATH, so a nested `/bin/sh -c` sees them too.
     bin=$(mktemp -d)
-    printf '#!/bin/sh\necho "%s"\n' "$FAKE_SSH_UNAME" > "$bin/uname"
-    chmod 755 "$bin/uname"
+    if [ -n "$FAKE_SSH_UNAME" ]; then
+        printf '#!/bin/sh\necho "%s"\n' "$FAKE_SSH_UNAME" > "$bin/uname"
+        chmod 755 "$bin/uname"
+    fi
+    if [ -n "$FAKE_SSH_ID_U" ]; then
+        printf '#!/bin/sh\necho "%s"\n' "$FAKE_SSH_ID_U" > "$bin/id"
+        chmod 755 "$bin/id"
+    fi
     HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" PATH="$bin:$PATH" sh -c "$cmd"
     status=$?
     rm -rf "$bin"

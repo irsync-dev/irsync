@@ -545,6 +545,11 @@ pub struct DaemonArgs {
     /// one IPv4 and one IPv6.
     #[arg(long, value_name = "ADDR")]
     pub listen: Vec<HostPort>,
+    /// Run even as root. The daemon has not had a security audit, and as
+    /// root any client with write access can create setuid files and
+    /// device nodes. The config key `daemon.allow_root` does the same.
+    #[arg(long = "run-as-root-i-know-what-i-am-doing")]
+    pub run_as_root: bool,
     #[command(flatten)]
     pub log: LogArgs,
 }
