@@ -645,6 +645,11 @@ fn server_knows_the_client_by_name() {
         Some(&*client_id(w.client.path()))
     );
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
+    // The automatic export the daemon made for the push names it too.
+    let exports = t["exports"].as_table().unwrap();
+    assert_eq!(exports.len(), 1, "{t}");
+    let (_, e) = exports.iter().next().unwrap();
+    assert_eq!(e["rw"][0].as_str(), Some("myclient"), "{t}");
 }
 
 #[test]
