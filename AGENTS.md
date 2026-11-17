@@ -4,6 +4,18 @@ The contributor guide is the book under `book/src/contributing/`. Start with
 `setup.md` and `testing.md`. This file only lists the commands. Releases:
 `book/src/contributing/releasing.md`.
 
+## Pull requests
+
+All work goes through a pull request. Work on a branch, push the branch,
+and open a PR against `main`. Never push to `main` directly unless you are
+explicitly asked to.
+
+If the work is for an issue, the PR must close it: put `Closes #N` in the
+PR description, where `N` is the issue number.
+
+When asked to merge a PR, clean up afterwards: delete the branch on the
+remote and locally, and switch back to an up-to-date `main`.
+
 ## Setup
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain,
