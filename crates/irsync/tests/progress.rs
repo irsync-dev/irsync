@@ -311,7 +311,7 @@ fn frame_shows_connection_state_and_percent() {
     r.handle(Event::FileDone(rp("a"), 500));
     let f = r.frame(std::time::Instant::now());
     assert!(
-        f[2].contains(" 50%") && f[2].contains("[direct]") && f[2].contains("xfr#1"),
+        f[2].contains(" 50%") && f[2].contains("[direct]") && f[2].contains("500/1000"),
         "{f:?}"
     );
     r.handle(Event::Conn(ConnState::Reconnecting { attempt: 1 }));
