@@ -148,3 +148,41 @@ fn listing_an_unreachable_path_prints_the_hint() {
         stderr(&o)
     );
 }
+
+#[test]
+fn list_command_matches_host_colon() {
+    let s = setup();
+    let colon = format!("{}:", s.daemon_id);
+    let want = ok(&s.client, &["--address", &s.address, &colon]);
+    for args in [
+        vec!["list", "--address", &s.address, &s.daemon_id],
+        vec!["list", "--address", &s.address, &colon],
+        vec!["sync", "--address", &s.address, &colon],
+    ] {
+        assert_eq!(ok(&s.client, &args), want, "{args:?}");
+    }
+}
+
+#[test]
+fn list_command_lists_files() {
+    let s = setup();
+    let operand = format!("{}:photos/", s.daemon_id);
+    let out = ok(&s.client, &["list", "--address", &s.address, &operand]);
+    assert!(out.contains("a/x.jpg") && out.contains("b.jpg"), "{out:?}");
+    assert!(!s.client.join("photos").exists());
+}
+
+#[test]
+fn sync_command_pushes() {
+    let s = setup();
+    let src = s.client.join("up");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("new.jpg"), b"n").unwrap();
+    let dest = format!("{}:photos/", s.daemon_id);
+    let src_arg = format!("{}/", src.display());
+    ok(
+        &s.client,
+        &["sync", "-a", "--address", &s.address, &src_arg, &dest],
+    );
+    assert_eq!(std::fs::read(s.photos.join("new.jpg")).unwrap(), b"n");
+}

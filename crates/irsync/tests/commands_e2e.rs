@@ -2175,3 +2175,43 @@ fn host_rename_renames_the_host_and_its_grants_in_the_file() {
         before
     );
 }
+
+/// `irsync --help` names `sync` and `list` and keeps the transfer options;
+/// each has its own help, `list` with its one operand.
+#[test]
+fn help_names_sync_and_list_and_each_has_its_own() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let top = irsync(&home, &["--help"]);
+    assert!(top.status.success());
+    let top = String::from_utf8_lossy(&top.stdout);
+    assert!(
+        top.contains("\n  sync ") && top.contains("\n  list "),
+        "{top}"
+    );
+    assert!(
+        top.contains("--archive"),
+        "transfer options stay at the top: {top}"
+    );
+    for (cmd, want) in [("sync", "SRC... DEST"), ("list", "HOST[:PATH]")] {
+        let o = irsync(&home, &[cmd, "--help"]);
+        assert!(o.status.success(), "{cmd}");
+        let h = String::from_utf8_lossy(&o.stdout);
+        assert!(h.contains(want) && h.contains("--archive"), "{cmd}: {h}");
+    }
+    let o = irsync(&home, &["list", "--help"]);
+    let h = String::from_utf8_lossy(&o.stdout);
+    assert!(h.contains("irsync list [OPTIONS] <HOST[:PATH]>\n"), "{h}");
+    assert!(!h.contains("several sources"), "{h}");
+}
+
+/// A `list` usage error shows the usage of `list`.
+#[test]
+fn list_usage_error_shows_list_usage() {
+    let d = tempfile::tempdir().unwrap();
+    let o = irsync(&d.path().join("home"), &["list", "./photos"]);
+    assert_eq!(o.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("list takes one operand"), "{e}");
+    assert!(e.contains("irsync list [OPTIONS] <HOST[:PATH]>"), "{e}");
+}
