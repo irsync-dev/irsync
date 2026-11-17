@@ -149,6 +149,25 @@ impl Hosts {
             .map(|(alias, _)| alias.as_str())
     }
 
+    /// The alias whose `ssh` value is exactly `dest`: the first in
+    /// lexicographic order when several entries of one daemon have it.
+    /// `Err`: the aliases, when entries of different daemons have it.
+    pub fn by_ssh(&self, dest: &str) -> Result<Option<&str>, Vec<String>> {
+        let mut found = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.ssh.as_deref() == Some(dest));
+        let Some((first, entry)) = found.next() else {
+            return Ok(None);
+        };
+        let rest: Vec<_> = found.collect();
+        if rest.iter().all(|(_, e)| e.endpoint_id == entry.endpoint_id) {
+            return Ok(Some(first));
+        }
+        let others = rest.into_iter().map(|(a, _)| a.clone());
+        Err(std::iter::once(first.clone()).chain(others).collect())
+    }
+
     /// An alias first, then a literal EndpointId.
     pub fn resolve_peer(&self, s: &str) -> Result<EndpointId, ConfigError> {
         if let Some(e) = self.get(s) {

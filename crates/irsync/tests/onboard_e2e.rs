@@ -309,6 +309,20 @@ fn ip_address_is_saved_under_the_server_name() {
     );
     assert!(cfg["hosts"].get("192.168.1.5").is_none());
     same_tree(w.src.path(), &dest);
+    // Typed again, the address finds the saved host: no ssh.
+    let calls = w.ssh_calls();
+    std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
+    let err = ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("192.168.1.5:{}", dest.display()),
+    ]));
+    assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
+    assert_eq!(w.ssh_calls(), calls, "found by its ssh destination");
+    assert_eq!(
+        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+        "again\n"
+    );
     // The other spelling of the address ends on the same alias.
     ok(&w.irsync(&[
         "-a",
@@ -321,6 +335,29 @@ fn ip_address_is_saved_under_the_server_name() {
         cfg["hosts"]["myserver"]["ssh"].as_str(),
         Some("u@192.168.1.5")
     );
+}
+
+/// Two saved daemons set up by one address: the address alone cannot say
+/// which one is meant, and nothing is tried.
+#[test]
+fn two_hosts_with_one_ssh_destination_are_refused() {
+    let w = World::new();
+    let id = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
+    let cfg = w.client.path().join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let text = format!(
+        "[hosts.a]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n\
+         [hosts.b]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n",
+        id(7),
+        id(8)
+    );
+    std::fs::write(cfg.join("irsync.toml"), &text).unwrap();
+    let out = w.irsync(&["-a", &w.src_arg(), "192.168.1.5:dest"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("192.168.1.5") && err.contains("a, b"), "{err}");
+    assert_eq!(w.ssh_calls(), 0);
+    assert_eq!(w.client_config(), text);
 }
 
 #[test]

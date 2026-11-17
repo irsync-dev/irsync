@@ -504,6 +504,26 @@ async fn connect_for(
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
     // An unknown host is an ssh destination: set it up and save the alias.
     // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
+    // Not an alias and not an id: a saved host may have been set up by
+    // this very ssh destination (an address, say). Then it is that host.
+    let by_ssh = if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
+        match config.hosts.by_ssh(host) {
+            Ok(alias) => alias.map(str::to_string),
+            Err(aliases) => bail!(
+                "{host} is the ssh destination of several saved hosts with \
+                 different ids ({}); name one of them, or change an `ssh` \
+                 value in {}",
+                aliases.join(", "),
+                config.hosts.path.display()
+            ),
+        }
+    } else {
+        None
+    };
+    if let Some(alias) = &by_ssh {
+        log.eprintln(&format!("irsync: {host} is saved as {alias}"));
+    }
+    let host = by_ssh.as_deref().unwrap_or(host);
     let mut onboarded_with = None;
     let mut saved_as = None;
     let saved = config.hosts.get(host);

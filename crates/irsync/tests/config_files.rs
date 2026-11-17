@@ -155,6 +155,36 @@ fn short_host_names() {
 }
 
 #[test]
+fn host_by_ssh_destination() {
+    let host = |alias: &str, n: u8, ssh: &str| {
+        format!(
+            "[hosts.\"{alias}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
+            id(n)
+        )
+    };
+    let text = [
+        host("myserver", 1, "192.168.1.5"),
+        host("u@other", 2, "u@other"),
+        host("other", 2, "u@other"),
+        host("a", 3, "10.0.0.1"),
+        host("b", 4, "10.0.0.1"),
+        format!("[hosts.plain]\nendpoint_id = \"{}\"\n", id(5)),
+    ]
+    .concat();
+    let hosts = parse_hosts(&text, p()).unwrap();
+    assert_eq!(hosts.by_ssh("192.168.1.5"), Ok(Some("myserver")));
+    assert_eq!(hosts.by_ssh("192.168.1.50"), Ok(None));
+    assert_eq!(hosts.by_ssh("plain"), Ok(None));
+    // One daemon under two names: the first in order.
+    assert_eq!(hosts.by_ssh("u@other"), Ok(Some("other")));
+    // Two daemons: no way to tell which one is meant.
+    assert_eq!(
+        hosts.by_ssh("10.0.0.1"),
+        Err(vec!["a".to_string(), "b".to_string()])
+    );
+}
+
+#[test]
 fn hosts_old_layout_names_the_new_location() {
     let e = parse_hosts("\n[home]\nendpoint_id = \"x\"\n", p())
         .unwrap_err()
