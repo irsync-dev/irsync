@@ -48,7 +48,9 @@ cp -R "$bin_dir/man" "$stage/$name/man"
 
 # Pack in the temp folder and move the result over, so a failed run leaves
 # no half-written tarball. -cJf works with GNU tar and FreeBSD's tar.
-tar -cJf "$stage/$name.tar.xz" -C "$stage" "$name"
+# COPYFILE_DISABLE: on macOS, tar would add a "._name" entry beside every
+# file to hold its extended attributes. Other systems ignore it.
+COPYFILE_DISABLE=1 tar -cJf "$stage/$name.tar.xz" -C "$stage" "$name"
 
 if command -v sha256sum >/dev/null 2>&1; then
     digest=$(sha256sum "$stage/$name.tar.xz" | cut -d' ' -f1)
