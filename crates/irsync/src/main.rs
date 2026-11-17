@@ -78,8 +78,8 @@ fn main() {
             client,
             recheck,
             no_dht,
-            keep_old: _,
-        }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
+            keep_old,
+        }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, *keep_old, files)),
         None => unreachable!("try_parse_from always sets a command"),
     }
 }
@@ -1595,7 +1595,13 @@ fn file_paths(f: &FilesArgs) -> Paths {
 }
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
-fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -> i32 {
+fn run_ssh_setup(
+    client: &str,
+    recheck: bool,
+    no_dht: bool,
+    keep_old: bool,
+    files: &FilesArgs,
+) -> i32 {
     // The client stops when its probe sees root; this holds when it did not.
     if running_as_root() {
         eprintln!(
@@ -1616,7 +1622,7 @@ fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -
                 irsync::identity::refuse_to_generate_with_passphrase_file(&key, &pass)
                     .with_context(|| format!("identity {}", key.display()))?;
             }
-            irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht)
+            irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht, keep_old)
         });
     match result {
         Ok(report) => {

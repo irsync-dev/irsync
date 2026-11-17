@@ -199,6 +199,14 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             );
         }
     }
+    // Interim wording; the summary of the old install is not final yet.
+    for file in &r.stale_services {
+        out.push(format!(
+            "  warning: {} still starts irsync from ~/.local/share/irsync/bin; \
+             change it to ~/.local/bin/irsync",
+            file.display()
+        ));
+    }
     match o.previous_id {
         // Already saved with this id (a restart): nothing to say.
         None if o.alias_existed => {}
@@ -308,6 +316,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::ssh::payload::Contents;
+    use crate::ssh::setup::OldBin;
 
     /// Neither `fileset` nor the man pages.
     const ALONE: Contents = Contents {
@@ -346,6 +355,8 @@ mod tests {
                 log: PathBuf::from("/s/daemon.log"),
                 relay: None,
                 addrs: Vec::new(),
+                stale_services: Vec::new(),
+                old_bin: OldBin::Absent,
             },
             install,
             os,

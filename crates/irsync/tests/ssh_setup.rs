@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use common::irsync_bin;
 use iroh::{EndpointId, SecretKey};
 use irsync::daemon_lock::probe;
-use irsync::ssh::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
+use irsync::ssh::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
 
 /// A temp HOME with an offline daemon config; kills the daemon holding its
 /// lock when dropped.
@@ -130,6 +130,8 @@ fn report_roundtrips() {
                     } else {
                         Vec::new()
                     },
+                    stale_services: Vec::new(),
+                    old_bin: OldBin::Absent,
                 };
                 let text = r.to_lines();
                 assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");
