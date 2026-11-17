@@ -2223,3 +2223,89 @@ fn list_usage_error_shows_list_usage() {
     assert!(e.contains("list takes one operand"), "{e}");
     assert!(e.contains("irsync list [OPTIONS] <HOST[:PATH]>"), "{e}");
 }
+
+/// `host add` changes the daemon id. For a machine that also has a client
+/// id, grants stay with that one, and the command says so instead of
+/// claiming they moved.
+#[test]
+fn host_add_says_when_grants_stay_with_the_client_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, config) = home_with(
+        &d,
+        &format!(
+            "[hosts.box]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.phone]\nclient_id = \"{client}\"\n[immediate]\nrw = [\"box\"]\n"
+        ),
+    );
+    let o = irsync(&home, &["host", "add", "box", &new]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("box: {daemon} -> {new}\n")
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "irsync host add: note: the grants that name box (in immediate) stay with \
+             its client_id {client}; `irsync config set hosts.box.client_id ID` changes that\n"
+        )
+    );
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains(&format!("client_id = \"{client}\"")),
+        "{text}"
+    );
+    // A client-only host that no grant names gets its daemon id quietly.
+    let o = irsync(&home, &["host", "add", "phone", &new]);
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+/// `config set` and `config unset` on a host's ids can change which id
+/// its grants are for. That is never silent.
+#[test]
+fn config_says_when_a_hosts_grants_move_to_another_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, _) = home_with(
+        &d,
+        &format!(
+            "[hosts.box]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.free]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [immediate]\nrw = [\"box\"]\n"
+        ),
+    );
+    let note = |cmd: &str, from: &str, to: &str| {
+        format!(
+            "irsync config {cmd}: note: the grants that name box (in immediate) now apply \
+             to {to} (was {from})\n"
+        )
+    };
+    // The daemon id is not what grants go by here: no note.
+    let other = peer_id(8);
+    let o = irsync(&home, &["config", "set", "hosts.box.endpoint_id", &other]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+    let o = irsync(&home, &["config", "set", "hosts.box.client_id", &new]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("set", &client, &new)
+    );
+    // Without its client id, the grants fall to the daemon id.
+    let o = irsync(&home, &["config", "unset", "hosts.box.client_id"]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("unset", &new, &other)
+    );
+    let o = irsync(&home, &["config", "set", "hosts.box.endpoint_id", &daemon]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("set", &other, &daemon)
+    );
+    // A host no grant names changes without a note.
+    let o = irsync(&home, &["config", "unset", "hosts.free.client_id"]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}

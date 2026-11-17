@@ -611,3 +611,24 @@ fn recheck_does_not_revive_a_leftover_grant() {
         assert!(probe(&home.state()).is_none());
     }
 }
+
+/// The entry of a taken name may also be how this server dials that
+/// machine. The advice then replaces only the client id, and gives it.
+#[test]
+fn a_taken_name_with_a_daemon_id_is_not_told_to_remove_the_host() {
+    let check = |text: &str| {
+        let doc: DocumentMut = text.parse().unwrap();
+        check_client_name(&doc, cfg(), id(2), "myclient")
+            .unwrap_err()
+            .to_string()
+    };
+    let e = check(&format!(
+        "[hosts.myclient]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n",
+        id(5),
+        id(1)
+    ));
+    let set = format!("irsync config set hosts.myclient.client_id {}", id(2));
+    assert!(e.contains(&set) && !e.contains("host remove"), "{e}");
+    let e = check(&format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)));
+    assert!(e.contains("irsync host remove myclient -f"), "{e}");
+}

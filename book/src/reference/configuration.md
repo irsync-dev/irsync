@@ -166,7 +166,7 @@ be an `EndpointId`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint_id` | none | The `EndpointId` of the machine's daemon: the one dialled for `ALIAS:PATH`. The client pins it. An entry needs this, `client_id`, or both. |
-| `client_id` | none | The machine's `EndpointId` as a client. A grant that names `ALIAS` is for this id. Without it, such a grant is for `endpoint_id`, as for a client you added by hand with `irsync host add`. |
+| `client_id` | none | The machine's `EndpointId` as a client. A grant that names `ALIAS` is for this id. Without it, such a grant is for `endpoint_id`, as for a client you added by hand with `irsync host add`. When `irsync config set` or `unset` changes which id a host's grants are for, a note on stderr says so. |
 | `relay` | `[client]`'s | This host's relay server. |
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |

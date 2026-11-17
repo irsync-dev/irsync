@@ -73,9 +73,11 @@ name cannot be used there:
   that entry is a peer someone named by hand. Rename one of the two.
 - The name already belongs to another client. This also happens when the
   same machine comes back with a new key, for example after a reinstall.
-  The message names the entry. If that client is gone, remove it on the
-  server with `irsync host remove myclient -f`; else rename the client
-  machine.
+  The message names the entry and the command to run on the server if that
+  client is gone: `irsync host remove myclient -f`, or, when the server also
+  dials that machine under the name, `irsync config set
+  hosts.myclient.client_id ID`, which replaces only the client id. Else
+  rename the client machine.
 - Grants on the server still name a client that has no `[hosts]` entry any
   more. Those are left from a removed client and are not handed to a new
   one of the same name. Take the name out of the lists the message names.

@@ -192,8 +192,6 @@ impl Hosts {
             .entries
             .iter()
             .filter(|(_, e)| e.ssh.as_deref() == Some(dest));
-        // A host that is only a client has an `ssh` value too, once a
-        // setup of its daemon failed half way: it counts, as its own.
         let Some((first, entry)) = found.next() else {
             return Ok(None);
         };

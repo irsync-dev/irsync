@@ -714,7 +714,10 @@ fn two_machines_sync_in_both_directions() {
     let back = w.client.path().join("back");
     let here = format!("myclient:{}", back.display());
     let err = ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
-    assert!(err.contains("setting it up over ssh"), "{err}");
+    assert!(
+        err.contains("myclient is saved as a client only; setting it up over ssh"),
+        "{err}"
+    );
     assert!(err.contains("saved host alias myclient"), "{err}");
     same_tree(w.src.path(), &back);
 

@@ -1580,8 +1580,10 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                let before = peer_ids(&doc, &paths.config);
                 cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
                 lock.save(&mut doc).with_context(|| key.to_string())?;
+                note_moved_grants("config set", &before, &doc, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1594,6 +1596,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 }
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                let before = peer_ids(&doc, &paths.config);
                 // Unsetting a host's table or its id removes the host: like
                 // `host remove`, not while grants name it.
                 let hosts = if path[0] == "hosts" {
@@ -1623,9 +1626,46 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     }
                 }
                 lock.save(&mut doc).with_context(|| key.to_string())?;
+                note_moved_grants("config unset", &before, &doc, &paths.config);
                 Ok(())
             })(),
         ),
+    }
+}
+
+/// The id each host of `doc` has as a peer in a grant; none when `doc`
+/// does not load.
+fn peer_ids(
+    doc: &toml_edit::DocumentMut,
+    path: &Path,
+) -> std::collections::BTreeMap<String, iroh::EndpointId> {
+    let Ok(config) = Config::parse(&doc.to_string(), path) else {
+        return Default::default();
+    };
+    let hosts = config.hosts.entries;
+    hosts.into_iter().map(|(a, h)| (a, h.peer_id())).collect()
+}
+
+/// A grant by alias follows the alias. After an edit that changed which id
+/// a host's grants are for (`before`: [`peer_ids`] from before it), say so
+/// on stderr, for each such host that grants name.
+fn note_moved_grants(
+    cmd: &str,
+    before: &std::collections::BTreeMap<String, iroh::EndpointId>,
+    doc: &toml_edit::DocumentMut,
+    path: &Path,
+) {
+    for (alias, new) in peer_ids(doc, path) {
+        let Some(old) = before.get(&alias).filter(|old| **old != new) else {
+            continue;
+        };
+        let lists = manage::grants::lists_naming(doc, &alias);
+        if !lists.is_empty() {
+            eprintln!(
+                "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
+                lists.join(", ")
+            );
+        }
     }
 }
 
@@ -2206,19 +2246,28 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
     lock.save(&mut doc)?;
     match old {
-        Some(old) => {
-            println!("{}: {old} -> {id}", a.alias);
-            // A grant by alias follows the alias: say that it moved.
-            let lists = manage::grants::lists_naming(&doc, &a.alias);
-            if !lists.is_empty() {
-                eprintln!(
-                    "irsync host add: note: the grants that name {} (in {}) now apply to the new EndpointId",
-                    a.alias,
-                    lists.join(", ")
-                );
-            }
-        }
+        Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),
+    }
+    // This set the daemon's id. Grants that name the alias are for its
+    // client id when it has one: they did not move. Else a grant by alias
+    // follows the alias: say that it moved.
+    let lists = manage::grants::lists_naming(&doc, &a.alias);
+    let client = Config::parse(&doc.to_string(), &paths.config)
+        .ok()
+        .and_then(|c| c.hosts.get(&a.alias).and_then(|h| h.client_id));
+    if !lists.is_empty() {
+        let (alias, lists) = (&a.alias, lists.join(", "));
+        match (client, old) {
+            (Some(client), _) => eprintln!(
+                "irsync host add: note: the grants that name {alias} (in {lists}) stay with \
+                 its client_id {client}; `irsync config set hosts.{alias}.client_id ID` changes that"
+            ),
+            (None, Some(_)) => eprintln!(
+                "irsync host add: note: the grants that name {alias} (in {lists}) now apply to the new EndpointId"
+            ),
+            (None, None) => {}
+        }
     }
     Ok(())
 }

@@ -274,11 +274,17 @@ pub fn check_client_name(
         );
     }
     let entry = hosts.get(name);
-    if let Some(other) = entry.and_then(|h| h.client_id) {
+    if let Some((h, other)) = entry.and_then(|h| Some((h, h.client_id?))) {
+        // The entry may also be how this server dials that machine: then
+        // only its client id is to be replaced, not the host removed.
+        let fix = if h.endpoint_id.is_some() {
+            format!("replace it there with `irsync config set hosts.{name}.client_id {client}`")
+        } else {
+            format!("remove it there with `irsync host remove {name} -f`")
+        };
         bail!(
             "the name {name:?} is already used on this server, as [hosts.{name}] \
-             for the client {}. If that client is gone, remove it there with \
-             `irsync host remove {name} -f`; else rename this machine",
+             for the client {}. If that client is gone, {fix}; else rename this machine",
             other.fmt_short()
         );
     }
@@ -289,8 +295,8 @@ pub fn check_client_name(
         match entry {
             Some(h) => bail!(
                 "grants on this server ({lists}) name {name:?}, which is [hosts.{name}] \
-                 there, for {}: another peer. Rename this machine, or rename that \
-                 entry there with `irsync host rename`",
+                 there, for {}. Those grants stay with that id. Rename this machine, \
+                 or rename that entry there with `irsync host rename`",
                 h.peer_id().fmt_short()
             ),
             None => bail!(
