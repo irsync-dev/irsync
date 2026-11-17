@@ -37,6 +37,11 @@ its `ssh` value and says so:
 irsync: 192.168.1.5 is saved as myserver
 ```
 
+A host that is already saved with a name to reach it by, such as
+`ssh = "mike@myserver"`, keeps that name when you type its address: an
+address can go stale. The address is then not saved, so each run that types
+it checks the server over ssh again. Type the alias to skip that.
+
 It dials the daemon saved under that name, wherever it is now. If the
 address has since gone to another machine, that is not the machine you get.
 First take the address off the old entry (`irsync host remove myserver`, or

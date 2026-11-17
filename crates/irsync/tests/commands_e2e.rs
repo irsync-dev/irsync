@@ -2309,3 +2309,61 @@ fn config_says_when_a_hosts_grants_move_to_another_id() {
     assert!(o.status.success());
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
 }
+
+/// A host with a daemon id and a client id, and one that is a client
+/// only, through `host list`, `show`, `host rename` and `host remove`.
+#[test]
+fn hosts_with_a_client_id_list_show_rename_and_remove() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, phone) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, config) = home_with(
+        &d,
+        &format!(
+            "[hosts.desk]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.phone]\nclient_id = \"{phone}\"\n[immediate]\nrw = [\"desk\", \"phone\"]\n"
+        ),
+    );
+    let list = ok(&home, &["host", "list"]);
+    assert_eq!(
+        list,
+        format!(
+            "desk: {daemon}\n    client_id = \"{client}\"\n\
+             phone: (client only)\n    client_id = \"{phone}\"\n"
+        )
+    );
+    // `show` has the same lines, and a grant is for the client id.
+    let show = ok(&home, &["show"]);
+    assert!(show.contains(&list), "{show}");
+    let grants = ok(&home, &["grant", "list"]);
+    assert!(
+        grants.contains(&format!("rw: desk ({client}), phone ({phone})")),
+        "{grants}"
+    );
+
+    // A rename takes both ids and the grants along.
+    ok(&home, &["host", "rename", "desk", "box"]);
+    let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert!(t["hosts"].get("desk").is_none(), "{t}");
+    assert_eq!(t["hosts"]["box"]["endpoint_id"].as_str(), Some(&*daemon));
+    assert_eq!(t["hosts"]["box"]["client_id"].as_str(), Some(&*client));
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("box"), "{t}");
+
+    // A client-only host is removed like any other: not while grants
+    // name it, unless forced.
+    let o = irsync(&home, &["host", "remove", "phone"]);
+    assert!(!o.status.success());
+    ok(&home, &["host", "remove", "phone", "-f"]);
+    ok(&home, &["host", "remove", "box", "-f"]);
+    let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert!(
+        t.get("hosts")
+            .is_none_or(|h| h.as_table().unwrap().is_empty()),
+        "{t}"
+    );
+    assert!(
+        t.get("immediate")
+            .and_then(|i| i.get("rw"))
+            .is_none_or(|rw| rw.as_array().unwrap().is_empty()),
+        "{t}"
+    );
+}

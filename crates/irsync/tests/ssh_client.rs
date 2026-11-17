@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use irsync::config::hosts::short_host_name;
 use irsync::ssh::client::{
     client_host_name, decode_name, ensure_installed, parse_uname, probe, set_exe_override,
     setup_command, Install, Rsh, REMOTE_BIN,
@@ -346,8 +347,14 @@ fn client_host_name_is_the_short_usable_one() {
         "{e}"
     );
     unsafe { std::env::remove_var("IRSYNC_TEST_HOSTNAME") };
-    // The real one: whatever it is, the call does not panic.
-    let _ = client_host_name();
+    // The real one: what `uname -n` prints, cut short, or an error when
+    // that is no usable name.
+    let out = std::process::Command::new("uname")
+        .arg("-n")
+        .output()
+        .unwrap();
+    let real = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(client_host_name().ok(), short_host_name(&real), "{real:?}");
 }
 
 /// The probe says whether the ssh user is root (`id -u` is 0).

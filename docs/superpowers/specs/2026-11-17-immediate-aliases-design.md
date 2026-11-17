@@ -189,3 +189,12 @@ An entry needs at least one of the two.
 Calls made by the author: no `host add` flag for `client_id` yet (it can be
 set with `irsync config set hosts.NAME.client_id ID`); `host list` shows
 `(client only)` for an entry without a daemon id.
+
+## Small changes after the pull request review
+
+- `ssh-setup` applies the client's own host name rule to the name it is
+  given (no `localhost`, digits only, `.` or control characters), so a
+  hand-run setup cannot save a name a client would never send.
+- An IP address typed for a daemon that is already saved with a
+  non-address `ssh` value does not replace that value. An address still
+  replaces an address.
