@@ -1,9 +1,12 @@
 # Command line
 
 ```text
-irsync [OPTIONS] SRC... DEST
-irsync [OPTIONS] HOST:[PATH]
+irsync sync [OPTIONS] SRC... DEST
+irsync list [OPTIONS] HOST[:PATH]
 irsync COMMAND ...
+
+irsync [OPTIONS] SRC... DEST        # the same as irsync sync
+irsync [OPTIONS] HOST:[PATH]        # the same as irsync list
 ```
 
 `irsync` copies directory trees from one machine to another, in one
@@ -32,6 +35,12 @@ The terms used on this page:
   can, read-write. The daemon then makes an export for each new path the
   client uses.
 
+The last two lines of the synopsis above are the rsync-compatible shorthand:
+a command written for rsync works with `irsync` in its place. The named forms
+`irsync sync` and `irsync list` do the same and cannot be mistaken for a
+command that a later irsync adds, which makes them the safer choice in
+scripts.
+
 `irsync --help` lists irsync's flags, one line each; `irsync COMMAND --help`
 lists a subcommand's.
 
@@ -58,6 +67,8 @@ List the exports this client may reach, then the files a pull would fetch:
 irsync myserver:
 irsync myserver:/srv/photos/
 ```
+
+`irsync list myserver` and `irsync list myserver:/srv/photos/` do the same.
 
 Push again and delete on the server what is gone from the source. Run it
 with `-n` first to see what would change:
@@ -86,7 +97,8 @@ an ssh destination; see [Setup over ssh](#setup-over-ssh).
   place it: into `T` if that is a directory, as `T` if it does not exist, over
   `T` if that is a file. See
   [Copying one file](remote-addresses.md#copying-one-file).
-- A single remote operand lists instead of copying. `irsync HOST:` prints the
+- A single remote operand lists instead of copying, as `irsync list` does;
+  there the colon may be left out (`irsync list HOST`). `irsync HOST:` prints the
   exports this client may reach, one `NAME PATH ACCESS` line each, where
   `ACCESS` is `rw` or `ro` with the export's `read_only` applied.
   `irsync HOST:PATH` prints the files a pull would fetch (just that file, if
@@ -243,6 +255,8 @@ alias's table, then `[client]`, then the built-in default. See
 
 | Command | What it does |
 | --- | --- |
+| `irsync sync` | Copy files; the same as the rsync-style form. See [Operands](#operands). |
+| `irsync list` | List a host's exports, or the files under `HOST:PATH`. See [Operands](#operands). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
@@ -253,7 +267,8 @@ alias's table, then `[client]`, then the built-in default. See
 `-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before
 or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
 command name right after these flags is the command. So a directory called
-`gc` is written `./gc`: `irsync -v ./gc host:path`.
+`gc` is written `./gc`: `irsync -v ./gc host:path`. The same goes for `sync`
+and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
 
 - `-v` asks for the command's own extra output. Where a command has none,
   `-v` shows nothing more. `-vv` gives info logs, `-vvv` debug, `-vvvv`
@@ -275,8 +290,9 @@ command name right after these flags is the command. So a directory called
   daemon's key. Both must exist already: without the flag it would generate
   the missing one.
 
-Any other sync option given with a command is an error, for example
-`-a is a sync option and cannot be used with 'gc'`.
+Any other sync option given before a command is an error, for example
+`-a is a sync option and cannot be used with 'gc'`. That holds for `sync`
+and `list` too: write `irsync sync -av …`, not `irsync -av sync …`.
 
 ### irsync daemon
 
