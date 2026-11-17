@@ -65,23 +65,25 @@ fn source(tag: &str) -> (String, bool) {
     (format!("{RELEASES}/{tag}"), false)
 }
 
-/// A downloaded, checked and unpacked release binary. The directory that
-/// holds it is removed on drop.
+/// A downloaded, checked and unpacked release. The directory that holds
+/// it is removed on drop.
 #[derive(Debug)]
 pub struct Fetched {
-    bin: PathBuf,
-    _dir: tempfile::TempDir,
+    dir: PathBuf,
+    _tmp: tempfile::TempDir,
 }
 
 impl Fetched {
-    pub fn bin(&self) -> &Path {
-        &self.bin
+    /// The unpacked `irsync-<target>/` directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 }
 
 /// Download `irsync-<target>.tar.xz` and `sha256.sum` for `tag` with the
-/// system's `curl` or `wget`, check the tarball's hash, and unpack
-/// `irsync-<target>/irsync` with `tar`.
+/// system's `curl` or `wget`, check the tarball's hash, and unpack it with
+/// `tar`. Fails unless the unpacked directory holds `irsync` as a regular
+/// file.
 pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let (base, allow_file) = source(tag);
     let dir = tempfile::Builder::new()
@@ -108,30 +110,24 @@ pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
         .arg(&tarball)
         .arg("-C")
         .arg(dir.path())
-        .arg(&member)
         .output()
-        .context("cannot run tar to unpack the release binary")?;
-    let bin = dir.path().join(&member);
+        .context("cannot run tar to unpack the release")?;
+    if !out.status.success() {
+        bail!(
+            "cannot unpack {file}: tar failed (it must be able to read .xz): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let unpacked = dir.path().join(format!("irsync-{target}"));
     // A symlink is not the binary, whatever it points at.
-    let is_file = std::fs::symlink_metadata(&bin).is_ok_and(|m| m.is_file());
+    let is_file = std::fs::symlink_metadata(unpacked.join("irsync")).is_ok_and(|m| m.is_file());
     if !is_file {
-        if !out.status.success() && !mentions_missing_member(&out.stderr) {
-            bail!(
-                "cannot unpack {file}: tar failed (it must be able to read .xz): {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
         bail!("{file} does not hold {member}");
     }
-    Ok(Fetched { bin, _dir: dir })
-}
-
-/// Whether tar's complaint is that the member is not in the archive (GNU
-/// tar and bsdtar both say "Not found in archive").
-fn mentions_missing_member(stderr: &[u8]) -> bool {
-    String::from_utf8_lossy(stderr)
-        .to_ascii_lowercase()
-        .contains("not found in archive")
+    Ok(Fetched {
+        dir: unpacked,
+        _tmp: dir,
+    })
 }
 
 fn sha256_of(path: &Path) -> Result<String> {

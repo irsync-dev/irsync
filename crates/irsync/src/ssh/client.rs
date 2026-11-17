@@ -217,7 +217,7 @@ fn install_release(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
     };
     eprintln!("irsync: downloading irsync {tag} for {os} {arch}");
     let fetched = release::fetch(&tag, target)?;
-    match upload(rsh, dest, fetched.bin())? {
+    match upload(rsh, dest, &fetched.dir().join("irsync"))? {
         Upload::Done => {}
         Upload::Short => bail!("{}", cut_short(dest)),
         Upload::NotThisVersion => bail!(
