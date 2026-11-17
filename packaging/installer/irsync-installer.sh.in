@@ -59,6 +59,7 @@ main() {
       --from)
         [ $# -ge 2 ] || { usage >&2; exit 2; }
         shift
+        [ -n "$1" ] || { usage >&2; exit 2; }
         from=$1 ;;
       -*[!hqv]* | -) usage >&2; exit 2 ;;
       -*h*) set_mode help ;;
@@ -274,11 +275,48 @@ directory instead of downloading."
     place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
   fi
 
+  # Ask the user's login shell whether it finds irsync. A terminal starts
+  # that shell, and its startup files may add ~/.local/bin to PATH, which
+  # this script's own PATH cannot show (over ssh, for one, it is bare). The
+  # probe is cut off after 5 seconds and never fails the install.
+  login_finds() {
+    case ${SHELL-} in "") return 1 ;; esac
+    case ${SHELL##*/} in
+      sh | dash | ash | ksh | ksh93 | mksh | bash | zsh | fish) probe=posix ;;
+      nu) probe=nu ;;
+      *) return 1 ;;
+    esac
+    [ -x "$SHELL" ] || return 1
+    command -v sleep >/dev/null 2>&1 || return 1
+    [ -n "$tmp" ] || tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX") || return 1
+    out=$tmp/login-shell.out
+    : >"$out" || return 1
+    if [ "$probe" = nu ]; then
+      "$SHELL" -l -c 'which irsync | get path.0' </dev/null >"$out" 2>/dev/null &
+    else
+      "$SHELL" -l -i -c 'command -v irsync' </dev/null >"$out" 2>/dev/null &
+    fi
+    probe_pid=$!
+    ( sleep 5; kill "$probe_pid" ) </dev/null >/dev/null 2>&1 &
+    timer_pid=$!
+    wait "$probe_pid" 2>/dev/null
+    status=$?
+    kill "$timer_pid" 2>/dev/null
+    wait "$timer_pid" 2>/dev/null
+    [ "$status" -eq 0 ] || return 1
+    last=
+    while IFS= read -r line || [ -n "$line" ]; do last=$line; done <"$out"
+    [ "$last" = "$bin/irsync" ]
+  }
+
   on_path=yes
   case ":${PATH-}:" in
     *":$bin:"* | *":$bin/:"*) ;;
     *)
-      on_path=no
+      if login_finds; then :; else on_path=no; fi ;;
+  esac
+  case $on_path in
+    no)
       # Most Linux systems put ~/.local/bin on PATH at login, but only when
       # it exists by then (Debian's and Ubuntu's ~/.profile, Fedora's
       # ~/.bashrc, systemd's user environment). So a new login is often all
@@ -309,6 +347,8 @@ $export_line" ;;
 $export_line" ;;
         sh | dash | ash | ksh | ksh93 | mksh) say "$missing put this line in ~/.profile:
 $export_line" ;;
+        nu) say "$missing put this line in your config.nu (nu prints its place with: \$nu.config-path):
+  \$env.PATH = (\$env.PATH | prepend (\$env.HOME | path join \".local\" \"bin\"))" ;;
         csh | tcsh) say "$missing put this line in ~/.cshrc:
   set path = (~/.local/bin \$path)" ;;
         *)

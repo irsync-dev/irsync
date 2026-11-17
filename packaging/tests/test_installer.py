@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,7 +42,7 @@ ENV_SH = ".config/irsync/env.sh"
 # What the installer runs, besides uname, a downloader and a checksum tool.
 # GNU tar runs xz to read .tar.xz; bsdtar reads it on its own.
 TOOLS = ["sh", "mktemp", "rm", "mkdir", "cp", "mv", "chmod", "cat", "tar", "xz",
-         "grep", "printf"]
+         "grep", "printf", "sleep"]
 
 FAKE_UNAME = """#!/bin/sh
 case $1 in
@@ -201,6 +202,9 @@ class Base(unittest.TestCase):
         full_env = {
             "PATH": bindir,
             "HOME": home or self.home,
+            # Not a real shell: bash as sh fills in a missing SHELL, and the
+            # installer would run that shell to look for irsync.
+            "SHELL": "/nonexistent/shell",
             "TMPDIR": self.tmp,
             "FAKE_UNAME_S": uname[0],
             "FAKE_UNAME_M": uname[1],
@@ -439,6 +443,56 @@ class InstallTests(Base):
         self.assertNotIn("Log out", err)
         self.assertIn("is not on your PATH. To add it, put this line in ~/.zshrc:", err)
 
+    def fake_shell(self, name, body):
+        """An executable shells/NAME that logs its path and arguments, then runs BODY."""
+        d = os.path.join(self.tmp, "shells")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, name)
+        write_exe(path, f'#!/bin/sh\necho "$0 $*" >> "{self.log}"\n{body}\n')
+        return path
+
+    def test_login_shell_finds_it_no_advice(self):
+        sh = self.fake_shell("zsh", f'echo banner; echo "{self.home}/.local/bin/irsync"')
+        r = self.install(env={"SHELL": sh})
+        self.assertNotIn("not on your PATH", r.stderr)
+        self.assertIn("-l -i -c command -v irsync", read(self.log).decode())
+
+    def test_login_shell_misses_it_advice(self):
+        for body in ("exit 1", "echo /usr/bin/irsync", "echo 'irsync: aliased to x'"):
+            r = self.install(env={"SHELL": self.fake_shell("zsh", body)})
+            self.assertIn("not on your PATH", r.stderr, body)
+            self.assertIn("~/.zshrc", r.stderr, body)
+
+    def test_own_path_is_enough(self):
+        # The shell misses it, but the installer's PATH has ~/.local/bin.
+        r = self.install(env={"SHELL": self.fake_shell("zsh", "exit 1"),
+                              "PATH": f"{self.bindir}:{self.home}/.local/bin"})
+        self.assertNotIn("not on your PATH", r.stderr)
+
+    def test_slow_login_shell_is_cut_off(self):
+        start = time.monotonic()
+        r = self.install(env={"SHELL": self.fake_shell("bash", "sleep 60")})
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("not on your PATH", r.stderr)
+
+    def test_nushell_probe_and_advice(self):
+        sh = self.fake_shell("nu", "exit 1")
+        r = self.install(env={"SHELL": sh})
+        self.assertIn("-l -c which irsync | get path.0", read(self.log).decode())
+        self.assertIn('$env.PATH = ($env.PATH | prepend ($env.HOME | path join ".local" "bin"))', r.stderr)
+        self.assertIn("$nu.config-path", r.stderr)
+
+    def test_csh_and_unknown_shells_are_not_run(self):
+        for name in ("tcsh", "xonsh"):
+            self.install(env={"SHELL": self.fake_shell(name, "exit 0")})
+        self.assertNotIn("shells/", read(self.log).decode() if os.path.exists(self.log) else "")
+
+    def test_missing_shell_binary_falls_back(self):
+        r = self.install(env={"SHELL": "/nonexistent/zsh"})
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("not on your PATH", r.stderr)
+
     def test_path_hint_names_the_shells_startup_file(self):
         export = '\n  export PATH="$HOME/.local/bin:$PATH"\n'
         for shell, uname, want in [
@@ -461,9 +515,9 @@ class InstallTests(Base):
                     self.assertNotIn("export PATH", err)
 
     def test_path_hint_for_an_unknown_shell(self):
-        err = self.path_hint("nu", env={"SHELL": "/usr/bin/nu"})
+        err = self.path_hint("xonsh", env={"SHELL": "/usr/bin/xonsh"})
         self.assertIn("add it in your shell's startup file", err)
-        self.assertIn("does not know your shell, nu)", err)
+        self.assertIn("does not know your shell, xonsh)", err)
         self.assertIn('In sh, bash or zsh the line is:\n  export PATH="$HOME/.local/bin:$PATH"\n', err)
         # Empty, not unset: bash as sh sets a missing SHELL itself.
         err = self.path_hint("empty", env={"SHELL": ""})
@@ -553,8 +607,9 @@ class InstallTests(Base):
         for f in startup:
             self.put(f, f"# {f}\n")
         before = self.snapshot()
-        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash", "/usr/bin/fish"]:
-            r = self.install(env={"SHELL": shell})
+        # Fake shells: a real one, run as the login shell, may write to HOME.
+        for name in ["sh", "zsh", "bash", "fish"]:
+            r = self.install(env={"SHELL": self.fake_shell(name, "exit 1")})
             self.assertEqual(r.returncode, 0, r.stderr)
         after = self.snapshot()
         for f in startup:
@@ -712,6 +767,12 @@ class FromDirTests(Base):
                          bindir=self.make_bindir("bare", sums=(), without=("tar", "xz")))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.under_home(), set(FILES))
+
+    def test_from_empty_value_is_a_usage_error(self):
+        r = self.install("--from", "", archives=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("usage:", r.stderr)
+        self.assertEqual(self.under_home(), set())
 
     def test_from_usage_errors(self):
         d = self.make_dir(self.ALL)
@@ -900,6 +961,7 @@ class ShellTests(Base):
         self.assertEqual(lines[-1], 'main "$@"')
         env = {
             "PATH": self.bindir,
+            "SHELL": "/nonexistent/shell",
             "TMPDIR": self.tmp,
             "FAKE_UNAME_S": "Linux",
             "FAKE_UNAME_M": "x86_64",
