@@ -1,6 +1,6 @@
 use irsync::config::exports::Exports;
 use irsync::config::file::{first_sighting, ignored_split_files, Config};
-use irsync::config::hosts::{valid_alias, Hosts};
+use irsync::config::hosts::{short_host_name, valid_alias, Hosts};
 use irsync::config::paths::Paths;
 use irsync::config::settings::{RelayMode, Settings};
 use irsync::config::ConfigError;
@@ -125,6 +125,33 @@ fn alias_validity() {
     assert!(!valid_alias("") && !valid_alias("a:b") && !valid_alias("a/b"));
     assert!(!valid_alias(&id(1).to_string()));
     assert!(!valid_alias("all") && !valid_alias("*"));
+}
+
+#[test]
+fn short_host_names() {
+    assert_eq!(
+        short_host_name("myserver.example.com\n").as_deref(),
+        Some("myserver")
+    );
+    assert_eq!(short_host_name("my server").as_deref(), Some("my server"));
+    let endpoint = id(1).to_string();
+    for bad in [
+        "",
+        "  ",
+        ".local",
+        "localhost",
+        "localhost.localdomain",
+        "LocalHost",
+        "all",
+        "*",
+        "a/b",
+        "a:b",
+        "192.168.1.5",
+        "10",
+        &endpoint,
+    ] {
+        assert_eq!(short_host_name(bad), None, "{bad:?}");
+    }
 }
 
 #[test]

@@ -10,6 +10,7 @@ use iroh::EndpointId;
 use super::release;
 use super::setup::SetupReport;
 use crate::build::{BuildInfo, LONG_VERSION};
+use crate::config::hosts::short_host_name;
 
 /// irsync's own copy on the server, relative to the remote home.
 pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
@@ -96,6 +97,8 @@ pub struct Probe {
     pub installed: Option<String>,
     /// The ssh user is root (`id -u` is 0).
     pub root: bool,
+    /// The server's short host name (`uname -n`), when it can be an alias.
+    pub hostname: Option<String>,
 }
 
 /// Map `uname -sm` output to the names `std::env::consts` uses.
@@ -119,7 +122,8 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
 pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     // The marker lets us skip any banner a noisy login shell prints first.
     let cmd = format!(
-        "echo {PROBE_MARKER}; id -u; uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
+        "echo {PROBE_MARKER}; id -u; uname -sm; uname -n 2>/dev/null || echo; \
+         \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
     );
     let out = rsh
         .command(dest, &cmd)
@@ -141,6 +145,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     let mut lines = all[at + 1..].iter().copied();
     let root = lines.next().map(str::trim) == Some("0");
     let (os, arch) = parse_uname(lines.next().unwrap_or(""));
+    let hostname = lines.next().and_then(short_host_name);
     let installed = lines
         .next()
         .map(str::trim)
@@ -151,6 +156,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
         arch,
         installed,
         root,
+        hostname,
     })
 }
 

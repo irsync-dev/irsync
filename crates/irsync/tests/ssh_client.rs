@@ -38,6 +38,7 @@ fn fake(uname: Option<&str>) -> Fake {
             None => std::env::remove_var("FAKE_SSH_UNAME"),
         }
         std::env::remove_var("IRSYNC_TEST_RELEASE_URL");
+        std::env::set_var("FAKE_SSH_HOSTNAME", "-");
     }
     set_exe_override(PathBuf::from(env!("CARGO_BIN_EXE_irsync")));
     let rsh = Rsh::from_opts(Some(fake_ssh().to_str().unwrap()));
@@ -287,6 +288,25 @@ fn remote_commands_run_under_sh() {
         ensure_installed(&wrapper, "myserver", &p).unwrap(),
         Install::Current
     );
+}
+
+/// The probe asks for the server's host name and keeps its short form,
+/// with or without an installed irsync before it in the reply.
+#[test]
+fn probe_reports_the_host_name() {
+    let f = fake(Some("Linux x86_64"));
+    assert_eq!(probe(&f.rsh, "myserver").unwrap().hostname, None);
+    // SAFETY: serialized by ENV (held by `f`).
+    unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "myserver.example.com") };
+    let p = probe(&f.rsh, "192.168.1.5").unwrap();
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert_eq!(p.installed, None);
+    ensure_installed(&f.rsh, "192.168.1.5", &p).unwrap();
+    let p = probe(&f.rsh, "192.168.1.5").unwrap();
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert!(p.installed.is_some());
+    unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "localhost") };
+    assert_eq!(probe(&f.rsh, "192.168.1.5").unwrap().hostname, None);
 }
 
 /// The probe says whether the ssh user is root (`id -u` is 0).
