@@ -255,7 +255,12 @@ fn install_release(
     eprintln!("irsync: downloading irsync {tag} for {os} {arch}");
     let fetched = match release::fetch(tag, target) {
         Ok(fetched) => fetched,
-        Err(_) if same => return Ok(Err(format!("could not download release {tag}"))),
+        Err(e) if same => {
+            return Ok(Err(format!(
+                "could not download release {tag}: {}",
+                e.root_cause()
+            )))
+        }
         Err(e) => return Err(e),
     };
     let staged = Staged::from_release(fetched)?;
@@ -351,9 +356,9 @@ fn install_remote(rsh: &Rsh, dest: &str, packed: &Packed) -> Result<Upload> {
     // failed installer, 7 files that could not be stored or unpacked.
     // `sh_quote` takes no `'`, so the EXIT trap calls a function.
     let cmd = format!(
-        "w=$(mktemp -d \"$HOME/.irsync-install.XXXXXX\") || exit 7; \
-         clean() {{ rm -rf \"$w\"; }}; \
+        "w=; clean() {{ [ -z \"$w\" ] || rm -rf \"$w\"; }}; \
          trap clean EXIT; trap \"exit 129\" HUP; trap \"exit 130\" INT; trap \"exit 143\" TERM; \
+         w=$(mktemp -d \"$HOME/.irsync-install.XXXXXX\") || exit 7; \
          cat > \"$w/in.tar\" || exit 7; \
          [ \"$(wc -c < \"$w/in.tar\")\" -eq {len} ] || exit 3; \
          tar -xf \"$w/in.tar\" -C \"$w\" || exit 7; \
