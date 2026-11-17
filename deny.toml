@@ -20,6 +20,7 @@ ignore = [
     # may have been copied from someone else.
     { id = "RUSTSEC-2026-0459", reason = "TEMPORARY: SQLite fix held back by the 3.54 re-prepare regression; fileset opens manifests that may come from others, so this needs a decision, not a standing exception." },
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable. It is built only on Windows, which irsync does not ship for: wmi turns it on by default and iroh's netwatch uses wmi there. No upgrade drops it (wmi 0.18.4 is the newest; netwatch 0.20 still needs it); it goes when upstream moves off it." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable. Only filegen uses it (via serde_yaml_ng), to read its own test specs; filegen is a test tool and is not shipped." },
 ]
 
