@@ -43,8 +43,9 @@ Picked: **B**, plus goodput (a percentage up to 2, a ratio above).
 
 **State (`state.rs`).**
 - `Live` gets `matched: u64`, the run's matched bytes. `FileMatched`
-  carries the file's running total, so the counter adds the increase over
-  the row's previous `matched`.
+  carries the file's latest estimate, which shrinks as more chunks are
+  requested, so each file's share is replaced, not added to; the counter
+  can go down. The windowed synced rate is never below the sent rate.
 - `Live` keeps a short list of samples `(Instant, literal, synced)`, one
   per `tick`, and drops those older than the window. The current rates
   are the change from the oldest kept sample to now. The window is 5

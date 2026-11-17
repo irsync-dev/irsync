@@ -651,16 +651,33 @@ fn failed_events_are_counted_and_the_last_three_kept_in_order() {
 }
 
 #[test]
-fn matched_bytes_are_counted_once_and_never_go_down() {
+fn matched_bytes_follow_each_files_latest_estimate() {
     let (mut l, t) = (live(), Instant::now());
     l.apply(&Event::FileMatched(rp("b"), 300), t); // before FileStart
     l.apply(&Event::FileStart(rp("b"), 400), t);
     l.apply(&Event::FileMatched(rp("b"), 350), t);
     assert_eq!(l.matched, 350);
-    l.apply(&Event::FileMatched(rp("b"), 100), t); // smaller: ignored
-    assert_eq!(l.matched, 350);
+    // The sender's estimate shrinks as more chunks are requested.
+    l.apply(&Event::FileMatched(rp("b"), 100), t);
+    assert_eq!(l.matched, 100);
+    // Hashed again (a retry): the next estimate replaces, not adds.
+    l.apply(&Event::FileHashing(rp("b"), 400), t);
+    l.apply(&Event::FileMatched(rp("b"), 100), t);
+    assert_eq!(l.matched, 100);
     l.apply(&Event::FileDone(rp("b"), 400), t);
-    assert_eq!(l.matched, 350);
+    l.apply(&Event::FileMatched(rp("c"), 50), t);
+    assert_eq!(l.matched, 150, "a finished file keeps its share");
+}
+
+#[test]
+fn synced_rate_is_never_below_the_sent_rate() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileMatched(rp("f"), 1000), t);
+    l.tick(t);
+    l.apply(&Event::FileMatched(rp("f"), 200), t);
+    l.apply(&Event::FileBytes(rp("f"), 300), t);
+    l.tick(t + Duration::from_secs(1));
+    assert_eq!(l.current_rates(), Some((300.0, 300.0)));
 }
 
 #[test]

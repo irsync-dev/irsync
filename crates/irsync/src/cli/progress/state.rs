@@ -61,6 +61,9 @@ pub struct Row {
     /// Every stream is done and only the receiver's ack is outstanding:
     /// counts toward the percent until `FileDone`, not shown.
     pub sent: bool,
+    /// This file's share of [`Live::matched`]: its latest `FileMatched`.
+    /// Kept when the row is hashed again, so a retry replaces it.
+    pub matched_counted: u64,
 }
 
 impl Row {
@@ -75,6 +78,7 @@ impl Row {
             rate: 0.0,
             opened: false,
             sent: false,
+            matched_counted: 0,
         }
     }
 
@@ -139,8 +143,8 @@ pub struct Live {
     pub source: Party,
     /// Wire bytes, for the rate.
     pub literal: u64,
-    /// Matched bytes this session: what each row's `FileMatched` total
-    /// grew by.
+    /// Matched bytes this session: the latest `FileMatched` of each file
+    /// (an estimate until the file is done, so it can go down).
     pub matched: u64,
     /// `(time, literal, literal + matched)` at each `tick`, covering
     /// [`SPEED_WINDOW`], oldest first.
@@ -291,11 +295,13 @@ impl Live {
                         now,
                     )
                 });
-                let before = match row.state {
-                    RowState::Moving { matched, .. } => matched,
-                    RowState::Hashing => 0,
-                };
-                self.matched = self.matched.saturating_add(n.saturating_sub(before));
+                // Each report is the file's latest estimate, which shrinks
+                // as more chunks are requested: it replaces the last one.
+                self.matched = self
+                    .matched
+                    .saturating_add(*n)
+                    .saturating_sub(row.matched_counted);
+                row.matched_counted = *n;
                 match &mut row.state {
                     RowState::Moving { matched, .. } => *matched = *n,
                     state @ RowState::Hashing => {
@@ -431,10 +437,10 @@ impl Live {
             return None;
         }
         let secs = span.as_secs_f64();
-        Some((
-            last.1.saturating_sub(first.1) as f64 / secs,
-            last.2.saturating_sub(first.2) as f64 / secs,
-        ))
+        let sent = last.1.saturating_sub(first.1);
+        // Matched estimates can shrink, but what was sent was synced.
+        let synced = last.2.saturating_sub(first.2).max(sent);
+        Some((sent as f64 / secs, synced as f64 / secs))
     }
 
     /// Synced bytes per wire byte this session; `None` before any wire byte.
