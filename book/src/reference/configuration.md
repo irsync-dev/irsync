@@ -154,16 +154,19 @@ When to choose `cubic` over `bbr`, with measurements, is in
 
 ## Hosts
 
-`[hosts.ALIAS]` names a remote by its `EndpointId`. On a client it names the
-daemons you dial; on a daemon's machine it names the clients that grants may
-refer to. The [SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves)
-writes both: the server's alias on the client, and the client's host name on
-the server. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
+`[hosts.ALIAS]` names another machine. A machine has two `EndpointId`s: its
+daemon's, which you dial, and its own as a client, which grants are for. An
+entry holds one of them or both, so one name serves a machine you sync to
+and that syncs to you. The
+[SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves) writes both
+sides: the server's alias on the client, and the client's host name on the
+server. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
 be an `EndpointId`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint_id` | required | The remote's `EndpointId`. The client pins it. |
+| `endpoint_id` | none | The `EndpointId` of the machine's daemon: the one dialled for `ALIAS:PATH`. The client pins it. An entry needs this, `client_id`, or both. |
+| `client_id` | none | The machine's `EndpointId` as a client. A grant that names `ALIAS` is for this id. Without it, such a grant is for `endpoint_id`, as for a client you added by hand with `irsync host add`. |
 | `relay` | `[client]`'s | This host's relay server. |
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |

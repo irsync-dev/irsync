@@ -94,7 +94,7 @@ fn settings_missing_file_is_default() {
 fn hosts_parse_and_resolve_alias_before_id() {
     let t = format!("[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1), id(2));
     let h = parse_hosts(&t, p()).unwrap();
-    assert_eq!(h.get("home").unwrap().endpoint_id, id(1));
+    assert_eq!(h.get("home").unwrap().endpoint_id, Some(id(1)));
     assert_eq!(h.get("home").unwrap().parallel, Some(4));
     assert_eq!(h.get("home").unwrap().address.len(), 1);
     assert_eq!(h.resolve_peer("laptop").unwrap(), id(2));
@@ -182,6 +182,45 @@ fn host_by_ssh_destination() {
         hosts.by_ssh("10.0.0.1"),
         Err(vec!["a".to_string(), "b".to_string()])
     );
+}
+
+/// One entry stands for one machine: `endpoint_id` is its daemon, the id
+/// to dial; `client_id` is the machine as a client, the id grants are for.
+#[test]
+fn host_entry_with_a_client_id() {
+    let text = format!(
+        "[hosts.laptop]\nendpoint_id = \"{d}\"\nclient_id = \"{c}\"\n\
+         [hosts.phone]\nclient_id = \"{p}\"\n\
+         [hosts.nas]\nendpoint_id = \"{n}\"\n",
+        d = id(1),
+        c = id(2),
+        p = id(3),
+        n = id(4)
+    );
+    let hosts = parse_hosts(&text, p()).unwrap();
+    let laptop = hosts.get("laptop").unwrap();
+    assert_eq!(laptop.endpoint_id, Some(id(1)));
+    assert_eq!(laptop.client_id, Some(id(2)));
+    assert_eq!(laptop.peer_id(), id(2));
+    let phone = hosts.get("phone").unwrap();
+    assert_eq!((phone.endpoint_id, phone.peer_id()), (None, id(3)));
+    // Without a client id, the one id is the peer, as it always was.
+    assert_eq!(hosts.get("nas").unwrap().peer_id(), id(4));
+    // Grants go by the peer id: the daemon of a machine is not its client.
+    assert_eq!(hosts.resolve_peer("laptop").unwrap(), id(2));
+    assert_eq!(hosts.alias_of(&id(2)), Some("laptop"));
+    assert_eq!(hosts.alias_of(&id(1)), None);
+    assert_eq!(hosts.alias_of(&id(3)), Some("phone"));
+    assert_eq!(hosts.alias_of(&id(4)), Some("nas"));
+    // An entry needs one of the two; a bad client id names its line.
+    let e = parse_hosts("[hosts.x]\nssh = \"x\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("endpoint_id") && e.contains("client_id"), "{e}");
+    let e = parse_hosts("[hosts.x]\nclient_id = \"nope\"\n", p())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
 }
 
 #[test]
@@ -389,7 +428,7 @@ fn merged_file_holds_every_table() {
     .unwrap();
     assert_eq!(c.settings.state_dir, PathBuf::from("/var/lib/irsync"));
     assert_eq!(c.settings.client.parallel, Some(4));
-    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, id(1));
+    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, Some(id(1)));
     assert_eq!(c.exports.ro, ["home"]);
     assert_eq!(c.exports.exports["photos"].rw, ["home"]);
     assert_eq!(

@@ -167,7 +167,8 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
     let cs = ClientSettings::default();
     // Addresses from the host entry, with relay/dht/mdns set beside them: isolated wins.
     let he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
+        endpoint_id: Some(SecretKey::generate().public()),
+        client_id: None,
         relay: Some("https://r.example".parse().unwrap()),
         relay_mode: None,
         congestion: None,
@@ -282,7 +283,8 @@ fn opts_carry_the_congestion_controller() {
         ..ClientSettings::default()
     };
     let mut he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
+        endpoint_id: Some(SecretKey::generate().public()),
+        client_id: None,
         relay: None,
         relay_mode: None,
         congestion: None,
@@ -373,7 +375,8 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
     assert_eq!(o.relay, RelayChoice::Disabled);
     // The host entry decides over the client settings, either way round.
     let mut he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
+        endpoint_id: Some(SecretKey::generate().public()),
+        client_id: None,
         relay: None,
         relay_mode: Some(RelayMode::Default),
         congestion: None,

@@ -157,3 +157,35 @@ Update the book pages that describe the first sync and grants:
   does it, else the smallest addition).
 - Test layout: unit tests beside each function; an end-to-end test of the
   onboarding path where the existing ssh tests allow it.
+
+## Change after review: one host entry, two ids
+
+Decided by Mike on 2026-11-17, after the branch review.
+
+The first build saved the client on the server as `[hosts.NAME]` with its
+client id in `endpoint_id`. That is also the name typed to dial that
+machine's daemon, which has another id, so syncing in both directions
+between two machines broke.
+
+A host entry now stands for a machine and holds up to two ids:
+
+- `endpoint_id`: the machine's daemon, the id dialled. Optional now.
+- `client_id`: the machine as a client, the id that grants naming the
+  entry are for. Without it, grants are for `endpoint_id`, as before.
+
+An entry needs at least one of the two.
+
+- **Server, ssh setup:** the client goes in as `client_id`. A free name
+  makes a new entry. An entry that has only `endpoint_id` and that no grant
+  names gets the `client_id` added. Refused: an entry that already has
+  another `client_id`; a name that grants mention when it is not this
+  client (a peer named by hand, or left from a removed client).
+- **Client, dialling:** an entry with no `endpoint_id` is a first run: its
+  daemon is set up over ssh and `endpoint_id` is added to the same entry.
+- The two keys stay separate on purpose. With one shared key, the daemon
+  cannot be reached through the relay while a sync runs on its machine
+  (tested against a local relay of the pinned iroh).
+
+Calls made by the author: no `host add` flag for `client_id` yet (it can be
+set with `irsync config set hosts.NAME.client_id ID`); `host list` shows
+`(client only)` for an entry without a daemon id.

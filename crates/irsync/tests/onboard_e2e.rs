@@ -43,6 +43,9 @@ struct World {
     server: tempfile::TempDir,
     src: tempfile::TempDir,
     port: u16,
+    /// Where a daemon in the client's home listens, once
+    /// [`World::client_daemon_config`] wrote its config.
+    client_port: u16,
     uname: Option<String>,
     /// Where the client downloads a release from, instead of GitHub.
     release_url: Option<String>,
@@ -64,6 +67,7 @@ impl World {
             server: tempfile::tempdir().unwrap(),
             src: tempfile::tempdir().unwrap(),
             port: free_port(),
+            client_port: free_port(),
             uname: None,
             release_url: None,
             client_name: "myclient".into(),
@@ -122,13 +126,48 @@ impl World {
     /// As [`World::irsync`], without `--address`: the client dials what it
     /// learns from the setup and from its lookups.
     fn irsync_bare(&self, args: &[&str]) -> Output {
+        self.run(
+            self.client.path(),
+            self.server.path(),
+            &self.client_name,
+            args,
+        )
+    }
+
+    /// The other direction: irsync run on the server machine (host name
+    /// `myserver`), whose ssh reaches the client machine. Dials the
+    /// client's daemon at `client_port`.
+    fn irsync_back(&self, args: &[&str]) -> Output {
+        let addr = format!("127.0.0.1:{}", self.client_port);
+        let mut all = args.to_vec();
+        all.extend(["--address", &addr]);
+        self.run(self.server.path(), self.client.path(), "myserver", &all)
+    }
+
+    /// A daemon config in the client's home, so the client machine can be
+    /// set up as a server too.
+    fn client_daemon_config(&self) {
+        let cfg = self.client.path().join(".config/irsync");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let text = format!(
+            "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+             listen = [\"127.0.0.1:{}\"]\n\
+             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+            self.client_port
+        );
+        std::fs::write(cfg.join("irsync.toml"), text).unwrap();
+    }
+
+    /// irsync run in `home` as the machine `name`, with a fake ssh that
+    /// lands in `remote`.
+    fn run(&self, home: &Path, remote: &Path, name: &str, args: &[&str]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
         cmd.args(args)
-            .env("HOME", self.client.path())
-            .env("XDG_STATE_HOME", self.client.path().join("xdg"))
+            .env("HOME", home)
+            .env("XDG_STATE_HOME", home.join("xdg"))
             .env("IRSYNC_RSH", fake_ssh())
-            .env("FAKE_SSH_HOME", self.server.path())
-            .env("FAKE_SSH_LOG", self.ssh_log())
+            .env("FAKE_SSH_HOME", remote)
+            .env("FAKE_SSH_LOG", home.join("ssh.log"))
             .env_remove("IRSYNC_PASSPHRASE")
             .env_remove("RUST_LOG")
             .stdin(Stdio::null())
@@ -142,7 +181,7 @@ impl World {
             Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
-        cmd.env("IRSYNC_TEST_HOSTNAME", &self.client_name);
+        cmd.env("IRSYNC_TEST_HOSTNAME", name);
         cmd.env("FAKE_SSH_HOSTNAME", self.hostname.as_deref().unwrap_or("-"));
         if self.probe_root {
             cmd.env("FAKE_SSH_ID_U", "0");
@@ -172,12 +211,13 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        let state = self.server.path().join("xdg/irsync");
-        if let Some(info) = probe(&state) {
-            if info.pid != 0 {
-                let _ = Command::new("kill")
-                    .args(["-9", &info.pid.to_string()])
-                    .status();
+        for home in [self.server.path(), self.client.path()] {
+            if let Some(info) = probe(&home.join("xdg/irsync")) {
+                if info.pid != 0 {
+                    let _ = Command::new("kill")
+                        .args(["-9", &info.pid.to_string()])
+                        .status();
+                }
             }
         }
     }
@@ -617,11 +657,9 @@ fn refusal_never_uses_ssh() {
 fn immediate_granted(w: &World, id: &str) -> bool {
     let doc: toml::Table = w.server_toml().parse().unwrap();
     let named = |entry: &str| {
-        doc.get("hosts")
-            .and_then(|h| h.get(entry))
-            .and_then(|h| h.get("endpoint_id"))
-            .and_then(|v| v.as_str())
-            == Some(id)
+        let host = doc.get("hosts").and_then(|h| h.get(entry));
+        let key = |k: &str| host.and_then(|h| h.get(k)).and_then(|v| v.as_str());
+        key("client_id").or(key("endpoint_id")) == Some(id)
     };
     doc.get("immediate")
         .and_then(|i| i.get("rw"))
@@ -641,7 +679,7 @@ fn server_knows_the_client_by_name() {
     assert!(err.contains("granted this client (myclient, "), "{err}");
     let t: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(
-        t["hosts"]["myclient"]["endpoint_id"].as_str(),
+        t["hosts"]["myclient"]["client_id"].as_str(),
         Some(&*client_id(w.client.path()))
     );
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
@@ -652,14 +690,76 @@ fn server_knows_the_client_by_name() {
     assert_eq!(e["rw"][0].as_str(), Some("myclient"), "{t}");
 }
 
+/// Two machines, each a client of the other. A machine has one entry on
+/// the other side, under its host name: its daemon's id to dial and its
+/// client id for grants. Neither direction gets in the other's way.
+#[test]
+fn two_machines_sync_in_both_directions() {
+    let w = World::new();
+    w.client_daemon_config();
+    let table = |home: &Path| -> toml::Table {
+        std::fs::read_to_string(home.join(".config/irsync/irsync.toml"))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // myclient -> myserver.
+    let there = format!("myserver:{}", w.server.path().join("dest").display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &there]));
+    let t = table(w.server.path());
+    assert!(t["hosts"]["myclient"].get("endpoint_id").is_none(), "{t}");
+
+    // myserver -> myclient: the name the server knows the client by is
+    // the name typed to dial it. Its daemon is set up over ssh.
+    let back = w.client.path().join("back");
+    let here = format!("myclient:{}", back.display());
+    let err = ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
+    assert!(err.contains("setting it up over ssh"), "{err}");
+    assert!(err.contains("saved host alias myclient"), "{err}");
+    same_tree(w.src.path(), &back);
+
+    // One entry per machine, on both sides, with both ids.
+    let (server, client) = (table(w.server.path()), table(w.client.path()));
+    for (t, name) in [(&server, "myclient"), (&client, "myserver")] {
+        let hosts = t["hosts"].as_table().unwrap();
+        assert_eq!(hosts.len(), 1, "{t}");
+        let h = &hosts[name];
+        assert!(h["endpoint_id"].is_str() && h["client_id"].is_str(), "{t}");
+        assert_ne!(h["endpoint_id"], h["client_id"], "{t}");
+        assert_eq!(h["ssh"].as_str(), Some(name), "{t}");
+        assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name), "{t}");
+    }
+    assert_eq!(
+        server["hosts"]["myclient"]["client_id"].as_str(),
+        Some(&*client_id(w.client.path()))
+    );
+
+    // Both directions again: no ssh, and each still gets in.
+    let calls = (w.ssh_calls(), ssh_calls_in(w.server.path()));
+    std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
+    ok(&w.irsync(&["-a", &w.src_arg(), &there]));
+    ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
+    assert_eq!((w.ssh_calls(), ssh_calls_in(w.server.path())), calls);
+    for dest in [w.server.path().join("dest"), back] {
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+            "again\n"
+        );
+    }
+}
+
+/// The ssh calls made by the irsync that ran in `home`.
+fn ssh_calls_in(home: &Path) -> usize {
+    std::fs::read_to_string(home.join("ssh.log"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
 #[test]
 fn a_taken_client_name_is_refused_and_changes_nothing() {
     let w = World::new();
     let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
-    w.server_config(
-        "",
-        &format!("[hosts.myclient]\nendpoint_id = \"{other}\"\n"),
-    );
+    w.server_config("", &format!("[hosts.myclient]\nclient_id = \"{other}\"\n"));
     let before = w.server_toml();
     let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
     assert!(!out.status.success());

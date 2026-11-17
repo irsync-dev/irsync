@@ -100,6 +100,26 @@ pub fn host_add(
     Ok(old)
 }
 
+/// Create `[hosts.alias]` when it is missing and set its `client_id`: the
+/// id `alias` has as a client, the one grants naming it are for. Its other
+/// keys, the daemon's `endpoint_id` among them, stay as they are.
+pub fn host_set_client(
+    doc: &mut DocumentMut,
+    alias: &str,
+    id: EndpointId,
+) -> Result<(), ManageError> {
+    if !valid_alias(alias) {
+        return Err(ManageError::BadAlias(alias.to_string()));
+    }
+    let hosts = hosts_table(doc);
+    if !hosts.get(alias).is_some_and(Item::is_table_like) {
+        hosts.insert(alias, toml_edit::table());
+    }
+    let t = hosts.get_mut(alias).expect("just inserted");
+    t["client_id"] = toml_edit::value(id.to_string());
+    Ok(())
+}
+
 /// Remove `[hosts.alias]`; only a host entry (a table) is removed. A host
 /// that grants still name is not removed: without it they would match
 /// nobody. With `force` those grants are removed first. The number of
@@ -211,7 +231,11 @@ pub fn host_list(doc: &DocumentMut) -> Vec<String> {
         let Some(t) = item.as_table_like() else {
             continue;
         };
-        let id = t.get("endpoint_id").and_then(Item::as_str).unwrap_or("?");
+        // A host known only as a client has no daemon id to dial.
+        let id = t
+            .get("endpoint_id")
+            .and_then(Item::as_str)
+            .unwrap_or("(client only)");
         out.push(format!("{alias}: {id}"));
         for (k, v) in t.iter().filter(|(k, _)| *k != "endpoint_id") {
             if let Some(v) = v.as_value() {

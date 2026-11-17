@@ -439,7 +439,12 @@ fn verb(dry_run: bool) -> &'static str {
 /// string itself must be an EndpointId.
 fn resolve_target(hosts: &Hosts, host: &str) -> anyhow::Result<EndpointId> {
     if let Some(entry) = hosts.get(host) {
-        return Ok(entry.endpoint_id);
+        return entry.endpoint_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{host} is saved in {} as a client only: it has no endpoint_id to dial",
+                hosts.path.display()
+            )
+        });
     }
     parse_endpoint_id(host).map_err(|_| {
         let missing = if hosts.path.exists() {
@@ -535,6 +540,11 @@ async fn connect_for(
     let mut saved_as = None;
     let saved = config.hosts.get(host);
     let unknown = saved.is_none() && parse_endpoint_id(host).is_err();
+    // Saved here as a client only (it synced to this machine): its daemon
+    // was never set up from here. That is a first run, saved under the
+    // same name.
+    let client_only = saved.is_some_and(|h| h.endpoint_id.is_none());
+    let first = unknown || client_only;
     let forced = opts.force_ssh || opts.no_remote_dht;
     if forced && saved.is_none() && !unknown {
         let flag = if opts.force_ssh {
@@ -544,7 +554,7 @@ async fn connect_for(
         };
         bail!("{flag} needs a host alias or an ssh destination, not an EndpointId");
     }
-    if unknown || forced {
+    if first || forced {
         // A saved host: its `ssh` destination, else the alias itself.
         let dest = saved
             .and_then(|h| h.ssh.clone())
@@ -560,6 +570,8 @@ async fn connect_for(
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
         log.eprintln(&if unknown {
             format!("irsync: {host} is not a saved alias; setting it up over ssh")
+        } else if client_only {
+            format!("irsync: {host} is saved as a client only; setting it up over ssh")
         } else {
             format!("irsync: checking {host} over ssh")
         });
@@ -569,11 +581,17 @@ async fn connect_for(
             alias,
             &dest,
             secret.public(),
-            !unknown,
+            !first,
             opts.no_remote_dht,
         )
         .with_context(|| {
-            if unknown {
+            if client_only {
+                format!(
+                    "{host} is saved in {} as a client only; setting its daemon \
+                     up over ssh failed",
+                    config.hosts.path.display()
+                )
+            } else if unknown {
                 format!(
                     "{host:?} is not an alias in {} and not an EndpointId; \
                      setting it up over ssh failed",
@@ -1740,7 +1758,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 }
                 let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
-                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let resolve = |s: &str| hosts.get(s).map(|h| h.peer_id());
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 if export == "immediate" {
@@ -1770,7 +1788,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
             "grant remove",
             (|| {
                 let hosts = Config::load(&paths)?.hosts;
-                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let resolve = |s: &str| hosts.get(s).map(|h| h.peer_id());
                 if who == "*" {
                     bail!(
                         "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",

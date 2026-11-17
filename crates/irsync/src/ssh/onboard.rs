@@ -199,10 +199,9 @@ pub fn onboard(
     };
     let mut saved = Vec::new();
     for alias in aliases {
-        let existed = doc
-            .get("hosts")
-            .and_then(|h| h.get(&alias))
-            .is_some_and(toml_edit::Item::is_table_like);
+        // Saved with a daemon id before: an entry that was a client only
+        // is saved as a host now.
+        let existed = saved_id(&doc, &alias).is_some();
         let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &flags)
             .with_context(|| format!("saving host alias {alias}"))?;
         saved.push(SavedAlias {

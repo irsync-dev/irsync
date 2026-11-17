@@ -26,6 +26,21 @@ fn alias_and_raw_id_entries_both_grant() {
     assert!(s.grants(&id(3)).is_empty());
 }
 
+/// A grant that names a machine is for its client id, not its daemon's.
+#[test]
+fn a_named_machine_is_granted_as_a_client() {
+    let s = snap(
+        &format!(
+            "[hosts.laptop]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n",
+            id(1),
+            id(2)
+        ),
+        "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\n",
+    );
+    assert!(s.grants(&id(2)).allows("photos", true));
+    assert!(s.grants(&id(1)).is_empty());
+}
+
 #[test]
 fn per_export_entry_wins_over_top_level_and_rw_wins_over_ro() {
     let s = snap("", &format!("[all]\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));

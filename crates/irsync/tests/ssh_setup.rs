@@ -176,7 +176,7 @@ fn fresh_home_generates_grants_starts() {
     // The client is saved under its host name, and the name is granted.
     assert_eq!(rw[0].as_str().unwrap(), "myclient");
     assert_eq!(
-        doc["hosts"]["myclient"]["endpoint_id"].as_str().unwrap(),
+        doc["hosts"]["myclient"]["client_id"].as_str().unwrap(),
         client.to_string()
     );
     let info = probe(&home.state()).expect("daemon running");
@@ -293,7 +293,7 @@ fn recheck_does_not_regrant() {
     assert_eq!(rw.len(), 1);
     assert_eq!(rw[0].as_str().unwrap(), "other");
     assert_eq!(
-        doc["hosts"]["other"]["endpoint_id"].as_str().unwrap(),
+        doc["hosts"]["other"]["client_id"].as_str().unwrap(),
         other.to_string()
     );
     // A rebuilt server (fresh identity) gets the grant again.
@@ -435,7 +435,7 @@ fn hosts_from(text: &str) -> Hosts {
 
 #[test]
 fn client_name_rules() {
-    let doc: DocumentMut = format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1))
+    let doc: DocumentMut = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1))
         .parse()
         .unwrap();
     let check = |client, name| check_client_name(&doc, cfg(), client, name);
@@ -451,15 +451,53 @@ fn client_name_rules() {
     assert!(check(id(1), "a/b").is_ok());
 }
 
+/// The server dials a machine as `desktop`; that machine then comes as a
+/// client called `desktop`. One entry holds both ids: its daemon to dial,
+/// its client id for grants.
+#[test]
+fn a_client_joins_the_entry_of_its_own_daemon() {
+    let text = format!(
+        "[hosts.desktop]\nendpoint_id = \"{}\"\nssh = \"mike@desktop\"\n",
+        id(5)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert!(grant_client(&mut doc, cfg(), id(2), "desktop").unwrap());
+    let hosts = hosts_from(&doc.to_string());
+    let e = hosts.get("desktop").unwrap();
+    assert_eq!((e.endpoint_id, e.client_id), (Some(id(5)), Some(id(2))));
+    assert_eq!(e.ssh.as_deref(), Some("mike@desktop"));
+    assert_eq!(hosts.entries.len(), 1);
+    let t: toml::Table = doc.to_string().parse().unwrap();
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("desktop"));
+    assert_eq!(hosts.resolve_peer("desktop").unwrap(), id(2));
+}
+
+/// An entry that grants already name is a peer someone named by hand: a
+/// client that calls itself the same must not get those grants.
+#[test]
+fn a_client_does_not_join_an_entry_that_grants_name() {
+    let text = format!(
+        "[hosts.desktop]\nendpoint_id = \"{}\"\n[exports.x]\npath = \"/x\"\nrw = [\"desktop\"]\n",
+        id(5)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    let e = grant_client(&mut doc, cfg(), id(2), "desktop")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("[exports.x]") && e.contains("desktop"), "{e}");
+    assert_eq!(doc.to_string(), text);
+}
+
 #[test]
 fn grants_the_name() {
     let mut doc = DocumentMut::new();
     assert!(grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
     let t: toml::Table = doc.to_string().parse().unwrap();
     assert_eq!(
-        t["hosts"]["myclient"]["endpoint_id"].as_str(),
+        t["hosts"]["myclient"]["client_id"].as_str(),
         Some(&*id(1).to_string())
     );
+    assert!(t["hosts"]["myclient"].get("endpoint_id").is_none());
     assert_eq!(
         t["immediate"]["rw"].as_array().unwrap(),
         &[toml::Value::from("myclient")]
@@ -490,7 +528,7 @@ fn names_that_need_quoting_round_trip() {
         );
         assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name));
         // And irsync itself reads it back as that host.
-        assert_eq!(hosts_from(&text).get(name).unwrap().endpoint_id, id(1));
+        assert_eq!(hosts_from(&text).get(name).unwrap().client_id, Some(id(1)));
     }
 }
 
@@ -512,7 +550,7 @@ fn a_bare_id_grant_counts() {
 fn a_taken_client_name_changes_nothing() {
     let home = Home::new("");
     let mut text = std::fs::read_to_string(home.config()).unwrap();
-    text.push_str(&format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1)));
+    text.push_str(&format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)));
     std::fs::write(home.config(), &text).unwrap();
     let out = home.try_setup(&id(2), "myclient", &[]);
     assert_eq!(out.status.code(), Some(1));
@@ -550,7 +588,7 @@ fn a_leftover_grant_name_is_not_taken_over() {
 /// what `[hosts]` held before the lock was taken.
 #[test]
 fn a_name_taken_in_the_document_is_not_overwritten() {
-    let text = format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1));
+    let text = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1));
     let mut doc: DocumentMut = text.parse().unwrap();
     assert!(grant_client(&mut doc, cfg(), id(2), "myclient").is_err());
     assert_eq!(doc.to_string(), text);

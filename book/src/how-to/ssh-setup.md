@@ -49,7 +49,7 @@ and grants that name:
 
 ```toml
 [hosts.myclient]
-endpoint_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
+client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 
 [immediate]
 rw = ["myclient"]
@@ -59,9 +59,18 @@ The name is a label. The daemon decides access by the `EndpointId` the name
 stands for, never by what a client calls itself. A client the server already
 has a name for keeps that name.
 
+The two machines can sync in both directions under the same names. When the
+server later runs `irsync ... myclient:PATH`, irsync sees that `myclient` is
+saved as a client only, sets its daemon up over ssh, and adds the daemon's
+`endpoint_id` to the same entry. The other way round works too: a client
+called `myclient` joins a `[hosts.myclient]` entry that the server so far
+only dials, as long as no grant names that entry.
+
 The setup stops, and changes nothing on the server, when the client's host
 name cannot be used there:
 
+- Grants on the server name `[hosts.myclient]`, and it is not this client:
+  that entry is a peer someone named by hand. Rename one of the two.
 - The name already belongs to another client. This also happens when the
   same machine comes back with a new key, for example after a reinstall.
   The message names the entry. If that client is gone, remove it on the

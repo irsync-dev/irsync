@@ -25,7 +25,6 @@ use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
-use crate::manage::hosts::HostFlags;
 use crate::manage::{self, PeerSpec};
 use toml_edit::DocumentMut;
 
@@ -245,11 +244,18 @@ impl SetupReport {
 }
 
 /// Whether `name` may stand for `client` in the server config `doc` (the
-/// file at `path`): a valid alias that is free or already points at
-/// `client`. A free name that grants still mention is refused too: those
-/// are left from a client that was removed, and must not pass to whoever
-/// has its name now. A client the server already has a name for keeps that
-/// one, whatever it calls itself.
+/// file at `path`). A host entry is a machine: `endpoint_id` is its daemon,
+/// `client_id` the machine as a client. The name may be:
+///
+/// - free: the entry is made, with `client_id` only;
+/// - an entry with no `client_id` that no grant names: this server dials
+///   that machine's daemon by the name, and the client joins the entry.
+///
+/// It is refused when it is not a valid alias, when the entry already has
+/// another client, and when grants name it without it being this client:
+/// they are for a peer named by hand, or left from a client that was
+/// removed, and must not pass to whoever has the name now. A client the
+/// server already has a name for keeps that one, whatever it calls itself.
 pub fn check_client_name(
     doc: &DocumentMut,
     path: &Path,
@@ -267,32 +273,39 @@ pub fn check_client_name(
              EndpointId); rename the client machine"
         );
     }
-    if let Some(h) = hosts.get(name) {
-        if h.endpoint_id != client {
-            bail!(
-                "the name {name:?} is already used on this server, as [hosts.{name}] \
-                 for {}. If that is a client that is gone, remove it there with \
-                 `irsync host remove {name} -f`; else rename this machine",
-                h.endpoint_id.fmt_short()
-            );
-        }
-        return Ok(());
+    let entry = hosts.get(name);
+    if let Some(other) = entry.and_then(|h| h.client_id) {
+        bail!(
+            "the name {name:?} is already used on this server, as [hosts.{name}] \
+             for the client {}. If that client is gone, remove it there with \
+             `irsync host remove {name} -f`; else rename this machine",
+            other.fmt_short()
+        );
     }
     let lists = manage::grants::lists_naming(doc, name);
     if !lists.is_empty() {
         let lists: Vec<String> = lists.iter().map(|l| format!("[{l}]")).collect();
-        bail!(
-            "grants on this server still name {name:?} ({}), and no [hosts.{name}] \
-             says who that is. They are left from a client that was removed; \
-             take {name:?} out of those lists there, or rename this machine",
-            lists.join(", ")
-        );
+        let lists = lists.join(", ");
+        match entry {
+            Some(h) => bail!(
+                "grants on this server ({lists}) name {name:?}, which is [hosts.{name}] \
+                 there, for {}: another peer. Rename this machine, or rename that \
+                 entry there with `irsync host rename`",
+                h.peer_id().fmt_short()
+            ),
+            None => bail!(
+                "grants on this server still name {name:?} ({lists}), and no \
+                 [hosts.{name}] says who that is. They are left from a client that \
+                 was removed; take {name:?} out of those lists there, or rename \
+                 this machine"
+            ),
+        }
     }
     Ok(())
 }
 
-/// Saves `client` in `[hosts]` under `name` (unless it has a name there
-/// already) and grants that name immediate access, after
+/// Saves `client` as the `client_id` of `[hosts.name]` (unless it has a
+/// name there already) and grants that name immediate access, after
 /// [`check_client_name`] on `doc` itself. False when the client was
 /// already granted, by a name or by its id; the `[hosts]` entry is written
 /// all the same. The name is only ever a label: the daemon decides access
@@ -308,7 +321,7 @@ pub fn grant_client(
     let alias = match hosts.alias_of(&client) {
         Some(a) => a.to_string(),
         None => {
-            manage::hosts::host_add(doc, name, client, &HostFlags::default())?;
+            manage::hosts::host_set_client(doc, name, client)?;
             name.to_string()
         }
     };
@@ -316,7 +329,7 @@ pub fn grant_client(
         if s == alias {
             return Some(client);
         }
-        hosts.get(s).map(|h| h.endpoint_id)
+        hosts.get(s).map(|h| h.peer_id())
     };
     let spec = PeerSpec::Alias(alias.clone());
     Ok(manage::grants::grant_immediate(doc, &spec, &resolve)?)

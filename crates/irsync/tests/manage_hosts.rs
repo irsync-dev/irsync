@@ -123,7 +123,7 @@ fn host_add_keeps_the_other_keys_of_an_inline_table() {
     let e = h.get("home").unwrap();
     assert_eq!(
         (e.endpoint_id, e.parallel, e.dial_retries, e.mdns),
-        (id(2), Some(4), Some(3), Some(true)),
+        (Some(id(2)), Some(4), Some(3), Some(true)),
         "{doc}"
     );
 }

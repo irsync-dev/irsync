@@ -42,7 +42,7 @@ connection; nothing needs a restart.
 | `irsync host add ALIAS ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--mdns yes\|no]` | Add an alias for an `EndpointId`, or change the id and the keys given for an existing alias. Keys not given stay as they are. Prints `ALIAS: ID`, or `ALIAS: OLD -> NEW` when the id changed. Grants that name the alias then apply to the new id, and a note on stderr says where they are. |
 | `irsync host remove ALIAS [-f]` | Remove an alias. Refused while a grant names it, and the error lists where: without the alias those grants would match nobody. A grant written as the `EndpointId` counts as naming the alias, unless another alias has the same `EndpointId`. `-f`/`--force` removes those grants, then the alias. |
 | `irsync host rename OLD NEW` | Rename an alias, and every grant that names it: in `[all]`, `[immediate]` and every export. A grant written as the `EndpointId` counts as naming the alias. The alias keeps its place, keys and comments. Refused, with nothing changed, when `OLD` is no alias, `NEW` is not a valid alias or `NEW` is an alias already. Only the config file changes: scripts and commands that use `OLD` keep using it. |
-| `irsync host list` | One `ALIAS: ID` line per alias, then one indented `key = value` line per other key. |
+| `irsync host list` | One `ALIAS: ID` line per alias, with the daemon's id, then one indented `key = value` line per other key. A host saved as a client only shows `(client only)` for the id and its `client_id` below. |
 
 The flags of `host add` set the keys of the alias's table; see
 [Configuration](configuration.md#hosts) for what each does. `--address`
