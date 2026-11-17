@@ -135,7 +135,7 @@ fn install_copies_then_is_current() {
     let f = fake(None);
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(p.installed, None);
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -148,7 +148,7 @@ fn install_copies_then_is_current() {
     assert_eq!(std::fs::read(&dst).unwrap(), this_binary());
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(
-        ensure_installed(&f.rsh, "myserver", &p).unwrap(),
+        ensure_installed(&f.rsh, "myserver", &p, false).unwrap(),
         Install::Current
     );
     assert!(std::fs::read_to_string(&f.log)
@@ -157,10 +157,54 @@ fn install_copies_then_is_current() {
 }
 
 #[test]
+fn no_install_with_the_same_build_is_current() {
+    let f = fake(None);
+    let p = probe(&f.rsh, "myserver").unwrap();
+    ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
+    let p = probe(&f.rsh, "myserver").unwrap();
+    assert_eq!(
+        ensure_installed(&f.rsh, "myserver", &p, true).unwrap(),
+        Install::Current
+    );
+}
+
+#[test]
+fn no_install_with_nothing_there_fails() {
+    let f = fake(None);
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let msg = ensure_installed(&f.rsh, "myserver", &p, true)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("--no-install"), "{msg}");
+    assert!(msg.contains("~/.local/bin/irsync"), "{msg}");
+    assert!(msg.contains("found none"), "{msg}");
+    assert!(msg.contains("Nothing was changed."), "{msg}");
+    assert_nothing_installed(&f);
+}
+
+#[test]
+fn no_install_with_another_version_fails() {
+    let f = fake(None);
+    let bin = f.home.join(REMOTE_BIN);
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    let old = "#!/bin/sh\necho 'irsync 0.0.1 (old)'\n";
+    std::fs::write(&bin, old).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let msg = ensure_installed(&f.rsh, "myserver", &p, true)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("found irsync 0.0.1 (old)"), "{msg}");
+    assert!(msg.contains("Nothing was changed."), "{msg}");
+    assert_eq!(std::fs::read_to_string(&bin).unwrap(), old);
+    assert_no_work_dir(&f);
+}
+
+#[test]
 fn install_lands_in_local_bin_with_no_leftovers() {
     let f = fake(None);
     let p = probe(&f.rsh, "myserver").unwrap();
-    ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     let dst = f.home.join(".local/bin/irsync");
     assert_ne!(dst.metadata().unwrap().permissions().mode() & 0o111, 0);
     assert_eq!(std::fs::read(&dst).unwrap(), this_binary());
@@ -180,7 +224,7 @@ fn install_brings_fileset_and_pages_when_beside_the_exe() {
     release::put_extras(&dir);
     set_exe_override(dir.join("irsync"));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -195,7 +239,7 @@ fn install_brings_fileset_and_pages_when_beside_the_exe() {
 fn install_refuses_a_platform_without_a_release() {
     let f = fake(Some("Linux riscv64"));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p).unwrap_err();
+    let e = ensure_installed(&f.rsh, "myserver", &p, false).unwrap_err();
     let msg = e.to_string();
     assert!(
         msg.starts_with("myserver runs linux an unknown CPU, this irsync is "),
@@ -229,7 +273,7 @@ fn install_downloads_for_another_platform() {
     let this = Path::new(env!("CARGO_BIN_EXE_irsync"));
     set_release_url(&release::fake_release(rel.path(), target, this));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Downloaded {
@@ -244,7 +288,7 @@ fn install_downloads_for_another_platform() {
     );
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(
-        ensure_installed(&f.rsh, "myserver", &p).unwrap(),
+        ensure_installed(&f.rsh, "myserver", &p, false).unwrap(),
         Install::Current
     );
 }
@@ -257,7 +301,7 @@ fn release_install_brings_everything() {
     let ours = fake_exe(&f, Some(&format!("irsync {}", *LONG_VERSION)));
     set_release_url(&release::full_release(rel.path(), target, &ours));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Downloaded {
@@ -284,7 +328,7 @@ fn same_platform_release_build_downloads_first() {
     let ours = fake_exe(&f, Some(&format!("irsync {}", *LONG_VERSION)));
     set_release_url(&release::full_release(rel.path(), target, &ours));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Downloaded {
@@ -308,7 +352,7 @@ fn same_platform_falls_back_when_the_download_fails() {
     let rel = tempfile::tempdir().unwrap();
     set_release_url(&release::url_of(rel.path()));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -332,7 +376,7 @@ fn same_platform_falls_back_when_the_release_is_another_build() {
     let other = fake_exe(&f, Some("irsync 0.0.0 (other)"));
     set_release_url(&release::full_release(rel.path(), target, &other));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -355,7 +399,7 @@ fn other_platform_has_no_fallback() {
     let other = fake_exe(&f, Some("irsync 0.0.0 (other)"));
     set_release_url(&release::full_release(rel.path(), target, &other));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("is not this build"), "{e}");
@@ -367,7 +411,7 @@ fn other_platform_has_no_fallback() {
 fn home_with_a_space() {
     let f = fake_at(None, "my home");
     let p = probe(&f.rsh, "myserver").unwrap();
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -382,7 +426,7 @@ fn home_with_a_space() {
     assert_no_work_dir(&f);
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(
-        ensure_installed(&f.rsh, "myserver", &p).unwrap(),
+        ensure_installed(&f.rsh, "myserver", &p, false).unwrap(),
         Install::Current
     );
 }
@@ -393,7 +437,7 @@ fn server_without_tar_changes_nothing() {
     // SAFETY: serialized by ENV, held in `f`.
     unsafe { std::env::set_var("FAKE_SSH_HIDE", "tar") };
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("could not unpack"), "{e}");
@@ -410,7 +454,7 @@ fn a_release_that_is_not_this_build_is_not_installed() {
     let other = fake_exe(&f, Some("irsync 9.9.9 (other)"));
     set_release_url(&release::fake_release(rel.path(), target, &other));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("development build"), "{e}");
@@ -426,7 +470,7 @@ fn a_downloaded_binary_that_does_not_run_says_so() {
     let broken = fake_exe(&f, None);
     set_release_url(&release::fake_release(rel.path(), target, &broken));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("does not run on myserver"), "{e}");
@@ -442,7 +486,7 @@ fn a_failed_download_changes_nothing() {
     let rel = tempfile::tempdir().unwrap();
     set_release_url(&release::url_of(rel.path()));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("could not download"), "{e}");
@@ -458,7 +502,7 @@ fn install_replaces_other_version() {
     std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(p.installed.as_deref(), Some("irsync 0.0.1 (old)"));
-    let r = ensure_installed(&f.rsh, "myserver", &p).unwrap();
+    let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -527,7 +571,7 @@ fn remote_commands_run_under_sh() {
     // SAFETY: serialized by ENV, held in `f`.
     unsafe { std::env::remove_var("FAKE_SSH_UNAME") };
     let p = probe(&wrapper, "myserver").unwrap();
-    let r = ensure_installed(&wrapper, "myserver", &p).unwrap();
+    let r = ensure_installed(&wrapper, "myserver", &p, false).unwrap();
     assert_eq!(
         r,
         Install::Copied {
@@ -537,7 +581,7 @@ fn remote_commands_run_under_sh() {
     );
     let p = probe(&wrapper, "myserver").unwrap();
     assert_eq!(
-        ensure_installed(&wrapper, "myserver", &p).unwrap(),
+        ensure_installed(&wrapper, "myserver", &p, false).unwrap(),
         Install::Current
     );
 }
@@ -576,7 +620,7 @@ fn install_removes_a_short_upload() {
         &format!("head -c 10 | {} \"$@\"", fake_ssh().display()),
     );
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&wrapper, "myserver", &p).unwrap_err();
+    let e = ensure_installed(&wrapper, "myserver", &p, false).unwrap_err();
     assert!(e.to_string().contains("cut short"), "{e}");
     assert_nothing_installed(&f);
 }
@@ -627,7 +671,7 @@ fn install_rejects_a_copy_that_reports_another_version() {
     let f = fake(None);
     set_exe_override(fake_exe(&f, Some("irsync 9.9.9 (other)")));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("does not run on myserver"), "{e}");
@@ -640,7 +684,7 @@ fn install_rejects_a_copy_that_does_not_run() {
     let f = fake(None);
     set_exe_override(fake_exe(&f, None));
     let p = probe(&f.rsh, "myserver").unwrap();
-    let e = ensure_installed(&f.rsh, "myserver", &p)
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();
     assert!(e.contains("does not run on myserver"), "{e}");
@@ -656,7 +700,7 @@ fn a_rejected_copy_keeps_the_old_binary() {
     std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
     set_exe_override(fake_exe(&f, Some("irsync 9.9.9 (other)")));
     let p = probe(&f.rsh, "myserver").unwrap();
-    ensure_installed(&f.rsh, "myserver", &p).unwrap_err();
+    ensure_installed(&f.rsh, "myserver", &p, false).unwrap_err();
     assert!(std::fs::read_to_string(&dst)
         .unwrap()
         .contains("0.0.1 (old)"));

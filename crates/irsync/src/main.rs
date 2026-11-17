@@ -37,6 +37,7 @@ use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
 };
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
@@ -77,6 +78,7 @@ fn main() {
             client,
             recheck,
             no_dht,
+            keep_old: _,
         }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
         None => unreachable!("try_parse_from always sets a command"),
     }
@@ -527,26 +529,23 @@ async fn connect_for(
         } else {
             format!("irsync: checking {host} over ssh")
         });
-        let o = irsync::ssh::onboard::onboard(
-            &paths,
-            &rsh,
-            host,
-            &dest,
-            secret.public(),
-            !unknown,
-            opts.no_remote_dht,
-        )
-        .with_context(|| {
-            if unknown {
-                format!(
-                    "{host:?} is not an alias in {} and not an EndpointId; \
+        let flags = SetupFlags {
+            recheck: !unknown,
+            no_dht: opts.no_remote_dht,
+            no_install: opts.no_install || config.settings.client.ssh_install == Some(false),
+        };
+        let o = irsync::ssh::onboard::onboard(&paths, &rsh, host, &dest, secret.public(), flags)
+            .with_context(|| {
+                if unknown {
+                    format!(
+                        "{host:?} is not an alias in {} and not an EndpointId; \
                      setting it up over ssh failed",
-                    config.hosts.path.display()
-                )
-            } else {
-                format!("checking {host} over ssh failed")
-            }
-        })?;
+                        config.hosts.path.display()
+                    )
+                } else {
+                    format!("checking {host} over ssh failed")
+                }
+            })?;
         report_onboarded(log, &o);
         hints = o.hints();
         config = Config::load(&paths)?;
@@ -671,6 +670,7 @@ fn recheck_over_ssh(
     client: iroh::EndpointId,
     remote: &str,
     opts: &SyncOptions,
+    ssh_install: Option<bool>,
     log: &LogWriter,
 ) -> Recheck {
     let Some(dest) = entry.and_then(|h| h.ssh.as_deref()) else {
@@ -681,8 +681,12 @@ fn recheck_over_ssh(
     ));
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let no_dht = opts.no_remote_dht;
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true, no_dht) {
+    let flags = SetupFlags {
+        recheck: true,
+        no_dht: opts.no_remote_dht,
+        no_install: opts.no_install || ssh_install == Some(false),
+    };
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, flags) {
         Ok(o) => o,
         Err(e) => return Recheck::Failed(e),
     };
@@ -995,7 +999,15 @@ async fn sync(
                     rechecked = true;
                     let client = conn.endpoint.id();
                     let entry = conn.host_entry.as_ref();
-                    match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
+                    match recheck_over_ssh(
+                        host,
+                        entry,
+                        client,
+                        &remote_text,
+                        cli_opts,
+                        conn.settings.client.ssh_install,
+                        log,
+                    ) {
                         Recheck::Done(hints) => {
                             conn.endpoint.close().await;
                             conn = connect_for(host, cli_opts, log, hints).await?;

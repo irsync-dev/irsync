@@ -733,6 +733,46 @@ fn no_remote_dht_turns_server_publishing_off() {
     assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
 }
 
+/// A first push that must stop: the server has no irsync, and nothing is
+/// installed, changed or saved.
+fn assert_stopped_by_no_install(w: &World, o: &Output) {
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("--no-install"), "{err}");
+    assert!(err.contains("Nothing was changed."), "{err}");
+    assert!(
+        !w.client_config().contains("[hosts"),
+        "{}",
+        w.client_config()
+    );
+    assert!(!w.server.path().join(".local").exists());
+    assert!(!w.server.path().join("xdg").exists());
+}
+
+#[test]
+fn no_install_flag_stops_a_first_push() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&[
+        "-a",
+        "--no-install",
+        &w.src_arg(),
+        &format!("myserver:{}", dest.display()),
+    ]);
+    assert_stopped_by_no_install(&w, &o);
+}
+
+#[test]
+fn ssh_install_false_in_config_does_the_same() {
+    let w = World::new();
+    let cfg = w.client.path().join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("irsync.toml"), "[client]\nssh_install = false\n").unwrap();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    assert_stopped_by_no_install(&w, &o);
+}
+
 /// A first push with no `--address` and every client lookup off: the only
 /// way to the new daemon is the address `ssh-setup` hands back. Without it
 /// the client finds no address (the daemon has published nothing yet).

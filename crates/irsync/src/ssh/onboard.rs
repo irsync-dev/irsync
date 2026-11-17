@@ -51,19 +51,28 @@ impl Onboarded {
     }
 }
 
+/// What an onboarding run is asked to do beyond the defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SetupFlags {
+    /// `alias` is a saved host being checked, so `ssh-setup` must not add
+    /// back a removed grant.
+    pub recheck: bool,
+    /// Turn the daemon's DHT publishing off.
+    pub no_dht: bool,
+    /// Copy nothing to the server: use the irsync already there.
+    pub no_install: bool,
+}
+
 /// Sets up `dest` (an ssh destination) for `client`: probe, install this
 /// build, run `ssh-setup`, then save `alias` with `ssh = dest`. A first
-/// run passes the same text for both. `recheck`: `alias` is a saved host
-/// being checked, so `ssh-setup` must not add back a removed grant.
-/// `no_dht`: turn the daemon's DHT publishing off.
+/// run passes the same text for both. `flags` says what else to do.
 pub fn onboard(
     paths: &Paths,
     rsh: &Rsh,
     alias: &str,
     dest: &str,
     client: EndpointId,
-    recheck: bool,
-    no_dht: bool,
+    flags: SetupFlags,
 ) -> anyhow::Result<Onboarded> {
     check(alias, dest)?;
     let p = probe(rsh, dest)?;
@@ -75,11 +84,11 @@ pub fn onboard(
              {RUN_THE_DAEMON_URL}"
         );
     }
-    let install = ensure_installed(rsh, dest, &p)?;
-    let report = run_setup(rsh, dest, client, recheck, no_dht)?;
+    let install = ensure_installed(rsh, dest, &p, flags.no_install)?;
+    let report = run_setup(rsh, dest, client, flags)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
-    let flags = HostFlags {
+    let host_flags = HostFlags {
         ssh: Some(dest.to_string()),
         ..HostFlags::default()
     };
@@ -87,7 +96,7 @@ pub fn onboard(
         .get("hosts")
         .and_then(|h| h.get(alias))
         .is_some_and(toml_edit::Item::is_table_like);
-    let previous_id = manage::hosts::host_add(&mut doc, alias, report.endpoint_id, &flags)
+    let previous_id = manage::hosts::host_add(&mut doc, alias, report.endpoint_id, &host_flags)
         .with_context(|| format!("saving host alias {alias}"))?;
     lock.save(&mut doc)?;
     Ok(Onboarded {

@@ -163,6 +163,9 @@ pub struct ClientSettings {
     /// Retries for a server that has not answered yet; unset: 4.
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    /// Set the server up over ssh by copying irsync there; unset: true.
+    /// `false` is `--no-install` for every run.
+    pub ssh_install: Option<bool>,
     pub mdns: Option<bool>,
     pub relay: Option<Url>,
     /// `"disabled"`: direct connections only, no relay fallback; the lookups

@@ -362,6 +362,9 @@ pub enum Command {
         /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
         #[arg(long)]
         no_dht: bool,
+        /// Nothing was installed this run (`--no-install`).
+        #[arg(long, hide = true)]
+        keep_old: bool,
     },
 }
 
@@ -914,6 +917,12 @@ pub struct SyncArgs {
     /// too, like `--ssh`. Without it the server's setting is left alone.
     #[arg(long)]
     pub no_remote_dht: bool,
+    /// When going through ssh, copy nothing to the server: use the irsync
+    /// already at `~/.local/bin/irsync` there, and stop if it is missing or
+    /// another version. Default: `ssh_install` in the config file, else
+    /// install.
+    #[arg(long)]
+    pub no_install: bool,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -1057,6 +1066,8 @@ pub struct SyncOptions {
     /// `--ssh`.
     pub force_ssh: bool,
     pub no_remote_dht: bool,
+    /// `--no-install`.
+    pub no_install: bool,
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub inplace: bool,
@@ -1127,6 +1138,7 @@ impl SyncOptions {
             rsh: a.rsh.clone(),
             force_ssh: a.ssh,
             no_remote_dht: a.no_remote_dht,
+            no_install: a.no_install,
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,

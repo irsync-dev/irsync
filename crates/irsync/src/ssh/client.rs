@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, bail, Context, Result};
 use iroh::EndpointId;
 
+use super::onboard::SetupFlags;
 use super::payload::{Contents, Packed, Staged};
 use super::release;
 use super::setup::SetupReport;
@@ -181,10 +182,24 @@ pub enum Install {
 /// the server's platform; on the same OS and CPU it falls back to this
 /// machine's own files when there are no release files for this build. A
 /// development build sends its own files, and only to the same platform.
-pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
+///
+/// `no_install` copies nothing: the irsync already in `~/.local/bin` must be
+/// this exact build, or this fails and the server is left as it was.
+pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe, no_install: bool) -> Result<Install> {
     // `--version` prints the program name, then LONG_VERSION.
     if probe.installed.as_deref() == Some(format!("irsync {}", *LONG_VERSION).as_str()) {
         return Ok(Install::Current);
+    }
+    if no_install {
+        let found = match &probe.installed {
+            Some(v) => format!("found {v}"),
+            None => "found none".to_string(),
+        };
+        bail!(
+            "--no-install: {dest} has no irsync {} at ~/.local/bin/irsync ({found}). \
+             Install that version there, or run without --no-install. Nothing was changed.",
+            *LONG_VERSION
+        );
     }
     let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
     let same = probe.os == Some(my_os) && probe.arch == Some(my_arch);
@@ -385,22 +400,25 @@ fn install_remote(rsh: &Rsh, dest: &str, packed: &Packed) -> Result<Upload> {
 
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`
 /// passes `--recheck` (a saved host: never add back a removed grant),
-/// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off).
+/// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off),
+/// `no_install` passes `--keep-old` (nothing was installed this run).
 pub fn run_setup(
     rsh: &Rsh,
     dest: &str,
     client: EndpointId,
-    recheck: bool,
-    no_dht: bool,
+    flags: SetupFlags,
 ) -> Result<SetupReport> {
-    let mut flags = String::new();
-    if recheck {
-        flags.push_str(" --recheck");
+    let mut extra = String::new();
+    if flags.recheck {
+        extra.push_str(" --recheck");
     }
-    if no_dht {
-        flags.push_str(" --no-dht");
+    if flags.no_dht {
+        extra.push_str(" --no-dht");
     }
-    let cmd = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client}{flags}");
+    if flags.no_install {
+        extra.push_str(" --keep-old");
+    }
+    let cmd = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client}{extra}");
     let out = rsh
         .command(dest, &cmd)
         .stdout(Stdio::piped())

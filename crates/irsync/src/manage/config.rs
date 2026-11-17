@@ -40,7 +40,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client", "parallel"] => Int,
         ["client", "reconnect"] => Duration,
         ["client", "dial_retries"] => Int,
-        ["client", "dht"] | ["client", "mdns"] => Bool,
+        ["client", "dht" | "mdns" | "ssh_install"] => Bool,
         ["client", "relay"] => Url,
         ["client", "relay_mode"] | ["client", "congestion"] => Str,
         ["daemon", "identity"] => Path,
