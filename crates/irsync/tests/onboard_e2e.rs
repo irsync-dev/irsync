@@ -46,6 +46,8 @@ struct World {
     uname: Option<String>,
     /// Where the client downloads a release from, instead of GitHub.
     release_url: Option<String>,
+    /// What the server's `uname -n` prints; `None`: an empty line.
+    hostname: Option<String>,
     /// The ssh probe's `id -u` prints 0.
     probe_root: bool,
     /// The server's irsync believes it runs as root (the probe does not
@@ -62,6 +64,7 @@ impl World {
             port: free_port(),
             uname: None,
             release_url: None,
+            hostname: None,
             probe_root: false,
             server_root: false,
         };
@@ -136,6 +139,7 @@ impl World {
             Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
+        cmd.env("FAKE_SSH_HOSTNAME", self.hostname.as_deref().unwrap_or("-"));
         if self.probe_root {
             cmd.env("FAKE_SSH_ID_U", "0");
         } else {
@@ -265,6 +269,70 @@ fn user_at_host_alias() {
         "again\n"
     );
     assert_eq!(w.ssh_calls(), 3);
+}
+
+#[test]
+fn user_at_host_saves_the_plain_name_too() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let err = ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("u@myserver:{}", dest.display()),
+    ]));
+    assert!(err.contains("saved host alias u@myserver"), "{err}");
+    assert!(err.contains("saved host alias myserver"), "{err}");
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    for a in ["u@myserver", "myserver"] {
+        assert_eq!(cfg["hosts"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
+    }
+    let calls = w.ssh_calls();
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    assert_eq!(w.ssh_calls(), calls, "the plain name needs no ssh");
+}
+
+#[test]
+fn ip_address_is_saved_under_the_server_name() {
+    let mut w = World::new();
+    w.hostname = Some("myserver.example.com".into());
+    let dest = w.server.path().join("dest");
+    let err = ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("192.168.1.5:{}", dest.display()),
+    ]));
+    assert!(err.contains("saved host alias myserver"), "{err}");
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    assert_eq!(
+        cfg["hosts"]["myserver"]["ssh"].as_str(),
+        Some("192.168.1.5")
+    );
+    assert!(cfg["hosts"].get("192.168.1.5").is_none());
+    same_tree(w.src.path(), &dest);
+    // The other spelling of the address ends on the same alias.
+    ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("u@192.168.1.5:{}", dest.display()),
+    ]));
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    assert_eq!(cfg["hosts"].as_table().unwrap().len(), 1, "{cfg}");
+    assert_eq!(
+        cfg["hosts"]["myserver"]["ssh"].as_str(),
+        Some("u@192.168.1.5")
+    );
+}
+
+#[test]
+fn ipv6_without_a_server_name_changes_nothing() {
+    let w = World::new();
+    let out = w.irsync(&["-a", &w.src_arg(), "[fe80::1]:dest"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("host name"), "{err}");
+    assert_eq!(w.ssh_calls(), 1, "the probe only");
+    assert!(!w.server.path().join(".local/share/irsync").exists());
+    assert_eq!(w.client_config(), "");
 }
 
 #[test]

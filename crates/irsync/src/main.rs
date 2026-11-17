@@ -480,6 +480,9 @@ struct Connected {
     target: EndpointAddr,
     settings: Settings,
     host_entry: Option<irsync::config::hosts::HostEntry>,
+    /// The saved alias `host_entry` is under: the host as typed, or the
+    /// alias a first run saved it as.
+    alias: Option<String>,
     /// `opts` with the per-host and settings defaults filled in.
     opts: SyncOptions,
     /// The host was set up over ssh just now, by this call.
@@ -502,6 +505,7 @@ async fn connect_for(
     // An unknown host is an ssh destination: set it up and save the alias.
     // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
     let mut onboarded_with = None;
+    let mut saved_as = None;
     let saved = config.hosts.get(host);
     let unknown = saved.is_none() && parse_endpoint_id(host).is_err();
     let forced = opts.force_ssh || opts.no_remote_dht;
@@ -518,8 +522,13 @@ async fn connect_for(
         let dest = saved
             .and_then(|h| h.ssh.clone())
             .unwrap_or_else(|| host.to_string());
+        // A first run picks the aliases itself, once the server answered.
+        let alias = saved.is_some().then_some(host);
         // No ssh call yet: these errors need no "over ssh failed" context.
-        irsync::ssh::onboard::check(host, &dest)?;
+        match alias {
+            Some(a) => irsync::ssh::onboard::check(a, &dest)?,
+            None => irsync::ssh::onboard::check_dest(&dest)?,
+        }
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
         log.eprintln(&if unknown {
@@ -530,7 +539,7 @@ async fn connect_for(
         let o = irsync::ssh::onboard::onboard(
             &paths,
             &rsh,
-            host,
+            alias,
             &dest,
             secret.public(),
             !unknown,
@@ -551,7 +560,10 @@ async fn connect_for(
         hints = o.hints();
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
+        saved_as = Some(o.alias);
     }
+    // What a first run saved the host as: its name from here on.
+    let host = saved_as.as_deref().unwrap_or(host);
     let Config {
         settings, hosts, ..
     } = config;
@@ -628,6 +640,7 @@ async fn connect_for(
         endpoint,
         target,
         settings,
+        alias: host_entry.is_some().then(|| host.to_string()),
         host_entry,
         opts,
         onboarded,
@@ -682,7 +695,8 @@ fn recheck_over_ssh(
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
     let no_dht = opts.no_remote_dht;
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true, no_dht) {
+    let alias = Some(host);
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, alias, dest, client, true, no_dht) {
         Ok(o) => o,
         Err(e) => return Recheck::Failed(e),
     };
@@ -995,10 +1009,13 @@ async fn sync(
                     rechecked = true;
                     let client = conn.endpoint.id();
                     let entry = conn.host_entry.as_ref();
-                    match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
+                    // The saved alias, when the operand named the host
+                    // another way (an address it was first set up by).
+                    let name = conn.alias.clone().unwrap_or_else(|| host.to_string());
+                    match recheck_over_ssh(&name, entry, client, &remote_text, cli_opts, log) {
                         Recheck::Done(hints) => {
                             conn.endpoint.close().await;
-                            conn = connect_for(host, cli_opts, log, hints).await?;
+                            conn = connect_for(&name, cli_opts, log, hints).await?;
                         }
                         Recheck::NotSsh => break Err(with_wrong_id_hint(e)),
                         Recheck::GrantRemoved(refused) => break Err(refused),
