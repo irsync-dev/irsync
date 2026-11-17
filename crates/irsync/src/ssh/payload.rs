@@ -3,7 +3,7 @@
 //! installer script into one plain tar. The server unpacks it with `tar -xf`
 //! and runs the script on `files/`, which has the release tarball's layout.
 
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -133,8 +133,11 @@ impl Staged {
             .tempfile()
             .context("cannot make a temporary file for the files to send")?;
         let mut tar = Command::new("tar");
-        // No `._` entries for extended attributes on macOS.
+        // No `._` entries (COPYFILE_DISABLE) and no extended attribute
+        // records (--no-xattrs) on macOS: GNU tar on the server warns about
+        // each, and a Mac server may put quarantine back on the program.
         tar.env("COPYFILE_DISABLE", "1")
+            .arg("--no-xattrs")
             .arg("-chf")
             .arg(out.path())
             .arg("-C")
@@ -192,8 +195,8 @@ fn is_file(p: &Path) -> bool {
 
 /// Whether `rel` (like `man/man1/irsync.1`) is in the unpacked release at
 /// `base`: `Ok(false)` if something on the way is absent. Errors if the
-/// leaf is not a regular file or a directory on the way is not a real
-/// directory (a symlink, say).
+/// leaf is not a regular file with one link, or a directory on the way is
+/// not a real directory (a symlink, say).
 fn release_member(base: &Path, rel: &str) -> Result<bool> {
     let parts: Vec<&str> = rel.split('/').collect();
     let mut path = base.to_path_buf();
@@ -212,6 +215,9 @@ fn release_member(base: &Path, rel: &str) -> Result<bool> {
         if !ok {
             let what = parts[..=i].join("/");
             bail!("the release holds {what} as something other than a regular file or directory (a symlink?)");
+        }
+        if i + 1 == parts.len() && meta.nlink() != 1 {
+            bail!("the release holds {rel} as a file with more than one name (a hard link)");
         }
     }
     Ok(true)
@@ -471,6 +477,40 @@ mod tests {
         symlink("/etc/hosts", man.join(PAGES[0])).unwrap();
         let e = staged_from(tmp, &dir).unwrap_err().to_string();
         assert!(e.contains("irsync.1"), "{e}");
+    }
+
+    #[test]
+    fn a_release_hard_link_for_fileset_is_an_error() {
+        let (tmp, dir) = release_dir();
+        let secret = tmp.path().join("secret");
+        std::fs::write(&secret, b"s").unwrap();
+        std::fs::hard_link(&secret, dir.join("fileset")).unwrap();
+        let e = staged_from(tmp, &dir).unwrap_err().to_string();
+        assert!(e.contains("fileset"), "{e}");
+        assert!(e.contains("hard link"), "{e}");
+    }
+
+    /// Where `xattr` exists (macOS), a staged file with an extended
+    /// attribute; elsewhere a plain one. The tar holds no attribute records.
+    #[test]
+    fn packed_tar_has_no_extended_attributes() {
+        let (_d, exe) = bin_dir("irsync");
+        let set = Command::new("xattr")
+            .args(["-w", "user.test", "1"])
+            .arg(&exe)
+            .status();
+        if !set.is_ok_and(|s| s.success()) {
+            eprintln!("no xattr tool here: checking a file without attributes");
+        }
+        let p = Staged::from_local(&exe).unwrap().pack().unwrap();
+        let raw = std::fs::read(p.path()).unwrap();
+        for name in [&b"LIBARCHIVE.xattr"[..], b"SCHILY.xattr"] {
+            assert!(
+                !raw.windows(name.len()).any(|w| w == name),
+                "{} in the tar",
+                String::from_utf8_lossy(name)
+            );
+        }
     }
 
     #[test]
