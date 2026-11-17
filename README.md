@@ -98,11 +98,13 @@ supported, as client and as daemon.
 
 With ssh, the client is enough: the first sync installs irsync, fileset and
 the manual pages on the server. A released irsync downloads the release files
-for the server's platform on this machine, whatever that platform is. If the
-download fails and the server has the same OS and CPU, it sends this machine's
-own files instead. The server needs no internet access. A build from source
-sends only its own files, so it can set up only a server with the same OS and
-CPU; otherwise install irsync on both machines and set the server up by hand.
+for the server's platform on this machine, also when it differs from this one.
+If the download fails and the server has the same OS and CPU, it sends this
+machine's own files instead. The server needs no internet access. A build from
+source sends only its own files, so it can set up only a server with the same
+OS and CPU. Some platforms have no release files (an Intel Mac, for example).
+For those, and for a source build with a server of another OS or CPU, install
+irsync on both machines and set the server up by hand.
 
 The workspace also holds `fileset`, an independent tool that records the
 checksums and metadata of a directory tree and later verifies the tree against

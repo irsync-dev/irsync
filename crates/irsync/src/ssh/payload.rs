@@ -133,12 +133,16 @@ impl Staged {
             .tempfile()
             .context("cannot make a temporary file for the files to send")?;
         let mut tar = Command::new("tar");
-        // No `._` entries (COPYFILE_DISABLE) and no extended attribute
-        // records (--no-xattrs) on macOS: GNU tar on the server warns about
-        // each, and a Mac server may put quarantine back on the program.
-        tar.env("COPYFILE_DISABLE", "1")
-            .arg("--no-xattrs")
-            .arg("-chf")
+        // No `._` entries for extended attributes on macOS.
+        tar.env("COPYFILE_DISABLE", "1");
+        // macOS's bsdtar also writes extended attributes as records of their
+        // own: GNU tar on the server warns about each, and a Mac server may
+        // put quarantine back on the program. Only there: BusyBox tar and GNU
+        // tar before 1.27 refuse the flag.
+        if cfg!(target_os = "macos") {
+            tar.arg("--no-xattrs");
+        }
+        tar.arg("-chf")
             .arg(out.path())
             .arg("-C")
             .arg(self.root.path())
@@ -490,17 +494,18 @@ mod tests {
         assert!(e.contains("hard link"), "{e}");
     }
 
-    /// Where `xattr` exists (macOS), a staged file with an extended
-    /// attribute; elsewhere a plain one. The tar holds no attribute records.
+    /// On macOS, a staged file with an extended attribute; elsewhere, where
+    /// `pack` passes no `--no-xattrs`, a plain one. The tar holds no
+    /// attribute records.
     #[test]
     fn packed_tar_has_no_extended_attributes() {
         let (_d, exe) = bin_dir("irsync");
-        let set = Command::new("xattr")
-            .args(["-w", "user.test", "1"])
-            .arg(&exe)
-            .status();
-        if !set.is_ok_and(|s| s.success()) {
-            eprintln!("no xattr tool here: checking a file without attributes");
+        if cfg!(target_os = "macos") {
+            let set = Command::new("xattr")
+                .args(["-w", "user.test", "1"])
+                .arg(&exe)
+                .status();
+            assert!(set.is_ok_and(|s| s.success()), "xattr -w failed");
         }
         let p = Staged::from_local(&exe).unwrap().pack().unwrap();
         let raw = std::fs::read(p.path()).unwrap();

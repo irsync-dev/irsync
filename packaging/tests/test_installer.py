@@ -515,7 +515,7 @@ class InstallTests(Base):
                 err = self.path_hint(f"{uname}-{name}",
                                      uname=(uname, arch), env={"SHELL": shell})
                 self.assertIn(want, err)
-                if "fish" in shell or "csh" in shell:
+                if name in ("fish", "tcsh"):
                     self.assertNotIn("export PATH", err)
 
     def test_path_hint_for_an_unknown_shell(self):

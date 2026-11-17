@@ -312,8 +312,13 @@ directory instead of downloading."
     status=$?
     kill "$timer_pid" 2>/dev/null
     wait "$timer_pid" 2>/dev/null
+    # Only when the settings changed: setting them from a background job
+    # (an installer started with &) would stop the installer.
     if [ -n "$tty_state" ]; then
-      (stty "$tty_state" </dev/tty) >/dev/null 2>&1 || :
+      tty_now=$( (stty -g </dev/tty) 2>/dev/null ) || tty_now=
+      if [ "$tty_now" != "$tty_state" ]; then
+        (stty "$tty_state" </dev/tty) >/dev/null 2>&1 || :
+      fi
     fi
     [ "$status" -eq 0 ] || return 1
     last=
