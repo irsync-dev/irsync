@@ -16,6 +16,10 @@ pub const STALL_AFTER: Duration = Duration::from_secs(2);
 pub const ROW_EXPIRY: Duration = Duration::from_secs(30);
 /// Minimum window over which a per-row rate is computed.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+/// The span the transfer line's current rates are taken over.
+pub const SPEED_WINDOW: Duration = Duration::from_secs(5);
+/// No current rate is shown until the samples span this much.
+const SPEED_MIN_SPAN: Duration = Duration::from_secs(1);
 /// Failed files kept for the block's `errors` section (the newest).
 pub const RECENT_ERRORS: usize = 3;
 
@@ -135,6 +139,12 @@ pub struct Live {
     pub source: Party,
     /// Wire bytes, for the rate.
     pub literal: u64,
+    /// Matched bytes this session: what each row's `FileMatched` total
+    /// grew by.
+    pub matched: u64,
+    /// `(time, literal, literal + matched)` at each `tick`, covering
+    /// [`SPEED_WINDOW`], oldest first.
+    pub samples: VecDeque<(Instant, u64, u64)>,
     /// Sum of `FileDone` sizes.
     pub done_bytes: u64,
     /// Sum of `Skipped` sizes on this connection.
@@ -166,6 +176,8 @@ impl Live {
             peer: Walk::default(),
             source,
             literal: 0,
+            matched: 0,
+            samples: VecDeque::new(),
             done_bytes: 0,
             skipped_local: 0,
             skipped_before: 0,
@@ -279,6 +291,11 @@ impl Live {
                         now,
                     )
                 });
+                let before = match row.state {
+                    RowState::Moving { matched, .. } => matched,
+                    RowState::Hashing => 0,
+                };
+                self.matched = self.matched.saturating_add(n.saturating_sub(before));
                 match &mut row.state {
                     RowState::Moving { matched, .. } => *matched = *n,
                     state @ RowState::Hashing => {
@@ -387,11 +404,43 @@ impl Live {
                 row.rate_bytes = 0;
             }
         }
+        self.samples
+            .push_back((now, self.literal, self.literal.saturating_add(self.matched)));
+        // Keep the newest sample at or before the window's start, so a
+        // late tick still has one to measure from.
+        while self
+            .samples
+            .get(1)
+            .is_some_and(|s| now.saturating_duration_since(s.0) >= SPEED_WINDOW)
+        {
+            self.samples.pop_front();
+        }
         if let Some(d) = &mut self.delete {
             if d.started && d.total == Some(d.done) {
                 d.finished = true;
             }
         }
+    }
+
+    /// `(sent, synced)` bytes per second over the samples, `None` until
+    /// they span [`SPEED_MIN_SPAN`].
+    pub fn current_rates(&self) -> Option<(f64, f64)> {
+        let (first, last) = (self.samples.front()?, self.samples.back()?);
+        let span = last.0.saturating_duration_since(first.0);
+        if span < SPEED_MIN_SPAN {
+            return None;
+        }
+        let secs = span.as_secs_f64();
+        Some((
+            last.1.saturating_sub(first.1) as f64 / secs,
+            last.2.saturating_sub(first.2) as f64 / secs,
+        ))
+    }
+
+    /// Synced bytes per wire byte this session; `None` before any wire byte.
+    pub fn goodput(&self) -> Option<f64> {
+        (self.literal > 0)
+            .then(|| self.literal.saturating_add(self.matched) as f64 / self.literal as f64)
     }
 
     /// (numerator, denominator) for the transfer percent, with rsync's

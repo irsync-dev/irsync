@@ -649,3 +649,63 @@ fn failed_events_are_counted_and_the_last_three_kept_in_order() {
         ]
     );
 }
+
+#[test]
+fn matched_bytes_are_counted_once_and_never_go_down() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileMatched(rp("b"), 300), t); // before FileStart
+    l.apply(&Event::FileStart(rp("b"), 400), t);
+    l.apply(&Event::FileMatched(rp("b"), 350), t);
+    assert_eq!(l.matched, 350);
+    l.apply(&Event::FileMatched(rp("b"), 100), t); // smaller: ignored
+    assert_eq!(l.matched, 350);
+    l.apply(&Event::FileDone(rp("b"), 400), t);
+    assert_eq!(l.matched, 350);
+}
+
+#[test]
+fn current_rates_cover_the_last_five_seconds() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileStart(rp("f"), 1 << 30), t);
+    l.tick(t);
+    assert_eq!(l.current_rates(), None);
+    l.apply(&Event::FileBytes(rp("f"), 500), t);
+    l.tick(t + Duration::from_millis(500));
+    assert_eq!(l.current_rates(), None, "under 1 s of samples");
+    l.apply(&Event::FileMatched(rp("f"), 1500), t);
+    l.tick(t + Duration::from_secs(1));
+    assert_eq!(l.current_rates(), Some((500.0, 2000.0)));
+    // Bytes stop; ticks go on: the burst leaves the window.
+    for s in 2..=7 {
+        l.tick(t + Duration::from_secs(s));
+    }
+    assert_eq!(l.current_rates(), Some((0.0, 0.0)));
+}
+
+#[test]
+fn a_late_tick_uses_the_real_time_span() {
+    let (mut l, t) = (live(), Instant::now());
+    l.tick(t);
+    l.apply(&Event::FileBytes(rp("f"), 1000), t);
+    l.tick(t + Duration::from_secs(10));
+    assert_eq!(l.current_rates(), Some((100.0, 100.0)));
+}
+
+#[test]
+fn goodput_is_hidden_without_wire_bytes() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileMatched(rp("f"), 1000), t);
+    assert_eq!(l.goodput(), None);
+    l.apply(&Event::FileBytes(rp("f"), 250), t);
+    assert_eq!(l.goodput(), Some(5.0));
+}
+
+#[test]
+fn a_new_session_clears_matched_and_samples() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileMatched(rp("f"), 1000), t);
+    l.tick(t);
+    l.apply(&Event::SessionStart { index: 1, of: 2 }, t);
+    assert_eq!(l.matched, 0);
+    assert!(l.samples.is_empty());
+}
