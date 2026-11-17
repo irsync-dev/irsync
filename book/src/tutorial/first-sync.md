@@ -36,7 +36,7 @@ irsync: myserver is not a saved alias; setting it up over ssh
 irsync: set up myserver over ssh:
 irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
 irsync:   generated the daemon identity
-irsync:   granted this client (a3e4753e5e) access to any path
+irsync:   granted this client (myclient, a3e4753e5e) access to any path
 irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
 irsync:   saved host alias myserver -> 4a29f16a4f
 ```
@@ -53,11 +53,14 @@ In steps, it:
   machines and [set the server up by hand](#set-the-server-up-by-hand);
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
-  first push to `/srv/photos` makes it an export, granted to this client
-  only;
+  server saves the client under its host name, here `myclient`, so its
+  grants show that name instead of a long id. The first push to
+  `/srv/photos` makes it an export, granted to this client only;
 - starts the daemon, which keeps running in the background;
 - saves `myserver` as a host alias on the client, with the daemon's
-  `EndpointId` and `ssh = "myserver"`.
+  `EndpointId` and `ssh = "myserver"`. For `mike@myserver` or an IP
+  address, see
+  [which names the setup saves](../how-to/ssh-setup.md#the-names-the-setup-saves).
 
 After that, irsync prints how to make the daemon a user service, so that it
 survives a reboot (see

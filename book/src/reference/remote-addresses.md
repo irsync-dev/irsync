@@ -7,6 +7,13 @@ A remote operand is `HOST:PATH`.
   z-base-32 as iroh prints it. Aliases match exactly; there are no patterns.
   The client pins the `EndpointId` it dials: a daemon with another key fails
   the connection.
+- A `HOST` that is neither is looked up among the saved hosts by their `ssh`
+  value: the address a host was first set up by finds that host again. When
+  hosts with different `EndpointId`s share that `ssh` value, irsync stops
+  and names them. A `HOST` that matches nothing is an ssh destination, and
+  irsync sets it up over ssh.
+- An IPv6 address goes in brackets: `[fe80::1]:PATH`, or
+  `mike@[fe80::1]:PATH`.
 - `PATH` is sent to the daemon as typed and resolved on the daemon's machine.
   The client does not interpret it, apart from the trailing slash.
 

@@ -80,6 +80,9 @@ everyone; `--warm-index` sets `warm_index`.
 | `irsync grant list EXPORT` | One export's grants; `all` lists those that apply to every export, `immediate` the peers that may reach any path. |
 | `irsync grant list WHO` | What one peer may reach: `immediate: rw` first when it is in `[immediate]`, then one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |
 
+A client set up over ssh is listed by its host name, which the setup saved
+in `[hosts]`.
+
 `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
 line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment beside the entry. A peer that `[hosts]` has an alias for is stored

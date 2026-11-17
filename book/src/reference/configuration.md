@@ -98,7 +98,7 @@ read_only = true
 ro = ["myclient"]
 
 # Peers that may reach any path this account can, read-write.
-# The SSH setup adds the client here.
+# The SSH setup adds the client here, under its host name.
 [immediate]
 rw = ["myclient"]
 
@@ -106,7 +106,7 @@ rw = ["myclient"]
 [exports.auto-srv-music]
 path = "/srv/music"
 auto = true
-rw = ["a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"]
+rw = ["myclient"]
 ```
 
 ## Identity and state
@@ -156,7 +156,9 @@ When to choose `cubic` over `bbr`, with measurements, is in
 
 `[hosts.ALIAS]` names a remote by its `EndpointId`. On a client it names the
 daemons you dial; on a daemon's machine it names the clients that grants may
-refer to. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
+refer to. The [SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves)
+writes both: the server's alias on the client, and the client's host name on
+the server. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
 be an `EndpointId`.
 
 | Key | Default | Meaning |
@@ -237,7 +239,8 @@ automatic ones (`auto = true`).
 `[immediate]` has one key, `rw`: peers that may reach any path the daemon's
 account can, read-write. There is no read-only form. `irsync grant add
 immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
-and the SSH setup adds its client here.
+and the SSH setup adds its client here, by the host name it saved the client
+under in `[hosts]`.
 
 When such a peer uses a path that no export covers, the daemon adds an
 automatic export for it, `auto = true`, named `auto-` and the path with `-`
