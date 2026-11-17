@@ -261,6 +261,8 @@ and add one sentence: the rates are over the last 5 seconds; `synced` counts mat
 
 - [ ] **Step 2: Add the same explanation to the book's Output section**, after the sentence about the transfer bar's `N in flight`: what `sent`, `synced` and `goodput` mean, the percent-up-to-2 / ratio-above format, and that `done` shows run averages.
 
+- [ ] **Step 2b: Dashboard note (done while planning)**: `book/src/reference/metrics.md` gains "Transfer rates and goodput", PromQL for the same three figures from `irsync_bytes_literal_total` and `irsync_bytes_matched_total`.
+
 - [ ] **Step 3: Run the man page tests**
 
 Run: `python3 -m unittest discover -s tools/tests`
@@ -274,6 +276,6 @@ Expected: exits 0.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/irsync/src/cli/progress/mod.rs book/src/reference/command-line.md
+git add crates/irsync/src/cli/progress/mod.rs book/src/reference/command-line.md book/src/reference/metrics.md docs/superpowers/plans/2026-11-17-progress-rate.md
 git commit -m "Document the transfer rates and goodput in the progress block (#25)"
 ```

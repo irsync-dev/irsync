@@ -109,6 +109,31 @@ average is 1.5 or more: `place 18.2s ×14.8` is 18.2 s of the run during which
 about fifteen files were being placed at a time. `index_wait` appears there as
 `index` on the `waiting` line.
 
+## Transfer rates and goodput
+
+The progress block's `sent` and `synced` rates and its goodput can be drawn
+from the two byte counters. In PromQL, for the client:
+
+```text
+# sent: bytes on the wire per second
+sum(rate(irsync_bytes_literal_total{side="client"}[1m]))
+
+# synced: bytes put in place per second, sent or matched
+sum(rate(irsync_bytes_literal_total{side="client"}[1m]))
+  + sum(rate(irsync_bytes_matched_total{side="client"}[1m]))
+
+# goodput: synced bytes per byte on the wire (1 means nothing matched)
+(sum(increase(irsync_bytes_literal_total{side="client"}[1h]))
+  + sum(increase(irsync_bytes_matched_total{side="client"}[1h])))
+  / sum(increase(irsync_bytes_literal_total{side="client"}[1h]))
+```
+
+Pick one `side`: the client and the daemon count the same bytes, so adding
+both counts them twice. For a daemon, use `side="daemon"`; its counters add
+up across all the sessions it serves. Matched bytes are counted when each file
+is placed, so over a short range the synced rate jumps at the end of large
+files; a range of a minute or more smooths that out.
+
 ## Spans
 
 Span names are stable. The per-file spans, `file` and its children, reach the

@@ -15,7 +15,7 @@
 //! ```text
 //! ──────────────────────────────────────────────────────────────────────
 //! list      18,204 entries  walking 2023/  peer 9,120 entries  walking 2022/
-//! transfer  [██████████░░░░░░░░░░░░░░░░░░░░]   33%  41.20MB/s  0:01:23  xfr#1,882  [direct]
+//! transfer  [██████████░░░░░░░░░░░░░░░░░░░░]   33%  41.20MB/s sent  380.00MB/s synced  goodput 9.2×  0:01:23  xfr#1,882  [direct]
 //!   [███████░░░░░░░░░░░░░]   36%  2024/trip/clip_0007.mov  1.90G  8.10MB/s
 //!   hashing                       2024/trip/clip_0009.mov  2.40G
 //!   … and 28 more
@@ -32,7 +32,11 @@
 //! line each (the full list is printed on stderr after the block is
 //! cleared). The roles log a failed file at `info`, so by default nothing
 //! scrolls for it on the client while the daemon's log still records it. The transfer percent has rsync's
-//! `--info=progress2` meaning: skipped and matched bytes count as done. Lines
+//! `--info=progress2` meaning: skipped and matched bytes count as done. The
+//! rates are over the last 5 seconds: `sent` counts wire bytes, `synced`
+//! wire and matched bytes; goodput is synced over sent bytes for the
+//! session, a percent up to 2 and a ratio above. The `done` line shows the
+//! same three as averages over the run. Lines
 //! are fitted to the terminal width, which is re-read on every redraw (at most
 //! every 100 ms, at once on a connection state change). At the end of a
 //! session the block is erased before the trailer; with several sources each
