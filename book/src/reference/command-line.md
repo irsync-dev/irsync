@@ -112,11 +112,16 @@ The daemon honours the client's flags in both directions, filters included.
 
 A `HOST` that is neither an alias nor an `EndpointId` is taken as an ssh
 destination, such as `myserver` or `me@myserver`. `irsync` then sets that
-machine up over ssh before it syncs: it copies itself there when the server
-has no matching build, grants this client access to any path
+machine up over ssh before it syncs: it installs `irsync`, `fileset` and the
+manual pages there (the same files as `install.sh`, in `~/.local/bin`) when
+the server has no matching build, grants this client access to any path
 (`[immediate]`), starts the daemon and saves `HOST` as an alias with
 `ssh = "HOST"`. It prints what it did. Later runs dial the alias over iroh
 and do not use ssh.
+A release build downloads the release files on this machine, for every server
+platform. If that fails and the server has the same OS and CPU, it installs
+this machine's own files instead. The server needs no internet access.
+`--no-install` copies nothing.
 
 A sync to an alias with `ssh` dials once and waits at most 15 seconds
 (`--dial-retries` sets how often it retries first). When the daemon does not

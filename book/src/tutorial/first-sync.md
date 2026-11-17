@@ -34,7 +34,7 @@ irsync refuses to set up a daemon as root. It says what it did:
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh
 irsync: set up myserver over ssh:
-irsync:   installed irsync 0.1.0 (1a2b3c4) at ~/.local/share/irsync/bin/irsync
+irsync:   installed irsync 0.1.0 (1a2b3c4) in ~/.local/bin, with fileset and the manual pages
 irsync:   generated the daemon identity
 irsync:   granted this client (a3e4753e5e) access to any path
 irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
@@ -43,14 +43,22 @@ irsync:   saved host alias myserver -> 4a29f16a4f
 
 In steps, it:
 
-- copies itself to the server, when the server runs the same OS and CPU as
-  the client. When they differ, a released irsync downloads the release
-  binary of its own version for the server's platform, checks it, and copies
-  that over. The download happens on the client, which needs `curl` or
-  `wget`, and `tar`; the server needs no internet access. A build from
-  source cannot do this, and not every platform has a release binary (an
-  Intel Mac has none). irsync then stops and says so; install irsync on both
-  machines and [set the server up by hand](#set-the-server-up-by-hand);
+- installs irsync on the server, the same way `install.sh` does: `irsync`,
+  `fileset` and the manual pages go to `~/.local/bin` and
+  `~/.local/share/man`. The client sends the files; the installer script
+  places them. A released irsync downloads the release files of its own
+  version on the client, for any server platform, and checks them. If that
+  download fails and the server has the same OS and CPU, it installs this
+  machine's own files instead. The download needs `curl` or `wget`, and
+  `tar`, on the client; the server needs no internet access. A build from
+  source has no release to download, so it works only when the server has
+  the same OS and CPU. Not every platform has a release (an Intel Mac has
+  none). Otherwise irsync stops and says so; install irsync on both machines
+  and [set the server up by hand](#set-the-server-up-by-hand). Add
+  `--no-install` to copy nothing and use the irsync already at
+  `~/.local/bin/irsync` there. The installer never edits your shell startup
+  files. When the server's login shell does not find `irsync`, it prints the
+  line to add, and so does the setup;
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
   first push to `/srv/photos` makes it an export, granted to this client

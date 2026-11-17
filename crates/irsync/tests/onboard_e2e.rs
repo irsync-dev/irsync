@@ -337,7 +337,7 @@ fn other_platform_gets_the_release_binary() {
     let err = ok(&o);
     assert!(err.contains("irsync: downloading irsync v"), "{err}");
     assert!(
-        err.contains(&format!("(release binary for {platform})")),
+        err.contains(&format!("(release files for {platform})")),
         "{err}"
     );
     same_tree(w.src.path(), &dest);
@@ -998,10 +998,12 @@ fn service_file_keeps_the_old_binary_and_daemon() {
     assert_eq!(info.pid, old.0.id(), "{err}");
     assert_eq!(w.lock_exe(), w.server_real(OLD_BIN));
     assert!(w.old_bin().exists());
+    assert!(err
+        .lines()
+        .any(|l| l.contains("~/.config/systemd/user/irsync.service still starts irsync")),);
     assert!(
         err.lines()
-            .any(|l| l.contains(".config/systemd/user/irsync.service")
-                && l.contains("~/.local/bin/irsync")),
+            .any(|l| l.contains("Change the path in that file to ~/.local/bin/irsync")),
         "{err}"
     );
     same_tree(w.src.path(), &dest);

@@ -159,13 +159,29 @@ landed. Minors from the final review; the signature check is under
 
 ## The upload command on the server (`ssh/client.rs`)
 
-- [ ] A rejected install on a fresh server leaves an empty
-      `~/.local/share/irsync/bin`, although the message says nothing was
-      changed.
-- [ ] A failed `cat`, `chmod` or `mv` (disk full) leaves the `.tmp.$$` file;
-      only the size and version checks remove it. A `trap 'rm -f …' EXIT`
-      would cover all of them. - [ ] A CPU that irsync does not know is reported as "an unknown CPU";
+- [ ] A CPU that irsync does not know is reported as "an unknown CPU";
       pass the raw `uname -m` text through.
+
+# Open items from the ssh install through the installer, 2026-11-17
+
+What the change (`docs/superpowers/specs/2026-11-17-ssh-install-matches-installer-design.md`)
+left open. It fixed the two items about the upload command that stood here
+(the empty directory after a rejected install, the leftover temp file after
+a failed step).
+
+- [ ] The installer's login-shell probe is not run for csh and tcsh.
+- [ ] A service file under another name, or in another place than the two
+      the setup looks at, is not found. Neither is a service file that
+      names the old path through a variable.
+- [ ] A daemon run by a supervisor other than those two service files is
+      restarted by the setup, as if the setup had started it.
+- [ ] The installer's interactive login-shell probe can make zsh write
+      `~/.zcompdump`. It has not been tried under `ssh -t`.
+- [ ] `release::fetch` unpacks a downloaded tarball with a bare `tar -xJf`.
+      Check hard-link members that point outside the directory.
+- [ ] A failed download and a checksum mismatch both fall back to this
+      machine's files on the same platform. Decide whether a mismatch
+      should stop instead.
 
 # Open items from the supply chain work, 2026-11-15
 
