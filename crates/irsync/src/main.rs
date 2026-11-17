@@ -48,15 +48,22 @@ fn main() {
     let args = Args::parse();
     // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
     let _ = irsync::fs::rlimit::raise_nofile();
-    if args.cmd.is_none() && args.sync.paths.len() == 1 {
-        let opts = SyncOptions::from_args(&args);
-        exit_after_capture(run_list(args, &opts));
-    }
     let (log, files) = (args.log, &args.files);
-    if !matches!(args.cmd, None | Some(Command::Daemon(_))) {
+    if !matches!(
+        args.cmd,
+        Some(Command::Sync(_) | Command::List(_) | Command::Daemon(_))
+    ) {
         init_command_logging(log);
     }
     match &args.cmd {
+        Some(Command::Sync(_)) => {
+            let opts = SyncOptions::from_args(&args);
+            exit_after_capture(run_sync(&args, &opts));
+        }
+        Some(Command::List(_)) => {
+            let opts = SyncOptions::from_args(&args);
+            exit_after_capture(run_list(args, &opts));
+        }
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
@@ -71,10 +78,7 @@ fn main() {
             recheck,
             no_dht,
         }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
-        None => {
-            let opts = SyncOptions::from_args(&args);
-            exit_after_capture(run_sync(&args, &opts));
-        }
+        None => unreachable!("try_parse_from always sets a command"),
     }
 }
 
@@ -454,12 +458,12 @@ struct Totals {
 /// The sources, the destination and which way the data flows.
 fn locations(args: &Args) -> anyhow::Result<(Vec<Location>, Location, Direction)> {
     let srcs = args
-        .sync
+        .sync_args()
         .src()
         .iter()
         .map(|s| Location::parse(s))
         .collect::<Result<Vec<_>, _>>()?;
-    let dest = Location::parse(args.sync.dest().context("missing destination")?)?;
+    let dest = Location::parse(args.sync_args().dest().context("missing destination")?)?;
     let direction = validate(&srcs, &dest)?;
     Ok((srcs, dest, direction))
 }
@@ -739,7 +743,7 @@ fn client_state_dir(opts: &SyncOptions) -> PathBuf {
 /// HOST:PATH` lists a directory: a dry-run pull into a temporary directory
 /// that also holds the run's index, so nothing is written or kept.
 fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
-    let operand = args.sync.paths[0].clone();
+    let operand = args.sync_args().paths[0].clone();
     let dir_listing = match Location::parse(&operand) {
         Ok(Location::Remote { path, .. }) => !path.is_empty(),
         _ => false,
@@ -755,13 +759,18 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         let _ = CLIENT_STATE.set(tmp.path().join("state"));
         // With the slash a listed file keeps its own name.
         let dest = format!("{}/", tmp.path().join("list").display());
-        args.sync.paths = vec![operand, dest];
+        // The listing is a dry-run pull into the temporary directory.
+        let Some(Command::List(mut s)) = args.cmd.take() else {
+            unreachable!("run_list takes a list command")
+        };
+        s.paths = vec![operand, dest];
+        args.cmd = Some(Command::Sync(s));
         let mut opts = opts.clone();
         opts.dry_run = true;
         opts.verbose = opts.verbose.max(1);
         // A listing shows the tree, so it recurses unless told not to (a
         // sync needs -r or -a for that).
-        opts.preserve.recursive = !args.sync.no_recursive;
+        opts.preserve.recursive = !args.sync_args().no_recursive;
         // A listing is a question: with the daemon unreachable it fails
         // now rather than waiting out a sync's reconnect window.
         opts.reconnect = Some(std::time::Duration::ZERO);
@@ -847,8 +856,8 @@ async fn sync(
     };
     // The operand as typed, for the no-access hint.
     let remote_text: String = match direction {
-        Direction::ClientSends => args.sync.dest().unwrap_or_default().to_string(),
-        Direction::DaemonSends => args.sync.src()[0].clone(),
+        Direction::ClientSends => args.sync_args().dest().unwrap_or_default().to_string(),
+        Direction::DaemonSends => args.sync_args().src()[0].clone(),
     };
 
     let mut conn = connect_for(host, opts, log, Vec::new()).await?;
@@ -931,8 +940,8 @@ async fn sync(
         };
         sessions += 1;
         let started = Instant::now();
-        let operand_from = args.sync.src()[index].clone();
-        let operand_to = args.sync.dest().unwrap_or_default().to_string();
+        let operand_from = args.sync_args().src()[index].clone();
+        let operand_to = args.sync_args().dest().unwrap_or_default().to_string();
         // Why checking the host over ssh failed, while the daemon is tried
         // once more.
         let mut ssh_failed: Option<anyhow::Error> = None;

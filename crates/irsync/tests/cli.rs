@@ -17,6 +17,124 @@ fn loc(s: &str) -> Location {
     Location::parse(s).unwrap()
 }
 
+fn sync_paths(a: &Args) -> Vec<String> {
+    match &a.cmd {
+        Some(Command::Sync(s)) => s.paths.clone(),
+        c => panic!("not Sync: {c:?}"),
+    }
+}
+
+fn list_paths(a: &Args) -> Vec<String> {
+    match &a.cmd {
+        Some(Command::List(s)) => s.paths.clone(),
+        c => panic!("not List: {c:?}"),
+    }
+}
+
+fn parse_err(a: &[&str]) -> String {
+    let mut v = vec!["irsync"];
+    v.extend_from_slice(a);
+    Args::try_parse_from(v).unwrap_err().to_string()
+}
+
+#[test]
+fn short_sync_is_rewritten_into_sync_command() {
+    for (short, long) in [
+        (
+            vec!["-av", "a", "b", "h:m/"],
+            vec!["sync", "-av", "a", "b", "h:m/"],
+        ),
+        (vec!["h:m/", "local/"], vec!["sync", "h:m/", "local/"]),
+    ] {
+        let (s, l) = (parse(&short), parse(&long));
+        assert_eq!(sync_paths(&s), sync_paths(&l));
+        assert!(s.sync.paths.is_empty() && l.sync.paths.is_empty());
+        assert_eq!(
+            format!("{:?}", SyncOptions::from_args(&s)),
+            format!("{:?}", SyncOptions::from_args(&l))
+        );
+    }
+}
+
+#[test]
+fn listings_are_rewritten_into_list_command() {
+    assert_eq!(list_paths(&parse(&["home:"])), ["home:"]);
+    assert_eq!(list_paths(&parse(&["sync", "home:"])), ["home:"]);
+    assert_eq!(list_paths(&parse(&["list", "home:"])), ["home:"]);
+    assert_eq!(list_paths(&parse(&["list", "home"])), ["home:"]);
+    assert_eq!(
+        list_paths(&parse(&["-v", "home:photos/"])),
+        ["home:photos/"]
+    );
+    assert_eq!(
+        list_paths(&parse(&["list", "-v", "home:photos/"])),
+        ["home:photos/"]
+    );
+}
+
+#[test]
+fn filters_keep_order_under_the_sync_command() {
+    let a = parse(&[
+        "sync",
+        "--exclude=a",
+        "--include-from=inc",
+        "--include",
+        "b",
+        "--exclude-from",
+        "exc",
+        "x",
+        "h:m",
+    ]);
+    assert_eq!(
+        SyncOptions::from_args(&a).filters,
+        vec![
+            FilterRule::Exclude("a".into()),
+            FilterRule::IncludeFrom(PathBuf::from("inc")),
+            FilterRule::Include("b".into()),
+            FilterRule::ExcludeFrom(PathBuf::from("exc")),
+        ]
+    );
+}
+
+#[test]
+fn sync_and_list_follow_the_command_rules() {
+    // Global flags may come first, as for every command.
+    let a = parse(&["-v", "sync", "a/", "h:m/"]);
+    assert_eq!(sync_paths(&a), ["a/", "h:m/"]);
+    assert_eq!(a.log.verbose, 1);
+    assert_eq!(list_paths(&parse(&["-q", "list", "h"])), ["h:"]);
+    // A sync option before the command name is an error, as with `gc`.
+    assert!(parse_err(&["-av", "sync", "h:m/"])
+        .contains("-a is a sync option and cannot be used with 'sync'"));
+    assert!(parse_err(&["-a", "list", "h:"])
+        .contains("-a is a sync option and cannot be used with 'list'"));
+    // After a path the words are paths; `./sync` is always a path.
+    assert_eq!(
+        sync_paths(&parse(&["h:m/", "-v", "sync"])),
+        ["h:m/", "sync"]
+    );
+    assert_eq!(sync_paths(&parse(&["./sync", "h:m/"])), ["./sync", "h:m/"]);
+}
+
+#[test]
+fn sync_and_list_usage_errors() {
+    for bad in [
+        vec!["sync"],
+        vec!["sync", "-a", "./x"],
+        vec!["-a", "./x"],
+        vec!["list"],
+        vec!["list", "a:", "b:"],
+        vec!["list", "./photos"],
+        vec!["list", "photos/x"],
+        vec!["list", "."],
+        vec!["list", ".."],
+    ] {
+        let mut full = vec!["irsync"];
+        full.extend(bad.iter());
+        assert!(Args::try_parse_from(full).is_err(), "{bad:?}");
+    }
+}
+
 #[test]
 fn archive_expands_to_rlptgod() {
     let p = opts(&["-a", "src", "h:m/"]).preserve;
@@ -193,9 +311,9 @@ fn subcommands_parse() {
     // `keygen` is gone; a lone word is a sync missing its DEST.
     assert!(Args::try_parse_from(["irsync", "keygen"]).is_err());
     let a = parse(&["-av", "a", "b", "h:m/"]);
-    assert!(a.cmd.is_none());
-    assert_eq!(a.sync.src(), vec!["a", "b"]);
-    assert_eq!(a.sync.dest(), Some("h:m/"));
+    assert!(matches!(a.cmd, Some(Command::Sync(_))));
+    assert_eq!(a.sync_args().src(), vec!["a", "b"]);
+    assert_eq!(a.sync_args().dest(), Some("h:m/"));
 }
 
 #[test]
@@ -599,10 +717,7 @@ fn old_bare_verbs_are_gone() {
     // No subcommand is named so: the words are the two paths of a sync.
     for v in ["add", "remove", "allow", "revoke"] {
         let a = parse(&[v, "photos"]);
-        assert!(
-            a.cmd.is_none() && a.sync.paths == vec![v, "photos"],
-            "{v}: {a:?}"
-        );
+        assert!(a.sync_args().paths == vec![v, "photos"], "{v}: {a:?}");
     }
 }
 
@@ -703,9 +818,9 @@ fn id_and_show_parse() {
 #[test]
 fn one_remote_operand_is_a_listing() {
     let a = parse(&["home:"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["home:"]);
+    assert!(a.sync_args().paths == ["home:"]);
     let a = parse(&["-v", "home:photos/"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["home:photos/"]);
+    assert!(a.sync_args().paths == ["home:photos/"]);
     // A single local path is still a usage error.
     assert!(Args::try_parse_from(["irsync", "./x"]).is_err());
     assert!(Args::try_parse_from(["irsync"]).is_err());
@@ -855,17 +970,17 @@ fn a_sync_still_reads_verbose_and_quiet() {
     assert_eq!((o.verbose, o.quiet), (2, false));
     assert!(opts(&["-q", "src", "h:m/"]).quiet);
     let a = parse(&["-v", "home:photos/"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["home:photos/"] && a.log.verbose == 1);
+    assert!(a.sync_args().paths == ["home:photos/"] && a.log.verbose == 1);
 }
 
 #[test]
 fn a_path_named_like_a_command_is_still_a_path() {
     let a = parse(&["-a", "myserver:photos/", "config"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["myserver:photos/", "config"]);
+    assert!(a.sync_args().paths == ["myserver:photos/", "config"]);
     let a = parse(&["src", "gc"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["src", "gc"]);
+    assert!(a.sync_args().paths == ["src", "gc"]);
     let a = parse(&["-v", "./gc", "h:m/"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["./gc", "h:m/"]);
+    assert!(a.sync_args().paths == ["./gc", "h:m/"]);
 }
 
 #[test]
@@ -948,22 +1063,22 @@ fn a_sync_option_with_a_command_is_rejected_by_name() {
 #[test]
 fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
     let a = parse(&["h:photos/", "-v", "gc"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "gc"]);
+    assert!(a.sync_args().paths == ["h:photos/", "gc"]);
     assert_eq!(a.log.verbose, 1);
     let a = parse(&["h:photos/", "-q", "config"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(a.sync_args().paths == ["h:photos/", "config"]);
     assert!(a.log.quiet);
     let a = parse(&["h:photos/", "--config", "f", "show"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "show"]);
+    assert!(a.sync_args().paths == ["h:photos/", "show"]);
     assert_eq!(a.files.config, Some(PathBuf::from("f")));
     let a = parse(&["h:photos/", "-a", "config"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "config"]);
+    assert!(a.sync_args().paths == ["h:photos/", "config"]);
     assert!(SyncOptions::from_args(&a).preserve.recursive);
     let a = parse(&["src", "-v", "gc", "h:m/"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["src", "gc", "h:m/"]);
+    assert!(a.sync_args().paths == ["src", "gc", "h:m/"]);
     // A path whose command would fail to parse is still a path.
     let a = parse(&["h:photos/", "-v", "host", "add"]);
-    assert!(a.cmd.is_none() && a.sync.paths == ["h:photos/", "host", "add"]);
+    assert!(a.sync_args().paths == ["h:photos/", "host", "add"]);
     // With no path first, a command name is the command.
     assert!(matches!(parse(&["-v", "gc"]).cmd, Some(Command::Gc { .. })));
     assert!(matches!(parse(&["gc", "-v"]).cmd, Some(Command::Gc { .. })));
