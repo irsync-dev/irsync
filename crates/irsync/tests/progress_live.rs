@@ -809,3 +809,24 @@ fn done_line_shows_averages_and_goodput() {
         lines[2]
     );
 }
+
+#[test]
+fn reconnecting_and_done_transfer_lines_fit_every_width() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = mid_sync();
+    l.apply(
+        &Event::FileMatched(rp("2024/trip/clip_0007.mov"), 1_000_000_000),
+        t,
+    );
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 12 }), t);
+    let now = t + Duration::from_secs(3);
+    let mut done = l.clone();
+    done.transfer_done = true;
+    for width in 20..=200 {
+        for live in [&l, &done] {
+            for line in render(live, &Geometry::fixed(width, 40), now) {
+                assert!(line.chars().count() <= width, "{width}: {line:?}");
+            }
+        }
+    }
+}

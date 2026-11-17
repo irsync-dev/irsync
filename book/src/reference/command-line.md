@@ -227,8 +227,12 @@ destination catches up. Goodput is synced data divided by sent data for the
 session: `100%` means nothing was matched, and above 2 it is shown as a
 ratio, so `9.2×` means each byte sent put about nine in place. Once the
 transfer is done, the line shows the same three numbers as averages over the
-whole run. On a narrow terminal the transfer count goes first, then
-goodput, then the synced rate. While the block is drawn, failed files show in its
+whole run. No rate is shown in a session's first second, and both read
+`0B/s` while the client reconnects. Matched data counts as soon as a file's
+chunks are requested, before any of its data moves, so `synced` jumps for a
+few seconds when a large, mostly unchanged file starts. On a narrow terminal
+the transfer count goes first, then goodput, then the synced rate. While the
+block is drawn, failed files show in its
 `errors` section instead of scrolling, and the full list goes to stderr once the
 block is cleared at the end. `-q` turns the block off. When stdout is not a
 terminal, or `TERM` is `dumb`, the block is not drawn and the output is plain

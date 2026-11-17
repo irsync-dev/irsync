@@ -111,8 +111,11 @@ about fifteen files were being placed at a time. `index_wait` appears there as
 
 ## Transfer rates and goodput
 
-The progress block's `sent` and `synced` rates and its goodput can be drawn
-from the two byte counters. In PromQL, for the client:
+Figures comparable to the progress block's `sent` and `synced` rates and its
+goodput can be drawn from the two byte counters. They are not identical: the
+block counts matched data as soon as a file's chunks are requested, while
+`irsync_bytes_matched_total` counts it when the file is placed, and also
+counts files found already identical. In PromQL, for the client:
 
 ```text
 # sent: bytes on the wire per second
