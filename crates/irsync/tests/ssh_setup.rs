@@ -423,6 +423,10 @@ fn id(n: u8) -> EndpointId {
     SecretKey::from_bytes(&[n; 32]).public()
 }
 
+fn cfg() -> &'static Path {
+    Path::new("/x/irsync.toml")
+}
+
 fn hosts_from(text: &str) -> Hosts {
     Config::parse(text, Path::new("/x/irsync.toml"))
         .unwrap()
@@ -431,25 +435,26 @@ fn hosts_from(text: &str) -> Hosts {
 
 #[test]
 fn client_name_rules() {
-    let hosts = hosts_from(&format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1)));
-    assert!(check_client_name(&hosts, id(1), "myclient").is_ok());
-    assert!(check_client_name(&hosts, id(2), "other").is_ok());
-    let e = check_client_name(&hosts, id(2), "myclient")
-        .unwrap_err()
-        .to_string();
+    let doc: DocumentMut = format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1))
+        .parse()
+        .unwrap();
+    let check = |client, name| check_client_name(&doc, cfg(), client, name);
+    assert!(check(id(1), "myclient").is_ok());
+    assert!(check(id(2), "other").is_ok());
+    let e = check(id(2), "myclient").unwrap_err().to_string();
     assert!(e.contains("[hosts.myclient]"), "{e}");
     assert!(e.contains(&id(1).fmt_short().to_string()), "{e}");
     for bad in ["", "all", "*", "a/b", "a:b"] {
-        assert!(check_client_name(&hosts, id(2), bad).is_err(), "{bad:?}");
+        assert!(check(id(2), bad).is_err(), "{bad:?}");
     }
     // A client this server already has a name for is not being named.
-    assert!(check_client_name(&hosts, id(1), "a/b").is_ok());
+    assert!(check(id(1), "a/b").is_ok());
 }
 
 #[test]
 fn grants_the_name() {
     let mut doc = DocumentMut::new();
-    assert!(grant_client(&mut doc, &hosts_from(""), id(1), "myclient").unwrap());
+    assert!(grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
     let t: toml::Table = doc.to_string().parse().unwrap();
     assert_eq!(
         t["hosts"]["myclient"]["endpoint_id"].as_str(),
@@ -475,7 +480,7 @@ fn names_that_need_quoting_round_trip() {
         "'",
     ] {
         let mut doc = DocumentMut::new();
-        grant_client(&mut doc, &hosts_from(""), id(1), name).unwrap();
+        grant_client(&mut doc, cfg(), id(1), name).unwrap();
         let text = doc.to_string();
         let t: toml::Table = text.parse().unwrap();
         assert_eq!(t.len(), 2, "{name:?}: {text}");
@@ -494,7 +499,7 @@ fn a_bare_id_grant_counts() {
     let mut doc: DocumentMut = format!("[immediate]\nrw = [\"{}\"]\n", id(1))
         .parse()
         .unwrap();
-    assert!(!grant_client(&mut doc, &hosts_from(""), id(1), "myclient").unwrap());
+    assert!(!grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
     let t: toml::Table = doc.to_string().parse().unwrap();
     assert_eq!(t["immediate"]["rw"].as_array().unwrap().len(), 1);
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some(&*id(1).to_string()));
@@ -521,4 +526,50 @@ fn a_taken_client_name_changes_nothing() {
         home.setup_named(&id(1), "myclient", &[]).grant,
         GrantOutcome::Added
     );
+}
+
+/// A grant that still names a client whose `[hosts]` entry was removed
+/// must not pass to the next client that calls itself that name.
+#[test]
+fn a_leftover_grant_name_is_not_taken_over() {
+    for text in [
+        "[immediate]\nrw = [\"myclient\"]\n",
+        "[all]\nro = [\"myclient\"]\n",
+        "[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n",
+    ] {
+        let mut doc: DocumentMut = text.parse().unwrap();
+        let e = grant_client(&mut doc, cfg(), id(2), "myclient")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("myclient") && e.contains("still"), "{e}");
+        assert_eq!(doc.to_string(), text);
+    }
+}
+
+/// The name is checked against the document being edited, not against
+/// what `[hosts]` held before the lock was taken.
+#[test]
+fn a_name_taken_in_the_document_is_not_overwritten() {
+    let text = format!("[hosts.myclient]\nendpoint_id = \"{}\"\n", id(1));
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert!(grant_client(&mut doc, cfg(), id(2), "myclient").is_err());
+    assert_eq!(doc.to_string(), text);
+}
+
+/// A recheck does not hand a removed client's leftover grant to whoever
+/// has its name now, and changes nothing.
+#[test]
+fn recheck_does_not_revive_a_leftover_grant() {
+    let home = Home::new("");
+    let mut text = std::fs::read_to_string(home.config()).unwrap();
+    text.push_str("[immediate]\nrw = [\"myclient\"]\n");
+    std::fs::write(home.config(), &text).unwrap();
+    for extra in [&["--recheck"][..], &[]] {
+        let out = home.try_setup(&id(2), "myclient", extra);
+        assert_eq!(out.status.code(), Some(1), "{extra:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("[immediate]"), "{err}");
+        assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
+        assert!(probe(&home.state()).is_none());
+    }
 }

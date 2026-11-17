@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 
 use crate::build::LONG_VERSION;
 use crate::config::file::Config;
-use crate::config::hosts::{valid_alias, Hosts};
+use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
@@ -244,10 +244,19 @@ impl SetupReport {
     }
 }
 
-/// Whether `name` may stand for `client` on this server: a valid alias
-/// that is free or already points at `client`. A client the server
-/// already has a name for keeps that one, whatever it calls itself.
-pub fn check_client_name(hosts: &Hosts, client: EndpointId, name: &str) -> anyhow::Result<()> {
+/// Whether `name` may stand for `client` in the server config `doc` (the
+/// file at `path`): a valid alias that is free or already points at
+/// `client`. A free name that grants still mention is refused too: those
+/// are left from a client that was removed, and must not pass to whoever
+/// has its name now. A client the server already has a name for keeps that
+/// one, whatever it calls itself.
+pub fn check_client_name(
+    doc: &DocumentMut,
+    path: &Path,
+    client: EndpointId,
+    name: &str,
+) -> anyhow::Result<()> {
+    let hosts = Config::parse(&doc.to_string(), path)?.hosts;
     if hosts.alias_of(&client).is_some() {
         return Ok(());
     }
@@ -258,28 +267,44 @@ pub fn check_client_name(hosts: &Hosts, client: EndpointId, name: &str) -> anyho
              EndpointId); rename the client machine"
         );
     }
-    match hosts.get(name) {
-        Some(h) if h.endpoint_id != client => bail!(
-            "the name {name:?} is already used on this server for another client \
-             ({}); remove [hosts.{name}] there, or rename this machine",
-            h.endpoint_id.fmt_short()
-        ),
-        _ => Ok(()),
+    if let Some(h) = hosts.get(name) {
+        if h.endpoint_id != client {
+            bail!(
+                "the name {name:?} is already used on this server, as [hosts.{name}] \
+                 for {}. If that is a client that is gone, remove it there with \
+                 `irsync host remove {name} -f`; else rename this machine",
+                h.endpoint_id.fmt_short()
+            );
+        }
+        return Ok(());
     }
+    let lists = manage::grants::lists_naming(doc, name);
+    if !lists.is_empty() {
+        let lists: Vec<String> = lists.iter().map(|l| format!("[{l}]")).collect();
+        bail!(
+            "grants on this server still name {name:?} ({}), and no [hosts.{name}] \
+             says who that is. They are left from a client that was removed; \
+             take {name:?} out of those lists there, or rename this machine",
+            lists.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Saves `client` in `[hosts]` under `name` (unless it has a name there
-/// already) and grants that name immediate access. False when the client
-/// was already granted, by a name or by its id; the `[hosts]` entry is
-/// written all the same. The name is only ever a label: the daemon decides
-/// access by the id it stands for.
+/// already) and grants that name immediate access, after
+/// [`check_client_name`] on `doc` itself. False when the client was
+/// already granted, by a name or by its id; the `[hosts]` entry is written
+/// all the same. The name is only ever a label: the daemon decides access
+/// by the id it stands for.
 pub fn grant_client(
     doc: &mut DocumentMut,
-    hosts: &Hosts,
+    path: &Path,
     client: EndpointId,
     name: &str,
 ) -> anyhow::Result<bool> {
-    check_client_name(hosts, client, name)?;
+    check_client_name(doc, path, client, name)?;
+    let hosts = Config::parse(&doc.to_string(), path)?.hosts;
     let alias = match hosts.alias_of(&client) {
         Some(a) => a.to_string(),
         None => {
@@ -314,14 +339,13 @@ pub fn run(
     recheck: bool,
     no_dht: bool,
 ) -> anyhow::Result<SetupReport> {
-    let Config {
-        settings, hosts, ..
-    } = Config::load(paths)?;
+    let Config { settings, .. } = Config::load(paths)?;
 
     // Before anything is changed: with immediate mode off nothing is
     // granted and the client is not named.
     if settings.daemon.immediate {
-        check_client_name(&hosts, client, client_name)
+        let doc = manage::lock_config(&paths.config)?.load()?;
+        check_client_name(&doc, &paths.config, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
     }
 
@@ -347,7 +371,8 @@ pub fn run(
         let lock = manage::lock_config(&paths.config)?;
         let mut doc = lock.load()?;
         let before = doc.to_string();
-        let added = grant_client(&mut doc, &hosts, client, client_name)
+        // Checked again on the locked document: it may have changed.
+        let added = grant_client(&mut doc, &paths.config, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
             (false, _) => {

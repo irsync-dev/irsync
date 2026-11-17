@@ -38,7 +38,11 @@ irsync: 192.168.1.5 is saved as myserver
 ```
 
 It dials the daemon saved under that name, wherever it is now. If the
-address has since gone to another machine, pass `--ssh` to set that one up.
+address has since gone to another machine, that is not the machine you get.
+First take the address off the old entry (`irsync host remove myserver`, or
+change its `ssh` value in the config file), then sync to the address again:
+the new machine is set up and saved under its own name. Do not use `--ssh`
+for this: it would point the old alias at the new machine.
 
 On the server, the setup saves the client under the client's short host name
 and grants that name:
@@ -60,8 +64,12 @@ name cannot be used there:
 
 - The name already belongs to another client. This also happens when the
   same machine comes back with a new key, for example after a reinstall.
-  The message names the entry; remove it on the server with
-  `irsync host remove myclient -f`, or rename the client machine.
+  The message names the entry. If that client is gone, remove it on the
+  server with `irsync host remove myclient -f`; else rename the client
+  machine.
+- Grants on the server still name a client that has no `[hosts]` entry any
+  more. Those are left from a removed client and are not handed to a new
+  one of the same name. Take the name out of the lists the message names.
 - The client has no usable host name of its own (none, or `localhost`).
   Give the machine a host name.
 
