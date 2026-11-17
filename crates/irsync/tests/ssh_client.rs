@@ -295,7 +295,7 @@ fn remote_commands_run_under_sh() {
 /// with or without an installed irsync before it in the reply.
 #[test]
 fn probe_reports_the_host_name() {
-    let f = fake(Some("Linux x86_64"));
+    let f = fake(None);
     assert_eq!(probe(&f.rsh, "myserver").unwrap().hostname, None);
     // SAFETY: serialized by ENV (held by `f`).
     unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "myserver.example.com") };

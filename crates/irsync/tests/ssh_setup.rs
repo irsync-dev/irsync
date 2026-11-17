@@ -447,6 +447,22 @@ fn client_name_rules() {
     for bad in ["", "all", "*", "a/b", "a:b"] {
         assert!(check(id(2), bad).is_err(), "{bad:?}");
     }
+    // The names a client never sends are refused from a hand-run setup too.
+    for bad in [
+        "localhost",
+        "LocalHost",
+        "123",
+        "tab\there",
+        "a.b",
+        " pad",
+        "x\n[daemon]",
+    ] {
+        let e = check(id(2), bad).unwrap_err().to_string();
+        assert!(
+            e.contains("cannot be a name on this server"),
+            "{bad:?}: {e}"
+        );
+    }
     // A client this server already has a name for is not being named.
     assert!(check(id(1), "a/b").is_ok());
 }
@@ -511,10 +527,9 @@ fn names_that_need_quoting_round_trip() {
     for name in [
         "my client",
         "say \"hi\"",
-        "tab\there",
         "ü",
-        "a.b",
-        "x = 1\n[daemon]",
+        "x = 1 [daemon]",
+        "a]\\b",
         "'",
     ] {
         let mut doc = DocumentMut::new();

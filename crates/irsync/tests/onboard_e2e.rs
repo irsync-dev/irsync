@@ -381,6 +381,38 @@ fn ip_address_is_saved_under_the_server_name() {
     );
 }
 
+/// A host saved with a name to reach it by keeps that name when its
+/// address is typed later: an address goes stale, a name does not.
+#[test]
+fn an_address_does_not_replace_a_saved_ssh_name() {
+    let mut w = World::new();
+    w.hostname = Some("myserver".into());
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("mike@myserver:{}", dest.display()),
+    ]));
+    let err = ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("192.168.1.5:{}", dest.display()),
+    ]));
+    assert!(
+        err.contains("host alias myserver keeps ssh = mike@myserver"),
+        "{err}"
+    );
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    assert_eq!(cfg["hosts"].as_table().unwrap().len(), 2, "{cfg}");
+    for alias in ["myserver", "mike@myserver"] {
+        assert_eq!(
+            cfg["hosts"][alias]["ssh"].as_str(),
+            Some("mike@myserver"),
+            "{alias}"
+        );
+    }
+}
+
 /// Two saved daemons set up by one address: the address alone cannot say
 /// which one is meant, and nothing is tried.
 #[test]

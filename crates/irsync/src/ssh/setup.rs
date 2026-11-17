@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 
 use crate::build::LONG_VERSION;
 use crate::config::file::Config;
-use crate::config::hosts::valid_alias;
+use crate::config::hosts::short_host_name;
 use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
@@ -266,11 +266,13 @@ pub fn check_client_name(
     if hosts.alias_of(&client).is_some() {
         return Ok(());
     }
-    if !valid_alias(name) {
+    // The same rule the client applies to its own name before it sends it.
+    if short_host_name(name).as_deref() != Some(name) {
         bail!(
             "this client's host name {name:?} cannot be a name on this server \
-             (it may not be empty, contain `:` or `/`, or be `all`, `*` or an \
-             EndpointId); rename the client machine"
+             (it may not be empty, `localhost`, digits only, `all`, `*` or an \
+             EndpointId, or contain `:`, `/`, `.` or control characters); \
+             rename the client machine"
         );
     }
     let entry = hosts.get(name);

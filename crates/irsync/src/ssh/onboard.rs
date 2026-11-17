@@ -29,6 +29,9 @@ pub struct SavedAlias {
     pub previous_id: Option<EndpointId>,
     /// It was saved before this run (with `previous_id` or the same id).
     pub existed: bool,
+    /// The `ssh` value it had and keeps: a name, when this run reached the
+    /// host by an address.
+    pub kept_ssh: Option<String>,
 }
 
 /// What the text before the `:` is, as an ssh destination.
@@ -193,21 +196,30 @@ pub fn onboard(
         Some(a) => vec![a.to_string()],
         None => choose_aliases(dest, p.hostname.as_deref(), id, &|a| saved_id(&doc, a)),
     };
-    let flags = HostFlags {
-        ssh: Some(dest.to_string()),
-        ..HostFlags::default()
-    };
+    let by_address = matches!(dest_kind(dest), DestKind::Ip { .. });
     let mut saved = Vec::new();
     for alias in aliases {
         // Saved with a daemon id before: an entry that was a client only
         // is saved as a host now.
-        let existed = saved_id(&doc, &alias).is_some();
+        let before = saved_id(&doc, &alias);
+        let existed = before.is_some();
+        // An address goes stale, a name does not: the same daemon, saved
+        // with a name to reach it by, keeps that name.
+        let kept_ssh = (by_address && before == Some(id))
+            .then(|| saved_ssh(&doc, &alias))
+            .flatten()
+            .filter(|old| !matches!(dest_kind(old), DestKind::Ip { .. }));
+        let flags = HostFlags {
+            ssh: kept_ssh.is_none().then(|| dest.to_string()),
+            ..HostFlags::default()
+        };
         let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &flags)
             .with_context(|| format!("saving host alias {alias}"))?;
         saved.push(SavedAlias {
             alias,
             previous_id,
             existed,
+            kept_ssh,
         });
     }
     lock.save(&mut doc)?;
@@ -230,6 +242,12 @@ fn saved_id(doc: &toml_edit::DocumentMut, alias: &str) -> Option<EndpointId> {
         .get("endpoint_id")?
         .as_str()
         .and_then(|s| crate::identity::parse_endpoint_id(s).ok())
+}
+
+/// The `ssh` value `[hosts.alias]` holds in `doc`.
+fn saved_ssh(doc: &toml_edit::DocumentMut, alias: &str) -> Option<String> {
+    let ssh = doc.get("hosts")?.get(alias)?.get("ssh")?.as_str()?;
+    Some(ssh.to_string())
 }
 
 /// Whether `alias` can be saved and `dest` is a host name ssh will not
@@ -322,8 +340,13 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     for a in &o.saved {
         let alias = &a.alias;
         match a.previous_id {
-            // Already saved with this id (a restart): nothing to say.
-            None if a.existed => {}
+            None if a.existed => {
+                // Already saved with this id (a restart): nothing to say,
+                // unless the host was reached another way than it is saved.
+                if let Some(ssh) = &a.kept_ssh {
+                    out.push(format!("  host alias {alias} keeps ssh = {ssh}"));
+                }
+            }
             None => out.push(format!(
                 "  saved host alias {alias} -> {}",
                 short(&o.endpoint_id)
@@ -504,11 +527,13 @@ mod tests {
                 alias: "u@myserver".into(),
                 previous_id: None,
                 existed: true,
+                kept_ssh: None,
             },
             SavedAlias {
                 alias: "myserver".into(),
                 previous_id: None,
                 existed: false,
+                kept_ssh: None,
             },
         ];
         let s = summary(&o).join("\n");
@@ -530,6 +555,7 @@ mod tests {
                 alias: "myserver".into(),
                 previous_id: Some(id(3)),
                 existed: true,
+                kept_ssh: None,
             }],
             report: SetupReport {
                 version: LONG_VERSION.clone(),
