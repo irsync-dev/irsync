@@ -308,31 +308,50 @@ fn cut(line: Line, g: &Geometry) -> String {
     }
 }
 
+/// Goodput, synced bytes per wire byte: a whole percent up to 2, a
+/// ratio with one decimal above, `>999×` past `999.9×`.
+pub fn goodput_text(ratio: f64, g: &Geometry) -> String {
+    let times = if g.unicode { '×' } else { 'x' };
+    if ratio <= 2.0 {
+        format!("goodput {}%", (ratio * 100.0).round() as u64)
+    } else if ratio >= 999.95 {
+        format!("goodput >999{times}")
+    } else {
+        format!("goodput {ratio:.1}{times}")
+    }
+}
+
 fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
     let elapsed = now
         .saturating_duration_since(live.start)
         .max(Duration::from_millis(1));
     let reconnecting = matches!(live.conn, ConnState::Reconnecting { .. });
-    let rate = if reconnecting {
-        0.0
-    } else {
-        live.literal as f64 / elapsed.as_secs_f64()
-    };
+    let goodput = live.goodput().map(|r| goodput_text(r, g));
     let mut line = Line::default();
     line.push(&phase("transfer"), None, g);
     if live.transfer_done {
-        line.push("done", Some(&green()), g);
-        line.push(
-            &format!(
-                "  {} sent  {} files  {}  {}",
-                human(live.literal),
-                commas(live.xfr),
-                rate_text(rate),
-                clock(elapsed)
-            ),
-            None,
-            g,
+        let (sent, synced) = if reconnecting {
+            (0.0, 0.0)
+        } else {
+            let secs = elapsed.as_secs_f64();
+            (
+                live.literal as f64 / secs,
+                live.literal.saturating_add(live.matched) as f64 / secs,
+            )
+        };
+        let mut text = format!(
+            "  {} sent  {} files  avg {} sent  {} synced",
+            human(live.literal),
+            commas(live.xfr),
+            rate_text(sent),
+            rate_text(synced),
         );
+        if let Some(goodput) = &goodput {
+            text.push_str(&format!("  {goodput}"));
+        }
+        text.push_str(&format!("  {}", clock(elapsed)));
+        line.push("done", Some(&green()), g);
+        line.push(&text, None, g);
         return cut(line, g);
     }
     let (num, den) = live.transfer_fraction();
@@ -342,19 +361,31 @@ fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
     }
     line.push(&pct_cell(live.transfer_percent()), None, g);
 
+    let rates = if reconnecting {
+        Some((0.0, 0.0))
+    } else {
+        live.current_rates()
+    };
     let conn = format!("[{}]", conn_label(live.conn));
     // (keep priority, 0 = keep first; text; style), in display order.
-    let optional: [(usize, String, Option<Style>); 6] = [
-        (3, format!("{}/{}", human(num), human(den)), None),
-        (1, rate_text(rate), None),
+    let mut optional: Vec<(usize, String, Option<Style>)> =
+        vec![(3, format!("{}/{}", human(num), human(den)), None)];
+    if let Some((sent, synced)) = rates {
+        optional.push((1, format!("{} sent", rate_text(sent)), None));
+        optional.push((5, format!("{} synced", rate_text(synced)), None));
+    }
+    if let Some(goodput) = goodput {
+        optional.push((6, goodput, None));
+    }
+    optional.extend([
         (2, clock(elapsed), None),
-        (5, format!("xfr#{}", live.xfr), None),
         (4, format!("{} in flight", live.in_flight()), None),
+        (7, format!("xfr#{}", live.xfr), None),
         (0, conn, reconnecting.then(yellow)),
-    ];
+    ]);
     let mut room = g.width.saturating_sub(line.width());
-    let mut keep = [false; 6];
-    for prio in 0..6 {
+    let mut keep = vec![false; optional.len()];
+    for prio in 0..=7 {
         let Some(i) = optional.iter().position(|(p, ..)| *p == prio) else {
             continue;
         };

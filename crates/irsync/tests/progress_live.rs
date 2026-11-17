@@ -236,7 +236,7 @@ fn second_session_resets_counters_but_keeps_connection() {
     assert_eq!(l.conn, ConnState::Relay);
 }
 
-use irsync::cli::progress::render::{bar, render, truncate_middle, Geometry};
+use irsync::cli::progress::render::{bar, goodput_text, render, truncate_middle, Geometry};
 
 fn mid_sync() -> (Live, Instant) {
     let t = Instant::now();
@@ -708,4 +708,87 @@ fn a_new_session_clears_matched_and_samples() {
     l.apply(&Event::SessionStart { index: 1, of: 2 }, t);
     assert_eq!(l.matched, 0);
     assert!(l.samples.is_empty());
+}
+
+#[test]
+fn goodput_is_a_percent_up_to_two_and_a_ratio_above() {
+    let mut g = Geometry::fixed(80, 20);
+    assert_eq!(goodput_text(1.0, &g), "goodput 100%");
+    assert_eq!(goodput_text(2.0, &g), "goodput 200%");
+    assert_eq!(goodput_text(2.1, &g), "goodput 2.1×");
+    assert_eq!(goodput_text(999.9, &g), "goodput 999.9×");
+    assert_eq!(goodput_text(5000.0, &g), "goodput >999×");
+    g.unicode = false;
+    assert_eq!(goodput_text(9.2, &g), "goodput 9.2x");
+}
+
+#[test]
+fn transfer_line_shows_labelled_rates_and_goodput() {
+    let (mut l, t) = mid_sync();
+    l.tick(t);
+    l.apply(
+        &Event::FileMatched(rp("2024/trip/clip_0007.mov"), 5_480_000_000),
+        t,
+    );
+    l.apply(
+        &Event::FileBytes(rp("2024/trip/clip_0007.mov"), 1_000_000),
+        t,
+    );
+    l.tick(t + Duration::from_secs(1));
+    let lines = render(&l, &Geometry::fixed(200, 40), t + Duration::from_secs(1));
+    let line = &lines[2];
+    assert!(line.contains("976.56KB/s sent"), "{line}");
+    assert!(line.contains("5.10GB/s synced"), "{line}");
+    assert!(line.contains("goodput 9.0×"), "{line}");
+    let order = [
+        "B/s sent",
+        "B/s synced",
+        "goodput",
+        "0:00:01",
+        "in flight",
+        "xfr#",
+        "[connecting]",
+    ];
+    let at: Vec<usize> = order.iter().map(|s| line.find(s).unwrap()).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "{line}");
+}
+
+#[test]
+fn narrow_transfer_lines_drop_xfr_before_goodput_before_synced() {
+    let (mut l, t) = mid_sync();
+    l.tick(t);
+    l.apply(
+        &Event::FileMatched(rp("2024/trip/clip_0007.mov"), 1_000_000_000),
+        t,
+    );
+    l.tick(t + Duration::from_secs(1));
+    let now = t + Duration::from_secs(1);
+    let full = render(&l, &Geometry::fixed(200, 40), now)[2].clone();
+    let w = full.chars().count();
+    let at = |width| render(&l, &Geometry::fixed(width, 40), now)[2].clone();
+    assert!(full.contains("xfr#"), "{full}");
+    assert!(!at(w - 1).contains("xfr#") && at(w - 1).contains("goodput"));
+    let no_xfr = at(w - 1).chars().count();
+    assert!(!at(no_xfr - 1).contains("goodput") && at(no_xfr - 1).contains("synced"));
+    for width in 20..=200 {
+        for line in render(&l, &Geometry::fixed(width, 40), now) {
+            assert!(line.chars().count() <= width, "{width}: {line:?}");
+        }
+    }
+}
+
+#[test]
+fn done_line_shows_averages_and_goodput() {
+    let t = Instant::now();
+    let mut l = Live::new(Party::Local, DeleteMode::Off, t);
+    l.apply(&Event::FileMatched(rp("f"), 3_000_000), t);
+    l.apply(&Event::FileBytes(rp("f"), 1_000_000), t);
+    l.transfer_done = true;
+    l.xfr = 1;
+    let lines = render(&l, &Geometry::fixed(200, 30), t + Duration::from_secs(2));
+    assert!(
+        lines[2].contains("avg 488.28KB/s sent  1.91MB/s synced  goodput 4.0×  0:00:02"),
+        "{}",
+        lines[2]
+    );
 }
