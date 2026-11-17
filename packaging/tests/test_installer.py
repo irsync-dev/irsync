@@ -179,11 +179,14 @@ class Base(unittest.TestCase):
         self.log = os.path.join(self.tmp, "calls.log")
         self.bindir = self.make_bindir("bin")
 
-    def make_bindir(self, name, sums=("sha256sum", "shasum"), shell=SHELL):
-        """A directory of the installer's tools; `sums` are the checksum tools in it."""
+    def make_bindir(self, name, sums=("sha256sum", "shasum"), shell=SHELL, without=()):
+        """A directory of the installer's tools; `sums` are the checksum tools in it,
+        `without` are tools of TOOLS to leave out."""
         bindir = os.path.join(self.tmp, name)
         os.mkdir(bindir)
         for tool in TOOLS:
+            if tool in without:
+                continue
             found = shell if tool == "sh" else shutil.which(tool)
             if found:
                 os.symlink(found, os.path.join(bindir, tool))
@@ -222,6 +225,16 @@ class Base(unittest.TestCase):
     def snapshot(self, home=None):
         home = home or self.home
         return {f: read(os.path.join(home, f)) for f in self.under_home(home)}
+
+    def make_dir(self, names):
+        """An unpacked release directory holding the named files. Returns its path."""
+        d = os.path.join(self.tmp, "from")
+        for n in names:
+            path = os.path.join(d, n)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(f"#!/bin/sh\necho {n}\n")
+        return d
 
     def put(self, rel, body="old\n", home=None):
         path = os.path.join(home or self.home, rel)
@@ -641,12 +654,72 @@ class UnwritableTests(Base):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")], [])
 
+    def test_unwritable_bin_with_from_changes_nothing(self):
+        for f in FILES:
+            self.put(f)
+        self.lock(".local/bin")
+        d = os.path.join(self.tmp, "from")
+        os.makedirs(d)
+        with open(os.path.join(d, "irsync"), "w") as f:
+            f.write("#!/bin/sh\n")
+        before = self.snapshot()
+        r = self.install("--from", d, archives=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.snapshot(), before)
+
     def test_unwritable_bin_in_a_fresh_home_installs_no_pages(self):
         self.lock(".local/bin")
         r = self.install()
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.under_home(), set())
         self.assertFalse(os.path.exists(os.path.join(self.home, ".local/share")))
+
+
+class FromDirTests(Base):
+    """--from DIR: install from an unpacked release directory."""
+
+    ALL = ["irsync", "fileset", "man/man1/irsync.1", "man/man1/fileset.1",
+           "man/man5/irsync.toml.5"]
+
+    def test_from_installs_five_files(self):
+        r = self.install("--from", self.make_dir(self.ALL), archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+        self.assertTrue(os.access(os.path.join(self.home, ".local/bin/irsync"), os.X_OK))
+
+    def test_from_irsync_only(self):
+        r = self.install("--from", self.make_dir(["irsync"]), archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), {".local/bin/irsync"})
+        self.assertIn("fileset", r.stderr)
+        self.assertIn("manual pages", r.stderr)
+
+    def test_from_some_pages_installs_no_pages(self):
+        r = self.install("--from", self.make_dir(["irsync", "man/man1/irsync.1"]),
+                         archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), {".local/bin/irsync"})
+
+    def test_from_without_irsync_changes_nothing(self):
+        r = self.install("--from", self.make_dir(["fileset"]), archives=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.under_home(), set())
+
+    def test_from_needs_no_tools_and_no_platform(self):
+        # No tar, xz or checksum tool on PATH, and an unsupported platform.
+        r = self.install("--from", self.make_dir(self.ALL), archives=False,
+                         uname=("SunOS", "sparc"),
+                         bindir=self.make_bindir("bare", sums=(), without=("tar", "xz")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_from_usage_errors(self):
+        d = self.make_dir(self.ALL)
+        for args, code in [(["--from"], 2), (["--from", "/nonexistent"], 1),
+                           (["--from", d, "--uninstall"], 2), (["--from", d, "--help"], 2)]:
+            with self.subTest(args=args):
+                self.assertEqual(self.install(*args, archives=False).returncode, code)
+        self.assertEqual(self.under_home(), set())
 
 
 class CompatibilityTests(Base):
