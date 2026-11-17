@@ -103,7 +103,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
             .dial_retries
             .to_string()),
-        ["client", "dht"] | ["client", "mdns"] => one("true".to_string()),
+        ["client", "dht"] | ["client", "mdns"] | ["client", "ssh_install"] => {
+            one("true".to_string())
+        }
         ["client", "relay_mode"] => one("default".to_string()),
         ["client", "congestion"] => one(crate::config::settings::Congestion::default()
             .as_str()

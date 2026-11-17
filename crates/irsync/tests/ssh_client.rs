@@ -178,6 +178,7 @@ fn no_install_with_nothing_there_fails() {
     assert!(msg.contains("--no-install"), "{msg}");
     assert!(msg.contains("~/.local/bin/irsync"), "{msg}");
     assert!(msg.contains("found none"), "{msg}");
+    assert!(msg.contains("ssh_install = true"), "{msg}");
     assert!(msg.contains("Nothing was changed."), "{msg}");
     assert_nothing_installed(&f);
 }
@@ -437,6 +438,36 @@ fn server_without_tar_changes_nothing() {
     // SAFETY: serialized by ENV, held in `f`.
     unsafe { std::env::set_var("FAKE_SSH_HIDE", "tar") };
     let p = probe(&f.rsh, "myserver").unwrap();
+    let e = ensure_installed(&f.rsh, "myserver", &p, false)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("could not unpack"), "{e}");
+    assert!(e.contains("Nothing was changed"), "{e}");
+    let left: Vec<_> = std::fs::read_dir(&f.home).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// Gives `dir` its permissions back when dropped, so the temporary
+/// directory holding it can be removed.
+struct Restore(PathBuf, u32);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+    }
+}
+
+#[test]
+fn unwritable_home_changes_nothing() {
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipped: root can write to a read-only directory");
+        return;
+    }
+    let f = fake(None);
+    let p = probe(&f.rsh, "myserver").unwrap();
+    let mode = f.home.metadata().unwrap().permissions().mode() & 0o7777;
+    std::fs::set_permissions(&f.home, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let _restore = Restore(f.home.clone(), mode);
     let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
         .to_string();

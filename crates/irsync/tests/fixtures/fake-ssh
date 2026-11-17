@@ -4,7 +4,8 @@
 # prints), FAKE_SSH_ID_U (optional: what `id` prints, as for `id -u`),
 # FAKE_SSH_HIDE (optional: a tool, like `tar`, that fails as if it were
 # missing), FAKE_SSH_STDERR (optional: a file that gets the remote
-# command's stderr instead of the terminal).
+# command's stderr instead of the terminal). SHELL names no real shell, so
+# the installer never runs the developer's login shell against the fake home.
 echo "$1" >> "$FAKE_SSH_LOG"
 shift
 cmd="$*"
@@ -26,9 +27,11 @@ if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_ID_U" ] || [ -n "$FAKE_SSH_HIDE" 
         printf '#!/bin/sh\necho "sh: %s: not found" >&2\nexit 127\n' "$FAKE_SSH_HIDE" > "$bin/$FAKE_SSH_HIDE"
         chmod 755 "$bin/$FAKE_SSH_HIDE"
     fi
-    HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" PATH="$bin:$PATH" sh -c "$cmd"
+    HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
+        PATH="$bin:$PATH" sh -c "$cmd"
     status=$?
     rm -rf "$bin"
     exit $status
 fi
-HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" exec sh -c "$cmd"
+HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
+    exec sh -c "$cmd"
