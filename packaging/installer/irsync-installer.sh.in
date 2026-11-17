@@ -291,6 +291,14 @@ directory instead of downloading."
     [ -n "$tmp" ] || tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX") || return 1
     out=$tmp/login-shell.out
     : >"$out" || return 1
+    # A startup file may ask for a passphrase on the terminal with echo off
+    # (ssh-add, keychain). A shell killed then leaves echo off, so save the
+    # terminal's settings and put them back after the probe. Without a
+    # terminal (over ssh, in tests) this does nothing.
+    tty_state=
+    if command -v stty >/dev/null 2>&1; then
+      tty_state=$( (stty -g </dev/tty) 2>/dev/null ) || tty_state=
+    fi
     if [ "$probe" = nu ]; then
       "$SHELL" -l -c 'which irsync | get path.0' </dev/null >"$out" 2>/dev/null &
     else
@@ -304,6 +312,9 @@ directory instead of downloading."
     status=$?
     kill "$timer_pid" 2>/dev/null
     wait "$timer_pid" 2>/dev/null
+    if [ -n "$tty_state" ]; then
+      (stty "$tty_state" </dev/tty) >/dev/null 2>&1 || :
+    fi
     [ "$status" -eq 0 ] || return 1
     last=
     while IFS= read -r line || [ -n "$line" ]; do last=$line; done <"$out"
@@ -314,6 +325,8 @@ directory instead of downloading."
   case ":${PATH-}:" in
     *":$bin:"* | *":$bin/:"*) ;;
     *)
+      # Keep this call in a condition: under set -e a failing probe must
+      # not end the installer.
       if login_finds; then :; else on_path=no; fi ;;
   esac
   case $on_path in

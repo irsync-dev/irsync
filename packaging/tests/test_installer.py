@@ -197,7 +197,8 @@ class Base(unittest.TestCase):
         return bindir
 
     def install(self, *args, home=None, uname=("Linux", "x86_64"), env=None,
-                bindir=None, archives=True):
+                bindir=None, archives=True, popen=None):
+        """Run the installer; `popen` holds extra arguments for subprocess.run."""
         bindir = bindir or self.bindir
         full_env = {
             "PATH": bindir,
@@ -215,7 +216,7 @@ class Base(unittest.TestCase):
             full_env["IRSYNC_INSTALLER_ARCHIVE_DIR"] = self.archives
         full_env.update(env or {})
         return subprocess.run([os.path.join(bindir, "sh"), self.installer, *args],
-                              env=full_env, capture_output=True, text=True)
+                              env=full_env, capture_output=True, text=True, **(popen or {}))
 
     def fake_shell(self, name, body):
         """An executable shells/NAME that logs its path and arguments, then runs BODY."""
@@ -444,10 +445,11 @@ class InstallTests(Base):
     def test_path_hint_says_to_log_in_again_on_linux(self):
         # Most Linux systems add ~/.local/bin at login once it exists; macOS
         # does not.
-        err = self.path_hint("linux", env={"SHELL": "/bin/zsh"})
+        zsh = self.fake_shell("zsh", "exit 1")
+        err = self.path_hint("linux", env={"SHELL": zsh})
         self.assertIn("Log out and in again first", err)
         self.assertIn("If it is still missing then, put this line in ~/.zshrc:", err)
-        err = self.path_hint("mac", uname=("Darwin", "arm64"), env={"SHELL": "/bin/zsh"})
+        err = self.path_hint("mac", uname=("Darwin", "arm64"), env={"SHELL": zsh})
         self.assertNotIn("Log out", err)
         self.assertIn("is not on your PATH. To add it, put this line in ~/.zshrc:", err)
 
@@ -495,20 +497,22 @@ class InstallTests(Base):
 
     def test_path_hint_names_the_shells_startup_file(self):
         export = '\n  export PATH="$HOME/.local/bin:$PATH"\n'
-        for shell, uname, want in [
-            ("/bin/zsh", "Linux", "put this line in ~/.zshrc:" + export),
-            ("/usr/bin/bash", "Linux", "put this line in ~/.bashrc:" + export),
+        # Fake shells that find nothing, so no real login shell runs.
+        for name, uname, want in [
+            ("zsh", "Linux", "put this line in ~/.zshrc:" + export),
+            ("bash", "Linux", "put this line in ~/.bashrc:" + export),
             # A terminal on macOS starts a login shell.
-            ("/bin/bash", "Darwin", "put this line in ~/.bash_profile:" + export),
-            ("/bin/sh", "Linux", "put this line in ~/.profile:" + export),
-            ("/usr/bin/dash", "Linux", "put this line in ~/.profile:" + export),
-            ("/bin/ksh", "Linux", "put this line in ~/.profile:" + export),
-            ("/usr/bin/fish", "Linux", "run: fish_add_path ~/.local/bin\n"),
-            ("/bin/tcsh", "Darwin", "put this line in ~/.cshrc:\n  set path = (~/.local/bin $path)\n"),
+            ("bash", "Darwin", "put this line in ~/.bash_profile:" + export),
+            ("sh", "Linux", "put this line in ~/.profile:" + export),
+            ("dash", "Linux", "put this line in ~/.profile:" + export),
+            ("ksh", "Linux", "put this line in ~/.profile:" + export),
+            ("fish", "Linux", "run: fish_add_path ~/.local/bin\n"),
+            ("tcsh", "Darwin", "put this line in ~/.cshrc:\n  set path = (~/.local/bin $path)\n"),
         ]:
-            with self.subTest(shell=shell, uname=uname):
+            shell = self.fake_shell(name, "exit 1")
+            with self.subTest(shell=name, uname=uname):
                 arch = "arm64" if uname == "Darwin" else "x86_64"
-                err = self.path_hint(f"{uname}-{os.path.basename(shell)}",
+                err = self.path_hint(f"{uname}-{name}",
                                      uname=(uname, arch), env={"SHELL": shell})
                 self.assertIn(want, err)
                 if "fish" in shell or "csh" in shell:
@@ -904,6 +908,56 @@ class KillTests(Base):
                 self.assertNotEqual(r.returncode, 0)
                 self.assertEqual(self.temp_dirs(), [])
                 self.assertEqual(self.under_home(home), set())
+
+
+class TerminalTests(Base):
+    """The login shell probe saves the terminal's settings with stty and puts
+    them back, and never fails the install over it."""
+
+    def in_terminal(self):
+        """subprocess.run arguments that give the installer a new pseudo
+        terminal as its controlling terminal. Returns them and the terminal's
+        master side, which still reads its settings after macOS revokes the
+        slave side when the installer exits."""
+        import fcntl
+        import pty
+        import termios
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+
+        def take_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        return {"stdin": slave, "preexec_fn": take_terminal}, master
+
+    def test_no_terminal_and_a_failing_stty(self):
+        write_exe(os.path.join(self.bindir, "stty"), "#!/bin/sh\nexit 1\n")
+        sh = self.fake_shell("zsh", "exit 1")
+        r = self.install(env={"SHELL": sh},
+                         popen={"start_new_session": True, "stdin": subprocess.DEVNULL})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_terminal_and_a_failing_stty(self):
+        write_exe(os.path.join(self.bindir, "stty"), "#!/bin/sh\nexit 1\n")
+        popen, _ = self.in_terminal()
+        r = self.install(env={"SHELL": self.fake_shell("zsh", "exit 1")}, popen=popen)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_echo_is_back_after_a_killed_login_shell(self):
+        # A startup file that turns echo off to ask for a passphrase, then
+        # hangs until the probe kills it.
+        import termios
+        stty = shutil.which("stty")
+        os.symlink(stty, os.path.join(self.bindir, "stty"))
+        popen, tty = self.in_terminal()
+        sh = self.fake_shell("bash", f"trap '' TERM; {stty} -echo </dev/tty; sleep 60")
+        r = self.install(env={"SHELL": sh}, popen=popen)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(termios.tcgetattr(tty)[3] & termios.ECHO, "echo is still off")
 
 
 class UninstallTests(Base):
