@@ -4,7 +4,8 @@
 # pandoc before 3.1.12 (Ubuntu 24.04 has 3.1.3) writes inline code in a font
 # "V" that it defines at the top of the page, and code blocks as .nf with a
 # font "C". groff and mandoc know neither font. Newer pandoc writes CR and
-# .EX/.EE, which this turns the old form into.
+# .EX/.EE, which this turns the old form into. pandoc before 3.1.11 also
+# leaves hyphens as they are, where newer pandoc writes \-.
 
 # s with every \f[from] turned into \f[to]. Not gsub: awks disagree on a
 # backslash in its replacement.
@@ -16,6 +17,29 @@ function font(s, from, to,    out, at) {
         s = substr(s, at + length(from))
     }
     return out s
+}
+
+# s with every hyphen written as \-, the ASCII minus that flags are typed
+# with. A plain - is a typographic hyphen to groff, which can come out as
+# a character that does not match when searched for or pasted. Escapes
+# stay as they are, \- among them: pandoc 3.1.11 and later write it
+# already.
+function minus(s,    out, c, end) {
+    out = ""
+    while (s != "") {
+        c = substr(s, 1, 1)
+        if (c == "\\") {
+            # The escape's name: one character, or [name].
+            end = 2
+            if (substr(s, 2, 1) == "[" && index(s, "]") > 0) end = index(s, "]")
+            out = out substr(s, 1, end)
+            s = substr(s, end + 1)
+            continue
+        }
+        out = out (c == "-" ? "\\-" : c)
+        s = substr(s, 2)
+    }
+    return out
 }
 
 { line[NR] = $0 }
@@ -49,6 +73,10 @@ END {
         # An old code block: .nf, a line "\f[C]", the code, "\f[R]", .fi.
         if (l == ".nf" && i < NR && line[i + 1] == "\\f[C]") { print ".EX"; i++; continue }
         if (l == "\\f[R]" && i < NR && line[i + 1] == ".fi") { print ".EE"; i++; continue }
+        # Text, and the titles of sections. Other requests keep their
+        # hyphens, as in new pandoc's output: the date in .TH is one.
+        if (l !~ /^[.']/) l = minus(l)
+        else if (l ~ /^\.S[HS] /) l = substr(l, 1, 4) minus(substr(l, 5))
         l = font(l, "VBI", "CBI")
         l = font(l, "VB", "CB")
         l = font(l, "VI", "CI")
