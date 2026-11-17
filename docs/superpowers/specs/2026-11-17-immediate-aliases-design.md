@@ -94,7 +94,7 @@ Add `hostname` to the probe command and a `hostname: Option<String>` to
 `Probe`. Keep the part before the first `.`. It is usable when it passes
 `valid_alias`.
 
-### Server: `ssh-setup --client-name NAME` (`ssh/setup.rs`)
+### Server: `ssh-setup --client-name-hex HEX` (`ssh/setup.rs`)
 
 The client sends its own short host name. Before any change:
 
@@ -104,7 +104,11 @@ The client sends its own short host name. Before any change:
 
 Then add `[hosts.NAME]` with the client's id, and grant `NAME` (not the
 id) in `[immediate].rw`. A client already granted by bare id counts as
-granted; its entry is left as it is. A recheck follows the same rules and
+granted. Its `[hosts]` entry is still added, and saving the config then
+writes the grant by that name, as every save already does for a peer that
+`[hosts]` has a name for. A client the server already has a name for keeps
+that name: no second entry is added and its own host name is not checked.
+With immediate mode off, nothing is granted, named or refused. A recheck follows the same rules and
 still never adds back a removed grant.
 
 If the client cannot work out its own host name, it fails before ssh
@@ -137,7 +141,14 @@ Update the book pages that describe the first sync and grants:
 - IPv4 fallback and IPv6 failure when the server reports no usable name.
 - Refuse when two saved hosts share an ssh destination but not an id.
 - Fail on the client when its own host name cannot be found.
-- A bare-id grant already present counts as granted and is not rewritten.
+- A bare-id grant already present counts as granted. (It is rewritten to
+  the name on save; that is how the config writer already works.)
+- The name goes over ssh as hex digits (`--client-name-hex`), because the
+  command is read by whatever login shell the server account has.
+- `localhost`, all-digit names and names with control characters count as
+  no usable host name.
+- The server's name comes from `uname -n`.
+- IPv6 hosts are typed in brackets: `[fe80::1]:PATH`.
 
 ## Left to the builder
 

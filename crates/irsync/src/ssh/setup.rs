@@ -20,11 +20,14 @@ use std::net::SocketAddr;
 
 use crate::build::LONG_VERSION;
 use crate::config::file::Config;
+use crate::config::hosts::{valid_alias, Hosts};
 use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
+use crate::manage::hosts::HostFlags;
 use crate::manage::{self, PeerSpec};
+use toml_edit::DocumentMut;
 
 /// The first line of the report; text before it (a login shell's) is ignored.
 pub const BEGIN: &str = "irsync-setup-begin";
@@ -241,7 +244,63 @@ impl SetupReport {
     }
 }
 
+/// Whether `name` may stand for `client` on this server: a valid alias
+/// that is free or already points at `client`. A client the server
+/// already has a name for keeps that one, whatever it calls itself.
+pub fn check_client_name(hosts: &Hosts, client: EndpointId, name: &str) -> anyhow::Result<()> {
+    if hosts.alias_of(&client).is_some() {
+        return Ok(());
+    }
+    if !valid_alias(name) {
+        bail!(
+            "this client's host name {name:?} cannot be a name on this server \
+             (it may not be empty, contain `:` or `/`, or be `all`, `*` or an \
+             EndpointId); rename the client machine"
+        );
+    }
+    match hosts.get(name) {
+        Some(h) if h.endpoint_id != client => bail!(
+            "the name {name:?} is already used on this server for another client \
+             ({}); remove [hosts.{name}] there, or rename this machine",
+            h.endpoint_id.fmt_short()
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Saves `client` in `[hosts]` under `name` (unless it has a name there
+/// already) and grants that name immediate access. False when the client
+/// was already granted, by a name or by its id; the `[hosts]` entry is
+/// written all the same. The name is only ever a label: the daemon decides
+/// access by the id it stands for.
+pub fn grant_client(
+    doc: &mut DocumentMut,
+    hosts: &Hosts,
+    client: EndpointId,
+    name: &str,
+) -> anyhow::Result<bool> {
+    check_client_name(hosts, client, name)?;
+    let alias = match hosts.alias_of(&client) {
+        Some(a) => a.to_string(),
+        None => {
+            manage::hosts::host_add(doc, name, client, &HostFlags::default())?;
+            name.to_string()
+        }
+    };
+    let resolve = |s: &str| {
+        if s == alias {
+            return Some(client);
+        }
+        hosts.get(s).map(|h| h.endpoint_id)
+    };
+    let spec = PeerSpec::Alias(alias.clone());
+    Ok(manage::grants::grant_immediate(doc, &spec, &resolve)?)
+}
+
 /// Does every server-side step for `client`: identity, grant, daemon.
+/// `client_name`: the client's host name, the name it is saved and granted
+/// under; refused, before anything is changed, when it cannot be a name
+/// here or belongs to another client.
 /// With `recheck` (a client checking a saved host that did not answer) a
 /// missing immediate grant is added only when the daemon identity was just
 /// generated, a rebuilt server; otherwise the owner removed it, and it is
@@ -255,10 +314,16 @@ pub fn run(
     recheck: bool,
     no_dht: bool,
 ) -> anyhow::Result<SetupReport> {
-    let _ = client_name;
     let Config {
         settings, hosts, ..
     } = Config::load(paths)?;
+
+    // Before anything is changed: with immediate mode off nothing is
+    // granted and the client is not named.
+    if settings.daemon.immediate {
+        check_client_name(&hosts, client, client_name)
+            .with_context(|| format!("in {}", paths.config.display()))?;
+    }
 
     // 1. The daemon identity; no one is there to type a passphrase.
     let key = &settings.daemon.identity;
@@ -281,15 +346,18 @@ pub fn run(
     let grant = if settings.daemon.immediate {
         let lock = manage::lock_config(&paths.config)?;
         let mut doc = lock.load()?;
-        let spec = PeerSpec::Id {
-            id: client,
-            comment: None,
-        };
-        let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
-        let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
+        let before = doc.to_string();
+        let added = grant_client(&mut doc, &hosts, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
-            (false, _) => GrantOutcome::Already,
+            (false, _) => {
+                // Granted by its bare id before it had a name: the name
+                // is new.
+                if doc.to_string() != before {
+                    lock.save(&mut doc)?;
+                }
+                GrantOutcome::Already
+            }
             // Not saved: the edit is dropped with the lock.
             (true, true) => GrantOutcome::Missing,
             (true, false) => {

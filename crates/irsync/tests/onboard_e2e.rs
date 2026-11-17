@@ -612,13 +612,60 @@ fn refusal_never_uses_ssh() {
     assert!(!granted, "{}", w.server_toml());
 }
 
-/// Whether the server config grants `id` immediate access.
+/// Whether the server config grants `id` immediate access, by its id or
+/// by a name its `[hosts]` has for it.
 fn immediate_granted(w: &World, id: &str) -> bool {
     let doc: toml::Table = w.server_toml().parse().unwrap();
+    let named = |entry: &str| {
+        doc.get("hosts")
+            .and_then(|h| h.get(entry))
+            .and_then(|h| h.get("endpoint_id"))
+            .and_then(|v| v.as_str())
+            == Some(id)
+    };
     doc.get("immediate")
         .and_then(|i| i.get("rw"))
         .and_then(|rw| rw.as_array())
-        .is_some_and(|rw| rw.iter().any(|v| v.as_str() == Some(id)))
+        .is_some_and(|rw| {
+            rw.iter()
+                .filter_map(|v| v.as_str())
+                .any(|e| e == id || named(e))
+        })
+}
+
+#[test]
+fn server_knows_the_client_by_name() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    assert!(err.contains("granted this client (myclient, "), "{err}");
+    let t: toml::Table = w.server_toml().parse().unwrap();
+    assert_eq!(
+        t["hosts"]["myclient"]["endpoint_id"].as_str(),
+        Some(&*client_id(w.client.path()))
+    );
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
+}
+
+#[test]
+fn a_taken_client_name_is_refused_and_changes_nothing() {
+    let w = World::new();
+    let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
+    w.server_config(
+        "",
+        &format!("[hosts.myclient]\nendpoint_id = \"{other}\"\n"),
+    );
+    let before = w.server_toml();
+    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("[hosts.myclient]"), "{err}");
+    assert_eq!(w.server_toml(), before);
+    assert!(
+        probe(&w.server.path().join("xdg/irsync")).is_none(),
+        "no daemon started"
+    );
+    assert_eq!(w.client_config(), "", "no alias saved");
 }
 
 /// The owner removed the immediate grant and the daemon is down: the ssh

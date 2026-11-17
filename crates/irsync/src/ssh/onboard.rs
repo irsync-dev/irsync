@@ -133,6 +133,8 @@ pub struct Onboarded {
     pub os: Option<&'static str>,
     /// This client's EndpointId, the one `ssh-setup` granted.
     pub client: EndpointId,
+    /// This client's host name, the name the server saved it under.
+    pub client_name: String,
 }
 
 impl Onboarded {
@@ -217,6 +219,7 @@ pub fn onboard(
         install,
         os: p.os,
         client,
+        client_name,
         report,
     })
 }
@@ -275,7 +278,8 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     }
     match r.grant {
         GrantOutcome::Added => out.push(format!(
-            "  granted this client ({}) access to any path",
+            "  granted this client ({}, {}) access to any path",
+            o.client_name,
             short(&o.client)
         )),
         GrantOutcome::Already => {}
@@ -542,6 +546,7 @@ mod tests {
             install,
             os,
             client: id(1),
+            client_name: "myclient".into(),
         }
     }
 
