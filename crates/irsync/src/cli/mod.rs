@@ -63,6 +63,10 @@ pub struct Args {
     pub sync: SyncArgs,
 }
 
+/// The operand of `list`, in place of the sync's `SRC... DEST` text.
+const LIST_OPERAND_HELP: &str = "A host alias or an EndpointId, with or without `:`, lists the \
+     exports this client may use; HOST:PATH lists the files a pull of it would fetch";
+
 /// clap's default template with the build info on top; subcommands get it
 /// in [`Args::command_tree`] since the template is not inherited.
 const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
@@ -108,7 +112,17 @@ impl Args {
         fn apply(c: clap::Command) -> clap::Command {
             c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
         }
-        Args::command().mut_subcommands(apply)
+        Args::command()
+            .mut_subcommands(apply)
+            .mut_subcommand("list", |c| {
+                c.mut_arg("paths", |a| {
+                    a.value_name("HOST[:PATH]")
+                        .num_args(1)
+                        .action(ArgAction::Set)
+                        .required(true)
+                        .help(LIST_OPERAND_HELP)
+                })
+            })
     }
 
     /// Like `Parser::try_parse_from`, but also records the command-line order
@@ -135,19 +149,32 @@ impl Args {
         };
         reject_sync_args_with_command(&m)?;
         let mut args = Args::from_arg_matches(&m)?;
-        // One operand is a listing when it is remote (`irsync HOST:` or
-        // `irsync HOST:PATH`); a lone local path is still a usage error.
-        let listing = args.sync.paths.len() == 1
-            && super::cli::location::Location::parse(&args.sync.paths[0])
-                .is_ok_and(|l| l.is_remote());
-        if args.cmd.is_none() && args.sync.paths.len() < 2 && !listing {
-            return Err(Args::command().error(
-                clap::error::ErrorKind::MissingRequiredArgument,
-                "the following required arguments were not provided:\n  <SRC>... <DEST>",
-            ));
-        }
-        args.sync.filters = ordered_filters(&m);
+        args.cmd = match args.cmd.take() {
+            None => {
+                let mut s = std::mem::take(&mut args.sync);
+                s.filters = ordered_filters(&m);
+                Some(sync_or_list(s)?)
+            }
+            Some(Command::Sync(mut s)) => {
+                s.filters = ordered_filters(sub_matches(&m, "sync"));
+                Some(sync_or_list(s)?)
+            }
+            Some(Command::List(mut s)) => {
+                s.filters = ordered_filters(sub_matches(&m, "list"));
+                Some(Command::List(list_operand(s)?))
+            }
+            other => other,
+        };
         Ok(args)
+    }
+
+    /// The options of a `sync` or `list`, which every sync and listing
+    /// is by the time [`Args::try_parse_from`] returns.
+    pub fn sync_args(&self) -> &SyncArgs {
+        match &self.cmd {
+            Some(Command::Sync(s) | Command::List(s)) => s,
+            _ => panic!("sync_args: not a sync or list command"),
+        }
     }
 
     pub fn parse() -> Args {
@@ -206,6 +233,56 @@ fn reject_sync_args_with_command(m: &clap::ArgMatches) -> Result<(), clap::Error
     Ok(())
 }
 
+fn sub_matches<'a>(m: &'a clap::ArgMatches, name: &str) -> &'a clap::ArgMatches {
+    m.subcommand_matches(name)
+        .expect("clap parsed this subcommand")
+}
+
+fn is_remote(operand: &str) -> bool {
+    Location::parse(operand).is_ok_and(|l| l.is_remote())
+}
+
+/// A sync with one remote operand is a listing (`irsync HOST:`, `irsync
+/// HOST:PATH`); a lone local path is a usage error.
+fn sync_or_list(s: SyncArgs) -> Result<Command, clap::Error> {
+    if s.paths.len() == 1 && is_remote(&s.paths[0]) {
+        return Ok(Command::List(s));
+    }
+    if s.paths.len() < 2 {
+        return Err(Args::command().error(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "the following required arguments were not provided:\n  <SRC>... <DEST>",
+        ));
+    }
+    Ok(Command::Sync(s))
+}
+
+/// `list` takes one remote operand (clap checks there is exactly one); a
+/// bare `HOST` means `HOST:`.
+fn list_operand(mut s: SyncArgs) -> Result<SyncArgs, clap::Error> {
+    let op = &mut s.paths[0];
+    // `.` and `..` are paths, not hosts: no `:` for them.
+    if !op.contains(':') && !op.contains('/') && op != "." && op != ".." {
+        op.push(':');
+    }
+    if !is_remote(op) {
+        return Err(list_error(
+            clap::error::ErrorKind::ValueValidation,
+            "list takes one operand: HOST or HOST:PATH",
+        ));
+    }
+    Ok(s)
+}
+
+/// A usage error that prints the usage of `list`, not of the top level.
+fn list_error(kind: clap::error::ErrorKind, msg: &str) -> clap::Error {
+    let mut c = Args::command_tree();
+    c.build();
+    c.find_subcommand_mut("list")
+        .expect("list is a subcommand")
+        .error(kind, msg)
+}
+
 fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
     let mut v: Vec<(usize, FilterRule)> = Vec::new();
     let mut collect = |id: &str, mk: fn(String) -> FilterRule| {
@@ -223,6 +300,10 @@ fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Copy files to or from a host (the rsync-style form, named).
+    Sync(SyncArgs),
+    /// List a host's exports, or the files a pull of HOST:PATH would fetch.
+    List(SyncArgs),
     /// Run the daemon.
     ///
     /// Serves the exports in the config file to the peers they are granted to
@@ -639,7 +720,7 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
     Ok(bytes as u64)
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Default, clap::Args)]
 pub struct SyncArgs {
     /// Local paths or `HOST:PATH` (HOST: a host alias or
     /// an EndpointId; EXPORT: a directory the daemon shares by name).
@@ -992,7 +1073,7 @@ pub struct SyncOptions {
 
 impl SyncOptions {
     pub fn from_args(args: &Args) -> SyncOptions {
-        let a = &args.sync;
+        let a = args.sync_args();
         let preserve = Preserve {
             recursive: (a.archive || a.recursive) && !a.no_recursive,
             dirs: a.dirs,

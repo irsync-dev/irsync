@@ -124,7 +124,8 @@ grant is as for a directory push.
 
 ## Listing
 
-A single remote operand lists instead of copying:
+A single remote operand lists instead of copying. `irsync list` does the
+same, and takes `myserver` for `myserver:`:
 
 - `irsync myserver:` prints the exports this client may reach, one
   `NAME PATH ACCESS` line each, `ACCESS` being `rw` or `ro` with `read_only`
