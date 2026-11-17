@@ -1451,11 +1451,15 @@ impl Receiver {
                 ..
             }) = ev
             {
-                let current = self
+                let placed = self
                     .files
                     .get(&file_id)
-                    .is_some_and(|f| f.gen == gen && f.st == St::Finalizing);
-                if current {
+                    .filter(|f| f.gen == gen && f.st == St::Finalizing)
+                    .map(|f| (f.path.clone(), f.entry.nlink, f.hashed));
+                if let Some((path, nlink, hashed)) = placed {
+                    // As in `on_finalized`: the next connection does not
+                    // place it again, so its link check needs the stat now.
+                    self.note_placed(path, nlink, hashed);
                     self.persist.done(file_id);
                 }
             }

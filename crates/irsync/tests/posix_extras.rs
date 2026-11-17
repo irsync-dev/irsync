@@ -472,6 +472,74 @@ async fn links_to_files_placed_before_a_drop_are_checked() {
     }
 }
 
+/// `-H`: a link target placed while the connection drops (the receiver
+/// hears of it only as it shuts down) is not sent again, so its link is
+/// checked on the resumed connection against the stat stored at shutdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn links_to_files_placed_during_a_drop_are_checked() {
+    let opts = opts_with(|p| p.hard_links = true);
+    for flow in [Flow::Push, Flow::Pull] {
+        let h = common::Harness::new().await;
+        let src = h.src(flow);
+        fs::create_dir(src.join("links")).unwrap();
+        for i in 0..4 {
+            let f = src.join(format!("a{i}.bin"));
+            fs::write(&f, data(4 * 1024, i + 1)).unwrap();
+            fs::hard_link(&f, src.join(format!("links/a{i}"))).unwrap();
+        }
+        for i in 0..4 {
+            fs::write(src.join(format!("z{i}.bin")), data(4 * MIB, i + 11)).unwrap();
+        }
+        h.daemon.fault.drop_after_bytes(8 * MIB as u64);
+        let ropts = irsync::session::reconnect::ReconnectOpts {
+            backoff_min: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let checks = Arc::new(AtomicU32::new(0));
+        let counter: irsync::session::FrameHook = {
+            let checks = checks.clone();
+            Arc::new(move |kind, m| {
+                if kind == irsync::session::StreamKind::Control
+                    && matches!(m, irsync_proto::v1::control::Msg::CheckLink(_))
+                {
+                    checks.fetch_add(1, Ordering::SeqCst);
+                }
+                vec![m]
+            })
+        };
+        // The small files are placed at once; the drop comes within the
+        // second the receiver takes to hear of it.
+        let slow = Some(Duration::from_secs(1));
+        let mut local = h.local_side();
+        match flow {
+            Flow::Push => {
+                let mut hooks = h.daemon.hooks.lock().unwrap();
+                hooks.tamper_frames = Some(counter);
+                hooks.slow_place = slow;
+            }
+            Flow::Pull => {
+                local.hooks.tamper_frames = Some(counter);
+                local.hooks.slow_place = slow;
+            }
+        }
+        let (out, reconnects) = within60(h.run_reconnect(&opts, flow, ropts, local)).await;
+        let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+        assert!(h.daemon.fault.fired(), "{flow:?}: the fault never fired");
+        assert_eq!(reconnects, 1, "{flow:?}");
+        assert!(out.resumed, "{flow:?}");
+        assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
+        assert_eq!(checks.load(Ordering::SeqCst), 4, "{flow:?}: links checked");
+        let dst = h.dst(flow);
+        for i in 0..4 {
+            assert_eq!(
+                ino(&dst.join(format!("a{i}.bin"))),
+                ino(&dst.join(format!("links/a{i}"))),
+                "{flow:?}: links/a{i} not linked"
+            );
+        }
+    }
+}
+
 fn set_mtime(p: &Path, sec: i64, nsec: u32) {
     let t = nix::sys::time::TimeSpec::new(sec, nsec as _);
     nix::sys::stat::utimensat(
