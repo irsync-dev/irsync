@@ -251,9 +251,11 @@ impl SetupReport {
 pub fn run(
     paths: &Paths,
     client: EndpointId,
+    client_name: &str,
     recheck: bool,
     no_dht: bool,
 ) -> anyhow::Result<SetupReport> {
+    let _ = client_name;
     let Config {
         settings, hosts, ..
     } = Config::load(paths)?;

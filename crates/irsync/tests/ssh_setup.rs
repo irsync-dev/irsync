@@ -11,6 +11,9 @@ use iroh::{EndpointId, SecretKey};
 use irsync::daemon_lock::probe;
 use irsync::ssh::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 
+/// `myclient`, as `--client-name-hex` takes it.
+const MYCLIENT_HEX: &str = "6d79636c69656e74";
+
 /// A temp HOME with an offline daemon config; kills the daemon holding its
 /// lock when dropped.
 struct Home {
@@ -49,7 +52,13 @@ impl Home {
 
     fn setup_with(&self, client: &EndpointId, extra: &[&str]) -> SetupReport {
         let id = client.to_string();
-        let mut args = vec!["ssh-setup", "--client", &id];
+        let mut args = vec![
+            "ssh-setup",
+            "--client",
+            &id,
+            "--client-name-hex",
+            MYCLIENT_HEX,
+        ];
         args.extend_from_slice(extra);
         let out = irsync_bin(self.path(), &args);
         let stdout = String::from_utf8_lossy(&out.stdout);

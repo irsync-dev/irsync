@@ -5,7 +5,9 @@
 use anyhow::Context;
 use iroh::EndpointId;
 
-use super::client::{ensure_installed, probe, run_setup, Install, Rsh, REMOTE_BIN};
+use super::client::{
+    client_host_name, ensure_installed, probe, run_setup, Install, Rsh, REMOTE_BIN,
+};
 use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::hosts::valid_alias;
@@ -166,6 +168,8 @@ pub fn onboard(
         Some(a) => check(a, dest)?,
         None => check_dest(dest)?,
     }
+    // The server knows this client by its host name: no name, no setup.
+    let client_name = client_host_name()?;
     let p = probe(rsh, dest)?;
     // Before anything is installed or changed on the server.
     if p.root {
@@ -179,7 +183,7 @@ pub fn onboard(
         check_first(dest, p.hostname.as_deref())?;
     }
     let install = ensure_installed(rsh, dest, &p)?;
-    let report = run_setup(rsh, dest, client, recheck, no_dht)?;
+    let report = run_setup(rsh, dest, client, &client_name, recheck, no_dht)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let id = report.endpoint_id;

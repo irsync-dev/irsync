@@ -354,6 +354,10 @@ pub enum Command {
         /// The client's EndpointId.
         #[arg(long)]
         client: String,
+        /// The client's host name, as hex digits of its UTF-8 bytes: the
+        /// name this server knows the client by.
+        #[arg(long)]
+        client_name_hex: String,
         /// A client checking a saved host: do not add back an immediate
         /// grant the owner removed (only a freshly generated daemon
         /// identity gets one).

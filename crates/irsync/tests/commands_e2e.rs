@@ -2087,7 +2087,15 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
         &["show", "--passphrase-file", pf_s],
         &["daemon", "--passphrase-file", pf_s],
         &["export", "add", &export, "--passphrase-file", pf_s],
-        &["ssh-setup", "--client", &id, "--passphrase-file", pf_s],
+        &[
+            "ssh-setup",
+            "--client",
+            &id,
+            "--client-name-hex",
+            "6d79636c69656e74",
+            "--passphrase-file",
+            pf_s,
+        ],
         &["--passphrase-file", pf_s, "-a", &src, &dest],
         &["--passphrase-file", pf_s, &listing],
     ] {

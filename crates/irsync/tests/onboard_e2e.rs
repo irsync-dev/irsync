@@ -46,6 +46,8 @@ struct World {
     uname: Option<String>,
     /// Where the client downloads a release from, instead of GitHub.
     release_url: Option<String>,
+    /// This client's host name, as its irsync sees it.
+    client_name: String,
     /// What the server's `uname -n` prints; `None`: an empty line.
     hostname: Option<String>,
     /// The ssh probe's `id -u` prints 0.
@@ -64,6 +66,7 @@ impl World {
             port: free_port(),
             uname: None,
             release_url: None,
+            client_name: "myclient".into(),
             hostname: None,
             probe_root: false,
             server_root: false,
@@ -139,6 +142,7 @@ impl World {
             Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
+        cmd.env("IRSYNC_TEST_HOSTNAME", &self.client_name);
         cmd.env("FAKE_SSH_HOSTNAME", self.hostname.as_deref().unwrap_or("-"));
         if self.probe_root {
             cmd.env("FAKE_SSH_ID_U", "0");
@@ -358,6 +362,29 @@ fn two_hosts_with_one_ssh_destination_are_refused() {
     assert!(err.contains("192.168.1.5") && err.contains("a, b"), "{err}");
     assert_eq!(w.ssh_calls(), 0);
     assert_eq!(w.client_config(), text);
+}
+
+/// The client's name is data on the server's command line, never shell.
+#[test]
+fn client_name_with_shell_characters_runs_nothing() {
+    let mut w = World::new();
+    // A valid alias (no `/`, `:` or `.`) that a shell would act on.
+    w.client_name = "x';cd;touch pwned;echo '$(cd;touch pwned)`cd;touch pwned`".into();
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    assert!(!w.server.path().join("pwned").exists());
+    assert!(!w.client.path().join("pwned").exists());
+}
+
+#[test]
+fn unusable_client_name_stops_before_ssh() {
+    let mut w = World::new();
+    w.client_name = "localhost".into();
+    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("host name"), "{err}");
+    assert_eq!(w.ssh_calls(), 0);
 }
 
 #[test]
