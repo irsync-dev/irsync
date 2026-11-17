@@ -80,6 +80,14 @@ impl Fetched {
     }
 }
 
+#[cfg(test)]
+impl Fetched {
+    /// A release unpacked by hand: `dir` lives inside `tmp`.
+    pub fn for_test(tmp: tempfile::TempDir, dir: PathBuf) -> Fetched {
+        Fetched { dir, _tmp: tmp }
+    }
+}
+
 /// Download `irsync-<target>.tar.xz` and `sha256.sum` for `tag` with the
 /// system's `curl` or `wget`, check the tarball's hash, and unpack it with
 /// `tar`. Fails unless the unpacked directory holds `irsync` as a regular

@@ -31,11 +31,38 @@ pub struct Staged {
 }
 
 impl Staged {
-    /// The files of a downloaded release.
+    /// The files of a downloaded release: only the five known names, each
+    /// checked to be a regular file under real directories. A symlink on
+    /// any of those paths is an error, never skipped, so a release cannot
+    /// make the client send some other file. Anything else in the release
+    /// is left out.
     pub fn from_release(fetched: release::Fetched) -> Result<Staged> {
         let root = temp_root()?;
-        symlink(fetched.dir(), root.path().join("files"))
-            .context("cannot link the release files")?;
+        let files = root.path().join("files");
+        std::fs::create_dir(&files).context("cannot make the staging directory")?;
+        let base = fetched.dir();
+        if !release_member(base, "irsync")? {
+            bail!("the release does not hold irsync");
+        }
+        link(&base.join("irsync"), &files.join("irsync"))?;
+        if release_member(base, "fileset")? {
+            link(&base.join("fileset"), &files.join("fileset"))?;
+        }
+        let mut pages = Vec::new();
+        for page in PAGES {
+            let member = format!("man/{page}");
+            if release_member(base, &member)? {
+                pages.push(member);
+            }
+        }
+        if pages.len() == PAGES.len() {
+            for member in pages {
+                let to = files.join(&member);
+                std::fs::create_dir_all(to.parent().unwrap())
+                    .context("cannot make the staging directory")?;
+                link(&base.join(&member), &to)?;
+            }
+        }
         Ok(Staged {
             root,
             _release: Some(fetched),
@@ -44,7 +71,8 @@ impl Staged {
 
     /// This machine's files: `exe` as `irsync`; `fileset` beside it if a
     /// regular file; the three man pages from `<exe dir>/man`, else
-    /// `<exe dir>/../share/man`, all three or none.
+    /// `<exe dir>/../share/man`, all three or none. Symlinks are followed
+    /// on purpose: package managers use them, and the user ran this binary.
     pub fn from_local(exe: &Path) -> Result<Staged> {
         let exe =
             std::path::absolute(exe).with_context(|| format!("cannot find {}", exe.display()))?;
@@ -155,6 +183,33 @@ fn temp_root() -> Result<tempfile::TempDir> {
 /// A regular file, or a link to one.
 fn is_file(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// Whether `rel` (like `man/man1/irsync.1`) is in the unpacked release at
+/// `base`: `Ok(false)` if something on the way is absent. Errors if the
+/// leaf is not a regular file or a directory on the way is not a real
+/// directory (a symlink, say).
+fn release_member(base: &Path, rel: &str) -> Result<bool> {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let mut path = base.to_path_buf();
+    for (i, part) in parts.iter().enumerate() {
+        path.push(part);
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        };
+        let ok = if i + 1 == parts.len() {
+            meta.is_file()
+        } else {
+            meta.is_dir()
+        };
+        if !ok {
+            let what = parts[..=i].join("/");
+            bail!("the release holds {what} as something other than a regular file or directory (a symlink?)");
+        }
+    }
+    Ok(true)
 }
 
 fn link(from: &Path, to: &Path) -> Result<()> {
@@ -317,24 +372,101 @@ mod tests {
         assert!(meta.permissions().mode() & 0o111 != 0);
     }
 
+    /// A release directory with a stand-in irsync, as `fetch` leaves it.
+    fn release_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("irsync-x");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("irsync"), b"r").unwrap();
+        (tmp, dir)
+    }
+
+    fn staged_from(tmp: tempfile::TempDir, dir: &Path) -> Result<Staged> {
+        Staged::from_release(release::Fetched::for_test(tmp, dir.to_path_buf()))
+    }
+
     #[test]
-    fn a_release_keeps_its_layout() {
-        let rel = tempfile::tempdir().unwrap();
-        std::fs::write(rel.path().join("irsync"), b"r").unwrap();
-        // A stand-in for a fetched release: only its directory matters.
-        let root = temp_root().unwrap();
-        symlink(rel.path(), root.path().join("files")).unwrap();
-        let s = Staged {
-            root,
-            _release: None,
-        };
+    fn a_full_release_stages_all_five() {
+        let (tmp, dir) = release_dir();
+        std::fs::write(dir.join("fileset"), b"f").unwrap();
+        put_pages(&dir.join("man"));
+        let s = staged_from(tmp, &dir).unwrap();
         assert_eq!(
             s.contents(),
             Contents {
-                fileset: false,
-                man: false
+                fileset: true,
+                man: true
             }
         );
+        let (names, _out, _p) = unpack(&s);
+        let mut want = vec!["files", "files/irsync", "files/fileset", "files/man"];
+        want.extend(["files/man/man1", "files/man/man5", "installer.sh"]);
+        for w in want {
+            assert!(names.contains(&w.to_string()), "{w} missing in {names:?}");
+        }
+        for p in PAGES {
+            assert!(names.contains(&format!("files/man/{p}")), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn a_release_with_two_pages_has_no_man() {
+        let (tmp, dir) = release_dir();
+        let man = dir.join("man");
+        put_pages(&man);
+        std::fs::remove_file(man.join(PAGES[1])).unwrap();
+        let s = staged_from(tmp, &dir).unwrap();
+        assert!(!s.contents().man);
+        let (names, _out, _p) = unpack(&s);
+        assert!(!names.iter().any(|n| n.contains("man")), "{names:?}");
+    }
+
+    #[test]
+    fn a_release_symlink_for_fileset_is_an_error() {
+        let (tmp, dir) = release_dir();
+        let secret = tmp.path().join("secret");
+        std::fs::write(&secret, b"s").unwrap();
+        symlink(&secret, dir.join("fileset")).unwrap();
+        let e = staged_from(tmp, &dir).unwrap_err().to_string();
+        assert!(e.contains("fileset"), "{e}");
+    }
+
+    #[test]
+    fn a_release_symlink_for_a_man_directory_is_an_error() {
+        for link_at in ["man", "man/man1"] {
+            let (tmp, dir) = release_dir();
+            let real = tmp.path().join("elsewhere");
+            put_pages(&real);
+            if link_at == "man" {
+                symlink(&real, dir.join("man")).unwrap();
+            } else {
+                std::fs::create_dir(dir.join("man")).unwrap();
+                symlink(real.join("man1"), dir.join("man/man1")).unwrap();
+            }
+            let e = staged_from(tmp, &dir).unwrap_err().to_string();
+            assert!(e.contains(link_at), "{link_at}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_release_symlink_for_a_page_is_an_error() {
+        let (tmp, dir) = release_dir();
+        let man = dir.join("man");
+        put_pages(&man);
+        std::fs::remove_file(man.join(PAGES[0])).unwrap();
+        symlink("/etc/hosts", man.join(PAGES[0])).unwrap();
+        let e = staged_from(tmp, &dir).unwrap_err().to_string();
+        assert!(e.contains("irsync.1"), "{e}");
+    }
+
+    #[test]
+    fn extra_release_members_are_not_sent() {
+        let (tmp, dir) = release_dir();
+        std::fs::write(dir.join("evil"), b"x").unwrap();
+        std::fs::create_dir(dir.join("extra")).unwrap();
+        std::fs::write(dir.join("extra/more"), b"x").unwrap();
+        std::fs::write(dir.join("README.md"), b"x").unwrap();
+        let s = staged_from(tmp, &dir).unwrap();
         let (names, _out, _p) = unpack(&s);
         assert_eq!(names, ["files", "files/irsync", "installer.sh"]);
     }
