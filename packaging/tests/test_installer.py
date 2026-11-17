@@ -217,6 +217,14 @@ class Base(unittest.TestCase):
         return subprocess.run([os.path.join(bindir, "sh"), self.installer, *args],
                               env=full_env, capture_output=True, text=True)
 
+    def fake_shell(self, name, body):
+        """An executable shells/NAME that logs its path and arguments, then runs BODY."""
+        d = os.path.join(self.tmp, "shells")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, name)
+        write_exe(path, f'#!/bin/sh\necho "$0 $*" >> "{self.log}"\n{body}\n')
+        return path
+
     def under_home(self, home=None):
         """Every file and symlink under HOME, relative to it."""
         home = home or self.home
@@ -443,14 +451,6 @@ class InstallTests(Base):
         self.assertNotIn("Log out", err)
         self.assertIn("is not on your PATH. To add it, put this line in ~/.zshrc:", err)
 
-    def fake_shell(self, name, body):
-        """An executable shells/NAME that logs its path and arguments, then runs BODY."""
-        d = os.path.join(self.tmp, "shells")
-        os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, name)
-        write_exe(path, f'#!/bin/sh\necho "$0 $*" >> "{self.log}"\n{body}\n')
-        return path
-
     def test_login_shell_finds_it_no_advice(self):
         sh = self.fake_shell("zsh", f'echo banner; echo "{self.home}/.local/bin/irsync"')
         r = self.install(env={"SHELL": sh})
@@ -471,7 +471,7 @@ class InstallTests(Base):
 
     def test_slow_login_shell_is_cut_off(self):
         start = time.monotonic()
-        r = self.install(env={"SHELL": self.fake_shell("bash", "sleep 60")})
+        r = self.install(env={"SHELL": self.fake_shell("bash", "trap '' TERM; sleep 60")})
         self.assertLess(time.monotonic() - start, 20)
         self.assertEqual(r.returncode, 0)
         self.assertIn("not on your PATH", r.stderr)
@@ -861,6 +861,23 @@ class KillTests(Base):
 
     def temp_dirs(self):
         return [n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")]
+
+    def test_login_probe_under_each_shell(self):
+        # The probe's cap must work even when the login shell ignores TERM, as
+        # interactive shells do.
+        for name, shell in self.shells():
+            with self.subTest(shell=name):
+                bindir = self.make_bindir(f"bin-probe-{name}", shell=shell)
+                found = self.fake_shell("zsh", f'echo "{self.home}/.local/bin/irsync"')
+                r = self.install(bindir=bindir, env={"SHELL": found})
+                self.assertNotIn("not on your PATH", r.stderr)
+                start = time.monotonic()
+                slow = self.fake_shell("bash", "trap '' TERM; sleep 60")
+                r = self.install(bindir=bindir, env={"SHELL": slow})
+                self.assertLess(time.monotonic() - start, 20)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("not on your PATH", r.stderr)
+                self.assertEqual(self.temp_dirs(), [])
 
     def test_killed_install_leaves_no_temp_files(self):
         for name, shell in self.shells():

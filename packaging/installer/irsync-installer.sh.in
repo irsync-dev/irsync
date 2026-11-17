@@ -296,8 +296,9 @@ directory instead of downloading."
     else
       "$SHELL" -l -i -c 'command -v irsync' </dev/null >"$out" 2>/dev/null &
     fi
+    # KILL, not TERM: interactive shells ignore TERM.
     probe_pid=$!
-    ( sleep 5; kill "$probe_pid" ) </dev/null >/dev/null 2>&1 &
+    ( sleep 5; kill -KILL "$probe_pid" ) </dev/null >/dev/null 2>&1 &
     timer_pid=$!
     wait "$probe_pid" 2>/dev/null
     status=$?
