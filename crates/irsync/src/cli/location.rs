@@ -25,30 +25,38 @@ impl Location {
         matches!(self, Location::Remote { .. })
     }
 
-    /// A `:` before any `/` makes the string remote (rsync's rule).
+    /// A `:` before any `/` makes the string remote (rsync's rule). An
+    /// IPv6 host is written in brackets, `[fe80::1]:PATH` or
+    /// `user@[fe80::1]:PATH`; the host is kept without them.
     pub fn parse(s: &str) -> Result<Location, UsageError> {
         let contents_only = s.ends_with('/');
-        let colon = s.find(':');
-        let slash = s.find('/');
-        match colon {
-            Some(c) if slash.is_none_or(|sl| c < sl) => {
-                let host = &s[..c];
+        let remote = match bracketed(s)? {
+            Bracketed::Remote(host, rest) => Some((host, rest)),
+            Bracketed::Local => None,
+            Bracketed::No => match (s.find(':'), s.find('/')) {
+                (Some(c), slash) if slash.is_none_or(|sl| c < sl) => {
+                    Some((s[..c].to_string(), &s[c + 1..]))
+                }
+                _ => None,
+            },
+        };
+        match remote {
+            Some((host, rest)) => {
                 if host.is_empty() {
                     return Err(UsageError(format!("empty host in {s:?}")));
                 }
-                let rest = &s[c + 1..];
                 let path = if rest.chars().all(|ch| ch == '/') && !rest.is_empty() {
                     "/"
                 } else {
                     rest.trim_end_matches('/')
                 };
                 Ok(Location::Remote {
-                    host: host.to_string(),
+                    host,
                     path: path.as_bytes().to_vec(),
                     contents_only,
                 })
             }
-            _ => {
+            None => {
                 let trimmed = s.trim_end_matches('/');
                 let path = if trimmed.is_empty() {
                     if s.is_empty() {
@@ -65,4 +73,52 @@ impl Location {
             }
         }
     }
+}
+
+/// What a leading `[` (after an optional `user@`) makes of an operand.
+enum Bracketed<'a> {
+    /// `[ipv6]:REST`: the host without brackets, and `REST`.
+    Remote(String, &'a str),
+    /// `[x]/...` or `[x]`: a local path.
+    Local,
+    /// No leading bracket, or one the usual rule decides.
+    No,
+}
+
+fn bracketed(s: &str) -> Result<Bracketed<'_>, UsageError> {
+    let (user, rest) = match s.split_once('@') {
+        Some((u, r)) if !u.contains(['/', ':']) => (Some(u), r),
+        _ => (None, s),
+    };
+    if !rest.starts_with('[') {
+        return Ok(Bracketed::No);
+    }
+    let name = &rest[..rest.find('/').unwrap_or(rest.len())];
+    let Some(close) = name.find(']') else {
+        if name.contains(':') {
+            return Err(UsageError(format!("no closing `]` in {s:?}")));
+        }
+        return Ok(Bracketed::No);
+    };
+    let after = &rest[close + 1..];
+    let Some(path) = after.strip_prefix(':') else {
+        return Ok(if after.is_empty() || after.starts_with('/') {
+            Bracketed::Local
+        } else {
+            Bracketed::No
+        });
+    };
+    let addr = &rest[1..close];
+    // A link-local address may carry a zone (`fe80::1%eth0`), as for ssh.
+    let bare = addr.split_once('%').map_or(addr, |(a, _)| a);
+    if bare.parse::<std::net::Ipv6Addr>().is_err() {
+        return Err(UsageError(format!(
+            "{addr:?} in {s:?} is not an IPv6 address"
+        )));
+    }
+    let host = match user {
+        Some(u) => format!("{u}@{addr}"),
+        None => addr.to_string(),
+    };
+    Ok(Bracketed::Remote(host, path))
 }

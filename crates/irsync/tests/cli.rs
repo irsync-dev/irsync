@@ -396,6 +396,26 @@ fn remote_path_is_passed_as_typed() {
 }
 
 #[test]
+fn bracketed_ipv6_host() {
+    let host = |s: &str| match Location::parse(s).unwrap() {
+        Location::Remote { host, path, .. } => (host, path),
+        l => panic!("{l:?}"),
+    };
+    assert_eq!(host("[fe80::1]:/p"), ("fe80::1".into(), b"/p".to_vec()));
+    assert_eq!(
+        host("mike@[::1]:dir/"),
+        ("mike@::1".into(), b"dir".to_vec())
+    );
+    assert_eq!(host("[fe80::1%eth0]:").0, "fe80::1%eth0");
+    // Not an address in the brackets, or no closing bracket:
+    assert!(Location::parse("[myserver]:/p").is_err());
+    assert!(Location::parse("[fe80::1:/p").is_err());
+    // A local path may still start with a bracket.
+    assert!(!Location::parse("[fe80::1]/p").unwrap().is_remote());
+    assert!(!Location::parse("[notes]/a").unwrap().is_remote());
+}
+
+#[test]
 fn location_local_with_colon_after_slash_is_local() {
     let local = |p: &str, c: bool| Location::Local {
         path: PathBuf::from(p),
