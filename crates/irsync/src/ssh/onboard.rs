@@ -125,8 +125,10 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     let mut out = vec![format!("set up {dest} over ssh:")];
     let (replaced, note) = match &o.install {
         Install::Current => (None, None),
-        Install::Copied { replaced } => (Some(replaced), None),
-        Install::Downloaded { replaced, platform } => (
+        Install::Copied { replaced, .. } => (Some(replaced), None),
+        Install::Downloaded {
+            replaced, platform, ..
+        } => (
             Some(replaced),
             Some(format!(" (release binary for {platform})")),
         ),
@@ -296,6 +298,14 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use crate::ssh::payload::Contents;
+
+    /// Neither `fileset` nor the man pages.
+    const ALONE: Contents = Contents {
+        fileset: false,
+        man: false,
+    };
+
     fn id(b: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[b; 32]).public()
     }
@@ -340,6 +350,7 @@ mod tests {
             Install::Downloaded {
                 replaced: None,
                 platform: "linux aarch64".into(),
+                contents: ALONE,
             },
             DaemonOutcome::Started,
             Some("linux"),
@@ -354,6 +365,7 @@ mod tests {
             Install::Downloaded {
                 replaced: Some("irsync 0.0.1 (old)".into()),
                 platform: "linux aarch64".into(),
+                contents: ALONE,
             },
             DaemonOutcome::Started,
             Some("linux"),
@@ -371,6 +383,7 @@ mod tests {
         let o = onboarded(
             Install::Copied {
                 replaced: Some("irsync 0.0.1 (old)".into()),
+                contents: ALONE,
             },
             DaemonOutcome::Restarted {
                 old_version: "0.0.1 (old)".into(),
@@ -379,7 +392,7 @@ mod tests {
         );
         let s = summary(&o).join("\n");
         assert!(s.contains(&format!(
-            "  replaced irsync 0.0.1 (old) with {} at ~/.local/share/irsync/bin/irsync",
+            "  replaced irsync 0.0.1 (old) with {} at ~/.local/bin/irsync",
             *LONG_VERSION
         )));
         assert!(s.contains("  restarted the daemon (was 0.0.1 (old))"));

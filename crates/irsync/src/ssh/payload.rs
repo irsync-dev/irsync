@@ -41,6 +41,11 @@ impl Staged {
         let files = root.path().join("files");
         std::fs::create_dir(&files).context("cannot make the staging directory")?;
         let base = fetched.dir();
+        let top = std::fs::symlink_metadata(base)
+            .with_context(|| format!("cannot read {}", base.display()))?;
+        if !top.is_dir() {
+            bail!("the release holds its top directory as something other than a directory (a symlink?)");
+        }
         if !release_member(base, "irsync")? {
             bail!("the release does not hold irsync");
         }
@@ -356,7 +361,7 @@ mod tests {
     fn packed_len_is_file_size() {
         let (_d, exe) = bin_dir("irsync");
         let p = Staged::from_local(&exe).unwrap().pack().unwrap();
-        assert!(p.len() > 0);
+        assert!(!p.is_empty());
         assert_eq!(p.len(), std::fs::metadata(p.path()).unwrap().len());
     }
 
@@ -446,6 +451,15 @@ mod tests {
             let e = staged_from(tmp, &dir).unwrap_err().to_string();
             assert!(e.contains(link_at), "{link_at}: {e}");
         }
+    }
+
+    #[test]
+    fn a_release_whose_top_directory_is_a_symlink_is_an_error() {
+        let (tmp, real) = release_dir();
+        let dir = tmp.path().join("irsync-link");
+        symlink(&real, &dir).unwrap();
+        let e = staged_from(tmp, &dir).unwrap_err().to_string();
+        assert!(e.contains("top directory"), "{e}");
     }
 
     #[test]
