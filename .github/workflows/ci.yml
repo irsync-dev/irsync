@@ -221,6 +221,28 @@ jobs:
       - name: Check the dependencies
         run: tools/ci.sh deny
 
+  # The licenses of every crate in Cargo.lock, for every platform: the deny
+  # job looks only at the platforms irsync is built for. A failure here
+  # shows on a pull request without blocking it (continue-on-error), but it
+  # stops a release (`inputs.plan` is set).
+  licenses-all:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    continue-on-error: ${{ !inputs.plan }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check the licenses for every platform
+        run: tools/ci.sh licenses-all
+
   # Flags a pull request that adds or bumps a dependency with a known
   # vulnerability, in the pull request itself.
   dependency-review:
@@ -241,7 +263,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, check, release-build, workflows, deny, dependency-review]
+    needs: [changes, check, release-build, workflows, deny, licenses-all, dependency-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read

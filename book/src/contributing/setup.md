@@ -95,9 +95,11 @@ script. It runs on FreeBSD x86_64 only, and CI does not run it. GitHub runs
 it in a workflow you start by hand: see
 [Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
 
-The `deny` job checks the dependencies with `cargo deny`, and the
-`workflows` job runs the workflow rule tests and actionlint, which needs
-PyYAML and actionlint ([Supply chain](supply-chain.md)).
+The `deny` job checks the dependencies with `cargo deny`, for the platforms
+irsync is built for. The `licenses-all` job checks the licenses of every
+platform's dependencies; on GitHub its failure blocks a release, not a pull
+request. The `workflows` job runs the workflow rule tests and actionlint,
+which needs PyYAML and actionlint ([Supply chain](supply-chain.md)).
 
 Two things run only on GitHub: the macOS and arm64 runs, and the dependency
 review of a pull request.

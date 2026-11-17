@@ -72,7 +72,11 @@ differ, the code is what shipped.
    dist table is bumped by hand.
 
 9. **cargo-deny fails on any advisory; exceptions need a reason.**
-   Unmaintained and yanked crates fail too. Accepted today:
+   Unmaintained and yanked crates fail too. Only crates built for the
+   platforms irsync is built for count (`targets` in `deny.toml`); the
+   licenses of all the others are still checked before a release
+   (`deny-license-check.toml`). Cost if wrong: a platform we build for
+   but forgot to list goes unchecked. Accepted today:
    - `paste` (RUSTSEC-2024-0436) and `unsafe-libyaml` (RUSTSEC-2024-0449):
      unmaintained, with no known hole. One is a build-time macro reached
      through iroh. The other is used only by the unshipped `filegen`.

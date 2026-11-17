@@ -4,6 +4,20 @@
 
 [graph]
 all-features = true
+# The platforms irsync is built for: the release targets
+# (dist-workspace.toml), FreeBSD, and Linux with glibc, which CI and
+# developers build. A crate built only for another platform (Windows, say)
+# is not ours to answer for and is left out of every check here. Add a
+# platform here when irsync starts building for it. The licenses of every
+# platform's crates are still checked, by deny-license-check.toml.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-freebsd",
+]
 
 [advisories]
 version = 2
@@ -20,12 +34,13 @@ ignore = [
     # may have been copied from someone else.
     { id = "RUSTSEC-2026-0459", reason = "TEMPORARY: SQLite fix held back by the 3.54 re-prepare regression; fileset opens manifests that may come from others, so this needs a decision, not a standing exception." },
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
-    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable. It is built only on Windows, which irsync does not ship for: wmi turns it on by default and iroh's netwatch uses wmi there. No upgrade drops it (wmi 0.18.4 is the newest; netwatch 0.20 still needs it); it goes when upstream moves off it." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable. Only filegen uses it (via serde_yaml_ng), to read its own test specs; filegen is a test tool and is not shipped." },
 ]
 
 [licenses]
 version = 2
+# Keep this table the same as the one in deny-license-check.toml (a test in
+# .github/scripts/tests checks it).
 # Every license in the tree today, all compatible with irsync's MIT license.
 # Crates that offer a GPL or LGPL alternative (self_cell, r-efi) are used
 # under their MIT or Apache-2.0 option. MPL-2.0 (attohttpc, option-ext) is
