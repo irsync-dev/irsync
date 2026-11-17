@@ -57,8 +57,9 @@ In steps, it:
   and [set the server up by hand](#set-the-server-up-by-hand). Add
   `--no-install` to copy nothing and use the irsync already at
   `~/.local/bin/irsync` there. The installer never edits your shell startup
-  files. When the server's login shell does not find `irsync`, it prints the
-  line to add, and so does the setup;
+  files. When the server's login shell does not find `irsync`, the installer
+  prints the line to add to a startup file there, and you see it during the
+  setup;
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
   first push to `/srv/photos` makes it an export, granted to this client

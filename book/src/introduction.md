@@ -80,12 +80,15 @@ Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
 Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
-With ssh, the client is enough: the first sync copies irsync to the server when
-both run the same OS and CPU. When they differ, a released irsync downloads the
-release binary for the server's platform and copies that over instead. A build
-from source cannot do that, and some platforms have no release binary (an Intel
-Mac, for example): then install irsync on both machines and set the server up
-by hand ([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
+With ssh, the client is enough: the first sync installs irsync, fileset and
+the manual pages on the server. A released irsync downloads the release files
+for the server's platform on this machine, whatever that platform is. If the
+download fails and the server has the same OS and CPU, it sends this machine's
+own files instead. The server needs no internet access. A build from source
+sends only its own files, so it can set up only a server with the same OS and
+CPU. For another server, and for a platform with no release files (an Intel
+Mac, for example), install irsync on both machines and set the server up by
+hand ([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
 
 ## Quick start
 

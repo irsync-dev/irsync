@@ -183,6 +183,33 @@ a failed step).
       machine's files on the same platform. Decide whether a mismatch
       should stop instead.
 
+## Deferred review findings
+
+- [ ] The installer's `login_finds` works only when called in a condition
+      (`if`/`||`): under `set -e` a failing probe would end the installer.
+      It also leaves an orphan `sleep` behind when it kills a slow shell,
+      and sets globals (`probe`, `out`, `status`, `last`, …) that the rest
+      of the script could trip over.
+- [ ] `Staged::from_local` looks for `../share/man` beside the exe path as
+      given, not the resolved one, so a symlinked `irsync` finds the pages
+      only if they sit beside the link.
+- [ ] No direct tests through `setup::run` for: the pid-0 guard, the
+      `is_old_bin(&exe)` guard, an unreadable service file, and a home
+      that is a symlink.
+- [ ] Untested: the one-line fallback notice ("no release files for this
+      build"), and the `--no-install` path on a recheck (a saved host whose
+      daemon did not answer).
+- [ ] The summary says what the client sent, not what the installer
+      placed: with a man directory it cannot write to, the summary still
+      says "with the manual pages".
+- [ ] A half install (irsync placed, fileset not) is reported as current
+      on the next run, which then never places fileset.
+- [ ] Over ssh, the installer's "installed without fileset: … has none"
+      lines name the work directory (`~/.irsync-install.XXXXXX/files`),
+      which is gone by the time the user reads it.
+- [ ] When a downloaded release lacks fileset or the pages, the summary
+      blames "this machine" ("this machine has none beside its irsync").
+
 # Open items from the supply chain work, 2026-11-15
 
 What the supply chain work (`docs/SUPPLY_CHAIN_DECISIONS.md`) left open:

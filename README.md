@@ -96,11 +96,13 @@ Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
 Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
-With ssh, the client is enough: the first sync copies irsync to the server when
-both run the same OS and CPU. When they differ, a released irsync downloads the
-release binary for the server's platform and copies that over instead. A build
-from source cannot do that; then install irsync on both machines and set the
-server up by hand.
+With ssh, the client is enough: the first sync installs irsync, fileset and
+the manual pages on the server. A released irsync downloads the release files
+for the server's platform on this machine, whatever that platform is. If the
+download fails and the server has the same OS and CPU, it sends this machine's
+own files instead. The server needs no internet access. A build from source
+sends only its own files, so it can set up only a server with the same OS and
+CPU; otherwise install irsync on both machines and set the server up by hand.
 
 The workspace also holds `fileset`, an independent tool that records the
 checksums and metadata of a directory tree and later verifies the tree against
@@ -125,9 +127,8 @@ This is rsync's command line, with `irsync` in place of `rsync`.
 its name spelled out, the safer form in scripts. `irsync list myserver`
 lists the exports the server shares with this client.
 
-The first time, irsync sets the server up over SSH: it copies itself there
-(or, for another OS or CPU, the matching release binary), gives this
-client's key access, starts the daemon and saves `myserver` as a host alias. It prints what it did.
+The first time, irsync sets the server up over SSH: it installs irsync there
+(with fileset and the manual pages), gives this client's key access, starts the daemon and saves `myserver` as a host alias. It prints what it did.
 Later runs connect over iroh directly and do not use SSH. If the daemon stops
 answering, irsync waits about 15 seconds, then checks it over SSH and starts it
 again.

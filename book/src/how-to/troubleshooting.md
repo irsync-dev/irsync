@@ -57,8 +57,9 @@ platform", comes for a server no release is built for, such as an Intel Mac.
 ([Install](../introduction.md#install)), or install irsync on the server
 yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
-Installing it on the server does not make the ssh setup work, because the
-setup only uses its own copy of the client's exact build.
+Installing it on the server does not make the ssh setup work, unless you run
+with `--no-install`: the setup otherwise uses its own copy of the client's
+exact build.
 
 Other messages from this step:
 
@@ -79,6 +80,48 @@ Other messages from this step:
 - `the download of … is damaged (SHA-256 does not match)`: run again.
 
 Nothing on the server is changed in any of these cases.
+
+## ssh setup says there are no release files for this build
+
+```text
+irsync: downloading irsync v0.1.0-beta.1 for macos aarch64
+irsync: no release files for this build (could not download release v0.1.0-beta.1: …); installing this machine's own files
+```
+
+This is a notice, not an error. The server has the same OS and CPU as the
+client, so when the download fails, or the release is another build, the
+setup sends the client's own files instead. The setup goes on. `fileset` and
+the manual pages come along only if they sit beside the client's `irsync`;
+the summary says when they did not.
+
+## ssh setup stops on the server
+
+These stop the setup after the files reached the server:
+
+- `could not unpack irsync on myserver (it needs tar and a writable home
+  directory). Nothing was changed there.`: the server has no `tar`, or the
+  setup cannot write its work directory in your home there. Install `tar`,
+  or check that you own your home directory and can write to it, then run
+  again.
+- `the installer failed on myserver; see its message above`: the installer
+  script ran on the server and stopped. Its own message, printed just
+  before, says why, for example a `~/.local/bin` you cannot write to. Fix
+  that and run again.
+
+## ssh setup stops: --no-install
+
+```text
+irsync: … setting it up over ssh failed: --no-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-install (or set ssh_install = true in the config). Nothing was changed.
+```
+
+**Cause.** With `--no-install`, or `ssh_install = false` in the config file,
+the setup copies nothing. It needs the client's exact build at
+`~/.local/bin/irsync` on the server, and found another version there
+(`found irsync …`) or none.
+
+**Fix.** Install the same version as the client on the server, in
+`~/.local/bin`. Or let the setup install it: run without `--no-install`, and
+remove `ssh_install = false` from the config file if it is there.
 
 ## The daemon rejected this client's key
 

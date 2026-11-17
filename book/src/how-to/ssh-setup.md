@@ -88,7 +88,9 @@ irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) in ~/.local/bin (no fileset, n
 ```
 
 The download happens on the client, which needs `curl` or `wget`, and a
-`tar` that reads `.xz`. The server needs no internet access. Either way the
+`tar` that reads `.xz`. The server needs no internet access, but it needs
+`tar` to unpack the files it is sent, and a home directory you can write
+to. Either way the
 server runs the new binary with `--version` before it replaces anything, and
 keeps what it had unless the binary reports the client's exact build.
 
@@ -114,6 +116,8 @@ moves a server off that directory: it starts the daemon from `~/.local/bin`
 and removes the old copy. It warns instead when a service file still starts
 the old copy; see
 [Run the daemon](run-the-daemon.md#service-files-from-an-older-irsync).
+A client with an older irsync that also uses this server puts the old copy
+back on its next setup, so update those clients too.
 
 ## Keep the daemon running
 
