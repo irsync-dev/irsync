@@ -45,6 +45,8 @@ class TarballTests(unittest.TestCase):
     def test_layout_matches_the_release_tarballs(self):
         self.run_ok(T, self.bin, self.out)
         with tarfile.open(os.path.join(self.out, f"irsync-{T}.tar.xz")) as tar:
+            # On macOS this also checks that tar added no "._name" entries
+            # for the files' extended attributes.
             files = sorted(m.name for m in tar.getmembers() if m.isfile())
             self.assertEqual(files, [f"irsync-{T}/{n}" for n in
                                      ["LICENSE", "README.md", "fileset", "irsync"] + PAGES])
