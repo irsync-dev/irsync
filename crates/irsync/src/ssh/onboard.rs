@@ -6,7 +6,7 @@ use anyhow::Context;
 use iroh::EndpointId;
 
 use super::client::{ensure_installed, probe, run_setup, Install, Rsh, REMOTE_BIN};
-use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
+use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
@@ -207,6 +207,11 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             file.display()
         ));
     }
+    if let OldBin::RemoveFailed(e) = &r.old_bin {
+        out.push(format!(
+            "  warning: could not remove the old copy in ~/.local/share/irsync/bin: {e}"
+        ));
+    }
     match o.previous_id {
         // Already saved with this id (a restart): nothing to say.
         None if o.alias_existed => {}
@@ -316,7 +321,6 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::ssh::payload::Contents;
-    use crate::ssh::setup::OldBin;
 
     /// Neither `fileset` nor the man pages.
     const ALONE: Contents = Contents {

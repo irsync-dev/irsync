@@ -92,11 +92,14 @@ pub enum DaemonOutcome {
 pub enum OldBin {
     /// There is none.
     Absent,
-    /// It is still there: a service file starts it, or nothing was
-    /// installed this run (`--keep-old`).
+    /// It is still there on purpose: a service file starts it, nothing was
+    /// installed this run (`--keep-old`), `ssh-setup` itself runs from it,
+    /// or a daemon whose owner is unknown holds the lock.
     Kept,
     /// It was removed, and its `bin` directory if that was then empty.
     Removed,
+    /// Removing it failed, with this error; it is still there.
+    RemoveFailed(String),
 }
 
 /// What `ssh-setup` did, as the client reads it back.
@@ -175,14 +178,15 @@ impl SetupReport {
         for f in &self.stale_services {
             lines.push(format!("stale_service={}", f.display()));
         }
-        lines.push(format!(
-            "old_bin={}",
-            match self.old_bin {
-                OldBin::Absent => "absent",
-                OldBin::Kept => "kept",
-                OldBin::Removed => "removed",
+        match &self.old_bin {
+            OldBin::Absent => lines.push("old_bin=absent".into()),
+            OldBin::Kept => lines.push("old_bin=kept".into()),
+            OldBin::Removed => lines.push("old_bin=removed".into()),
+            OldBin::RemoveFailed(e) => {
+                lines.push("old_bin=failed".into());
+                lines.push(format!("old_bin_error={}", e.replace(['\r', '\n'], " ")));
             }
-        ));
+        }
         lines.push(END.to_string());
         lines.join("\n") + "\n"
     }
@@ -259,6 +263,12 @@ impl SetupReport {
             None | Some("absent") => OldBin::Absent,
             Some("kept") => OldBin::Kept,
             Some("removed") => OldBin::Removed,
+            Some("failed") => OldBin::RemoveFailed(
+                fields
+                    .get("old_bin_error")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
+            ),
             Some(v) => return Err(bad("old_bin", v)),
         };
         Ok(SetupReport {
@@ -366,7 +376,7 @@ pub fn run(
     // 4. The daemon. One running from the old install path is ours too,
     // unless a service file starts it: stopping it would fight systemd or
     // launchd.
-    let home = dirs::home_dir();
+    let home = usable_home(dirs::home_dir());
     let stale = home
         .as_deref()
         .map(legacy::stale_services)
@@ -375,7 +385,11 @@ pub fn run(
     let state = &settings.state_dir;
     let log = state.join("daemon.log");
     let exe = std::env::current_exe().context("finding this executable")?;
-    let daemon = match probe(state) {
+    let lock = probe(state);
+    // Held, but by whom is not known: it may be a daemon from the old path
+    // that is still starting.
+    let owner_unknown = lock.as_ref().is_some_and(|i| i.pid == 0);
+    let daemon = match lock {
         None => {
             start_daemon(&exe, paths, state, &log)?;
             DaemonOutcome::Started
@@ -412,21 +426,9 @@ pub fn run(
         Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
     };
 
-    // 5. The old binary, now that no daemon of ours runs from it. Kept when
-    // it is this very executable. A failed removal leaves it, as kept.
-    let old_bin = match &home {
-        Some(h) if h.join(OLD_REMOTE_BIN).symlink_metadata().is_ok() => {
-            if !stale.is_empty() || keep_old || is_old_bin(&exe) {
-                OldBin::Kept
-            } else {
-                match legacy::remove_old_bin(h) {
-                    Ok(_) => OldBin::Removed,
-                    Err(_) => OldBin::Kept,
-                }
-            }
-        }
-        _ => OldBin::Absent,
-    };
+    // 5. The old binary, now that no daemon of ours runs from it.
+    let keep = !stale.is_empty() || keep_old || owner_unknown || is_old_bin(&exe);
+    let old_bin = old_bin_step(home.as_deref(), keep);
 
     // 6. Where the daemon can be reached: a daemon that just started has
     // published nothing yet, so the client dials this first.
@@ -449,6 +451,31 @@ pub fn run(
         stale_services: stale,
         old_bin,
     })
+}
+
+/// The home directory to look for the old install in: none unless it is
+/// absolute, so nothing is ever looked up or removed relative to the
+/// current directory.
+fn usable_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.filter(|h| h.is_absolute())
+}
+
+/// What happens to the old binary under `home`: removed unless `keep`.
+/// A failed removal does not fail the setup; it is reported.
+fn old_bin_step(home: Option<&Path>, keep: bool) -> OldBin {
+    let Some(h) = home else {
+        return OldBin::Absent;
+    };
+    if h.join(OLD_REMOTE_BIN).symlink_metadata().is_err() {
+        OldBin::Absent
+    } else if keep {
+        OldBin::Kept
+    } else {
+        match legacy::remove_old_bin(h) {
+            Ok(_) => OldBin::Removed,
+            Err(e) => OldBin::RemoveFailed(e.to_string()),
+        }
+    }
 }
 
 /// Tells this copy's daemon `pid` to re-read its settings.
@@ -578,7 +605,12 @@ mod tests {
 
     #[test]
     fn report_round_trips_stale_and_old_bin() {
-        for old_bin in [OldBin::Absent, OldBin::Kept, OldBin::Removed] {
+        for old_bin in [
+            OldBin::Absent,
+            OldBin::Kept,
+            OldBin::Removed,
+            OldBin::RemoveFailed("Permission denied (os error 13)".into()),
+        ] {
             let mut r = report();
             r.old_bin = old_bin;
             r.stale_services = vec![
@@ -591,6 +623,84 @@ mod tests {
             let text = r.to_lines();
             assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");
         }
+    }
+
+    /// The error is one line in the report; a `failed` with no error line
+    /// still parses.
+    #[test]
+    fn failed_removal_error_is_one_line() {
+        let mut r = report();
+        r.old_bin = OldBin::RemoveFailed("first\nsecond".into());
+        let text = r.to_lines();
+        assert!(text.contains("\nold_bin_error=first second\n"), "{text}");
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().old_bin,
+            OldBin::RemoveFailed("first second".into())
+        );
+        let text: String = text
+            .lines()
+            .filter(|l| !l.starts_with("old_bin_error="))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().old_bin,
+            OldBin::RemoveFailed(String::new())
+        );
+    }
+
+    /// A home with the old binary in it.
+    fn home_with_old_bin() -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let old = home.path().join(OLD_REMOTE_BIN);
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "old").unwrap();
+        (home, old)
+    }
+
+    #[test]
+    fn old_bin_step_removes_or_keeps() {
+        let (home, old) = home_with_old_bin();
+        // `keep` covers a stale service file, `--keep-old`, this executable
+        // being the old one, and a lock whose owner is unknown.
+        assert_eq!(old_bin_step(Some(home.path()), true), OldBin::Kept);
+        assert!(old.exists());
+        assert_eq!(old_bin_step(Some(home.path()), false), OldBin::Removed);
+        assert!(!old.exists());
+        assert_eq!(old_bin_step(Some(home.path()), false), OldBin::Absent);
+        assert_eq!(old_bin_step(None, false), OldBin::Absent);
+    }
+
+    #[test]
+    fn failed_removal_is_reported_not_kept() {
+        if nix::unistd::geteuid().is_root() {
+            // root may remove anything.
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let (home, old) = home_with_old_bin();
+        let bin = old.parent().unwrap();
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let got = old_bin_step(Some(home.path()), false);
+        // Writable again, so the temp dir can be cleaned up.
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(&got, OldBin::RemoveFailed(e) if !e.is_empty()),
+            "{got:?}"
+        );
+        assert!(old.exists());
+    }
+
+    /// A relative `$HOME` is no home: nothing is looked up or removed
+    /// relative to the current directory.
+    #[test]
+    fn relative_home_is_no_home() {
+        assert_eq!(usable_home(Some(PathBuf::from("relative/home"))), None);
+        assert_eq!(usable_home(Some(PathBuf::from(""))), None);
+        assert_eq!(usable_home(None), None);
+        assert_eq!(
+            usable_home(Some(PathBuf::from("/home/u"))),
+            Some(PathBuf::from("/home/u"))
+        );
     }
 
     /// A server with an older irsync sends neither line.
