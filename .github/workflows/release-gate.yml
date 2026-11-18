@@ -138,10 +138,16 @@ jobs:
           # An earlier attempt may have made a draft. A published release
           # already has the tag, which the checks above refuse. Delete only a
           # draft, and only the release: no tag exists to remove.
-          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null) &&
-              [ "$is_draft" = true ]; then
-            echo "Deleting the draft release $TAG left over from an earlier attempt."
-            gh release delete "$TAG" --yes
+          if out=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1); then
+            if [ "$out" = true ]; then
+              echo "Deleting the draft release $TAG left over from an earlier attempt."
+              gh release delete "$TAG" --yes
+            fi
+          else
+            case $out in
+              *"release not found"*|*"Not Found"*) ;;
+              *) echo "::error::Could not look up the release $TAG: $out"; exit 1 ;;
+            esac
           fi
 
       - name: Launch release.yml on the pinned commit
@@ -229,7 +235,8 @@ jobs:
     needs: [check, release]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Draft releases are visible only with write access; read gets a 404.
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}

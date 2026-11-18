@@ -377,6 +377,9 @@ class EnvironmentTests(unittest.TestCase):
         text = read("release-resume.yml")
         self.assertNotIn("MAIN_REF", text)
         self.assertNotIn("refs/heads/main", text)
+        self.assertNotIn("default_branch", text)
+        outside = text.replace(job_text("release-resume.yml", "branch"), "")
+        self.assertNotIn("refs/heads/", outside)
 
 
 class FreeBsdTests(unittest.TestCase):
@@ -522,6 +525,15 @@ class GateTests(unittest.TestCase):
 
     def test_gate_points_to_signing(self):
         self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))
+
+    def test_gate_draft_job_can_see_drafts(self):
+        # GitHub shows a draft release only to callers with push access.
+        self.assertEqual(jobs(self.gate())["draft"]["permissions"]["contents"], "write")
+
+    def test_gate_leftover_draft_step_fails_on_other_errors(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("release not found", text)
+        self.assertIn("Could not look up the release", text)
 
     def test_gate_has_no_branch_or_finish_job(self):
         for job_id in ("branch", "finish"):
