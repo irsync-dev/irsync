@@ -567,5 +567,50 @@ class GateTests(unittest.TestCase):
         self.assertEqual(push["branches"], ["main", "release-*"])
 
 
+REPLACE_KEY = ("replace the test key with the real release key "
+               "(book/src/contributing/release-signing-key.md)")
+
+
+def key_lines(text):
+    """The base64 key lines of a minisign public key file."""
+    return [l.strip() for l in text.splitlines()
+            if l.strip() and not l.startswith("untrusted comment:")]
+
+
+class ReleaseKeyTests(unittest.TestCase):
+    """Fails while packaging/signing/release-keys.pub holds the test key.
+
+    This is meant to keep a pull request red until the maintainer puts in
+    the real key. It runs in the `workflows` job, not in `tools/ci.sh check`.
+    """
+
+    def read_root(self, *path):
+        with open(os.path.join(ROOT, *path)) as f:
+            return f.read()
+
+    def readme_keys(self):
+        """The lines of the ```text block under "## Verify a download"."""
+        readme = self.read_root("README.md")
+        section = readme.split("## Verify a download", 1)[1]
+        m = re.search(r"```text\n(.*?)```", section, re.S)
+        self.assertIsNotNone(m, f"no ```text block with the key in README.md; {REPLACE_KEY}")
+        return [l.strip() for l in m[1].splitlines() if l.strip()]
+
+    def test_replace_the_test_key_with_the_real_release_key(self):
+        keys = self.read_root("packaging", "signing", "release-keys.pub")
+        test_pub = self.read_root(".github", "scripts", "tests", "fixtures", "minisign",
+                                  "test.pub")
+        test_id = test_pub.splitlines()[0].split()[-1]
+        for line in key_lines(test_pub):
+            self.assertNotIn(line, keys, f"release-keys.pub holds the test key; {REPLACE_KEY}")
+        self.assertNotIn(test_id, keys, f"release-keys.pub names the test key; {REPLACE_KEY}")
+        self.assertTrue(key_lines(keys), f"release-keys.pub holds no key; {REPLACE_KEY}")
+        for doc in ("README.md", os.path.join("book", "src", "how-to", "verify-a-download.md")):
+            self.assertNotIn("REPLACE-WITH-RELEASE-KEY", self.read_root(doc),
+                             f"{doc} has no real key yet; {REPLACE_KEY}")
+        self.assertEqual(self.readme_keys(), key_lines(keys),
+                         f"the key in README.md is not the one in release-keys.pub; {REPLACE_KEY}")
+
+
 if __name__ == "__main__":
     unittest.main()
