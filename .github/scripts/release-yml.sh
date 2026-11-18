@@ -43,7 +43,9 @@ if [ "$found" -ne 1 ]; then
     echo "release-yml.sh: expected one 'gh release create' line in what dist wrote, found $found; did dist change its template?" >&2
     exit 1
 fi
-sed -i 's/\(gh release create .*\) artifacts\/\*/\1 --draft artifacts\/*/' "$workflow"
+# Not sed -i: BSD and GNU sed take its argument differently.
+sed 's/\(gh release create .*\) artifacts\/\*/\1 --draft artifacts\/*/' "$workflow" >"$tmp/draft"
+cp "$tmp/draft" "$workflow"
 if ! grep 'gh release create' "$workflow" | grep -q -- ' --draft artifacts/\*'; then
     echo "release-yml.sh: could not add --draft before artifacts/*; did dist change its template?" >&2
     exit 1
