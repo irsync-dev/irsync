@@ -209,6 +209,11 @@ a failed step).
       which is gone by the time the user reads it.
 - [ ] When a downloaded release lacks fileset or the pages, the summary
       blames "this machine" ("this machine has none beside its irsync").
+- [ ] A FreeBSD client's tar (bsdtar) still writes extended attribute
+      records into the files it sends: `--no-xattrs` is passed only on
+      macOS, because BusyBox tar and GNU tar before 1.27 refuse it. A
+      server whose tar does not know these records may print warnings.
+      Not tried on a real FreeBSD client.
 
 # Open items from the supply chain work, 2026-11-15
 
