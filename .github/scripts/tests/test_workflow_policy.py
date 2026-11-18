@@ -169,6 +169,28 @@ class CiWorkflowTests(unittest.TestCase):
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
 
+    def test_licenses_all_blocks_only_a_release(self):
+        self.ci_script_runs(
+            "licenses-all",
+            "cargo deny --locked --config deny-license-check.toml check licenses")
+        job = jobs(self.ci)["licenses-all"]
+        # A failed job with continue-on-error counts as passed for "CI
+        # result"; a release run (inputs.plan is set) turns that off.
+        self.assertEqual(job["continue-on-error"], "${{ !inputs.plan }}")
+
+    def test_deny_configs_agree(self):
+        def load(name):
+            with open(os.path.join(ROOT, name), "rb") as f:
+                return tomllib.load(f)
+        narrow, wide = load("deny.toml"), load("deny-license-check.toml")
+        # The same licenses are allowed whichever platforms are looked at.
+        self.assertEqual(narrow["licenses"], wide["licenses"])
+        self.assertTrue(narrow["graph"]["all-features"])
+        self.assertEqual(wide["graph"], {"all-features": True})
+        # Every release target is one of the platforms deny.toml checks.
+        released = set(dist_config()["dist"]["targets"])
+        self.assertLessEqual(released, set(narrow["graph"]["targets"]))
+
     def test_dependency_review_on_prs_only(self):
         found = False
         for j in jobs(self.ci).values():
