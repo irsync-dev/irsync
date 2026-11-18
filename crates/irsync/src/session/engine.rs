@@ -1318,6 +1318,7 @@ async fn serve_daemon_inner(
                 h.events = Some(shared.events.clone());
                 h.slow_finalize = *shared.slow_finalize.lock().unwrap();
                 h.slow_plan = p.slow_plan;
+                h.slow_place = p.slow_place;
                 h.max_inflight = p.max_inflight;
                 h.listing_peak = p.listing_peak;
                 h.listing_waits = p.listing_waits;

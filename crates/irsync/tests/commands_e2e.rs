@@ -2087,7 +2087,15 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
         &["show", "--passphrase-file", pf_s],
         &["daemon", "--passphrase-file", pf_s],
         &["export", "add", &export, "--passphrase-file", pf_s],
-        &["ssh-setup", "--client", &id, "--passphrase-file", pf_s],
+        &[
+            "ssh-setup",
+            "--client",
+            &id,
+            "--client-name-hex",
+            "6d79636c69656e74",
+            "--passphrase-file",
+            pf_s,
+        ],
         &["--passphrase-file", pf_s, "-a", &src, &dest],
         &["--passphrase-file", pf_s, &listing],
     ] {
@@ -2214,4 +2222,148 @@ fn list_usage_error_shows_list_usage() {
     let e = String::from_utf8_lossy(&o.stderr);
     assert!(e.contains("list takes one operand"), "{e}");
     assert!(e.contains("irsync list [OPTIONS] <HOST[:PATH]>"), "{e}");
+}
+
+/// `host add` changes the daemon id. For a machine that also has a client
+/// id, grants stay with that one, and the command says so instead of
+/// claiming they moved.
+#[test]
+fn host_add_says_when_grants_stay_with_the_client_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, config) = home_with(
+        &d,
+        &format!(
+            "[hosts.box]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.phone]\nclient_id = \"{client}\"\n[immediate]\nrw = [\"box\"]\n"
+        ),
+    );
+    let o = irsync(&home, &["host", "add", "box", &new]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("box: {daemon} -> {new}\n")
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "irsync host add: note: the grants that name box (in immediate) stay with \
+             its client_id {client}; `irsync config set hosts.box.client_id ID` changes that\n"
+        )
+    );
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.contains(&format!("client_id = \"{client}\"")),
+        "{text}"
+    );
+    // A client-only host that no grant names gets its daemon id quietly.
+    let o = irsync(&home, &["host", "add", "phone", &new]);
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+/// `config set` and `config unset` on a host's ids can change which id
+/// its grants are for. That is never silent.
+#[test]
+fn config_says_when_a_hosts_grants_move_to_another_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, _) = home_with(
+        &d,
+        &format!(
+            "[hosts.box]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.free]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [immediate]\nrw = [\"box\"]\n"
+        ),
+    );
+    let note = |cmd: &str, from: &str, to: &str| {
+        format!(
+            "irsync config {cmd}: note: the grants that name box (in immediate) now apply \
+             to {to} (was {from})\n"
+        )
+    };
+    // The daemon id is not what grants go by here: no note.
+    let other = peer_id(8);
+    let o = irsync(&home, &["config", "set", "hosts.box.endpoint_id", &other]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+    let o = irsync(&home, &["config", "set", "hosts.box.client_id", &new]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("set", &client, &new)
+    );
+    // Without its client id, the grants fall to the daemon id.
+    let o = irsync(&home, &["config", "unset", "hosts.box.client_id"]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("unset", &new, &other)
+    );
+    let o = irsync(&home, &["config", "set", "hosts.box.endpoint_id", &daemon]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        note("set", &other, &daemon)
+    );
+    // A host no grant names changes without a note.
+    let o = irsync(&home, &["config", "unset", "hosts.free.client_id"]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+/// A host with a daemon id and a client id, and one that is a client
+/// only, through `host list`, `show`, `host rename` and `host remove`.
+#[test]
+fn hosts_with_a_client_id_list_show_rename_and_remove() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, phone) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, config) = home_with(
+        &d,
+        &format!(
+            "[hosts.desk]\nendpoint_id = \"{daemon}\"\nclient_id = \"{client}\"\n\
+             [hosts.phone]\nclient_id = \"{phone}\"\n[immediate]\nrw = [\"desk\", \"phone\"]\n"
+        ),
+    );
+    let list = ok(&home, &["host", "list"]);
+    assert_eq!(
+        list,
+        format!(
+            "desk: {daemon}\n    client_id = \"{client}\"\n\
+             phone: (client only)\n    client_id = \"{phone}\"\n"
+        )
+    );
+    // `show` has the same lines, and a grant is for the client id.
+    let show = ok(&home, &["show"]);
+    assert!(show.contains(&list), "{show}");
+    let grants = ok(&home, &["grant", "list"]);
+    assert!(
+        grants.contains(&format!("rw: desk ({client}), phone ({phone})")),
+        "{grants}"
+    );
+
+    // A rename takes both ids and the grants along.
+    ok(&home, &["host", "rename", "desk", "box"]);
+    let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert!(t["hosts"].get("desk").is_none(), "{t}");
+    assert_eq!(t["hosts"]["box"]["endpoint_id"].as_str(), Some(&*daemon));
+    assert_eq!(t["hosts"]["box"]["client_id"].as_str(), Some(&*client));
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("box"), "{t}");
+
+    // A client-only host is removed like any other: not while grants
+    // name it, unless forced.
+    let o = irsync(&home, &["host", "remove", "phone"]);
+    assert!(!o.status.success());
+    ok(&home, &["host", "remove", "phone", "-f"]);
+    ok(&home, &["host", "remove", "box", "-f"]);
+    let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert!(
+        t.get("hosts")
+            .is_none_or(|h| h.as_table().unwrap().is_empty()),
+        "{t}"
+    );
+    assert!(
+        t.get("immediate")
+            .and_then(|i| i.get("rw"))
+            .is_none_or(|rw| rw.as_array().unwrap().is_empty()),
+        "{t}"
+    );
 }

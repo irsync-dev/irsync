@@ -53,7 +53,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
-        ["hosts", _, "endpoint_id"] => Id,
+        ["hosts", _, "endpoint_id" | "client_id"] => Id,
         ["hosts", _, "relay"] => Url,
         ["hosts", _, "relay_mode" | "congestion" | "ssh"] => Str,
         ["hosts", _, "address"] => AddrArray,

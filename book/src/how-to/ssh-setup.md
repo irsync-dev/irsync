@@ -6,6 +6,89 @@ client access, starts the daemon and saves `myserver` as a host alias.
 [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh) walks
 through it. This page covers the options.
 
+## The names the setup saves
+
+On the client, the alias depends on what you typed before the `:`:
+
+| You typed | Saved alias |
+|-----------|-------------|
+| `myserver` | `myserver` |
+| `mike@myserver` | `mike@myserver`, and also `myserver` when no alias has that name yet |
+| `192.168.1.5` or `mike@192.168.1.5` | the server's own host name, for example `myserver` |
+| `[fe80::1]` (an IPv6 address goes in brackets) | the server's own host name |
+
+Every alias keeps what you typed as its `ssh` value, so a later check over
+ssh logs in the same way.
+
+- With `mike@myserver`, both names reach the same daemon. If `myserver` is
+  an alias already, it is left as it is: the first one wins.
+- For an address, irsync asks the server for its host name and uses the part
+  before the first `.`. If that name already belongs to another daemon, the
+  alias is `myserver-2`, then `myserver-3`.
+- A server that gives no usable name (none, or `localhost`) keeps an IPv4
+  address as its alias. An IPv6 address cannot be an alias, so the setup
+  stops before it changes anything; give the server a host name or
+  [add the host by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
+
+Typing the address again later needs no ssh. irsync finds the saved host by
+its `ssh` value and says so:
+
+```text
+irsync: 192.168.1.5 is saved as myserver
+```
+
+A host that is already saved with a name to reach it by, such as
+`ssh = "mike@myserver"`, keeps that name when you type its address: an
+address can go stale. The address is then not saved, so each run that types
+it checks the server over ssh again. Type the alias to skip that.
+
+It dials the daemon saved under that name, wherever it is now. If the
+address has since gone to another machine, that is not the machine you get.
+First take the address off the old entry (`irsync host remove myserver`, or
+change its `ssh` value in the config file), then sync to the address again:
+the new machine is set up and saved under its own name. Do not use `--ssh`
+for this: it would point the old alias at the new machine.
+
+On the server, the setup saves the client under the client's short host name
+and grants that name:
+
+```toml
+[hosts.myclient]
+client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
+
+[immediate]
+rw = ["myclient"]
+```
+
+The name is a label. The daemon decides access by the `EndpointId` the name
+stands for, never by what a client calls itself. A client the server already
+has a name for keeps that name.
+
+The two machines can sync in both directions under the same names. When the
+server later runs `irsync ... myclient:PATH`, irsync sees that `myclient` is
+saved as a client only, sets its daemon up over ssh, and adds the daemon's
+`endpoint_id` to the same entry. The other way round works too: a client
+called `myclient` joins a `[hosts.myclient]` entry that the server so far
+only dials, as long as no grant names that entry.
+
+The setup stops, and changes nothing on the server, when the client's host
+name cannot be used there:
+
+- Grants on the server name `[hosts.myclient]`, and it is not this client:
+  that entry is a peer someone named by hand. Rename one of the two.
+- The name already belongs to another client. This also happens when the
+  same machine comes back with a new key, for example after a reinstall.
+  The message names the entry and the command to run on the server if that
+  client is gone: `irsync host remove myclient -f`, or, when the server also
+  dials that machine under the name, `irsync config set
+  hosts.myclient.client_id ID`, which replaces only the client id. Else
+  rename the client machine.
+- Grants on the server still name a client that has no `[hosts]` entry any
+  more. Those are left from a removed client and are not handed to a new
+  one of the same name. Take the name out of the lists the message names.
+- The client has no usable host name of its own (none, or `localhost`).
+  Give the machine a host name.
+
 ## Run the setup again
 
 Pass `--ssh` to go through ssh on purpose, for example to update irsync on

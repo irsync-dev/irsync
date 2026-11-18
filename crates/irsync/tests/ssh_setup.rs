@@ -8,8 +8,18 @@ use std::time::{Duration, Instant};
 
 use common::irsync_bin;
 use iroh::{EndpointId, SecretKey};
+use irsync::config::file::Config;
+use irsync::config::hosts::Hosts;
 use irsync::daemon_lock::probe;
-use irsync::ssh::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
+use irsync::ssh::setup::{
+    check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport,
+};
+use toml_edit::DocumentMut;
+
+/// `name` as `--client-name-hex` takes it.
+fn hex(name: &str) -> String {
+    name.bytes().map(|b| format!("{b:02x}")).collect()
+}
 
 /// A temp HOME with an offline daemon config; kills the daemon holding its
 /// lock when dropped.
@@ -48,10 +58,19 @@ impl Home {
     }
 
     fn setup_with(&self, client: &EndpointId, extra: &[&str]) -> SetupReport {
-        let id = client.to_string();
-        let mut args = vec!["ssh-setup", "--client", &id];
+        self.setup_named(client, "myclient", extra)
+    }
+
+    /// `ssh-setup` as the client `name` runs it; the raw result.
+    fn try_setup(&self, client: &EndpointId, name: &str, extra: &[&str]) -> std::process::Output {
+        let (id, name) = (client.to_string(), hex(name));
+        let mut args = vec!["ssh-setup", "--client", &id, "--client-name-hex", &name];
         args.extend_from_slice(extra);
-        let out = irsync_bin(self.path(), &args);
+        irsync_bin(self.path(), &args)
+    }
+
+    fn setup_named(&self, client: &EndpointId, name: &str, extra: &[&str]) -> SetupReport {
+        let out = self.try_setup(client, name, extra);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -156,7 +175,12 @@ fn fresh_home_generates_grants_starts() {
     let doc = read_config(&home);
     let rw = doc["immediate"]["rw"].as_array().unwrap();
     assert_eq!(rw.len(), 1);
-    assert_eq!(rw[0].as_str().unwrap(), client.to_string());
+    // The client is saved under its host name, and the name is granted.
+    assert_eq!(rw[0].as_str().unwrap(), "myclient");
+    assert_eq!(
+        doc["hosts"]["myclient"]["client_id"].as_str().unwrap(),
+        client.to_string()
+    );
     let info = probe(&home.state()).expect("daemon running");
     assert_ne!(info.pid, 0);
     // Relays are off in this config: the direct address is the report's.
@@ -261,8 +285,18 @@ fn recheck_does_not_regrant() {
     );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
-        home.setup_with(&other, &["--recheck"]).grant,
+        home.setup_named(&other, "other", &["--recheck"]).grant,
         GrantOutcome::Already
+    );
+    // It was granted by its bare id. The name is saved, and saving the
+    // config writes a peer by the name `[hosts]` has for it, as always.
+    let doc = read_config(&home);
+    let rw = doc["immediate"]["rw"].as_array().unwrap();
+    assert_eq!(rw.len(), 1);
+    assert_eq!(rw[0].as_str().unwrap(), "other");
+    assert_eq!(
+        doc["hosts"]["other"]["client_id"].as_str().unwrap(),
+        other.to_string()
     );
     // A rebuilt server (fresh identity) gets the grant again.
     let fresh = Home::new("");
@@ -385,4 +419,233 @@ fn the_report_still_parses_with_logging_on() {
     let logged = home.setup_with(&client, &["-vv"]);
     let plain = home.setup(&client);
     assert_eq!(format!("{logged:?}"), format!("{plain:?}"));
+}
+
+fn id(n: u8) -> EndpointId {
+    SecretKey::from_bytes(&[n; 32]).public()
+}
+
+fn cfg() -> &'static Path {
+    Path::new("/x/irsync.toml")
+}
+
+fn hosts_from(text: &str) -> Hosts {
+    Config::parse(text, Path::new("/x/irsync.toml"))
+        .unwrap()
+        .hosts
+}
+
+#[test]
+fn client_name_rules() {
+    let doc: DocumentMut = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1))
+        .parse()
+        .unwrap();
+    let check = |client, name| check_client_name(&doc, cfg(), client, name);
+    assert!(check(id(1), "myclient").is_ok());
+    assert!(check(id(2), "other").is_ok());
+    let e = check(id(2), "myclient").unwrap_err().to_string();
+    assert!(e.contains("[hosts.myclient]"), "{e}");
+    assert!(e.contains(&id(1).fmt_short().to_string()), "{e}");
+    for bad in ["", "all", "*", "a/b", "a:b"] {
+        assert!(check(id(2), bad).is_err(), "{bad:?}");
+    }
+    // The names a client never sends are refused from a hand-run setup too.
+    for bad in [
+        "localhost",
+        "LocalHost",
+        "123",
+        "tab\there",
+        "a.b",
+        " pad",
+        "x\n[daemon]",
+    ] {
+        let e = check(id(2), bad).unwrap_err().to_string();
+        assert!(
+            e.contains("cannot be a name on this server"),
+            "{bad:?}: {e}"
+        );
+    }
+    // A client this server already has a name for is not being named.
+    assert!(check(id(1), "a/b").is_ok());
+}
+
+/// The server dials a machine as `desktop`; that machine then comes as a
+/// client called `desktop`. One entry holds both ids: its daemon to dial,
+/// its client id for grants.
+#[test]
+fn a_client_joins_the_entry_of_its_own_daemon() {
+    let text = format!(
+        "[hosts.desktop]\nendpoint_id = \"{}\"\nssh = \"mike@desktop\"\n",
+        id(5)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert!(grant_client(&mut doc, cfg(), id(2), "desktop").unwrap());
+    let hosts = hosts_from(&doc.to_string());
+    let e = hosts.get("desktop").unwrap();
+    assert_eq!((e.endpoint_id, e.client_id), (Some(id(5)), Some(id(2))));
+    assert_eq!(e.ssh.as_deref(), Some("mike@desktop"));
+    assert_eq!(hosts.entries.len(), 1);
+    let t: toml::Table = doc.to_string().parse().unwrap();
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("desktop"));
+    assert_eq!(hosts.resolve_peer("desktop").unwrap(), id(2));
+}
+
+/// An entry that grants already name is a peer someone named by hand: a
+/// client that calls itself the same must not get those grants.
+#[test]
+fn a_client_does_not_join_an_entry_that_grants_name() {
+    let text = format!(
+        "[hosts.desktop]\nendpoint_id = \"{}\"\n[exports.x]\npath = \"/x\"\nrw = [\"desktop\"]\n",
+        id(5)
+    );
+    let mut doc: DocumentMut = text.parse().unwrap();
+    let e = grant_client(&mut doc, cfg(), id(2), "desktop")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("[exports.x]") && e.contains("desktop"), "{e}");
+    assert_eq!(doc.to_string(), text);
+}
+
+#[test]
+fn grants_the_name() {
+    let mut doc = DocumentMut::new();
+    assert!(grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
+    let t: toml::Table = doc.to_string().parse().unwrap();
+    assert_eq!(
+        t["hosts"]["myclient"]["client_id"].as_str(),
+        Some(&*id(1).to_string())
+    );
+    assert!(t["hosts"]["myclient"].get("endpoint_id").is_none());
+    assert_eq!(
+        t["immediate"]["rw"].as_array().unwrap(),
+        &[toml::Value::from("myclient")]
+    );
+}
+
+/// Whatever a client calls itself, the config stays valid TOML and the
+/// name comes back as it went in.
+#[test]
+fn names_that_need_quoting_round_trip() {
+    for name in [
+        "my client",
+        "say \"hi\"",
+        "ü",
+        "x = 1 [daemon]",
+        "a]\\b",
+        "'",
+    ] {
+        let mut doc = DocumentMut::new();
+        grant_client(&mut doc, cfg(), id(1), name).unwrap();
+        let text = doc.to_string();
+        let t: toml::Table = text.parse().unwrap();
+        assert_eq!(t.len(), 2, "{name:?}: {text}");
+        assert!(
+            t["hosts"].as_table().unwrap().contains_key(name),
+            "{name:?}: {text}"
+        );
+        assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name));
+        // And irsync itself reads it back as that host.
+        assert_eq!(hosts_from(&text).get(name).unwrap().client_id, Some(id(1)));
+    }
+}
+
+#[test]
+fn a_bare_id_grant_counts() {
+    let mut doc: DocumentMut = format!("[immediate]\nrw = [\"{}\"]\n", id(1))
+        .parse()
+        .unwrap();
+    assert!(!grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
+    let t: toml::Table = doc.to_string().parse().unwrap();
+    assert_eq!(t["immediate"]["rw"].as_array().unwrap().len(), 1);
+    assert_eq!(t["immediate"]["rw"][0].as_str(), Some(&*id(1).to_string()));
+    assert!(t["hosts"].as_table().unwrap().contains_key("myclient"));
+}
+
+/// A name that belongs to another client is refused before anything on
+/// the server changes: no identity, no grant, no daemon.
+#[test]
+fn a_taken_client_name_changes_nothing() {
+    let home = Home::new("");
+    let mut text = std::fs::read_to_string(home.config()).unwrap();
+    text.push_str(&format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)));
+    std::fs::write(home.config(), &text).unwrap();
+    let out = home.try_setup(&id(2), "myclient", &[]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("[hosts.myclient]"), "{err}");
+    assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
+    assert!(probe(&home.state()).is_none());
+    assert!(!home.path().join(".config/irsync/daemon_ed25519").exists());
+    // Its own name: as before.
+    assert_eq!(
+        home.setup_named(&id(1), "myclient", &[]).grant,
+        GrantOutcome::Added
+    );
+}
+
+/// A grant that still names a client whose `[hosts]` entry was removed
+/// must not pass to the next client that calls itself that name.
+#[test]
+fn a_leftover_grant_name_is_not_taken_over() {
+    for text in [
+        "[immediate]\nrw = [\"myclient\"]\n",
+        "[all]\nro = [\"myclient\"]\n",
+        "[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n",
+    ] {
+        let mut doc: DocumentMut = text.parse().unwrap();
+        let e = grant_client(&mut doc, cfg(), id(2), "myclient")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("myclient") && e.contains("still"), "{e}");
+        assert_eq!(doc.to_string(), text);
+    }
+}
+
+/// The name is checked against the document being edited, not against
+/// what `[hosts]` held before the lock was taken.
+#[test]
+fn a_name_taken_in_the_document_is_not_overwritten() {
+    let text = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1));
+    let mut doc: DocumentMut = text.parse().unwrap();
+    assert!(grant_client(&mut doc, cfg(), id(2), "myclient").is_err());
+    assert_eq!(doc.to_string(), text);
+}
+
+/// A recheck does not hand a removed client's leftover grant to whoever
+/// has its name now, and changes nothing.
+#[test]
+fn recheck_does_not_revive_a_leftover_grant() {
+    let home = Home::new("");
+    let mut text = std::fs::read_to_string(home.config()).unwrap();
+    text.push_str("[immediate]\nrw = [\"myclient\"]\n");
+    std::fs::write(home.config(), &text).unwrap();
+    for extra in [&["--recheck"][..], &[]] {
+        let out = home.try_setup(&id(2), "myclient", extra);
+        assert_eq!(out.status.code(), Some(1), "{extra:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("[immediate]"), "{err}");
+        assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
+        assert!(probe(&home.state()).is_none());
+    }
+}
+
+/// The entry of a taken name may also be how this server dials that
+/// machine. The advice then replaces only the client id, and gives it.
+#[test]
+fn a_taken_name_with_a_daemon_id_is_not_told_to_remove_the_host() {
+    let check = |text: &str| {
+        let doc: DocumentMut = text.parse().unwrap();
+        check_client_name(&doc, cfg(), id(2), "myclient")
+            .unwrap_err()
+            .to_string()
+    };
+    let e = check(&format!(
+        "[hosts.myclient]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n",
+        id(5),
+        id(1)
+    ));
+    let set = format!("irsync config set hosts.myclient.client_id {}", id(2));
+    assert!(e.contains(&set) && !e.contains("host remove"), "{e}");
+    let e = check(&format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)));
+    assert!(e.contains("irsync host remove myclient -f"), "{e}");
 }

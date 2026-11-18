@@ -15,7 +15,12 @@ use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostEntry {
-    pub endpoint_id: EndpointId,
+    /// The machine's daemon: the id to dial. `None`: the machine is known
+    /// only as a client (`client_id`).
+    pub endpoint_id: Option<EndpointId>,
+    /// The machine as a client: the id grants naming this host are for.
+    /// An entry has this, `endpoint_id`, or both.
+    pub client_id: Option<EndpointId>,
     pub relay: Option<Url>,
     /// `"disabled"`: reach this host directly only, never through a relay.
     pub relay_mode: Option<RelayMode>,
@@ -34,7 +39,10 @@ pub struct HostEntry {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawHost {
-    endpoint_id: Spanned<String>,
+    #[serde(default)]
+    endpoint_id: Option<Spanned<String>>,
+    #[serde(default)]
+    client_id: Option<Spanned<String>>,
     #[serde(default)]
     relay: Option<Url>,
     #[serde(default)]
@@ -88,13 +96,29 @@ pub(crate) fn hosts_from_raw(
                 ),
             ));
         }
+        let start = r.span().start;
         let r = r.into_inner();
-        let endpoint_id = parse_endpoint_id(r.endpoint_id.get_ref())
-            .map_err(|e| at(r.endpoint_id.span().start, format!("host {alias:?}: {e}")))?;
+        let id_of = |key: &Option<Spanned<String>>| {
+            key.as_ref()
+                .map(|s| {
+                    parse_endpoint_id(s.get_ref())
+                        .map_err(|e| at(s.span().start, format!("host {alias:?}: {e}")))
+                })
+                .transpose()
+        };
+        let endpoint_id = id_of(&r.endpoint_id)?;
+        let client_id = id_of(&r.client_id)?;
+        if endpoint_id.is_none() && client_id.is_none() {
+            return Err(at(
+                start,
+                format!("host {alias:?}: needs an endpoint_id (its daemon), a client_id, or both"),
+            ));
+        }
         entries.insert(
             alias,
             HostEntry {
                 endpoint_id,
+                client_id,
                 relay: r.relay,
                 relay_mode: r.relay_mode,
                 congestion: r.congestion,
@@ -121,24 +145,68 @@ pub fn valid_alias(s: &str) -> bool {
         && parse_endpoint_id(s).is_err()
 }
 
+/// A machine's host name as an alias: `raw` up to its first `.`, when
+/// that says something about the machine. `None` for a name that is not
+/// a valid alias, for `localhost`, for one made of digits only (the start
+/// of an IPv4 address), and for one with control characters.
+pub fn short_host_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let name = name.split_once('.').map_or(name, |(first, _)| first).trim();
+    let usable = valid_alias(name)
+        && !name.eq_ignore_ascii_case("localhost")
+        && !name.bytes().all(|b| b.is_ascii_digit())
+        && !name.chars().any(char::is_control);
+    usable.then(|| name.to_string())
+}
+
+impl HostEntry {
+    /// The id this host has as a peer in a grant: its client id, else the
+    /// one id it has.
+    pub fn peer_id(&self) -> EndpointId {
+        self.client_id
+            .or(self.endpoint_id)
+            .expect("a host entry has an endpoint_id or a client_id")
+    }
+}
+
 impl Hosts {
     pub fn get(&self, alias: &str) -> Option<&HostEntry> {
         self.entries.get(alias)
     }
 
-    /// The alias that stands for `id`: the first in lexicographic order
-    /// when several entries have it.
+    /// The alias that stands for the peer `id` (see
+    /// [`HostEntry::peer_id`]): the first in lexicographic order when
+    /// several entries have it.
     pub fn alias_of(&self, id: &EndpointId) -> Option<&str> {
         self.entries
             .iter()
-            .find(|(_, e)| e.endpoint_id == *id)
+            .find(|(_, e)| e.peer_id() == *id)
             .map(|(alias, _)| alias.as_str())
+    }
+
+    /// The alias whose `ssh` value is exactly `dest`: the first in
+    /// lexicographic order when several entries of one daemon have it.
+    /// `Err`: the aliases, when entries of different daemons have it.
+    pub fn by_ssh(&self, dest: &str) -> Result<Option<&str>, Vec<String>> {
+        let mut found = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.ssh.as_deref() == Some(dest));
+        let Some((first, entry)) = found.next() else {
+            return Ok(None);
+        };
+        let rest: Vec<_> = found.collect();
+        if rest.iter().all(|(_, e)| e.endpoint_id == entry.endpoint_id) {
+            return Ok(Some(first));
+        }
+        let others = rest.into_iter().map(|(a, _)| a.clone());
+        Err(std::iter::once(first.clone()).chain(others).collect())
     }
 
     /// An alias first, then a literal EndpointId.
     pub fn resolve_peer(&self, s: &str) -> Result<EndpointId, ConfigError> {
         if let Some(e) = self.get(s) {
-            return Ok(e.endpoint_id);
+            return Ok(e.peer_id());
         }
         parse_endpoint_id(s).map_err(|_| ConfigError::UnknownAlias {
             alias: s.to_string(),

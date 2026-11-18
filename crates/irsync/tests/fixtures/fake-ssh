@@ -1,7 +1,8 @@
 #!/bin/sh
 # Stands in for ssh in tests: runs the remote command locally under a fake HOME.
 # Env: FAKE_SSH_HOME, FAKE_SSH_LOG, FAKE_SSH_UNAME (optional: what `uname`
-# prints), FAKE_SSH_ID_U (optional: what `id` prints, as for `id -u`),
+# prints), FAKE_SSH_HOSTNAME (optional: what `uname -n` prints; `-` for an
+# empty line), FAKE_SSH_ID_U (optional: what `id` prints, as for `id -u`),
 # FAKE_SSH_HIDE (optional: a tool, like `tar`, that fails as if it were
 # missing), FAKE_SSH_STDERR (optional: a file that gets the remote
 # command's stderr instead of the terminal). SHELL names no real shell, so
@@ -12,11 +13,24 @@ cmd="$*"
 if [ -n "$FAKE_SSH_STDERR" ]; then
     exec 2>>"$FAKE_SSH_STDERR"
 fi
-if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_ID_U" ] || [ -n "$FAKE_SSH_HIDE" ]; then
+if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_HOSTNAME" ] || [ -n "$FAKE_SSH_ID_U" ] || [ -n "$FAKE_SSH_HIDE" ]; then
     # The stand-ins come first on PATH, so a nested `/bin/sh -c` sees them too.
     bin=$(mktemp -d)
-    if [ -n "$FAKE_SSH_UNAME" ]; then
-        printf '#!/bin/sh\necho "%s"\n' "$FAKE_SSH_UNAME" > "$bin/uname"
+    if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_HOSTNAME" ]; then
+        real=$(command -v uname)
+        {
+            echo '#!/bin/sh'
+            if [ -n "$FAKE_SSH_HOSTNAME" ]; then
+                name=$FAKE_SSH_HOSTNAME
+                [ "$name" = - ] && name=
+                printf 'if [ "$1" = -n ]; then echo "%s"; exit 0; fi\n' "$name"
+            fi
+            if [ -n "$FAKE_SSH_UNAME" ]; then
+                printf 'echo "%s"\n' "$FAKE_SSH_UNAME"
+            else
+                printf 'exec "%s" "$@"\n' "$real"
+            fi
+        } > "$bin/uname"
         chmod 755 "$bin/uname"
     fi
     if [ -n "$FAKE_SSH_ID_U" ]; then

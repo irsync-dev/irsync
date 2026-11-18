@@ -40,6 +40,15 @@ maintainer can do. Why each choice was made is in
   - any RustSec advisory, including unmaintained or yanked crates;
   - a license that isn't on the list;
   - a crate from anywhere but crates.io and our iroh fork.
+
+  It looks at the crates built for the platforms irsync is built for,
+  listed under `targets` in `deny.toml`. A crate that only a Windows build
+  would pull in is left out. Add a platform there when irsync starts
+  building for it.
+- The licenses of every crate in `Cargo.lock`, for every platform, are
+  checked too (`deny-license-check.toml`, the `licenses-all` job). A failure
+  there shows on a pull request without blocking it, but it stops a
+  release. The two files must allow the same licenses; a test checks that.
 - The same advisory check runs daily (`advisories.yml`), so a new advisory
   against untouched code is noticed.
 - Dependency review flags a pull request that adds a vulnerable crate.

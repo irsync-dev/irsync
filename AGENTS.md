@@ -16,6 +16,18 @@ PR description, where `N` is the issue number.
 When asked to merge a PR, clean up afterwards: delete the branch on the
 remote and locally, and switch back to an up-to-date `main`.
 
+If CI fails on a PR whose branch is behind `main`, first check whether
+`main` already fixes the problem, before you try to fix it on the branch.
+If it does, pull `main` and bring the branch up to date, then push. That
+starts a fresh CI run that includes the fixes from `main`.
+
+- If nobody has reviewed the PR yet, rebase the branch onto `main` and
+  push with `git push --force-with-lease`.
+- If the PR already has review comments or approvals, merge `main` into
+  the branch instead and push normally. A rebase and force-push would mark
+  inline comments as outdated and break the reviewer's "changes since
+  your last review" view.
+
 ## Setup
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain,
@@ -57,6 +69,7 @@ with and without OpenTelemetry, every test including those five slow ones
 pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
+`licenses-all` (licenses for every platform; blocks a release only),
 `workflows` (after a change under `.github/`) and `release-build` (after a
 change to the release build or packaging; Linux only).
 

@@ -456,6 +456,7 @@ pub struct DaemonSessions {
 #[derive(Clone, Default)]
 pub struct DaemonHooks {
     pub slow_plan: Option<Duration>,
+    pub slow_place: Option<Duration>,
     pub max_inflight: Option<usize>,
     pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -733,6 +734,10 @@ pub struct SideHooks {
     /// Receiver: every finalize takes this much longer (slow storage).
     #[cfg(feature = "test-hooks")]
     pub slow_finalize: Option<std::time::Duration>,
+    /// Receiver: the main loop hears of each placed file this much later
+    /// (a connection can drop in between).
+    #[cfg(feature = "test-hooks")]
+    pub slow_place: Option<std::time::Duration>,
     /// Receiver: every local chunk copy takes this much longer (slow disk).
     #[cfg(feature = "test-hooks")]
     pub slow_local_copy: Option<std::time::Duration>,
