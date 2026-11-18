@@ -1767,7 +1767,11 @@ pub(super) async fn run(
     }
     out.finish();
     // Let the sender read SessionDone and close its side.
-    let _ = tokio::time::timeout(CLOSE_TIMEOUT, async {
+    #[cfg(feature = "test-hooks")]
+    let close_timeout = ctx.hooks.close_timeout.unwrap_or(CLOSE_TIMEOUT);
+    #[cfg(not(feature = "test-hooks"))]
+    let close_timeout = CLOSE_TIMEOUT;
+    let _ = tokio::time::timeout(close_timeout, async {
         while let Some(ev) = peer.recv().await {
             if matches!(ev, Ev::PeerEof | Ev::PeerFailed(_)) {
                 break;
