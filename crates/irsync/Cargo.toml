@@ -39,6 +39,7 @@ n0-watcher = { workspace = true, optional = true }
 noq-udp = { workspace = true, optional = true }
 ssh-key = { workspace = true }
 thiserror = { workspace = true }
+minisign-verify = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 sysinfo = { workspace = true }
