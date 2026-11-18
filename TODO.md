@@ -214,6 +214,13 @@ a failed step).
       macOS, because BusyBox tar and GNU tar before 1.27 refuse it. A
       server whose tar does not know these records may print warnings.
       Not tried on a real FreeBSD client.
+- [ ] `cargo publish` of the irsync crate would not build: the built-in
+      installer is read from `packaging/installer/irsync-installer.sh.in`,
+      outside the crate's directory, and a published crate holds only that
+      directory. When publishing matters, keep a copy of the template
+      inside `crates/irsync/`, with a test that it matches the one under
+      `packaging/`. Publishing also waits on the iroh pin in `Cargo.toml`
+      (`[patch.crates-io]`), which crates.io ignores.
 
 # Open items from the supply chain work, 2026-11-15
 
