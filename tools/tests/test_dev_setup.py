@@ -210,7 +210,9 @@ exit 0""")
         path = self.bin
         if path_has_cargo_bin:
             path = os.path.join(self.tmp, ".cargo", "bin") + ":" + path
-        r = subprocess.run([script], env={"PATH": path, "HOME": self.tmp},
+        self.scratch = os.path.join(self.tmp, "scratch")
+        os.makedirs(self.scratch, exist_ok=True)
+        r = subprocess.run([script], env={"PATH": path, "HOME": self.tmp, "TMPDIR": self.scratch},
                            capture_output=True, text=True)
         calls = ""
         if os.path.exists(log):
@@ -365,7 +367,66 @@ echo "$sha" > "$HOME/expected-hash"
 
     def test_setup_names_the_directory_missing_from_path(self):
         out, calls = self.setup(uname=LINUX, path_has_cargo_bin=False, **self.good_downloads())
-        self.assertRegex(out, r"missing +mdbook .*it is in \S+/\.cargo/bin.*\n +add \S+/\.cargo/bin to PATH\n")
+        for tool in [*self.pins(), "actionlint"]:
+            self.assertRegex(out, rf"missing +{tool} .*it is in \S+/\.cargo/bin.*\n +add \S+/\.cargo/bin to PATH\n")
+        self.assertNotIn("install", calls)
+
+    def test_setup_does_not_download_again_what_path_hides(self):
+        # Another mdbook comes first on PATH, and ~/.cargo/bin is not on it.
+        hidden = dict(uname=LINUX, path_has_cargo_bin=False, mdbook="echo mdbook v0.0.1")
+        self.setup(**hidden, **self.good_downloads())
+        out, calls = self.setup(**hidden, curl='echo "curl called" >&2; exit 99')
+        self.assertNotIn("curl called", out)
+        self.assertNotIn("download", out)
+        self.assertRegex(out, r"missing +mdbook \S+, have 0\.0\.1, .*\n +put \S+/\.cargo/bin first in PATH\n")
+        self.assertRegex(out, r"missing +actionlint .*\n +add \S+/\.cargo/bin to PATH\n")
+        self.assertNotIn("install", calls)
+
+    def test_setup_says_why_a_download_failed(self):
+        out, calls = self.setup(uname=LINUX, curl="exit 6")
+        self.assertRegex(out, r"failed +mdbook download: could not fetch https://github\.com/rust-lang/mdBook/\S+\n")
+        self.assertRegex(out, r"failed +actionlint download: could not fetch https://")
+
+    def test_setup_says_when_it_cannot_unpack(self):
+        # The right hash, but no archive behind it.
+        g = self.good_downloads()
+        out, calls = self.setup(uname=LINUX, sha256sum=g["sha256sum"],
+                                curl=g["curl"] + '\necho "not an archive" > "$out"')
+        for tool in [*self.pins(), "actionlint"]:
+            self.assertRegex(out, rf"failed +{tool} download: could not unpack")
+        self.assertNotIn("install", calls)
+
+    def test_setup_says_when_nothing_can_check_the_hash(self):
+        # setup() links the real hash programs in; keep them out.
+        real_which = shutil.which
+        self.addCleanup(setattr, shutil, "which", real_which)
+        shutil.which = lambda u, *a, **k: None if u in ("sha256sum", "shasum", "sha256") else real_which(u, *a, **k)
+        out, calls = self.setup(uname=LINUX, curl=self.good_downloads()["curl"])
+        self.assertRegex(out, r"failed +mdbook download: there is no sha256sum, shasum or sha256")
+        self.assertNotIn("refused", out)
+        self.assertNotIn("install", calls)
+
+    def test_setup_leaves_no_temporary_directory_when_stopped(self):
+        out, calls = self.setup(uname=LINUX, curl="kill -TERM $PPID; exit 1")
+        self.assertNotIn("download cargo-deny", out)  # it stopped at the first download
+        self.assertEqual(os.listdir(self.scratch), [])
+
+    def test_setup_goes_on_when_cargo_cannot_build_a_tool(self):
+        out, calls = self.setup(uname=RISCV, curl="exit 99", cargo='[ "$1" = install ] && exit 1')
+        for crate in self.pins():
+            self.assertRegex(out, rf"missing +{crate} \S+, .*\n +cargo install --locked {crate} ")
+        self.assertIn("This checkout", out)
+
+    def test_setup_does_not_say_compiling_when_rust_is_not_ready(self):
+        old_rust = """case "$1 $2" in
+  "run "*) echo "rustc 1.80.0 (abc 2024-07-21)" ;;
+  "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
+  *) echo "rustup 1.29.3" ;;
+esac"""
+        out, calls = self.setup_in_copy(nextest="9.9.9", uname=LINUX, rustup=old_rust, **self.good_downloads())
+        self.assertRegex(out, r"note +cargo-nextest: the hashes are for \S+, CI uses 9\.9\.9; "
+                              r"cargo has to build it, and Rust is not ready\n")
+        self.assertNotIn("; compiling", out)
         self.assertNotIn("install", calls)
 
     def test_setup_says_when_another_copy_comes_first_on_path(self):

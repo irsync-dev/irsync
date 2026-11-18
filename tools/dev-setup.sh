@@ -7,12 +7,12 @@
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
 # and cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five are
 # downloaded from their release pages and checked against SHA-256s kept
-# here; cargo builds one only where it has no binary for the machine. They
-# are held to the versions CI uses: another version is replaced. Points git
-# at the repo's hooks. Checks the rest, which comes from the system package
-# manager, and says which package to install (apt, brew, or pkg on FreeBSD).
-# Safe to run again. With all of it in place, tools/ci.sh runs the CI checks
-# here.
+# here; cargo builds one only where it has no binary for the machine, or the
+# hashes here are for another version than CI's. They are held to the
+# versions CI uses: another version is replaced. Points git at the repo's
+# hooks. Checks the rest, which comes from the system package manager, and
+# says which package to install (apt, brew, or pkg on FreeBSD). Safe to run
+# again. With all of it in place, tools/ci.sh runs the CI checks here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
 # something required is missing, else 0. Missing optional tools, and ones
@@ -161,7 +161,17 @@ fi
 
 # The first x.y.z in the first line a version command prints, or nothing.
 tool_version() {
-    { $1 2>/dev/null || true; } | sed -n '1s/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+    { $1 2>/dev/null || true; } | first_version
+}
+first_version() {
+    sed -n '1s/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+}
+# The same for a program in $cargo_bin, whatever PATH finds.
+#   version_in_cargo_bin PROGRAM ARGUMENT...
+version_in_cargo_bin() {
+    local bin=$cargo_bin/$1
+    shift
+    { "$bin" "$@" 2>/dev/null || true; } | first_version
 }
 
 sha256_of() {
@@ -175,32 +185,53 @@ sha256_of() {
     fi | awk '{print $1}'
 }
 
+# The directory a download is unpacked in. It goes away when the script
+# ends, also when it is stopped half way.
+fetch_dir=""
+trap '[ -z "$fetch_dir" ] || rm -rf "$fetch_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # fetch_tool NAME VERSION PLAT URL SHA256 MEMBER
 # Downloads URL, checks it against SHA256 and puts MEMBER (a path inside the
 # archive, .tar.gz or .tar.xz) into $cargo_bin under its base name. Nothing
-# else from the archive lands there. Says what it downloads, and why it
-# refuses a download with another hash.
+# else from the archive lands there. Says what it downloads, and why when
+# it fails or refuses a download with another hash.
 # Returns 0 installed, 1 could not download or unpack, 2 refused.
 fetch_tool() {
-    local name=$1 version=$2 plat=$3 url=$4 want=$5 member=$6 d got rc=0
-    have curl && have tar || return 1
-    d=$(mktemp -d) || return 1
+    local name=$1 version=$2 plat=$3 url=$4 want=$5 member=$6 d got hint="" rc=0
+    fetch_failed() { printf '  failed   %s download: %s\n' "$name" "$1"; }
+    if ! have curl || ! have tar; then
+        fetch_failed "it needs curl and tar"
+        return 1
+    fi
+    if ! have sha256sum && ! have shasum && ! have sha256; then
+        fetch_failed "there is no sha256sum, shasum or sha256 to check it with"
+        return 1
+    fi
+    fetch_dir=$(mktemp -d) || return 1
+    d=$fetch_dir
     printf '  running  download %s %s (%s)\n' "$name" "$version" "$plat"
     if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/archive" "$url"; then
         got=$(sha256_of "$d/archive")
         if [ "$got" != "$want" ]; then
             printf '  refused  %s download: SHA-256 is %s, expected %s\n' "$name" "$got" "$want"
             rc=2
-        else
-            # tar finds out by itself whether it is gzip or xz.
-            mkdir -p "$d/x" "$cargo_bin" &&
-                tar -xf "$d/archive" -C "$d/x" "$member" &&
-                mv -f "$d/x/$member" "$cargo_bin/${member##*/}" || rc=1
+        # tar finds out by itself whether it is gzip or xz.
+        elif ! { mkdir -p "$d/x" "$cargo_bin" &&
+            tar -xf "$d/archive" -C "$d/x" "$member" &&
+            mv -f "$d/x/$member" "$cargo_bin/${member##*/}"; }; then
+            # GNU tar runs xz as a program.
+            case $url in *.tar.xz) have xz || hint="; is xz installed?" ;; esac
+            fetch_failed "could not unpack it into $cargo_bin$hint"
+            rc=1
         fi
     else
+        fetch_failed "could not fetch $url"
         rc=1
     fi
     rm -rf "$d"
+    fetch_dir=""
     return $rc
 }
 
@@ -278,9 +309,10 @@ tool_archive() {
 # another version: it is replaced. The release binary is downloaded where
 # there is one for this machine. A download that fails or is refused is
 # reported; it is never made up for by compiling. Only where there is no
-# binary, or the hashes above are for another version, cargo builds it.
+# binary, or the hashes above are for another version, cargo builds it. A
+# build that fails is reported, and the script goes on.
 cargo_tool() {
-    local crate=$1 pin=$2 cmd=$3 why=$4 have_v target want="" for_v archive fetched=false
+    local crate=$1 pin=$2 cmd=$3 why=$4 have_v target want="" for_v archive bin there_v fetched=false
     if [ -z "$pin" ]; then
         warn "$crate: no pinned version found, skipped"
         return
@@ -294,7 +326,11 @@ cargo_tool() {
     have_v=$(tool_version "$cmd")
     if [ -n "$want" ] && [ "$for_v" != "$pin" ]; then
         if [ "$have_v" != "$pin" ] && ! $check_only; then
-            printf '  note     %s: the hashes are for %s, CI uses %s; compiling\n' "$crate" "$for_v" "$pin"
+            if $rust_ready; then
+                printf '  note     %s: the hashes are for %s, CI uses %s; compiling\n' "$crate" "$for_v" "$pin"
+            else
+                printf '  note     %s: the hashes are for %s, CI uses %s; cargo has to build it, and Rust is not ready\n' "$crate" "$for_v" "$pin"
+            fi
         fi
         want=""
     fi
@@ -302,11 +338,20 @@ cargo_tool() {
     if [ "$have_v" != "$pin" ] && ! $check_only; then
         if [ -n "$want" ]; then
             archive=$(tool_archive "$crate" "$pin" "$target")
-            if fetch_tool "$crate" "$pin" "$target" "${archive% *}" "$want" "${archive#* }"; then
+            bin=${archive#* }
+            bin=${bin##*/}
+            case $crate in
+                cargo-nextest | cargo-deny) there_v=$(version_in_cargo_bin "$bin" "${crate#cargo-}" --version) ;;
+                *) there_v=$(version_in_cargo_bin "$bin" --version) ;;
+            esac
+            # Already downloaded, but PATH does not lead to it: say so below,
+            # do not download it again.
+            if [ "$there_v" = "$pin" ] ||
+                fetch_tool "$crate" "$pin" "$target" "${archive% *}" "$want" "${archive#* }"; then
                 fetched=true
             fi
         elif $rust_ready; then
-            run $compile
+            run $compile || true
         fi
         have_v=$(tool_version "$cmd")
     fi
@@ -364,14 +409,22 @@ install_actionlint() {
         "$want" actionlint || return 1
 }
 actionlint_v=$(tool_version "actionlint -version")
+actionlint_fetched=false
 if [ "$actionlint_v" != "$actionlint_pin" ] && ! $check_only; then
-    install_actionlint || true
+    # As for the cargo tools: not again when it is there and PATH hides it.
+    if [ "$(version_in_cargo_bin actionlint -version)" = "$actionlint_pin" ] || install_actionlint; then
+        actionlint_fetched=true
+    fi
     actionlint_v=$(tool_version "actionlint -version")
 fi
-if [ -z "$actionlint_v" ]; then
-    warn "actionlint $actionlint_pin, for tools/ci.sh workflows" "tools/dev-setup.sh"
-elif [ "$actionlint_v" = "$actionlint_pin" ]; then
+if [ "$actionlint_v" = "$actionlint_pin" ]; then
     ok "actionlint $actionlint_v"
+elif $actionlint_fetched && [ -z "$actionlint_v" ]; then
+    warn "actionlint $actionlint_pin, for tools/ci.sh workflows; it is in $cargo_bin" "add $cargo_bin to PATH"
+elif $actionlint_fetched; then
+    warn "actionlint $actionlint_pin, have $actionlint_v, for tools/ci.sh workflows; $actionlint_pin is in $cargo_bin" "put $cargo_bin first in PATH"
+elif [ -z "$actionlint_v" ]; then
+    warn "actionlint $actionlint_pin, for tools/ci.sh workflows" "tools/dev-setup.sh"
 else
     warn "actionlint $actionlint_pin, have $actionlint_v, for tools/ci.sh workflows" "tools/dev-setup.sh"
 fi
