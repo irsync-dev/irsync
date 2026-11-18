@@ -1336,7 +1336,13 @@ async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
             .unwrap_or_else(|e| panic!("{e:#}"));
         chmod_all(&base, 0o750, 0o600);
         let before = h.daemon.sessions.load(SeqCst);
-        h.daemon.hooks.lock().unwrap().close_quiet = Some(Duration::from_secs(2));
+        {
+            let mut d = h.daemon.hooks.lock().unwrap();
+            d.close_quiet = Some(Duration::from_secs(2));
+            // The daemon first gives the client a fixed 10 s to close its
+            // side; the quiet time is what this test is about.
+            d.close_timeout = Some(Duration::from_secs(1));
+        }
         let mut local = h.local_side();
         local.hooks.slow_peer_events = Some(Duration::from_secs(1));
         let mut opts = archive_opts();
@@ -1378,6 +1384,8 @@ async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
         {
             let mut d = h.daemon.hooks.lock().unwrap();
             d.close_quiet = Some(Duration::from_secs(2));
+            // As above: not the fixed 10 s for the client to close.
+            d.close_timeout = Some(Duration::from_secs(1));
             d.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
                 (StreamKind::Control, m @ Msg::Done(_)) => {
                     let tail = Msg::Itemized(irsync_proto::v1::Itemized {

@@ -468,6 +468,7 @@ pub struct DaemonHooks {
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub tamper_frames: Option<FrameHook>,
     pub close_quiet: Option<Duration>,
+    pub close_timeout: Option<Duration>,
     pub stop_reading_after_done: bool,
     pub list_budget: Option<u64>,
     pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -706,6 +707,10 @@ pub struct SideHooks {
     /// nothing moves, instead of the default.
     #[cfg(feature = "test-hooks")]
     pub close_quiet: Option<std::time::Duration>,
+    /// Receiver: how long it waits for the sender to close its end after
+    /// `SessionDone`, instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub close_timeout: Option<std::time::Duration>,
     /// Both roles: the control reader stops reading once it has passed on
     /// the peer's `SessionDone`, keeping the stream open (a peer that does
     /// not read).
