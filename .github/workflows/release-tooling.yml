@@ -69,7 +69,7 @@ jobs:
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
 
       - name: Check release.yml matches dist-workspace.toml
-        run: dist generate --check
+        run: .github/scripts/release-yml.sh check
 
   actionlint:
     runs-on: ubuntu-latest

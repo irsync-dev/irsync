@@ -162,7 +162,7 @@ class CiWorkflowTests(unittest.TestCase):
         # commands are in tools/ci.sh, which ci.yml runs.
         self.ci_script_runs("workflows", "python3 -m unittest discover -s .github/scripts/tests")
         self.ci_script_runs("workflows", "actionlint -shellcheck= -pyflakes=")
-        self.ci_script_runs("release-build", "dist generate --check")
+        self.ci_script_runs("release-build", ".github/scripts/release-yml.sh check")
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
@@ -226,6 +226,12 @@ class AttestationTests(unittest.TestCase):
 
     def test_dist_attestations_on(self):
         self.assertIs(dist_config()["dist"].get("github-attestations"), True)
+
+    def test_release_creates_a_draft(self):
+        # A maintainer signs the files, then publishes the draft by hand.
+        lines = [l for l in read("release.yml").splitlines() if "gh release create" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("--draft", lines[0])
 
     def test_release_yml_attests(self):
         wf = load_workflows()["release.yml"]
