@@ -33,7 +33,14 @@ const SHORTER: u32 = 1;
 /// the two sides as the long paths fill 8 MiB, so the tests keep their
 /// file counts and timing (and on Linux run with the defaults).
 async fn long_path_harness() -> Harness {
-    with_stream_window(8 * 1024 * 1024 / SHORTER, Harness::new()).await
+    small_window_harness(1).await
+}
+
+/// As [`long_path_harness`], with streams that buffer `div` times less
+/// again. A test that slows one side down per entry runs for as long as
+/// it has entries; with smaller buffers, fewer entries fill them.
+async fn small_window_harness(div: u32) -> Harness {
+    with_stream_window(8 * 1024 * 1024 / SHORTER / div, Harness::new()).await
 }
 
 async fn within60<F: std::future::Future>(f: F) -> F::Output {
@@ -232,13 +239,15 @@ fn many_files(root: &Path, n: u32) {
 /// planner's queue must never hold more than its capacity.
 async fn slow_planner(flow: Flow) {
     within120(async {
-        let h = long_path_harness().await;
-        many_files(h.src(flow), 5000);
-        // The transport buffers a stream's first 8 MiB, so the walk only
-        // waits once the listing outgrows that: 4000 symlinks with long
-        // targets (14 MB of listing) alongside the files. (On macOS the
-        // targets and the buffer are a fifth of that: see `SHORTER`.)
-        for i in 0..4000 {
+        // The transport buffers the start of a stream (0.8 MiB of it
+        // here), so the walk only waits once the listing outgrows that
+        // and the planner's queue: 2000 symlinks with long targets (7 MB
+        // of listing) alongside the files. (On macOS the targets and the
+        // buffer are a fifth of that: see `SHORTER`.) The run takes about
+        // 1 ms for each of the 4000 entries, so no more of them than that.
+        let h = small_window_harness(10).await;
+        many_files(h.src(flow), 2000);
+        for i in 0..2000 {
             let target = format!("{}/t{i:05}", "x".repeat(3500 / SHORTER as usize));
             let link = h.src(flow).join(format!("d{:02}/l{i:05}", i % 50));
             std::os::unix::fs::symlink(target, link).unwrap();
@@ -269,7 +278,7 @@ async fn slow_planner(flow: Flow) {
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        assert_eq!(out.files_transferred, 5000);
+        assert_eq!(out.files_transferred, 2000);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
         let peak = peak.load(SeqCst);
         assert!(peak <= LISTING_QUEUE, "planner queue peaked at {peak}");
@@ -420,12 +429,12 @@ async fn a_late_planned_completion_never_loses_the_answer() {
 /// The writer's budget for paced control frames (`OUT_BUDGET`).
 const OUT_BUDGET: usize = 4 * MIB;
 
-/// 20 000 one-byte files in 2 000 directories, all below fifteen nested
+/// 12 000 one-byte files in 1 200 directories, all below fifteen nested
 /// directories with 240-byte names, so each path is about 3600 bytes long
 /// (on macOS three, a fifth as long: see [`SHORTER`] and
-/// [`long_path_harness`]). Returns the directory that holds the 2 000.
+/// [`long_path_harness`]). Returns the directory that holds the 1 200.
 fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
-    deep_tree(root, 2000)
+    deep_tree(root, 1200)
 }
 
 /// `dirs` directories of ten one-byte files each, below fifteen nested
@@ -458,20 +467,23 @@ fn chmod_all(base: &Path, dirs: u32, files: u32) {
     }
 }
 
-/// A metadata-only change to every one of 20 000 entries, pushed with `-i`:
+/// A metadata-only change to every one of 13 200 entries, pushed with `-i`:
 /// the receiving daemon's planner sends one `Itemized` per entry, none of
 /// which takes an in-flight slot. `--bwlimit` paces data streams only, and
 /// a metadata-only push has none, so the slow link is the client's main
 /// loop taking 0.5 ms per peer event: once the client's queue and the
-/// stream's 8 MiB window are full, the daemon's writer stalls. The ~80 MB
-/// of `Itemized` frames must then wait in the planner, not in the queue.
-/// (Long paths keep the backlog the client still has to read at the end,
-/// which the daemon waits for only so long, to a few thousand frames.)
+/// stream's window (2 MiB here) are full, the daemon's writer stalls. The
+/// ~48 MB of `Itemized` frames must then wait in the planner, not in the
+/// queue. (Long paths keep the backlog the client still has to read at the
+/// end, which the daemon waits for only so long, to a few thousand frames.)
+/// The client's sleeps are most of the run, so the tree is no larger than
+/// fills the budget with room to spare: on macOS, where the frames are a
+/// fifth as long, 400 directories no longer half-fill it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
     within240(async {
         let flow = Flow::Push;
-        let h = long_path_harness().await;
+        let h = small_window_harness(4).await;
         let base = wide_deep_tree(h.src(flow));
         h.run(&archive_opts(), flow)
             .await
