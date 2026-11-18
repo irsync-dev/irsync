@@ -39,8 +39,8 @@ on:
 permissions:
   contents: read
 
-# The same group as release-resume.yml for this tag, so the resume run the
-# gate starts waits for the gate run to end.
+# The same group as release-resume.yml for this tag, so a gate run and a
+# resume run for the same version never run at the same time.
 concurrency:
   group: release-v${{ inputs.version }}
   cancel-in-progress: false

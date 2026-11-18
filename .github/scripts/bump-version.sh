@@ -11,6 +11,7 @@
 # rule). That branch only takes changes through a pull request, so the script
 # does not push and does not tag: open the pull request, merge it once "CI
 # result" passes, then start the release gate on the base branch. The gate
+# ends at a draft release; sign-release.sh signs and publishes it, which
 # creates the tag. The script prints those commands at the end.
 #
 # Run it anywhere in the repo, with no uncommitted changes to tracked files.
@@ -91,4 +92,6 @@ Next:
   # once "CI result" passes:
   gh pr merge --merge
   gh workflow run release-gate.yml --ref $base -f version=$version
+  # once the gate has made the draft:
+  .github/scripts/sign-release.sh $version
 EOF

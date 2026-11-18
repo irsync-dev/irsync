@@ -2,8 +2,9 @@
 # Usage: stray-tags.sh
 #
 # Finds stray release tags: v* tags that have no GitHub Release (draft or
-# published). The release workflow creates the tag last, together with the
-# release, so a v* tag without one can only have been pushed by hand.
+# published). A release gets its tag only when its draft is published
+# (sign-release.sh), so a v* tag without a release can only have been pushed
+# by hand.
 # Prints one stray tag per line on stdout (sorted by version) and exits 1,
 # with an ::error:: line on stderr. Prints nothing and exits 0 if there are none.
 #

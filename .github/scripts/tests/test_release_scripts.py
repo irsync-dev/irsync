@@ -174,6 +174,9 @@ class BumpVersionTests(unittest.TestCase):
         self.assertIn("gh pr create --fill --base main", r.stdout)
         self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0-beta.1",
                       r.stdout)
+        # The gate ends at a draft; signing it is the last step.
+        self.assertEqual(r.stdout.rstrip().splitlines()[-1].strip(),
+                         ".github/scripts/sign-release.sh 1.3.0-beta.1")
         self.assertNotIn("git tag", r.stdout)
         self.assertNotIn("git push origin main", r.stdout)
 
