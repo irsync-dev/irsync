@@ -141,9 +141,10 @@ release starts. It does this, in order:
    `irsync(1)`, `fileset(1)` and `irsync.toml(5)`, built from the book with
    pandoc. It creates a **draft** GitHub Release with the tarballs,
    checksums, our installer `irsync-installer.sh` and the Homebrew formula,
-   each with an attestation. (The signatures added later have none.) A draft is not public and has no tag. It still
-   takes new files. The gate then deletes the `pinned/` branch and prints
-   the command that signs and publishes the draft. It ends there.
+   each with an attestation. (The signatures added later have none.) A
+   draft is not public and has no tag. It still takes new files. The gate
+   then deletes the `pinned/` branch and prints the command that signs and
+   publishes the draft. It ends there.
 
 You then run `.github/scripts/sign-release.sh`, on your own computer (see
 [Signing the release](#signing-the-release)). It signs the files and
@@ -300,12 +301,12 @@ Two traps:
 ### Finishing a release with the resume workflow
 
 `.github/workflows/release-resume.yml` is the second half of every release:
-`sign-release.sh` starts it on the new tag. You start it yourself to finish a release
-that already exists but whose resume run failed or never ran. It runs the
-same branch, packages, Homebrew and notes steps. It never builds or
-publishes a release. Start it **on the tag**, so the `release` environment opens. In the
-browser, go to Actions, Release resume, Run workflow, and pick the tag under
-"Use workflow from". Or run:
+`sign-release.sh` starts it on the new tag. You start it yourself to
+finish a release that already exists but whose resume run failed or never
+ran. It runs the same branch, packages, Homebrew and notes steps. It never
+builds or publishes a release. Start it **on the tag**, so the `release`
+environment opens. In the browser, go to Actions, Release resume, Run
+workflow, and pick the tag under "Use workflow from". Or run:
 
 ```sh
 gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
@@ -376,7 +377,8 @@ only uploads files to the draft.
   (`gh release delete vX.Y.Z`) and start the gate again with the same
   version. It deletes a leftover draft anyway.
 - The release is published, but the resume run did not start: start it by
-  hand (see [Finishing a release with the resume workflow](#finishing-a-release-with-the-resume-workflow)).
+  hand (see
+  [Finishing a release with the resume workflow](#finishing-a-release-with-the-resume-workflow)).
   Never run the script on a published release: it refuses.
 
 Once the release is published, its files can't change. A wrong signature
@@ -625,10 +627,10 @@ tag permanent once it exists:
 | Restrict deletions | Deleting a tag |
 | Block force pushes | Overwriting a tag with `git push --force` |
 
-Nobody can bypass it, admins included. Creating tags is allowed, and publishing
-a draft creates one, so the ruleset doesn't get in the way. A stable release still publishes nothing
-beyond the GitHub Release until a maintainer approves the `release`
-environment.
+Nobody can bypass it, admins included. Creating tags is allowed, and
+publishing a draft creates one, so the ruleset doesn't get in the way. A
+stable release still publishes nothing beyond the GitHub Release until a
+maintainer approves the `release` environment.
 
 A tag pushed by hand has no GitHub Release. It is a stray tag. It can't be
 deleted, and it uses up its number. The gate checks for stray tags and

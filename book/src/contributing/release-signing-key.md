@@ -154,7 +154,8 @@ publishes it. Unplug the stick when it is done.
 So that releases don't depend on one person, another maintainer can make
 their own key with steps 1 to 5, on their own sticks and with their own
 password. Add their public key to `release-keys.pub` below the first one,
-both lines of it. A release signed with either key passes.
+both lines of it. A release signed with either key passes. Also add the
+key to `README.md` and `book/src/how-to/verify-a-download.md`.
 
 A new key can sign from the first release that lists it. An irsync that is
 already installed only checks downloads of its own version, which were
