@@ -696,6 +696,21 @@ async fn connect_for(
 /// is checked over ssh.
 const SSH_HOST_FIRST_DIAL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The bound on each dial until the server has answered once: `usual`
+/// (`None`: iroh's own handshake timeout, about 60 s). A test-hooks build
+/// takes `IRSYNC_TEST_DIAL_SECS` seconds instead, when that is set, so a
+/// test of a host that does not answer need not wait the real time out.
+fn first_dial_limit(usual: Option<std::time::Duration>) -> Option<std::time::Duration> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(secs) = std::env::var("IRSYNC_TEST_DIAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    usual
+}
+
 /// What setting a host up over ssh did, then the service how-to.
 fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     for line in irsync::ssh::onboard::summary(o) {
@@ -874,18 +889,27 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         ..Hello::default()
     };
     let client = c.endpoint.id();
-    let conn = c
-        .endpoint
-        .connect(c.target.clone(), irsync_proto::ALPN)
-        .await
-        .map_err(|e| {
-            let err = anyhow::anyhow!(describe_dial(&c.target.id, &e));
-            // A host set up over ssh is not one whose ID was copied by hand.
-            match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
-                Some(_) => err,
-                None => with_wrong_id_hint(err),
-            }
-        })?;
+    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
+    // No limit of its own, except in a test (see `first_dial_limit`).
+    let dialled = match first_dial_limit(None) {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
+            Err(_) => Err(format!(
+                "connecting to {}: no answer within {} s",
+                c.target.id,
+                limit.as_secs()
+            )),
+        },
+        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
+    };
+    let conn = dialled.map_err(|msg| {
+        let err = anyhow::anyhow!(msg);
+        // A host set up over ssh is not one whose ID was copied by hand.
+        match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
+            Some(_) => err,
+            None => with_wrong_id_hint(err),
+        }
+    })?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
     let entries = list_exports(&conn, hello)
         .await
@@ -1000,6 +1024,7 @@ async fn sync(
                 .or(settings.client.dial_retries)
                 .unwrap_or(ReconnectOpts::default().dial_retries),
             source_index: index,
+            first_dial_timeout: first_dial_limit(None),
             ..ReconnectOpts::default()
         };
         sessions += 1;
@@ -1017,7 +1042,7 @@ async fn sync(
             let ropts = if ssh_host && !rechecked {
                 ReconnectOpts {
                     dial_retries: cli_opts.dial_retries.unwrap_or(0),
-                    first_dial_timeout: Some(SSH_HOST_FIRST_DIAL),
+                    first_dial_timeout: first_dial_limit(Some(SSH_HOST_FIRST_DIAL)),
                     ..ropts
                 }
             } else {
