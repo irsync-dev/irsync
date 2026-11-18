@@ -41,8 +41,12 @@ where there is no binary for the platform.
    tampered download. Cost: 14 hash lines to replace by hand when versions
    move.
 2. **cargo-binstall.** Much less script, and it falls back to compiling by
-   itself. Rejected: one more tool to install and trust, and it does not
-   check downloads against hashes we hold.
+   itself. It can verify minisign signatures, but only for a tool whose
+   own `Cargo.toml` names a signing key
+   (`[package.metadata.binstall.signing]`). None of the four does at the
+   pinned versions, so for these tools it would check nothing beyond
+   HTTPS. Rejected for that, and because it is one more tool to install
+   and trust. Worth another look if the tools start signing.
 3. **Keep compiling, with a shared build cache.** Rejected: still compiles
    on a fresh machine, which is the complaint.
 
