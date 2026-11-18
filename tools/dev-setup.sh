@@ -162,6 +162,46 @@ tool_version() {
     { $1 2>/dev/null || true; } | sed -n '1s/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
 }
 
+sha256_of() {
+    # sha256 is FreeBSD's own; -q prints only the digest.
+    if have sha256sum; then
+        sha256sum "$1"
+    elif have shasum; then
+        shasum -a 256 "$1"
+    else
+        sha256 -q "$1"
+    fi | awk '{print $1}'
+}
+
+# fetch_tool NAME VERSION PLAT URL SHA256 MEMBER
+# Downloads URL, checks it against SHA256 and puts MEMBER (a path inside the
+# archive, .tar.gz or .tar.xz) into $cargo_bin under its base name. Nothing
+# else from the archive lands there. Says what it downloads, and why it
+# refuses a download with another hash.
+# Returns 0 installed, 1 could not download or unpack, 2 refused.
+fetch_tool() {
+    local name=$1 version=$2 plat=$3 url=$4 want=$5 member=$6 d got rc=0
+    have curl && have tar || return 1
+    d=$(mktemp -d) || return 1
+    printf '  running  download %s %s (%s)\n' "$name" "$version" "$plat"
+    if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/archive" "$url"; then
+        got=$(sha256_of "$d/archive")
+        if [ "$got" != "$want" ]; then
+            printf '  refused  %s download: SHA-256 is %s, expected %s\n' "$name" "$got" "$want"
+            rc=2
+        else
+            # tar finds out by itself whether it is gzip or xz.
+            mkdir -p "$d/x" "$cargo_bin" &&
+                tar -xf "$d/archive" -C "$d/x" "$member" &&
+                mv -f "$d/x/$member" "$cargo_bin/${member##*/}" || rc=1
+        fi
+    else
+        rc=1
+    fi
+    rm -rf "$d"
+    return $rc
+}
+
 # A cargo-installed tool at the version CI pins.
 #   cargo_tool CRATE PINNED-VERSION "VERSION-COMMAND" WHAT-FOR [any]
 # A missing tool is installed at the pinned version, and so is one at
@@ -219,19 +259,9 @@ actionlint_sha256() {
         freebsd_amd64) echo f6eec0e5efd17183a954f0d88280885b7a58f39808050cdfcd7f068fc1734bc8 ;;
     esac
 }
-sha256_of() {
-    # sha256 is FreeBSD's own; -q prints only the digest.
-    if have sha256sum; then
-        sha256sum "$1"
-    elif have shasum; then
-        shasum -a 256 "$1"
-    else
-        sha256 -q "$1"
-    fi | awk '{print $1}'
-}
-# Prints nothing and returns 1 if it cannot install; the caller reports.
+# Returns 1 if it cannot install; the caller reports.
 install_actionlint() {
-    local plat want d got rc=0
+    local plat want
     case $(uname -m) in
         x86_64 | amd64) plat=amd64 ;; # FreeBSD says amd64
         aarch64 | arm64) plat=arm64 ;;
@@ -239,23 +269,10 @@ install_actionlint() {
     esac
     plat=$(echo "$os" | tr '[:upper:]' '[:lower:]')_$plat
     want=$(actionlint_sha256 "$plat")
-    [ -n "$want" ] && have curl && have tar || return 1
-    d=$(mktemp -d) || return 1
-    printf '  running  download actionlint %s (%s)\n' "$actionlint_pin" "$plat"
-    if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/a.tar.gz" \
-        "https://github.com/rhysd/actionlint/releases/download/v$actionlint_pin/actionlint_${actionlint_pin}_$plat.tar.gz"; then
-        got=$(sha256_of "$d/a.tar.gz")
-        if [ "$got" = "$want" ]; then
-            mkdir -p "$cargo_bin" && tar -xzf "$d/a.tar.gz" -C "$cargo_bin" actionlint || rc=1
-        else
-            printf '  refused  actionlint download: SHA-256 is %s, expected %s\n' "$got" "$want"
-            rc=1
-        fi
-    else
-        rc=1
-    fi
-    rm -rf "$d"
-    return $rc
+    [ -n "$want" ] || return 1
+    fetch_tool actionlint "$actionlint_pin" "$plat" \
+        "https://github.com/rhysd/actionlint/releases/download/v$actionlint_pin/actionlint_${actionlint_pin}_$plat.tar.gz" \
+        "$want" actionlint || return 1
 }
 actionlint_v=$(tool_version "actionlint -version")
 if [ "$actionlint_v" != "$actionlint_pin" ] && ! $check_only; then
