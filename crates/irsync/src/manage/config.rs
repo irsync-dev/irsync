@@ -57,7 +57,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["hosts", _, "relay"] => Url,
         ["hosts", _, "relay_mode" | "congestion" | "ssh"] => Str,
         ["hosts", _, "address"] => AddrArray,
-        ["hosts", _, "ssh_also"] => StrArray,
+        ["hosts", _, "ssh_aliases"] => StrArray,
         ["hosts", _, "parallel"] => Int,
         ["hosts", _, "reconnect"] => Duration,
         ["hosts", _, "dial_retries"] => Int,

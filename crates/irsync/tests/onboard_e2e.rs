@@ -375,7 +375,7 @@ fn ip_address_is_saved_under_the_server_name() {
     assert_eq!(cfg["hosts"].as_table().unwrap().len(), 1, "{cfg}");
     let h = &cfg["hosts"]["myserver"];
     assert_eq!(h["ssh"].as_str(), Some("192.168.1.5"), "{cfg}");
-    assert_eq!(h["ssh_also"][0].as_str(), Some("u@192.168.1.5"), "{cfg}");
+    assert_eq!(h["ssh_aliases"][0].as_str(), Some("u@192.168.1.5"), "{cfg}");
     // From here on neither spelling needs ssh.
     let calls = w.ssh_calls();
     for target in [&other, &format!("192.168.1.5:{}", dest.display())] {
@@ -384,7 +384,7 @@ fn ip_address_is_saved_under_the_server_name() {
     }
     assert_eq!(w.ssh_calls(), calls);
     let cfg: toml::Table = w.client_config().parse().unwrap();
-    let also = cfg["hosts"]["myserver"]["ssh_also"].as_array().unwrap();
+    let also = cfg["hosts"]["myserver"]["ssh_aliases"].as_array().unwrap();
     assert_eq!(also.len(), 1, "{cfg}");
 }
 
@@ -420,7 +420,7 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
     }
     // The address is remembered beside the name: typed again, no ssh.
     assert_eq!(
-        cfg["hosts"]["myserver"]["ssh_also"][0].as_str(),
+        cfg["hosts"]["myserver"]["ssh_aliases"][0].as_str(),
         Some("192.168.1.5"),
         "{cfg}"
     );

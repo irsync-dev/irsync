@@ -31,7 +31,7 @@ pub struct SavedAlias {
     pub existed: bool,
     /// The `ssh` value it had and keeps, when this run reached the host by
     /// an address: a name, or another spelling of that address. The
-    /// address typed goes into `ssh_also`.
+    /// address typed goes into `ssh_aliases`.
     pub kept_ssh: Option<String>,
 }
 
@@ -226,7 +226,7 @@ pub fn onboard(
             .with_context(|| format!("saving host alias {alias}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
-            manage::hosts::host_also_ssh(&mut doc, &alias, dest);
+            manage::hosts::host_add_ssh_alias(&mut doc, &alias, dest);
         }
         saved.push(SavedAlias {
             alias,
