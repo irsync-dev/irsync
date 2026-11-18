@@ -68,7 +68,7 @@ differ, the code is what shipped.
    `# vX.Y.Z` comment, and Dependabot updates them. `release.yml` gets its
    pins from `[dist.github-action-commits]` in `dist-workspace.toml`
    (dist can't write the comment), and Dependabot leaves it alone, because
-   an edit there would fail `dist generate --check`. Cost if wrong: the
+   an edit there would fail `.github/scripts/release-yml.sh check`. Cost if wrong: the
    dist table is bumped by hand.
 
 9. **cargo-deny fails on any advisory; exceptions need a reason.**

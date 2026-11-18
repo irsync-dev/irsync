@@ -12,6 +12,7 @@ SCRIPTS = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(SCRIPTS))
 CHECK = os.path.join(SCRIPTS, "check-release-tag.sh")
 NOTES = os.path.join(SCRIPTS, "release-notes.sh")
+RELEASE_YML = os.path.join(SCRIPTS, "release-yml.sh")
 RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
@@ -707,6 +708,99 @@ class FormulaManPagesTests(unittest.TestCase):
         self.run_script()
         r = subprocess.run(["ruby", "-c", self.path], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class ReleaseYmlTests(unittest.TestCase):
+    """release-yml.sh, in a temp git repo, with a fake dist that writes a canned workflow."""
+    CONFIG = '[dist]\nci = "github"\nallow-dirty = ["ci"]\n'
+    OLD = "old release.yml\n"
+    CREATE = ('          gh release create "$TAG" --title "$T" --notes-file n.txt'
+              ' artifacts/*\n')
+    DRAFT = CREATE.replace(" artifacts/*", " --draft artifacts/*")
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="relyml-")
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", self.repo], check=True)
+        os.makedirs(os.path.join(self.repo, ".github", "workflows"))
+        self.write_repo("dist-workspace.toml", self.CONFIG)
+        self.write_repo(".github/workflows/release.yml", self.OLD)
+        bindir = os.path.join(self.repo, "fakebin")
+        os.mkdir(bindir)
+        # The fake dist insists that allow-dirty is gone, as dist needs it to be.
+        with open(os.path.join(bindir, "dist"), "w") as f:
+            f.write('#!/bin/sh\n'
+                    '[ "$1 $2" = "generate --mode=ci" ] || exit 2\n'
+                    '! grep -q allow-dirty dist-workspace.toml || exit 3\n'
+                    'printf "%s" "$FAKE_WORKFLOW" > .github/workflows/release.yml\n')
+        os.chmod(os.path.join(bindir, "dist"), 0o755)
+        self.bindir = bindir
+
+    def write_repo(self, name, text):
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+
+    def read_repo(self, name):
+        with open(os.path.join(self.repo, name)) as f:
+            return f.read()
+
+    def run_script(self, mode, create_lines=1):
+        workflow = "jobs:\n" + self.CREATE * create_lines + "done\n"
+        env = dict(os.environ, PATH=self.bindir + os.pathsep + os.environ["PATH"],
+                   FAKE_WORKFLOW=workflow)
+        return subprocess.run([RELEASE_YML, mode], cwd=self.repo, env=env,
+                              capture_output=True, text=True)
+
+    def assert_untouched(self):
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"), self.OLD)
+
+    def test_write_adds_draft_before_artifacts(self):
+        r = self.run_script("write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"),
+                         "jobs:\n" + self.DRAFT + "done\n")
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+
+    def test_no_create_line_fails(self):
+        r = self.run_script("write", create_lines=0)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("found 0", r.stderr)
+        self.assert_untouched()
+
+    def test_two_create_lines_fail(self):
+        r = self.run_script("write", create_lines=2)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("found 2", r.stderr)
+        self.assert_untouched()
+
+    def test_check_fails_with_a_diff(self):
+        r = self.run_script("check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("-old release.yml", r.stdout)
+        self.assertIn("+" + self.DRAFT.rstrip("\n"), r.stdout)
+        self.assert_untouched()
+
+    def test_check_passes_after_write(self):
+        self.assertEqual(self.run_script("write").returncode, 0)
+        r = self.run_script("check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"),
+                         "jobs:\n" + self.DRAFT + "done\n")
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+
+    def test_dist_failure_restores_files(self):
+        os.remove(os.path.join(self.bindir, "dist"))
+        with open(os.path.join(self.bindir, "dist"), "w") as f:
+            f.write("#!/bin/sh\necho junk > .github/workflows/release.yml\nexit 1\n")
+        os.chmod(os.path.join(self.bindir, "dist"), 0o755)
+        r = self.run_script("write")
+        self.assertNotEqual(r.returncode, 0)
+        self.assert_untouched()
+
+    def test_usage(self):
+        r = self.run_script("nonsense")
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":

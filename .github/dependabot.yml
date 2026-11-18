@@ -4,7 +4,8 @@
 #
 # The Action pins in release.yml come from [dist.github-action-commits] in
 # dist-workspace.toml, which Dependabot does not read: update that table to
-# match when Dependabot bumps the other workflows, then run `dist generate`.
+# match when Dependabot bumps the other workflows, then run
+# `.github/scripts/release-yml.sh write`.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -20,7 +21,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     # dist writes release.yml; a Dependabot edit there would fail CI's
-    # `dist generate --check`.
+    # `.github/scripts/release-yml.sh check`.
     exclude-paths:
       - .github/workflows/release.yml
     schedule:

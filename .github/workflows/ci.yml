@@ -167,7 +167,7 @@ jobs:
           echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
-      # dist generate --check, the build, and a look inside the tarball.
+      # release-yml.sh check, the build, and a look inside the tarball.
       - name: Build the release artifacts
         env:
           CI_RELEASE_TARGET: ${{ matrix.target }}
