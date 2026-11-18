@@ -228,17 +228,35 @@ impl Reader for SqliteReader {
     }
 }
 
+/// Keeps SQLite from choosing a query plan by the values bound to a
+/// statement (its "query planner stability guarantee"). Since SQLite 3.54 a
+/// plan can depend on the value bound in `col = ?`, and every
+/// sqlite3_clear_bindings() then expires the statement. rusqlite's
+/// statement cache calls that on each return, so the per-entry lookup
+/// would be prepared again on every call.
+fn stable_plans(conn: &Connection) -> Result<()> {
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG,
+        true,
+    )?;
+    Ok(())
+}
+
 impl SqliteReader {
     /// An idle connection, or a new one.
     fn take(&self) -> Result<Connection> {
         let idle = self.idle.lock().unwrap().pop();
         match idle {
             Some(c) => Ok(c),
-            None => Connection::open_with_flags(
-                &self.path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .with_context(|| format!("opening {}", self.path.display())),
+            None => {
+                let conn = Connection::open_with_flags(
+                    &self.path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .with_context(|| format!("opening {}", self.path.display()))?;
+                stable_plans(&conn)?;
+                Ok(conn)
+            }
         }
     }
 }
@@ -293,6 +311,7 @@ impl SqliteStore {
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )
                 .with_context(|| format!("opening {}", path.display()))?;
+                stable_plans(&conn)?;
                 check_schema(&read_meta(&conn)?, mode)?;
                 Ok(SqliteStore {
                     conn,
@@ -304,6 +323,7 @@ impl SqliteStore {
     }
 
     fn configure(conn: &Connection) -> Result<()> {
+        stable_plans(conn)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL")?;
         Ok(())
