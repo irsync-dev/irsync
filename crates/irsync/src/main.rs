@@ -889,18 +889,27 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         ..Hello::default()
     };
     let client = c.endpoint.id();
-    let conn = c
-        .endpoint
-        .connect(c.target.clone(), irsync_proto::ALPN)
-        .await
-        .map_err(|e| {
-            let err = anyhow::anyhow!(describe_dial(&c.target.id, &e));
-            // A host set up over ssh is not one whose ID was copied by hand.
-            match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
-                Some(_) => err,
-                None => with_wrong_id_hint(err),
-            }
-        })?;
+    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
+    // No limit of its own, except in a test (see `first_dial_limit`).
+    let dialled = match first_dial_limit(None) {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
+            Err(_) => Err(format!(
+                "connecting to {}: no answer within {} s",
+                c.target.id,
+                limit.as_secs()
+            )),
+        },
+        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
+    };
+    let conn = dialled.map_err(|msg| {
+        let err = anyhow::anyhow!(msg);
+        // A host set up over ssh is not one whose ID was copied by hand.
+        match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
+            Some(_) => err,
+            None => with_wrong_id_hint(err),
+        }
+    })?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
     let entries = list_exports(&conn, hello)
         .await
