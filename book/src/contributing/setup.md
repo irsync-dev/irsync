@@ -56,7 +56,9 @@ package manager (`apt`, `brew`, `pkg`).
 - **minisign 0.10 or newer**, optional. Maintainers sign releases with it
   ([The release signing key](release-signing-key.md)), and it makes the
   signature test files. Older versions write a signature format that irsync
-  refuses.
+  refuses. The `sign-release.sh` tests also run with the real minisign
+  when it is there; with the `CI` environment variable set, they fail
+  instead of skipping without it.
 
 ## Continuous integration
 

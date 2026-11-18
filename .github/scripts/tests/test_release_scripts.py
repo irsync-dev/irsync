@@ -1211,11 +1211,23 @@ def real_minisign():
     return path if m and (int(m[1]), int(m[2])) >= (0, 10) else None
 
 
-@unittest.skipUnless(real_minisign(), "needs minisign 0.10 or newer")
 class RealMinisignSignTests(SignTests):
-    """The same tests, with the real minisign doing the signing and checking."""
+    """The same tests, with the real minisign doing the signing and checking.
+
+    They skip without minisign 0.10 or newer, but fail when the CI
+    environment variable is set, as on GitHub, so CI can't pass without
+    running them.
+    """
 
     REAL_MINISIGN = real_minisign()
+
+    def setUp(self):
+        if not self.REAL_MINISIGN:
+            if os.environ.get("CI"):
+                self.fail("needs minisign 0.10 or newer on PATH (CI is set, so this fails "
+                          "instead of skipping)")
+            self.skipTest("needs minisign 0.10 or newer")
+        super().setUp()
 
 
 if __name__ == "__main__":

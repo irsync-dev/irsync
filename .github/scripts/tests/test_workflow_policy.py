@@ -166,6 +166,15 @@ class CiWorkflowTests(unittest.TestCase):
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
+    def test_workflows_job_installs_minisign(self):
+        # The sign-release.sh tests with the real minisign fail without it
+        # when CI is set.
+        steps = jobs(load_workflows()["ci.yml"])["workflows"]["steps"]
+        runs = [st.get("run", "") for st in steps]
+        install = next(i for i, r in enumerate(runs) if "apt-get install -y minisign" in r)
+        tests = next(i for i, r in enumerate(runs) if "tools/ci.sh workflows" in r)
+        self.assertLess(install, tests)
+
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
 
@@ -525,6 +534,10 @@ class GateTests(unittest.TestCase):
 
     def test_gate_points_to_signing(self):
         self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))
+
+    def test_gate_draft_job_needs_check_and_release(self):
+        # check gives the tag; release must have made the draft.
+        self.assertEqual(set(jobs(self.gate())["draft"]["needs"]), {"check", "release"})
 
     def test_gate_draft_job_can_see_drafts(self):
         # GitHub shows a draft release only to callers with push access.
