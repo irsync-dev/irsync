@@ -40,6 +40,11 @@ pr-run-mode = "skip"
 # launches it after the full test suite passed on the tagged commit. Never
 # launch release.yml by hand.
 dispatch-releases = true
+# dist does not manage release.yml: .github/scripts/release-yml.sh write
+# regenerates it with dist and makes the release a draft, and `release-yml.sh
+# check` replaces `dist generate --check`, which now ignores the file. Never
+# edit release.yml by hand.
+allow-dirty = ["ci"]
 # Extra files for every archive. packaging/dist/build.sh writes this directory;
 # it lands in the tarball as irsync-<target>/man/.
 include = ["packaging/dist/man"]

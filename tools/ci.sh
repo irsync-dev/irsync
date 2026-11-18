@@ -173,8 +173,8 @@ job_workflows() {
 job_release_build() {
     local target=${CI_RELEASE_TARGET:-$(uname -m)-unknown-linux-musl} contents bin page
     local t standins=() global=() tmp version found pages warnings
-    # release.yml must be what dist generates from dist-workspace.toml.
-    run dist generate --check
+    # release.yml must be what release-yml.sh makes from dist-workspace.toml.
+    run .github/scripts/release-yml.sh check
     run dist build --artifacts=local "--target=$target"
     printf '\n== the tarball holds both binaries and the man pages\n'
     contents=$(tar -tJf "target/distrib/irsync-$target.tar.xz")

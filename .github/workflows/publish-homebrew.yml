@@ -1,7 +1,7 @@
 # Pushes the Homebrew formula of a published release to
 # irsync-dev/homebrew-tap. release-resume.yml calls it for stable tags, in the
-# run the release gate starts after release.yml published the release, or in
-# a run started by hand to finish a release. It replaces dist's built-in
+# run sign-release.sh starts after it published the release, or in a run
+# started by hand to finish a release. It replaces dist's built-in
 # Homebrew job so it can run in the `release` environment: HOMEBREW_TAP_TOKEN
 # lives there and opens only for runs on a v* tag, after an approval. (dist
 # 0.34.0 can't call a local custom publish job: it writes

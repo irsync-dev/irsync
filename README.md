@@ -145,6 +145,21 @@ irsync daemon                              # server: serve until interrupted
 irsync -av ~/Photos/ <server-id>:photos/   # client: push
 ```
 
+## Verify a download
+
+Every file on a release has a minisign signature (`FILE.minisig`), made with
+a key that is kept offline. The public key:
+
+```text
+RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
+```
+
+Check a file with `minisign -Vm FILE -P <key>`, and make sure the trusted
+comment reads `irsync vX.Y.Z` for your version. More ways to check, with
+`gh attestation verify` too, are in
+[Verify a download](https://irsync.org/book/how-to/verify-a-download.html).
+Releases from before signing started have no signatures.
+
 ## Documentation
 
 The project's website is [irsync.org](https://irsync.org), and the book is at

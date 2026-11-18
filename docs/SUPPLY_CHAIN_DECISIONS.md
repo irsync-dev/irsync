@@ -56,19 +56,21 @@ differ, the code is what shipped.
    included, can swap a file on a release. Cost if wrong: people who
    downloaded packages from the release page now use dist.irsync.org.
 
-7. **Attestations, verified by hand.** dist attests every file on the
-   release in its host job (`github-attestations-phase = "host"`). Its
-   default attests only the per-target archives, which left the installer
-   unattested up to v0.1.0-beta.2. `packages.yml` attests the packages. `install.sh` doesn't
-   check them. Why: checking in the script would need `gh` on every user's
-   machine. Cost if wrong: an install through `install.sh` trusts GitHub's
-   release storage, as before.
+7. **Attestations, verified by hand.** dist attests every file it builds
+   for the release in its host job (`github-attestations-phase = "host"`).
+   The `.minisig` signatures, added later by hand, have no attestation (see
+   17). dist's default attests only the per-target archives, which left
+   the installer unattested up to v0.1.0-beta.2. `packages.yml` attests
+   the packages. `install.sh` doesn't check them. Why: checking in the
+   script would need `gh` on every user's machine. Cost if wrong: an
+   install through `install.sh` trusts GitHub's release storage, as
+   before.
 
 8. **Every Action pinned to a commit.** Hand-written workflows carry a
    `# vX.Y.Z` comment, and Dependabot updates them. `release.yml` gets its
    pins from `[dist.github-action-commits]` in `dist-workspace.toml`
    (dist can't write the comment), and Dependabot leaves it alone, because
-   an edit there would fail `dist generate --check`. Cost if wrong: the
+   an edit there would fail `.github/scripts/release-yml.sh check`. Cost if wrong: the
    dist table is bumped by hand.
 
 9. **cargo-deny fails on any advisory; exceptions need a reason.**
@@ -145,6 +147,26 @@ differ, the code is what shipped.
     nothing beyond HTTPS. Cost if wrong: the hashes are replaced by hand on
     each bump, and mdbook publishes none, so its hashes are our own first
     download. Revisit if the tools start signing.
+
+18. **Release files are signed with an offline minisign key** (issue #89).
+    A maintainer signs every file on the draft release on their own
+    computer with `.github/scripts/sign-release.sh`, then publishes the
+    draft. The public key is in `packaging/signing/release-keys.pub`. Every
+    signature has the trusted comment `irsync vX.Y.Z`, so an older
+    release's signed files can't be passed off as a newer one. Why the key
+    is offline: until now only GitHub vouched for a release, through
+    attestations and checksums. Whoever takes over the organisation, a
+    maintainer's token or a compromised Action can build and publish a
+    release that passes both. A key that never touches GitHub closes that
+    gap: nothing that happens on GitHub can make a valid signature. It also
+    gives users a check that needs no `gh` and no GitHub account. The
+    flow: `release.yml` makes a draft (the gate ends there), the script
+    signs and publishes it, which creates the tag, and then starts the
+    resume run. A draft takes new files even with immutable releases on, and
+    has no tag, so a failed run leaves nothing behind. Cost if wrong: every
+    release needs the maintainer, with the USB stick, at their computer.
+    Losing the key means a new key and a changed `release-keys.pub`. A
+    second maintainer can add their own key to that file.
 
 ## Left open
 

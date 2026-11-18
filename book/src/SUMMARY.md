@@ -65,4 +65,5 @@
 - [Design records](contributing/design-records.md)
 - [Releasing](contributing/releasing.md)
   - [Supply chain security](contributing/supply-chain.md)
+  - [The release signing key](contributing/release-signing-key.md)
 - [This website](contributing/website.md)

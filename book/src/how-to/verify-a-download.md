@@ -6,8 +6,38 @@ commit, which workflow. You can check any file you downloaded against it.
 Doing so shows that the file was built by irsync's own release workflow, and
 not swapped somewhere on the way to you.
 
-You need the [GitHub CLI](https://cli.github.com/) (`gh`), logged in with
-`gh auth login`.
+Every file on a release is also signed with irsync's release key. The key
+is kept offline, away from GitHub, so a signature is the stronger proof. The
+minisign check below is the simplest, and needs no GitHub account.
+
+The attestation checks need the [GitHub CLI](https://cli.github.com/)
+(`gh`), logged in with `gh auth login`.
+
+## Check the signature with minisign
+
+Install [minisign](https://jedisct1.github.io/minisign/) 0.10 or newer
+(`apt install minisign`, `dnf install minisign`, `brew install minisign`).
+Download the file and its signature, which has the same name with
+`.minisig` added, from the
+[releases page](https://github.com/irsync-dev/irsync/releases). Then:
+
+```sh
+minisign -Vm irsync-x86_64-unknown-linux-musl.tar.xz -P RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
+```
+
+`-P` is irsync's public key, the line above. It is the same key as in the
+[README](https://github.com/irsync-dev/irsync#verify-a-download) and in
+`packaging/signing/release-keys.pub` in the repository.
+
+A good file prints `Signature and comment signature verified`, and a line
+`Trusted comment: irsync vX.Y.Z`. **Check that the trusted comment names the
+version you downloaded.** Otherwise someone could give you an older release's
+signed files. A failure means: don't use the file, and please
+[report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
+
+The same works for every file on the release, the checksum files included.
+Releases from before signing started have no `.minisig` files; use the
+checks below for them.
 
 ## An archive or the installer
 

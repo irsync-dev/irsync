@@ -167,7 +167,7 @@ jobs:
           echo "${{ matrix.dist_sha256 }}  $RUNNER_TEMP/dist.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/dist.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/${{ matrix.dist }}" >> "$GITHUB_PATH"
-      # dist generate --check, the build, and a look inside the tarball.
+      # release-yml.sh check, the build, and a look inside the tarball.
       - name: Build the release artifacts
         env:
           CI_RELEASE_TARGET: ${{ matrix.target }}
@@ -189,6 +189,10 @@ jobs:
           persist-credentials: false
       - name: Install PyYAML
         run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+      # For the sign-release.sh tests with the real minisign, which fail
+      # without it when CI is set. From the Ubuntu archive, like pandoc.
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Install actionlint
         run: |
           set -euo pipefail

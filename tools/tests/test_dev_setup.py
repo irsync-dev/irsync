@@ -170,6 +170,22 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(out, r"missing +mdbook.*\(optional\)")
         self.assertIn("Ready.", out)
 
+    def test_minisign_is_optional_and_named(self):
+        r, out = self.check()
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"missing  minisign 0\.10 or newer, to sign releases \(optional\)\n"
+                              r" {15}(sudo apt install minisign|brew install minisign|sudo pkg install minisign)\n")
+
+    def test_old_minisign_is_reported(self):
+        r, out = self.check(minisign="echo minisign 0.9")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"missing  minisign 0\.10 or newer, have 0\.9, to sign releases \(optional\)")
+
+    def test_minisign_found(self):
+        for line, version in [("minisign 0.11", "0.11"), ("minisign 0.12.1", "0.12.1")]:
+            r, out = self.check(minisign=f'[ "$1" = -v ] && echo {line}')
+            self.assertRegex(out, rf"ok +minisign {re.escape(version)}\n", line)
+
     def test_ci_tools_are_optional_and_named(self):
         # What tools/ci.sh needs beyond the build: none of it is here.
         r, out = self.check(python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
@@ -496,22 +512,38 @@ esac"""
             uname=FREEBSD, rsync=None, cc=None,
             python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("pkg install rsync", out)
-        self.assertIn("pkg install llvm", out)
-        self.assertIn("pkg install node npm", out)
-        self.assertIn("pkg install py312-pyyaml", out)
+        self.assertIn("sudo pkg install rsync", out)
+        self.assertIn("sudo pkg install llvm", out)
+        self.assertIn("sudo pkg install node npm", out)
+        self.assertIn("sudo pkg install py312-pyyaml", out)
         self.assertNotIn("apt install", out)
         self.assertNotIn("brew install", out)
         # Linux-only tools are not asked for.
         self.assertNotIn("musl", out)
         self.assertNotIn("nfpm", out)
 
+    def test_root_only_hints_use_sudo(self):
+        # apt and pkg need root; brew refuses it, and cargo, go and pip
+        # install for the user.
+        missing = dict(rsync=None, cc=None, pandoc=None,
+                       python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
+        for uname, manager in [(LINUX, "apt"), (FREEBSD, "pkg")]:
+            r, out = self.check(uname=uname, **missing)
+            hints = [l.strip() for l in out.splitlines() if f"{manager} install" in l]
+            self.assertTrue(hints, out)
+            for h in hints:
+                self.assertTrue(h.startswith(f"sudo {manager} install "), h)
+            self.assertNotRegex(out, r"sudo (cargo|go|brew|rustup|python3)")
+        r, out = self.check(uname=MAC, **missing)
+        self.assertIn("brew install rsync", out)
+        self.assertNotIn("sudo", out)
+
     def test_install_commands_get_their_own_line(self):
         r, out = self.check(cc=None)
         lines = out.splitlines()
         i = next(n for n, l in enumerate(lines) if "C compiler" in l)
         self.assertRegex(lines[i], r"^  missing  C compiler \(cc\) \(required\)$")
-        self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install|pkg install llvm)$")
+        self.assertRegex(lines[i + 1], r"^ {15}(sudo apt install build-essential|xcode-select --install|sudo pkg install llvm)$")
         # Where a tool has a release binary, the script is what installs it.
         r, out = self.check(uname=LINUX)
         self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"

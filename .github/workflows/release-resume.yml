@@ -1,14 +1,14 @@
-# The second half of every release. The release gate (release-gate.yml)
-# starts it on the new tag once release.yml has published the release. Start
-# it by hand on the tag to finish a release whose resume run failed (for
-# example because the Homebrew push failed) or that the gate lost track of
-# (it could not find or watch the release.yml run). It runs on the tag, so the
+# The second half of every release. sign-release.sh starts it on the new tag
+# once it has signed and published the draft release. Start it by hand on the
+# tag to finish a release whose resume run failed (for example because the
+# Homebrew push failed). It runs on the tag, so the
 # release secrets (environment `release`, v* tags only) open and the tagged
 # scripts run:
 #
 #   gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
 #
-# It never builds or publishes a release. It only runs packages.yml and
+# It never builds or publishes a release. It creates the branch release-X.Y
+# for an X.Y.0 release, and runs packages.yml and
 # publish-homebrew.yml (stable releases) and the notes step for a GitHub
 # Release that already exists. All are safe to run again.
 #
@@ -48,6 +48,7 @@ jobs:
       packages: ${{ steps.check.outputs.packages }}
       homebrew: ${{ steps.check.outputs.homebrew }}
       notes: ${{ steps.check.outputs.notes }}
+      new-branch: ${{ steps.check.outputs.new-branch }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -100,3 +101,22 @@ jobs:
       tag: ${{ inputs.tag }}
     permissions:
       contents: write
+
+  # X.Y.0 only: the branch for the later X.Y.Z patch releases, at the commit
+  # just released (this run is on the tag).
+  branch:
+    needs: check
+    if: needs.check.outputs.new-branch != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      NEW_BRANCH: ${{ needs.check.outputs.new-branch }}
+    steps:
+      - name: Create the release branch
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/heads/$NEW_BRANCH" -f sha="$GITHUB_SHA" > /dev/null
+          echo "Created $NEW_BRANCH at $GITHUB_SHA."

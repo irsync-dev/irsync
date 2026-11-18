@@ -12,6 +12,7 @@ SCRIPTS = os.path.dirname(HERE)
 ROOT = os.path.dirname(os.path.dirname(SCRIPTS))
 CHECK = os.path.join(SCRIPTS, "check-release-tag.sh")
 NOTES = os.path.join(SCRIPTS, "release-notes.sh")
+RELEASE_YML = os.path.join(SCRIPTS, "release-yml.sh")
 RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
@@ -173,6 +174,9 @@ class BumpVersionTests(unittest.TestCase):
         self.assertIn("gh pr create --fill --base main", r.stdout)
         self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0-beta.1",
                       r.stdout)
+        # The gate ends at a draft; signing it is the last step.
+        self.assertEqual(r.stdout.rstrip().splitlines()[-1].strip(),
+                         ".github/scripts/sign-release.sh 1.3.0-beta.1")
         self.assertNotIn("git tag", r.stdout)
         self.assertNotIn("git push origin main", r.stdout)
 
@@ -303,9 +307,9 @@ class ResumeTests(FakeGh):
         # On a runner GITHUB_REF is always set; here only where a test sets it.
         self.env.pop("GITHUB_REF", None)
 
-    def resume(self, tag, dry_run, release=None, ref=None):
+    def resume(self, tag, dry_run, release=None, ref=None, branches=("main",)):
         releases = {tag: release} if release else {}
-        self.set_state(releases=releases, tags=[tag], generated="x")
+        self.set_state(releases=releases, tags=[tag], branches=list(branches), generated="x")
         if ref is not None:
             self.env["GITHUB_REF"] = ref
         return self.run_script(RESUME, tag, "true" if dry_run else "false")
@@ -319,23 +323,39 @@ class ResumeTests(FakeGh):
 
     def test_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED)),
-                         {"packages": "true", "homebrew": "true", "notes": "true"})
+                         {"packages": "true", "homebrew": "true", "notes": "true", "new-branch": ""})
 
     def test_prerelease_tag_gets_notes_only(self):
         self.assertEqual(self.out(self.resume("v1.2.3-beta.1", False, self.PRE)),
-                         {"packages": "false", "homebrew": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true", "new-branch": ""})
 
     def test_stable_tag_marked_prerelease_gets_no_packages(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PRE)),
-                         {"packages": "false", "homebrew": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true", "new-branch": ""})
 
     def test_dry_run_on_alpha(self):
         self.assertEqual(self.out(self.resume("v0.1.0-alpha.1", True, self.PRE)),
-                         {"packages": "true", "homebrew": "false", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false", "new-branch": ""})
 
     def test_dry_run_on_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", True, self.PUBLISHED)),
-                         {"packages": "true", "homebrew": "false", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false", "new-branch": ""})
+
+    def test_new_minor_gets_new_branch(self):
+        out = self.out(self.resume("v1.3.0", False, self.PUBLISHED))
+        self.assertEqual(out["new-branch"], "release-1.3")
+
+    def test_existing_branch_not_recreated(self):
+        out = self.out(self.resume("v1.3.0", False, self.PUBLISHED,
+                                   branches=("main", "release-1.3")))
+        self.assertEqual(out["new-branch"], "")
+
+    def test_patch_and_prerelease_get_no_branch(self):
+        self.assertEqual(self.out(self.resume("v1.3.1", False, self.PUBLISHED))["new-branch"], "")
+        self.assertEqual(self.out(self.resume("v1.3.0-beta.1", False, self.PRE))["new-branch"], "")
+
+    def test_dry_run_gets_no_branch(self):
+        self.assertEqual(self.out(self.resume("v1.3.0", True, self.PUBLISHED))["new-branch"], "")
 
     def test_draft_fails(self):
         r = self.resume("v1.2.3", False, {"body": "", "isDraft": True, "isPrerelease": False})
@@ -365,7 +385,7 @@ class ResumeTests(FakeGh):
     def test_resume_accepts_matching_tag_ref(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED,
                                               ref="refs/tags/v1.2.3")),
-                         {"packages": "true", "homebrew": "true", "notes": "true"})
+                         {"packages": "true", "homebrew": "true", "notes": "true", "new-branch": ""})
 
     def test_bad_tag_fails_before_gh(self):
         r = self.resume("v1.2.3;id", True, self.PUBLISHED)
@@ -707,6 +727,507 @@ class FormulaManPagesTests(unittest.TestCase):
         self.run_script()
         r = subprocess.run(["ruby", "-c", self.path], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class ReleaseYmlTests(unittest.TestCase):
+    """release-yml.sh, in a temp git repo, with a fake dist that writes a canned workflow."""
+    CONFIG = '[dist]\nci = "github"\nallow-dirty = ["ci"]\n'
+    OLD = "old release.yml\n"
+    CREATE = ('          gh release create "$TAG" --title "$T" --notes-file n.txt'
+              ' artifacts/*\n')
+    DRAFT = CREATE.replace(" artifacts/*", " --draft artifacts/*")
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="relyml-")
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", self.repo], check=True)
+        os.makedirs(os.path.join(self.repo, ".github", "workflows"))
+        self.write_repo("dist-workspace.toml", self.CONFIG)
+        self.write_repo(".github/workflows/release.yml", self.OLD)
+        bindir = os.path.join(self.repo, "fakebin")
+        os.mkdir(bindir)
+        # The fake dist insists that allow-dirty is gone, as dist needs it to be.
+        with open(os.path.join(bindir, "dist"), "w") as f:
+            f.write('#!/bin/sh\n'
+                    '[ "$1 $2" = "generate --mode=ci" ] || exit 2\n'
+                    '! grep -q allow-dirty dist-workspace.toml || exit 3\n'
+                    'printf "%s" "$FAKE_WORKFLOW" > .github/workflows/release.yml\n')
+        os.chmod(os.path.join(bindir, "dist"), 0o755)
+        self.bindir = bindir
+
+    def write_repo(self, name, text):
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+
+    def read_repo(self, name):
+        with open(os.path.join(self.repo, name)) as f:
+            return f.read()
+
+    def run_script(self, mode, create_lines=1):
+        workflow = "jobs:\n" + self.CREATE * create_lines + "done\n"
+        env = dict(os.environ, PATH=self.bindir + os.pathsep + os.environ["PATH"],
+                   FAKE_WORKFLOW=workflow)
+        return subprocess.run([RELEASE_YML, mode], cwd=self.repo, env=env,
+                              capture_output=True, text=True)
+
+    def assert_untouched(self):
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"), self.OLD)
+
+    def test_write_adds_draft_before_artifacts(self):
+        r = self.run_script("write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"),
+                         "jobs:\n" + self.DRAFT + "done\n")
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+
+    def test_no_create_line_fails(self):
+        r = self.run_script("write", create_lines=0)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("found 0", r.stderr)
+        self.assert_untouched()
+
+    def test_two_create_lines_fail(self):
+        r = self.run_script("write", create_lines=2)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("found 2", r.stderr)
+        self.assert_untouched()
+
+    def test_check_fails_with_a_diff(self):
+        r = self.run_script("check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("-old release.yml", r.stdout)
+        self.assertIn("+" + self.DRAFT.rstrip("\n"), r.stdout)
+        self.assert_untouched()
+
+    def test_check_passes_after_write(self):
+        self.assertEqual(self.run_script("write").returncode, 0)
+        r = self.run_script("check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.read_repo(".github/workflows/release.yml"),
+                         "jobs:\n" + self.DRAFT + "done\n")
+        self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
+
+    def test_dist_failure_restores_files(self):
+        os.remove(os.path.join(self.bindir, "dist"))
+        with open(os.path.join(self.bindir, "dist"), "w") as f:
+            f.write("#!/bin/sh\necho junk > .github/workflows/release.yml\nexit 1\n")
+        os.chmod(os.path.join(self.bindir, "dist"), 0o755)
+        r = self.run_script("write")
+        self.assertNotEqual(r.returncode, 0)
+        self.assert_untouched()
+
+    def test_usage(self):
+        r = self.run_script("nonsense")
+        self.assertEqual(r.returncode, 2)
+
+
+SIGN = os.path.join(SCRIPTS, "sign-release.sh")
+MINISIGN_FIXTURES = os.path.join(HERE, "fixtures", "minisign")
+TEST_KEY = os.path.join(MINISIGN_FIXTURES, "test.key")
+TEST_PUB = os.path.join(MINISIGN_FIXTURES, "test.pub")
+# A public key nobody has the secret key for.
+OTHER_PUB = ("untrusted comment: some other key\n"
+             "RWQBAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJico\n")
+
+
+COMMIT = "0123abcd" * 5
+
+
+def release_targets():
+    import tomllib
+    with open(os.path.join(ROOT, "dist-workspace.toml"), "rb") as f:
+        return tomllib.load(f)["dist"]["targets"]
+
+
+def sha256(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+class SignTests(FakeGh):
+    """sign-release.sh, with fake gh and minisign (fake_minisign.py)."""
+
+    REAL_MINISIGN = None
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.symlink(os.path.join(HERE, "fake_minisign.py"), os.path.join(bindir, "minisign"))
+        self.minisign_log = os.path.join(self.tmp, "minisign.log")
+        open(self.minisign_log, "w").close()
+        self.env.update(FAKE_MINISIGN_LOG=self.minisign_log, IRSYNC_SIGN_KEYS_FILE=TEST_PUB)
+        if self.REAL_MINISIGN:
+            self.env["FAKE_MINISIGN_REAL"] = self.REAL_MINISIGN
+        self.files = {}
+        for t in release_targets():
+            self.files[f"irsync-{t}.tar.xz"] = f"tarball for {t}"
+        self.files["source.tar.gz"] = "source"
+        for name in list(self.files):
+            self.files[name + ".sha256"] = f"{sha256(self.files[name])} *{name}\n"
+        self.files["irsync-installer.sh"] = "#!/bin/sh\n"
+        self.files["irsync.rb"] = "class Irsync\nend\n"
+        self.files["dist-manifest.json"] = "{}"
+        self.files["sha256.sum"] = "".join(
+            f"{sha256(c)} *{n}\n" for n, c in self.files.items()
+            if not n.endswith(".sha256")) + "\n"
+        self.release = {"body": "", "isDraft": True, "isPrerelease": False, "databaseId": 42,
+                        "targetCommitish": COMMIT, "immutable": False,
+                        "assets": dict(self.files)}
+        self.tags = []
+        with open(TEST_PUB) as f:
+            self.extra_state = {"keys_at_commit": f.read(), "attested_commit": COMMIT,
+                                "attested_ref": "refs/heads/pinned/v1.2.3"}
+
+    def sign(self, *opts, answer="y\n", version="1.2.3", keys=None):
+        self.set_state(releases={f"v{version}": self.release}, tags=self.tags,
+                       generated="", **self.extra_state)
+        open(self.minisign_log, "w").close()
+        if keys is not None:
+            path = os.path.join(self.tmp, "keys.pub")
+            with open(path, "w") as f:
+                f.write(keys)
+            self.env["IRSYNC_SIGN_KEYS_FILE"] = path
+            self.set_state(**dict(self.state(), keys_at_commit=keys))
+        return subprocess.run([SIGN, "--key", TEST_KEY, *opts, version], env=self.env,
+                              input=answer, capture_output=True, text=True)
+
+    def calls(self, *prefix):
+        return [c for c in self.state().get("calls", []) if c[:len(prefix)] == list(prefix)]
+
+    def minisign_calls(self):
+        with open(self.minisign_log) as f:
+            return [json.loads(l) for l in f]
+
+    def signing_calls(self):
+        return [c for c in self.minisign_calls() if c[0] == "-S"]
+
+    def uploaded(self):
+        return [os.path.basename(a) for c in self.calls("release", "upload")
+                for a in c[3:] if not a.startswith("-")]
+
+    def assert_refused(self, r, *words):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        for w in words:
+            self.assertIn(w, r.stderr)
+
+    def assert_nothing_signed(self):
+        self.assertEqual(self.signing_calls(), [])
+        self.assertEqual(self.calls("release", "upload"), [])
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_signs_uploads_publishes_and_resumes(self):
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(COMMIT, r.stdout)
+        for name in self.files:
+            self.assertIn(name, r.stdout)
+        signing = self.signing_calls()
+        self.assertEqual(len(signing), 1)
+        self.assertEqual(signing[0][signing[0].index("-t") + 1], "irsync v1.2.3")
+        self.assertEqual(sorted(os.path.basename(f) for f in signing[0][signing[0].index("-m") + 1:]),
+                         sorted(self.files))
+        upload = self.calls("release", "upload")
+        self.assertEqual(len(upload), 1)
+        self.assertEqual(upload[0][2], "v1.2.3")
+        self.assertIn("--clobber", upload[0])
+        self.assertEqual(sorted(self.uploaded()), sorted(n + ".minisig" for n in self.files))
+        calls = self.state()["calls"]
+        patch = calls.index(["api", "-X", "PATCH", "repos/irsync-dev/irsync/releases/42",
+                             "-F", "draft=false", "-f", "make_latest=legacy"])
+        self.assertLess(calls.index(upload[0]), patch)
+        resume = calls.index(["workflow", "run", "release-resume.yml", "--ref", "v1.2.3",
+                              "-f", "tag=v1.2.3"])
+        self.assertLess(patch, resume)
+        self.assertEqual(calls[-1], calls[resume])
+        rel = self.state()["releases"]["v1.2.3"]
+        self.assertFalse(rel["isDraft"])
+        for name in self.files:
+            self.assertIn("trusted comment: irsync v1.2.3\n", rel["assets"][name + ".minisig"])
+
+    def test_publishes_with_make_latest_legacy(self):
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["patched"], {"draft": "false", "make_latest": "legacy"})
+        self.assertEqual(self.calls("release", "edit"), [])
+
+    def test_refuses_published_release(self):
+        self.release["isDraft"] = False
+        r = self.sign()
+        self.assert_refused(r, "not a draft",
+                            "gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3")
+        self.assertEqual(self.calls("release", "download"), [])
+        self.assert_nothing_signed()
+
+    def test_refuses_missing_release(self):
+        self.set_state(releases={}, tags=[])
+        r = subprocess.run([SIGN, "1.2.3"], env=self.env, input="y\n",
+                           capture_output=True, text=True)
+        self.assert_refused(r, "v1.2.3")
+        self.assert_nothing_signed()
+
+    def test_refuses_missing_file(self):
+        del self.release["assets"]["irsync.rb"]
+        r = self.sign()
+        self.assert_refused(r, "missing", "irsync.rb")
+        self.assert_nothing_signed()
+
+    def test_refuses_extra_file(self):
+        self.release["assets"]["notes.txt"] = "hello"
+        r = self.sign()
+        self.assert_refused(r, "notes.txt")
+        self.assert_nothing_signed()
+
+    def test_refuses_signature_of_unknown_file(self):
+        self.release["assets"]["notes.txt.minisig"] = "old"
+        r = self.sign()
+        self.assert_refused(r, "notes.txt.minisig")
+        self.assert_nothing_signed()
+
+    def test_refuses_checksum_mismatch(self):
+        target = release_targets()[0]
+        cases = [
+            # The tarball no longer matches its .sha256 nor sha256.sum.
+            (f"irsync-{target}.tar.xz", "changed", f"irsync-{target}.tar.xz"),
+            # Only sha256.sum is wrong.
+            ("sha256.sum", self.files["sha256.sum"].replace(
+                sha256(self.files["irsync.rb"]), sha256("other")), "irsync.rb"),
+            # Only the .sha256 file is wrong.
+            ("source.tar.gz.sha256", f"{sha256('other')} *source.tar.gz\n", "source.tar.gz"),
+        ]
+        for name, content, named in cases:
+            with self.subTest(name=name):
+                self.release["assets"] = dict(self.files, **{name: content})
+                r = self.sign()
+                self.assert_refused(r, "checksum", named)
+                self.assert_nothing_signed()
+
+    def test_refuses_failed_attestation(self):
+        self.extra_state["bad_attestations"] = ["irsync.rb"]
+        r = self.sign()
+        self.assert_refused(r, "attestation", "irsync.rb")
+        self.assert_nothing_signed()
+        attest = self.calls("attestation", "verify")
+        self.assertIn(["--repo", "irsync-dev/irsync", "--signer-workflow",
+                       "irsync-dev/irsync/.github/workflows/release.yml",
+                       "--source-digest", COMMIT, "--source-ref", "refs/heads/pinned/v1.2.3",
+                       "--deny-self-hosted-runners"],
+                      [c[3:] for c in attest])
+
+    def test_attestation_must_name_the_commit_and_pinned_branch(self):
+        for key, value in [("attested_commit", "f" * 40),
+                           ("attested_ref", "refs/heads/some-branch")]:
+            with self.subTest(key=key):
+                self.extra_state[key] = value
+                r = self.sign()
+                self.assert_refused(r, "attestation")
+                self.assert_nothing_signed()
+                del self.extra_state[key]
+
+    def test_commit_must_be_a_full_sha(self):
+        for commit in ["0123abcd", "main", "0123ABCD" * 5]:
+            with self.subTest(commit=commit):
+                self.release["targetCommitish"] = commit
+                r = self.sign()
+                self.assert_refused(r, "full commit id")
+                self.assertEqual(self.calls("release", "download"), [])
+                self.assert_nothing_signed()
+
+    def test_commit_must_be_on_the_release_branch(self):
+        for version, branch in [("1.2.3", "release-1.2"), ("1.3.0", "main")]:
+            for status in ["identical", "ahead"]:
+                with self.subTest(version=version, status=status):
+                    self.extra_state.update(compare=status,
+                                            attested_ref=f"refs/heads/pinned/v{version}")
+                    r = self.sign("--no-publish", version=version)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertEqual(self.calls("api")[0][1],
+                                     f"repos/irsync-dev/irsync/compare/{COMMIT}...{branch}")
+            for status in ["behind", "diverged"]:
+                with self.subTest(version=version, status=status):
+                    self.extra_state["compare"] = status
+                    r = self.sign(version=version)
+                    self.assert_refused(r, COMMIT, branch, status)
+                    self.assertEqual(self.calls("release", "download"), [])
+                    self.assert_nothing_signed()
+
+    def test_keys_must_match_the_commit(self):
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(["api", f"repos/irsync-dev/irsync/contents/packaging/signing/"
+                       f"release-keys.pub?ref={COMMIT}", "--jq", ".content | @base64d"],
+                      self.calls("api"))
+        self.extra_state["keys_at_commit"] = OTHER_PUB
+        r = self.sign()
+        self.assert_refused(r, "not the same", COMMIT)
+        self.assertEqual(self.calls("release", "download"), [])
+        self.assert_nothing_signed()
+
+    def test_keys_file_missing_at_the_commit(self):
+        del self.extra_state["keys_at_commit"]
+        r = self.sign()
+        self.assert_refused(r, "release-keys.pub", COMMIT)
+        self.assert_nothing_signed()
+
+    def test_answer_no_signs_nothing(self):
+        for answer in ["n\n", "\n", ""]:
+            with self.subTest(answer=answer):
+                r = self.sign(answer=answer)
+                self.assert_refused(r)
+                self.assertIn("Sign these files? [y/N]", r.stdout + r.stderr)
+                self.assert_nothing_signed()
+
+    def test_no_publish_stops_after_upload(self):
+        r = self.sign("--no-publish")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(self.uploaded()), sorted(n + ".minisig" for n in self.files))
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+        self.assertEqual(self.calls("workflow"), [])
+        self.assertTrue(self.state()["releases"]["v1.2.3"]["isDraft"])
+
+    def test_replaces_stale_signatures(self):
+        self.release["assets"]["irsync.rb.minisig"] = "stale"
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("--clobber", self.calls("release", "upload")[0])
+        self.assertIn("irsync.rb.minisig", self.uploaded())
+        new = self.state()["releases"]["v1.2.3"]["assets"]["irsync.rb.minisig"]
+        self.assertIn("trusted comment: irsync v1.2.3\n", new)
+
+    def test_reads_is_immutable_before_signing(self):
+        # An old gh does not know isImmutable; it must fail in step 2.
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        first = self.calls("release", "view")[0]
+        self.assertIn("isImmutable", first[first.index("--json") + 1].split(","))
+
+    def test_checksum_on_a_last_line_without_newline(self):
+        lines = [l for l in self.files["sha256.sum"].splitlines() if l]
+        good = "\n".join(lines)
+        bad = "\n".join(lines[:-1] + [f"{sha256('other')} {lines[-1].split()[1]}"])
+        named = lines[-1].split()[1].lstrip("*")
+        with self.subTest("good"):
+            self.release["assets"] = dict(self.files, **{"sha256.sum": good})
+            r = self.sign("--no-publish")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with self.subTest("bad"):
+            self.release["assets"] = dict(self.files, **{"sha256.sum": bad})
+            r = self.sign()
+            self.assert_refused(r, "checksum", named)
+            self.assert_nothing_signed()
+
+    def test_verifies_prehashed_only(self):
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        verify = [c for c in self.minisign_calls() if c[0] == "-V"]
+        self.assertTrue(verify)
+        for c in verify:
+            self.assertIn("-H", c)
+
+    def test_refuses_publish_when_an_asset_is_swapped(self):
+        target = release_targets()[0]
+        for name in [f"irsync-{target}.tar.xz", "sha256.sum.minisig"]:
+            with self.subTest(name=name):
+                self.extra_state["swap_on_upload"] = {name: "swapped"}
+                r = self.sign()
+                self.assert_refused(r, name, "not the ones that were signed", "still a draft")
+                self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+                self.assertEqual(self.calls("workflow"), [])
+
+    def test_refuses_publish_when_an_asset_is_added(self):
+        self.extra_state["swap_on_upload"] = {"notes.txt": "hello"}
+        r = self.sign()
+        self.assert_refused(r, "not the ones that were signed")
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+
+    def test_refuses_publish_when_the_release_changed(self):
+        self.extra_state["new_id_on_upload"] = 43
+        r = self.sign()
+        self.assert_refused(r, "release 43, not 42")
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_no_resume_when_an_asset_changed_on_publish(self):
+        self.extra_state["swap_on_publish"] = {"irsync.rb": "swapped"}
+        r = self.sign()
+        self.assert_refused(r, "irsync.rb", "release-resume.yml has not been started")
+        self.assertEqual(len(self.calls("api", "-X", "PATCH")), 1)
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_refuses_publish_when_a_signature_is_missing(self):
+        self.extra_state["drop_upload"] = ["irsync.rb.minisig"]
+        r = self.sign()
+        self.assert_refused(r, "irsync.rb.minisig")
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_wrong_key_refused(self):
+        r = self.sign(keys=OTHER_PUB)
+        self.assert_refused(r, "does not verify")
+        self.assertEqual(self.calls("release", "upload"), [])
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+
+    def test_any_key_in_the_keys_file_will_do(self):
+        with open(TEST_PUB) as f:
+            r = self.sign(keys=OTHER_PUB + f.read())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_refuses_publish_when_tag_exists(self):
+        self.tags = ["v1.2.3"]
+        r = self.sign()
+        self.assert_refused(r, "v1.2.3", "tag")
+        self.assertEqual(self.calls("api", "-X", "PATCH"), [])
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_no_resume_unless_immutable(self):
+        self.extra_state["not_immutable"] = True
+        r = self.sign()
+        self.assert_refused(r, "immutable")
+        self.assertEqual(len(self.calls("api", "-X", "PATCH")), 1)
+        self.assertEqual(self.calls("workflow"), [])
+
+    def test_bad_version_fails_before_gh(self):
+        for version in ["v1.2.3", "1.2", "1.2.3;id"]:
+            with self.subTest(version=version):
+                r = self.sign(version=version)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(self.state().get("calls", []), [])
+                self.assertEqual(self.minisign_calls(), [])
+
+    def test_usage(self):
+        for args in [[], ["--bogus", "1.2.3"], ["1.2.3", "1.2.4"], ["--key"]]:
+            with self.subTest(args=args):
+                r = subprocess.run([SIGN, *args], env=self.env, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 2)
+
+
+def real_minisign():
+    path = shutil.which("minisign")
+    if not path:
+        return None
+    r = subprocess.run([path, "-v"], capture_output=True, text=True)
+    m = re.match(r"minisign (\d+)\.(\d+)", r.stdout + r.stderr)
+    return path if m and (int(m[1]), int(m[2])) >= (0, 10) else None
+
+
+class RealMinisignSignTests(SignTests):
+    """The same tests, with the real minisign doing the signing and checking.
+
+    They skip without minisign 0.10 or newer, but fail when the CI
+    environment variable is set, as on GitHub, so CI can't pass without
+    running them.
+    """
+
+    REAL_MINISIGN = real_minisign()
+
+    def setUp(self):
+        if not self.REAL_MINISIGN:
+            if os.environ.get("CI"):
+                self.fail("needs minisign 0.10 or newer on PATH (CI is set, so this fails "
+                          "instead of skipping)")
+            self.skipTest("needs minisign 0.10 or newer")
+        super().setUp()
 
 
 if __name__ == "__main__":

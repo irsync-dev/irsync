@@ -162,9 +162,35 @@ class CiWorkflowTests(unittest.TestCase):
         # commands are in tools/ci.sh, which ci.yml runs.
         self.ci_script_runs("workflows", "python3 -m unittest discover -s .github/scripts/tests")
         self.ci_script_runs("workflows", "actionlint -shellcheck= -pyflakes=")
-        self.ci_script_runs("release-build", "dist generate --check")
+        self.ci_script_runs("release-build", ".github/scripts/release-yml.sh check")
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
+
+    def test_jobs_running_the_script_tests_install_minisign(self):
+        # The sign-release.sh tests with the real minisign fail without it
+        # when CI is set, as on GitHub. Every job that runs
+        # .github/scripts/tests must install it first: itself with apt, or
+        # through install-packaging-tools.sh.
+        with open(os.path.join(ROOT, ".github", "scripts", "install-packaging-tools.sh")) as f:
+            packaging_tools = f.read()
+        self.assertRegex(packaging_tools, r"apt-get install [^\n]*\bminisign\b")
+
+        def installs(run):
+            return (re.search(r"apt-get install [^\n]*\bminisign\b", run) is not None
+                    or "install-packaging-tools.sh" in run)
+
+        found = []
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                runs = [st.get("run", "") for st in job.get("steps") or []]
+                for i, run in enumerate(runs):
+                    if ".github/scripts/tests" in run or "tools/ci.sh workflows" in run:
+                        found.append((name, job_id))
+                        self.assertTrue(any(installs(r) for r in runs[:i]),
+                                        f"{name} job {job_id} runs the script tests "
+                                        "without installing minisign first")
+        self.assertIn(("ci.yml", "workflows"), found)
+        self.assertIn(("release-tooling.yml", "scripts"), found)
 
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
@@ -226,6 +252,12 @@ class AttestationTests(unittest.TestCase):
 
     def test_dist_attestations_on(self):
         self.assertIs(dist_config()["dist"].get("github-attestations"), True)
+
+    def test_release_creates_a_draft(self):
+        # A maintainer signs the files, then publishes the draft by hand.
+        lines = [l for l in read("release.yml").splitlines() if "gh release create" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("--draft", lines[0])
 
     def test_release_yml_attests(self):
         wf = load_workflows()["release.yml"]
@@ -370,7 +402,10 @@ class EnvironmentTests(unittest.TestCase):
     def test_resume_has_no_main_guard(self):
         text = read("release-resume.yml")
         self.assertNotIn("MAIN_REF", text)
-        self.assertNotIn("refs/heads/", text)
+        self.assertNotIn("refs/heads/main", text)
+        self.assertNotIn("default_branch", text)
+        outside = text.replace(job_text("release-resume.yml", "branch"), "")
+        self.assertNotIn("refs/heads/", outside)
 
 
 class FreeBsdTests(unittest.TestCase):
@@ -509,14 +544,35 @@ class GateTests(unittest.TestCase):
         self.assertIn("in_progress", text)
         self.assertIn("queued", text)
 
-    def test_gate_makes_release_branch_after_release(self):
-        job = jobs(self.gate())["branch"]
-        self.assertIn("release", job["needs"])
+    def test_resume_makes_release_branch(self):
+        job = jobs(load_workflows()["release-resume.yml"])["branch"]
+        self.assertIn("check", job["needs"])
         self.assertIn("new-branch", job["if"])
 
-    def test_gate_finishes_on_the_tag(self):
-        self.assertIn('release-resume.yml --ref "refs/tags/$TAG"',
-                      job_text("release-gate.yml", "finish"))
+    def test_gate_points_to_signing(self):
+        self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))
+
+    def test_gate_draft_job_needs_check_and_release(self):
+        # check gives the tag; release must have made the draft.
+        self.assertEqual(set(jobs(self.gate())["draft"]["needs"]), {"check", "release"})
+
+    def test_gate_draft_job_can_see_drafts(self):
+        # GitHub shows a draft release only to callers with push access.
+        self.assertEqual(jobs(self.gate())["draft"]["permissions"]["contents"], "write")
+
+    def test_gate_leftover_draft_step_fails_on_other_errors(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("release not found", text)
+        self.assertIn("Could not look up the release", text)
+
+    def test_gate_has_no_branch_or_finish_job(self):
+        for job_id in ("branch", "finish"):
+            self.assertNotIn(job_id, jobs(self.gate()))
+
+    def test_gate_deletes_only_a_leftover_draft(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("isDraft", text)
+        self.assertLess(text.index("isDraft"), text.index("gh workflow run release.yml"))
 
     def test_gate_and_resume_share_concurrency(self):
         self.assertEqual(self.gate()["concurrency"]["group"], "release-v${{ inputs.version }}")
@@ -526,6 +582,53 @@ class GateTests(unittest.TestCase):
     def test_ci_runs_on_release_branches(self):
         push = triggers(load_workflows()["ci.yml"])["push"]
         self.assertEqual(push["branches"], ["main", "release-*"])
+
+
+REPLACE_KEY = ("replace the test key with the real release key "
+               "(book/src/contributing/release-signing-key.md)")
+
+
+def key_lines(text):
+    """The base64 key lines of a minisign public key file."""
+    return [l.strip() for l in text.splitlines()
+            if l.strip() and not l.startswith("untrusted comment:")]
+
+
+class ReleaseKeyTests(unittest.TestCase):
+    """Fails while packaging/signing/release-keys.pub holds the test key.
+
+    This is meant to keep a pull request red until the maintainer puts in
+    the real key. It fails in both workflows that run these tests: the
+    `workflows` job of ci.yml (`tools/ci.sh workflows`) and the `scripts`
+    job of release-tooling.yml. It is not part of `tools/ci.sh check`.
+    """
+
+    def read_root(self, *path):
+        with open(os.path.join(ROOT, *path)) as f:
+            return f.read()
+
+    def readme_keys(self):
+        """The lines of the ```text block under "## Verify a download"."""
+        readme = self.read_root("README.md")
+        section = readme.split("## Verify a download", 1)[1]
+        m = re.search(r"```text\n(.*?)```", section, re.S)
+        self.assertIsNotNone(m, f"no ```text block with the key in README.md; {REPLACE_KEY}")
+        return [l.strip() for l in m[1].splitlines() if l.strip()]
+
+    def test_replace_the_test_key_with_the_real_release_key(self):
+        keys = self.read_root("packaging", "signing", "release-keys.pub")
+        test_pub = self.read_root(".github", "scripts", "tests", "fixtures", "minisign",
+                                  "test.pub")
+        test_id = test_pub.splitlines()[0].split()[-1]
+        for line in key_lines(test_pub):
+            self.assertNotIn(line, keys, f"release-keys.pub holds the test key; {REPLACE_KEY}")
+        self.assertNotIn(test_id, keys, f"release-keys.pub names the test key; {REPLACE_KEY}")
+        self.assertTrue(key_lines(keys), f"release-keys.pub holds no key; {REPLACE_KEY}")
+        for doc in ("README.md", os.path.join("book", "src", "how-to", "verify-a-download.md")):
+            self.assertNotIn("REPLACE-WITH-RELEASE-KEY", self.read_root(doc),
+                             f"{doc} has no real key yet; {REPLACE_KEY}")
+        self.assertEqual(self.readme_keys(), key_lines(keys),
+                         f"the key in README.md is not the one in release-keys.pub; {REPLACE_KEY}")
 
 
 if __name__ == "__main__":

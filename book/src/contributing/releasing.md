@@ -1,10 +1,11 @@
 # Releasing
 
-You start a release by hand, with one command. The rest is done by GitHub
-Actions. The release gate tests the commit, and the release workflow creates
-the tag together with the GitHub Release, as its last step. You never push a
-release tag. This page says how to cut a release, what the workflows do, what
-to do when one fails, and what to set up once.
+You start a release by hand, with one command. GitHub Actions tests the
+commit and builds the files, and leaves a draft GitHub Release. Then you sign
+the files on your own computer with an offline key, and publish the draft.
+Publishing creates the tag. You never push a release tag. This page says how
+to cut a release, what the workflows do, what to do when one fails, and what
+to set up once.
 
 Only three kinds of version release anything:
 
@@ -23,7 +24,8 @@ published.
 - A pre-release (`X.Y.Z-beta.N`, `X.Y.Z-alpha.N`) and a new minor or major
   version (`X.Y.0`) are cut from `main`.
 - A patch release (`X.Y.Z` with `Z` above 0) is cut from the branch
-  `release-X.Y`. The gate creates that branch when it releases `X.Y.0`.
+  `release-X.Y`. The resume run creates that branch after `X.Y.0` is
+  published.
 
 `main` and every `release-X.Y` branch only take changes through a pull
 request that passed the `CI result` check. The gate refuses to run on the
@@ -31,7 +33,7 @@ wrong branch.
 
 ## Cutting a release
 
-The three cases differ only in the branch. Steps 1 to 4 are the same.
+The three cases differ only in the branch. All the steps are the same.
 
 1. Switch to the branch the release is cut from, up to date and with no
    uncommitted changes: `main` for a pre-release or `X.Y.0`, `release-X.Y`
@@ -66,13 +68,24 @@ The three cases differ only in the branch. Steps 1 to 4 are the same.
 
    For a patch, use `--ref release-1.2`. In the browser: Actions, Release
    gate, Run workflow, pick the branch, enter the version.
+5. When the gate is done, it prints `Draft ready. Sign and publish it:` and
+   the command. Plug in the USB stick with the release key and run it, with
+   the version:
+
+   ```sh
+   .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key 1.2.3
+   ```
+
+   It checks the draft, asks you to confirm, asks for the key's password
+   once, signs every file, publishes the release and starts the resume run.
+   See [Signing the release](#signing-the-release).
 
 For a pre-release, use a version such as `1.2.3-beta.1` or `1.2.3-alpha.1`.
-For `1.3.0`, the gate also creates the branch `release-1.3` at the released
-commit.
+For `1.3.0`, the resume run also creates the branch `release-1.3` at the
+released commit.
 
-Don't start the gate twice for the same version. A second run can cancel the
-resume run the first one started, which waits for the first to end.
+Don't start the gate twice for the same version while one run is going. The
+second run deletes the draft the first one made.
 
 If you change the version by hand instead, keep all three files in step.
 These checks catch a mismatch:
@@ -121,44 +134,49 @@ release starts. It does this, in order:
    release builds exactly that commit even if the branch moves on. It
    deletes a `pinned/vX.Y.Z` left over from an earlier failed attempt. It
    refuses to go on if a `release.yml` run from an earlier attempt is still
-   going.
-4. **Release.** It launches `release.yml` on the pinned branch and waits for
+   going. It also deletes a draft release left over for the tag.
+4. **Draft.** It launches `release.yml` on the pinned branch and waits for
    it. `release.yml` builds `irsync` and `fileset` for Linux x86_64, Linux
    arm64 and macOS on Apple Silicon. Each tarball also holds the man pages
    `irsync(1)`, `fileset(1)` and `irsync.toml(5)`, built from the book with
-   pandoc. It publishes the GitHub Release with the tarballs, checksums,
-   our installer `irsync-installer.sh` and the Homebrew formula, each with
-   an attestation. As its last step it creates the tag `vX.Y.Z`,
-   together with the release. That is the point of no return: the release
-   is immutable from then on, and no file on it can be replaced or added.
-   The gate then deletes the `pinned/` branch.
-5. **Branch** (`X.Y.0` only). It creates `release-X.Y` at the released
-   commit. This step and the next one start together after the release;
-   neither waits for the other.
-6. **Resume.** It starts `.github/workflows/release-resume.yml` on the new
-   tag. This run waits for the gate run to end. The rest happens there,
-   because the secrets of the `release` environment open only for runs on a
-   `v*` tag:
-   - **Packages and Homebrew** (stable releases only). Both jobs wait for
-     you to approve the `release` environment. Open the resume run, click
-     "Review deployments", tick `release` and approve: one click lets both
-     start.
-     - `.github/workflows/packages.yml` builds the `.deb` and `.rpm` files
-       from the released Linux tarballs. It signs the `.rpm` files, adds
-       everything to `irsync-dev/packages`, signs the apt and dnf metadata
-       and pushes. It keeps the newest 3 versions. GitHub Pages serves the
-       result at `dist.irsync.org`. The packages get attestations, but are
-       not attached to the release.
-     - `.github/workflows/publish-homebrew.yml` pushes the formula from the
-       release to `irsync-dev/homebrew-tap`. First it runs
-       `.github/scripts/formula-man-pages.sh`, which adds two lines to the
-       formula (`man1.install` and `man5.install`), so brew puts the man
-       pages where `man` looks. This happens before the tap is checked out
-       with its token. The script fails if dist's formula template changed,
-       so look at the formula then.
-   - **Notes.** It adds GitHub's list of changes to the release notes, under
-     the heading `## What's changed`. For a stable release the list starts
-     at the previous stable release, so it covers the betas in between too.
+   pandoc. It creates a **draft** GitHub Release with the tarballs,
+   checksums, our installer `irsync-installer.sh` and the Homebrew formula,
+   each with an attestation. (The signatures added later have none.) A
+   draft is not public and has no tag. It still takes new files. The gate
+   then deletes the `pinned/` branch and prints the command that signs and
+   publishes the draft. It ends there.
+
+You then run `.github/scripts/sign-release.sh`, on your own computer (see
+[Signing the release](#signing-the-release)). It signs the files and
+publishes the draft. Publishing creates the tag `vX.Y.Z`. That is the point
+of no return: the release is immutable from then on, and no file on it can
+be replaced or added. The script then starts
+`.github/workflows/release-resume.yml` on the new tag. That run does the
+rest, because the secrets of the `release` environment open only for runs
+on a `v*` tag:
+
+- **Branch** (`X.Y.0` only). It creates `release-X.Y` at the released
+  commit.
+- **Packages and Homebrew** (stable releases only). Both jobs wait for
+  you to approve the `release` environment. Open the resume run, click
+  "Review deployments", tick `release` and approve: one click lets both
+  start.
+  - `.github/workflows/packages.yml` builds the `.deb` and `.rpm` files
+    from the released Linux tarballs. It signs the `.rpm` files, adds
+    everything to `irsync-dev/packages`, signs the apt and dnf metadata
+    and pushes. It keeps the newest 3 versions. GitHub Pages serves the
+    result at `dist.irsync.org`. The packages get attestations, but are
+    not attached to the release.
+  - `.github/workflows/publish-homebrew.yml` pushes the formula from the
+    release to `irsync-dev/homebrew-tap`. First it runs
+    `.github/scripts/formula-man-pages.sh`, which adds two lines to the
+    formula (`man1.install` and `man5.install`), so brew puts the man
+    pages where `man` looks. This happens before the tap is checked out
+    with its token. The script fails if dist's formula template changed,
+    so look at the formula then.
+- **Notes.** It adds GitHub's list of changes to the release notes, under
+  the heading `## What's changed`. For a stable release the list starts
+  at the previous stable release, so it covers the betas in between too.
 
 The release tag is a lightweight tag made by GitHub, not an annotated one.
 
@@ -188,16 +206,20 @@ Its source is `packaging/installer/irsync-installer.sh.in`.
 
 ## The release workflow is generated
 
-`.github/workflows/release.yml` is made by `dist generate` (cargo dist
-0.34.0). Never edit it by hand. The settings are in `dist-workspace.toml`,
-and the package is described in `packaging/dist/dist.toml`. After you change
-`dist-workspace.toml`, run:
+`.github/workflows/release.yml` is made by
+`.github/scripts/release-yml.sh` from what `dist generate` writes (cargo
+dist 0.34.0), with `--draft` added so the release is created as a draft.
+dist does not manage the file any more (`allow-dirty = ["ci"]` in
+`dist-workspace.toml`). Never edit it by hand. The settings are in
+`dist-workspace.toml`, and the package is described in
+`packaging/dist/dist.toml`. After you change `dist-workspace.toml`, run:
 
 ```sh
-dist generate
+.github/scripts/release-yml.sh write
 ```
 
-and commit the result.
+and commit the result. `.github/scripts/release-yml.sh check` says whether
+the file is up to date; CI runs it.
 
 The installer is not dist's. `dist-workspace.toml` lists
 `irsync-installer.sh` under `extra-artifacts`, and dist builds it with
@@ -205,7 +227,7 @@ The installer is not dist's. `dist-workspace.toml` lists
 checksums of the three tarballs. The man pages get into the tarballs through
 `packaging/dist/build.sh`, which runs `tools/build-man.sh`. The build
 runners need pandoc, which `dist-workspace.toml` lists as a dependency.
-`dist generate` needed no change to `release.yml` for this: the workflow
+This needed no change to `release.yml`: the workflow
 reads the runners' packages and the extra artifact from `dist plan` when it
 runs.
 
@@ -214,9 +236,9 @@ hand from the Actions tab.** That skips the tests.
 
 ## If a release fails
 
-The tag is created last, so a failure before the GitHub Release exists
+The tag is created when you publish the draft, so a failure before that
 leaves no tag behind. Fix the cause and start the gate again with the same
-version.
+version. It deletes a leftover draft.
 
 **The check failed.** Nothing ran. Read the error. Usually the version in
 the two files does not match, or you are on the wrong branch, or the branch
@@ -233,18 +255,22 @@ again with the same version.
 link is in the gate's log. If the gate could not find the run, look in the
 Actions tab under the release workflow: it may still be running.
 
-- If the GitHub Release was not created, nothing was published and there is
-  no tag. Fix the cause, then start the gate again with the same version.
-  A leftover `pinned/vX.Y.Z` branch is deleted by the next run. If a
-  `release.yml` run is still going, the gate refuses to start: cancel that
-  run first (`gh run cancel <id>`), or wait for it to end.
-- If the GitHub Release was created, the release is public (and the tag
-  exists), but the gate stopped before the branch, the packages, Homebrew
-  and the notes. This happens when the gate lost track of the `release.yml`
-  run. Finish the release with the resume workflow (see below). For
-  `X.Y.0`, also create the branch `release-X.Y` at the released commit by
-  hand, if it is missing (see
-  [Creating `release-X.Y` by hand](#creating-release-xy-by-hand)).
+- If the draft was not created, or you don't trust it, nothing was published
+  and there is no tag. Fix the cause, then start the gate again with the
+  same version. A leftover `pinned/vX.Y.Z` branch and a leftover draft are
+  deleted by the next run. If a `release.yml` run is still going, the gate
+  refuses to start: cancel that run first (`gh run cancel <id>`), or wait
+  for it to end.
+- If the draft was created but the gate lost track of the `release.yml`
+  run, the draft is fine. Sign and publish it with `sign-release.sh`.
+
+**Signing failed.** See [Signing the release](#signing-the-release).
+
+**The tag exists, but the release is not finished.** The gate refuses to
+start again, since the tag can't be reused. Finish the release with the
+resume workflow (see below). For `X.Y.0`, also create the branch
+`release-X.Y` at the released commit by hand, if it is missing (see
+[Creating `release-X.Y` by hand](#creating-release-xy-by-hand)).
 
 **The packages or Homebrew step failed.** Fix the cause (often a token in
 the `release` environment), then re-run that job from the resume run, or
@@ -256,8 +282,9 @@ nothing.
 **The notes step failed.** Re-run that job, or start a new resume run. It
 does nothing if the heading is already there.
 
-**The release is out, but packages, Homebrew or the notes did not happen.**
-This is what you see if the gate or the resume run was cancelled. Start the
+**The release is out, but the branch, packages, Homebrew or the notes did
+not happen.** This is what you see if the resume run was cancelled, or
+`sign-release.sh` could not start it. Start the
 resume run by hand:
 
 ```sh
@@ -268,18 +295,18 @@ Two traps:
 
 - **Cancelling the gate run does not stop `release.yml`** once it has been
   launched. Cancel that run too, from the Actions tab.
-- **Starting the gate twice for the same version** can cancel the first
-  run's waiting resume run. Start the resume run by hand if that happens.
+- **Starting the gate twice for the same version** makes the second run
+  delete the first run's draft. Don't.
 
 ### Finishing a release with the resume workflow
 
 `.github/workflows/release-resume.yml` is the second half of every release:
-the gate starts it on the new tag. You start it yourself to finish a release
-that already exists but whose resume run failed or never ran. It runs the
-same packages, Homebrew and notes steps. It never builds or publishes a
-release. Start it **on the tag**, so the `release` environment opens. In the
-browser, go to Actions, Release resume, Run workflow, and pick the tag under
-"Use workflow from". Or run:
+`sign-release.sh` starts it on the new tag. You start it yourself to
+finish a release that already exists but whose resume run failed or never
+ran. It runs the same branch, packages, Homebrew and notes steps. It never
+builds or publishes a release. Start it **on the tag**, so the `release`
+environment opens. In the browser, go to Actions, Release resume, Run
+workflow, and pick the tag under "Use workflow from". Or run:
 
 ```sh
 gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
@@ -298,6 +325,64 @@ but publishes nothing: no push, no Homebrew, no notes. The packages and the
 updated repo are kept as artifacts of the run, for you to look at. Use it
 on a pre-release to check the key and tokens before the first stable
 release.
+
+## Signing the release
+
+Every file on a release gets a [minisign](https://jedisct1.github.io/minisign/)
+signature, `FILE.minisig`, made with a key that never goes near GitHub. The
+`.sha256` files are signed too. Someone who takes over the GitHub
+organisation or a workflow can build a release, but can't sign it. The
+reasons are in [Supply chain security](supply-chain.md). The one-off key
+setup is in [The release signing key](release-signing-key.md).
+
+`sign-release.sh` runs on your computer, with the key's USB stick plugged
+in. It stops at the first check that fails:
+
+1. The draft holds exactly the files a release should have.
+2. Every checksum matches, and every file has an attestation from
+   `release.yml`.
+3. You confirm the list of files.
+4. minisign signs all files in one go and asks for the password once. The
+   trusted comment of every signature is `irsync vX.Y.Z`.
+5. Every signature checks out against
+   `packaging/signing/release-keys.pub`. A wrong key is caught here.
+6. It uploads the `.minisig` files and checks that every file has one.
+7. It checks that the tag still does not exist. Then it publishes the
+   draft, which creates the tag, checks that the release is immutable and
+   starts `release-resume.yml` on the tag.
+
+`--key PATH` names the secret key file. Without it, minisign uses
+`~/.minisign/minisign.key`. `--no-publish` stops after step 6: use it to
+look at the signed draft first, then run the script again to publish.
+
+**Where the key lives.** The secret key is a password-protected file on a
+USB stick, and a copy is on a second stick kept somewhere else. The password
+is in a password manager. Nothing of it is on GitHub. The public key is in
+`packaging/signing/release-keys.pub`.
+
+**A second key.** Another maintainer makes their own key, as in
+[A second key](release-signing-key.md#a-second-key), and a pull request
+adds their public key to `release-keys.pub` below the first one. A release
+signed with either key passes. The new key can sign from the first release
+that lists it.
+
+**If signing fails.** Nothing is public until the last step, and the script
+only uploads files to the draft.
+
+- A check fails before the upload (files, checksums, attestations, the
+  key): read the message, fix the cause and run the script again.
+- Something fails after the upload but before the publish: run the script
+  again. It replaces the signatures.
+- You can't fix it, or the build itself is wrong: delete the draft
+  (`gh release delete vX.Y.Z`) and start the gate again with the same
+  version. It deletes a leftover draft anyway.
+- The release is published, but the resume run did not start: start it by
+  hand (see
+  [Finishing a release with the resume workflow](#finishing-a-release-with-the-resume-workflow)).
+  Never run the script on a published release: it refuses.
+
+Once the release is published, its files can't change. A wrong signature
+means a new version.
 
 ## Testing a version on FreeBSD
 
@@ -364,6 +449,11 @@ it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
 The workflow uses the fingerprint of the key it imports as `GPG_KEY_ID`, so
 there is nothing else to set.
 
+**Release signing key.** Make the minisign key that signs every file on a
+release, step by step in
+[The release signing key](release-signing-key.md). It stays offline, on a
+USB stick, and never goes into GitHub.
+
 **Tokens and secrets.** Make one fine-grained token per repository, and put
 the secrets in the `release` environment, not the repository. Step by step
 in [Supply chain security](supply-chain.md#maintainer-steps), steps 2 to 5:
@@ -394,7 +484,7 @@ releases. See [Checking the settings](supply-chain.md#checking-the-settings).
 
 ## Creating `release-X.Y` by hand
 
-The `branch` job creates `release-X.Y` after the release is public. If it
+The resume run creates `release-X.Y` after the release is public. If it
 fails, or the branch is missing, create it at the released commit:
 
 ```sh
@@ -406,9 +496,9 @@ admin disables that ruleset for a moment, pushes the branch, and turns the
 ruleset on again with `tools/github_settings.py apply`.
 
 **Watch the first stable release.** The first `X.Y.0` is the first time the
-`branch` job creates `release-X.Y`, and it runs after the release is
+resume run creates `release-X.Y`, and it runs after the release is
 public. The `Release branches` ruleset may block it. If it does, create the
-branch by hand as above, and fix the ruleset or the job.
+branch by hand as above, and fix the ruleset or the workflow.
 
 **Watch the first patch release.** The first release from a `release-X.Y`
 branch should be watched. The gate creates `pinned/vX.Y.Z` with the
@@ -432,13 +522,15 @@ Do the one-time setup first. Then:
    this way, with the old flow. Its tag exists and it has no release, so
    the start check refuses that version now. The next rehearsal uses the
    next pre-release, for example `0.1.0-beta.4`. Follow
-   [Cutting a release](#cutting-a-release) with that version. The gate
-   creates the tag.
+   [Cutting a release](#cutting-a-release) with that version, including the
+   signing step. Publishing the draft creates the tag.
 
    Check that:
-   - the gate passes and creates the tag `v0.1.0-beta.4`;
+   - the gate passes and leaves a draft, and `sign-release.sh` publishes it
+     and creates the tag `v0.1.0-beta.4`;
    - the GitHub Release is marked as a pre-release and has the tarballs, the
-     checksums and the installer;
+     checksums, the installer and a `.minisig` file for each of them, and
+     they verify as in [Verify a download](../how-to/verify-a-download.md);
    - its notes end with `## What's changed`;
    - the install script with `--alpha` installs it, and without `--alpha`
      says there is no stable release yet;
@@ -524,8 +616,8 @@ If `main` is protected against force pushes, allow it for this push.
 
 ## Protecting the release tags
 
-Release tags are created by `release.yml`, as the last step of a release,
-together with the GitHub Release. **Never push a `v*` tag yourself.** The
+Release tags are created by GitHub when `sign-release.sh` publishes the
+draft release. That is not a push. **Never push a `v*` tag yourself.** The
 `Release tags` ruleset, set by `tools/github_settings.py`, makes every `v*`
 tag permanent once it exists:
 
@@ -535,10 +627,10 @@ tag permanent once it exists:
 | Restrict deletions | Deleting a tag |
 | Block force pushes | Overwriting a tag with `git push --force` |
 
-Nobody can bypass it, admins included. Creating tags is allowed (the
-release workflow needs that). A stable release still publishes nothing
-beyond the GitHub Release until a maintainer approves the `release`
-environment.
+Nobody can bypass it, admins included. Creating tags is allowed, and
+publishing a draft creates one, so the ruleset doesn't get in the way. A
+stable release still publishes nothing beyond the GitHub Release until a
+maintainer approves the `release` environment.
 
 A tag pushed by hand has no GitHub Release. It is a stray tag. It can't be
 deleted, and it uses up its number. The gate checks for stray tags and

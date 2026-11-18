@@ -14,8 +14,8 @@ maintainer can do. Why each choice was made is in
 - `main` only changes through a pull request that passed the `CI result`
   check. Nobody can push to it directly or force-push, admins included. A
   pull request needs no approving review while irsync has one maintainer.
-- Release tags (`v*`) are created by the release workflow, together with
-  the GitHub Release. They can never be moved or deleted. Anyone with write
+- Release tags (`v*`) are created by GitHub when a maintainer publishes the
+  draft release, not by a push. They can never be moved or deleted. Anyone with write
   access can still push a new `v*` tag by hand. That is caught, not
   blocked: a tag with no release stops the next gate run, and
   `tools/github_settings.py check` reports it.
@@ -61,6 +61,15 @@ maintainer can do. Why each choice was made is in
 - Every archive, installer and package gets an attestation. Users can check
   one with `gh attestation verify`, see
   [Verify a download](../how-to/verify-a-download.md).
+- Every file on a release is signed with a minisign key that is kept
+  offline, on a USB stick, and never goes into GitHub. A maintainer signs
+  the draft on their own computer and then publishes it
+  (`.github/scripts/sign-release.sh`, see
+  [Releasing](releasing.md#signing-the-release)). Someone who takes over
+  the organisation, a token or a workflow can build a release, but can't
+  make a signature that passes. Users check it as in
+  [Verify a download](../how-to/verify-a-download.md). The one-off key setup
+  is in [The release signing key](release-signing-key.md).
 - Releases are immutable once published: no file can be replaced or added.
 - `install.sh` refuses plain HTTP, even after a redirect.
 - The apt/dnf key's primary part is kept offline. GitHub holds only a
