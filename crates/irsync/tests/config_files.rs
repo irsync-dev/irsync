@@ -184,6 +184,31 @@ fn host_by_ssh_destination() {
     );
 }
 
+/// `ssh_aliases` lists other destinations typed for a host: they find it the
+/// way its `ssh` value does.
+#[test]
+fn host_by_another_ssh_destination() {
+    let text = format!(
+        "[hosts.myserver]\nendpoint_id = \"{}\"\nssh = \"mike@myserver\"\n\
+         ssh_aliases = [\"192.168.1.5\", \"u@192.168.1.5\"]\n\
+         [hosts.other]\nendpoint_id = \"{}\"\nssh = \"u@192.168.1.5\"\n",
+        id(1),
+        id(2)
+    );
+    let hosts = parse_hosts(&text, p()).unwrap();
+    assert_eq!(
+        hosts.get("myserver").unwrap().ssh_aliases,
+        ["192.168.1.5", "u@192.168.1.5"]
+    );
+    assert!(hosts.get("other").unwrap().ssh_aliases.is_empty());
+    assert_eq!(hosts.by_ssh("192.168.1.5"), Ok(Some("myserver")));
+    assert_eq!(hosts.by_ssh("mike@myserver"), Ok(Some("myserver")));
+    assert_eq!(
+        hosts.by_ssh("u@192.168.1.5"),
+        Err(vec!["myserver".to_string(), "other".to_string()])
+    );
+}
+
 /// One entry stands for one machine: `endpoint_id` is its daemon, the id
 /// to dial; `client_id` is the machine as a client, the id grants are for.
 #[test]

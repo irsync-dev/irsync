@@ -179,6 +179,7 @@ be an `EndpointId`.
 | `dht` | `[client]`'s | Look this host up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this host up with mDNS. |
 | `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a host with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync HOST:`, is not checked this way. A host without `ssh` is never touched over ssh. |
+| `ssh_aliases` | none | Other ssh destinations that were typed for this host, such as its address: `["192.168.1.5"]`. Typing one of them finds this host, as typing its `ssh` value does. The SSH setup adds to it; nothing is ever dialled through it. These are not host aliases: they do not work in grant lists or with `irsync host`. |
 
 `--address` on the command line replaces the host's `address` list.
 
