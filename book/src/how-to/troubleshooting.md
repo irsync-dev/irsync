@@ -82,7 +82,8 @@ Other messages from this step:
   the signature check`: the release on GitHub is not signed the way this
   irsync expects, so it refuses to use it. Report it on
   [GitHub Issues](https://github.com/irsync-dev/irsync/issues), and set the
-  server up by hand meanwhile.
+  server up by hand meanwhile. If you built irsync yourself, this is
+  expected: only release builds install on another OS or CPU.
 
 Nothing on the server is changed in any of these cases.
 

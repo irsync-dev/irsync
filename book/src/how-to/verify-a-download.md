@@ -39,6 +39,18 @@ The same works for every file on the release, the checksum files included.
 Releases from before signing started have no `.minisig` files; use the
 checks below for them.
 
+## Check the signature with irsync
+
+An installed irsync can check a download too, with the release keys built in:
+
+```sh
+irsync verify-signature --trusted-comment "irsync vX.Y.Z" irsync-x86_64-unknown-linux-musl.tar.xz
+```
+
+The signature file, `.minisig` added to the name, must be next to the file.
+Exit status 0 means a good signature, 1 a bad or missing one. This command is
+hidden from `irsync --help`.
+
 ## An archive or the installer
 
 Download the file from the
