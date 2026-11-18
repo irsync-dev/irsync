@@ -114,8 +114,7 @@ impl World {
         format!("{}/", self.src.path().display())
     }
 
-    /// Runs the client irsync with `args` plus `--address`, bounded to 180 s
-    /// (a dial to a dead daemon takes the 60 s handshake timeout).
+    /// Runs the client irsync with `args` plus `--address`, bounded to 180 s.
     fn irsync(&self, args: &[&str]) -> Output {
         let addr = format!("127.0.0.1:{}", self.port);
         let mut all = args.to_vec();
@@ -182,6 +181,9 @@ impl World {
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
         cmd.env("IRSYNC_TEST_HOSTNAME", name);
+        // A dial to a daemon that is not there gives up after this long,
+        // not after the real 15 s or 60 s; plenty for one on this machine.
+        cmd.env("IRSYNC_TEST_DIAL_SECS", "5");
         cmd.env("FAKE_SSH_HOSTNAME", self.hostname.as_deref().unwrap_or("-"));
         if self.probe_root {
             cmd.env("FAKE_SSH_ID_U", "0");

@@ -696,6 +696,21 @@ async fn connect_for(
 /// is checked over ssh.
 const SSH_HOST_FIRST_DIAL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The bound on each dial until the server has answered once: `usual`
+/// (`None`: iroh's own handshake timeout, about 60 s). A test-hooks build
+/// takes `IRSYNC_TEST_DIAL_SECS` seconds instead, when that is set, so a
+/// test of a host that does not answer need not wait the real time out.
+fn first_dial_limit(usual: Option<std::time::Duration>) -> Option<std::time::Duration> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(secs) = std::env::var("IRSYNC_TEST_DIAL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    usual
+}
+
 /// What setting a host up over ssh did, then the service how-to.
 fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     for line in irsync::ssh::onboard::summary(o) {
@@ -1000,6 +1015,7 @@ async fn sync(
                 .or(settings.client.dial_retries)
                 .unwrap_or(ReconnectOpts::default().dial_retries),
             source_index: index,
+            first_dial_timeout: first_dial_limit(None),
             ..ReconnectOpts::default()
         };
         sessions += 1;
@@ -1017,7 +1033,7 @@ async fn sync(
             let ropts = if ssh_host && !rechecked {
                 ReconnectOpts {
                     dial_retries: cli_opts.dial_retries.unwrap_or(0),
-                    first_dial_timeout: Some(SSH_HOST_FIRST_DIAL),
+                    first_dial_timeout: first_dial_limit(Some(SSH_HOST_FIRST_DIAL)),
                     ..ropts
                 }
             } else {
