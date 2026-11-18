@@ -134,6 +134,18 @@ differ, the code is what shipped.
     shell script ourselves, and a change to the tarball names must change it
     too.
 
+17. **Developer tools are downloaded and checked against hashes in the
+    repo.** `tools/dev-setup.sh` fetches cargo-nextest, cargo-deny, dist,
+    mdbook and actionlint as release binaries and refuses one whose SHA-256
+    is not the one in the script. A refused or failed download is reported;
+    it never turns into a build from source. Why: building them took
+    minutes on every new machine and version bump. cargo-binstall was
+    turned down: it verifies minisign signatures only for a tool whose
+    `Cargo.toml` names a key, and none of these does, so it would check
+    nothing beyond HTTPS. Cost if wrong: the hashes are replaced by hand on
+    each bump, and mdbook publishes none, so its hashes are our own first
+    download. Revisit if the tools start signing.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the

@@ -35,6 +35,13 @@ esac""",
 # Fake `uname`s, so a test of one OS's branch runs on every OS.
 LINUX = 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac'
 FREEBSD = 'case "$1" in -m) echo amd64 ;; *) echo FreeBSD ;; esac'
+MAC = 'case "$1" in -m) echo arm64 ;; *) echo Darwin ;; esac'
+# A CPU no tool has a release binary for.
+RISCV = 'case "$1" in -m) echo riscv64 ;; *) echo Linux ;; esac'
+
+# The part of its download URL that tells a tool apart.
+URL_KEY = {"cargo-nextest": "nextest-rs", "cargo-deny": "cargo-deny",
+           "cargo-dist": "cargo-dist", "mdbook": "mdBook"}
 
 
 class DevSetupCheckTests(unittest.TestCase):
@@ -162,8 +169,8 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertRegex(out, rf"ok +actionlint {re.escape(self.actionlint_pin())}")
         # Another version than CI's is reported, with the one CI uses.
         self.assertRegex(out, r"missing +cargo-deny \d+\.\d+\.\d+, have 0\.1\.0.*\(optional\)")
-        # Any mdbook will do.
-        self.assertRegex(out, r"ok +mdbook 0\.0\.1\n")
+        # mdbook is held to CI's version too.
+        self.assertRegex(out, r"missing +mdbook \d+\.\d+\.\d+, have 0\.0\.1.*\(optional\)")
 
     def test_another_actionlint_version_is_reported(self):
         r, out = self.check(actionlint="echo 0.0.1")
@@ -184,16 +191,26 @@ class DevSetupCheckTests(unittest.TestCase):
             self.assertIn(f"ACTIONLINT_VERSION: {self.actionlint_pin()}\n", text, wf)
             self.assertIn(f"ACTIONLINT_SHA256: {amd64}\n", text, wf)
 
-    def setup(self, **tools):
-        """Runs the script without --check, with a cargo that records its calls."""
+    def setup(self, script=SCRIPT, path_has_cargo_bin=True, **tools):
+        """Runs the script without --check, with a cargo that records its calls.
+
+        Like cargo, the fake runs cargo-NAME for the subcommand NAME when
+        that is on PATH. ~/.cargo/bin is on PATH, ahead of the fakes.
+        """
         log = os.path.join(self.tmp, "cargo.log")
         for name, body in {**GOOD, **tools}.items():
             self.fake(name, body)
-        self.fake("cargo", f'echo "$*" >> {log}\n' + tools.get("cargo", "") + "\nexit 0")
-        for u in ["sha256sum", "shasum", "sha256", "mkdir"]:
-            if shutil.which(u):
+        self.fake("cargo", f'echo "$*" >> {log}\n' + tools.get("cargo", "") + """
+if command -v "cargo-$1" >/dev/null 2>&1; then exec "cargo-$1" "$@"; fi
+exit 0""")
+        for u in ["sha256sum", "shasum", "sha256", "mkdir", "mv", "chmod", "gzip"]:
+            # A test's own fake stays.
+            if shutil.which(u) and not os.path.lexists(os.path.join(self.bin, u)):
                 os.symlink(shutil.which(u), os.path.join(self.bin, u))
-        r = subprocess.run([SCRIPT], env={"PATH": self.bin, "HOME": self.tmp},
+        path = self.bin
+        if path_has_cargo_bin:
+            path = os.path.join(self.tmp, ".cargo", "bin") + ":" + path
+        r = subprocess.run([script], env={"PATH": path, "HOME": self.tmp},
                            capture_output=True, text=True)
         calls = ""
         if os.path.exists(log):
@@ -201,13 +218,163 @@ class DevSetupCheckTests(unittest.TestCase):
                 calls = f.read()
         return r.stdout + r.stderr, calls
 
-    def test_setup_replaces_another_version_but_keeps_any_mdbook(self):
-        out, calls = self.setup(cargo='[ "$1" = deny ] && echo "cargo-deny 0.1.0"',
-                                mdbook="echo mdbook v0.0.1",
-                                curl="exit 22")
-        self.assertRegex(calls, r"install --locked cargo-deny --version \d+\.\d+\.\d+\n")
-        self.assertRegex(calls, r"install --locked cargo-nextest --version")
-        self.assertNotIn("mdbook", calls)
+    def setup_in_copy(self, nextest, **tools):
+        """Runs a copy of the script in a tree whose ci.yml pins another nextest."""
+        repo = os.path.join(self.tmp, "repo")
+        files = ["tools/dev-setup.sh", "rust-toolchain.toml", "Cargo.toml", "dist-workspace.toml",
+                 ".github/workflows/site.yml", ".github/workflows/ci.yml",
+                 ".github/scripts/install-packaging-tools.sh"]
+        for f in files:
+            os.makedirs(os.path.dirname(os.path.join(repo, f)), exist_ok=True)
+            shutil.copy(os.path.join(ROOT, f), os.path.join(repo, f))
+        ci = os.path.join(repo, ".github", "workflows", "ci.yml")
+        with open(ci) as f:
+            text = f.read()
+        with open(ci, "w") as f:
+            f.write(re.sub(r"cargo-nextest@[0-9.]+", f"cargo-nextest@{nextest}", text))
+        return self.setup(script=os.path.join(repo, "tools", "dev-setup.sh"), **tools)
+
+    def pins(self):
+        """Crate name to the version the script's hashes are for."""
+        with open(SCRIPT) as f:
+            body = re.search(r"^tool_hashes_for\(\) \{\n(.*?)^\}", f.read(), re.M | re.S)
+        self.assertIsNotNone(body, "tool_hashes_for not found")
+        return dict(re.findall(r"^ +(\S+)\) echo (\S+) ;;$", body.group(1), re.M))
+
+    def good_downloads(self):
+        """A curl that "downloads" each tool as a script printing the pinned
+        version, packed the way the real archive is, and a sha256sum that
+        prints the hash the script expects for it."""
+        with open(SCRIPT) as f:
+            script = f.read()
+        arms = []
+        for keys, sha in re.findall(r"^ +(\S+:\S+(?: \| \S+:\S+)*)\) echo ([0-9a-f]{64}) ;;$", script, re.M):
+            for key in keys.split(" | "):
+                crate, target = key.split(":")
+                if crate == "cargo-nextest" and target.endswith("apple-darwin"):
+                    target = "universal-apple-darwin"
+                arms.append(f'*{URL_KEY[crate]}*{target}*) name={crate}; pin={self.pins()[crate]}; sha={sha} ;;')
+        for plat, sha in re.findall(r"^ +(\w+_\w+)\) echo ([0-9a-f]{64}) ;;$", script, re.M):
+            arms.append(f'*actionlint*{plat}*) name=actionlint; pin={self.actionlint_pin()}; sha={sha} ;;')
+        curl = """out=; url=
+while [ $# -gt 0 ]; do
+  case $1 in -o) out=$2; shift ;; https://*) url=$1 ;; esac
+  shift
+done
+case $url in
+%s
+*) exit 22 ;;
+esac
+file=${url##*/}
+case $name in
+  cargo-deny) member=${file%%.tar.gz}/cargo-deny ;;
+  cargo-dist) member=${file%%.tar.xz}/dist ;;
+  *) member=$name ;;
+esac
+d=$(mktemp -d)
+mkdir -p "$(dirname "$d/$member")"
+printf '#!/bin/sh\\necho "%%s %%s"\\n' "$name" "$pin" > "$d/$member"
+chmod +x "$d/$member"
+echo other > "$d/README.md"
+case $url in
+  *.tar.xz) tar -cJf "$out" -C "$d" "$member" README.md ;;
+  *) tar -czf "$out" -C "$d" "$member" README.md ;;
+esac
+rm -rf "$d"
+echo "$sha" > "$HOME/expected-hash"
+""" % "\n".join(arms)
+        return {"curl": curl, "sha256sum": 'echo "$(cat "$HOME/expected-hash")  $1"'}
+
+    def test_tool_hash_versions_match_the_pins(self):
+        # A version bump must bring its hashes along.
+        def first(pattern, *path):
+            with open(os.path.join(ROOT, *path)) as f:
+                return re.search(pattern, f.read(), re.M).group(1)
+        wf = (".github", "workflows")
+        self.assertEqual(self.pins(), {
+            "cargo-nextest": first(r"cargo-nextest@([0-9.]+)", *wf, "ci.yml"),
+            "cargo-deny": first(r"cargo-deny@([0-9.]+)", *wf, "ci.yml"),
+            "cargo-dist": first(r'^cargo-dist-version *= *"(.*)"', "dist-workspace.toml"),
+            "mdbook": first(r"^ *MDBOOK_VERSION: *([0-9.]+)", *wf, "site.yml"),
+        })
+
+    def test_setup_downloads_the_tools_and_does_not_compile(self):
+        out, calls = self.setup(uname=LINUX, mdbook="echo mdbook v0.0.1", **self.good_downloads())
+        for crate, pin in self.pins().items():
+            self.assertRegex(out, rf"running +download {crate} {re.escape(pin)} \(x86_64-unknown-linux-musl\)")
+            self.assertRegex(out, rf"ok +{crate} {re.escape(pin)}\n")
+        self.assertNotIn("install", calls)
+        for b in ["cargo-nextest", "cargo-deny", "dist", "mdbook", "actionlint"]:
+            self.assertTrue(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", b)), b)
+        # Only the binary, not the archive's other files.
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 5)
+
+    def test_setup_on_a_mac_takes_the_universal_nextest(self):
+        out, calls = self.setup(uname=MAC, **self.good_downloads())
+        self.assertRegex(out, r"download cargo-nextest \S+ \(aarch64-apple-darwin\)")
+        self.assertRegex(out, r"ok +cargo-nextest")
+        self.assertNotIn("install", calls)
+
+    def test_setup_refuses_a_tampered_tool_and_does_not_compile(self):
+        out, calls = self.setup(
+            uname=LINUX,
+            curl='while [ "$1" != -o ]; do shift; done; echo tampered > "$2"')
+        for crate in self.pins():
+            self.assertRegex(out, rf"refused +{crate} download: SHA-256 is")
+            self.assertRegex(out, rf"missing +{crate} .*\n +tools/dev-setup\.sh\n")
+        self.assertNotIn("install", calls)
+
+    def test_setup_offline_reports_and_does_not_compile(self):
+        out, calls = self.setup(uname=LINUX, curl="exit 6")
+        for crate in self.pins():
+            self.assertRegex(out, rf"missing +{crate} .*\n +tools/dev-setup\.sh\n")
+        self.assertNotIn("install", calls)
+
+    def test_setup_on_freebsd_downloads_nextest_and_compiles_the_rest(self):
+        out, calls = self.setup(uname=FREEBSD, **self.good_downloads())
+        self.assertRegex(out, r"download cargo-nextest \S+ \(x86_64-unknown-freebsd\)")
+        self.assertNotIn("cargo-nextest", calls.replace("nextest --version", ""))
+        for crate in ["cargo-deny", "cargo-dist", "mdbook"]:
+            self.assertRegex(calls, rf"install --locked {crate} --version \d+\.\d+\.\d+ --force\n")
+
+    def test_setup_compiles_on_a_cpu_without_binaries(self):
+        out, calls = self.setup(uname=RISCV, curl="exit 99")
+        for crate in self.pins():
+            self.assertRegex(calls, rf"install --locked {crate} --version \d+\.\d+\.\d+ --force\n")
+
+    def test_setup_leaves_right_versions_alone(self):
+        p = self.pins()
+        out, calls = self.setup(
+            uname=LINUX, curl='echo "curl called" >&2; exit 99',
+            cargo=f'case "$1" in nextest) echo "cargo-nextest {p["cargo-nextest"]}" ;; '
+                  f'deny) echo "cargo-deny {p["cargo-deny"]}" ;; esac',
+            dist=f'echo "dist {p["cargo-dist"]}"', mdbook=f'echo "mdbook v{p["mdbook"]}"',
+            actionlint=f"echo {self.actionlint_pin()}")
+        self.assertNotIn("curl called", out)
+        self.assertNotIn("install", calls)
+        self.assertNotRegex(out, r"missing +(cargo-|mdbook|actionlint)")
+
+    def test_setup_names_the_directory_missing_from_path(self):
+        out, calls = self.setup(uname=LINUX, path_has_cargo_bin=False, **self.good_downloads())
+        self.assertRegex(out, r"missing +mdbook .*it is in \S+/\.cargo/bin.*\n +add \S+/\.cargo/bin to PATH\n")
+        self.assertNotIn("install", calls)
+
+    def test_setup_compiles_when_the_hashes_are_for_another_version(self):
+        out, calls = self.setup_in_copy(nextest="9.9.9", uname=LINUX, **self.good_downloads())
+        self.assertRegex(out, r"note +cargo-nextest: the hashes are for \S+, CI uses 9\.9\.9; compiling")
+        self.assertNotIn("download cargo-nextest", out)
+        self.assertIn("install --locked cargo-nextest --version 9.9.9 --force\n", calls)
+
+    @unittest.skipUnless(os.environ.get("DEV_SETUP_NETWORK") == "1"
+                         and os.uname().sysname == "Linux" and os.uname().machine == "x86_64",
+                         "set DEV_SETUP_NETWORK=1 on Linux x86_64: downloads the real tools")
+    def test_the_real_downloads_install_and_run(self):
+        os.symlink(shutil.which("curl"), os.path.join(self.bin, "curl.real"))
+        out, calls = self.setup(curl='exec curl.real "$@"')
+        for crate, pin in self.pins().items():
+            self.assertRegex(out, rf"ok +{crate} {re.escape(pin)}\n")
+        self.assertRegex(out, r"ok +actionlint")
+        self.assertNotIn("install", calls)
 
     def refuses_a_tampered_actionlint(self, uname, plat):
         out, calls = self.setup(
@@ -245,10 +412,16 @@ class DevSetupCheckTests(unittest.TestCase):
         i = next(n for n, l in enumerate(lines) if "C compiler" in l)
         self.assertRegex(lines[i], r"^  missing  C compiler \(cc\) \(required\)$")
         self.assertRegex(lines[i + 1], r"^ {15}(apt install build-essential|xcode-select --install|pkg install llvm)$")
+        # Where a tool has a release binary, the script is what installs it.
+        r, out = self.check(uname=LINUX)
         self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"
-                              r" {15}cargo install --locked cargo-deny --version \S+\n")
-        # No version for mdbook: any will do.
-        self.assertRegex(out, r"missing  mdbook, .*\n {15}cargo install --locked mdbook\n")
+                              r" {15}tools/dev-setup\.sh\n")
+        self.assertRegex(out, r"missing  mdbook \S+, .*\n {15}tools/dev-setup\.sh\n")
+        # Where it has none, cargo builds it.
+        r, out = self.check(uname=RISCV)
+        self.assertRegex(out, r"missing  cargo-deny \S+, for tools/ci\.sh deny \(optional\)\n"
+                              r" {15}cargo install --locked cargo-deny --version \S+ --force\n")
+        self.assertRegex(out, r"missing  mdbook \S+, .*\n {15}cargo install --locked mdbook --version \S+ --force\n")
 
     @unittest.skipUnless(os.uname().sysname == "Linux", "the packaging tools are checked on Linux only")
     def test_nfpm_is_held_to_the_ci_version(self):

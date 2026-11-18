@@ -19,10 +19,12 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 ## Requirements
 
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
-what rustup and cargo can install: rustup, the toolchain with rustfmt and
-clippy, the musl target on Linux, and cargo-nextest, cargo-deny, dist,
-actionlint and mdbook. The CI tools are held to the versions CI uses: if you
-have another version, it is replaced. Any mdbook will do. It points git at the repo's hooks. System tools such as
+rustup, the toolchain with rustfmt and clippy, the musl target on Linux, and
+cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five tools
+are downloaded from their release pages and checked against SHA-256s kept
+in the script. Only where a project has no binary for your machine does
+cargo build the tool. They are held to the versions CI uses: if you have
+another version, it is replaced. It points git at the repo's hooks. System tools such as
 rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
 it again whenever you like.
