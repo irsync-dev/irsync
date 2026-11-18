@@ -34,6 +34,9 @@ pub struct HostEntry {
     pub mdns: Option<bool>,
     /// The `[user@]host` that `ssh` reaches this daemon's machine by.
     pub ssh: Option<String>,
+    /// Other ssh destinations that were typed for this host, such as its
+    /// address: they find this entry as `ssh` does.
+    pub ssh_also: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +66,8 @@ pub(crate) struct RawHost {
     mdns: Option<bool>,
     #[serde(default)]
     ssh: Option<String>,
+    #[serde(default)]
+    ssh_also: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +134,7 @@ pub(crate) fn hosts_from_raw(
                 dht: r.dht,
                 mdns: r.mdns,
                 ssh: r.ssh,
+                ssh_also: r.ssh_also,
             },
         );
     }
@@ -184,14 +190,14 @@ impl Hosts {
             .map(|(alias, _)| alias.as_str())
     }
 
-    /// The alias whose `ssh` value is exactly `dest`: the first in
-    /// lexicographic order when several entries of one daemon have it.
-    /// `Err`: the aliases, when entries of different daemons have it.
+    /// The alias whose `ssh` value is exactly `dest`, or that lists it in
+    /// `ssh_also`: the first in lexicographic order when several entries
+    /// of one daemon have it. `Err`: the aliases, when entries of
+    /// different daemons have it.
     pub fn by_ssh(&self, dest: &str) -> Result<Option<&str>, Vec<String>> {
-        let mut found = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.ssh.as_deref() == Some(dest));
+        let mut found = self.entries.iter().filter(|(_, e)| {
+            e.ssh.as_deref() == Some(dest) || e.ssh_also.iter().any(|a| a == dest)
+        });
         let Some((first, entry)) = found.next() else {
             return Ok(None);
         };

@@ -179,6 +179,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         dht: Some(true),
         mdns: Some(true),
         ssh: None,
+        ssh_also: Vec::new(),
     };
     let o = client_endpoint_opts(
         SecretKey::generate(),
@@ -295,6 +296,7 @@ fn opts_carry_the_congestion_controller() {
         dht: None,
         mdns: None,
         ssh: None,
+        ssh_also: Vec::new(),
     };
     for a in [&[][..], &addr[..]] {
         let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, None, a);
@@ -387,6 +389,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         dht: None,
         mdns: None,
         ssh: None,
+        ssh_also: Vec::new(),
     };
     let o = client_endpoint_opts(
         SecretKey::generate(),

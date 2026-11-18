@@ -39,13 +39,14 @@ irsync: 192.168.1.5 is saved as myserver
 
 A host that is already saved with a name to reach it by, such as
 `ssh = "mike@myserver"`, keeps that name when you type its address: an
-address can go stale. The address is then not saved, so each run that types
-it checks the server over ssh again. Type the alias to skip that.
+address can go stale. The address is saved beside it, in `ssh_also`, so
+typing it again needs no ssh either. The same goes for a second spelling of
+an address, such as `u@192.168.1.5` after `192.168.1.5`.
 
 It dials the daemon saved under that name, wherever it is now. If the
 address has since gone to another machine, that is not the machine you get.
 First take the address off the old entry (`irsync host remove myserver`, or
-change its `ssh` value in the config file), then sync to the address again:
+change its `ssh` or `ssh_also` value in the config file), then sync to the address again:
 the new machine is set up and saved under its own name. Do not use `--ssh`
 for this: it would point the old alias at the new machine.
 

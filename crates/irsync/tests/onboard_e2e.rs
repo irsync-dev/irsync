@@ -367,18 +367,25 @@ fn ip_address_is_saved_under_the_server_name() {
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "again\n"
     );
-    // The other spelling of the address ends on the same alias.
-    ok(&w.irsync(&[
-        "-a",
-        &w.src_arg(),
-        &format!("u@192.168.1.5:{}", dest.display()),
-    ]));
+    // The other spelling of the address ends on the same alias, and is
+    // remembered beside the first.
+    let other = format!("u@192.168.1.5:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &other]));
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(cfg["hosts"].as_table().unwrap().len(), 1, "{cfg}");
-    assert_eq!(
-        cfg["hosts"]["myserver"]["ssh"].as_str(),
-        Some("u@192.168.1.5")
-    );
+    let h = &cfg["hosts"]["myserver"];
+    assert_eq!(h["ssh"].as_str(), Some("192.168.1.5"), "{cfg}");
+    assert_eq!(h["ssh_also"][0].as_str(), Some("u@192.168.1.5"), "{cfg}");
+    // From here on neither spelling needs ssh.
+    let calls = w.ssh_calls();
+    for target in [&other, &format!("192.168.1.5:{}", dest.display())] {
+        let err = ok(&w.irsync(&["-a", &w.src_arg(), target]));
+        assert!(err.contains("is saved as myserver"), "{err}");
+    }
+    assert_eq!(w.ssh_calls(), calls);
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    let also = cfg["hosts"]["myserver"]["ssh_also"].as_array().unwrap();
+    assert_eq!(also.len(), 1, "{cfg}");
 }
 
 /// A host saved with a name to reach it by keeps that name when its
@@ -411,6 +418,20 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
             "{alias}"
         );
     }
+    // The address is remembered beside the name: typed again, no ssh.
+    assert_eq!(
+        cfg["hosts"]["myserver"]["ssh_also"][0].as_str(),
+        Some("192.168.1.5"),
+        "{cfg}"
+    );
+    let calls = w.ssh_calls();
+    let err = ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("192.168.1.5:{}", dest.display()),
+    ]));
+    assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
+    assert_eq!(w.ssh_calls(), calls);
 }
 
 /// Two saved daemons set up by one address: the address alone cannot say
@@ -642,6 +663,37 @@ fn dead_daemon_is_restarted_over_ssh() {
         "changed\n"
     );
     assert!(w.ssh_calls() > calls);
+}
+
+/// A server saved under two names (`mike@myserver` and `myserver`) and
+/// rebuilt: the check through one name gives both the new id. A host
+/// reached another way keeps what it has.
+#[test]
+fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let target = format!("mike@myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let before = w.saved_id("myserver");
+    assert_eq!(w.saved_id("mike@myserver"), before);
+    ok(&w.irsync_bare(&["host", "add", "elsewhere", &before]));
+    ok(&w.irsync_bare(&["config", "set", "hosts.elsewhere.ssh", "nas"]));
+    w.kill_daemon();
+    for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
+        let p = entry.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if name.starts_with("daemon_ed25519") {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(err.contains("updated host alias mike@myserver:"), "{err}");
+    assert!(err.contains("updated host alias myserver:"), "{err}");
+    let now = w.saved_id("mike@myserver");
+    assert_ne!(now, before);
+    assert_eq!(w.saved_id("myserver"), now);
+    assert_eq!(w.saved_id("elsewhere"), before);
+    same_tree(w.src.path(), &dest);
 }
 
 #[test]

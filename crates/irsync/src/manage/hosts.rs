@@ -100,6 +100,29 @@ pub fn host_add(
     Ok(old)
 }
 
+/// Add `dest` to the `ssh_also` list of `[hosts.alias]`, unless it is
+/// there: another ssh destination that was typed for this host. Nothing
+/// when there is no such host.
+pub fn host_also_ssh(doc: &mut DocumentMut, alias: &str, dest: &str) {
+    let Some(t) = doc
+        .get_mut("hosts")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|hosts| hosts.get_mut(alias))
+        .and_then(Item::as_table_like_mut)
+    else {
+        return;
+    };
+    let mut also = t
+        .get("ssh_also")
+        .and_then(Item::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !also.iter().any(|v| v.as_str() == Some(dest)) {
+        also.push(dest);
+        t.insert("ssh_also", toml_edit::value(also));
+    }
+}
+
 /// Create `[hosts.alias]` when it is missing and set its `client_id`: the
 /// id `alias` has as a client, the one grants naming it are for. Its other
 /// keys, the daemon's `endpoint_id` among them, stay as they are.
