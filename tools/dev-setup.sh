@@ -5,12 +5,14 @@
 #
 # Installs what it can without root: rustup itself, the toolchain from
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
-# and cargo-nextest, cargo-deny, dist, actionlint and mdbook. The CI tools
-# are held to the versions CI uses: another version is replaced. (mdbook is
-# not: any version builds the book.) Points git at the repo's hooks. Checks
-# the rest, which comes from the system package manager, and says which
-# package to install (apt, brew, or pkg on FreeBSD). Safe to run again. With
-# all of it in place, tools/ci.sh runs the CI checks here.
+# and cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five are
+# downloaded from their release pages and checked against SHA-256s kept
+# here; cargo builds one only where it has no binary for the machine. They
+# are held to the versions CI uses: another version is replaced. Points git
+# at the repo's hooks. Checks the rest, which comes from the system package
+# manager, and says which package to install (apt, brew, or pkg on FreeBSD).
+# Safe to run again. With all of it in place, tools/ci.sh runs the CI checks
+# here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
 # something required is missing, else 0. Missing optional tools, and ones
@@ -25,7 +27,7 @@ check_only=false
 case ${1:-} in
     "") ;;
     --check) check_only=true ;;
-    -h | --help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "usage: $0 [--check]" >&2; exit 2 ;;
 esac
 
@@ -89,7 +91,7 @@ hint() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # ---------------------------------------------------------------- Rust
-step "Rust (installed with rustup and cargo)"
+step "Rust (rustup, and tools from their release pages)"
 
 # rustup and cargo install into $CARGO_HOME/bin, ~/.cargo/bin by default.
 cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
@@ -162,36 +164,163 @@ tool_version() {
     { $1 2>/dev/null || true; } | sed -n '1s/[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
 }
 
-# A cargo-installed tool at the version CI pins.
-#   cargo_tool CRATE PINNED-VERSION "VERSION-COMMAND" WHAT-FOR [any]
+sha256_of() {
+    # sha256 is FreeBSD's own; -q prints only the digest.
+    if have sha256sum; then
+        sha256sum "$1"
+    elif have shasum; then
+        shasum -a 256 "$1"
+    else
+        sha256 -q "$1"
+    fi | awk '{print $1}'
+}
+
+# fetch_tool NAME VERSION PLAT URL SHA256 MEMBER
+# Downloads URL, checks it against SHA256 and puts MEMBER (a path inside the
+# archive, .tar.gz or .tar.xz) into $cargo_bin under its base name. Nothing
+# else from the archive lands there. Says what it downloads, and why it
+# refuses a download with another hash.
+# Returns 0 installed, 1 could not download or unpack, 2 refused.
+fetch_tool() {
+    local name=$1 version=$2 plat=$3 url=$4 want=$5 member=$6 d got rc=0
+    have curl && have tar || return 1
+    d=$(mktemp -d) || return 1
+    printf '  running  download %s %s (%s)\n' "$name" "$version" "$plat"
+    if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/archive" "$url"; then
+        got=$(sha256_of "$d/archive")
+        if [ "$got" != "$want" ]; then
+            printf '  refused  %s download: SHA-256 is %s, expected %s\n' "$name" "$got" "$want"
+            rc=2
+        else
+            # tar finds out by itself whether it is gzip or xz.
+            mkdir -p "$d/x" "$cargo_bin" &&
+                tar -xf "$d/archive" -C "$d/x" "$member" &&
+                mv -f "$d/x/$member" "$cargo_bin/${member##*/}" || rc=1
+        fi
+    else
+        rc=1
+    fi
+    rm -rf "$d"
+    return $rc
+}
+
+# The Rust target whose release binaries run here, or nothing. Linux takes
+# the static musl builds, so the host's libc does not matter.
+tool_target() {
+    case $os:$(uname -m) in
+        Linux:x86_64) echo x86_64-unknown-linux-musl ;;
+        Linux:aarch64 | Linux:arm64) echo aarch64-unknown-linux-musl ;;
+        Darwin:x86_64) echo x86_64-apple-darwin ;;
+        Darwin:arm64) echo aarch64-apple-darwin ;;
+        FreeBSD:amd64 | FreeBSD:x86_64) echo x86_64-unknown-freebsd ;;
+    esac
+}
+
+# The tools below are downloaded as release binaries and checked against
+# these hashes. To move one to a new version: change the pin where it lives
+# (see the *_pin lines below), change its version here, and replace its
+# hash lines. tools/tests/test_dev_setup.py holds the pin and the version
+# here together; when they differ, the tool is compiled instead.
+
+# The version the hashes below are for.
+tool_hashes_for() {
+    case $1 in
+        cargo-nextest) echo 0.9.151 ;;
+        cargo-deny) echo 0.20.2 ;;
+        cargo-dist) echo 0.34.0 ;;
+        mdbook) echo 0.5.2 ;;
+    esac
+}
+# The SHA-256 of a tool's release archive for a target, or nothing where
+# there is none. nextest, deny and dist publish a .sha256 file next to each
+# archive. mdbook publishes none: download its archives and hash them.
+tool_sha256() {
+    case $1:$2 in
+        cargo-nextest:x86_64-unknown-linux-musl) echo 6b284d6fde9670dfb6ee10ea9d9abbc85f95643d3f592472d420d82e257b3a6c ;;
+        cargo-nextest:aarch64-unknown-linux-musl) echo a9ee2d53cf0711d879f068c0ff814b6fe3af3f9be8799f8ab484e47571087160 ;;
+        # One universal archive for both Macs.
+        cargo-nextest:x86_64-apple-darwin | cargo-nextest:aarch64-apple-darwin) echo d1d7d025d4bfc9fb154cd76aea3949bd78534829a0589abefa6e5dd4edb135dd ;;
+        cargo-nextest:x86_64-unknown-freebsd) echo a353c1c6a4488b2be2c3c584852b18caa6830b5fa2ccdc0349e3971418b01d86 ;;
+        cargo-deny:x86_64-unknown-linux-musl) echo 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f ;;
+        cargo-deny:aarch64-unknown-linux-musl) echo 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d ;;
+        cargo-deny:x86_64-apple-darwin) echo 248da7f581724e470071990c088ffc55c811981715f4cbdb258621fb79f8b7a6 ;;
+        cargo-deny:aarch64-apple-darwin) echo fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3 ;;
+        cargo-dist:x86_64-unknown-linux-musl) echo f274b9889e93333a52cdcab86b93ab04b875b8ef4eebc7f8589514e0aff827e6 ;;
+        cargo-dist:aarch64-unknown-linux-musl) echo aac7d48901f5283b53e136dd0498782c88a3350dfa4a5e88f4c3e0ba7e486eea ;;
+        cargo-dist:x86_64-apple-darwin) echo 6aa89bb1e7c18f51ae8b148ce2fc6ab00ac46ed8173d4f2ed9afa12101218773 ;;
+        cargo-dist:aarch64-apple-darwin) echo d1eec30e63eed23e5a5bd48fe96eae314799811bffca254ec1d2264638ba1890 ;;
+        mdbook:x86_64-unknown-linux-musl) echo 8e9d802bbecea34380aabfc65bec4fdba23c07453ef2c7e06fa34c282082e2c4 ;;
+        mdbook:aarch64-unknown-linux-musl) echo fb229bfdc68dd6c93692e64c502a67a8d3d2fc35c37c61fc72768843e6476add ;;
+        mdbook:x86_64-apple-darwin) echo 17cc64478ec279a73881420e850bd8f9d460552e56b50159ff465bc97eb90d6c ;;
+        mdbook:aarch64-apple-darwin) echo da2f55653e96e3f6e1c53e2e13e91cc0cfbce8ab971c2e0de792c0f1f8d24222 ;;
+    esac
+}
+
+# tool_archive CRATE VERSION TARGET
+# Prints the URL of the release archive and, after a space, the path of the
+# binary inside it.
+tool_archive() {
+    local v=$2 t=$3
+    case $1 in
+        cargo-nextest)
+            case $t in *-apple-darwin) t=universal-apple-darwin ;; esac
+            echo "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$v/cargo-nextest-$v-$t.tar.gz cargo-nextest"
+            ;;
+        cargo-deny) echo "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-$t.tar.gz cargo-deny-$v-$t/cargo-deny" ;;
+        cargo-dist) echo "https://github.com/axodotdev/cargo-dist/releases/download/v$v/cargo-dist-$t.tar.xz cargo-dist-$t/dist" ;;
+        mdbook) echo "https://github.com/rust-lang/mdBook/releases/download/v$v/mdbook-v$v-$t.tar.gz mdbook" ;;
+    esac
+}
+
+# A tool at the version CI pins.
+#   cargo_tool CRATE PINNED-VERSION "VERSION-COMMAND" WHAT-FOR
 # A missing tool is installed at the pinned version, and so is one at
-# another version: cargo install replaces it. With "any", whatever version
-# is there stays.
+# another version: it is replaced. The release binary is downloaded where
+# there is one for this machine. A download that fails or is refused is
+# reported; it is never made up for by compiling. Only where there is no
+# binary, or the hashes above are for another version, cargo builds it.
 cargo_tool() {
-    local crate=$1 pin=$2 cmd=$3 why=$4 any=${5:-} have_v
-    local install="cargo install --locked $crate"
-    [ -n "$any" ] || install="$install --version $pin"
+    local crate=$1 pin=$2 cmd=$3 why=$4 have_v target want="" for_v archive fetched=false
     if [ -z "$pin" ]; then
         warn "$crate: no pinned version found, skipped"
         return
     fi
+    # --force: cargo will not replace a binary it did not install itself.
+    local compile="cargo install --locked $crate --version $pin --force"
+    local fix=$compile
+    target=$(tool_target)
+    for_v=$(tool_hashes_for "$crate")
+    [ -z "$target" ] || want=$(tool_sha256 "$crate" "$target")
     have_v=$(tool_version "$cmd")
-    if [ -n "$have_v" ] && [ -n "$any" ]; then
-        ok "$crate $have_v"
-        return
+    if [ -n "$want" ] && [ "$for_v" != "$pin" ]; then
+        if [ "$have_v" != "$pin" ] && ! $check_only; then
+            printf '  note     %s: the hashes are for %s, CI uses %s; compiling\n' "$crate" "$for_v" "$pin"
+        fi
+        want=""
     fi
-    if [ "$have_v" != "$pin" ] && $rust_ready && ! $check_only; then
-        run $install
+    [ -z "$want" ] || fix="tools/dev-setup.sh"
+    if [ "$have_v" != "$pin" ] && ! $check_only; then
+        if [ -n "$want" ]; then
+            archive=$(tool_archive "$crate" "$pin" "$target")
+            if fetch_tool "$crate" "$pin" "$target" "${archive% *}" "$want" "${archive#* }"; then
+                fetched=true
+            fi
+        elif $rust_ready; then
+            run $compile
+        fi
         have_v=$(tool_version "$cmd")
     fi
-    if [ -z "$have_v" ] && [ -n "$any" ]; then
-        warn "$crate, $why" "$install"
-    elif [ -z "$have_v" ]; then
-        warn "$crate $pin, $why" "$install"
-    elif [ "$have_v" = "$pin" ]; then
+    if [ "$have_v" = "$pin" ]; then
         ok "$crate $have_v"
+    elif $fetched && [ -z "$have_v" ]; then
+        warn "$crate $pin, $why; it is in $cargo_bin" "add $cargo_bin to PATH"
+    elif $fetched; then
+        # Another copy comes first on PATH.
+        warn "$crate $pin, have $have_v, $why; $pin is in $cargo_bin" "put $cargo_bin first in PATH"
+    elif [ -z "$have_v" ]; then
+        warn "$crate $pin, $why" "$fix"
     else
-        warn "$crate $pin, have $have_v, $why" "$install"
+        warn "$crate $pin, have $have_v, $why" "$fix"
     fi
 }
 
@@ -202,7 +331,7 @@ deny_pin=$(sed -n 's/.*cargo-deny@\([0-9.]*\).*/\1/p' "$root/.github/workflows/c
 cargo_tool cargo-nextest "$nextest_pin" "cargo nextest --version" "for tools/ci.sh check"
 cargo_tool cargo-deny "$deny_pin" "cargo deny --version" "for tools/ci.sh deny"
 cargo_tool cargo-dist "$dist_pin" "dist --version" "for release builds and tools/ci.sh release-build"
-cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site" any
+cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site"
 
 # actionlint, for tools/ci.sh workflows. Not a crate: the release binary is
 # downloaded, checked against the SHA-256 below and put next to the cargo
@@ -219,19 +348,9 @@ actionlint_sha256() {
         freebsd_amd64) echo f6eec0e5efd17183a954f0d88280885b7a58f39808050cdfcd7f068fc1734bc8 ;;
     esac
 }
-sha256_of() {
-    # sha256 is FreeBSD's own; -q prints only the digest.
-    if have sha256sum; then
-        sha256sum "$1"
-    elif have shasum; then
-        shasum -a 256 "$1"
-    else
-        sha256 -q "$1"
-    fi | awk '{print $1}'
-}
-# Prints nothing and returns 1 if it cannot install; the caller reports.
+# Returns 1 if it cannot install; the caller reports.
 install_actionlint() {
-    local plat want d got rc=0
+    local plat want
     case $(uname -m) in
         x86_64 | amd64) plat=amd64 ;; # FreeBSD says amd64
         aarch64 | arm64) plat=arm64 ;;
@@ -239,23 +358,10 @@ install_actionlint() {
     esac
     plat=$(echo "$os" | tr '[:upper:]' '[:lower:]')_$plat
     want=$(actionlint_sha256 "$plat")
-    [ -n "$want" ] && have curl && have tar || return 1
-    d=$(mktemp -d) || return 1
-    printf '  running  download actionlint %s (%s)\n' "$actionlint_pin" "$plat"
-    if curl --proto '=https' --tlsv1.2 -fsSL -o "$d/a.tar.gz" \
-        "https://github.com/rhysd/actionlint/releases/download/v$actionlint_pin/actionlint_${actionlint_pin}_$plat.tar.gz"; then
-        got=$(sha256_of "$d/a.tar.gz")
-        if [ "$got" = "$want" ]; then
-            mkdir -p "$cargo_bin" && tar -xzf "$d/a.tar.gz" -C "$cargo_bin" actionlint || rc=1
-        else
-            printf '  refused  actionlint download: SHA-256 is %s, expected %s\n' "$got" "$want"
-            rc=1
-        fi
-    else
-        rc=1
-    fi
-    rm -rf "$d"
-    return $rc
+    [ -n "$want" ] || return 1
+    fetch_tool actionlint "$actionlint_pin" "$plat" \
+        "https://github.com/rhysd/actionlint/releases/download/v$actionlint_pin/actionlint_${actionlint_pin}_$plat.tar.gz" \
+        "$want" actionlint || return 1
 }
 actionlint_v=$(tool_version "actionlint -version")
 if [ "$actionlint_v" != "$actionlint_pin" ] && ! $check_only; then
