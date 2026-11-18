@@ -117,9 +117,10 @@ impl Fetched {
 }
 
 /// Download `irsync-<target>.tar.xz`, `sha256.sum` and its signature for
-/// `tag` with the system's `curl` or `wget`, check the signature (made for
-/// exactly `tag`) and then the tarball's hash, and unpack it with `tar`.
-/// Fails unless the unpacked directory holds `irsync` as a regular file.
+/// `tag` with the system's `curl` or `wget`. The signature (made for
+/// exactly `tag`) is checked before the tarball is downloaded; then the
+/// tarball's hash is checked and the tarball is unpacked with `tar`. Fails
+/// unless the unpacked directory holds `irsync` as a regular file.
 pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let (base, allow_file) = source(tag);
     let dir = tempfile::Builder::new()
@@ -129,7 +130,6 @@ pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let file = format!("irsync-{target}.tar.xz");
     let tarball = dir.path().join(&file);
     let sums = dir.path().join(SUMS);
-    download(&format!("{base}/{file}"), &tarball, tag, allow_file)?;
     download(&format!("{base}/{SUMS}"), &sums, tag, allow_file)?;
     let sums_sig = dir.path().join(SUMS_SIG);
     let url = format!("{base}/{SUMS_SIG}");
@@ -144,6 +144,9 @@ pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
         bail!("the release {tag} failed the signature check: {e}");
     }
 
+    // The two small files are checked first, so a refused release costs
+    // two small downloads, not the whole tarball.
+    download(&format!("{base}/{file}"), &tarball, tag, allow_file)?;
     let listed = std::fs::read_to_string(&sums).context("cannot read the downloaded sha256.sum")?;
     let Some(want) = expected_sha256(&listed, &file) else {
         bail!("{SUMS} does not list {file}");
@@ -323,6 +326,14 @@ mod tests {
         assert_eq!(expected_sha256(s, "irsync-c.tar.xz"), None);
         // A name that is only the tail of another does not match.
         assert_eq!(expected_sha256(s, "a.tar.xz"), None);
+    }
+
+    #[test]
+    fn missing_means_the_server_said_no() {
+        assert!(is_missing(Tool::Curl, Some(22)));
+        assert!(is_missing(Tool::Curl, Some(37)));
+        assert!(is_missing(Tool::Wget, Some(8)));
+        assert!(!is_missing(Tool::Curl, Some(6)));
     }
 
     #[test]

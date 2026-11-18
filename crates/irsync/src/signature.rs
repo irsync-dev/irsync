@@ -21,7 +21,7 @@ pub enum SignatureError {
     },
     #[error("malformed signature or key: {0}")]
     Malformed(String),
-    #[error("signed by key {key_id}, which is not an irsync release key")]
+    #[error("signed by key {key_id}, which is not one of the trusted keys")]
     UnknownKey { key_id: String },
     #[error("the signature does not match the file")]
     Bad,
@@ -189,7 +189,10 @@ mod tests {
     #[test]
     fn rejects_unknown_key() {
         let err = check("data.txt.b.minisig", &[key("a.pub")], None).unwrap_err();
-        assert!(matches!(err, SignatureError::UnknownKey { .. }), "{err:?}");
+        match err {
+            SignatureError::UnknownKey { key_id } => assert_eq!(key_id, "2AED585271522910"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

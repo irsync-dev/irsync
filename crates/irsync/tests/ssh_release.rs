@@ -104,6 +104,10 @@ fn fetch_refuses_a_tarball_missing_from_the_sums() {
 #[test]
 fn fetch_reports_a_failed_download() {
     let w = world();
+    // The signed sums are there; the tarball is not.
+    release::fake_release(w.rel.path(), w.target, this_irsync());
+    release::sign_sums(w.rel.path(), "a", &format!("irsync {}", release::tag()));
+    std::fs::remove_file(w.rel.path().join(format!("irsync-{}.tar.xz", w.target))).unwrap();
     let e = fetch(&release::tag(), w.target).unwrap_err().to_string();
     assert!(e.contains("could not download"), "{e}");
     assert!(e.contains(&w.tarball()), "{e}");
@@ -183,7 +187,7 @@ fn fetch_rejects_unknown_key() {
         e.starts_with(&format!("the release {tag} failed the signature check: ")),
         "{e}"
     );
-    assert!(e.contains("which is not an irsync release key"), "{e}");
+    assert!(e.contains("which is not one of the trusted keys"), "{e}");
     assert_eq!(w.left_in_tmpdir(), 0);
 }
 
