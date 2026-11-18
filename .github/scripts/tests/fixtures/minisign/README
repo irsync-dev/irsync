@@ -1,0 +1,5 @@
+A minisign key pair for tests only. It has no password, and its secret key
+is public, so it proves nothing. Never sign a release with it, and never put
+its public key in a file that irsync or a user trusts.
+
+Made with: minisign -G -W -p test.pub -s test.key
