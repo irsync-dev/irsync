@@ -46,9 +46,9 @@ maintainer can do. Why each choice was made is in
   would pull in is left out. Add a platform there when irsync starts
   building for it.
 - The licenses of every crate in `Cargo.lock`, for every platform, are
-  checked too (`deny-license-check.toml`, the `licenses-all` job). A failure
-  there shows on a pull request without blocking it, but it stops a
-  release. The two files must allow the same licenses; a test checks that.
+  checked too (`deny-license-check.toml`, the `deny-license-check` job). A
+  failure there shows on a pull request without blocking it, but it stops
+  a release. The two files must allow the same licenses; a test checks that.
 - The same advisory check runs daily (`advisories.yml`), so a new advisory
   against untouched code is noticed.
 - Dependency review flags a pull request that adds a vulnerable crate.

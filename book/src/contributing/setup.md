@@ -96,9 +96,9 @@ it in a workflow you start by hand: see
 [Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
 
 The `deny` job checks the dependencies with `cargo deny`, for the platforms
-irsync is built for. The `licenses-all` job checks the licenses of every
-platform's dependencies; on GitHub its failure blocks a release, not a pull
-request. The `workflows` job runs the workflow rule tests and actionlint,
+irsync is built for. The `deny-license-check` job checks the licenses of
+every platform's dependencies; on GitHub its failure blocks a release, not
+a pull request. The `workflows` job runs the workflow rule tests and actionlint,
 which needs PyYAML and actionlint ([Supply chain](supply-chain.md)).
 
 Two things run only on GitHub: the macOS and arm64 runs, and the dependency

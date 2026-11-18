@@ -11,7 +11,8 @@
 #                  the slow ones, and the doc tests
 #   deny           the dependency check (cargo deny, see deny.toml), for
 #                  the platforms irsync is built for
-#   licenses-all   the license check for every platform's dependencies
+#   deny-license-check
+#                  the license check for every platform's dependencies
 #                  (deny-license-check.toml); on GitHub it blocks a
 #                  release, not a pull request
 #   workflows      the workflow rule tests and actionlint
@@ -40,22 +41,22 @@ os=$(uname -s)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
-all_jobs="workflows deny licenses-all check release-build"
+all_jobs="workflows deny deny-license-check check release-build"
 jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | licenses-all | workflows | release-build | freebsd-build) jobs="$jobs $arg" ;;
+        check | deny | deny-license-check | workflows | release-build | freebsd-build) jobs="$jobs $arg" ;;
         *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
     jobs=$all_jobs
     if [ "$os" = FreeBSD ]; then
-        jobs="workflows deny licenses-all check freebsd-build"
+        jobs="workflows deny deny-license-check check freebsd-build"
         echo "ci.sh: leaving out release-build, which runs on Linux only"
     elif [ "$os" != Linux ]; then
-        jobs="workflows deny licenses-all check"
+        jobs="workflows deny deny-license-check check"
         echo "ci.sh: leaving out release-build, which runs on Linux only"
     fi
 fi
@@ -86,7 +87,7 @@ needs_check() {
     need mandoc mandoc -T ascii /dev/null
 }
 needs_deny() { need cargo-deny cargo deny --version; }
-needs_licenses_all() { needs_deny; }
+needs_deny_license_check() { needs_deny; }
 needs_workflows() {
     need "PyYAML (the Python yaml module)" python3 -c "import yaml"
     need actionlint actionlint -version
@@ -155,7 +156,7 @@ job_deny() {
 
 # The licenses of every crate in Cargo.lock, whatever platform it is built
 # for.
-job_licenses_all() {
+job_deny_license_check() {
     run cargo deny --locked --config deny-license-check.toml check licenses
 }
 

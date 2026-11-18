@@ -225,7 +225,7 @@ jobs:
   # job looks only at the platforms irsync is built for. A failure here
   # shows on a pull request without blocking it (continue-on-error), but it
   # stops a release (`inputs.plan` is set).
-  licenses-all:
+  deny-license-check:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     continue-on-error: ${{ !inputs.plan }}
@@ -241,7 +241,7 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - name: Check the licenses for every platform
-        run: tools/ci.sh licenses-all
+        run: tools/ci.sh deny-license-check
 
   # Flags a pull request that adds or bumps a dependency with a known
   # vulnerability, in the pull request itself.
@@ -263,7 +263,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, check, release-build, workflows, deny, licenses-all, dependency-review]
+    needs: [changes, check, release-build, workflows, deny, deny-license-check, dependency-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read

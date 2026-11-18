@@ -169,11 +169,11 @@ class CiWorkflowTests(unittest.TestCase):
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
 
-    def test_licenses_all_blocks_only_a_release(self):
+    def test_deny_license_check_blocks_only_a_release(self):
         self.ci_script_runs(
-            "licenses-all",
+            "deny-license-check",
             "cargo deny --locked --config deny-license-check.toml check licenses")
-        job = jobs(self.ci)["licenses-all"]
+        job = jobs(self.ci)["deny-license-check"]
         # A failed job with continue-on-error counts as passed for "CI
         # result"; a release run (inputs.plan is set) turns that off.
         self.assertEqual(job["continue-on-error"], "${{ !inputs.plan }}")
