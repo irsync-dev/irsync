@@ -38,7 +38,7 @@ where there is no binary for the platform.
 
 1. **Direct downloads, hashes in the script.** Chosen. It is what the
    script already does for actionlint, adds nothing to trust, and refuses a
-   tampered download. Cost: 14 hash lines to replace by hand when versions
+   tampered download. Cost: 16 hash lines to replace by hand when versions
    move.
 2. **cargo-binstall.** Much less script, and it falls back to compiling by
    itself. It can verify minisign signatures, but only for a tool whose

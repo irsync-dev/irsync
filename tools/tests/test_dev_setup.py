@@ -324,6 +324,15 @@ echo "$sha" > "$HOME/expected-hash"
             self.assertRegex(out, rf"missing +{crate} .*\n +tools/dev-setup\.sh\n")
         self.assertNotIn("install", calls)
 
+    def test_setup_does_not_install_a_real_archive_with_another_hash(self):
+        # A tampered release is a working archive; only the hash tells.
+        out, calls = self.setup(uname=LINUX, curl=self.good_downloads()["curl"])
+        for tool in [*self.pins(), "actionlint"]:
+            self.assertRegex(out, rf"refused +{tool} download: SHA-256 is [0-9a-f]{{64}}, expected")
+        cargo_bin = os.path.join(self.tmp, ".cargo", "bin")
+        self.assertEqual(os.listdir(cargo_bin) if os.path.exists(cargo_bin) else [], [])
+        self.assertNotIn("install", calls)
+
     def test_setup_offline_reports_and_does_not_compile(self):
         out, calls = self.setup(uname=LINUX, curl="exit 6")
         for crate in self.pins():
