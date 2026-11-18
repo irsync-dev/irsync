@@ -1125,6 +1125,10 @@ pub(super) async fn commit(
     let apply = ctx.apply_opts(&entry);
     let placed = v.commit(&entry, &apply).await?;
     ctx.hooks.event("placed", &path);
+    #[cfg(feature = "test-hooks")]
+    if let Some(d) = ctx.hooks.slow_place {
+        tokio::time::sleep(d).await;
+    }
     record(&ctx, &path, &digest, placed.hash, placed.stat).await;
     Ok(())
 }
