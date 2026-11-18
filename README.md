@@ -151,10 +151,8 @@ Every file on a release has a minisign signature (`FILE.minisig`), made with
 a key that is kept offline. The public key:
 
 ```text
-RWS...REPLACE-WITH-RELEASE-KEY
+RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
 ```
-
-<!-- TODO(#89): paste the key from packaging/signing/release-keys.pub -->
 
 Check a file with `minisign -Vm FILE -P <key>`, and make sure the trusted
 comment reads `irsync vX.Y.Z` for your version. More ways to check, with

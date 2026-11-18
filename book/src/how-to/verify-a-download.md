@@ -22,10 +22,8 @@ Download the file and its signature, which has the same name with
 [releases page](https://github.com/irsync-dev/irsync/releases). Then:
 
 ```sh
-minisign -Vm irsync-x86_64-unknown-linux-musl.tar.xz -P RWS...REPLACE-WITH-RELEASE-KEY
+minisign -Vm irsync-x86_64-unknown-linux-musl.tar.xz -P RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
 ```
-
-<!-- TODO(#89): paste the key from packaging/signing/release-keys.pub -->
 
 `-P` is irsync's public key, the line above. It is the same key as in the
 [README](https://github.com/irsync-dev/irsync#verify-a-download) and in
