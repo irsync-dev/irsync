@@ -91,6 +91,10 @@ rand_core = { workspace = true }
 # No default features: `--no-default-features` must reach the test builds too.
 irsync = { path = ".", default-features = false, features = ["test-hooks"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+# Sign the fake releases the download tests fetch. ct-codecs reads the
+# test key, whose checksum minisign 0.10 rejects (see tests/common/release.rs).
+minisign = { workspace = true }
+ct-codecs = { workspace = true }
 
 [build-dependencies]
 vergen-gitcl = "10"

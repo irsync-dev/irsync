@@ -78,6 +78,11 @@ Other messages from this step:
   run the binary, for example because its home directory is mounted
   `noexec`. Install irsync on the server yourself and set it up by hand.
 - `the download of … is damaged (SHA-256 does not match)`: run again.
+- `the release … has no signature for sha256.sum` or `the release … failed
+  the signature check`: the release on GitHub is not signed the way this
+  irsync expects, so it refuses to use it. Report it on
+  [GitHub Issues](https://github.com/irsync-dev/irsync/issues), and set the
+  server up by hand meanwhile.
 
 Nothing on the server is changed in any of these cases.
 

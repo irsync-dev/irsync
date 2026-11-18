@@ -1,4 +1,5 @@
 Test keys and signatures for src/signature.rs. Never use them for anything real.
+tests/common/release.rs also signs fake releases with a.key while tests run.
 The secret keys have no password and are public.
 
 a.pub, b.pub        two key pairs (a.key, b.key are the secret halves)

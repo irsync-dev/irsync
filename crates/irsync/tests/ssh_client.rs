@@ -73,6 +73,7 @@ fn fake_at(uname: Option<&str>, home_name: &str) -> Fake {
         }
         std::env::remove_var("FAKE_SSH_HIDE");
         std::env::remove_var("IRSYNC_TEST_RELEASE_URL");
+        std::env::remove_var("IRSYNC_TEST_RELEASE_KEYS");
         std::env::set_var("FAKE_SSH_HOSTNAME", "-");
     }
     // A directory of its own, so no `fileset` or man pages from the build
@@ -264,10 +265,13 @@ fn install_refuses_a_platform_without_a_release() {
     assert!(!f.home.join(".local").exists());
 }
 
-/// Point the release download at `url`.
+/// Point the release download at `url`, signed with the test key.
 fn set_release_url(url: &str) {
     // SAFETY: the caller holds ENV through its `Fake`.
-    unsafe { std::env::set_var("IRSYNC_TEST_RELEASE_URL", url) };
+    unsafe {
+        std::env::set_var("IRSYNC_TEST_RELEASE_URL", url);
+        std::env::set_var("IRSYNC_TEST_RELEASE_KEYS", release::keys_file());
+    }
 }
 
 #[test]

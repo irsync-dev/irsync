@@ -180,6 +180,8 @@ impl World {
             Some(u) => cmd.env("IRSYNC_TEST_RELEASE_URL", u),
             None => cmd.env_remove("IRSYNC_TEST_RELEASE_URL"),
         };
+        // The fake releases are signed with this test key.
+        cmd.env("IRSYNC_TEST_RELEASE_KEYS", release::keys_file());
         cmd.env("IRSYNC_TEST_HOSTNAME", name);
         // A dial to a daemon that is not there gives up after this long,
         // not after the real 15 s or 60 s; plenty for one on this machine.

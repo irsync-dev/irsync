@@ -174,11 +174,12 @@ irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) in ~/.local/bin (no fileset, n
 ```
 
 The download happens on the client, which needs `curl` or `wget`, and a
-`tar` that reads `.xz`. The server needs no internet access, but it needs
-`tar` to unpack the files it is sent, and a home directory you can write
-to. Either way the
-server runs the new binary with `--version` before it replaces anything, and
-keeps what it had unless the binary reports the client's exact build.
+`tar` that reads `.xz`. The client also checks that an irsync release key
+signed the release's list of SHA-256 sums for exactly this version. The
+server needs no internet access, but it needs `tar` to unpack the files it
+is sent, and a home directory you can write to. Either way the server runs
+the new binary with `--version` before it replaces anything, and keeps what
+it had unless the binary reports the client's exact build.
 
 Release files exist for Linux on x86_64 and arm64 and for macOS on Apple
 Silicon. For any other server, and for a client built from source whose

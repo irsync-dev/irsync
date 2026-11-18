@@ -10,12 +10,16 @@ use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::build::BuildInfo;
+use crate::signature::{release_keys, verify_file};
 
 /// Where GitHub serves a release's files, without the tag.
 const RELEASES: &str = "https://github.com/irsync-dev/irsync/releases/download";
 
 /// The checksum list every release carries.
 const SUMS: &str = "sha256.sum";
+
+/// The signature of [`SUMS`].
+const SUMS_SIG: &str = "sha256.sum.minisig";
 
 /// The release target for a server platform, as `parse_uname` names it.
 pub fn target_for(os: Option<&str>, arch: Option<&str>) -> Option<&'static str> {
@@ -56,6 +60,30 @@ pub fn test_url() -> Option<String> {
         .filter(|u| !u.is_empty())
 }
 
+/// Test builds only: the keys a release must be signed with, from the
+/// key file `IRSYNC_TEST_RELEASE_KEYS` names, instead of the release keys.
+#[cfg(feature = "test-hooks")]
+fn test_keys() -> Result<Option<Vec<minisign_verify::PublicKey>>> {
+    let Some(path) = std::env::var_os("IRSYNC_TEST_RELEASE_KEYS").filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let keys = crate::signature::parse_keys(&text)
+        .with_context(|| format!("bad key file {}", path.display()))?;
+    Ok(Some(keys))
+}
+
+/// The keys a release must be signed with.
+fn keys() -> Result<Vec<minisign_verify::PublicKey>> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(keys) = test_keys()? {
+        return Ok(keys);
+    }
+    Ok(release_keys())
+}
+
 /// The URL prefix of `tag`'s files, and whether `file://` is allowed.
 fn source(tag: &str) -> (String, bool) {
     #[cfg(feature = "test-hooks")]
@@ -88,10 +116,10 @@ impl Fetched {
     }
 }
 
-/// Download `irsync-<target>.tar.xz` and `sha256.sum` for `tag` with the
-/// system's `curl` or `wget`, check the tarball's hash, and unpack it with
-/// `tar`. Fails unless the unpacked directory holds `irsync` as a regular
-/// file.
+/// Download `irsync-<target>.tar.xz`, `sha256.sum` and its signature for
+/// `tag` with the system's `curl` or `wget`, check the signature (made for
+/// exactly `tag`) and then the tarball's hash, and unpack it with `tar`.
+/// Fails unless the unpacked directory holds `irsync` as a regular file.
 pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let (base, allow_file) = source(tag);
     let dir = tempfile::Builder::new()
@@ -103,6 +131,18 @@ pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let sums = dir.path().join(SUMS);
     download(&format!("{base}/{file}"), &tarball, tag, allow_file)?;
     download(&format!("{base}/{SUMS}"), &sums, tag, allow_file)?;
+    let sums_sig = dir.path().join(SUMS_SIG);
+    let url = format!("{base}/{SUMS_SIG}");
+    if let Some((tool, code)) = try_download(&url, &sums_sig, allow_file)? {
+        if is_missing(tool, code) {
+            bail!("the release {tag} has no signature for {SUMS}; refusing to use the download");
+        }
+        bail!("{}", download_failure(tool, code, tag, &url));
+    }
+    let keys = keys()?;
+    if let Err(e) = verify_file(&sums, &sums_sig, &keys, Some(&format!("irsync {tag}"))) {
+        bail!("the release {tag} failed the signature check: {e}");
+    }
 
     let listed = std::fs::read_to_string(&sums).context("cannot read the downloaded sha256.sum")?;
     let Some(want) = expected_sha256(&listed, &file) else {
@@ -168,6 +208,15 @@ enum Tool {
 /// Fetch `url` into `to` with curl, or wget when there is no curl. Their
 /// own error output stays on the terminal.
 fn download(url: &str, to: &Path, tag: &str, allow_file: bool) -> Result<()> {
+    match try_download(url, to, allow_file)? {
+        None => Ok(()),
+        Some((tool, code)) => bail!("{}", download_failure(tool, code, tag, url)),
+    }
+}
+
+/// Like [`download`], but a tool that ran and failed is not an error: it
+/// comes back as the tool and its exit code.
+fn try_download(url: &str, to: &Path, allow_file: bool) -> Result<Option<(Tool, Option<i32>)>> {
     let protocols = if allow_file { "=file,https" } else { "=https" };
     let mut curl = Command::new("curl");
     curl.args(["-fsSL", "--proto", protocols, "--proto-redir", "=https"])
@@ -178,8 +227,8 @@ fn download(url: &str, to: &Path, tag: &str, allow_file: bool) -> Result<()> {
     wget.arg("-q").arg("-O").arg(to).arg(url);
     for (tool, mut cmd) in [(Tool::Curl, curl), (Tool::Wget, wget)] {
         match cmd.status() {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(status) => bail!("{}", download_failure(tool, status.code(), tag, url)),
+            Ok(status) if status.success() => return Ok(None),
+            Ok(status) => return Ok(Some((tool, status.code()))),
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => {
                 return Err(e).with_context(|| format!("cannot run {tool:?} to download {url}"))
@@ -187,6 +236,16 @@ fn download(url: &str, to: &Path, tag: &str, allow_file: bool) -> Result<()> {
         }
     }
     bail!("need curl or wget on this machine to download the release binary")
+}
+
+/// Whether `tool`'s exit `code` says the file is not there: the server
+/// answered with an error (curl 22, wget 8), or, for a `file://` URL that
+/// only test builds allow, curl could not read the file (37).
+fn is_missing(tool: Tool, code: Option<i32>) -> bool {
+    matches!(
+        (tool, code),
+        (Tool::Curl, Some(22 | 37)) | (Tool::Wget, Some(8))
+    )
 }
 
 /// The message for a download that `tool` gave up on with exit `code`.
