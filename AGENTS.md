@@ -16,6 +16,12 @@ PR description, where `N` is the issue number.
 When asked to merge a PR, clean up afterwards: delete the branch on the
 remote and locally, and switch back to an up-to-date `main`.
 
+If CI fails on a PR whose branch is behind `main`, first check whether
+`main` already fixes the problem, before you try to fix it on the branch.
+If it does, pull `main`, rebase the branch onto it and push it
+(`git push --force-with-lease`). That starts a fresh CI run that includes
+the fixes from `main`.
+
 ## Setup
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain,
