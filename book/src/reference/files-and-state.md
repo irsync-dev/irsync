@@ -53,10 +53,15 @@ resumed. To remove only what nobody is coming back for, see
 ## On a server set up over ssh
 
 The ssh setup (see [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh))
-puts its own copy of `irsync` on the server at
-`~/.local/share/irsync/bin/irsync`. It
-replaces that copy when the client runs a different build, and leaves an
-`irsync` you installed elsewhere alone. Over ssh it then runs `irsync
+installs on the server the same files as `install.sh`: `irsync` and
+`fileset` in `~/.local/bin`, and `irsync.1`, `fileset.1` and `irsync.toml.5`
+under `~/.local/share/man`. All five come along when the setup sends release
+files; when it sends the client's own files, `fileset` and the manual pages
+come only if they sit beside the client's `irsync`. It replaces an `irsync` there when the client runs a
+different build. It does not touch an `irsync` installed elsewhere. It does not
+use `~/.local/share/irsync/bin` any more (see
+[Run the daemon](../how-to/run-the-daemon.md#service-files-from-an-older-irsync)).
+Over ssh it then runs `irsync
 ssh-setup`, a hidden command that grants the client, makes the daemon's key
 when it is missing and starts the daemon. The server's config, keys and state
 are the usual ones above; the daemon it starts writes `daemon.log` in the

@@ -159,13 +159,61 @@ landed. Minors from the final review; the signature check is under
 
 ## The upload command on the server (`ssh/client.rs`)
 
-- [ ] A rejected install on a fresh server leaves an empty
-      `~/.local/share/irsync/bin`, although the message says nothing was
-      changed.
-- [ ] A failed `cat`, `chmod` or `mv` (disk full) leaves the `.tmp.$$` file;
-      only the size and version checks remove it. A `trap 'rm -f …' EXIT`
-      would cover all of them. - [ ] A CPU that irsync does not know is reported as "an unknown CPU";
+- [ ] A CPU that irsync does not know is reported as "an unknown CPU";
       pass the raw `uname -m` text through.
+
+# Open items from the ssh install through the installer, 2026-11-17
+
+What the change (`docs/superpowers/specs/2026-11-17-ssh-install-matches-installer-design.md`)
+left open. It fixed the two items about the upload command that stood here
+(the empty directory after a rejected install, the leftover temp file after
+a failed step).
+
+- [ ] The installer's login-shell probe is not run for csh and tcsh.
+- [ ] A service file under another name, or in another place than the two
+      the setup looks at, is not found. Neither is a service file that
+      names the old path through a variable.
+- [ ] A daemon run by a supervisor other than those two service files is
+      restarted by the setup, as if the setup had started it.
+- [ ] The installer's interactive login-shell probe can make zsh write
+      `~/.zcompdump`. It has not been tried under `ssh -t`.
+- [ ] `release::fetch` unpacks a downloaded tarball with a bare `tar -xJf`.
+      Check hard-link members that point outside the directory.
+- [ ] A failed download and a checksum mismatch both fall back to this
+      machine's files on the same platform. Decide whether a mismatch
+      should stop instead.
+
+## Deferred review findings
+
+- [ ] The installer's `login_finds` works only when called in a condition
+      (`if`/`||`): under `set -e` a failing probe would end the installer.
+      It also leaves an orphan `sleep` behind when it kills a slow shell,
+      and sets globals (`probe`, `out`, `status`, `last`, …) that the rest
+      of the script could trip over.
+- [ ] `Staged::from_local` looks for `../share/man` beside the exe path as
+      given, not the resolved one, so a symlinked `irsync` finds the pages
+      only if they sit beside the link.
+- [ ] No direct tests through `setup::run` for: the pid-0 guard, the
+      `is_old_bin(&exe)` guard, an unreadable service file, and a home
+      that is a symlink.
+- [ ] Untested: the one-line fallback notice ("no release files for this
+      build"), and the `--no-install` path on a recheck (a saved host whose
+      daemon did not answer).
+- [ ] The summary says what the client sent, not what the installer
+      placed: with a man directory it cannot write to, the summary still
+      says "with the manual pages".
+- [ ] A half install (irsync placed, fileset not) is reported as current
+      on the next run, which then never places fileset.
+- [ ] Over ssh, the installer's "installed without fileset: … has none"
+      lines name the work directory (`~/.irsync-install.XXXXXX/files`),
+      which is gone by the time the user reads it.
+- [ ] When a downloaded release lacks fileset or the pages, the summary
+      blames "this machine" ("this machine has none beside its irsync").
+- [ ] A FreeBSD client's tar (bsdtar) still writes extended attribute
+      records into the files it sends: `--no-xattrs` is passed only on
+      macOS, because BusyBox tar and GNU tar before 1.27 refuse it. A
+      server whose tar does not know these records may print warnings.
+      Not tried on a real FreeBSD client.
 
 # Open items from the supply chain work, 2026-11-15
 

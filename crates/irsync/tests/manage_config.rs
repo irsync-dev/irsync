@@ -105,6 +105,10 @@ fn defaults_for_settings_keys() {
     );
     assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("client.mdns")), Some(vec!["true".into()]));
+    assert_eq!(
+        default_of(&p("client.ssh_install")),
+        Some(vec!["true".into()])
+    );
     assert_eq!(default_of(&p("client.relay")), None);
     assert_eq!(
         default_of(&p("client.relay_mode")),

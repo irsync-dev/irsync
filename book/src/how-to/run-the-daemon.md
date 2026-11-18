@@ -111,7 +111,7 @@ On Linux, put this in `~/.config/systemd/user/irsync.service`:
 [Unit]
 Description=irsync daemon
 [Service]
-ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv
+ExecStart=%h/.local/bin/irsync daemon -vv
 Restart=on-failure
 [Install]
 WantedBy=default.target
@@ -138,7 +138,7 @@ your home directory for `$HOME`:
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>org.irsync.daemon</string>
-  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>
+  <key>ProgramArguments</key><array><string>$HOME/.local/bin/irsync</string><string>daemon</string><string>-vv</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
@@ -158,6 +158,17 @@ If the state directory is not the default one, the setup prints the path of
 one daemon run at a time: the service cannot start while the first daemon
 holds it, so the loop waits until that daemon has exited. These lines are sh
 syntax; from fish or tcsh, run them under `sh`.
+
+### Service files from an older irsync
+
+An older irsync installed itself in `~/.local/share/irsync/bin`, and a service
+file written from its steps names `~/.local/share/irsync/bin/irsync`. The ssh
+setup warns when it finds such a file (at the two places above). A daemon that
+such a service runs is left alone. It stays on the old version, and it does
+not pick up a grant the setup adds for a new client. Change the path in the
+service file to `~/.local/bin/irsync`, then restart the service. The setup
+removes the old copy only when no service file names it. A service file the
+setup cannot read gets the same warning, since it cannot tell what it names.
 
 ## Under systemd
 

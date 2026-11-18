@@ -64,12 +64,13 @@ fn fetch_unpacks_the_binary() {
     let w = world();
     release::fake_release(w.rel.path(), w.target, this_irsync());
     let got = fetch("v0.0.0", w.target).unwrap();
+    let bin = got.dir().join("irsync");
     assert_eq!(
-        std::fs::read(got.bin()).unwrap(),
+        std::fs::read(&bin).unwrap(),
         std::fs::read(this_irsync()).unwrap()
     );
-    assert!(got.bin().starts_with(&w.tmpdir), "{:?}", got.bin());
-    let path = got.bin().to_path_buf();
+    assert!(bin.starts_with(&w.tmpdir), "{bin:?}");
+    let path = got.dir().to_path_buf();
     drop(got);
     assert!(!path.exists());
     assert_eq!(w.left_in_tmpdir(), 0);

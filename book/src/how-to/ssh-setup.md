@@ -146,32 +146,62 @@ irsync config set daemon.immediate false
 The setup then grants nothing, and you grant exports by hand as in
 [Your first sync](../tutorial/first-sync.md#3-grant-the-client-access).
 
-## A server with another OS or CPU
+## What gets installed, and from where
 
-When both machines run the same OS and CPU, the setup copies the client's
-own binary. When they differ, a released irsync downloads the release binary
-of its own version for the server's platform, checks its SHA-256, and copies
-that over:
+The setup installs the same files as `install.sh`: `irsync` and `fileset` in
+`~/.local/bin`, and the three manual pages under `~/.local/share/man`. It
+runs the installer script on files the client sends. The installer never
+edits your shell startup files. When the server's login shell does not find
+`irsync`, the setup shows the line to add.
+
+A released irsync downloads the release files of its own version on the
+client, for every server platform, and checks their SHA-256:
 
 ```text
 irsync: downloading irsync v0.1.0-beta.1 for linux aarch64
 irsync: set up myserver over ssh:
-irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/share/irsync/bin/irsync (release binary for linux aarch64)
+irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) in ~/.local/bin, with fileset and the manual pages (release files for linux aarch64)
+```
+
+If the download fails and the server has the same OS and CPU, irsync says so
+and installs this machine's own files instead. Then `fileset` and the manual
+pages come along only if they sit beside this machine's `irsync`:
+
+```text
+irsync:   installed irsync 0.1.0-beta.1 (ae5ebe5) in ~/.local/bin (no fileset, no manual pages: this machine has none beside its irsync)
 ```
 
 The download happens on the client, which needs `curl` or `wget`, and a
-`tar` that reads `.xz`. The server needs no internet access. Either way the
+`tar` that reads `.xz`. The server needs no internet access, but it needs
+`tar` to unpack the files it is sent, and a home directory you can write
+to. Either way the
 server runs the new binary with `--version` before it replaces anything, and
 keeps what it had unless the binary reports the client's exact build.
 
-Release binaries exist for Linux on x86_64 and arm64 and for macOS on Apple
-Silicon. For any other server, and for a client built from source, the setup
-stops and changes nothing. Then install irsync on the server yourself and
+Release files exist for Linux on x86_64 and arm64 and for macOS on Apple
+Silicon. For any other server, and for a client built from source whose
+server has another OS or CPU, the setup stops and changes nothing. Then
+install irsync on the server yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
-Installing it on the server does not make the ssh setup work: the setup only
-uses its own copy of the client's exact build. See
+Installing it on the server does not make the ssh setup work, unless you run
+with `--no-install`: the setup otherwise uses its own copy of the client's
+exact build. See
 [Troubleshooting](troubleshooting.md#ssh-setup-stops-the-server-runs-another-os-or-cpu)
 for the messages.
+
+To copy nothing to the server, use `--no-install` (or `ssh_install = false`
+in the config file). The setup then uses the irsync at `~/.local/bin/irsync`
+there, and stops if it is missing or another version.
+
+## Servers set up by an older irsync
+
+Older versions installed irsync in `~/.local/share/irsync/bin`. The setup now
+moves a server off that directory: it starts the daemon from `~/.local/bin`
+and removes the old copy. It warns instead when a service file still starts
+the old copy; see
+[Run the daemon](run-the-daemon.md#service-files-from-an-older-irsync).
+A client with an older irsync that also uses this server puts the old copy
+back on its next setup, so update those clients too.
 
 ## Keep the daemon running
 

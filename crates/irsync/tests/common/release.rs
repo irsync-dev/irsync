@@ -75,3 +75,32 @@ pub fn fake_release(dir: &Path, target: &str, bin: &Path) -> String {
         std::fs::copy(bin, inner.join("irsync")).unwrap();
     })
 }
+
+/// The three man pages a release holds, relative to its directory.
+pub const PAGES: [&str; 3] = [
+    "man/man1/irsync.1",
+    "man/man1/fileset.1",
+    "man/man5/irsync.toml.5",
+];
+
+/// A release as the real ones are: a copy of `bin` as `irsync`, a stand-in
+/// `fileset` and the three man pages.
+pub fn full_release(dir: &Path, target: &str, bin: &Path) -> String {
+    pack(dir, target, |inner| {
+        std::fs::copy(bin, inner.join("irsync")).unwrap();
+        put_extras(inner);
+    })
+}
+
+/// A stand-in `fileset` and the three man pages, in `dir`.
+pub fn put_extras(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let fileset = dir.join("fileset");
+    std::fs::write(&fileset, "#!/bin/sh\necho 'fileset (stand-in)'\n").unwrap();
+    std::fs::set_permissions(&fileset, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for page in PAGES {
+        let p = dir.join(page);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, ".TH STAND-IN 1\n").unwrap();
+    }
+}

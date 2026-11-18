@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,7 +42,7 @@ ENV_SH = ".config/irsync/env.sh"
 # What the installer runs, besides uname, a downloader and a checksum tool.
 # GNU tar runs xz to read .tar.xz; bsdtar reads it on its own.
 TOOLS = ["sh", "mktemp", "rm", "mkdir", "cp", "mv", "chmod", "cat", "tar", "xz",
-         "grep", "printf"]
+         "grep", "printf", "sleep"]
 
 FAKE_UNAME = """#!/bin/sh
 case $1 in
@@ -179,11 +180,14 @@ class Base(unittest.TestCase):
         self.log = os.path.join(self.tmp, "calls.log")
         self.bindir = self.make_bindir("bin")
 
-    def make_bindir(self, name, sums=("sha256sum", "shasum"), shell=SHELL):
-        """A directory of the installer's tools; `sums` are the checksum tools in it."""
+    def make_bindir(self, name, sums=("sha256sum", "shasum"), shell=SHELL, without=()):
+        """A directory of the installer's tools; `sums` are the checksum tools in it,
+        `without` are tools of TOOLS to leave out."""
         bindir = os.path.join(self.tmp, name)
         os.mkdir(bindir)
         for tool in TOOLS:
+            if tool in without:
+                continue
             found = shell if tool == "sh" else shutil.which(tool)
             if found:
                 os.symlink(found, os.path.join(bindir, tool))
@@ -193,11 +197,15 @@ class Base(unittest.TestCase):
         return bindir
 
     def install(self, *args, home=None, uname=("Linux", "x86_64"), env=None,
-                bindir=None, archives=True):
+                bindir=None, archives=True, popen=None):
+        """Run the installer; `popen` holds extra arguments for subprocess.run."""
         bindir = bindir or self.bindir
         full_env = {
             "PATH": bindir,
             "HOME": home or self.home,
+            # Not a real shell: bash as sh fills in a missing SHELL, and the
+            # installer would run that shell to look for irsync.
+            "SHELL": "/nonexistent/shell",
             "TMPDIR": self.tmp,
             "FAKE_UNAME_S": uname[0],
             "FAKE_UNAME_M": uname[1],
@@ -208,7 +216,15 @@ class Base(unittest.TestCase):
             full_env["IRSYNC_INSTALLER_ARCHIVE_DIR"] = self.archives
         full_env.update(env or {})
         return subprocess.run([os.path.join(bindir, "sh"), self.installer, *args],
-                              env=full_env, capture_output=True, text=True)
+                              env=full_env, capture_output=True, text=True, **(popen or {}))
+
+    def fake_shell(self, name, body):
+        """An executable shells/NAME that logs its path and arguments, then runs BODY."""
+        d = os.path.join(self.tmp, "shells")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, name)
+        write_exe(path, f'#!/bin/sh\necho "$0 $*" >> "{self.log}"\n{body}\n')
+        return path
 
     def under_home(self, home=None):
         """Every file and symlink under HOME, relative to it."""
@@ -222,6 +238,16 @@ class Base(unittest.TestCase):
     def snapshot(self, home=None):
         home = home or self.home
         return {f: read(os.path.join(home, f)) for f in self.under_home(home)}
+
+    def make_dir(self, names):
+        """An unpacked release directory holding the named files. Returns its path."""
+        d = os.path.join(self.tmp, "from")
+        for n in names:
+            path = os.path.join(d, n)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(f"#!/bin/sh\necho {n}\n")
+        return d
 
     def put(self, rel, body="old\n", home=None):
         path = os.path.join(home or self.home, rel)
@@ -419,38 +445,83 @@ class InstallTests(Base):
     def test_path_hint_says_to_log_in_again_on_linux(self):
         # Most Linux systems add ~/.local/bin at login once it exists; macOS
         # does not.
-        err = self.path_hint("linux", env={"SHELL": "/bin/zsh"})
+        zsh = self.fake_shell("zsh", "exit 1")
+        err = self.path_hint("linux", env={"SHELL": zsh})
         self.assertIn("Log out and in again first", err)
         self.assertIn("If it is still missing then, put this line in ~/.zshrc:", err)
-        err = self.path_hint("mac", uname=("Darwin", "arm64"), env={"SHELL": "/bin/zsh"})
+        err = self.path_hint("mac", uname=("Darwin", "arm64"), env={"SHELL": zsh})
         self.assertNotIn("Log out", err)
         self.assertIn("is not on your PATH. To add it, put this line in ~/.zshrc:", err)
 
+    def test_login_shell_finds_it_no_advice(self):
+        sh = self.fake_shell("zsh", f'echo banner; echo "{self.home}/.local/bin/irsync"')
+        r = self.install(env={"SHELL": sh})
+        self.assertNotIn("not on your PATH", r.stderr)
+        self.assertIn("-l -i -c command -v irsync", read(self.log).decode())
+
+    def test_login_shell_misses_it_advice(self):
+        for body in ("exit 1", "echo /usr/bin/irsync", "echo 'irsync: aliased to x'"):
+            r = self.install(env={"SHELL": self.fake_shell("zsh", body)})
+            self.assertIn("not on your PATH", r.stderr, body)
+            self.assertIn("~/.zshrc", r.stderr, body)
+
+    def test_own_path_is_enough(self):
+        # The shell misses it, but the installer's PATH has ~/.local/bin.
+        r = self.install(env={"SHELL": self.fake_shell("zsh", "exit 1"),
+                              "PATH": f"{self.bindir}:{self.home}/.local/bin"})
+        self.assertNotIn("not on your PATH", r.stderr)
+
+    def test_slow_login_shell_is_cut_off(self):
+        start = time.monotonic()
+        r = self.install(env={"SHELL": self.fake_shell("bash", "trap '' TERM; sleep 60")})
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("not on your PATH", r.stderr)
+
+    def test_nushell_probe_and_advice(self):
+        sh = self.fake_shell("nu", "exit 1")
+        r = self.install(env={"SHELL": sh})
+        self.assertIn("-l -c which irsync | get path.0", read(self.log).decode())
+        self.assertIn('$env.PATH = ($env.PATH | prepend ($env.HOME | path join ".local" "bin"))', r.stderr)
+        self.assertIn("$nu.config-path", r.stderr)
+
+    def test_csh_and_unknown_shells_are_not_run(self):
+        for name in ("tcsh", "xonsh"):
+            self.install(env={"SHELL": self.fake_shell(name, "exit 0")})
+        self.assertNotIn("shells/", read(self.log).decode() if os.path.exists(self.log) else "")
+
+    def test_missing_shell_binary_falls_back(self):
+        r = self.install(env={"SHELL": "/nonexistent/zsh"})
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("not on your PATH", r.stderr)
+
     def test_path_hint_names_the_shells_startup_file(self):
         export = '\n  export PATH="$HOME/.local/bin:$PATH"\n'
-        for shell, uname, want in [
-            ("/bin/zsh", "Linux", "put this line in ~/.zshrc:" + export),
-            ("/usr/bin/bash", "Linux", "put this line in ~/.bashrc:" + export),
+        # Fake shells that find nothing, so no real login shell runs.
+        for name, uname, want in [
+            ("zsh", "Linux", "put this line in ~/.zshrc:" + export),
+            ("bash", "Linux", "put this line in ~/.bashrc:" + export),
             # A terminal on macOS starts a login shell.
-            ("/bin/bash", "Darwin", "put this line in ~/.bash_profile:" + export),
-            ("/bin/sh", "Linux", "put this line in ~/.profile:" + export),
-            ("/usr/bin/dash", "Linux", "put this line in ~/.profile:" + export),
-            ("/bin/ksh", "Linux", "put this line in ~/.profile:" + export),
-            ("/usr/bin/fish", "Linux", "run: fish_add_path ~/.local/bin\n"),
-            ("/bin/tcsh", "Darwin", "put this line in ~/.cshrc:\n  set path = (~/.local/bin $path)\n"),
+            ("bash", "Darwin", "put this line in ~/.bash_profile:" + export),
+            ("sh", "Linux", "put this line in ~/.profile:" + export),
+            ("dash", "Linux", "put this line in ~/.profile:" + export),
+            ("ksh", "Linux", "put this line in ~/.profile:" + export),
+            ("fish", "Linux", "run: fish_add_path ~/.local/bin\n"),
+            ("tcsh", "Darwin", "put this line in ~/.cshrc:\n  set path = (~/.local/bin $path)\n"),
         ]:
-            with self.subTest(shell=shell, uname=uname):
+            shell = self.fake_shell(name, "exit 1")
+            with self.subTest(shell=name, uname=uname):
                 arch = "arm64" if uname == "Darwin" else "x86_64"
-                err = self.path_hint(f"{uname}-{os.path.basename(shell)}",
+                err = self.path_hint(f"{uname}-{name}",
                                      uname=(uname, arch), env={"SHELL": shell})
                 self.assertIn(want, err)
-                if "fish" in shell or "csh" in shell:
+                if name in ("fish", "tcsh"):
                     self.assertNotIn("export PATH", err)
 
     def test_path_hint_for_an_unknown_shell(self):
-        err = self.path_hint("nu", env={"SHELL": "/usr/bin/nu"})
+        err = self.path_hint("xonsh", env={"SHELL": "/usr/bin/xonsh"})
         self.assertIn("add it in your shell's startup file", err)
-        self.assertIn("does not know your shell, nu)", err)
+        self.assertIn("does not know your shell, xonsh)", err)
         self.assertIn('In sh, bash or zsh the line is:\n  export PATH="$HOME/.local/bin:$PATH"\n', err)
         # Empty, not unset: bash as sh sets a missing SHELL itself.
         err = self.path_hint("empty", env={"SHELL": ""})
@@ -540,8 +611,9 @@ class InstallTests(Base):
         for f in startup:
             self.put(f, f"# {f}\n")
         before = self.snapshot()
-        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash", "/usr/bin/fish"]:
-            r = self.install(env={"SHELL": shell})
+        # Fake shells: a real one, run as the login shell, may write to HOME.
+        for name in ["sh", "zsh", "bash", "fish"]:
+            r = self.install(env={"SHELL": self.fake_shell(name, "exit 1")})
             self.assertEqual(r.returncode, 0, r.stderr)
         after = self.snapshot()
         for f in startup:
@@ -641,12 +713,78 @@ class UnwritableTests(Base):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")], [])
 
+    def test_unwritable_bin_with_from_changes_nothing(self):
+        for f in FILES:
+            self.put(f)
+        self.lock(".local/bin")
+        d = os.path.join(self.tmp, "from")
+        os.makedirs(d)
+        with open(os.path.join(d, "irsync"), "w") as f:
+            f.write("#!/bin/sh\n")
+        before = self.snapshot()
+        r = self.install("--from", d, archives=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.snapshot(), before)
+
     def test_unwritable_bin_in_a_fresh_home_installs_no_pages(self):
         self.lock(".local/bin")
         r = self.install()
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.under_home(), set())
         self.assertFalse(os.path.exists(os.path.join(self.home, ".local/share")))
+
+
+class FromDirTests(Base):
+    """--from DIR: install from an unpacked release directory."""
+
+    ALL = ["irsync", "fileset", "man/man1/irsync.1", "man/man1/fileset.1",
+           "man/man5/irsync.toml.5"]
+
+    def test_from_installs_five_files(self):
+        r = self.install("--from", self.make_dir(self.ALL), archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+        self.assertTrue(os.access(os.path.join(self.home, ".local/bin/irsync"), os.X_OK))
+
+    def test_from_irsync_only(self):
+        r = self.install("--from", self.make_dir(["irsync"]), archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), {".local/bin/irsync"})
+        self.assertIn("fileset", r.stderr)
+        self.assertIn("manual pages", r.stderr)
+
+    def test_from_some_pages_installs_no_pages(self):
+        r = self.install("--from", self.make_dir(["irsync", "man/man1/irsync.1"]),
+                         archives=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), {".local/bin/irsync"})
+
+    def test_from_without_irsync_changes_nothing(self):
+        r = self.install("--from", self.make_dir(["fileset"]), archives=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.under_home(), set())
+
+    def test_from_needs_no_tools_and_no_platform(self):
+        # No tar, xz or checksum tool on PATH, and an unsupported platform.
+        r = self.install("--from", self.make_dir(self.ALL), archives=False,
+                         uname=("SunOS", "sparc"),
+                         bindir=self.make_bindir("bare", sums=(), without=("tar", "xz")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_from_empty_value_is_a_usage_error(self):
+        r = self.install("--from", "", archives=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("usage:", r.stderr)
+        self.assertEqual(self.under_home(), set())
+
+    def test_from_usage_errors(self):
+        d = self.make_dir(self.ALL)
+        for args, code in [(["--from"], 2), (["--from", "/nonexistent"], 1),
+                           (["--from", d, "--uninstall"], 2), (["--from", d, "--help"], 2)]:
+            with self.subTest(args=args):
+                self.assertEqual(self.install(*args, archives=False).returncode, code)
+        self.assertEqual(self.under_home(), set())
 
 
 class CompatibilityTests(Base):
@@ -728,6 +866,23 @@ class KillTests(Base):
     def temp_dirs(self):
         return [n for n in os.listdir(self.tmp) if n.startswith("irsync-installer.")]
 
+    def test_login_probe_under_each_shell(self):
+        # The probe's cap must work even when the login shell ignores TERM, as
+        # interactive shells do.
+        for name, shell in self.shells():
+            with self.subTest(shell=name):
+                bindir = self.make_bindir(f"bin-probe-{name}", shell=shell)
+                found = self.fake_shell("zsh", f'echo "{self.home}/.local/bin/irsync"')
+                r = self.install(bindir=bindir, env={"SHELL": found})
+                self.assertNotIn("not on your PATH", r.stderr)
+                start = time.monotonic()
+                slow = self.fake_shell("bash", "trap '' TERM; sleep 60")
+                r = self.install(bindir=bindir, env={"SHELL": slow})
+                self.assertLess(time.monotonic() - start, 20)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("not on your PATH", r.stderr)
+                self.assertEqual(self.temp_dirs(), [])
+
     def test_killed_install_leaves_no_temp_files(self):
         for name, shell in self.shells():
             with self.subTest(shell=name):
@@ -753,6 +908,56 @@ class KillTests(Base):
                 self.assertNotEqual(r.returncode, 0)
                 self.assertEqual(self.temp_dirs(), [])
                 self.assertEqual(self.under_home(home), set())
+
+
+class TerminalTests(Base):
+    """The login shell probe saves the terminal's settings with stty and puts
+    them back, and never fails the install over it."""
+
+    def in_terminal(self):
+        """subprocess.run arguments that give the installer a new pseudo
+        terminal as its controlling terminal. Returns them and the terminal's
+        master side, which still reads its settings after macOS revokes the
+        slave side when the installer exits."""
+        import fcntl
+        import pty
+        import termios
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+
+        def take_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        return {"stdin": slave, "preexec_fn": take_terminal}, master
+
+    def test_no_terminal_and_a_failing_stty(self):
+        write_exe(os.path.join(self.bindir, "stty"), "#!/bin/sh\nexit 1\n")
+        sh = self.fake_shell("zsh", "exit 1")
+        r = self.install(env={"SHELL": sh},
+                         popen={"start_new_session": True, "stdin": subprocess.DEVNULL})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_terminal_and_a_failing_stty(self):
+        write_exe(os.path.join(self.bindir, "stty"), "#!/bin/sh\nexit 1\n")
+        popen, _ = self.in_terminal()
+        r = self.install(env={"SHELL": self.fake_shell("zsh", "exit 1")}, popen=popen)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.under_home(), set(FILES))
+
+    def test_echo_is_back_after_a_killed_login_shell(self):
+        # A startup file that turns echo off to ask for a passphrase, then
+        # hangs until the probe kills it.
+        import termios
+        stty = shutil.which("stty")
+        os.symlink(stty, os.path.join(self.bindir, "stty"))
+        popen, tty = self.in_terminal()
+        sh = self.fake_shell("bash", f"trap '' TERM; {stty} -echo </dev/tty; sleep 60")
+        r = self.install(env={"SHELL": sh}, popen=popen)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(termios.tcgetattr(tty)[3] & termios.ECHO, "echo is still off")
 
 
 class UninstallTests(Base):
@@ -827,6 +1032,7 @@ class ShellTests(Base):
         self.assertEqual(lines[-1], 'main "$@"')
         env = {
             "PATH": self.bindir,
+            "SHELL": "/nonexistent/shell",
             "TMPDIR": self.tmp,
             "FAKE_UNAME_S": "Linux",
             "FAKE_UNAME_M": "x86_64",

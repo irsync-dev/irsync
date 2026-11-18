@@ -5,10 +5,9 @@
 use anyhow::Context;
 use iroh::EndpointId;
 
-use super::client::{
-    client_host_name, ensure_installed, probe, run_setup, Install, Rsh, REMOTE_BIN,
-};
-use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
+use super::client::{client_host_name, ensure_installed, probe, run_setup, Install, Rsh};
+use super::payload::Contents;
+use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
@@ -161,20 +160,30 @@ impl Onboarded {
     }
 }
 
+/// What an onboarding run is asked to do beyond the defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SetupFlags {
+    /// `alias` is a saved host being checked, so `ssh-setup` must not add
+    /// back a removed grant.
+    pub recheck: bool,
+    /// Turn the daemon's DHT publishing off.
+    pub no_dht: bool,
+    /// Copy nothing to the server: use the irsync already there.
+    pub no_install: bool,
+}
+
 /// Sets up `dest` (an ssh destination) for `client`: probe, install this
 /// build, run `ssh-setup`, then save the host with `ssh = dest`.
 /// `alias`: a saved host being checked, the only entry updated; `None` on
-/// a first run, which saves what [`choose_aliases`] says. `recheck`: the
-/// host is a saved one, so `ssh-setup` must not add back a removed grant.
-/// `no_dht`: turn the daemon's DHT publishing off.
+/// a first run, which saves what [`choose_aliases`] says. `flags` says
+/// what else to do.
 pub fn onboard(
     paths: &Paths,
     rsh: &Rsh,
     alias: Option<&str>,
     dest: &str,
     client: EndpointId,
-    recheck: bool,
-    no_dht: bool,
+    flags: SetupFlags,
 ) -> anyhow::Result<Onboarded> {
     match alias {
         Some(a) => check(a, dest)?,
@@ -194,8 +203,8 @@ pub fn onboard(
     if alias.is_none() {
         check_first(dest, p.hostname.as_deref())?;
     }
-    let install = ensure_installed(rsh, dest, &p)?;
-    let report = run_setup(rsh, dest, client, &client_name, recheck, no_dht)?;
+    let install = ensure_installed(rsh, dest, &p, flags.no_install)?;
+    let report = run_setup(rsh, dest, client, &client_name, flags)?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let id = report.endpoint_id;
@@ -218,11 +227,11 @@ pub fn onboard(
             .then(|| saved_ssh(&doc, &alias))
             .flatten()
             .filter(|old| old != dest && ip_of(old).is_none_or(|ip| Some(ip) == typed_ip));
-        let flags = HostFlags {
+        let host_flags = HostFlags {
             ssh: kept_ssh.is_none().then(|| dest.to_string()),
             ..HostFlags::default()
         };
-        let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &flags)
+        let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &host_flags)
             .with_context(|| format!("saving host alias {alias}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
@@ -307,27 +316,33 @@ pub fn check(alias: &str, dest: &str) -> anyhow::Result<()> {
 /// how-to is separate: see [`howto`].
 pub fn summary(o: &Onboarded) -> Vec<String> {
     let dest = &o.alias;
-    let bin = format!("~/{REMOTE_BIN}");
+    let dir = "~/.local/bin";
     let version = &*LONG_VERSION;
     let r = &o.report;
     let mut out = vec![format!("set up {dest} over ssh:")];
-    let (replaced, note) = match &o.install {
-        Install::Current => (None, None),
-        Install::Copied { replaced } => (Some(replaced), None),
-        Install::Downloaded { replaced, platform } => (
+    let (replaced, note, contents) = match &o.install {
+        Install::Current => (None, String::new(), None),
+        Install::Copied { replaced, contents } => (Some(replaced), String::new(), Some(contents)),
+        Install::Downloaded {
+            replaced,
+            platform,
+            contents,
+        } => (
             Some(replaced),
-            Some(format!(" (release binary for {platform})")),
+            format!(" (release files for {platform})"),
+            Some(contents),
         ),
     };
-    let note = note.unwrap_or_default();
-    match replaced {
-        None => {}
-        Some(None) => out.push(format!("  installed irsync {version} at {bin}{note}")),
-        Some(Some(old)) => {
-            let old = old.strip_prefix("irsync ").unwrap_or(old);
-            out.push(format!(
-                "  replaced irsync {old} with {version} at {bin}{note}"
-            ));
+    if let (Some(replaced), Some(contents)) = (replaced, contents) {
+        let what = contents_phrase(contents, &note);
+        match replaced {
+            None => out.push(format!("  installed irsync {version} in {dir}{what}")),
+            Some(old) => {
+                let old = old.strip_prefix("irsync ").unwrap_or(old);
+                out.push(format!(
+                    "  replaced irsync {old} with {version} in {dir}{what}"
+                ));
+            }
         }
     }
     if r.identity == Created::Generated {
@@ -377,6 +392,24 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             );
         }
     }
+    for file in &r.stale_services {
+        out.push(format!(
+            "  warning: {} still starts irsync from ~/.local/share/irsync/bin.",
+            home_tilde(file)
+        ));
+        out.push(
+            "    That copy is no longer updated. Change the path in that file to \
+             ~/.local/bin/irsync, then restart the service."
+                .into(),
+        );
+    }
+    match &r.old_bin {
+        OldBin::Removed => out.push("  removed the old copy in ~/.local/share/irsync/bin".into()),
+        OldBin::RemoveFailed(e) => out.push(format!(
+            "  warning: could not remove the old copy in ~/.local/share/irsync/bin: {e}"
+        )),
+        OldBin::Absent | OldBin::Kept => {}
+    }
     for a in &o.saved {
         let alias = &a.alias;
         match a.previous_id {
@@ -399,6 +432,33 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         }
     }
     out
+}
+
+/// What an install put beside `irsync`, as the tail of the install line:
+/// `, with fileset and the manual pages` and so on, then `note`.
+fn contents_phrase(c: &Contents, note: &str) -> String {
+    const WHY: &str = "this machine has none beside its irsync";
+    match (c.fileset, c.man) {
+        (true, true) => format!(", with fileset and the manual pages{note}"),
+        (true, false) => format!(", with fileset (no manual pages: {WHY}){note}"),
+        (false, true) => format!(", with the manual pages (no fileset: {WHY}){note}"),
+        (false, false) => format!(" (no fileset, no manual pages: {WHY}){note}"),
+    }
+}
+
+/// A service file's path with the home part shown as `~`. The two files
+/// the setup looks at have fixed places under the home directory.
+fn home_tilde(path: &std::path::Path) -> String {
+    let p = path.to_string_lossy();
+    for tail in [
+        "/.config/systemd/user/irsync.service",
+        "/Library/LaunchAgents/org.irsync.daemon.plist",
+    ] {
+        if p.ends_with(tail) {
+            return format!("~{tail}");
+        }
+    }
+    p.into_owned()
 }
 
 fn short(id: &EndpointId) -> String {
@@ -435,7 +495,7 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
                 "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
                 "<plist version=\"1.0\"><dict>",
                 "  <key>Label</key><string>org.irsync.daemon</string>",
-                "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>",
+                "  <key>ProgramArguments</key><array><string>$HOME/.local/bin/irsync</string><string>daemon</string><string>-vv</string></array>",
                 "  <key>RunAtLoad</key><true/>",
                 "  <key>KeepAlive</key><true/>",
                 "</dict></plist>",
@@ -448,7 +508,7 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
                 "[Unit]",
                 "Description=irsync daemon",
                 "[Service]",
-                "ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv",
+                "ExecStart=%h/.local/bin/irsync daemon -vv",
                 "Restart=on-failure",
                 "[Install]",
                 "WantedBy=default.target",
@@ -492,6 +552,12 @@ fn shell_path(path: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Neither `fileset` nor the man pages.
+    const ALONE: Contents = Contents {
+        fileset: false,
+        man: false,
+    };
 
     fn id(b: u8) -> EndpointId {
         iroh::SecretKey::from_bytes(&[b; 32]).public()
@@ -607,6 +673,8 @@ mod tests {
                 log: PathBuf::from("/s/daemon.log"),
                 relay: None,
                 addrs: Vec::new(),
+                stale_services: Vec::new(),
+                old_bin: OldBin::Absent,
             },
             install,
             os,
@@ -615,19 +683,25 @@ mod tests {
         }
     }
 
+    const ALL: Contents = Contents {
+        fileset: true,
+        man: true,
+    };
+
     #[test]
     fn downloaded_says_which_platform() {
         let o = onboarded(
             Install::Downloaded {
                 replaced: None,
                 platform: "linux aarch64".into(),
+                contents: ALL,
             },
             DaemonOutcome::Started,
             Some("linux"),
         );
         let s = summary(&o);
         let want = format!(
-            "  installed irsync {} at ~/{REMOTE_BIN} (release binary for linux aarch64)",
+            "  installed irsync {} in ~/.local/bin, with fileset and the manual pages (release files for linux aarch64)",
             *LONG_VERSION
         );
         assert!(s.contains(&want), "{s:?}");
@@ -635,16 +709,97 @@ mod tests {
             Install::Downloaded {
                 replaced: Some("irsync 0.0.1 (old)".into()),
                 platform: "linux aarch64".into(),
+                contents: ALL,
             },
             DaemonOutcome::Started,
             Some("linux"),
         );
         let s = summary(&o);
         let want = format!(
-            "  replaced irsync 0.0.1 (old) with {} at ~/{REMOTE_BIN} (release binary for linux aarch64)",
+            "  replaced irsync 0.0.1 (old) with {} in ~/.local/bin, with fileset and the manual pages (release files for linux aarch64)",
             *LONG_VERSION
         );
         assert!(s.contains(&want), "{s:?}");
+    }
+
+    /// A copy of this machine's files says what it left out, and why.
+    #[test]
+    fn copied_says_what_is_missing() {
+        let why = "this machine has none beside its irsync";
+        let v = &*LONG_VERSION;
+        for (contents, want) in [
+            (ALL, format!("  installed irsync {v} in ~/.local/bin, with fileset and the manual pages")),
+            (ALONE, format!("  installed irsync {v} in ~/.local/bin (no fileset, no manual pages: {why})")),
+            (
+                Contents { fileset: true, man: false },
+                format!("  installed irsync {v} in ~/.local/bin, with fileset (no manual pages: {why})"),
+            ),
+            (
+                Contents { fileset: false, man: true },
+                format!("  installed irsync {v} in ~/.local/bin, with the manual pages (no fileset: {why})"),
+            ),
+        ] {
+            let o = onboarded(
+                Install::Copied { replaced: None, contents },
+                DaemonOutcome::Started,
+                Some("linux"),
+            );
+            let s = summary(&o);
+            assert!(s.contains(&want), "{want}\n{s:#?}");
+        }
+    }
+
+    #[test]
+    fn warns_per_stale_service_file() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.report.stale_services = vec![
+            PathBuf::from("/home/u/.config/systemd/user/irsync.service"),
+            PathBuf::from("/home/u/Library/LaunchAgents/org.irsync.daemon.plist"),
+        ];
+        let s = summary(&o);
+        for file in [
+            "/home/u/.config/systemd/user/irsync.service",
+            "/home/u/Library/LaunchAgents/org.irsync.daemon.plist",
+        ] {
+            let shown = file.replace("/home/u", "~");
+            let l = at(
+                &s,
+                &format!("  warning: {shown} still starts irsync from ~/.local/share/irsync/bin."),
+            );
+            assert_eq!(
+                s[l + 1],
+                "    That copy is no longer updated. Change the path in that file to ~/.local/bin/irsync, then restart the service."
+            );
+        }
+    }
+
+    #[test]
+    fn says_when_the_old_copy_was_removed() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.report.old_bin = OldBin::Removed;
+        at(
+            &summary(&o),
+            "  removed the old copy in ~/.local/share/irsync/bin",
+        );
+    }
+
+    #[test]
+    fn says_when_the_old_copy_could_not_be_removed() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.report.old_bin = OldBin::RemoveFailed("permission denied".into());
+        at(
+            &summary(&o),
+            "  warning: could not remove the old copy in ~/.local/share/irsync/bin: permission denied",
+        );
+    }
+
+    #[test]
+    fn kept_old_copy_says_nothing_extra() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        let before = summary(&o);
+        o.report.old_bin = OldBin::Kept;
+        assert_eq!(summary(&o), before);
+        assert!(!before.join("\n").contains("old copy"));
     }
 
     #[test]
@@ -652,6 +807,7 @@ mod tests {
         let o = onboarded(
             Install::Copied {
                 replaced: Some("irsync 0.0.1 (old)".into()),
+                contents: ALL,
             },
             DaemonOutcome::Restarted {
                 old_version: "0.0.1 (old)".into(),
@@ -660,7 +816,7 @@ mod tests {
         );
         let s = summary(&o).join("\n");
         assert!(s.contains(&format!(
-            "  replaced irsync 0.0.1 (old) with {} at ~/.local/share/irsync/bin/irsync",
+            "  replaced irsync 0.0.1 (old) with {} in ~/.local/bin, with fileset and the manual pages",
             *LONG_VERSION
         )));
         assert!(s.contains("  restarted the daemon (was 0.0.1 (old))"));
@@ -679,7 +835,7 @@ mod tests {
         assert!(!text.contains("systemctl"));
         // The plist body starts at column 0 so it can be pasted as a file.
         assert!(h.iter().any(|l| l.starts_with("<?xml ")));
-        at(&h, "  <key>ProgramArguments</key><array><string>$HOME/.local/share/irsync/bin/irsync</string><string>daemon</string><string>-vv</string></array>");
+        at(&h, "  <key>ProgramArguments</key><array><string>$HOME/.local/bin/irsync</string><string>daemon</string><string>-vv</string></array>");
         let pid = at(&h, "  pid=\"$(sed -n 's/^pid=//p' /s/daemon.lock)\"");
         let wait = at(
             &h,
@@ -713,7 +869,7 @@ mod tests {
             "To keep the daemon running after a reboot, make it a user service."
         );
         assert_eq!(h[1], "Put this in ~/.config/systemd/user/irsync.service:");
-        at(&h, "ExecStart=%h/.local/share/irsync/bin/irsync daemon -vv");
+        at(&h, "ExecStart=%h/.local/bin/irsync daemon -vv");
         at(&h, "Restart=on-failure");
         let pid = at(
             &h,

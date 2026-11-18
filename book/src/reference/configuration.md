@@ -34,6 +34,7 @@ parallel = 128
 reconnect = "1d"
 dial_retries = 4
 dht = true
+ssh_install = true           # false: copy nothing to the server
 mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
 relay_mode = "default"       # or "disabled": no relay
@@ -142,6 +143,7 @@ built-in default.
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Flag: `--dial-retries`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
+| `ssh_install` | `true` | Copy irsync to the server when setting it up over ssh. `false` copies nothing: the setup uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
 | `relay_mode` | `default` | `disabled`: direct connections only, never through a relay; the lookups stay on. Flag: `--no-relay`. |

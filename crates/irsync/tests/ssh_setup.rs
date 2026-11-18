@@ -12,7 +12,7 @@ use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
 use irsync::daemon_lock::probe;
 use irsync::ssh::setup::{
-    check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, SetupReport,
+    check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport,
 };
 use toml_edit::DocumentMut;
 
@@ -149,6 +149,8 @@ fn report_roundtrips() {
                     } else {
                         Vec::new()
                     },
+                    stale_services: Vec::new(),
+                    old_bin: OldBin::Absent,
                 };
                 let text = r.to_lines();
                 assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");

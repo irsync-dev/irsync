@@ -1,19 +1,25 @@
 //! The client side of SSH onboarding: drive the server through the system
 //! `ssh` (or `--rsh` / `IRSYNC_RSH`). irsync has no SSH code of its own.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 use iroh::EndpointId;
 
+use super::onboard::SetupFlags;
+use super::payload::{Contents, Packed, Staged};
 use super::release;
 use super::setup::SetupReport;
 use crate::build::{BuildInfo, LONG_VERSION};
 use crate::config::hosts::short_host_name;
 
-/// irsync's own copy on the server, relative to the remote home.
-pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
+/// irsync on the server, relative to the remote home: where the release
+/// installer puts it.
+pub const REMOTE_BIN: &str = ".local/bin/irsync";
+
+/// Where irsync put its copy on the server before it used the installer.
+pub const OLD_REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
 
 /// Where the book explains the setup without ssh.
 const BY_HAND_URL: &str =
@@ -67,7 +73,7 @@ impl Rsh {
     /// unless the caller overrides them: `probe` and `ensure_installed` leave
     /// stderr on the terminal so password and host-key prompts and ssh's own
     /// errors show live; `probe` and `run_setup` capture stdout; `run_setup`
-    /// also captures stderr; `ensure_installed` feeds the binary on stdin.
+    /// also captures stderr; `ensure_installed` feeds the packed files on stdin.
     /// `remote_cmd` is fixed text built by irsync, plus
     /// an EndpointId and a hex-encoded name; it never contains user input. It is sh syntax, and
     /// the login shell may be fish or tcsh, so it is handed to `/bin/sh`
@@ -163,69 +169,129 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Install {
     Current,
+    /// This machine's own files, copied over.
     Copied {
         replaced: Option<String>,
+        contents: Contents,
     },
-    /// The release binary for `platform` ("linux aarch64"), downloaded
+    /// The release files for `platform` ("linux aarch64"), downloaded
     /// here and copied over.
     Downloaded {
         replaced: Option<String>,
         platform: String,
+        contents: Contents,
     },
 }
 
-/// Make sure the server has this exact build: copy this binary over if the
-/// platforms match, else the release binary for the server's platform.
-pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
+/// Make sure the server has this exact build, installed by the release
+/// installer into `~/.local`. A release build sends the release files for
+/// the server's platform; on the same OS and CPU it falls back to this
+/// machine's own files when there are no release files for this build. A
+/// development build sends its own files, and only to the same platform.
+///
+/// `no_install` copies nothing: the irsync already in `~/.local/bin` must be
+/// this exact build, or this fails and the server is left as it was.
+pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe, no_install: bool) -> Result<Install> {
     // `--version` prints the program name, then LONG_VERSION.
     if probe.installed.as_deref() == Some(format!("irsync {}", *LONG_VERSION).as_str()) {
         return Ok(Install::Current);
     }
-    let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    if probe.os != Some(my_os) || probe.arch != Some(my_arch) {
-        return install_release(rsh, dest, probe);
+    if no_install {
+        let found = match &probe.installed {
+            Some(v) => format!("found {v}"),
+            None => "found none".to_string(),
+        };
+        bail!(
+            "--no-install: {dest} has no irsync {} at ~/.local/bin/irsync ({found}). \
+             Install that version there, or run without --no-install (or set \
+             ssh_install = true in the config). Nothing was changed.",
+            *LONG_VERSION
+        );
     }
-    let exe = exe_path()?;
-    match upload(rsh, dest, &exe)? {
-        Upload::Done => {}
-        Upload::Short => bail!("{}", cut_short(dest)),
-        Upload::NotThisVersion | Upload::DoesNotRun => bail!(
-            "the copied irsync does not run on {dest}. Nothing was changed there. \
-             Install irsync on the server and set it up by hand: {BY_HAND_URL}"
-        ),
-    }
-    Ok(Install::Copied {
-        replaced: probe.installed.clone(),
-    })
-}
-
-/// The server's OS or CPU is not ours, so our own binary is no use there:
-/// download the release binary for this build's tag and copy that over.
-/// Only a release build can; see [`release::release_tag`].
-fn install_release(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
     let (my_os, my_arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    let same = probe.os == Some(my_os) && probe.arch == Some(my_arch);
+    let target = release::target_for(probe.os, probe.arch);
+    if let (Some(target), Some(tag)) = (target, release_tag()) {
+        match install_release(rsh, dest, probe, target, &tag, same)? {
+            Ok(install) => return Ok(install),
+            Err(reason) => eprintln!(
+                "irsync: no release files for this build ({reason}); \
+                 installing this machine's own files"
+            ),
+        }
+    }
+    if same {
+        return install_local(rsh, dest, probe);
+    }
     let os = probe.os.unwrap_or("an unknown OS");
     let arch = probe.arch.unwrap_or("an unknown CPU");
     let by_hand =
         format!("Install irsync on both machines and set the server up by hand: {BY_HAND_URL}");
-    let Some(target) = release::target_for(probe.os, probe.arch) else {
+    if target.is_none() {
         bail!(
             "{dest} runs {os} {arch}, this irsync is {my_os} {my_arch}, and there is no \
              release binary for that platform. {by_hand}"
         );
-    };
-    let Some(tag) = release_tag() else {
-        bail!(
-            "{dest} runs {os} {arch}, this irsync is {my_os} {my_arch} and a development \
-             build ({}). Only release builds install on another OS or CPU. {by_hand}",
-            *LONG_VERSION
-        );
-    };
-    eprintln!("irsync: downloading irsync {tag} for {os} {arch}");
-    let fetched = release::fetch(&tag, target)?;
-    match upload(rsh, dest, fetched.bin())? {
+    }
+    bail!(
+        "{dest} runs {os} {arch}, this irsync is {my_os} {my_arch} and a development \
+         build ({}). Only release builds install on another OS or CPU. {by_hand}",
+        *LONG_VERSION
+    )
+}
+
+/// This machine's own files, for a server of the same OS and CPU.
+fn install_local(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
+    let staged = Staged::from_local(&exe_path()?)?;
+    let contents = staged.contents();
+    match install_remote(rsh, dest, &staged.pack()?)? {
         Upload::Done => {}
-        Upload::Short => bail!("{}", cut_short(dest)),
+        Upload::NotThisVersion | Upload::DoesNotRun => bail!(
+            "the copied irsync does not run on {dest}. Nothing was changed there. \
+             Install irsync on the server and set it up by hand: {BY_HAND_URL}"
+        ),
+        other => bail!("{}", other.failure(dest)),
+    }
+    Ok(Install::Copied {
+        replaced: probe.installed.clone(),
+        contents,
+    })
+}
+
+/// Download the release files of `tag` for `target` and install them.
+/// `same`: the server has this machine's OS and CPU, so a missing download
+/// or a release of another build is no error; the inner `Err` says why,
+/// and the caller sends this machine's own files instead.
+fn install_release(
+    rsh: &Rsh,
+    dest: &str,
+    probe: &Probe,
+    target: &str,
+    tag: &str,
+    same: bool,
+) -> Result<std::result::Result<Install, String>> {
+    let os = probe.os.unwrap_or("an unknown OS");
+    let arch = probe.arch.unwrap_or("an unknown CPU");
+    let by_hand =
+        format!("Install irsync on both machines and set the server up by hand: {BY_HAND_URL}");
+    eprintln!("irsync: downloading irsync {tag} for {os} {arch}");
+    let fetched = match release::fetch(tag, target) {
+        Ok(fetched) => fetched,
+        Err(e) if same => {
+            return Ok(Err(format!(
+                "could not download release {tag}: {}",
+                e.root_cause()
+            )))
+        }
+        Err(e) => return Err(e),
+    };
+    let staged = Staged::from_release(fetched)?;
+    let contents = staged.contents();
+    match install_remote(rsh, dest, &staged.pack()?)? {
+        Upload::Done => {}
+        Upload::NotThisVersion if same => {
+            return Ok(Err(format!("release {tag} is another build")))
+        }
         Upload::NotThisVersion => bail!(
             "release {tag} is not this build ({}): this irsync is a development build with \
              a release's version number, so it cannot install on {dest}. Nothing was \
@@ -236,67 +302,92 @@ fn install_release(rsh: &Rsh, dest: &str, probe: &Probe) -> Result<Install> {
             "the release binary for {os} {arch} does not run on {dest} (is the home \
              directory there mounted noexec?). Nothing was changed there. {by_hand}"
         ),
+        other => bail!("{}", other.failure(dest)),
     }
-    Ok(Install::Downloaded {
+    Ok(Ok(Install::Downloaded {
         replaced: probe.installed.clone(),
         platform: format!("{os} {arch}"),
-    })
+        contents,
+    }))
 }
 
 /// The release tag of this build, or `None` for a development build. A
-/// test that points the download at its own files always gets a tag: test
-/// builds come from a tree with uncommitted changes.
+/// test build is a release build only when a test points the download at
+/// its own files, so no test ever downloads from GitHub.
 fn release_tag() -> Option<String> {
     let info = BuildInfo::current();
     #[cfg(feature = "test-hooks")]
-    if release::test_url().is_some() {
-        return Some(format!("v{}", info.version));
-    }
-    release::release_tag(&info)
+    let tag = release::test_url().map(|_| format!("v{}", info.version));
+    #[cfg(not(feature = "test-hooks"))]
+    let tag = release::release_tag(&info);
+    tag
 }
 
-fn cut_short(dest: &str) -> String {
-    format!("the copy of irsync on {dest} was cut short; nothing was changed, try again")
-}
-
-/// What the upload command reported.
+/// What the install command reported.
 #[derive(Debug, PartialEq, Eq)]
 enum Upload {
     Done,
     /// Fewer bytes arrived than were sent.
     Short,
-    /// The file arrived whole and runs on the server, but reports another
-    /// version than this build's.
+    /// The files arrived whole and irsync runs on the server, but reports
+    /// another version than this build's.
     NotThisVersion,
-    /// The file arrived whole, but on the server it prints no version: it
-    /// does not run there (wrong libc, a `noexec` home).
+    /// The files arrived whole, but on the server irsync prints no
+    /// version: it does not run there (wrong libc, a `noexec` home).
     DoesNotRun,
+    /// The installer script failed; it said why on stderr.
+    InstallerFailed,
+    /// No work directory, or the files could not be stored or unpacked.
+    CannotUnpack,
 }
 
-/// Send `local` to the server as the new irsync. It replaces the old one
-/// only if the size matches and its `--version` is ours; otherwise the
-/// temp file is removed and nothing changes.
-fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
-    let file =
-        std::fs::File::open(local).with_context(|| format!("cannot read {}", local.display()))?;
-    let len = file.metadata()?.len();
-    let dir = REMOTE_BIN.rsplit_once('/').map_or("", |(d, _)| d);
-    let tmp = format!("\"$HOME/{REMOTE_BIN}.tmp.$$\"");
+impl Upload {
+    /// The message for the outcomes every caller treats alike.
+    fn failure(&self, dest: &str) -> String {
+        match self {
+            Upload::Short => {
+                format!(
+                    "the copy of irsync on {dest} was cut short; nothing was changed, try again"
+                )
+            }
+            Upload::InstallerFailed => {
+                format!("the installer failed on {dest}; see its message above")
+            }
+            Upload::CannotUnpack => format!(
+                "could not unpack irsync on {dest} (it needs tar and a writable home \
+                 directory). Nothing was changed there."
+            ),
+            other => format!("installing irsync on {dest} failed ({other:?})"),
+        }
+    }
+}
+
+/// Send `packed` to the server and run its installer there. Nothing is
+/// installed unless every byte arrived and the unpacked irsync's
+/// `--version` is ours. The work directory in the home is removed on
+/// every exit, a signal included.
+fn install_remote(rsh: &Rsh, dest: &str, packed: &Packed) -> Result<Upload> {
+    let file = std::fs::File::open(packed.path()).context("cannot read the packed files")?;
+    let len = packed.len();
     // `--version` prints the program name, then LONG_VERSION. The text sits
     // in double quotes in the remote sh command.
     let want = format!("irsync {}", *LONG_VERSION);
     debug_assert!(!want.contains(['"', '$', '`']), "{want}");
-    // Exit 3 marks a short upload, exit 4 a binary that reports another
-    // version, exit 5 one that prints no version at all (it does not run);
-    // the temp file is removed first.
+    // Exit 3 marks a short upload, 4 an irsync that reports another
+    // version, 5 one that prints no version at all (it does not run), 6 a
+    // failed installer, 7 files that could not be stored or unpacked.
+    // `sh_quote` takes no `'`, so the EXIT trap calls a function.
     let cmd = format!(
-        "mkdir -p \"$HOME/{dir}\" && cat > {tmp} \
-         && {{ [ \"$(wc -c < {tmp})\" -eq {len} ] || {{ rm -f {tmp}; exit 3; }}; }} \
-         && chmod 755 {tmp} \
-         && {{ v=$({tmp} --version 2>/dev/null | head -n 1); \
-         [ -n \"$v\" ] || {{ rm -f {tmp}; exit 5; }}; \
-         [ \"$v\" = \"{want}\" ] || {{ rm -f {tmp}; exit 4; }}; }} \
-         && mv -f {tmp} \"$HOME/{REMOTE_BIN}\""
+        "w=; clean() {{ [ -z \"$w\" ] || rm -rf \"$w\"; }}; \
+         trap clean EXIT; trap \"exit 129\" HUP; trap \"exit 130\" INT; trap \"exit 143\" TERM; \
+         w=$(mktemp -d \"$HOME/.irsync-install.XXXXXX\") || exit 7; \
+         cat > \"$w/in.tar\" || exit 7; \
+         [ \"$(wc -c < \"$w/in.tar\")\" -eq {len} ] || exit 3; \
+         tar -xf \"$w/in.tar\" -C \"$w\" || exit 7; \
+         v=$(\"$w/files/irsync\" --version 2>/dev/null | head -n 1); \
+         [ -n \"$v\" ] || exit 5; \
+         [ \"$v\" = \"{want}\" ] || exit 4; \
+         sh \"$w/installer.sh\" --from \"$w/files\" || exit 6"
     );
     let status = rsh
         .command(dest, &cmd)
@@ -308,7 +399,9 @@ fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
         Some(3) => Ok(Upload::Short),
         Some(4) => Ok(Upload::NotThisVersion),
         Some(5) => Ok(Upload::DoesNotRun),
-        _ => bail!("copying irsync to {dest} failed ({status})"),
+        Some(6) => Ok(Upload::InstallerFailed),
+        Some(7) => Ok(Upload::CannotUnpack),
+        _ => bail!("installing irsync on {dest} failed ({status})"),
     }
 }
 
@@ -354,32 +447,35 @@ pub fn decode_name(hex: &str) -> Result<String> {
 /// The `ssh-setup` command line for the server. `client_name` is whatever
 /// this machine is called, so it goes as hex: the login shell there may be
 /// sh, fish or tcsh, and none of them may read any of it as syntax.
-pub fn setup_command(client: EndpointId, client_name: &str, recheck: bool, no_dht: bool) -> String {
+pub fn setup_command(client: EndpointId, client_name: &str, flags: SetupFlags) -> String {
     let mut cmd = format!(
         "\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client} --client-name-hex {}",
         encode_name(client_name)
     );
-    if recheck {
+    if flags.recheck {
         cmd.push_str(" --recheck");
     }
-    if no_dht {
+    if flags.no_dht {
         cmd.push_str(" --no-dht");
+    }
+    if flags.no_install {
+        cmd.push_str(" --keep-old");
     }
     cmd
 }
 
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`
 /// passes `--recheck` (a saved host: never add back a removed grant),
-/// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off).
+/// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off),
+/// `no_install` passes `--keep-old` (nothing was installed this run).
 pub fn run_setup(
     rsh: &Rsh,
     dest: &str,
     client: EndpointId,
     client_name: &str,
-    recheck: bool,
-    no_dht: bool,
+    flags: SetupFlags,
 ) -> Result<SetupReport> {
-    let cmd = setup_command(client, client_name, recheck, no_dht);
+    let cmd = setup_command(client, client_name, flags);
     let out = rsh
         .command(dest, &cmd)
         .stdout(Stdio::piped())

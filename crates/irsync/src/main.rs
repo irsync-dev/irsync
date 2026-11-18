@@ -37,6 +37,7 @@ use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
 };
 use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
@@ -78,11 +79,13 @@ fn main() {
             client_name_hex,
             recheck,
             no_dht,
+            keep_old,
         }) => std::process::exit(run_ssh_setup(
             client,
             client_name_hex,
             *recheck,
             *no_dht,
+            *keep_old,
             files,
         )),
         None => unreachable!("try_parse_from always sets a command"),
@@ -575,20 +578,17 @@ async fn connect_for(
         } else {
             format!("irsync: checking {host} over ssh")
         });
-        let o = irsync::ssh::onboard::onboard(
-            &paths,
-            &rsh,
-            alias,
-            &dest,
-            secret.public(),
-            !first,
-            opts.no_remote_dht,
-        )
-        .with_context(|| {
+        let flags = SetupFlags {
+            recheck: !first,
+            no_dht: opts.no_remote_dht,
+            no_install: opts.no_install || config.settings.client.ssh_install == Some(false),
+        };
+        let o = irsync::ssh::onboard::onboard(&paths, &rsh, alias, &dest, secret.public(), flags)
+            .with_context(|| {
             if client_only {
                 format!(
                     "{host} is saved in {} as a client only; setting its daemon \
-                     up over ssh failed",
+                         up over ssh failed",
                     config.hosts.path.display()
                 )
             } else if unknown {
@@ -729,6 +729,7 @@ fn recheck_over_ssh(
     client: iroh::EndpointId,
     remote: &str,
     opts: &SyncOptions,
+    ssh_install: Option<bool>,
     log: &LogWriter,
 ) -> Recheck {
     let Some(dest) = entry.and_then(|h| h.ssh.as_deref()) else {
@@ -739,9 +740,13 @@ fn recheck_over_ssh(
     ));
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let no_dht = opts.no_remote_dht;
+    let flags = SetupFlags {
+        recheck: true,
+        no_dht: opts.no_remote_dht,
+        no_install: opts.no_install || ssh_install == Some(false),
+    };
     let alias = Some(host);
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, alias, dest, client, true, no_dht) {
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, alias, dest, client, flags) {
         Ok(o) => o,
         Err(e) => return Recheck::Failed(e),
     };
@@ -1057,7 +1062,15 @@ async fn sync(
                     // The saved alias, when the operand named the host
                     // another way (an address it was first set up by).
                     let name = conn.alias.clone().unwrap_or_else(|| host.to_string());
-                    match recheck_over_ssh(&name, entry, client, &remote_text, cli_opts, log) {
+                    match recheck_over_ssh(
+                        &name,
+                        entry,
+                        client,
+                        &remote_text,
+                        cli_opts,
+                        conn.settings.client.ssh_install,
+                        log,
+                    ) {
                         Recheck::Done(hints) => {
                             conn.endpoint.close().await;
                             conn = connect_for(&name, cli_opts, log, hints).await?;
@@ -1690,6 +1703,7 @@ fn run_ssh_setup(
     client_name_hex: &str,
     recheck: bool,
     no_dht: bool,
+    keep_old: bool,
     files: &FilesArgs,
 ) -> i32 {
     // The client stops when its probe sees root; this holds when it did not.
@@ -1714,7 +1728,7 @@ fn run_ssh_setup(
             }
             let name =
                 irsync::ssh::client::decode_name(client_name_hex).context("--client-name-hex")?;
-            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht)
+            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht, keep_old)
         });
     match result {
         Ok(report) => {

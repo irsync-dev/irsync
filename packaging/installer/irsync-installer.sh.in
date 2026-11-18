@@ -4,12 +4,18 @@
 #
 #   sh irsync-installer.sh               install
 #   sh irsync-installer.sh --uninstall   remove what the installer placed
+#   sh irsync-installer.sh --from DIR    install from an unpacked release directory
 #   sh irsync-installer.sh --help        (or -h)
 #
 # It downloads the release tarball for this platform over HTTPS, checks its
 # SHA-256 against the value written in below, and changes nothing under your
 # home directory until that check has passed. It never edits shell startup
 # files.
+#
+# --from DIR skips the download and the checksum and installs from DIR, which
+# holds irsync and, optionally, fileset and man/man1/irsync.1,
+# man/man1/fileset.1 and man/man5/irsync.toml.5. It places fileset if DIR has
+# it, and the manual pages only if DIR has all three.
 #
 # dist's installer, which earlier releases shipped, took more. Its flags
 # --no-modify-path, --quiet (-q) and --verbose (-v), and IRSYNC_NO_MODIFY_PATH,
@@ -33,6 +39,7 @@ main() {
   die() { say "$*"; exit 1; }
   usage() {
     printf 'usage: sh irsync-installer.sh [--uninstall | --help | -h] [--no-modify-path]\n'
+    printf '                                 [--from DIR]\n'
     printf '                                 [--quiet | -q] [--verbose | -v]\n'
   }
   set_mode() { # MODE: at most one of --uninstall and --help
@@ -43,24 +50,34 @@ main() {
   # --no-modify-path, --quiet and --verbose do nothing. Short flags may be
   # grouped, as dist's installer allowed: -qv.
   mode=install
-  for arg in "$@"; do
-    case $arg in
+  from=
+  while [ $# -gt 0 ]; do
+    case $1 in
       --no-modify-path | --quiet | --verbose) ;;
       --uninstall) set_mode uninstall ;;
       --help) set_mode help ;;
+      --from)
+        [ $# -ge 2 ] || { usage >&2; exit 2; }
+        shift
+        [ -n "$1" ] || { usage >&2; exit 2; }
+        from=$1 ;;
       -*[!hqv]* | -) usage >&2; exit 2 ;;
       -*h*) set_mode help ;;
       -*) ;;
       *) usage >&2; exit 2 ;;
     esac
+    shift
   done
+  # --from installs, so it cannot go with --uninstall or --help.
+  if [ -n "$from" ] && [ "$mode" != install ]; then usage >&2; exit 2; fi
   if [ "$mode" = help ]; then
     usage
     printf '\n%s\n' "Installs irsync $version into ~/.local/bin and its manual pages into
 ~/.local/share/man. --uninstall removes them again; your config and state
 stay in place. --no-modify-path, --quiet and --verbose are accepted for
 compatibility with earlier installers and do nothing: this installer never
-edits shell startup files."
+edits shell startup files. --from DIR installs from an unpacked release
+directory instead of downloading."
     exit 0
   fi
 
@@ -100,60 +117,6 @@ edits shell startup files."
   fi
 
   os=$(uname -s)
-  arch=$(uname -m)
-  # A shell under Rosetta on an Apple Silicon Mac reports x86_64. On an Intel
-  # Mac the sysctl key does not exist, so the check fails there.
-  if [ "$os/$arch" = Darwin/x86_64 ] &&
-     [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
-    say "this shell runs under Rosetta, so installing the Apple Silicon build"
-    arch=arm64
-  fi
-  case $os/$arch in
-    Darwin/arm64)
-      target=aarch64-apple-darwin
-      sha=@SHA256_AARCH64_APPLE_DARWIN@ ;;
-    Linux/aarch64 | Linux/arm64)
-      target=aarch64-unknown-linux-musl
-      sha=@SHA256_AARCH64_UNKNOWN_LINUX_MUSL@ ;;
-    Linux/x86_64 | Linux/amd64)
-      target=x86_64-unknown-linux-musl
-      sha=@SHA256_X86_64_UNKNOWN_LINUX_MUSL@ ;;
-    *)
-      die "there is no irsync build for $os $arch. Builds exist for
-  aarch64-apple-darwin (macOS on Apple silicon), aarch64-unknown-linux-musl
-  and x86_64-unknown-linux-musl (Linux). Releases are listed at $page" ;;
-  esac
-  name=irsync-$target.tar.xz
-  url=$base_url/$name
-
-  # Checked before the download, so a missing tool costs nothing.
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256() { sha256sum; }
-  elif command -v shasum >/dev/null 2>&1; then
-    sha256() { shasum -a 256; }
-  else
-    die "need sha256sum or shasum to check the download"
-  fi
-
-  # HTTPS only, also after a redirect: a redirect to plain HTTP would let
-  # anyone on the network path swap the download.
-  fetch() { # URL: print the body on stdout
-    if command -v curl >/dev/null 2>&1; then
-      curl --proto '=https' --tlsv1.2 -fsSL "$1"
-    elif command -v wget >/dev/null 2>&1; then
-      wget --https-only -qO- "$1"
-    else
-      die "need curl or wget to download releases"
-    fi
-  }
-
-  if [ -z "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
-    # BusyBox wget (Alpine's default) has no --https-only.
-    if ! command -v curl >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 &&
-       ! wget --help 2>&1 | grep -q -- --https-only; then
-      die "this wget cannot refuse plain HTTP downloads; install curl and run again"
-    fi
-  fi
 
   # On any exit, also from a signal, remove the work directory and a file
   # half-placed under its temporary name. dash runs no EXIT trap when killed
@@ -168,35 +131,96 @@ edits shell startup files."
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX")
 
-  if [ -n "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
-    cp "$IRSYNC_INSTALLER_ARCHIVE_DIR/$name" "$tmp/$name" ||
-      die "could not read $IRSYNC_INSTALLER_ARCHIVE_DIR/$name"
+  if [ -n "$from" ]; then
+    src=$from
+    [ -f "$src/irsync" ] || die "$from has no irsync; nothing was installed"
   else
-    say "downloading $url"
-    fetch "$url" >"$tmp/$name" || die "could not download $url"
-  fi
+    arch=$(uname -m)
+    # A shell under Rosetta on an Apple Silicon Mac reports x86_64. On an Intel
+    # Mac the sysctl key does not exist, so the check fails there.
+    if [ "$os/$arch" = Darwin/x86_64 ] &&
+       [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+      say "this shell runs under Rosetta, so installing the Apple Silicon build"
+      arch=arm64
+    fi
+    case $os/$arch in
+      Darwin/arm64)
+        target=aarch64-apple-darwin
+        sha=@SHA256_AARCH64_APPLE_DARWIN@ ;;
+      Linux/aarch64 | Linux/arm64)
+        target=aarch64-unknown-linux-musl
+        sha=@SHA256_AARCH64_UNKNOWN_LINUX_MUSL@ ;;
+      Linux/x86_64 | Linux/amd64)
+        target=x86_64-unknown-linux-musl
+        sha=@SHA256_X86_64_UNKNOWN_LINUX_MUSL@ ;;
+      *)
+        die "there is no irsync build for $os $arch. Builds exist for
+    aarch64-apple-darwin (macOS on Apple silicon), aarch64-unknown-linux-musl
+    and x86_64-unknown-linux-musl (Linux). Releases are listed at $page" ;;
+    esac
+    name=irsync-$target.tar.xz
+    url=$base_url/$name
 
-  # Read from stdin, so the output is "HEX  -" whatever the path holds.
-  got=$(sha256 <"$tmp/$name") || die "could not compute the checksum of $name"
-  got=${got%% *}
-  if [ "$got" != "$sha" ]; then
-    die "checksum mismatch for $name: expected $sha, got $got.
-  Nothing was installed. Try again; if it keeps failing, report it at
-  https://github.com/irsync-dev/irsync/issues"
-  fi
+    # Checked before the download, so a missing tool costs nothing.
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256() { sha256sum; }
+    elif command -v shasum >/dev/null 2>&1; then
+      sha256() { shasum -a 256; }
+    else
+      die "need sha256sum or shasum to check the download"
+    fi
 
-  mkdir "$tmp/x"
-  if ! tar -xJf "$tmp/$name" -C "$tmp/x" 2>"$tmp/tar.err"; then
-    cat "$tmp/tar.err" >&2
-    die "could not unpack $name. This tar may not read xz files (BusyBox tar
-  and old tars cannot); install xz, or GNU tar with xz, and run again"
+    # HTTPS only, also after a redirect: a redirect to plain HTTP would let
+    # anyone on the network path swap the download.
+    fetch() { # URL: print the body on stdout
+      if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -fsSL "$1"
+      elif command -v wget >/dev/null 2>&1; then
+        wget --https-only -qO- "$1"
+      else
+        die "need curl or wget to download releases"
+      fi
+    }
+
+    if [ -z "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
+      # BusyBox wget (Alpine's default) has no --https-only.
+      if ! command -v curl >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 &&
+         ! wget --help 2>&1 | grep -q -- --https-only; then
+        die "this wget cannot refuse plain HTTP downloads; install curl and run again"
+      fi
+    fi
+
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX")
+
+    if [ -n "${IRSYNC_INSTALLER_ARCHIVE_DIR-}" ]; then
+      cp "$IRSYNC_INSTALLER_ARCHIVE_DIR/$name" "$tmp/$name" ||
+        die "could not read $IRSYNC_INSTALLER_ARCHIVE_DIR/$name"
+    else
+      say "downloading $url"
+      fetch "$url" >"$tmp/$name" || die "could not download $url"
+    fi
+
+    # Read from stdin, so the output is "HEX  -" whatever the path holds.
+    got=$(sha256 <"$tmp/$name") || die "could not compute the checksum of $name"
+    got=${got%% *}
+    if [ "$got" != "$sha" ]; then
+      die "checksum mismatch for $name: expected $sha, got $got.
+    Nothing was installed. Try again; if it keeps failing, report it at
+    https://github.com/irsync-dev/irsync/issues"
+    fi
+
+    mkdir "$tmp/x"
+    if ! tar -xJf "$tmp/$name" -C "$tmp/x" 2>"$tmp/tar.err"; then
+      cat "$tmp/tar.err" >&2
+      die "could not unpack $name. This tar may not read xz files (BusyBox tar
+    and old tars cannot); install xz, or GNU tar with xz, and run again"
+    fi
+    src=$tmp/x/irsync-$target
+    for f in irsync fileset man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+      [ -f "$src/$f" ] || die "$name has no $f; nothing was installed"
+    done
   fi
-  src=$tmp/x/irsync-$target
-  for f in irsync fileset man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
-    [ -f "$src/$f" ] || die "$name has no $f; nothing was installed"
-  done
 
   # Check every target directory before placing anything, so a directory we
   # cannot write to never leaves half an install. The probe file is cleaned
@@ -211,7 +235,16 @@ edits shell startup files."
   usable "$bin" || die "cannot write to $bin; nothing was installed.
   Check that you own it and can write to it, then run again."
   pages=yes
+  no_fileset=no
+  no_pages=no
+  if [ -n "$from" ]; then
+    # Pages are all or none, as in a release.
+    for f in man/man1/irsync.1 man/man1/fileset.1 man/man5/irsync.toml.5; do
+      [ -f "$src/$f" ] || { pages=no; no_pages=yes; }
+    done
+  fi
   for dir in "$man1" "$man5"; do
+    [ "$pages" = yes ] || break
     if ! usable "$dir"; then
       pages=no
       unusable=$dir
@@ -231,18 +264,78 @@ edits shell startup files."
     part=
   }
   place "$src/irsync" "$bin" irsync 0755
-  place "$src/fileset" "$bin" fileset 0755
+  if [ -f "$src/fileset" ]; then
+    place "$src/fileset" "$bin" fileset 0755
+  else
+    no_fileset=yes
+  fi
   if [ "$pages" = yes ]; then
     place "$src/man/man1/irsync.1" "$man1" irsync.1 0644
     place "$src/man/man1/fileset.1" "$man1" fileset.1 0644
     place "$src/man/man5/irsync.toml.5" "$man5" irsync.toml.5 0644
   fi
 
+  # Ask the user's login shell whether it finds irsync. A terminal starts
+  # that shell, and its startup files may add ~/.local/bin to PATH, which
+  # this script's own PATH cannot show (over ssh, for one, it is bare). The
+  # probe is cut off after 5 seconds and never fails the install.
+  login_finds() {
+    case ${SHELL-} in "") return 1 ;; esac
+    case ${SHELL##*/} in
+      sh | dash | ash | ksh | ksh93 | mksh | bash | zsh | fish) probe=posix ;;
+      nu) probe=nu ;;
+      *) return 1 ;;
+    esac
+    [ -x "$SHELL" ] || return 1
+    command -v sleep >/dev/null 2>&1 || return 1
+    [ -n "$tmp" ] || tmp=$(mktemp -d "${TMPDIR:-/tmp}/irsync-installer.XXXXXX") || return 1
+    out=$tmp/login-shell.out
+    : >"$out" || return 1
+    # A startup file may ask for a passphrase on the terminal with echo off
+    # (ssh-add, keychain). A shell killed then leaves echo off, so save the
+    # terminal's settings and put them back after the probe. Without a
+    # terminal (over ssh, in tests) this does nothing.
+    tty_state=
+    if command -v stty >/dev/null 2>&1; then
+      tty_state=$( (stty -g </dev/tty) 2>/dev/null ) || tty_state=
+    fi
+    if [ "$probe" = nu ]; then
+      "$SHELL" -l -c 'which irsync | get path.0' </dev/null >"$out" 2>/dev/null &
+    else
+      "$SHELL" -l -i -c 'command -v irsync' </dev/null >"$out" 2>/dev/null &
+    fi
+    # KILL, not TERM: interactive shells ignore TERM.
+    probe_pid=$!
+    ( sleep 5; kill -KILL "$probe_pid" ) </dev/null >/dev/null 2>&1 &
+    timer_pid=$!
+    wait "$probe_pid" 2>/dev/null
+    status=$?
+    kill "$timer_pid" 2>/dev/null
+    wait "$timer_pid" 2>/dev/null
+    # Only when the settings changed: setting them from a background job
+    # (an installer started with &) would stop the installer.
+    if [ -n "$tty_state" ]; then
+      tty_now=$( (stty -g </dev/tty) 2>/dev/null ) || tty_now=
+      if [ "$tty_now" != "$tty_state" ]; then
+        (stty "$tty_state" </dev/tty) >/dev/null 2>&1 || :
+      fi
+    fi
+    [ "$status" -eq 0 ] || return 1
+    last=
+    while IFS= read -r line || [ -n "$line" ]; do last=$line; done <"$out"
+    [ "$last" = "$bin/irsync" ]
+  }
+
   on_path=yes
   case ":${PATH-}:" in
     *":$bin:"* | *":$bin/:"*) ;;
     *)
-      on_path=no
+      # Keep this call in a condition: under set -e a failing probe must
+      # not end the installer.
+      if login_finds; then :; else on_path=no; fi ;;
+  esac
+  case $on_path in
+    no)
       # Most Linux systems put ~/.local/bin on PATH at login, but only when
       # it exists by then (Debian's and Ubuntu's ~/.profile, Fedora's
       # ~/.bashrc, systemd's user environment). So a new login is often all
@@ -273,6 +366,8 @@ $export_line" ;;
 $export_line" ;;
         sh | dash | ash | ksh | ksh93 | mksh) say "$missing put this line in ~/.profile:
 $export_line" ;;
+        nu) say "$missing put this line in your config.nu (nu prints its place with: \$nu.config-path):
+  \$env.PATH = (\$env.PATH | prepend (\$env.HOME | path join \".local\" \"bin\"))" ;;
         csh | tcsh) say "$missing put this line in ~/.cshrc:
   set path = (~/.local/bin \$path)" ;;
         *)
@@ -288,7 +383,12 @@ $export_line" ;;
   esac
 
   say "installed irsync $version"
-  if [ "$pages" = no ]; then
+  if [ "$no_fileset" = yes ]; then
+    say "installed without fileset: $from has none"
+  fi
+  if [ "$no_pages" = yes ]; then
+    say "installed without the manual pages: $from has none"
+  elif [ "$pages" = no ]; then
     say "warning: cannot write to $unusable,
   so the manual pages were not installed. Check that you own that directory
   and can write to it, then run again."

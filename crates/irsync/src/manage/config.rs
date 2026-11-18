@@ -40,7 +40,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client", "parallel"] => Int,
         ["client", "reconnect"] => Duration,
         ["client", "dial_retries"] => Int,
-        ["client", "dht"] | ["client", "mdns"] => Bool,
+        ["client", "dht" | "mdns" | "ssh_install"] => Bool,
         ["client", "relay"] => Url,
         ["client", "relay_mode"] | ["client", "congestion"] => Str,
         ["daemon", "identity"] => Path,
@@ -104,7 +104,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
             .dial_retries
             .to_string()),
-        ["client", "dht"] | ["client", "mdns"] => one("true".to_string()),
+        ["client", "dht"] | ["client", "mdns"] | ["client", "ssh_install"] => {
+            one("true".to_string())
+        }
         ["client", "relay_mode"] => one("default".to_string()),
         ["client", "congestion"] => one(crate::config::settings::Congestion::default()
             .as_str()

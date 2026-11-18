@@ -355,7 +355,19 @@ cross-referenced from commit messages and review notes.
   only if it reports the client's exact build. Release files are not
   signed yet; checking a signature against a key built into irsync is
   open and critical (`TODO.md`). Design:
-  `superpowers/specs/2026-11-14-cross-platform-install-design.md`.
+  `superpowers/specs/2026-11-14-cross-platform-install-design.md`;
+  amended 2026-11-17: the ssh install runs the built-in installer script
+  (`irsync-installer.sh --from DIR`) on files the client sends, so the
+  result is the one `install.sh` gives: `irsync`, `fileset` and the man
+  pages in `~/.local/bin` and `~/.local/share/man`, with the same `PATH`
+  advice, and nothing in `~/.local/share/irsync/bin` any more. A release
+  build downloads the tarball for every server platform, also when the
+  OS and CPU match; if the download fails or the server rejects the
+  tarball's `irsync`, and the OS and CPU match, it installs this
+  machine's own files instead. The server still needs no internet access.
+  `--no-install` (`ssh_install = false`) copies nothing and uses the
+  server's `~/.local/bin/irsync`. Design:
+  `superpowers/specs/2026-11-17-ssh-install-matches-installer-design.md`.
 
 ### 1.13 Files that change during a sync
 

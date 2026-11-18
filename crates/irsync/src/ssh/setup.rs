@@ -4,8 +4,9 @@
 //! and gets this copy of irsync's daemon running, then reports what it did
 //! as `key=value` lines.
 //!
-//! It stops or restarts only a daemon started from its own executable; any
-//! other daemon is reported as foreign and left alone.
+//! It stops or restarts only a daemon started from its own executable, or
+//! from the old install path when no service file starts that; any other
+//! daemon is reported as foreign and left alone.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
@@ -27,6 +28,9 @@ use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
 use crate::manage::{self, PeerSpec};
 use toml_edit::DocumentMut;
+
+use super::client::OLD_REMOTE_BIN;
+use super::legacy;
 
 /// The first line of the report; text before it (a login shell's) is ignored.
 pub const BEGIN: &str = "irsync-setup-begin";
@@ -85,6 +89,21 @@ pub enum DaemonOutcome {
     },
 }
 
+/// The old ssh install, `~/.local/share/irsync/bin/irsync`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OldBin {
+    /// There is none.
+    Absent,
+    /// It is still there on purpose: a service file starts it, nothing was
+    /// installed this run (`--keep-old`), `ssh-setup` itself runs from it,
+    /// or a daemon whose owner is unknown holds the lock.
+    Kept,
+    /// It was removed, and its `bin` directory if that was then empty.
+    Removed,
+    /// Removing it failed, with this error; it is still there.
+    RemoveFailed(String),
+}
+
 /// What `ssh-setup` did, as the client reads it back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupReport {
@@ -101,6 +120,9 @@ pub struct SetupReport {
     pub relay: Option<RelayUrl>,
     /// The daemon's direct addresses, as it reported them.
     pub addrs: Vec<SocketAddr>,
+    /// Service files that still start the old binary (or cannot be read).
+    pub stale_services: Vec<PathBuf>,
+    pub old_bin: OldBin,
 }
 
 impl SetupReport {
@@ -155,6 +177,18 @@ impl SetupReport {
         }
         let addrs: Vec<String> = self.addrs.iter().map(|a| a.to_string()).collect();
         lines.push(format!("addrs={}", addrs.join(",")));
+        for f in &self.stale_services {
+            lines.push(format!("stale_service={}", f.display()));
+        }
+        match &self.old_bin {
+            OldBin::Absent => lines.push("old_bin=absent".into()),
+            OldBin::Kept => lines.push("old_bin=kept".into()),
+            OldBin::Removed => lines.push("old_bin=removed".into()),
+            OldBin::RemoveFailed(e) => {
+                lines.push("old_bin=failed".into());
+                lines.push(format!("old_bin_error={}", e.replace(['\r', '\n'], " ")));
+            }
+        }
         lines.push(END.to_string());
         lines.join("\n") + "\n"
     }
@@ -166,6 +200,8 @@ impl SetupReport {
             return Err(format!("no {BEGIN} line"));
         }
         let mut fields = std::collections::HashMap::new();
+        // The one key that can repeat.
+        let mut stale_services = Vec::new();
         let mut ended = false;
         for line in lines {
             if line == END {
@@ -175,7 +211,11 @@ impl SetupReport {
             let (k, v) = line
                 .split_once('=')
                 .ok_or_else(|| format!("not a key=value line: {line:?}"))?;
-            fields.insert(k, v);
+            if k == "stale_service" {
+                stale_services.push(PathBuf::from(v));
+            } else {
+                fields.insert(k, v);
+            }
         }
         if !ended {
             return Err(format!("no {END} line"));
@@ -220,6 +260,19 @@ impl SetupReport {
             },
             v => return Err(bad("daemon", v)),
         };
+        // An older server sends no `old_bin` line.
+        let old_bin = match fields.get("old_bin").copied() {
+            None | Some("absent") => OldBin::Absent,
+            Some("kept") => OldBin::Kept,
+            Some("removed") => OldBin::Removed,
+            Some("failed") => OldBin::RemoveFailed(
+                fields
+                    .get("old_bin_error")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
+            ),
+            Some(v) => return Err(bad("old_bin", v)),
+        };
         Ok(SetupReport {
             version: get("version")?,
             endpoint_id,
@@ -232,6 +285,8 @@ impl SetupReport {
                 Some(v) => Some(v.parse().map_err(|e| format!("relay: {e}"))?),
                 None => None,
             },
+            stale_services,
+            old_bin,
             addrs: match fields.get("addrs") {
                 Some(v) if !v.is_empty() => v
                     .split(',')
@@ -353,12 +408,16 @@ pub fn grant_client(
 /// reported as [`GrantOutcome::Missing`] instead.
 /// With `no_dht`, `[daemon.discovery] dht` is set to `false` when it is on;
 /// without it the setting is left as it is.
+/// A daemon running from the old install path is moved to this copy unless
+/// a service file still starts it; the old binary is then removed, unless
+/// `keep_old` (nothing was installed this run) or a service file needs it.
 pub fn run(
     paths: &Paths,
     client: EndpointId,
     client_name: &str,
     recheck: bool,
     no_dht: bool,
+    keep_old: bool,
 ) -> anyhow::Result<SetupReport> {
     let Config { settings, .. } = Config::load(paths)?;
 
@@ -430,11 +489,23 @@ pub fn run(
         Dht::On
     };
 
-    // 4. The daemon.
+    // 4. The daemon. One running from the old install path is ours too,
+    // unless a service file starts it: stopping it would fight systemd or
+    // launchd.
+    let home = usable_home(dirs::home_dir());
+    let stale = home
+        .as_deref()
+        .map(legacy::stale_services)
+        .unwrap_or_default();
+    let is_old_bin = |p: &Path| home.as_deref().is_some_and(|h| legacy::is_old_bin(h, p));
     let state = &settings.state_dir;
     let log = state.join("daemon.log");
     let exe = std::env::current_exe().context("finding this executable")?;
-    let daemon = match probe(state) {
+    let lock = probe(state);
+    // Held, but by whom is not known: it may be a daemon from the old path
+    // that is still starting.
+    let owner_unknown = lock.as_ref().is_some_and(|i| i.pid == 0);
+    let daemon = match lock {
         None => {
             start_daemon(&exe, paths, state, &log)?;
             DaemonOutcome::Started
@@ -457,10 +528,25 @@ pub fn run(
                 }
             }
         }
+        Some(LockInfo {
+            pid,
+            exe: held,
+            version,
+        }) if pid != 0 && stale.is_empty() && is_old_bin(&held) => {
+            stop_daemon(pid, state)?;
+            start_daemon(&exe, paths, state, &log)?;
+            DaemonOutcome::Restarted {
+                old_version: version,
+            }
+        }
         Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
     };
 
-    // 5. Where the daemon can be reached: a daemon that just started has
+    // 5. The old binary, now that no daemon of ours runs from it.
+    let keep = !stale.is_empty() || keep_old || owner_unknown || is_old_bin(&exe);
+    let old_bin = old_bin_step(home.as_deref(), keep);
+
+    // 6. Where the daemon can be reached: a daemon that just started has
     // published nothing yet, so the client dials this first.
     let want_relay = settings.daemon.relay_mode != RelayMode::Disabled;
     let reached = probe(state)
@@ -478,7 +564,34 @@ pub fn run(
         log,
         relay: reached.relay,
         addrs: reached.addrs,
+        stale_services: stale,
+        old_bin,
     })
+}
+
+/// The home directory to look for the old install in: none unless it is
+/// absolute, so nothing is ever looked up or removed relative to the
+/// current directory.
+fn usable_home(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.filter(|h| h.is_absolute())
+}
+
+/// What happens to the old binary under `home`: removed unless `keep`.
+/// A failed removal does not fail the setup; it is reported.
+fn old_bin_step(home: Option<&Path>, keep: bool) -> OldBin {
+    let Some(h) = home else {
+        return OldBin::Absent;
+    };
+    if h.join(OLD_REMOTE_BIN).symlink_metadata().is_err() {
+        OldBin::Absent
+    } else if keep {
+        OldBin::Kept
+    } else {
+        match legacy::remove_old_bin(h) {
+            Ok(_) => OldBin::Removed,
+            Err(e) => OldBin::RemoveFailed(e.to_string()),
+        }
+    }
 }
 
 /// Tells this copy's daemon `pid` to re-read its settings.
@@ -589,6 +702,139 @@ fn tail(path: &Path, from: u64, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report() -> SetupReport {
+        SetupReport {
+            version: "irsync 1.2.3 (abc 2026-11-10)".into(),
+            endpoint_id: iroh::SecretKey::from_bytes(&[7; 32]).public(),
+            identity: Created::Existing,
+            grant: GrantOutcome::Already,
+            dht: Dht::Off,
+            daemon: DaemonOutcome::Running,
+            log: PathBuf::from("/home/u/.local/state/irsync/daemon.log"),
+            relay: None,
+            addrs: Vec::new(),
+            stale_services: Vec::new(),
+            old_bin: OldBin::Absent,
+        }
+    }
+
+    #[test]
+    fn report_round_trips_stale_and_old_bin() {
+        for old_bin in [
+            OldBin::Absent,
+            OldBin::Kept,
+            OldBin::Removed,
+            OldBin::RemoveFailed("Permission denied (os error 13)".into()),
+        ] {
+            let mut r = report();
+            r.old_bin = old_bin;
+            r.stale_services = vec![
+                PathBuf::from("/home/u/.config/systemd/user/irsync.service"),
+                PathBuf::from("/home/u/Library/LaunchAgents/org.irsync.daemon.plist"),
+            ];
+            let text = r.to_lines();
+            assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");
+            r.stale_services.clear();
+            let text = r.to_lines();
+            assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");
+        }
+    }
+
+    /// The error is one line in the report; a `failed` with no error line
+    /// still parses.
+    #[test]
+    fn failed_removal_error_is_one_line() {
+        let mut r = report();
+        r.old_bin = OldBin::RemoveFailed("first\nsecond".into());
+        let text = r.to_lines();
+        assert!(text.contains("\nold_bin_error=first second\n"), "{text}");
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().old_bin,
+            OldBin::RemoveFailed("first second".into())
+        );
+        let text: String = text
+            .lines()
+            .filter(|l| !l.starts_with("old_bin_error="))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().old_bin,
+            OldBin::RemoveFailed(String::new())
+        );
+    }
+
+    /// A home with the old binary in it.
+    fn home_with_old_bin() -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let old = home.path().join(OLD_REMOTE_BIN);
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "old").unwrap();
+        (home, old)
+    }
+
+    #[test]
+    fn old_bin_step_removes_or_keeps() {
+        let (home, old) = home_with_old_bin();
+        // `keep` covers a stale service file, `--keep-old`, this executable
+        // being the old one, and a lock whose owner is unknown.
+        assert_eq!(old_bin_step(Some(home.path()), true), OldBin::Kept);
+        assert!(old.exists());
+        assert_eq!(old_bin_step(Some(home.path()), false), OldBin::Removed);
+        assert!(!old.exists());
+        assert_eq!(old_bin_step(Some(home.path()), false), OldBin::Absent);
+        assert_eq!(old_bin_step(None, false), OldBin::Absent);
+    }
+
+    #[test]
+    fn failed_removal_is_reported_not_kept() {
+        if nix::unistd::geteuid().is_root() {
+            // root may remove anything.
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let (home, old) = home_with_old_bin();
+        let bin = old.parent().unwrap();
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let got = old_bin_step(Some(home.path()), false);
+        // Writable again, so the temp dir can be cleaned up.
+        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(&got, OldBin::RemoveFailed(e) if !e.is_empty()),
+            "{got:?}"
+        );
+        assert!(old.exists());
+    }
+
+    /// A relative `$HOME` is no home: nothing is looked up or removed
+    /// relative to the current directory.
+    #[test]
+    fn relative_home_is_no_home() {
+        assert_eq!(usable_home(Some(PathBuf::from("relative/home"))), None);
+        assert_eq!(usable_home(Some(PathBuf::from(""))), None);
+        assert_eq!(usable_home(None), None);
+        assert_eq!(
+            usable_home(Some(PathBuf::from("/home/u"))),
+            Some(PathBuf::from("/home/u"))
+        );
+    }
+
+    /// A server with an older irsync sends neither line.
+    #[test]
+    fn report_without_the_new_lines_parses() {
+        let mut r = report();
+        r.old_bin = OldBin::Removed;
+        r.stale_services = vec![PathBuf::from("/x/irsync.service")];
+        let text: String = r
+            .to_lines()
+            .lines()
+            .filter(|l| !l.starts_with("stale_service=") && !l.starts_with("old_bin="))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let parsed = SetupReport::parse(&text).unwrap();
+        assert_eq!(parsed.stale_services, Vec::<PathBuf>::new());
+        assert_eq!(parsed.old_bin, OldBin::Absent);
+    }
 
     #[test]
     fn daemon_never_inherits_capture_or_key_log() {

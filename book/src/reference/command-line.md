@@ -112,11 +112,16 @@ The daemon honours the client's flags in both directions, filters included.
 
 A `HOST` that is neither an alias nor an `EndpointId` is taken as an ssh
 destination, such as `myserver` or `me@myserver`. `irsync` then sets that
-machine up over ssh before it syncs: it copies itself there when the server
-has no matching build, grants this client access to any path
+machine up over ssh before it syncs: it installs `irsync`, `fileset` and the
+manual pages there (the same files as `install.sh`, in `~/.local/bin`) when
+the server has no matching build, grants this client access to any path
 (`[immediate]`), starts the daemon and saves `HOST` as an alias with
 `ssh = "HOST"`. It prints what it did. Later runs dial the alias over iroh
 and do not use ssh.
+A release build downloads the release files on this machine, for every server
+platform. If that fails and the server has the same OS and CPU, it installs
+this machine's own files instead. The server needs no internet access.
+`--no-install` copies nothing.
 
 A sync to an alias with `ssh` dials once and waits at most 15 seconds
 (`--dial-retries` sets how often it retries first). When the daemon does not
@@ -255,6 +260,7 @@ These have no rsync counterpart.
 | `--rsh CMD` | The remote shell for the ssh setup, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--ssh` | Go through ssh even for a saved host: install or update irsync on the server, check its daemon and the grant, then sync. Uses the host's `ssh` destination, else the alias. Default: off; a saved host is reached over iroh only. |
 | `--no-remote-dht` | When setting the server up over ssh, turn its DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Goes through ssh for a saved host too, like `--ssh`. Without it the server's setting is left alone, and new servers publish. |
+| `--no-install` | When going through ssh, copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
 | `--identity FILE` | The private key to connect with. Default: `identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
