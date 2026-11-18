@@ -1,7 +1,7 @@
 # Working on irsync
 
 The contributor guide is the book under `book/src/contributing/`. Start with
-`setup.md` and `testing.md`. This file only lists the commands. Releases:
+`setup.md` and `testing.md`. This file lists the working rules and commands. Releases:
 `book/src/contributing/releasing.md`.
 
 ## Pull requests
@@ -56,7 +56,7 @@ This skips five slow network-fault (netstress) tests, marked `#[ignore]`.
 They take a few minutes, and the first run builds the fault binaries into
 `target/netsim/debug`.
 
-Full regression, before committing to `main` or pushing:
+Full regression, before you push:
 
 ```sh
 tools/ci.sh check
