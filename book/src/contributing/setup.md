@@ -22,8 +22,9 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 rustup, the toolchain with rustfmt and clippy, the musl target on Linux, and
 cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five tools
 are downloaded from their release pages and checked against SHA-256s kept
-in the script. Only where a project has no binary for your machine does
-cargo build the tool. They are held to the versions CI uses: if you have
+in the script. Cargo builds a tool only where its project has no binary
+for your machine, or when the script's hashes are for another version than
+CI's. They are held to the versions CI uses: if you have
 another version, it is replaced. It points git at the repo's hooks. System tools such as
 rsync, Python and a C compiler it only checks, naming the package to
 install. `tools/dev-setup.sh --check` reports without changing anything. Run
