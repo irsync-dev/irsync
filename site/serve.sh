@@ -15,11 +15,6 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 port=${1:-9999}
 cd "$root"
 
-if ! command -v mdbook >/dev/null 2>&1; then
-  echo "mdbook not found; tools/dev-setup.sh installs it" >&2
-  exit 1
-fi
-
 site/build.sh
 
 # The build writes site/tokens.css and book/theme/tokens.css and may

@@ -22,6 +22,17 @@ case $base in
 esac
 out=$parent/$base
 
+# mdbook, at the version CI builds the site with. Another version still
+# builds, with a warning: its pages can differ from the ones on the site.
+mdbook_pin=$(sed -n 's/^ *MDBOOK_VERSION: *\([0-9.]*\).*/\1/p' "$root/.github/workflows/site.yml" | sed -n 1p)
+mdbook_v=$({ mdbook --version 2>/dev/null || true; } | sed -n '1s/[^0-9]*\([0-9.]*\).*/\1/p')
+if [ -z "$mdbook_v" ]; then
+  echo "mdbook not found; tools/dev-setup.sh installs it" >&2
+  exit 1
+elif [ "$mdbook_v" != "$mdbook_pin" ]; then
+  echo "warning: CI builds the site with mdbook $mdbook_pin, found $mdbook_v; tools/dev-setup.sh installs $mdbook_pin" >&2
+fi
+
 tokens() { python3 "$root/site/tools/gen_tokens.py" "$root/site/tokens.json" "$@"; }
 
 # The landing page takes its tokens from the system's light or dark setting;
