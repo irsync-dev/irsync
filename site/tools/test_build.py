@@ -42,17 +42,17 @@ class BuildMdbookVersionTests(unittest.TestCase):
     def pin(self):
         return re.search(r"^ *MDBOOK_VERSION: *([0-9.]+)$", SITE_YML.read_text(), re.M).group(1)
 
-    def test_ci_version_builds_without_a_warning(self):
+    def test_ci_version_builds(self):
         self.fake("mdbook", f"echo mdbook v{self.pin()}")
         r = self.build()
         self.assertEqual(r.returncode, 7, r.stderr)
         self.assertEqual(r.stderr, "")
 
-    def test_another_version_warns_and_builds(self):
+    def test_another_version_stops_the_build(self):
         self.fake("mdbook", "echo mdbook v0.0.1")
         r = self.build()
-        self.assertEqual(r.returncode, 7, r.stderr)
-        self.assertIn(f"warning: CI builds the site with mdbook {self.pin()}, found 0.0.1", r.stderr)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"the site is built with mdbook {self.pin()}, found 0.0.1", r.stderr)
         self.assertIn("tools/dev-setup.sh", r.stderr)
 
     def test_missing_mdbook_stops_the_build(self):
