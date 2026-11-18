@@ -363,3 +363,24 @@ is `docs/superpowers/specs/2026-11-16-freebsd-manual-build-design.md`.
 - [ ] A comment in `freebsd.yml` says a binary built on "the oldest
       supported release" runs on newer ones, but `14` picks the newest
       14.x.
+
+# Open items from the progress rates, 2026-11-17
+
+The `-P` transfer line shows current `sent` and `synced` rates and goodput
+(#25, PR #69). The design is
+`docs/superpowers/specs/2026-11-17-progress-rate-design.md`.
+
+- [ ] A file's matched bytes can count twice toward `synced` and goodput.
+      Each row holds its share of `Live::matched` (`matched_counted` in
+      `crates/irsync/src/cli/progress/state.rs`), so a later `FileMatched`
+      replaces it. But a row dropped after `ROW_EXPIRY` (30 s without an
+      event) loses that share, and if the file then carries on, its next
+      `FileMatched` adds the whole amount again. Rare; the figures stay
+      high for the rest of the session.
+- [ ] The `synced` rate jumps when a large, mostly unchanged file starts.
+      `FileMatched` arrives when the file's chunks are requested, before
+      any data moves, so a 5 GB file with little to send shows about
+      1 GB/s synced for the 5-second window, then drops. Documented in
+      the Output section of `book/src/reference/command-line.md`.
+      Smoothing it (for example, adding the matched bytes as the file's
+      position advances) is a design change.
