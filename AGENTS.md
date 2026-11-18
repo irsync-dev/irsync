@@ -18,9 +18,15 @@ remote and locally, and switch back to an up-to-date `main`.
 
 If CI fails on a PR whose branch is behind `main`, first check whether
 `main` already fixes the problem, before you try to fix it on the branch.
-If it does, pull `main`, rebase the branch onto it and push it
-(`git push --force-with-lease`). That starts a fresh CI run that includes
-the fixes from `main`.
+If it does, pull `main` and bring the branch up to date, then push. That
+starts a fresh CI run that includes the fixes from `main`.
+
+- If nobody has reviewed the PR yet, rebase the branch onto `main` and
+  push with `git push --force-with-lease`.
+- If the PR already has review comments or approvals, merge `main` into
+  the branch instead and push normally. A rebase and force-push would mark
+  inline comments as outdated and break the reviewer's "changes since
+  your last review" view.
 
 ## Setup
 
