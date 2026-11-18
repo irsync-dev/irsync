@@ -166,14 +166,31 @@ class CiWorkflowTests(unittest.TestCase):
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
-    def test_workflows_job_installs_minisign(self):
+    def test_jobs_running_the_script_tests_install_minisign(self):
         # The sign-release.sh tests with the real minisign fail without it
-        # when CI is set.
-        steps = jobs(load_workflows()["ci.yml"])["workflows"]["steps"]
-        runs = [st.get("run", "") for st in steps]
-        install = next(i for i, r in enumerate(runs) if "apt-get install -y minisign" in r)
-        tests = next(i for i, r in enumerate(runs) if "tools/ci.sh workflows" in r)
-        self.assertLess(install, tests)
+        # when CI is set, as on GitHub. Every job that runs
+        # .github/scripts/tests must install it first: itself with apt, or
+        # through install-packaging-tools.sh.
+        with open(os.path.join(ROOT, ".github", "scripts", "install-packaging-tools.sh")) as f:
+            packaging_tools = f.read()
+        self.assertRegex(packaging_tools, r"apt-get install [^\n]*\bminisign\b")
+
+        def installs(run):
+            return (re.search(r"apt-get install [^\n]*\bminisign\b", run) is not None
+                    or "install-packaging-tools.sh" in run)
+
+        found = []
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                runs = [st.get("run", "") for st in job.get("steps") or []]
+                for i, run in enumerate(runs):
+                    if ".github/scripts/tests" in run or "tools/ci.sh workflows" in run:
+                        found.append((name, job_id))
+                        self.assertTrue(any(installs(r) for r in runs[:i]),
+                                        f"{name} job {job_id} runs the script tests "
+                                        "without installing minisign first")
+        self.assertIn(("ci.yml", "workflows"), found)
+        self.assertIn(("release-tooling.yml", "scripts"), found)
 
     def test_deny_job_present(self):
         self.ci_script_runs("deny", "cargo deny --locked check")
@@ -581,7 +598,9 @@ class ReleaseKeyTests(unittest.TestCase):
     """Fails while packaging/signing/release-keys.pub holds the test key.
 
     This is meant to keep a pull request red until the maintainer puts in
-    the real key. It runs in the `workflows` job, not in `tools/ci.sh check`.
+    the real key. It fails in both workflows that run these tests: the
+    `workflows` job of ci.yml (`tools/ci.sh workflows`) and the `scripts`
+    job of release-tooling.yml. It is not part of `tools/ci.sh check`.
     """
 
     def read_root(self, *path):
