@@ -822,7 +822,7 @@ fn probe_keeps_its_lines_apart_when_one_is_empty() {
     // No stand-in from the fake ssh: the `uname` below is the one found.
     // SAFETY: serialized by ENV (held by `f`).
     unsafe { std::env::remove_var("FAKE_SSH_HOSTNAME") };
-    let bin = f.home.path().join("fake-bin");
+    let bin = f.aux.join("fake-bin");
     std::fs::create_dir(&bin).unwrap();
     let uname = bin.join("uname");
     std::fs::write(
@@ -846,7 +846,7 @@ fn probe_keeps_its_lines_apart_when_one_is_empty() {
     assert_eq!(p.installed, None);
     assert!(!p.root || nix::unistd::geteuid().is_root());
     // With irsync there, its version is the version, not the host name.
-    let exe = f.home.path().join(irsync::ssh::client::REMOTE_BIN);
+    let exe = f.home.join(irsync::ssh::client::REMOTE_BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "#!/bin/sh\necho irsync 9.9.9\necho more\n").unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
