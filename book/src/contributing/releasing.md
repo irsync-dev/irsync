@@ -364,6 +364,11 @@ it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
 The workflow uses the fingerprint of the key it imports as `GPG_KEY_ID`, so
 there is nothing else to set.
 
+**Release signing key.** Make the minisign key that signs every file on a
+release, step by step in
+[The release signing key](release-signing-key.md). It stays offline, on a
+USB stick, and never goes into GitHub.
+
 **Tokens and secrets.** Make one fine-grained token per repository, and put
 the secrets in the `release` environment, not the repository. Step by step
 in [Supply chain security](supply-chain.md#maintainer-steps), steps 2 to 5:
