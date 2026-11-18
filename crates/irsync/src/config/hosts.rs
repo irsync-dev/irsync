@@ -202,7 +202,10 @@ impl Hosts {
             return Ok(None);
         };
         let rest: Vec<_> = found.collect();
-        if rest.iter().all(|(_, e)| e.endpoint_id == entry.endpoint_id) {
+        // Entries without a daemon id (clients only) are never the same
+        // daemon: nothing says so.
+        let same = |e: &HostEntry| e.endpoint_id.is_some() && e.endpoint_id == entry.endpoint_id;
+        if rest.iter().all(|(_, e)| same(e)) {
             return Ok(Some(first));
         }
         let others = rest.into_iter().map(|(a, _)| a.clone());

@@ -2240,6 +2240,11 @@ fn run_show(f: &FilesArgs) -> i32 {
 
 fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
+    let client_id = a
+        .client_id
+        .as_deref()
+        .map(|c| parse_endpoint_id(c).with_context(|| format!("--client-id {c:?}")))
+        .transpose()?;
     let flags = manage::hosts::HostFlags {
         relay: a
             .relay
@@ -2257,11 +2262,21 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     };
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
+    let before = peer_ids(&doc, &paths.config);
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
+    if let Some(client_id) = client_id {
+        manage::hosts::host_set_client(&mut doc, &a.alias, client_id)?;
+    }
     lock.save(&mut doc)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),
+    }
+    if let Some(client_id) = client_id {
+        println!("{}: client_id {client_id}", a.alias);
+        // The id the grants are for was given: say so when it changed.
+        note_moved_grants("host add", &before, &doc, &paths.config);
+        return Ok(());
     }
     // This set the daemon's id. Grants that name the alias are for its
     // client id when it has one: they did not move. Else a grant by alias
@@ -2306,6 +2321,32 @@ mod tests {
 
     fn filter_enables_irsync_trace(spec: &str) -> bool {
         filter_enables(spec, "irsync::session")
+    }
+
+    /// A host saved as a client only cannot be dialled. A sync sets such
+    /// a host up over ssh first, so this is the error for a config that
+    /// changed in between.
+    #[test]
+    fn a_client_only_host_is_no_target() {
+        let key = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
+        let path = Path::new("/c/irsync.toml");
+        let text = format!(
+            "[hosts.phone]\nclient_id = \"{}\"\n\
+             [hosts.box]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n",
+            key(1),
+            key(2),
+            key(3)
+        );
+        let hosts = Config::parse(&text, path).unwrap().hosts;
+        let e = resolve_target(&hosts, "phone").unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "phone is saved in /c/irsync.toml as a client only: it has no endpoint_id to dial"
+        );
+        // The daemon's id is the one dialled, not the client's.
+        assert_eq!(resolve_target(&hosts, "box").unwrap(), key(2));
+        assert_eq!(resolve_target(&hosts, &key(4).to_string()).unwrap(), key(4));
+        assert!(resolve_target(&hosts, "nobody").is_err());
     }
 
     #[test]

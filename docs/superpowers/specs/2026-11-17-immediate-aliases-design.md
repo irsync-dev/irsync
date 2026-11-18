@@ -208,3 +208,6 @@ set with `irsync config set hosts.NAME.client_id ID`); `host list` shows
 - "The server must not be changed for a name that is then refused" holds
   for its configuration and daemon only. The name is checked by the irsync
   the setup installs, so that install stays; the error says so.
+- `irsync host add ALIAS ID --client-id ID` sets the `client_id` too.
+- Two hosts saved as clients only that share an `ssh` value are refused
+  like two daemons that do: nothing says they are one machine.

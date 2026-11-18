@@ -547,8 +547,12 @@ pub enum GrantCmd {
 pub struct HostAddArgs {
     /// The alias (no ':' or '/', not an EndpointId).
     pub alias: String,
-    /// The host's EndpointId.
+    /// The host's EndpointId: its daemon, the id dialled.
     pub id: String,
+    /// The EndpointId this machine has as a client, when it also syncs to
+    /// this one: grants that name the alias are then for this id.
+    #[arg(long, value_name = "ID")]
+    pub client_id: Option<String>,
     /// The host's home relay, used instead of the client settings' or n0's
     /// default.
     #[arg(long, value_name = "URL")]
