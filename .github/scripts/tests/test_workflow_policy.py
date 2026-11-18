@@ -376,7 +376,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_resume_has_no_main_guard(self):
         text = read("release-resume.yml")
         self.assertNotIn("MAIN_REF", text)
-        self.assertNotIn("refs/heads/", text)
+        self.assertNotIn("refs/heads/main", text)
 
 
 class FreeBsdTests(unittest.TestCase):
@@ -515,14 +515,22 @@ class GateTests(unittest.TestCase):
         self.assertIn("in_progress", text)
         self.assertIn("queued", text)
 
-    def test_gate_makes_release_branch_after_release(self):
-        job = jobs(self.gate())["branch"]
-        self.assertIn("release", job["needs"])
+    def test_resume_makes_release_branch(self):
+        job = jobs(load_workflows()["release-resume.yml"])["branch"]
+        self.assertIn("check", job["needs"])
         self.assertIn("new-branch", job["if"])
 
-    def test_gate_finishes_on_the_tag(self):
-        self.assertIn('release-resume.yml --ref "refs/tags/$TAG"',
-                      job_text("release-gate.yml", "finish"))
+    def test_gate_points_to_signing(self):
+        self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))
+
+    def test_gate_has_no_branch_or_finish_job(self):
+        for job_id in ("branch", "finish"):
+            self.assertNotIn(job_id, jobs(self.gate()))
+
+    def test_gate_deletes_only_a_leftover_draft(self):
+        text = job_text("release-gate.yml", "release")
+        self.assertIn("isDraft", text)
+        self.assertLess(text.index("isDraft"), text.index("gh workflow run release.yml"))
 
     def test_gate_and_resume_share_concurrency(self):
         self.assertEqual(self.gate()["concurrency"]["group"], "release-v${{ inputs.version }}")

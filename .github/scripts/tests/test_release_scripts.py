@@ -304,9 +304,9 @@ class ResumeTests(FakeGh):
         # On a runner GITHUB_REF is always set; here only where a test sets it.
         self.env.pop("GITHUB_REF", None)
 
-    def resume(self, tag, dry_run, release=None, ref=None):
+    def resume(self, tag, dry_run, release=None, ref=None, branches=("main",)):
         releases = {tag: release} if release else {}
-        self.set_state(releases=releases, tags=[tag], generated="x")
+        self.set_state(releases=releases, tags=[tag], branches=list(branches), generated="x")
         if ref is not None:
             self.env["GITHUB_REF"] = ref
         return self.run_script(RESUME, tag, "true" if dry_run else "false")
@@ -320,23 +320,39 @@ class ResumeTests(FakeGh):
 
     def test_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED)),
-                         {"packages": "true", "homebrew": "true", "notes": "true"})
+                         {"packages": "true", "homebrew": "true", "notes": "true", "new-branch": ""})
 
     def test_prerelease_tag_gets_notes_only(self):
         self.assertEqual(self.out(self.resume("v1.2.3-beta.1", False, self.PRE)),
-                         {"packages": "false", "homebrew": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true", "new-branch": ""})
 
     def test_stable_tag_marked_prerelease_gets_no_packages(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PRE)),
-                         {"packages": "false", "homebrew": "false", "notes": "true"})
+                         {"packages": "false", "homebrew": "false", "notes": "true", "new-branch": ""})
 
     def test_dry_run_on_alpha(self):
         self.assertEqual(self.out(self.resume("v0.1.0-alpha.1", True, self.PRE)),
-                         {"packages": "true", "homebrew": "false", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false", "new-branch": ""})
 
     def test_dry_run_on_stable(self):
         self.assertEqual(self.out(self.resume("v1.2.3", True, self.PUBLISHED)),
-                         {"packages": "true", "homebrew": "false", "notes": "false"})
+                         {"packages": "true", "homebrew": "false", "notes": "false", "new-branch": ""})
+
+    def test_new_minor_gets_new_branch(self):
+        out = self.out(self.resume("v1.3.0", False, self.PUBLISHED))
+        self.assertEqual(out["new-branch"], "release-1.3")
+
+    def test_existing_branch_not_recreated(self):
+        out = self.out(self.resume("v1.3.0", False, self.PUBLISHED,
+                                   branches=("main", "release-1.3")))
+        self.assertEqual(out["new-branch"], "")
+
+    def test_patch_and_prerelease_get_no_branch(self):
+        self.assertEqual(self.out(self.resume("v1.3.1", False, self.PUBLISHED))["new-branch"], "")
+        self.assertEqual(self.out(self.resume("v1.3.0-beta.1", False, self.PRE))["new-branch"], "")
+
+    def test_dry_run_gets_no_branch(self):
+        self.assertEqual(self.out(self.resume("v1.3.0", True, self.PUBLISHED))["new-branch"], "")
 
     def test_draft_fails(self):
         r = self.resume("v1.2.3", False, {"body": "", "isDraft": True, "isPrerelease": False})
@@ -366,7 +382,7 @@ class ResumeTests(FakeGh):
     def test_resume_accepts_matching_tag_ref(self):
         self.assertEqual(self.out(self.resume("v1.2.3", False, self.PUBLISHED,
                                               ref="refs/tags/v1.2.3")),
-                         {"packages": "true", "homebrew": "true", "notes": "true"})
+                         {"packages": "true", "homebrew": "true", "notes": "true", "new-branch": ""})
 
     def test_bad_tag_fails_before_gh(self):
         r = self.resume("v1.2.3;id", True, self.PUBLISHED)
