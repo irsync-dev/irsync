@@ -72,8 +72,10 @@ saved as a client only, sets its daemon up over ssh, and adds the daemon's
 called `myclient` joins a `[hosts.myclient]` entry that the server so far
 only dials, as long as no grant names that entry.
 
-The setup stops, and changes nothing on the server, when the client's host
-name cannot be used there:
+The setup stops, and leaves the server's configuration and daemon as they
+were, when the client's host name cannot be used there. The server checks
+the name with the irsync that the setup has just installed or updated
+there; that install stays, and the message says so. The cases:
 
 - Grants on the server name `[hosts.myclient]`, and it is not this client:
   that entry is a peer someone named by hand. Rename one of the two.

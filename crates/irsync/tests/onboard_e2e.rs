@@ -1007,7 +1007,7 @@ fn ssh_calls_in(home: &Path) -> usize {
 }
 
 #[test]
-fn a_taken_client_name_is_refused_and_changes_nothing() {
+fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     let w = World::new();
     let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
     w.server_config("", &format!("[hosts.myclient]\nclient_id = \"{other}\"\n"));
@@ -1022,6 +1022,18 @@ fn a_taken_client_name_is_refused_and_changes_nothing() {
         "no daemon started"
     );
     assert_eq!(w.client_config(), "", "no alias saved");
+    // The name is checked by the irsync just installed there: that one
+    // stays, and the message says so.
+    let note = "irsync was installed on myserver before this; that stays";
+    assert!(err.contains(note), "{err}");
+    assert!(w.server.path().join(".local/bin/irsync").exists());
+    // Again, with nothing to install: nothing at all is changed.
+    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("[hosts.myclient]"), "{err}");
+    assert!(!err.contains(note), "{err}");
+    assert_eq!(w.server_toml(), before);
 }
 
 /// The owner removed the immediate grant and the daemon is down: the ssh
