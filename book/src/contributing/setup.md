@@ -45,7 +45,7 @@ package manager (`apt`, `brew`, `pkg`).
 - **`curl`, and a `tar` that writes and reads `.tar.xz`**, for
   `crates/irsync/tests/ssh_release.rs`, which builds a small release
   tarball and downloads it from a local directory. GNU tar needs the `xz`
-  program for that (`apt install xz-utils`); macOS's tar has xz built in.
+  program for that (`sudo apt install xz-utils`); macOS's tar has xz built in.
 - **pandoc and mandoc**, for the man pages: `tools/build-man.sh OUTDIR`
   builds them from the book with pandoc, and the tests in `tools/tests`
   check them with mandoc. `tools/dev-setup.sh` checks both and says how to
@@ -53,6 +53,10 @@ package manager (`apt`, `brew`, `pkg`).
 - **groff**, optional. `test_groff_renders_without_warnings` renders each
   page with it and skips without it. It runs on Linux CI. On a Mac,
   `nix-shell -p groff` is one way to get it.
+- **minisign 0.10 or newer**, optional. Maintainers sign releases with it
+  ([The release signing key](release-signing-key.md)), and it makes the
+  signature test files. Older versions write a signature format that irsync
+  refuses.
 
 ## Continuous integration
 

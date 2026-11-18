@@ -67,23 +67,23 @@ hint() {
         esac
     elif [ "$os" = FreeBSD ]; then
         case $1 in
-            cc) echo "pkg install llvm" ;;
-            node) echo "pkg install node npm" ;;
-            pandoc) echo "pkg install hs-pandoc" ;;
-            *) echo "pkg install $1" ;;
+            cc) echo "sudo pkg install llvm" ;;
+            node) echo "sudo pkg install node npm" ;;
+            pandoc) echo "sudo pkg install hs-pandoc" ;;
+            *) echo "sudo pkg install $1" ;;
         esac
     else
         case $1 in
-            cc) echo "apt install build-essential" ;;
-            musl-gcc) echo "apt install musl-tools" ;;
-            xz) echo "apt install xz-utils" ;;
-            node) echo "apt install nodejs npm" ;;
-            apt-ftparchive) echo "apt install apt-utils" ;;
-            createrepo_c) echo "apt install createrepo-c" ;;
-            rpmsign) echo "apt install rpm" ;;
-            gpg) echo "apt install gnupg" ;;
-            dpkg-deb) echo "apt install dpkg" ;;
-            *) echo "apt install $1" ;;
+            cc) echo "sudo apt install build-essential" ;;
+            musl-gcc) echo "sudo apt install musl-tools" ;;
+            xz) echo "sudo apt install xz-utils" ;;
+            node) echo "sudo apt install nodejs npm" ;;
+            apt-ftparchive) echo "sudo apt install apt-utils" ;;
+            createrepo_c) echo "sudo apt install createrepo-c" ;;
+            rpmsign) echo "sudo apt install rpm" ;;
+            gpg) echo "sudo apt install gnupg" ;;
+            dpkg-deb) echo "sudo apt install dpkg" ;;
+            *) echo "sudo apt install $1" ;;
         esac
     fi
 }
@@ -476,9 +476,9 @@ elif [ "$os" = Darwin ]; then
 elif [ "$os" = FreeBSD ]; then
     # The package is named after the Python it is for: py311-pyyaml.
     py_pkg=$(echo "${py_v:-3.11}" | awk -F. '{print "py" $1 $2 "-pyyaml"}')
-    warn "PyYAML, for tools/ci.sh workflows" "pkg install $py_pkg"
+    warn "PyYAML, for tools/ci.sh workflows" "sudo pkg install $py_pkg"
 else
-    warn "PyYAML, for tools/ci.sh workflows" "apt install python3-yaml"
+    warn "PyYAML, for tools/ci.sh workflows" "sudo apt install python3-yaml"
 fi
 
 # curl, and a tar that writes and reads .tar.xz, for the tests of the
@@ -505,6 +505,20 @@ if [ "$os" = Linux ]; then
     if have musl-gcc; then ok "musl-gcc"; else warn "musl-gcc, for release builds and tools/ci.sh release-build" "$(hint musl-gcc)"; fi
 fi
 if have node && have npx; then ok "node and npx"; else warn "node and npx, for site/build.sh, site/serve.sh and site/deploy.sh" "$(hint node)"; fi
+
+# minisign signs releases (.github/scripts/sign-release.sh) and makes the
+# signature test files. 0.10 is the first to hash the file before signing by
+# default; irsync refuses the older format. It prints "minisign 0.11", with
+# two numbers or three.
+minisign_v=""
+if have minisign; then
+    minisign_v=$({ minisign -v 2>/dev/null || true; } | sed -n '1s/^minisign *\([0-9][0-9.]*\).*/\1/p')
+fi
+if [ -n "$minisign_v" ] && version_ge "$minisign_v" 0.10; then
+    ok "minisign $minisign_v"
+else
+    warn "minisign 0.10 or newer${minisign_v:+, have $minisign_v}, to sign releases" "$(hint minisign)"
+fi
 
 if [ "$os" = Linux ]; then
     # nfpm at the version CI installs (.github/scripts/install-packaging-tools.sh).
