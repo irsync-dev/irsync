@@ -1,6 +1,6 @@
 # The license check over every crate in Cargo.lock, for every platform:
 # deny.toml looks only at the platforms irsync is built for. tools/ci.sh and
-# ci.yml run it as the job `licenses-all`
+# ci.yml run it as the job `deny-license-check`
 # (`cargo deny --locked --config deny-license-check.toml check licenses`).
 # A failure does not block a pull request, but it does block a release.
 # Only the licenses are checked with this file; the rest is in deny.toml.
