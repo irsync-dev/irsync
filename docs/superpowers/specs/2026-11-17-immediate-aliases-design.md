@@ -205,3 +205,6 @@ set with `irsync config set hosts.NAME.client_id ID`); `host list` shows
   the address again needs no ssh.
 - A check over ssh that finds a new daemon id updates every alias that had
   the old id and the same `ssh` value, not only the one typed.
+- "The server must not be changed for a name that is then refused" holds
+  for its configuration and daemon only. The name is checked by the irsync
+  the setup installs, so that install stays; the error says so.

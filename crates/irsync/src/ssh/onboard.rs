@@ -204,7 +204,15 @@ pub fn onboard(
         check_first(dest, p.hostname.as_deref())?;
     }
     let install = ensure_installed(rsh, dest, &p, flags.no_install)?;
-    let report = run_setup(rsh, dest, client, &client_name, flags)?;
+    // The setup is run by the irsync that was just put there, so a setup
+    // that fails cannot leave the server without that install: say so.
+    let report = run_setup(rsh, dest, client, &client_name, flags).map_err(|e| {
+        if install == Install::Current {
+            e
+        } else {
+            anyhow::anyhow!("{e:#}\n  irsync was installed on {dest} before this; that stays")
+        }
+    })?;
     let lock = manage::lock_config(&paths.config)?;
     let mut doc = lock.load()?;
     let id = report.endpoint_id;
