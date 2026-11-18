@@ -146,6 +146,26 @@ differ, the code is what shipped.
     each bump, and mdbook publishes none, so its hashes are our own first
     download. Revisit if the tools start signing.
 
+18. **Release files are signed with an offline minisign key** (issue #89).
+    A maintainer signs every file on the draft release on their own
+    computer with `.github/scripts/sign-release.sh`, then publishes the
+    draft. The public key is in `packaging/signing/release-keys.pub`. Every
+    signature has the trusted comment `irsync vX.Y.Z`, so an older
+    release's signed files can't be passed off as a newer one. Why the key
+    is offline: until now only GitHub vouched for a release, through
+    attestations and checksums. Whoever takes over the organisation, a
+    maintainer's token or a compromised Action can build and publish a
+    release that passes both. A key that never touches GitHub closes that
+    gap: nothing that happens on GitHub can make a valid signature. It also
+    gives users a check that needs no `gh` and no GitHub account. The
+    flow: `release.yml` makes a draft (the gate ends there), the script
+    signs and publishes it, which creates the tag, and then starts the
+    resume run. A draft takes new files even with immutable releases on, and
+    has no tag, so a failed run leaves nothing behind. Cost if wrong: every
+    release needs the maintainer, with the USB stick, at their computer.
+    Losing the key means a new key and a changed `release-keys.pub`. A
+    second maintainer can add their own key to that file.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the

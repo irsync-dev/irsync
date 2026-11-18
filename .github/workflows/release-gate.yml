@@ -114,7 +114,7 @@ jobs:
           # published by an earlier attempt in the meantime has the tag now.
           if gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq '.[].ref' |
               grep -qxF -- "refs/tags/$TAG"; then
-            echo "::error::The tag $TAG exists now: an earlier attempt published the release while the tests ran. Finish it with .github/scripts/sign-release.sh or release-resume.yml (see the releasing guide), and do not start the gate again."
+            echo "::error::The tag $TAG exists now: an earlier attempt published the release while the tests ran. Finish it with release-resume.yml (see the releasing guide), and do not start the gate again."
             exit 1
           fi
 

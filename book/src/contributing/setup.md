@@ -90,7 +90,7 @@ build would.
 The `release-build` job runs the release build itself for the two
 Linux targets (x86_64 and arm64 musl): `dist build`, which runs
 `packaging/dist/build.sh`, on the same runners as a release. It checks that `release.yml` is what
-`dist generate` makes, that each tarball holds the three man pages, and
+`.github/scripts/release-yml.sh write` makes, that each tarball holds the three man pages, and
 that our installer, run on the tarball with a temporary home, installs a
 working `irsync` and pages that `man` finds. A change that
 would break a release fails here, before anyone tags it. On your machine it
