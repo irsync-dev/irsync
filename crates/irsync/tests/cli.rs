@@ -1211,6 +1211,38 @@ fn verify_signature_invalid_key_exit_2() {
 }
 
 #[test]
+fn verify_signature_empty_key_exit_2() {
+    let data = fixture("data.txt");
+    for key in ["", "  "] {
+        let o = verify_signature(&["--public-key", key, data.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(2));
+        assert_eq!(
+            String::from_utf8_lossy(&o.stderr),
+            "irsync: --public-key: no key given\n"
+        );
+    }
+}
+
+#[test]
+fn verify_signature_unreadable_file_exit_1() {
+    let key = fixture_key("a.pub");
+    let sig = fixture("data.txt.a.minisig");
+    let o = verify_signature(&[
+        "--signature",
+        sig.to_str().unwrap(),
+        "--public-key",
+        &key,
+        "/nonexistent/irsync-file",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.starts_with("irsync: cannot read /nonexistent/irsync-file: "),
+        "{err}"
+    );
+}
+
+#[test]
 fn verify_signature_hidden_from_help() {
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
         .arg("--help")

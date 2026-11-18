@@ -1736,6 +1736,10 @@ fn run_verify_signature(
     public_keys: &[String],
     trusted_comment: Option<&str>,
 ) -> i32 {
+    if public_keys.iter().any(|k| k.trim().is_empty()) {
+        eprintln!("irsync: --public-key: no key given");
+        return 2;
+    }
     let keys = if public_keys.is_empty() {
         irsync::signature::release_keys()
     } else {
@@ -1765,6 +1769,10 @@ fn run_verify_signature(
                 v.trusted_comment
             );
             0
+        }
+        Err(irsync::signature::SignatureError::Io { path, source }) if path == file => {
+            eprintln!("irsync: cannot read {}: {source}", file.display());
+            1
         }
         Err(e) => {
             eprintln!("irsync: bad signature for {}: {e}", file.display());
