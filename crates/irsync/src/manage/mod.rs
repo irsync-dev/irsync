@@ -162,11 +162,11 @@ pub fn canonicalize_without(
             reason,
         })?
         .hosts;
-    let shared = hosts.get(alias).map(|e| e.endpoint_id).is_some_and(|id| {
+    let shared = hosts.get(alias).map(|e| e.peer_id()).is_some_and(|id| {
         hosts
             .entries
             .iter()
-            .any(|(other, e)| other != alias && e.endpoint_id == id)
+            .any(|(other, e)| other != alias && e.peer_id() == id)
     });
     if shared {
         hosts.entries.remove(alias);

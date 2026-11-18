@@ -75,9 +75,16 @@ fn main() {
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::SshSetup {
             client,
+            client_name_hex,
             recheck,
             no_dht,
-        }) => std::process::exit(run_ssh_setup(client, *recheck, *no_dht, files)),
+        }) => std::process::exit(run_ssh_setup(
+            client,
+            client_name_hex,
+            *recheck,
+            *no_dht,
+            files,
+        )),
         None => unreachable!("try_parse_from always sets a command"),
     }
 }
@@ -432,7 +439,12 @@ fn verb(dry_run: bool) -> &'static str {
 /// string itself must be an EndpointId.
 fn resolve_target(hosts: &Hosts, host: &str) -> anyhow::Result<EndpointId> {
     if let Some(entry) = hosts.get(host) {
-        return Ok(entry.endpoint_id);
+        return entry.endpoint_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{host} is saved in {} as a client only: it has no endpoint_id to dial",
+                hosts.path.display()
+            )
+        });
     }
     parse_endpoint_id(host).map_err(|_| {
         let missing = if hosts.path.exists() {
@@ -480,6 +492,9 @@ struct Connected {
     target: EndpointAddr,
     settings: Settings,
     host_entry: Option<irsync::config::hosts::HostEntry>,
+    /// The saved alias `host_entry` is under: the host as typed, or the
+    /// alias a first run saved it as.
+    alias: Option<String>,
     /// `opts` with the per-host and settings defaults filled in.
     opts: SyncOptions,
     /// The host was set up over ssh just now, by this call.
@@ -501,9 +516,35 @@ async fn connect_for(
     let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
     // An unknown host is an ssh destination: set it up and save the alias.
     // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
+    // Not an alias and not an id: a saved host may have been set up by
+    // this very ssh destination (an address, say). Then it is that host.
+    let by_ssh = if config.hosts.get(host).is_none() && parse_endpoint_id(host).is_err() {
+        match config.hosts.by_ssh(host) {
+            Ok(alias) => alias.map(str::to_string),
+            Err(aliases) => bail!(
+                "{host} is the ssh destination of several saved hosts with \
+                 different ids ({}); name one of them, or change an `ssh` \
+                 value in {}",
+                aliases.join(", "),
+                config.hosts.path.display()
+            ),
+        }
+    } else {
+        None
+    };
+    if let Some(alias) = &by_ssh {
+        log.eprintln(&format!("irsync: {host} is saved as {alias}"));
+    }
+    let host = by_ssh.as_deref().unwrap_or(host);
     let mut onboarded_with = None;
+    let mut saved_as = None;
     let saved = config.hosts.get(host);
     let unknown = saved.is_none() && parse_endpoint_id(host).is_err();
+    // Saved here as a client only (it synced to this machine): its daemon
+    // was never set up from here. That is a first run, saved under the
+    // same name.
+    let client_only = saved.is_some_and(|h| h.endpoint_id.is_none());
+    let first = unknown || client_only;
     let forced = opts.force_ssh || opts.no_remote_dht;
     if forced && saved.is_none() && !unknown {
         let flag = if opts.force_ssh {
@@ -513,31 +554,44 @@ async fn connect_for(
         };
         bail!("{flag} needs a host alias or an ssh destination, not an EndpointId");
     }
-    if unknown || forced {
+    if first || forced {
         // A saved host: its `ssh` destination, else the alias itself.
         let dest = saved
             .and_then(|h| h.ssh.clone())
             .unwrap_or_else(|| host.to_string());
+        // A first run picks the aliases itself, once the server answered.
+        let alias = saved.is_some().then_some(host);
         // No ssh call yet: these errors need no "over ssh failed" context.
-        irsync::ssh::onboard::check(host, &dest)?;
+        match alias {
+            Some(a) => irsync::ssh::onboard::check(a, &dest)?,
+            None => irsync::ssh::onboard::check_dest(&dest)?,
+        }
         let secret = load_client_key(opts, &config.settings, &pass)?;
         let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
         log.eprintln(&if unknown {
             format!("irsync: {host} is not a saved alias; setting it up over ssh")
+        } else if client_only {
+            format!("irsync: {host} is saved as a client only; setting it up over ssh")
         } else {
             format!("irsync: checking {host} over ssh")
         });
         let o = irsync::ssh::onboard::onboard(
             &paths,
             &rsh,
-            host,
+            alias,
             &dest,
             secret.public(),
-            !unknown,
+            !first,
             opts.no_remote_dht,
         )
         .with_context(|| {
-            if unknown {
+            if client_only {
+                format!(
+                    "{host} is saved in {} as a client only; setting its daemon \
+                     up over ssh failed",
+                    config.hosts.path.display()
+                )
+            } else if unknown {
                 format!(
                     "{host:?} is not an alias in {} and not an EndpointId; \
                      setting it up over ssh failed",
@@ -551,7 +605,10 @@ async fn connect_for(
         hints = o.hints();
         config = Config::load(&paths)?;
         onboarded_with = Some(secret);
+        saved_as = Some(o.alias);
     }
+    // What a first run saved the host as: its name from here on.
+    let host = saved_as.as_deref().unwrap_or(host);
     let Config {
         settings, hosts, ..
     } = config;
@@ -628,6 +685,7 @@ async fn connect_for(
         endpoint,
         target,
         settings,
+        alias: host_entry.is_some().then(|| host.to_string()),
         host_entry,
         opts,
         onboarded,
@@ -682,7 +740,8 @@ fn recheck_over_ssh(
     let paths = Paths::resolve(opts.config.as_deref());
     let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
     let no_dht = opts.no_remote_dht;
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, host, dest, client, true, no_dht) {
+    let alias = Some(host);
+    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, alias, dest, client, true, no_dht) {
         Ok(o) => o,
         Err(e) => return Recheck::Failed(e),
     };
@@ -995,10 +1054,13 @@ async fn sync(
                     rechecked = true;
                     let client = conn.endpoint.id();
                     let entry = conn.host_entry.as_ref();
-                    match recheck_over_ssh(host, entry, client, &remote_text, cli_opts, log) {
+                    // The saved alias, when the operand named the host
+                    // another way (an address it was first set up by).
+                    let name = conn.alias.clone().unwrap_or_else(|| host.to_string());
+                    match recheck_over_ssh(&name, entry, client, &remote_text, cli_opts, log) {
                         Recheck::Done(hints) => {
                             conn.endpoint.close().await;
-                            conn = connect_for(host, cli_opts, log, hints).await?;
+                            conn = connect_for(&name, cli_opts, log, hints).await?;
                         }
                         Recheck::NotSsh => break Err(with_wrong_id_hint(e)),
                         Recheck::GrantRemoved(refused) => break Err(refused),
@@ -1518,8 +1580,10 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                let before = peer_ids(&doc, &paths.config);
                 cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
                 lock.save(&mut doc).with_context(|| key.to_string())?;
+                note_moved_grants("config set", &before, &doc, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1532,6 +1596,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 }
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
+                let before = peer_ids(&doc, &paths.config);
                 // Unsetting a host's table or its id removes the host: like
                 // `host remove`, not while grants name it.
                 let hosts = if path[0] == "hosts" {
@@ -1561,9 +1626,46 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     }
                 }
                 lock.save(&mut doc).with_context(|| key.to_string())?;
+                note_moved_grants("config unset", &before, &doc, &paths.config);
                 Ok(())
             })(),
         ),
+    }
+}
+
+/// The id each host of `doc` has as a peer in a grant; none when `doc`
+/// does not load.
+fn peer_ids(
+    doc: &toml_edit::DocumentMut,
+    path: &Path,
+) -> std::collections::BTreeMap<String, iroh::EndpointId> {
+    let Ok(config) = Config::parse(&doc.to_string(), path) else {
+        return Default::default();
+    };
+    let hosts = config.hosts.entries;
+    hosts.into_iter().map(|(a, h)| (a, h.peer_id())).collect()
+}
+
+/// A grant by alias follows the alias. After an edit that changed which id
+/// a host's grants are for (`before`: [`peer_ids`] from before it), say so
+/// on stderr, for each such host that grants name.
+fn note_moved_grants(
+    cmd: &str,
+    before: &std::collections::BTreeMap<String, iroh::EndpointId>,
+    doc: &toml_edit::DocumentMut,
+    path: &Path,
+) {
+    for (alias, new) in peer_ids(doc, path) {
+        let Some(old) = before.get(&alias).filter(|old| **old != new) else {
+            continue;
+        };
+        let lists = manage::grants::lists_naming(doc, &alias);
+        if !lists.is_empty() {
+            eprintln!(
+                "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
+                lists.join(", ")
+            );
+        }
     }
 }
 
@@ -1583,7 +1685,13 @@ fn file_paths(f: &FilesArgs) -> Paths {
 }
 
 /// `irsync ssh-setup`: the report between its marker lines on stdout.
-fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -> i32 {
+fn run_ssh_setup(
+    client: &str,
+    client_name_hex: &str,
+    recheck: bool,
+    no_dht: bool,
+    files: &FilesArgs,
+) -> i32 {
     // The client stops when its probe sees root; this holds when it did not.
     if running_as_root() {
         eprintln!(
@@ -1604,7 +1712,9 @@ fn run_ssh_setup(client: &str, recheck: bool, no_dht: bool, files: &FilesArgs) -
                 irsync::identity::refuse_to_generate_with_passphrase_file(&key, &pass)
                     .with_context(|| format!("identity {}", key.display()))?;
             }
-            irsync::ssh::setup::run(&file_paths(files), id, recheck, no_dht)
+            let name =
+                irsync::ssh::client::decode_name(client_name_hex).context("--client-name-hex")?;
+            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht)
         });
     match result {
         Ok(report) => {
@@ -1688,7 +1798,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 }
                 let hosts = Config::load(&paths)?.hosts;
                 let spec = PeerSpec::parse(who, &hosts)?;
-                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let resolve = |s: &str| hosts.get(s).map(|h| h.peer_id());
                 let lock = manage::lock_config(&paths.config)?;
                 let mut doc = lock.load()?;
                 if export == "immediate" {
@@ -1718,7 +1828,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
             "grant remove",
             (|| {
                 let hosts = Config::load(&paths)?.hosts;
-                let resolve = |s: &str| hosts.get(s).map(|h| h.endpoint_id);
+                let resolve = |s: &str| hosts.get(s).map(|h| h.peer_id());
                 if who == "*" {
                     bail!(
                         "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
@@ -2136,19 +2246,28 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
     lock.save(&mut doc)?;
     match old {
-        Some(old) => {
-            println!("{}: {old} -> {id}", a.alias);
-            // A grant by alias follows the alias: say that it moved.
-            let lists = manage::grants::lists_naming(&doc, &a.alias);
-            if !lists.is_empty() {
-                eprintln!(
-                    "irsync host add: note: the grants that name {} (in {}) now apply to the new EndpointId",
-                    a.alias,
-                    lists.join(", ")
-                );
-            }
-        }
+        Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),
+    }
+    // This set the daemon's id. Grants that name the alias are for its
+    // client id when it has one: they did not move. Else a grant by alias
+    // follows the alias: say that it moved.
+    let lists = manage::grants::lists_naming(&doc, &a.alias);
+    let client = Config::parse(&doc.to_string(), &paths.config)
+        .ok()
+        .and_then(|c| c.hosts.get(&a.alias).and_then(|h| h.client_id));
+    if !lists.is_empty() {
+        let (alias, lists) = (&a.alias, lists.join(", "));
+        match (client, old) {
+            (Some(client), _) => eprintln!(
+                "irsync host add: note: the grants that name {alias} (in {lists}) stay with \
+                 its client_id {client}; `irsync config set hosts.{alias}.client_id ID` changes that"
+            ),
+            (None, Some(_)) => eprintln!(
+                "irsync host add: note: the grants that name {alias} (in {lists}) now apply to the new EndpointId"
+            ),
+            (None, None) => {}
+        }
     }
     Ok(())
 }

@@ -112,7 +112,7 @@ impl Config {
                 // by its keys, both when it has neither.
                 _ if value.is_table() => {
                     let t = value.as_table().expect("checked");
-                    if t.contains_key("endpoint_id") {
+                    if t.contains_key("endpoint_id") || t.contains_key("client_id") {
                         format!("unknown table {name:?}; hosts live under [hosts.{name}]")
                     } else if t.contains_key("path") {
                         format!("unknown table {name:?}; exports live under [exports.{name}]")

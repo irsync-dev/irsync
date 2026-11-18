@@ -10,6 +10,7 @@ use iroh::EndpointId;
 use super::release;
 use super::setup::SetupReport;
 use crate::build::{BuildInfo, LONG_VERSION};
+use crate::config::hosts::short_host_name;
 
 /// irsync's own copy on the server, relative to the remote home.
 pub const REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
@@ -68,7 +69,7 @@ impl Rsh {
     /// errors show live; `probe` and `run_setup` capture stdout; `run_setup`
     /// also captures stderr; `ensure_installed` feeds the binary on stdin.
     /// `remote_cmd` is fixed text built by irsync, plus
-    /// an EndpointId; it never contains user input. It is sh syntax, and
+    /// an EndpointId and a hex-encoded name; it never contains user input. It is sh syntax, and
     /// the login shell may be fish or tcsh, so it is handed to `/bin/sh`
     /// whole: `exec /bin/sh -c '…'` reads the same in all of them.
     fn command(&self, dest: &str, remote_cmd: &str) -> Command {
@@ -96,6 +97,8 @@ pub struct Probe {
     pub installed: Option<String>,
     /// The ssh user is root (`id -u` is 0).
     pub root: bool,
+    /// The server's short host name (`uname -n`), when it can be an alias.
+    pub hostname: Option<String>,
 }
 
 /// Map `uname -sm` output to the names `std::env::consts` uses.
@@ -119,7 +122,8 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
 pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     // The marker lets us skip any banner a noisy login shell prints first.
     let cmd = format!(
-        "echo {PROBE_MARKER}; id -u; uname -sm; \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
+        "echo {PROBE_MARKER}; id -u; uname -sm; uname -n 2>/dev/null || echo; \
+         \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
     );
     let out = rsh
         .command(dest, &cmd)
@@ -141,6 +145,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     let mut lines = all[at + 1..].iter().copied();
     let root = lines.next().map(str::trim) == Some("0");
     let (os, arch) = parse_uname(lines.next().unwrap_or(""));
+    let hostname = lines.next().and_then(short_host_name);
     let installed = lines
         .next()
         .map(str::trim)
@@ -151,6 +156,7 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
         arch,
         installed,
         root,
+        hostname,
     })
 }
 
@@ -306,6 +312,62 @@ fn upload(rsh: &Rsh, dest: &str, local: &Path) -> Result<Upload> {
     }
 }
 
+/// This machine's short host name, the name the server will know this
+/// client by. A test-hooks build takes it from `IRSYNC_TEST_HOSTNAME`.
+pub fn client_host_name() -> Result<String> {
+    let raw = raw_host_name()?;
+    short_host_name(&raw).ok_or_else(|| {
+        anyhow!(
+            "this machine's host name ({raw:?}) cannot be used as its name on the \
+             server; give this machine a host name of its own"
+        )
+    })
+}
+
+fn raw_host_name() -> Result<String> {
+    #[cfg(feature = "test-hooks")]
+    if let Ok(name) = std::env::var("IRSYNC_TEST_HOSTNAME") {
+        return Ok(name);
+    }
+    let name = nix::unistd::gethostname().context("cannot read this machine's host name")?;
+    Ok(name.to_string_lossy().into_owned())
+}
+
+/// `name` as hex digits, for a command line that several shells read.
+fn encode_name(name: &str) -> String {
+    name.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The name [`encode_name`] wrote.
+pub fn decode_name(hex: &str) -> Result<String> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.is_ascii() {
+        bail!("not a hex-encoded name: {hex:?}");
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<std::result::Result<Vec<u8>, _>>()
+        .map_err(|_| anyhow!("not a hex-encoded name: {hex:?}"))?;
+    String::from_utf8(bytes).map_err(|_| anyhow!("the name in {hex:?} is not UTF-8"))
+}
+
+/// The `ssh-setup` command line for the server. `client_name` is whatever
+/// this machine is called, so it goes as hex: the login shell there may be
+/// sh, fish or tcsh, and none of them may read any of it as syntax.
+pub fn setup_command(client: EndpointId, client_name: &str, recheck: bool, no_dht: bool) -> String {
+    let mut cmd = format!(
+        "\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client} --client-name-hex {}",
+        encode_name(client_name)
+    );
+    if recheck {
+        cmd.push_str(" --recheck");
+    }
+    if no_dht {
+        cmd.push_str(" --no-dht");
+    }
+    cmd
+}
+
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`
 /// passes `--recheck` (a saved host: never add back a removed grant),
 /// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off).
@@ -313,17 +375,11 @@ pub fn run_setup(
     rsh: &Rsh,
     dest: &str,
     client: EndpointId,
+    client_name: &str,
     recheck: bool,
     no_dht: bool,
 ) -> Result<SetupReport> {
-    let mut flags = String::new();
-    if recheck {
-        flags.push_str(" --recheck");
-    }
-    if no_dht {
-        flags.push_str(" --no-dht");
-    }
-    let cmd = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {client}{flags}");
+    let cmd = setup_command(client, client_name, recheck, no_dht);
     let out = rsh
         .command(dest, &cmd)
         .stdout(Stdio::piped())

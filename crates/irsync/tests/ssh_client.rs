@@ -4,8 +4,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use irsync::config::hosts::short_host_name;
 use irsync::ssh::client::{
-    ensure_installed, parse_uname, probe, set_exe_override, Install, Rsh, REMOTE_BIN,
+    client_host_name, decode_name, ensure_installed, parse_uname, probe, set_exe_override,
+    setup_command, Install, Rsh, REMOTE_BIN,
 };
 
 #[path = "common/release.rs"]
@@ -38,6 +40,7 @@ fn fake(uname: Option<&str>) -> Fake {
             None => std::env::remove_var("FAKE_SSH_UNAME"),
         }
         std::env::remove_var("IRSYNC_TEST_RELEASE_URL");
+        std::env::set_var("FAKE_SSH_HOSTNAME", "-");
     }
     set_exe_override(PathBuf::from(env!("CARGO_BIN_EXE_irsync")));
     let rsh = Rsh::from_opts(Some(fake_ssh().to_str().unwrap()));
@@ -287,6 +290,71 @@ fn remote_commands_run_under_sh() {
         ensure_installed(&wrapper, "myserver", &p).unwrap(),
         Install::Current
     );
+}
+
+/// The probe asks for the server's host name and keeps its short form,
+/// with or without an installed irsync before it in the reply.
+#[test]
+fn probe_reports_the_host_name() {
+    let f = fake(None);
+    assert_eq!(probe(&f.rsh, "myserver").unwrap().hostname, None);
+    // SAFETY: serialized by ENV (held by `f`).
+    unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "myserver.example.com") };
+    let p = probe(&f.rsh, "192.168.1.5").unwrap();
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert_eq!(p.installed, None);
+    ensure_installed(&f.rsh, "192.168.1.5", &p).unwrap();
+    let p = probe(&f.rsh, "192.168.1.5").unwrap();
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert!(p.installed.is_some());
+    unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "localhost") };
+    assert_eq!(probe(&f.rsh, "192.168.1.5").unwrap().hostname, None);
+}
+
+/// The client's name goes into a shell command on the server. It travels
+/// as hex digits, so whatever it holds, no shell (sh, fish, tcsh) reads
+/// any of it as syntax.
+#[test]
+fn client_name_travels_as_hex() {
+    let id = iroh::SecretKey::from_bytes(&[1; 32]).public();
+    let nasty = "x'; touch \"$HOME/pwned\"; echo '\\ `id` ü";
+    let cmd = setup_command(id, nasty, true, true);
+    let fixed = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {id} --client-name-hex ");
+    let rest = cmd.strip_prefix(&fixed).unwrap_or_else(|| panic!("{cmd}"));
+    let (hex, flags) = rest.split_once(' ').unwrap();
+    assert_eq!(flags, "--recheck --no-dht");
+    assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex}");
+    assert_eq!(decode_name(hex).unwrap(), nasty);
+    assert!(setup_command(id, "myclient", false, false).ends_with(" 6d79636c69656e74"));
+    // Not hex, half a byte, not UTF-8.
+    for bad in ["zz", "abc", "ff", ""] {
+        assert!(decode_name(bad).is_err(), "{bad:?}");
+    }
+}
+
+/// The short host name of this machine; a test build takes it from
+/// `IRSYNC_TEST_HOSTNAME`.
+#[test]
+fn client_host_name_is_the_short_usable_one() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: serialized by ENV.
+    unsafe { std::env::set_var("IRSYNC_TEST_HOSTNAME", "myclient.example.com") };
+    assert_eq!(client_host_name().unwrap(), "myclient");
+    unsafe { std::env::set_var("IRSYNC_TEST_HOSTNAME", "localhost") };
+    let e = client_host_name().unwrap_err().to_string();
+    assert!(
+        e.contains("\"localhost\"") && e.contains("host name"),
+        "{e}"
+    );
+    unsafe { std::env::remove_var("IRSYNC_TEST_HOSTNAME") };
+    // The real one: what `uname -n` prints, cut short, or an error when
+    // that is no usable name.
+    let out = std::process::Command::new("uname")
+        .arg("-n")
+        .output()
+        .unwrap();
+    let real = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(client_host_name().ok(), short_host_name(&real), "{real:?}");
 }
 
 /// The probe says whether the ssh user is root (`id -u` is 0).

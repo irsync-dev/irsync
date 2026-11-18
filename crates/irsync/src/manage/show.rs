@@ -19,7 +19,7 @@ fn entry_text(entry: &str, hosts: &Hosts) -> String {
     if crate::identity::parse_endpoint_id(entry).is_ok() {
         entry.to_string()
     } else if let Some(h) = hosts.get(entry) {
-        format!("{entry} ({})", h.endpoint_id)
+        format!("{entry} ({})", h.peer_id())
     } else {
         format!("{entry} (unknown alias)")
     }

@@ -98,7 +98,7 @@ read_only = true
 ro = ["myclient"]
 
 # Peers that may reach any path this account can, read-write.
-# The SSH setup adds the client here.
+# The SSH setup adds the client here, under its host name.
 [immediate]
 rw = ["myclient"]
 
@@ -106,7 +106,7 @@ rw = ["myclient"]
 [exports.auto-srv-music]
 path = "/srv/music"
 auto = true
-rw = ["a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"]
+rw = ["myclient"]
 ```
 
 ## Identity and state
@@ -154,14 +154,19 @@ When to choose `cubic` over `bbr`, with measurements, is in
 
 ## Hosts
 
-`[hosts.ALIAS]` names a remote by its `EndpointId`. On a client it names the
-daemons you dial; on a daemon's machine it names the clients that grants may
-refer to. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
+`[hosts.ALIAS]` names another machine. A machine has two `EndpointId`s: its
+daemon's, which you dial, and its own as a client, which grants are for. An
+entry holds one of them or both, so one name serves a machine you sync to
+and that syncs to you. The
+[SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves) writes both
+sides: the server's alias on the client, and the client's host name on the
+server. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
 be an `EndpointId`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint_id` | required | The remote's `EndpointId`. The client pins it. |
+| `endpoint_id` | none | The `EndpointId` of the machine's daemon: the one dialled for `ALIAS:PATH`. The client pins it. An entry needs this, `client_id`, or both. |
+| `client_id` | none | The machine's `EndpointId` as a client. A grant that names `ALIAS` is for this id. Without it, such a grant is for `endpoint_id`, as for a client you added by hand with `irsync host add`. When `irsync config set` or `unset` changes which id a host's grants are for, a note on stderr says so. |
 | `relay` | `[client]`'s | This host's relay server. |
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |
@@ -237,7 +242,8 @@ automatic ones (`auto = true`).
 `[immediate]` has one key, `rw`: peers that may reach any path the daemon's
 account can, read-write. There is no read-only form. `irsync grant add
 immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
-and the SSH setup adds its client here.
+and the SSH setup adds its client here, by the host name it saved the client
+under in `[hosts]`.
 
 When such a peer uses a path that no export covers, the daemon adds an
 automatic export for it, `auto = true`, named `auto-` and the path with `-`
