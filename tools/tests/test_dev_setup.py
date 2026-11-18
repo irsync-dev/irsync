@@ -359,6 +359,20 @@ echo "$sha" > "$HOME/expected-hash"
         self.assertRegex(out, r"missing +mdbook .*it is in \S+/\.cargo/bin.*\n +add \S+/\.cargo/bin to PATH\n")
         self.assertNotIn("install", calls)
 
+    def test_setup_says_when_another_copy_comes_first_on_path(self):
+        out, calls = self.setup(uname=LINUX, path_has_cargo_bin=False,
+                                mdbook="echo mdbook v0.0.1", **self.good_downloads())
+        self.assertRegex(out, r"missing +mdbook \S+, have 0\.0\.1, .*\n +put \S+/\.cargo/bin first in PATH\n")
+
+    def test_site_workflow_checks_mdbook_against_the_same_hash(self):
+        with open(SCRIPT) as f:
+            want = re.search(r"mdbook:x86_64-unknown-linux-musl\) echo ([0-9a-f]{64}) ;;", f.read()).group(1)
+        with open(os.path.join(ROOT, ".github", "workflows", "site.yml")) as f:
+            text = f.read()
+        self.assertIn(f"MDBOOK_SHA256: {want}\n", text)
+        self.assertIn("x86_64-unknown-linux-musl.tar.gz", text)
+        self.assertIn("sha256sum --check", text)
+
     def test_setup_compiles_when_the_hashes_are_for_another_version(self):
         out, calls = self.setup_in_copy(nextest="9.9.9", uname=LINUX, **self.good_downloads())
         self.assertRegex(out, r"note +cargo-nextest: the hashes are for \S+, CI uses 9\.9\.9; compiling")
