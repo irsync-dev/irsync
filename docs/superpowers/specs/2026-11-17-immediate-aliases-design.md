@@ -198,3 +198,10 @@ set with `irsync config set hosts.NAME.client_id ID`); `host list` shows
 - An IP address typed for a daemon that is already saved with a
   non-address `ssh` value does not replace that value. An address still
   replaces an address.
+- A host entry has an `ssh_aliases` list: other destinations typed for it. A
+  first run by address that lands on a saved daemon and keeps its `ssh`
+  value (a name, or another spelling of the same address) adds the address
+  there, and the lookup by ssh destination reads the list too. So typing
+  the address again needs no ssh.
+- A check over ssh that finds a new daemon id updates every alias that had
+  the old id and the same `ssh` value, not only the one typed.

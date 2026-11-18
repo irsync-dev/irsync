@@ -29,8 +29,9 @@ pub struct SavedAlias {
     pub previous_id: Option<EndpointId>,
     /// It was saved before this run (with `previous_id` or the same id).
     pub existed: bool,
-    /// The `ssh` value it had and keeps: a name, when this run reached the
-    /// host by an address.
+    /// The `ssh` value it had and keeps, when this run reached the host by
+    /// an address: a name, or another spelling of that address. The
+    /// address typed goes into `ssh_aliases`.
     pub kept_ssh: Option<String>,
 }
 
@@ -62,6 +63,12 @@ pub fn dest_kind(dest: &str) -> DestKind {
         },
         Err(_) => DestKind::Plain,
     }
+}
+
+/// The address in `dest`, when it is one (see [`DestKind::Ip`]).
+fn ip_of(dest: &str) -> Option<std::net::IpAddr> {
+    let host = dest.rsplit_once('@').map_or(dest, |(_, h)| h);
+    host.split_once('%').map_or(host, |(a, _)| a).parse().ok()
 }
 
 /// Whether a first run to `dest` can go ahead, before any ssh call: ssh
@@ -196,7 +203,7 @@ pub fn onboard(
         Some(a) => vec![a.to_string()],
         None => choose_aliases(dest, p.hostname.as_deref(), id, &|a| saved_id(&doc, a)),
     };
-    let by_address = matches!(dest_kind(dest), DestKind::Ip { .. });
+    let typed_ip = ip_of(dest);
     let mut saved = Vec::new();
     for alias in aliases {
         // Saved with a daemon id before: an entry that was a client only
@@ -204,23 +211,43 @@ pub fn onboard(
         let before = saved_id(&doc, &alias);
         let existed = before.is_some();
         // An address goes stale, a name does not: the same daemon, saved
-        // with a name to reach it by, keeps that name.
-        let kept_ssh = (by_address && before == Some(id))
+        // with a name to reach it by, keeps that name. It also keeps
+        // another spelling of this address (`u@1.2.3.4` for `1.2.3.4`).
+        // Only an address that differs is replaced: the old one is stale.
+        let kept_ssh = (typed_ip.is_some() && before == Some(id))
             .then(|| saved_ssh(&doc, &alias))
             .flatten()
-            .filter(|old| !matches!(dest_kind(old), DestKind::Ip { .. }));
+            .filter(|old| old != dest && ip_of(old).is_none_or(|ip| Some(ip) == typed_ip));
         let flags = HostFlags {
             ssh: kept_ssh.is_none().then(|| dest.to_string()),
             ..HostFlags::default()
         };
         let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &flags)
             .with_context(|| format!("saving host alias {alias}"))?;
+        if kept_ssh.is_some() {
+            // So that typing this address again finds the host without ssh.
+            manage::hosts::host_add_ssh_alias(&mut doc, &alias, dest);
+        }
         saved.push(SavedAlias {
             alias,
             previous_id,
             existed,
             kept_ssh,
         });
+    }
+    // A check that found a new daemon (the server was rebuilt): the other
+    // names saved for that daemon through this ssh destination follow.
+    if let (Some(_), Some(old)) = (alias, saved[0].previous_id) {
+        for other in aliases_of(&doc, old, dest) {
+            manage::hosts::host_add(&mut doc, &other, id, &HostFlags::default())
+                .with_context(|| format!("saving host alias {other}"))?;
+            saved.push(SavedAlias {
+                alias: other,
+                previous_id: Some(old),
+                existed: true,
+                kept_ssh: None,
+            });
+        }
     }
     lock.save(&mut doc)?;
     Ok(Onboarded {
@@ -242,6 +269,19 @@ fn saved_id(doc: &toml_edit::DocumentMut, alias: &str) -> Option<EndpointId> {
         .get("endpoint_id")?
         .as_str()
         .and_then(|s| crate::identity::parse_endpoint_id(s).ok())
+}
+
+/// The aliases in `doc` saved with the daemon `id` and `ssh = dest`.
+fn aliases_of(doc: &toml_edit::DocumentMut, id: EndpointId, dest: &str) -> Vec<String> {
+    let Some(hosts) = doc.get("hosts").and_then(toml_edit::Item::as_table_like) else {
+        return Vec::new();
+    };
+    hosts
+        .iter()
+        .map(|(alias, _)| alias)
+        .filter(|a| saved_id(doc, a) == Some(id) && saved_ssh(doc, a).as_deref() == Some(dest))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The `ssh` value `[hosts.alias]` holds in `doc`.
