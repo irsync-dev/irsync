@@ -13,7 +13,8 @@ test what the scripts do with minisign without needing it installed.
 
 Only the calls the scripts make are understood:
   -S [-s KEY] -t COMMENT -m FILE...   writes FILE.minisig for each FILE
-  -V -Q -p PUBKEY -m FILE             prints the trusted comment
+  -V [-H] -Q -p PUBKEY -m FILE        prints the trusted comment (a legacy
+                                      signature always fails, as with -H)
 """
 import base64
 import hashlib

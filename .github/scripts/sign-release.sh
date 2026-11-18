@@ -8,23 +8,30 @@
 #
 # Stops at the first failed check:
 #  1. gh, minisign and sha256sum (or shasum) are there; the version is valid.
-#  2. The release vVERSION exists and is a draft.
+#  2. The release vVERSION exists and is a draft. Its commit is on the
+#     branch the release is cut from (release-branch.sh), and the keys file
+#     here is the same as in that commit, which irsync is built from.
 #  3. It holds exactly the files a release should have (signatures aside).
 #  4. Every checksum in sha256.sum and in the .sha256 files matches.
-#  5. Every file has a build attestation from release.yml.
+#  5. Every file has a build attestation from release.yml, built from that
+#     commit on pinned/vVERSION (where the release gate runs release.yml),
+#     on a GitHub-hosted runner.
 #  6. You say yes to the list of files.
 #  7. minisign signs them all in one go, with the trusted comment
 #     "irsync vVERSION". --key picks the secret key; minisign's default is
 #     ~/.minisign/minisign.key.
 #  8. Every new signature verifies with a key in
 #     packaging/signing/release-keys.pub, so a wrong key is caught here.
-#  9. The signatures are uploaded (replacing old ones), and the release then
-#     has one for every file.
+#  9. The signatures are uploaded (replacing old ones). The release is still
+#     the same one, and GitHub's sha256 of every file and signature on it is
+#     that of the file that was signed.
 # 10. Unless --no-publish: the tag must still not exist (a tag pushed by hand
 #     while the draft waited would take over the release). The release is
-#     published, must then be immutable, and release-resume.yml is started.
+#     published, must then be immutable with the same files (checked as in
+#     9), and release-resume.yml is started.
 #
-# IRSYNC_SIGN_KEYS_FILE replaces release-keys.pub; it is for the tests.
+# IRSYNC_SIGN_KEYS_FILE replaces release-keys.pub; it is for the tests. It is
+# still compared with the keys file in the release's commit.
 set -euo pipefail
 
 usage() {
@@ -85,15 +92,39 @@ fi
 [ -f "$keys_file" ] || die "$keys_file does not exist."
 
 # 2. The draft.
-info=$(gh release view "$tag" --json isDraft,assets,targetCommitish,databaseId \
+# isImmutable is read here too, only so that a gh too old to know it (it
+# is needed in step 10) fails before anything is signed.
+info=$(gh release view "$tag" --json isDraft,isImmutable,assets,targetCommitish,databaseId \
     --jq '"\(.isDraft) \(.targetCommitish) \(.databaseId)", .assets[].name') ||
-    die "Could not read the GitHub Release $tag (see the gh error above)."
+    die "Could not read the GitHub Release $tag (see the gh error above). An unknown field isImmutable means gh is too old."
 {
     read -r is_draft commit id
     assets=$(cat)
 } <<<"$info"
-[ "$is_draft" = true ] || die "$tag is not a draft. Only a draft can be signed: a published release is immutable."
+[ "$is_draft" = true ] ||
+    die "$tag is not a draft. Only a draft can be signed: a published release is immutable. If this script published it but could not start release-resume.yml, start it with: gh workflow run release-resume.yml --ref $tag -f tag=$tag"
 [[ $id =~ ^[0-9]+$ ]] || die "gh gave the release id '$id', which is not a number."
+[[ $commit =~ ^[0-9a-f]{40}$ ]] ||
+    die "The draft's commit is '$commit', not a full commit id. release.yml always gives one; was the draft made by hand?"
+
+# The commit must be on the branch the release is cut from: "identical" or
+# "ahead" means the branch holds the commit.
+branch=$("$here/release-branch.sh" "$version")
+status=$(gh api "repos/$repo/compare/$commit...$branch" --jq .status) ||
+    die "Could not compare $commit with the branch $branch."
+case $status in
+    identical | ahead) ;;
+    *) die "The draft's commit $commit is not on $branch (GitHub says '$status'). Not signing a build of another branch." ;;
+esac
+
+# The irsync built from $commit trusts the keys in its release-keys.pub. The
+# signatures are checked below against the local file, so the two must
+# agree.
+remote_keys=$(gh api "repos/$repo/contents/packaging/signing/release-keys.pub?ref=$commit" \
+    --jq '.content | @base64d') ||
+    die "Could not read packaging/signing/release-keys.pub at $commit."
+[ "$remote_keys" = "$(cat "$keys_file")" ] ||
+    die "$keys_file is not the same as packaging/signing/release-keys.pub at $commit, which the release is built from. Check out $commit (or pull) and run this again."
 
 # 3. The files. The release must hold exactly these (plus signatures).
 targets=$(sed -n 's/^targets *= *\[\(.*\)\]/\1/p' "$root/dist-workspace.toml" | tr -d '" ' | tr , ' ')
@@ -144,7 +175,8 @@ for f in "${files[@]}"; do
     esac
 done
 [ -s "$dir/sha256.sum" ] || die "sha256.sum is empty."
-while read -r sum name; do
+# `|| [ -n "$sum" ]`: also the last line when it has no newline at the end.
+while read -r sum name || [ -n "$sum" ]; do
     [ -n "$sum" ] || continue
     name=${name#\*}
     printf '%s\n' "$want" | grep -qxF -- "$name" ||
@@ -160,7 +192,9 @@ fi
 echo "Checking the build attestations..."
 for f in "${files[@]}"; do
     if ! gh attestation verify "$dir/$f" --repo "$repo" \
-            --signer-workflow "$repo/.github/workflows/release.yml" >"$tmp/attestation.log" 2>&1; then
+            --signer-workflow "$repo/.github/workflows/release.yml" \
+            --source-digest "$commit" --source-ref "refs/heads/pinned/$tag" \
+            --deny-self-hosted-runners >"$tmp/attestation.log" 2>&1; then
         cat "$tmp/attestation.log" >&2
         die "Not signing: the build attestation of $f does not verify."
     fi
@@ -197,7 +231,8 @@ keys=("$tmp"/keys/*.pub)
 for f in "${files[@]}"; do
     ok=false
     for k in "${keys[@]}"; do
-        if comment=$(minisign -V -Q -p "$k" -m "$dir/$f" 2>/dev/null); then
+        # -H: accept only a prehashed signature.
+        if comment=$(minisign -V -H -Q -p "$k" -m "$dir/$f" 2>/dev/null); then
             ok=true
             break
         fi
@@ -206,28 +241,54 @@ for f in "${files[@]}"; do
     [ "$comment" = "irsync $tag" ] ||
         die "The signature of $f has the trusted comment '$comment', not 'irsync $tag'. Nothing was uploaded."
     # Line 2 is the signature. "RU" is base64 for "ED", a prehashed
-    # signature; the legacy kind ("Ed") is refused by irsync.
+    # signature; the legacy kind ("Ed") is refused by irsync. -H above
+    # checks this too; this second look does not rely on minisign.
     [ "$(sed -n 2p "$dir/$f.minisig" | cut -c 1-2)" = RU ] ||
         die "The signature of $f is in minisign's legacy format. Use minisign 0.10 or newer, without -l."
 done
 
-# 9. Upload, then check every file has its signature.
+# 9. Upload, then check what is on the release.
+
+# Checks that the release is still release $id, that isDraft is $1 (and,
+# when $1 is false, that it is immutable), and that it holds exactly the
+# signed files and their signatures, by GitHub's sha256 of each. $2 is added
+# to every error message.
+check_release() {
+    local out is_d is_i rid digests line f n want=() bad=()
+    out=$(gh release view "$tag" --json isDraft,isImmutable,databaseId,assets \
+        --jq '"\(.isDraft) \(.isImmutable) \(.databaseId)", (.assets[] | "\(.digest) \(.name)")') ||
+        die "Could not read $tag. $2"
+    {
+        read -r is_d is_i rid
+        digests=$(cat)
+    } <<<"$out"
+    [ "$rid" = "$id" ] ||
+        die "$tag is now release $rid, not $id, the one that was checked and signed. $2"
+    [ "$is_d" = "$1" ] || die "$tag should have isDraft = $1, but gh says $is_d. $2"
+    if [ "$1" = false ] && [ "$is_i" != true ]; then
+        die "$tag should now be immutable, but gh says isImmutable = $is_i. Check the repository's immutable releases setting. $2"
+    fi
+    for f in "${files[@]}"; do
+        want+=("sha256:$(sha256_of "$dir/$f") $f" "sha256:$(sha256_of "$dir/$f.minisig") $f.minisig")
+    done
+    for line in "${want[@]}"; do
+        printf '%s\n' "$digests" | grep -qxF -- "$line" || bad+=("${line#* }")
+    done
+    n=$(printf '%s\n' "$digests" | grep -c . || true)
+    [ "$n" -eq ${#want[@]} ] || bad+=("(it holds $n files, not ${#want[@]})")
+    if [ ${#bad[@]} -gt 0 ]; then
+        printf '  %s\n' "${bad[@]}" >&2
+        die "These files on $tag are missing or are not the ones that were signed. $2"
+    fi
+}
+
 sigs=()
 for f in "${files[@]}"; do
     sigs+=("$dir/$f.minisig")
 done
 gh release upload "$tag" --clobber "${sigs[@]}" ||
     die "The upload failed. The release is still a draft; run this script again."
-assets=$(gh release view "$tag" --json assets --jq '.assets[].name') ||
-    die "Could not read the files of $tag after the upload."
-missing=()
-for f in "${files[@]}"; do
-    printf '%s\n' "$assets" | grep -qxF -- "$f.minisig" || missing+=("$f.minisig")
-done
-if [ ${#missing[@]} -gt 0 ]; then
-    printf '  %s\n' "${missing[@]}" >&2
-    die "These signatures are not on $tag after the upload. The release is still a draft; run this script again."
-fi
+check_release true "Not publishing; the release is still a draft. Check it, then run this script again."
 echo "Signed $tag and uploaded the signatures."
 
 if ! $publish; then
@@ -246,10 +307,7 @@ fi
 # version, as `gh release create` does.
 gh api -X PATCH "repos/$repo/releases/$id" -F draft=false -f make_latest=legacy >/dev/null ||
     die "Publishing $tag failed. It is signed; run this script again."
-state=$(gh release view "$tag" --json isDraft,isImmutable --jq '"\(.isDraft) \(.isImmutable)"') ||
-    die "Could not read $tag after publishing it. Check it on GitHub; release-resume.yml has not been started."
-[ "$state" = "false true" ] ||
-    die "$tag should now be published and immutable, but gh says isDraft isImmutable = $state. Check the release and the repository's immutable releases setting; release-resume.yml has not been started."
+check_release false "It was published; check it on GitHub. release-resume.yml has not been started."
 echo "Published $tag."
 
 gh workflow run release-resume.yml --ref "$tag" -f tag="$tag" ||

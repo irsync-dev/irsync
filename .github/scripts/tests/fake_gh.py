@@ -11,6 +11,13 @@ State lives in the JSON file named by FAKE_GH_STATE:
   bad_attestations: [asset name, ...] (attestation verify fails for these)
   drop_upload: [asset name, ...] (release upload leaves these out)
   not_immutable: bool (publishing leaves the release mutable)
+  swap_on_upload, swap_on_publish: {asset name: content} (replaces these
+    assets right after a release upload, or after publishing)
+  new_id_on_upload: int (the release gets this databaseId on upload)
+  compare: str (the status of compare/A...B; default "ahead")
+  keys_at_commit: str (packaging/signing/release-keys.pub in any commit)
+  attested_commit, attested_ref: str (what attestation verify checks
+    --source-digest and --source-ref against, when set)
   patched: {field: value} (the fields of the last PATCH of a release)
   calls: [argv, ...] (appended by every call)
 Only the calls the scripts make are understood; anything else fails.
@@ -49,7 +56,8 @@ def fields(flags=("-f",)):
 def positional(start):
     """The arguments from args[start:] that are not options or their values."""
     takes_value = {"-X", "-f", "-F", "-H", "--jq", "--dir", "--repo",
-                   "--signer-workflow", "--ref", "--json"}
+                   "--signer-workflow", "--ref", "--json",
+                   "--source-digest", "--source-ref"}
     out, i = [], start
     while i < len(args):
         if args[i] in takes_value:
@@ -60,6 +68,11 @@ def positional(start):
             out.append(args[i])
             i += 1
     return out
+
+
+def digest(content):
+    import hashlib
+    return "sha256:" + hashlib.sha256(content.encode()).hexdigest()
 
 
 def release(tag):
@@ -78,15 +91,18 @@ if args[:2] == ["release", "view"]:
         print(rel["body"])
     elif want == "isDraft,isPrerelease":
         print(f'{str(rel["isDraft"]).lower()} {str(rel["isPrerelease"]).lower()}')
-    elif want == "isDraft,assets,targetCommitish,databaseId":
+    elif want == "isDraft,isImmutable,assets,targetCommitish,databaseId":
         print(f'{str(rel["isDraft"]).lower()} {rel["targetCommitish"]} {rel["databaseId"]}')
         for name in rel["assets"]:
             print(name)
     elif want == "assets":
         for name in rel["assets"]:
             print(name)
-    elif want == "isDraft,isImmutable":
-        print(f'{str(rel["isDraft"]).lower()} {str(rel.get("immutable", False)).lower()}')
+    elif want == "isDraft,isImmutable,databaseId,assets":
+        print(f'{str(rel["isDraft"]).lower()} {str(rel.get("immutable", False)).lower()} '
+              f'{rel["databaseId"]}')
+        for name, content in rel["assets"].items():
+            print(f"{digest(content)} {name}")
     else:
         fail(f"unexpected --json {want}")
 elif args[:2] == ["release", "edit"]:
@@ -107,9 +123,15 @@ elif args[:2] == ["release", "upload"]:
             continue
         with open(upload) as f:
             rel["assets"][name] = f.read()
+    rel["assets"].update(state.get("swap_on_upload", {}))
+    if "new_id_on_upload" in state:
+        rel["databaseId"] = state["new_id_on_upload"]
 elif args[:2] == ["attestation", "verify"]:
     if os.path.basename(args[2]) in state.get("bad_attestations", []):
         fail(f"no attestation for {args[2]}")
+    for flag, key in (("--source-digest", "attested_commit"), ("--source-ref", "attested_ref")):
+        if key in state and opt(flag) != state[key]:
+            fail(f"the attestation has {state[key]}, not {flag} {opt(flag)}")
     print("Verification succeeded!")
 elif args[:2] == ["workflow", "run"]:
     pass
@@ -126,6 +148,12 @@ elif args[0] == "api":
         for b in state.get("branches", []):
             if b.startswith(endpoint[len(heads_prefix):]):
                 print(b)
+    elif endpoint.startswith(f"repos/{repo}/compare/"):
+        print(state.get("compare", "ahead"))
+    elif endpoint.startswith(f"repos/{repo}/contents/packaging/signing/release-keys.pub?ref="):
+        if "keys_at_commit" not in state:
+            fail("gh: Not Found (HTTP 404)")
+        print(state["keys_at_commit"])
     elif endpoint == f"repos/{repo}/releases":
         for t in state["releases"]:
             print(t)
@@ -136,6 +164,7 @@ elif args[0] == "api":
         if state["patched"].get("draft") == "false":
             state["releases"][tag].update(isDraft=False,
                                           immutable=not state.get("not_immutable"))
+            state["releases"][tag]["assets"].update(state.get("swap_on_publish", {}))
             state["tags"].append(tag)
     elif endpoint == f"repos/{repo}/releases/generate-notes":
         state["generate"] = fields()
