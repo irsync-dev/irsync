@@ -822,7 +822,7 @@ fn probe_keeps_its_lines_apart_when_one_is_empty() {
     // No stand-in from the fake ssh: the `uname` below is the one found.
     // SAFETY: serialized by ENV (held by `f`).
     unsafe { std::env::remove_var("FAKE_SSH_HOSTNAME") };
-    let bin = f.home.join("fake-bin");
+    let bin = f.aux.join("fake-bin");
     std::fs::create_dir(&bin).unwrap();
     let uname = bin.join("uname");
     std::fs::write(
