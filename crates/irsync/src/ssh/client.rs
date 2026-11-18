@@ -127,9 +127,12 @@ pub fn parse_uname(line: &str) -> (Option<&'static str>, Option<&'static str>) {
 /// One SSH call: the server's platform and the installed version.
 pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
     // The marker lets us skip any banner a noisy login shell prints first.
+    // Each answer has its own label, so one that comes back empty (a
+    // missing or silent command) cannot be taken for the next.
     let cmd = format!(
-        "echo {PROBE_MARKER}; id -u; uname -sm; uname -n 2>/dev/null || echo; \
-         \"$HOME/{REMOTE_BIN}\" --version 2>/dev/null || true"
+        "echo {PROBE_MARKER}; echo \"u=$(id -u 2>/dev/null)\"; \
+         echo \"s=$(uname -sm 2>/dev/null)\"; echo \"n=$(uname -n 2>/dev/null)\"; \
+         echo \"v=$(\"$HOME/{REMOTE_BIN}\" --version 2>/dev/null)\""
     );
     let out = rsh
         .command(dest, &cmd)
@@ -148,13 +151,20 @@ pub fn probe(rsh: &Rsh, dest: &str) -> Result<Probe> {
             text.trim()
         );
     };
-    let mut lines = all[at + 1..].iter().copied();
-    let root = lines.next().map(str::trim) == Some("0");
-    let (os, arch) = parse_uname(lines.next().unwrap_or(""));
-    let hostname = lines.next().and_then(short_host_name);
-    let installed = lines
-        .next()
-        .map(str::trim)
+    // The first line with each label; a multi-line answer only counts
+    // for its first line.
+    let reply = &all[at + 1..];
+    let answer = |label: &str| {
+        reply
+            .iter()
+            .find_map(|l| l.strip_prefix(label))
+            .map(str::trim)
+            .unwrap_or("")
+    };
+    let root = answer("u=") == "0";
+    let (os, arch) = parse_uname(answer("s="));
+    let hostname = short_host_name(answer("n="));
+    let installed = Some(answer("v="))
         .filter(|l| !l.is_empty())
         .map(str::to_owned);
     Ok(Probe {

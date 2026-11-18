@@ -20,6 +20,19 @@ A remote operand is `HOST:PATH`.
 An operand is remote when it has a `:` before its first `/`, as in rsync.
 `HOST` may not be empty.
 
+An operand that starts with `[`, or with `USER@[`, is read by its brackets
+first:
+
+| Operand | Read as |
+|---|---|
+| `[fe80::1]:PATH` | remote: the IPv6 address is the host |
+| `[myserver]:PATH` | an error: only an IPv6 address goes in brackets |
+| `[fe80::1:PATH` | an error: a `:` and no closing `]` |
+| `[a:b]/c`, `[a:b]`, `[notes]/a` | a local path, whatever is in the brackets |
+
+Write `./` before a local name that would otherwise be read as remote or
+as an error: `./[myserver]:x`.
+
 ## Resolution order
 
 The daemon reads `PATH` in this order:
