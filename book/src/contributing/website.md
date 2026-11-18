@@ -68,9 +68,9 @@ single-mode yellow kept for the beta warning only.
 
 ## Building
 
-The build needs mdbook, Python 3 and Node.js with npm. It warns when mdbook
-is not the version CI builds the site with; `tools/dev-setup.sh` installs
-that one:
+The build needs mdbook, Python 3 and Node.js with npm. mdbook must be the
+version CI builds the site with, so the pages come out the same everywhere;
+the build stops on any other. `tools/dev-setup.sh` installs that version:
 
 ```sh
 site/build.sh
