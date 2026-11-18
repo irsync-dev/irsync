@@ -217,7 +217,22 @@ including those beyond the rows drawn. It is not the session's window of up to
 4,096 files in flight described in
 [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams):
 a file in that window that is neither being hashed nor has a stream open has
-no row and is not counted. While the block is drawn, failed files show in its
+no row and is not counted.
+
+The transfer line shows two rates over the last 5 seconds, as in
+`41.20MB/s sent  380.00MB/s synced  goodput 9.2×`. `sent` is the file data
+that crossed the network. `synced` adds the data the receiver took from
+files it already had (matched data), so it is the rate at which the
+destination catches up. Goodput is synced data divided by sent data for the
+session: `100%` means nothing was matched, and above 2 it is shown as a
+ratio, so `9.2×` means each byte sent put about nine in place. Once the
+transfer is done, the line shows the same three numbers as averages over the
+whole run. No rate is shown in a session's first second, and both read
+`0B/s` while the client reconnects. Matched data counts as soon as a file's
+chunks are requested, before any of its data moves, so `synced` jumps for a
+few seconds when a large, mostly unchanged file starts. On a narrow terminal
+the transfer count goes first, then goodput, then the synced rate. While the
+block is drawn, failed files show in its
 `errors` section instead of scrolling, and the full list goes to stderr once the
 block is cleared at the end. `-q` turns the block off. When stdout is not a
 terminal, or `TERM` is `dumb`, the block is not drawn and the output is plain
