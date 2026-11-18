@@ -457,3 +457,45 @@ fn a_rejected_copy_keeps_the_old_binary() {
         .contains("0.0.1 (old)"));
     assert_eq!(std::fs::read_dir(dst.parent().unwrap()).unwrap().count(), 1);
 }
+
+/// A server command that prints nothing does not shift the lines after
+/// it: with a silent `uname -sm`, the host name is still the host name
+/// and the version line is not taken for it.
+#[test]
+fn probe_keeps_its_lines_apart_when_one_is_empty() {
+    let f = fake(None);
+    // No stand-in from the fake ssh: the `uname` below is the one found.
+    // SAFETY: serialized by ENV (held by `f`).
+    unsafe { std::env::remove_var("FAKE_SSH_HOSTNAME") };
+    let bin = f.home.path().join("fake-bin");
+    std::fs::create_dir(&bin).unwrap();
+    let uname = bin.join("uname");
+    std::fs::write(
+        &uname,
+        "#!/bin/sh\nif [ \"$1\" = -n ]; then echo myserver.example.com; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&uname, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let wrapper = script(
+        &f,
+        "quiet-uname-ssh",
+        &format!(
+            "PATH={}:$PATH exec {} \"$@\"",
+            bin.display(),
+            fake_ssh().display()
+        ),
+    );
+    let p = probe(&wrapper, "192.168.1.5").unwrap();
+    assert_eq!((p.os, p.arch), (None, None));
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert_eq!(p.installed, None);
+    assert!(!p.root || nix::unistd::geteuid().is_root());
+    // With irsync there, its version is the version, not the host name.
+    let exe = f.home.path().join(irsync::ssh::client::REMOTE_BIN);
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "#!/bin/sh\necho irsync 9.9.9\necho more\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let p = probe(&wrapper, "192.168.1.5").unwrap();
+    assert_eq!(p.hostname.as_deref(), Some("myserver"));
+    assert_eq!(p.installed.as_deref(), Some("irsync 9.9.9"));
+}

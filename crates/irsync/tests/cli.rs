@@ -413,6 +413,10 @@ fn bracketed_ipv6_host() {
     // A local path may still start with a bracket.
     assert!(!Location::parse("[fe80::1]/p").unwrap().is_remote());
     assert!(!Location::parse("[notes]/a").unwrap().is_remote());
+    // Also with a `:` inside the brackets, and behind `./`.
+    for local in ["[a:b]/c", "[a:b]", "mike@[a:b]/c", "./[myserver]:x"] {
+        assert!(!Location::parse(local).unwrap().is_remote(), "{local}");
+    }
 }
 
 #[test]
