@@ -1110,3 +1110,121 @@ fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
     assert!(a.cmd.is_some() && a.sync.paths.is_empty());
     assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
 }
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/minisign")
+        .join(name)
+}
+
+/// The base64 line of a fixture public key.
+fn fixture_key(name: &str) -> String {
+    let text = std::fs::read_to_string(fixture(name)).unwrap();
+    text.lines().nth(1).unwrap().to_string()
+}
+
+fn verify_signature(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .arg("verify-signature")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn verify_signature_good() {
+    let data = fixture("data.txt");
+    let sig = fixture("data.txt.a.minisig");
+    let key = fixture_key("a.pub");
+    let o = verify_signature(&[
+        "--signature",
+        sig.to_str().unwrap(),
+        "--public-key",
+        &key,
+        "--trusted-comment",
+        "irsync v1.2.3",
+        data.to_str().unwrap(),
+    ]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{out} {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(out.starts_with("good signature: "), "{out}");
+    assert!(out.contains("trusted comment: irsync v1.2.3"), "{out}");
+}
+
+#[test]
+fn verify_signature_bad_exit_1() {
+    // Signed by key a, checked against key b.
+    let data = fixture("data.txt");
+    let sig = fixture("data.txt.a.minisig");
+    let key = fixture_key("b.pub");
+    let o = verify_signature(&[
+        "--signature",
+        sig.to_str().unwrap(),
+        "--public-key",
+        &key,
+        data.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.starts_with("irsync: bad signature for "), "{err}");
+}
+
+#[test]
+fn verify_signature_comment_mismatch_exit_1() {
+    let data = fixture("data.txt");
+    let sig = fixture("data.txt.a.minisig");
+    let key = fixture_key("a.pub");
+    let o = verify_signature(&[
+        "--signature",
+        sig.to_str().unwrap(),
+        "--public-key",
+        &key,
+        "--trusted-comment",
+        "irsync v9.9.9",
+        data.to_str().unwrap(),
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("irsync v9.9.9"));
+}
+
+#[test]
+fn verify_signature_missing_sig_exit_1() {
+    // No data.txt.minisig next to the fixture.
+    let data = fixture("data.txt");
+    let key = fixture_key("a.pub");
+    let o = verify_signature(&["--public-key", &key, data.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).starts_with("irsync: bad signature for "));
+}
+
+#[test]
+fn verify_signature_invalid_key_exit_2() {
+    let data = fixture("data.txt");
+    let o = verify_signature(&["--public-key", "not a key", data.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("public key"));
+}
+
+#[test]
+fn verify_signature_hidden_from_help() {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("verify-signature"));
+}
+
+#[test]
+fn verify_signature_help_mentions_minisign() {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        .args(["verify-signature", "--help"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("minisign"));
+}

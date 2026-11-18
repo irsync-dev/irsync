@@ -370,6 +370,24 @@ pub enum Command {
         #[arg(long, hide = true)]
         keep_old: bool,
     },
+    /// Checks a minisign signature of FILE against the irsync release keys
+    /// (or the keys given). Used by install.sh. Exit 0 is a good signature,
+    /// 1 a bad, missing or untrusted one, 2 a usage error.
+    #[command(hide = true)]
+    VerifySignature {
+        /// The signature file. Default: FILE.minisig.
+        #[arg(long)]
+        signature: Option<PathBuf>,
+        /// A public key (the base64 line of a minisign .pub file). Can be
+        /// repeated. Replaces the built-in release keys.
+        #[arg(long = "public-key")]
+        public_key: Vec<String>,
+        /// The signature's trusted comment must be exactly this.
+        #[arg(long)]
+        trusted_comment: Option<String>,
+        /// The file that was signed.
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, clap::Args)]
