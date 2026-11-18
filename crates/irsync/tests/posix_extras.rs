@@ -23,6 +23,14 @@ async fn within60<F: std::future::Future>(f: F) -> F::Output {
         .expect("test timed out after 60 s")
 }
 
+/// For the sparse test: one of its two syncs takes up to 25 s on GitHub's
+/// macOS runners, and over 60 s on a slow one.
+async fn within120<F: std::future::Future>(f: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(120), f)
+        .await
+        .expect("test timed out after 120 s")
+}
+
 fn data(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
     (0..n)
@@ -231,7 +239,7 @@ async fn sparse_file_stays_sparse() {
     const TAIL: u64 = 19 * MIB as u64;
     for flow in [Flow::Push, Flow::Pull] {
         let opts = opts_with(|p| p.sparse = true);
-        let (out, h) = within60(sync_trees(
+        let (out, h) = within120(sync_trees(
             |src| {
                 write_sparse(&src.join("sparse.img"), SIZE);
                 // Ends in a zero run: the length must still come out right.
