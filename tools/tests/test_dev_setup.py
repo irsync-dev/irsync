@@ -145,6 +145,22 @@ class DevSetupCheckTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("rustup", out)
 
+    def test_rustup_that_path_does_not_lead_to_is_reported(self):
+        # rustup is in ~/.cargo/bin and PATH does not lead there. The script
+        # finds it for its own run; the shell that started it will not.
+        cargo_bin = os.path.join(self.tmp, ".cargo", "bin")
+        os.makedirs(cargo_bin)
+        with open(os.path.join(cargo_bin, "rustup"), "w") as f:
+            f.write(f"#!/bin/sh\n{GOOD['rustup']}\n")
+        os.chmod(os.path.join(cargo_bin, "rustup"), 0o755)
+        r, out = self.check(rustup=None)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotRegex(out, r"ok +rustup")
+        self.assertRegex(out, r"missing +rustup on PATH; it is in \S+/\.cargo/bin.*\(required\)\n"
+                              r" +add \S+/\.cargo/bin to PATH\n")
+        # The rest is still checked, with the rustup that was found.
+        self.assertRegex(out, r"ok +Rust ")
+
     def test_optional_tools_do_not_fail_the_check(self):
         # No node, cargo tools or packaging tools here; only required ones
         # decide the exit status.

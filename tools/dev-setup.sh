@@ -95,10 +95,16 @@ step "Rust (rustup, and tools from their release pages)"
 
 # rustup and cargo install into $CARGO_HOME/bin, ~/.cargo/bin by default.
 cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
+# rustup is there, but PATH does not lead to it. The script goes on with
+# it; the shell that started the script will not find it, nor the tools.
+rustup_hidden=false
 if ! have rustup && [ -x "$cargo_bin/rustup" ]; then
     PATH="$cargo_bin:$PATH"
+    rustup_hidden=true
 fi
-if have rustup; then
+if $rustup_hidden; then
+    bad "rustup on PATH; it is in $cargo_bin, with the tools below" "add $cargo_bin to PATH"
+elif have rustup; then
     ok "rustup"
 elif $check_only; then
     bad "rustup" "tools/dev-setup.sh"
