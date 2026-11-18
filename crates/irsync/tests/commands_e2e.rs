@@ -2367,3 +2367,54 @@ fn hosts_with_a_client_id_list_show_rename_and_remove() {
         "{t}"
     );
 }
+
+/// `host add --client-id` sets the id a machine has as a client, beside
+/// its daemon's id, and says so when that moves the grants naming it.
+#[test]
+fn host_add_takes_a_client_id() {
+    let d = tempfile::tempdir().unwrap();
+    let (daemon, client, other) = (peer_id(5), peer_id(6), peer_id(7));
+    let (home, config) = home_with(&d, "");
+    let o = irsync(
+        &home,
+        &["host", "add", "box", &daemon, "--client-id", &client],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("box: {daemon}\nbox: client_id {client}\n")
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+    let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    assert_eq!(t["hosts"]["box"]["endpoint_id"].as_str(), Some(&*daemon));
+    assert_eq!(t["hosts"]["box"]["client_id"].as_str(), Some(&*client));
+
+    // Grants name it: a new client id moves them, and the command says so.
+    ok(&home, &["grant", "add", "all", "box"]);
+    let o = irsync(
+        &home,
+        &["host", "add", "box", &daemon, "--client-id", &other],
+    );
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "irsync host add: note: the grants that name box (in all) now apply to \
+             {other} (was {client})\n"
+        )
+    );
+    // The same id again: nothing moved, nothing said.
+    let o = irsync(
+        &home,
+        &["host", "add", "box", &daemon, "--client-id", &other],
+    );
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+    // Not an id.
+    let o = irsync(
+        &home,
+        &["host", "add", "box", &daemon, "--client-id", "nope"],
+    );
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("--client-id"), "{e}");
+}

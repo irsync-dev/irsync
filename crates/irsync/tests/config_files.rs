@@ -184,6 +184,26 @@ fn host_by_ssh_destination() {
     );
 }
 
+/// Hosts saved as clients only have no daemon id to compare: two of them
+/// with one `ssh` value are two machines, not one daemon under two names.
+#[test]
+fn client_only_hosts_with_one_ssh_destination_are_told_apart() {
+    let text = format!(
+        "[hosts.a]\nclient_id = \"{}\"\nssh = \"box\"\n\
+         [hosts.b]\nclient_id = \"{}\"\nssh = \"box\"\n\
+         [hosts.c]\nclient_id = \"{}\"\nssh = \"alone\"\n",
+        id(1),
+        id(2),
+        id(3)
+    );
+    let hosts = parse_hosts(&text, p()).unwrap();
+    assert_eq!(
+        hosts.by_ssh("box"),
+        Err(vec!["a".to_string(), "b".to_string()])
+    );
+    assert_eq!(hosts.by_ssh("alone"), Ok(Some("c")));
+}
+
 /// `ssh_aliases` lists other destinations typed for a host: they find it the
 /// way its `ssh` value does.
 #[test]
