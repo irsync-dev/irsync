@@ -1017,18 +1017,20 @@ async fn fresh_empty_file_is_placed_without_a_chunk() {
 /// The time trigger counts from the first chunk not yet persisted, not from
 /// opening: a file whose data arrives late, but in one go, never writes a
 /// partial record (each one is three index writes under the index lock).
-#[tokio::test]
+// The persist interval reads tokio's clock, so the test skips ahead on the
+// paused clock instead of waiting it out.
+#[tokio::test(start_paused = true)]
 async fn a_late_first_chunk_does_not_persist_a_record() {
     let e = env();
     let data = content(11);
     let cl = chunk_list(&data);
     assert!(cl.chunks.len() >= 2, "want several chunks");
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    tokio::time::advance(std::time::Duration::from_millis(2_100)).await;
     write_all(&mut w, &data, &cl, &[0]).await;
     assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
     // Progress left unpersisted for the interval is recorded at the next chunk.
-    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    tokio::time::advance(std::time::Duration::from_millis(2_100)).await;
     write_all(&mut w, &data, &cl, &[1]).await;
     let p = e.index.lock().unwrap().partial(&rel()).unwrap().unwrap();
     assert_eq!(p.size, data.len() as u64);
