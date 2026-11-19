@@ -321,6 +321,24 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(job["permissions"], {"contents": "read", "security-events": "write"})
         self.assertEqual(sorted(job["strategy"]["matrix"]["language"]), ["actions", "rust"])
 
+    def test_scorecard(self):
+        wf = load_workflows()["scorecard.yml"]
+        on = triggers(wf)
+        self.assertEqual(on["push"]["branches"], ["main"])
+        self.assertTrue(on["schedule"][0]["cron"])
+        self.assertIn("branch_protection_rule", on)
+        # Scorecard publishes only from a workflow with no top-level write.
+        self.assertEqual(wf["permissions"], {})
+        self.assertNotIn("env", wf)
+        self.assertNotIn("defaults", wf)
+        job = next(iter(jobs(wf).values()))
+        self.assertEqual(job["permissions"], {"security-events": "write", "id-token": "write"})
+        steps = job["steps"]
+        card = next(s for s in steps if step_uses(s, "ossf/scorecard-action"))
+        self.assertIs(card["with"]["publish_results"], True)
+        self.assertTrue(any(step_uses(s, "github/codeql-action/upload-sarif") for s in steps))
+        self.assertFalse(any("run" in s for s in steps), "Scorecard allows no run steps here")
+
     def test_nightly_fuzz(self):
         wf = load_workflows()["nightly.yml"]
         on = triggers(wf)

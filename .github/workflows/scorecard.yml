@@ -1,0 +1,61 @@
+# OpenSSF Scorecard grades the repository on about 18 security habits and
+# gives a score out of 10. This workflow runs it, publishes the result to
+# api.scorecard.dev (the README badge reads from there) and uploads it to
+# code scanning.
+#
+# Scorecard accepts published results only from a workflow that follows its
+# rules (https://github.com/ossf/scorecard-action#workflow-restrictions):
+# no top-level env, defaults or write permissions; only this job may have
+# id-token: write; and the job may use only the Actions listed below, and
+# no `run` steps. Do not add others to this job.
+
+name: Scorecard
+
+on:
+  # Re-reads the branch protection settings when they change. Only the
+  # default branch is supported.
+  branch_protection_rule:
+  # Weekly as well: some checks (Maintained, for one) change with time.
+  schedule:
+    - cron: '41 4 * * 1'
+  push:
+    branches: [main]
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Scorecard supports only the default branch.
+    if: ${{ github.event.repository.default_branch == github.ref_name }}
+    permissions:
+      security-events: write # upload the result to code scanning
+      id-token: write # sign the result published to api.scorecard.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        if: ${{ always() }}
+        with:
+          sarif_file: results.sarif
