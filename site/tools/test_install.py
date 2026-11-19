@@ -196,6 +196,17 @@ exit 1
 """)
         self.assert_stopped(self.run_install(), "does not match")
 
+    def test_irsync_usage_error_is_not_a_bad_signature(self):
+        self.add_stub("irsync", """
+if [ "$1" = verify-signature ] && [ "$2" = --help ]; then echo minisign; exit 0; fi
+echo "irsync: unexpected argument" >&2
+exit 2
+""")
+        r = self.run_install()
+        self.assert_stopped(r, "irsync could not check the signature")
+        self.assertIn("irsync: unexpected argument", r.stderr)
+        self.assertNotIn("does not match", r.stderr)
+
     def test_missing_signature_fails(self):
         self.add_minisign()
         r = self.run_install(sig=None)
@@ -245,10 +256,14 @@ exit 99
         self.assert_ran(self.run_install("--require-signature"))
 
     def test_before_first_signed_skips_check(self):
-        # No signature file and no verifier, even with --require-signature.
-        r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.4", sig=None)
+        # No signature file and no verifier.
+        r = self.run_install("--beta", tag="v0.1.0-beta.4", sig=None)
         self.assert_ran(r)
         self.assertIn("not checking", r.stderr)
+
+    def test_before_first_signed_require_signature_fails(self):
+        r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.4", sig=None)
+        self.assert_stopped(r, "has no signature to check")
 
     def test_first_signed_is_checked(self):
         r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.5")

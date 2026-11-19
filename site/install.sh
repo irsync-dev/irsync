@@ -156,6 +156,9 @@ main() {
   # ones do not), else minisign, else none.
   verifier=none
   if older "$tag" "$first_signed"; then
+    if [ -n "$require_signature" ]; then
+      die "$tag is older than $first_signed, the first signed release, so it has no signature to check; not installing it with --require-signature"
+    fi
     verifier=skip
     say "$tag is older than $first_signed, the first signed release: not checking its signature"
   elif command -v irsync >/dev/null 2>&1 &&
@@ -185,11 +188,12 @@ main() {
   bad_signature() {
     die "the signature of $url does not match: not running it. Please report this at https://github.com/irsync-dev/irsync/blob/main/SECURITY.md"
   }
+  # irsync's own message, if any, stays on stderr.
   verify_irsync() {
     set --
     for k in $keys; do set -- "$@" --public-key "$k"; done
     irsync verify-signature "$@" --trusted-comment "irsync $tag" \
-      --signature "$tmp/installer.sh.minisig" "$tmp/installer.sh" >/dev/null 2>&1
+      --signature "$tmp/installer.sh.minisig" "$tmp/installer.sh" >/dev/null
   }
   verify_minisign() {
     for k in $keys; do
@@ -206,7 +210,13 @@ main() {
     irsync|minisign)
       get "$url.minisig" "$tmp/installer.sh.minisig" ||
         die "missing signature: could not download $url.minisig"
-      "verify_$verifier" || bad_signature
+      "verify_$verifier" && status=0 || status=$?
+      case $status in
+        0) ;;
+        # Exit 2 is irsync's usage error: it could not check, not a bad signature.
+        2) die "irsync could not check the signature (see above); install minisign, or update irsync, and run again" ;;
+        *) bad_signature ;;
+      esac
       ;;
   esac
 
