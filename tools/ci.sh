@@ -24,8 +24,11 @@
 #                  seeds (fuzz/seeds), with the nightly in
 #                  fuzz/rust-toolchain.toml
 #   fuzz           runs each fuzz target for FUZZ_SECONDS; only when named
+#   miri           the tests of the crates in miri_packages under Miri, which
+#                  catches undefined behaviour, with the nightly in
+#                  fuzz/rust-toolchain.toml; slow, so only when named
 #
-# With no job it runs all of them but fuzz, the quick ones first.
+# With no job it runs all of them but fuzz and miri, the quick ones first.
 # fuzz-build and release-build run on Linux only, freebsd-build on FreeBSD
 # only; a run of everything leaves each out elsewhere.
 #
@@ -52,8 +55,8 @@ jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | deny-license-check | workflows | shell-scripts | fuzz-build | fuzz | release-build | freebsd-build) jobs="$jobs $arg" ;;
-        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build fuzz)" >&2; exit 2 ;;
+        check | deny | deny-license-check | workflows | shell-scripts | fuzz-build | fuzz | miri | release-build | freebsd-build) jobs="$jobs $arg" ;;
+        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build fuzz miri)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
@@ -67,7 +70,7 @@ if [ -z "$jobs" ]; then
     fi
 fi
 
-# The nightly the fuzz targets build with: the one pin in the repository.
+# The nightly the fuzz targets and Miri use: the one pin in the repository.
 nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
 
 # Prints a command, then runs it.
@@ -113,6 +116,10 @@ needs_fuzz_build() {
     need "Rust $nightly (fuzz/rust-toolchain.toml)" rustup run "$nightly" rustc --version
 }
 needs_fuzz() { needs_fuzz_build; }
+needs_miri() {
+    need "Rust $nightly (fuzz/rust-toolchain.toml)" rustup run "$nightly" rustc --version
+    need Miri cargo "+$nightly" miri --version
+}
 needs_release_build() {
     if [ "$os" != Linux ]; then
         echo "ci.sh: release-build runs on Linux only" >&2
@@ -265,6 +272,45 @@ job_fuzz() {
     done
     if [ -n "$failed" ]; then
         echo "ci.sh: fuzz targets failed:$failed; the inputs are in fuzz/artifacts/" >&2
+        exit 1
+    fi
+}
+
+# What Miri runs: for each line, `cargo miri test -p` with that line's
+# arguments. Miri interprets the tests and stops at undefined behaviour,
+# such as a read out of bounds or of uninitialised memory, that a normal
+# test run can miss. It is about a hundred times slower than a normal run,
+# and it stops the whole test binary at the first system call it cannot
+# make (opening a file, for one). So this is the code that needs neither:
+#   irsync-glob             the wildcard matcher
+#   irsync-proto            the wire messages and the chunker
+#   irsync --test sub_chunk the delta codec (irsync::delta) on its own
+#   fileset --lib -- ...    fileset's comparison, escaping and wildcards
+# A test here that is too slow under Miri is marked
+# #[cfg_attr(miri, ignore = "reason")]: those that chunk megabytes, and
+# the delta tests on hundreds of KiB. With them, this takes about three
+# minutes after the first build.
+# Left out: the rest of irsync and fileset, stress, filegen and netstress.
+# Their tests open files, sockets, processes and threads through the
+# operating system, which Miri cannot do. The unsafe blocks in them are
+# such system calls, which Miri cannot check either.
+miri_packages=(
+    "irsync-glob"
+    "irsync-proto"
+    "irsync --test sub_chunk"
+    "fileset --lib -- compare:: escape:: glob::"
+)
+
+# The tests of each entry in miri_packages under Miri, with the nightly in
+# fuzz/rust-toolchain.toml. Every entry runs, also after one has failed.
+job_miri() {
+    local p failed=""
+    for p in "${miri_packages[@]}"; do
+        # shellcheck disable=SC2086 # an entry is a package and its arguments
+        run cargo "+$nightly" miri test --locked -p $p || failed="$failed '$p'"
+    done
+    if [ -n "$failed" ]; then
+        echo "ci.sh: Miri failed for:$failed" >&2
         exit 1
     fi
 }

@@ -31,14 +31,14 @@ class CiScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("ci.sh: freebsd-build runs on FreeBSD x86_64 only", r.stderr)
 
-    def run_with(self, args, cargo, env=None):
+    def run_with(self, args, cargo, env=None, rustup=RUSTUP):
         """Runs tools/ci.sh on a PATH of the real UTILS, a fake rustup and
         the given fake cargo."""
         tmp = tempfile.mkdtemp(prefix="ci-script-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         for u in UTILS:
             os.symlink(shutil.which(u), os.path.join(tmp, u))
-        for name, body in (("cargo", cargo), ("rustup", RUSTUP)):
+        for name, body in (("cargo", cargo), ("rustup", rustup)):
             with open(os.path.join(tmp, name), "w") as f:
                 f.write(f"#!/bin/sh\n{body}\n")
             os.chmod(os.path.join(tmp, name), 0o755)
@@ -84,6 +84,40 @@ class CiScriptTests(unittest.TestCase):
         r = self.run_with(["workflows"], "exit 0")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("zizmor not found; tools/dev-setup.sh", r.stderr)
+
+    def test_help_lists_miri(self):
+        r = subprocess.run([CI, "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertRegex(r.stdout, r"(?m)^  miri ")
+
+    def test_miri_needs_the_pinned_nightly(self):
+        # A rustup without the nightly: the job stops before cargo runs.
+        r = self.run_with(["miri"], 'echo "cargo called" >&2; exit 0',
+                          rustup='echo "error: toolchain not installed" >&2; exit 1')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertRegex(r.stderr, r"Rust nightly-\S+ \(fuzz/rust-toolchain\.toml\) not found")
+        self.assertNotIn("cargo called", r.stderr)
+
+    def test_miri_needs_the_miri_component(self):
+        r = self.run_with(["miri"], 'case "$2" in miri) exit 1 ;; esac; exit 0')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Miri not found; tools/dev-setup.sh", r.stderr)
+
+    def test_miri_runs_each_listed_crate_with_the_nightly(self):
+        r = self.run_with(["miri"], "exit 0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        runs = [l for l in r.stdout.splitlines() if l.startswith("== cargo ")]
+        self.assertTrue(runs, r.stdout)
+        for line in runs:
+            self.assertRegex(line, r"^== cargo \+nightly-\S+ miri test --locked -p \S+")
+        self.assertTrue(any(" -p irsync-glob" in l for l in runs), runs)
+        self.assertTrue(any(" -p irsync-proto" in l for l in runs), runs)
+
+    def test_miri_only_when_named(self):
+        # Slow: never part of a run of every job.
+        with open(CI) as f:
+            all_jobs = re.search(r'^all_jobs="(.*)"$', f.read(), re.M).group(1)
+        self.assertNotIn("miri", all_jobs.split())
 
     def test_job_builds_then_packs(self):
         with open(CI) as f:

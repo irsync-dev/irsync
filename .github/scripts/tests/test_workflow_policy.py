@@ -336,6 +336,13 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(pin.findall(text), pin.findall(job_text("ci.yml", "fuzz-build")))
         self.assertIn("fallback: cargo-install", text)
 
+    def test_nightly_miri(self):
+        # Miri runs nightly, in the same scheduled workflow as fuzzing.
+        text = job_text("nightly.yml", "miri")
+        self.assertIn("tools/ci.sh miri", text)
+        self.assertIn("fuzz/rust-toolchain.toml", text)
+        self.assertIn("--component miri", text)
+
 
 def dist_config():
     with open(os.path.join(ROOT, "dist-workspace.toml"), "rb") as f:

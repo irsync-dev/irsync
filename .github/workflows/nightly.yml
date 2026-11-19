@@ -2,6 +2,10 @@
 # the nights before grew. A crash, a hang or runaway memory fails the run,
 # which GitHub emails about, and the failing inputs are uploaded. See
 # "Fuzzing" in book/src/contributing/testing.md for what to do with one.
+#
+# Also runs the tests that Miri can run (tools/ci.sh miri), which catches
+# undefined behaviour in unsafe code. See "Static analysis" in the same
+# chapter.
 
 name: Nightly
 
@@ -61,3 +65,19 @@ jobs:
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts
+
+  miri:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # tools/ci.sh runs cargo with +nightly itself.
+      - name: Install Rust (the nightly in fuzz/rust-toolchain.toml) with Miri
+        run: |
+          nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
+          rustup toolchain install "$nightly" --profile minimal --component miri --component rust-src
+          cargo "+$nightly" miri setup
+      - name: Run the tests under Miri
+        run: tools/ci.sh miri
