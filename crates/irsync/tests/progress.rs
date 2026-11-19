@@ -594,8 +594,13 @@ fn a_long_error_is_cut_to_the_width_instead_of_wrapping() {
 }
 
 fn summary(index: usize, of: usize) -> Event {
+    session_end(index, of, false)
+}
+
+fn session_end(index: usize, of: usize, failed: bool) -> Event {
     use irsync::cli::progress::summary::SessionSummary;
     Event::SessionEnd(Arc::new(SessionSummary {
+        failed,
         index,
         of,
         verb: "push",
@@ -712,4 +717,66 @@ async fn would_delete_lines_need_v_or_i() {
         .await;
         assert_eq!(buf.text(), want, "v={v} i={itemize}");
     }
+}
+
+/// A session that ended with an error leaves `transfer  failed`, not the
+/// `done` of one that ran to its end; the first of several sessions and
+/// the last one alike.
+#[tokio::test]
+async fn a_failed_session_leaves_failed_not_done() {
+    for failed_at in [0, 1] {
+        let buf = Buf::default();
+        let mut r = feed(
+            reporter(&buf, true, 0, false, false),
+            vec![
+                Event::SessionStart { index: 0, of: 2 },
+                Event::FileStart(rp("a"), 5),
+                Event::FileBytes(rp("a"), 5),
+                Event::FileDone(rp("a"), 5),
+                session_end(0, 2, failed_at == 0),
+                Event::SessionStart { index: 1, of: 2 },
+                Event::FileStart(rp("b"), 7),
+                Event::FileBytes(rp("b"), 7),
+                Event::FileDone(rp("b"), 7),
+                session_end(1, 2, failed_at == 1),
+            ],
+        )
+        .await;
+        r.clear();
+        r.finish(&Outcome::default(), Duration::from_secs(1));
+        let t = buf.text();
+        let done = t.find("transfer  done").expect("a done line");
+        let failed = t
+            .find("transfer  failed  5")
+            .or(t.find("transfer  failed  7"));
+        let failed = failed.unwrap_or_else(|| panic!("no failed line: {t:?}"));
+        assert_eq!(t.matches("transfer  failed").count(), 1, "{t:?}");
+        assert_eq!(failed < done, failed_at == 0, "{t:?}");
+    }
+}
+
+/// The delete pass of a failed session did not run: its line is not
+/// forced to `done`.
+#[tokio::test]
+async fn a_failed_session_does_not_show_its_delete_pass_as_done() {
+    use irsync::cli::DeleteMode;
+    let buf = Buf::default();
+    let r = reporter(&buf, true, 0, false, false).with_delete_mode(DeleteMode::After);
+    let mut r = feed(
+        r,
+        vec![
+            Event::SessionStart { index: 0, of: 2 },
+            Event::FileDone(rp("a"), 5),
+            session_end(0, 2, true),
+            Event::SessionStart { index: 1, of: 2 },
+            Event::FileDone(rp("b"), 7),
+            session_end(1, 2, false),
+        ],
+    )
+    .await;
+    r.clear();
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    assert_eq!(t.matches("delete    not run").count(), 1, "{t:?}");
+    assert_eq!(t.matches("delete    done").count(), 1, "{t:?}");
 }

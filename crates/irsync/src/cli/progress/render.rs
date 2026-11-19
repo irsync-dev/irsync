@@ -222,7 +222,11 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
     let mut lines = vec![rule(g)];
     lines.push(list_line(live, g));
     lines.push(transfer_line(live, g, now));
-    let delete = live.delete.as_ref().map(|d| delete_line(d, g));
+    let ended_failed = live.transfer_done && live.session_failed;
+    let delete = live
+        .delete
+        .as_ref()
+        .map(|d| delete_line(d, ended_failed, g));
     let errors = error_lines(live, g);
 
     let fixed = 1 + 2 + usize::from(delete.is_some()) + 1 + errors.len();
@@ -350,7 +354,11 @@ fn transfer_line(live: &Live, g: &Geometry, now: Instant) -> String {
             text.push_str(&format!("  {goodput}"));
         }
         text.push_str(&format!("  {}", clock(elapsed)));
-        line.push("done", Some(&green()), g);
+        if live.session_failed {
+            line.push("failed", Some(&red()), g);
+        } else {
+            line.push("done", Some(&green()), g);
+        }
         line.push(&text, None, g);
         return cut(line, g);
     }
@@ -453,12 +461,15 @@ fn row_line(path: &RelPath, row: &Row, g: &Geometry, now: Instant) -> String {
     cut(line, g)
 }
 
-fn delete_line(d: &DeletePhase, g: &Geometry) -> String {
+/// `not_run`: the session failed, so a pass that has not started never will.
+fn delete_line(d: &DeletePhase, not_run: bool, g: &Geometry) -> String {
     let mut line = Line::default();
     line.push(&phase("delete"), None, g);
     if d.finished {
         line.push("done", Some(&green()), g);
         line.push(&format!("  {} deleted", commas(d.done)), None, g);
+    } else if !d.started && not_run {
+        line.push("not run", None, g);
     } else if !d.started {
         let mode = format!("{:?}", d.mode).to_lowercase();
         line.push(&format!("waiting (--delete-{mode})"), None, g);

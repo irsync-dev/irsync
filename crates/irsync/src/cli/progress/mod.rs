@@ -25,7 +25,8 @@
 //! ```
 //!
 //! One line per phase (`list`, `transfer`, `delete` with a `--delete*` flag),
-//! each collapsing to `done` and a summary when it ends, and one row per file
+//! each collapsing to `done` and a summary when it ends (`failed` on the
+//! transfer line of a session that ended with an error), and one row per file
 //! the local side is working on (an open stream or a hash), largest first,
 //! capped at half the terminal. Once a file has failed an `errors` section
 //! closes the block: the count and the newest three failures, one fitted
@@ -293,10 +294,7 @@ impl Reporter {
                 _ = tick.tick(), if tty => self.draw(false),
             }
         }
-        self.live.transfer_done = true;
-        if let Some(d) = &mut self.live.delete {
-            d.finished = true;
-        }
+        self.live.close();
         if self.live.session.1 > 1 {
             // No `SessionStart` follows the last of several sessions: its
             // `done` lines join the earlier ones' in the scrollback here.
@@ -386,10 +384,7 @@ impl Reporter {
             return;
         }
         let mut done = self.live.clone();
-        done.transfer_done = true;
-        if let Some(d) = &mut done.delete {
-            d.finished = true;
-        }
+        done.close();
         let now = Instant::now();
         for l in render(&done, &self.screen.geometry(), now) {
             if PHASES.iter().any(|p| l.starts_with(p)) {

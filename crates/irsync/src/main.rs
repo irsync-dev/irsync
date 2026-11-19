@@ -1151,6 +1151,7 @@ async fn sync(
             files_hashed: 0,
             bytes_sent: 0,
             bytes_received: 0,
+            failed: false,
         };
         let out = match result {
             Ok(out) => {
@@ -1166,6 +1167,7 @@ async fn sync(
             }
             Err(e) => {
                 summary.usage.wall = started.elapsed();
+                summary.failed = true;
                 bus.emit(Event::SessionEnd(Arc::new(summary)));
                 // Keep what earlier sources achieved; report this one and go on.
                 log.eprintln(&format!("irsync: {}: {e:#}", path.display()));
