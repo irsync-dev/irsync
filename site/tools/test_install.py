@@ -262,15 +262,32 @@ exit 99
         self.add_minisign()
         self.assert_ran(self.run_install("--require-signature"))
 
-    def test_before_first_signed_skips_check(self):
-        # No signature file and no verifier.
-        r = self.run_install("--beta", tag="v0.1.0-beta.4", sig=None)
-        self.assert_ran(r)
-        self.assertIn("not checking", r.stderr)
+    def test_before_first_signed_is_refused(self):
+        # Even with no verifier: an unsigned old release is never installed.
+        for tag in ["v0.1.0-beta.4", "v0.1.0-beta.1", "v0.1.0-alpha.3"]:
+            with self.subTest(tag=tag):
+                r = self.run_install("--alpha", tag=tag, sig=None)
+                self.assert_stopped(r, "from before v0.1.0-beta.5")
 
-    def test_before_first_signed_require_signature_fails(self):
-        r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.4", sig=None)
-        self.assert_stopped(r, "has no signature to check")
+    def test_legacy_signature_fails(self):
+        self.add_minisign()
+        r = self.run_install(sig="irsync-installer.sh.legacy.minisig")
+        self.assert_stopped(r, "does not match")
+
+    def test_huge_version_is_ignored(self):
+        # Some awks (BusyBox) turn 2147483648 into a negative number.
+        r = self.run_install(tag="v2147483648.0.0")
+        self.assert_stopped(r, "no stable release yet")
+
+    def test_busybox_awk(self):
+        busybox = shutil.which("busybox")
+        if busybox is None:
+            self.skipTest("busybox is not installed")
+        (self.bin / "awk").unlink()
+        (self.bin / "awk").symlink_to(busybox)
+        self.add_minisign()
+        self.assert_ran(self.run_install())
+        self.assert_stopped(self.run_install(tag="v2147483648.0.0"), "no stable release yet")
 
     def test_first_signed_is_checked(self):
         r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.5")
