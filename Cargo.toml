@@ -17,11 +17,14 @@ tokio = { version = "1", features = ["full"] }
 iroh = "1.3"
 iroh-base = "1.3"
 n0-watcher = "1"
-# Held below 1.4: noq-proto 1.4 closes the connection ("too many gaps in
-# stream buffer") once a stream's receive buffer holds 1024 pieces separated
-# by holes. Our 8 MiB stream window fits several thousand packets, so loss
-# while the reader is slow ends the session; `blocking_pool.rs` hits it.
-noq-udp = { version = "~1.3", default-features = false }
+noq-udp = { version = "1.4", default-features = false }
+# Held below 1.4: noq-proto 1.4.0 closes the connection ("too many gaps in
+# stream buffer") once about 2000 full packets wait unread on one stream,
+# with or without loss: it never merges them. That is under 3 MiB of our
+# 8 MiB stream window, so any reader that falls behind ends the session;
+# `backpressure.rs` and `blocking_pool.rs` hit it. Fixed upstream in
+# n0-computer/noq#866, not yet released. .github/dependabot.yml ignores
+# that version; lift both together.
 noq-proto = "~1.3"
 iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
