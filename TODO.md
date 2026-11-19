@@ -230,12 +230,7 @@ review, deferred.
 
 ## Decisions
 
-- [ ] RUSTSEC-2026-0459 (bundled SQLite) has a TEMPORARY exception in
-      `deny.toml`. The fix, rusqlite 0.41 with SQLite 3.54, breaks
-      `lookups_are_never_re_prepared`, which is why rusqlite is held at 0.40.
-      `fileset` opens manifests that may come from someone else, so the hole
-      is real. Either take the re-prepare cost (or work around it) and
-      upgrade, or write down why the exception stands.
+None open.
 
 ## Checks not yet run
 

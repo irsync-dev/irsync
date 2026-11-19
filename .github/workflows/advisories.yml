@@ -25,4 +25,4 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - name: Check for advisories
-        run: cargo deny --locked check advisories
+        run: cargo deny --locked check advisories -D advisory-not-detected

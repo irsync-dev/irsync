@@ -41,6 +41,9 @@ maintainer can do. Why each choice was made is in
   - a license that isn't on the list;
   - a crate from anywhere but crates.io and our iroh fork.
 
+  An exception in `deny.toml` that no longer matches any advisory also
+  fails the check, so a stale one gets removed.
+
   It looks at the crates built for the platforms irsync is built for,
   listed under `targets` in `deny.toml`. A crate that only a Windows build
   would pull in is left out. Add a platform there when irsync starts

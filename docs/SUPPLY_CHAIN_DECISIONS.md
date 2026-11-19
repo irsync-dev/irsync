@@ -82,10 +82,6 @@ differ, the code is what shipped.
    - `paste` (RUSTSEC-2024-0436) and `unsafe-libyaml` (RUSTSEC-2024-0449):
      unmaintained, with no known hole. One is a build-time macro reached
      through iroh. The other is used only by the unshipped `filegen`.
-   - SQLite (RUSTSEC-2026-0459), **temporarily**: the fix (rusqlite 0.41,
-     SQLite 3.54) breaks `lookups_are_never_re_prepared`, which is why
-     rusqlite is held at 0.40. `fileset` opens manifests that may come from
-     someone else, so this needs a decision, not a standing exception.
 
    Cost if wrong: a known hole ships.
 
@@ -172,4 +168,3 @@ differ, the code is what shipped.
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
   spec's non-goals.
-- The SQLite exception (decision 9).

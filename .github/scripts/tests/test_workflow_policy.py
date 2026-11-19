@@ -201,7 +201,11 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(("release-tooling.yml", "scripts"), found)
 
     def test_deny_job_present(self):
-        self.ci_script_runs("deny", "cargo deny --locked check")
+        self.ci_script_runs("deny", "cargo deny --locked check -D advisory-not-detected")
+
+    def test_stale_advisory_exception_fails(self):
+        with open(os.path.join(ROOT, "tools", "ci.sh")) as f:
+            self.assertIn("run cargo deny --locked check -D advisory-not-detected", f.read())
 
     def test_deny_license_check_blocks_only_a_release(self):
         self.ci_script_runs(
@@ -242,7 +246,10 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", on)
         self.assertEqual(wf["permissions"], {"contents": "read"})
         runs = [s.get("run", "") for j in jobs(wf).values() for s in j.get("steps", [])]
-        self.assertIn("cargo deny --locked check advisories", [r.strip() for r in runs])
+        self.assertIn(
+            "cargo deny --locked check advisories -D advisory-not-detected",
+            [r.strip() for r in runs],
+        )
 
 
 def dist_config():
