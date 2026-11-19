@@ -36,7 +36,9 @@ main() {
   if [ -n "${IRSYNC_INSTALL_PUBLIC_KEYS-}" ]; then
     keys=$IRSYNC_INSTALL_PUBLIC_KEYS
   fi
-  # The first release with signatures. Older ones are installed unchecked.
+  # The first release with signatures. The ones before it are listed by name
+  # below and never installed: they can't be checked, and an attacker who can
+  # change releases could delete the newer ones to make the script pick one.
   first_signed=v0.1.0-beta.5
 
   channel=stable
@@ -83,11 +85,12 @@ main() {
   fi
 
   # Each tag becomes a sortable record: X Y Z rank N tag, with rank
-  # alpha=0 < beta=1 < stable=2. Tags of any other shape are ignored.
+  # alpha=0 < beta=1 < stable=2. Tags of any other shape are ignored, and so
+  # are numbers longer than 9 digits, which some awks can't hold.
   tag=$(printf '%s\n' "$releases" |
     grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
     sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/' |
-    grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)\.[0-9]+)?$' |
+    grep -E '^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(-(alpha|beta)\.[0-9]{1,9})?$' |
     awk -v channel="$channel" '
       {
         t = $0
@@ -134,34 +137,16 @@ main() {
     exit 0
   fi
 
-  # Is tag $1 older than tag $2? Same ordering as the tag picker above.
-  older() {
-    awk -v a="$1" -v b="$2" '
-      function key(t,  v, i, p, x, rank, n) {
-        v = substr(t, 2); rank = 2; n = 0
-        i = index(v, "-")
-        if (i) {
-          split(substr(v, i + 1), p, ".")
-          v = substr(v, 1, i - 1)
-          rank = (p[1] == "alpha") ? 0 : 1
-          n = p[2] + 0
-        }
-        split(v, x, ".")
-        return sprintf("%09d%09d%09d%d%09d", x[1], x[2], x[3], rank, n)
-      }
-      BEGIN { exit !(key(a) < key(b)) }'
-  }
+  # The releases from before signing, by name: no arithmetic to get wrong.
+  case $tag in
+    v0.1.0-alpha.*|v0.1.0-beta.[1-4])
+      die "$tag is from before $first_signed, the first signed release, so its installer can't be checked; not installing it. Releases are listed at $page" ;;
+  esac
 
   # Which tool checks the signature: irsync if it has verify-signature (older
   # ones do not), else minisign, else none.
   verifier=none
-  if older "$tag" "$first_signed"; then
-    if [ -n "$require_signature" ]; then
-      die "$tag is older than $first_signed, the first signed release, so it has no signature to check; not installing it with --require-signature"
-    fi
-    verifier=skip
-    say "$tag is older than $first_signed, the first signed release: not checking its signature"
-  elif command -v irsync >/dev/null 2>&1 &&
+  if command -v irsync >/dev/null 2>&1 &&
        irsync verify-signature --help 2>&1 | grep -q minisign; then
     verifier=irsync
   elif command -v minisign >/dev/null 2>&1; then
@@ -200,8 +185,9 @@ main() {
       # -H: only a prehashed signature passes. Not -q: it hides the comment.
       if out=$(minisign -V -H -P "$k" -x "$tmp/installer.sh.minisig" \
                  -m "$tmp/installer.sh" 2>/dev/null); then
-        printf '%s\n' "$out" | grep -qxF "Trusted comment: irsync $tag"
-        return
+        # Any failure is a bad signature (1), never irsync's usage error (2).
+        printf '%s\n' "$out" | grep -qxF "Trusted comment: irsync $tag" || return 1
+        return 0
       fi
     done
     return 1
