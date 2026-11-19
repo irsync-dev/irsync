@@ -53,7 +53,12 @@ fuzz_target!(|data: &[u8]| {
     let Ok(chunk) = DataChunk::decode(wire) else {
         return;
     };
-    let Ok(ops) = chunk.ops.into_iter().map(Op::from_wire).collect::<io::Result<Vec<Op>>>() else {
+    let Ok(ops) = chunk
+        .ops
+        .into_iter()
+        .map(Op::from_wire)
+        .collect::<io::Result<Vec<Op>>>()
+    else {
         return;
     };
     let total = ops.iter().try_fold(0u64, |t, op| {

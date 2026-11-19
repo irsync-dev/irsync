@@ -147,6 +147,8 @@ job_check() {
     touch crates/irsync/build.rs
 
     run cargo fmt --all --check
+    # The fuzz targets are outside the workspace, so cargo fmt skips them.
+    run rustfmt --edition 2021 --check fuzz/fuzz_targets/*.rs
     # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
     # cargo command runs them. A missing pandoc or mandoc fails here instead
     # of skipping the man page tests.

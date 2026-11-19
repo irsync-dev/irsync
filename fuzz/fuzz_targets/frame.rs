@@ -42,7 +42,11 @@ fn body(b: &[u8]) {
     round_trip::<DataStreamHeader>(b);
     if let Some(c) = round_trip::<DataChunk>(b) {
         // What the receiver does next with a chunk's operations.
-        let _ = c.ops.into_iter().map(Op::from_wire).collect::<Result<Vec<_>, _>>();
+        let _ = c
+            .ops
+            .into_iter()
+            .map(Op::from_wire)
+            .collect::<Result<Vec<_>, _>>();
     }
     if let Some(Control {
         msg: Some(control::Msg::ChunkBasis(basis)),
