@@ -178,6 +178,82 @@ class FromGitTests(RepoCase):
         self.assertEqual(versions.from_git(ROOT)["0.1.0-beta.5"], "2026-11-19")
 
 
+class ReleasesTests(RepoCase):
+    def test_tagged_and_being_built(self):
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        self.git("tag", "v0.1.0-beta.5")
+        tagged = self.git("rev-parse", "HEAD")
+        self.commit("0.1.0-beta.6", "2026-11-25T12:00:00+00:00")
+        self.commit("0.1.0-beta.6", "2026-11-27T12:00:00+00:00")
+        tip = self.git("rev-parse", "HEAD")
+        got = versions.releases(self.repo)
+        self.assertEqual(got["0.1.0-beta.5"], versions.Release("2026-11-19", tagged, True))
+        # The pages come from the tip; the date stays the bump's.
+        self.assertEqual(got["0.1.0-beta.6"], versions.Release("2026-11-25", tip, False))
+        self.assertEqual(versions.from_git(self.repo),
+                         {"0.1.0-beta.5": "2026-11-19", "0.1.0-beta.6": "2026-11-25"})
+
+    def test_annotated_tag_gives_the_commit_not_the_tag_object(self):
+        self.commit("0.1.0-beta.1", "2026-11-14T12:00:00+00:00")
+        self.git("tag", "-a", "-m", "x", "v0.1.0-beta.1")
+        self.assertEqual(versions.releases(self.repo)["0.1.0-beta.1"].commit,
+                         self.git("rev-parse", "HEAD"))
+
+    def test_patch_being_built_on_a_release_branch(self):
+        self.commit("1.2.0", "2027-03-03T12:00:00+00:00")
+        self.git("tag", "v1.2.0")
+        base = self.git("rev-parse", "HEAD")
+        self.commit("1.2.1", "2027-03-10T12:00:00+00:00")
+        branch_tip = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/release-1.2", "HEAD")
+        self.git("reset", "-q", "--hard", base)
+        self.assertEqual(versions.releases(self.repo)["1.2.1"],
+                         versions.Release("2027-03-10", branch_tip, False))
+
+
+R = versions.Release
+
+
+class BooksTests(unittest.TestCase):
+    def test_today(self):
+        found = {"0.1.0-beta.5": R("2026-11-19", "b" * 40, True),
+                 "0.1.0-alpha.4": R("2026-11-13", "a" * 40, True)}
+        self.assertEqual(versions.books(found), [
+            versions.Book("book", "0.1.0-beta.5", "b" * 40, "published"),
+            versions.Book("beta", "0.1.0-beta.5", "b" * 40, "published"),
+            # Obsolete on the homepage, still a book.
+            versions.Book("alpha", "0.1.0-alpha.4", "a" * 40, "published"),
+            versions.Book("dev", None, None, "dev")])
+
+    def test_stable_is_the_main_book_and_old_channels_stay(self):
+        found = {"1.0.0": R("2027-03-03", "c" * 40, True),
+                 "0.9.0-beta.2": R("2027-01-01", "b" * 40, True),
+                 "1.1.0-alpha.1": R("2027-04-01", "a" * 40, False)}
+        got = versions.books(found)
+        self.assertEqual([b.path for b in got], ["book", "stable", "beta", "alpha", "dev"])
+        self.assertEqual(got[0].version, "1.0.0")
+        self.assertEqual(got[2].version, "0.9.0-beta.2")
+        self.assertEqual(got[3].state, "unpublished")
+
+    def test_no_version_at_all(self):
+        self.assertEqual(versions.books({}), [versions.Book("book", None, None, "dev"),
+                                              versions.Book("dev", None, None, "dev")])
+
+    def test_text(self):
+        found = {"0.1.0-beta.5": R("2026-11-19", "b" * 40, True)}
+        self.assertEqual(versions.books_text(versions.books(found)),
+                         f"book 0.1.0-beta.5 {'b' * 40} published\n"
+                         f"beta 0.1.0-beta.5 {'b' * 40} published\n"
+                         "dev - - dev\n")
+
+
+class NewestTests(unittest.TestCase):
+    def test_per_channel_without_hiding(self):
+        self.assertEqual(
+            versions.newest(["1.0.0", "0.9.0-beta.2", "0.9.0-beta.10", "0.1.0-alpha.4", "junk"]),
+            {"stable": "1.0.0", "beta": "0.9.0-beta.10", "alpha": "0.1.0-alpha.4"})
+
+
 INDEX = (ROOT / "site" / "index.html").read_text()
 
 
@@ -260,7 +336,7 @@ class RenderTests(unittest.TestCase):
 class CliTests(RepoCase):
     def run_tool(self, out, env=None):
         return subprocess.run(
-            [sys.executable, str(TOOL), str(self.repo), str(ROOT / "site/index.html"), str(out)],
+            [sys.executable, str(TOOL), "render", str(self.repo), str(ROOT / "site/index.html"), str(out)],
             env=env, capture_output=True, text=True)
 
     def test_writes_utf8_whatever_the_locale(self):
@@ -279,6 +355,16 @@ class CliTests(RepoCase):
         r = self.run_tool(out)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(">0.1.0-beta.5<", out.read_text())
+
+    def test_books_prints_the_list(self):
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        self.git("tag", "v0.1.0-beta.5")
+        sha = self.git("rev-parse", "HEAD")
+        r = subprocess.run([sys.executable, str(TOOL), "books", str(self.repo)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, f"book 0.1.0-beta.5 {sha} published\n"
+                                   f"beta 0.1.0-beta.5 {sha} published\ndev - - dev\n")
 
     def test_no_tags_exits_1_and_writes_nothing(self):
         self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")

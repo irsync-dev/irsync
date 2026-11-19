@@ -15,6 +15,7 @@ command on the page installs.
 The design is docs/superpowers/specs/2026-11-19-site-release-versions-design.md.
 """
 
+import argparse
 import re
 import subprocess
 import sys
@@ -66,28 +67,35 @@ def channel(text):
     return CHANNELS[2 - parse(text)[3]]
 
 
+def newest(versions):
+    """The newest version of each channel, obsolete or not. What is not a
+    release version is ignored."""
+    best = {}
+    for text in versions:
+        key = parse(text)
+        if key is None:
+            continue
+        c = channel(text)
+        if c not in best or key > parse(best[c]):
+            best[c] = text
+    return best
+
+
 def pick(candidates):
     """The versions to show, in the order stable, beta, alpha.
 
     `candidates` maps a version to its date. Keys that are not release
     versions are ignored.
     """
-    newest = {}
-    for text in candidates:
-        key = parse(text)
-        if key is None:
-            continue
-        c = channel(text)
-        if c not in newest or key > parse(newest[c]):
-            newest[c] = text
+    best = newest(candidates)
     shown = []
     for i, c in enumerate(CHANNELS):
-        if c not in newest:
+        if c not in best:
             continue
-        key = parse(newest[c])
+        key = parse(best[c])
         # Held against every higher channel that has a version.
-        if all(key > parse(newest[o]) for o in CHANNELS[:i] if o in newest):
-            shown.append(Shown(c, newest[c], candidates[newest[c]]))
+        if all(key > parse(best[o]) for o in CHANNELS[:i] if o in best):
+            shown.append(Shown(c, best[c], candidates[best[c]]))
     return shown
 
 
@@ -97,8 +105,13 @@ def _git(repo, *args):
     return r.returncode == 0, (r.stdout if r.returncode == 0 else r.stderr).strip()
 
 
-def from_git(repo):
-    """Every release version the checkout at `repo` knows, with its date.
+# Where a version comes from. `date` is an ISO day. `commit` is the commit
+# its documentation is read from. `published` says whether a tag has it.
+Release = namedtuple("Release", "date commit published")
+
+
+def releases(repo):
+    """Every release version the checkout at `repo` knows.
 
     A `v*` tag is a published release: GitHub creates the tag when the
     release is published. The workspace version in Cargo.toml, at HEAD and at
@@ -108,19 +121,27 @@ def from_git(repo):
     A date is the day in the commit, in the commit's own time zone: for a
     tag, of the commit it points at; for a version being built, of the
     commit that brought it onto the branch.
+
+    The commit is the one the tag points at; for a version being built, the
+    tip of the branch it was found on, which is what the release will be cut
+    from.
     """
-    # For an annotated tag the starred field is the commit's date and the
-    # plain one is empty; for a lightweight tag it is the other way round.
+    # For an annotated tag the starred fields are the commit's and the plain
+    # date is empty; for a lightweight tag the starred ones are empty.
     ok, out = _git(repo, "for-each-ref",
-                   "--format=%(refname:short) %(*committerdate:short)%(committerdate:short)",
+                   "--format=%(refname:short) %(*committerdate:short)%(committerdate:short)"
+                   " %(*objectname) %(objectname)",
                    "refs/tags/v*")
     if not ok:
         raise VersionsError(f"cannot list the tags of {repo}: {out}")
     found = {}
     for line in out.splitlines():
-        tag, _, date = line.partition(" ")
-        if parse(tag[1:]) is not None and date:
-            found[tag[1:]] = date
+        fields = line.split()
+        if len(fields) < 3 or parse(fields[0][1:]) is None:
+            continue
+        # Three fields: a lightweight tag, its commit last. Four: an
+        # annotated tag, the commit before the tag object.
+        found[fields[0][1:]] = Release(fields[1], fields[2], True)
     if not found:
         raise VersionsError("no release tags in this checkout; run: git fetch --tags")
 
@@ -138,9 +159,46 @@ def from_git(repo):
                         f'-Sversion = "{version}"', ref, "--", "Cargo.toml")
         if not (ok and date):
             ok, date = _git(repo, "log", "-1", "--format=%cs", ref)
-        if ok and date:
-            found[version] = date
+        tip_ok, tip = _git(repo, "rev-parse", f"{ref}^{{commit}}")
+        if ok and date and tip_ok:
+            found[version] = Release(date, tip, False)
     return found
+
+
+def from_git(repo):
+    """Every release version the checkout at `repo` knows, with its date."""
+    return {version: r.date for version, r in releases(repo).items()}
+
+
+# One copy of the documentation on the site, at /PATH/. `state` is
+# "published", "unpublished" (a release that is being built) or "dev" (the
+# working tree, with no version).
+Book = namedtuple("Book", "path version commit state")
+
+
+def books(found):
+    """The books the site holds, from what `releases` found.
+
+    /book/ is the main version, the one the install command installs.
+    /stable/, /beta/ and /alpha/ are the newest of each channel, also when
+    the landing page hides it as obsolete. /dev/ is the working tree. With no
+    version at all, /book/ is the working tree too.
+    """
+    def book(path, version):
+        r = found[version]
+        return Book(path, version, r.commit, "published" if r.published else "unpublished")
+
+    best = newest(found)
+    shown = pick({version: r.date for version, r in found.items()})
+    out = [book("book", shown[0].version) if shown else Book("book", None, None, "dev")]
+    out += [book(c, best[c]) for c in CHANNELS if c in best]
+    out.append(Book("dev", None, None, "dev"))
+    return out
+
+
+def books_text(books):
+    """The VERSIONS file of a built site: PATH VERSION COMMIT STATE per book."""
+    return "".join(f"{b.path} {b.version or '-'} {b.commit or '-'} {b.state}\n" for b in books)
 
 
 # How often each region is on the page. prerelease: the badge and the note.
@@ -198,19 +256,27 @@ def render(html, shown):
     return _fill(html, "prerelease", lambda inner: inner if pre else "")
 
 
-def main(argv):
-    if len(argv) != 4:
-        print("usage: versions.py REPO IN_HTML OUT_HTML", file=sys.stderr)
-        return 2
-    repo, src, dst = map(Path, argv[1:])
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="The release versions on the landing page, and the books.")
+    sub = ap.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("render", help="write the release versions into the landing page")
+    p.add_argument("repo", type=Path)
+    p.add_argument("src", type=Path)
+    p.add_argument("dst", type=Path)
+    p = sub.add_parser("books", help="list the books to build: PATH VERSION COMMIT STATE")
+    p.add_argument("repo", type=Path)
+    args = ap.parse_args(argv)
     try:
-        page = render(src.read_text(encoding="utf-8"), pick(from_git(repo)))
+        if args.command == "render":
+            page = render(args.src.read_text(encoding="utf-8"), pick(from_git(args.repo)))
+            args.dst.write_text(page, encoding="utf-8")
+        elif args.command == "books":
+            sys.stdout.write(books_text(books(releases(args.repo))))
     except VersionsError as e:
         print(f"versions.py: {e}", file=sys.stderr)
         return 1
-    dst.write_text(page, encoding="utf-8")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
