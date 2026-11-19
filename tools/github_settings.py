@@ -39,6 +39,7 @@ def desired(maintainer_id):
             "actions": {"enabled": True, "allowed_actions": "all",
                         "sha_pinning_required": True},
             "immutable_releases": True,
+            "private_vulnerability_reporting": True,
             # Needed by dependency review in ci.yml. No API turns it on.
             "dependency_graph": True,
             # Every Actions secret lives in an environment. The release gate
@@ -169,6 +170,8 @@ def fetch(repo):
     state["actions"] = gh(f"repos/{repo}/actions/permissions")
     imm = gh(f"repos/{repo}/immutable-releases", ok_missing=True)
     state["immutable_releases"] = bool(imm and imm.get("enabled"))
+    pvr = gh(f"repos/{repo}/private-vulnerability-reporting", ok_missing=True)
+    state["private_vulnerability_reporting"] = bool(pvr and pvr.get("enabled"))
     state["repo_wide_secrets"] = sorted(
         s["name"] for s in (gh(f"repos/{repo}/actions/secrets") or {}).get("secrets", []))
     # The SBOM endpoint answers only while the dependency graph is on.
@@ -241,6 +244,8 @@ def apply(repo, want):
                   f"repo-wide (not done automatically): {', '.join(s['name'] for s in extra)}")
     if want.get("immutable_releases"):
         gh(f"repos/{repo}/immutable-releases", "-X", "PUT")
+    if want.get("private_vulnerability_reporting"):
+        gh(f"repos/{repo}/private-vulnerability-reporting", "-X", "PUT")
     if want.get("dependency_graph") and gh(f"repos/{repo}/dependency-graph/sbom",
                                            ok_missing=True) is None:
         print(f"{repo}: turn on the dependency graph by hand: Settings, Code security, "

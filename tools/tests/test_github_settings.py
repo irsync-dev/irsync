@@ -82,6 +82,47 @@ class DesiredTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("PACKAGES_GPG_PRIVATE_KEY", lines[0])
 
+    def test_desired_private_vulnerability_reporting_main_only(self):
+        want = gs.desired(1)
+        self.assertIs(want[REPO]["private_vulnerability_reporting"], True)
+        for repo, settings in want.items():
+            if repo != REPO:
+                self.assertNotIn("private_vulnerability_reporting", settings, repo)
+
+    def test_diff_reports_private_vulnerability_reporting_off(self):
+        want = {REPO: {"private_vulnerability_reporting": True}}
+        have = {REPO: {"private_vulnerability_reporting": False}}
+        self.assertEqual(gs.diff(want, have),
+                         [f"{REPO}: private_vulnerability_reporting: want True, have False"])
+
+    def test_fetch_reads_private_vulnerability_reporting(self):
+        for answer, expected in [({"enabled": True}, True), ({"enabled": False}, False),
+                                 (None, False)]:
+            calls = []
+
+            def fake_gh(*args, **kw):
+                calls.append(args[0])
+                if args[0].endswith("/private-vulnerability-reporting"):
+                    return answer
+                return {}
+
+            with mock.patch.object(gs, "gh", fake_gh):
+                state = gs.fetch(REPO)
+            self.assertIs(state["private_vulnerability_reporting"], expected)
+            self.assertIn(f"repos/{REPO}/private-vulnerability-reporting", calls)
+
+    def test_apply_turns_on_private_vulnerability_reporting(self):
+        calls = []
+        with mock.patch.object(gs, "gh", lambda *a, **kw: calls.append(a)):
+            gs.apply(REPO, {"private_vulnerability_reporting": True})
+        self.assertIn((f"repos/{REPO}/private-vulnerability-reporting", "-X", "PUT"), calls)
+
+    def test_apply_leaves_private_vulnerability_reporting_alone_when_unwanted(self):
+        calls = []
+        with mock.patch.object(gs, "gh", lambda *a, **kw: calls.append(a)):
+            gs.apply(REPO, {})
+        self.assertFalse([c for c in calls if "private-vulnerability" in c[0]])
+
     def test_desired_release_branches_like_main(self):
         rs = gs.desired(1)[REPO]["rulesets"]
         self.assertEqual(rs["Release branches"]["include"], ["refs/heads/release-*"])
