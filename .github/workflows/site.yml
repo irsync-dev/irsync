@@ -64,7 +64,7 @@ jobs:
       - name: Build irsync (for the flag check)
         run: cargo build -p irsync
       - name: Install minisign (the install script tests need it)
-        run: sudo apt-get install -y --no-install-recommends minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
       - name: Site tool tests
         run: python3 -m unittest discover -s site/tools -p 'test_*.py'
       - name: Build
