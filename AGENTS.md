@@ -38,7 +38,10 @@ and checks the system tools;
 ## Tests
 
 A change that touches only Markdown files, `book/` or `site/` needs no
-tests, clippy or fmt; CI skips them too. The exception is what the man
+tests, clippy or fmt; CI skips them too. The site holds the book once per
+release channel, and `/book/` is the released one: see "The books" in
+`book/src/contributing/website.md` before you link to a new page from the
+landing page. The exception is what the man
 pages are built from: the book chapters named in `tools/build-man.sh` and
 `packaging/man/`. Run `python3 -m unittest discover -s tools/tests` for those;
 they need pandoc and mandoc. `tools/build-man.sh OUTDIR` builds the three

@@ -1,7 +1,8 @@
 # This website
 
 irsync.org has two parts, built from this repository into one directory: a
-landing page at `/` and this book at `/book/`.
+landing page at `/` and this book. The book is there several times, once
+per release channel: see [The books](#the-books).
 
 ## Layout
 
@@ -11,7 +12,7 @@ landing page at `/` and this book at `/book/`.
 | `site/tailwind.css` | The landing page's stylesheet: the Tailwind CSS and daisyUI source that the build compiles into `style.css`. |
 | `site/package.json`, `site/package-lock.json` | The npm packages the stylesheet is built with, pinned. Not deployed. |
 | `site/tokens.json` | The design tokens of the landing page and the book: colours, font stacks, text sizes, radius. |
-| `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `versions.py` (see [The release versions](#the-release-versions)), `check.py` (the checker) and their tests. Not deployed. |
+| `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `versions.py` (see [The release versions](#the-release-versions)), `label_book.py` (see [The books](#the-books)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
 | `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`; `picker.js`, which trims the theme picker; `home-link.js`, which links the title to the landing page). |
@@ -73,7 +74,8 @@ On the line of the "Install" heading, the landing page shows the current
 irsync versions, one per release channel: the channel, the version and its
 date. They are for someone who has irsync already and wants to know
 whether to install again. Each version is a button that copies the install
-command of its channel.
+command of its channel. The channel's name links to that channel's book
+(`stable/`, `beta/`, `alpha/`), and the date to the release on GitHub.
 
 Of each channel only the newest version counts. Then:
 
@@ -119,6 +121,59 @@ The build stops with an error when a marker is missing from the page, or
 when the checkout has no release tags. Fetch them with
 `git fetch --tags`.
 
+## The books
+
+The site holds the book five times, so that someone who runs a release
+reads the documentation of that release:
+
+| Path | Which book |
+| --- | --- |
+| `/book/` | The main version: the one the install command on the landing page installs |
+| `/stable/` | The newest stable release |
+| `/beta/` | The newest beta |
+| `/alpha/` | The newest alpha |
+| `/dev/` | The working tree: `main` on the site, your edits when you build locally |
+
+A channel's book is there whenever the channel has a version, also when the
+landing page hides that version as obsolete. A channel with no version has
+no directory. `/book/` is a full copy of its channel's book, not a
+redirect.
+
+The versions come from git, as for the landing page (`versions.py`). Each
+book is built from the pages (`book/src`) of its version's commit: the tag
+of a published release, or the branch tip of a release that is being built.
+Everything else is today's: `book/book.toml`, the theme, mdbook. So an old
+book has the current look.
+
+The build makes a working copy of each book under `target/site-books/` and
+never changes `book/` itself. `site/tools/label_book.py` labels the copy:
+
+- The title in the bar at the top of every page is `irsync 0.1.0-beta.5`;
+  in `/dev/` it is `irsync unreleased`.
+- The title page says which version it documents, under its heading.
+- "Edit this page" is only in `/dev/`. A released page cannot be edited at
+  its tag.
+- mdbook's `site-url` is the book's own path.
+
+The build stops with an error when a version's commit has no `book/src`, or
+when its title page does not start with a heading.
+
+The build also writes `VERSIONS` next to `BUILD`: one line per book, with
+its path, version, commit and `published`, `unpublished` (a release that is
+being built) or `dev`. `https://dev.irsync.org/VERSIONS` shows what staging
+holds. The promote reads it (see
+[Promoting to irsync.org](#promoting-to-irsyncorg)).
+
+### Linking from the landing page
+
+The landing page is built from `main`, and `/book/` from a release. Link
+to `book/…` as before. If the released book does not have the page or the
+heading yet, the checker fails and names the link. Then link to `dev/…`
+until the release has it, or wait for the release.
+
+The contributor guide is linked at `dev/`, from the landing page's footer
+and from `CONTRIBUTING.md`: contributors work on `main`.
+
 ## Building
 
 The build needs mdbook, Python 3 and Node.js with npm. It reads the release
@@ -130,8 +185,8 @@ the build stops on any other. `tools/dev-setup.sh` installs that version:
 site/build.sh
 ```
 
-It empties `target/site/`, generates the token CSS for both, builds the book
-into `target/site/book/`, copies the landing page files into `target/site/`,
+It empties `target/site/`, generates the token CSS for both, builds the
+books into `target/site/book/`, `target/site/beta/` and so on, copies the landing page files into `target/site/`,
 writes the release versions into `index.html`
 and compiles `site/tailwind.css` into `target/site/style.css`. Tailwind
 keeps only the classes that `site/index.html`, `site/404.html` and the
@@ -194,7 +249,8 @@ It enforces four things:
 
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
   resolves to a file, and every `#fragment` to an `id` on the target page.
-  External links are not fetched.
+  External links are not fetched. This covers the landing page and all
+  five books.
 - **No fonts but the site's own.** No font file and no `fonts/` directory
   is in the build, except Barlow, Inter and JetBrains Mono in the
   top-level `fonts/`.
@@ -208,8 +264,10 @@ It enforces four things:
   [Command line](../reference/command-line.md) is one that the given binary
   lists in `--help`, of the top-level command or a subcommand. A command
   that the help hides, such as `irsync verify-signature`, counts once a
-  page uses it: the checker asks for that command's own `--help`. The book,
-  `site/index.html` and `README.md` are checked.
+  page uses it: the checker asks for that command's own `--help`. The book
+  in the working tree (the source of `/dev/`), `site/index.html` and
+  `README.md` are checked. A released book's flags are not: that would
+  need that release's irsync.
 
 ## Serving locally
 
@@ -296,9 +354,11 @@ artifact `site`, and deploys it to `irsync-dev`. If a check fails, nothing is
 deployed.
 
 The `promote` job runs only when the workflow is started by hand on `main`.
-It downloads the `site` artifact of the newest successful push run on
-`main`, deploys it to `irsync-pub` and writes its `BUILD` to the job
-summary.
+It takes the newest push run on `main` and stops if that run is still going
+or failed: it does not fall back to the run before it. It downloads that
+run's `site` artifact, refuses it if it holds a version that is not
+published (see [Promoting to irsync.org](#promoting-to-irsyncorg)),
+deploys it to `irsync-pub` and writes its `BUILD` to the job summary.
 
 The repository secrets `CLOUDFLARE_API_TOKEN_DEV`, `CLOUDFLARE_API_TOKEN_PUB`
 and `CLOUDFLARE_ACCOUNT_ID` hold the credentials; each deploy step sees only
@@ -333,6 +393,29 @@ curl -sI https://irsync.org/ | grep -i x-robots  # prints nothing
 The last check matters most: a `noindex` on irsync.org would drop the site
 from search engines.
 
+**A version that is not published.** Between the merge of a version bump
+and the publishing of that release, staging shows a version nobody can
+install yet, and its book is read from a branch that may still move. The
+promote refuses such a build and names the version:
+
+```
+versions.py: this build holds 0.1.0-beta.6, which is not published. Publish the release, re-run the staging build, then promote.
+```
+
+`sign-release.sh --publish` re-runs the staging build for you. That run
+reads every release from its tag. So the usual order is: publish, wait for
+the staging run, look at dev.irsync.org, promote.
+
+In that window nothing can be promoted, not even an unrelated fix. The way
+out, for a fix that cannot wait or a bump that was abandoned:
+
+```sh
+gh workflow run site.yml --ref main -f allow-unpublished=true
+```
+
+A build from before `VERSIONS` existed is refused too. Re-run the newest
+staging run and promote again.
+
 The job promotes the newest CI build, not whatever dev.irsync.org serves at
 that moment. The two differ only if someone deployed staging by hand with
 `site/deploy.sh staging` after the last CI build; the `BUILD` comparison
@@ -341,7 +424,7 @@ back to a CI build before promoting.
 
 Artifacts expire after the repository's retention period (90 days by
 default). When the newest staging build is older than that, the job fails
-with "no successful staging run on main" or cannot download the build; push,
+with "no staging run on main" or cannot download the build; push,
 or re-run the newest staging run, and promote again.
 
 ### Rolling back irsync.org
@@ -383,7 +466,9 @@ and refuses to deploy when either fails. Then it deploys to `irsync-dev` and
 copies the build to `target/site-staging/`.
 
 `promote` deploys `target/site-staging/` to `irsync-pub` and prints its
-`BUILD`. It refuses without a `target/site-staging/BUILD`, and when that
+`BUILD`. Like the job, it refuses a build that holds a version which is not
+published; `site/deploy.sh promote --allow-unpublished` skips that. It
+refuses without a `target/site-staging/BUILD`, and when that
 `BUILD` differs from `https://dev.irsync.org/BUILD` or cannot be compared
 with it: someone else may have deployed staging since, and promotion ships
 only what staging serves. Run the checks under
@@ -412,6 +497,11 @@ applies per host: responses from `dev.irsync.org` carry
 `site/wrangler.jsonc` turns off the Workers' `workers.dev` hosts and preview
 hosts; `_headers` marks those `noindex` too, in case one is turned on.
 `site/tools/test_headers.py` pins these rules.
+
+Of the five books only `/book/` is indexed. `/stable/`, `/beta/`,
+`/alpha/` and `/dev/` carry `X-Robots-Tag: noindex` on every host: each is
+a copy of `/book/`, an older channel or unreleased, and must not outrank
+it in a search.
 
 There is no staging-only `robots.txt`. Promotion uploads staging's files
 unchanged, and identical files cannot carry a different `robots.txt` per
