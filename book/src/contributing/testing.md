@@ -166,7 +166,9 @@ or memory over 2 GiB.
 `fuzz/` is a project of its own, outside the workspace. cargo-fuzz needs a
 nightly Rust, so it builds with the nightly named in
 `fuzz/rust-toolchain.toml`; everything else stays on the stable version.
-`tools/dev-setup.sh` installs that nightly and cargo-fuzz.
+`tools/dev-setup.sh` installs that nightly and cargo-fuzz. `fuzz/` has its
+own `Cargo.lock`. `cargo deny` does not check it, because those crates are
+only built for fuzzing and never shipped.
 
 To build every target and run each on its *seeds*, the inputs checked in
 under `fuzz/seeds/<target>/`:
@@ -192,14 +194,15 @@ To run one target by hand until you stop it with Ctrl-C:
 
 ```sh
 nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
-cargo +$nightly fuzz run --target x86_64-unknown-linux-gnu relpath \
+host=$(rustup run "$nightly" rustc -vV | sed -n 's/^host: //p')
+cargo +$nightly fuzz run --target "$host" relpath \
     fuzz/corpus/relpath fuzz/seeds/relpath
 ```
 
-Name your own machine after `--target` (`rustc -vV` prints it as `host`).
-Without it, the cargo-fuzz that `tools/dev-setup.sh` downloads on Linux
-builds for musl, which the address checks libFuzzer builds in do not
-support.
+`host` is your machine's target, as `tools/ci.sh` finds it; this works on
+Linux and on a Mac. Always pass it. Without it, the cargo-fuzz that
+`tools/dev-setup.sh` downloads on Linux builds for musl, which the
+address checks libFuzzer builds in do not support.
 
 ### Adding a target
 
@@ -219,20 +222,29 @@ support.
 
 libFuzzer writes the failing input to `fuzz/artifacts/<target>/`. A failed
 nightly run uploads that directory as the `fuzz-artifacts` artifact of the
-run. To run the input again:
+run. To run the input again, with `nightly` and `host` set as above:
 
 ```sh
-cargo +$nightly fuzz run --target x86_64-unknown-linux-gnu relpath \
+cargo +$nightly fuzz run --target "$host" relpath \
     fuzz/artifacts/relpath/crash-...
 ```
 
-Then decide whether someone could exploit it: memory unsafety, a write
+A crash in the nightly run is public. The repository is public, so anyone
+can read the run's log and download its artifact. The log shows the input
+too: libFuzzer prints a short input in hex and Base64, with the panic
+message and the stack trace.
+
+So first decide whether someone could exploit it: memory unsafety, a write
 outside the destination tree, or a small input from a peer that makes
-irsync use memory or CPU without bound. If so, keep it private. Do not
-put the input or a description of it in an issue, a pull request or a
-commit; delete the run's artifact once you have it, and report it as
-[SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
-says.
+irsync use memory or CPU without bound. If it looks exploitable:
+
+1. Download the artifact, then delete the whole run, not just the
+   artifact: `gh run delete <run id>`.
+2. Tell the maintainer privately, as
+   [SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+   says.
+3. Do not open a public issue. Keep the input and any description of it
+   out of issues, pull requests and commits.
 
 Otherwise fix it like any bug, with a test in the crate's own tests that
 fails before the fix. Add the input to `fuzz/seeds/<target>/` too:

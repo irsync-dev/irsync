@@ -21,14 +21,16 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
 rustup, the toolchain with rustfmt and clippy, the musl target on Linux, the
 nightly the fuzz targets build with, and cargo-nextest, cargo-deny,
-cargo-fuzz, dist, actionlint and mdbook. Those six tools are downloaded
-from their release pages and checked against SHA-256s kept in the script. Cargo builds a tool only where its project has no binary
-for your machine, or when the script's hashes are for another version than
-CI's. They are held to the versions CI uses: if you have
-another version, it is replaced. It points git at the repo's hooks. System tools such as
-rsync, Python and a C compiler it only checks, naming the package to
-install. `tools/dev-setup.sh --check` reports without changing anything. Run
-it again whenever you like.
+cargo-fuzz, dist, actionlint and mdbook. The nightly is a large download,
+and only fuzzing and Miri need it. Those six tools are downloaded from
+their release pages and checked against SHA-256s kept in the script. Cargo
+builds a tool only where its project has no binary for your machine, or
+when the script's hashes are for another version than CI's. They are held
+to the versions CI uses: if you have another version, it is replaced. It
+points git at the repo's hooks. System tools such as rsync, Python and a C
+compiler it only checks, naming the package to install.
+`tools/dev-setup.sh --check` reports without changing anything. Run it
+again whenever you like.
 
 It works on Linux, macOS and FreeBSD, and names the package for each one's
 package manager (`apt`, `brew`, `pkg`).
