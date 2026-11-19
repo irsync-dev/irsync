@@ -212,7 +212,9 @@ main() {
         die "missing signature: could not download $url.minisig"
       "verify_$verifier" && status=0 || status=$?
       case $status in
-        0) ;;
+        # The check required exactly this trusted comment, so it is the
+        # signed one.
+        0) say "good signature on irsync-installer.sh (checked with $verifier), trusted comment: irsync $tag" ;;
         # Exit 2 is irsync's usage error: it could not check, not a bad signature.
         2) die "irsync could not check the signature (see above); install minisign, or update irsync, and run again" ;;
         *) bad_signature ;;
