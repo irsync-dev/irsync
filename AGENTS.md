@@ -70,7 +70,8 @@ pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
 `deny-license-check` (licenses for every platform; blocks a release only),
-`workflows` (after a change under `.github/`) and `release-build` (after a
+`workflows` (after a change under `.github/`), `shell-scripts` (shellcheck
+on every shell script) and `release-build` (after a
 change to the release build or packaging; Linux only).
 
 `tools/ci.sh freebsd-build` builds the FreeBSD tarball, on FreeBSD x86_64

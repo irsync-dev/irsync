@@ -189,7 +189,7 @@ class DevSetupCheckTests(unittest.TestCase):
     def test_shellcheck_is_optional_and_named(self):
         r, out = self.check()
         self.assertEqual(r.returncode, 0, out)
-        self.assertRegex(out, r"missing  shellcheck, to check the shell scripts \(optional\)\n"
+        self.assertRegex(out, r"missing  shellcheck, for tools/ci.sh shell-scripts \(optional\)\n"
                               r" {15}(sudo apt install shellcheck|brew install shellcheck|"
                               r"sudo pkg install hs-ShellCheck)\n")
 

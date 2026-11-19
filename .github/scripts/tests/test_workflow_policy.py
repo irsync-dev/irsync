@@ -166,6 +166,14 @@ class CiWorkflowTests(unittest.TestCase):
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
+    def test_shellcheck_in_ci_on_every_change(self):
+        # site/install.sh is a shell script, and a site-only pull request
+        # skips the jobs that wait for `changes`; this one must not.
+        self.ci_script_runs("shell-scripts", 'shellcheck "${files[@]}"')
+        job = jobs(self.ci)["shellcheck"]
+        self.assertNotIn("needs", job)
+        self.assertNotIn("if", job)
+
     def test_jobs_running_the_script_tests_install_minisign(self):
         # The sign-release.sh tests with the real minisign fail without it
         # when CI is set, as on GitHub. Every job that runs

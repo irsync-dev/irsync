@@ -16,6 +16,7 @@
 #                  (deny-license-check.toml); on GitHub it blocks a
 #                  release, not a pull request
 #   workflows      the workflow rule tests and actionlint
+#   shell-scripts  shellcheck on every shell script in the repository
 #   release-build  the release build for this machine's Linux musl target,
 #                  dist's global build, and our installer run on the result
 #   freebsd-build  the FreeBSD tarball; FreeBSD x86_64 only
@@ -41,22 +42,22 @@ os=$(uname -s)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
-all_jobs="workflows deny deny-license-check check release-build"
+all_jobs="workflows shell-scripts deny deny-license-check check release-build"
 jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | deny-license-check | workflows | release-build | freebsd-build) jobs="$jobs $arg" ;;
+        check | deny | deny-license-check | workflows | shell-scripts | release-build | freebsd-build) jobs="$jobs $arg" ;;
         *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
     jobs=$all_jobs
     if [ "$os" = FreeBSD ]; then
-        jobs="workflows deny deny-license-check check freebsd-build"
+        jobs="workflows shell-scripts deny deny-license-check check freebsd-build"
         echo "ci.sh: leaving out release-build, which runs on Linux only"
     elif [ "$os" != Linux ]; then
-        jobs="workflows deny deny-license-check check"
+        jobs="workflows shell-scripts deny deny-license-check check"
         echo "ci.sh: leaving out release-build, which runs on Linux only"
     fi
 fi
@@ -92,6 +93,7 @@ needs_workflows() {
     need "PyYAML (the Python yaml module)" python3 -c "import yaml"
     need actionlint actionlint -version
 }
+needs_shell_scripts() { need shellcheck shellcheck --version; }
 needs_release_build() {
     if [ "$os" != Linux ]; then
         echo "ci.sh: release-build runs on Linux only" >&2
@@ -167,6 +169,29 @@ job_workflows() {
     # actionlint's own shellcheck run is off: it would also lint the
     # generated release.yml.
     run actionlint -shellcheck= -pyflakes=
+}
+
+# Every tracked shell script: the ones named *.sh, and any other file whose
+# first line starts sh, bash or dash (the git hooks, test fixtures, the
+# installer template). A deliberate exception is turned off on its own line,
+# with the reason next to it.
+job_shell_scripts() {
+    local files=() file first
+    # Kept in a variable: bash 3.2 on macOS reads a quoted regex literally.
+    local shebang='^#!.*[/ ](ba|da)?sh( |$)'
+    while IFS= read -r -d '' file; do
+        case $file in
+            *.sh) files+=("$file") ;;
+            *)
+                [ -f "$file" ] && [ ! -L "$file" ] || continue
+                first=$(head -n 1 "$file" 2>/dev/null | tr -d '\0') || true
+                if [[ $first =~ $shebang ]]; then
+                    files+=("$file")
+                fi
+                ;;
+        esac
+    done < <(git ls-files -z)
+    run shellcheck "${files[@]}"
 }
 
 # The release build itself (dist and packaging/dist/build.sh), so a broken

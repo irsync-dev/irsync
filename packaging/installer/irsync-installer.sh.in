@@ -358,6 +358,8 @@ $export_line" ;;
         bash)
           # Terminals on macOS start a login shell, which does not read
           # ~/.bashrc.
+          # The ~ is text shown to the user, not a path to expand.
+          # shellcheck disable=SC2088
           case $os in
             Darwin) rc='~/.bash_profile' ;;
             *) rc='~/.bashrc' ;;

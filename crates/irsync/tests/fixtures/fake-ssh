@@ -23,6 +23,7 @@ if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_HOSTNAME" ] || [ -n "$FAKE_SSH_ID
             if [ -n "$FAKE_SSH_HOSTNAME" ]; then
                 name=$FAKE_SSH_HOSTNAME
                 [ "$name" = - ] && name=
+                # shellcheck disable=SC2016 # $1 belongs to the script it writes
                 printf 'if [ "$1" = -n ]; then echo "%s"; exit 0; fi\n' "$name"
             fi
             if [ -n "$FAKE_SSH_UNAME" ]; then
@@ -41,6 +42,7 @@ if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_HOSTNAME" ] || [ -n "$FAKE_SSH_ID
         printf '#!/bin/sh\necho "sh: %s: not found" >&2\nexit 127\n' "$FAKE_SSH_HIDE" > "$bin/$FAKE_SSH_HIDE"
         chmod 755 "$bin/$FAKE_SSH_HIDE"
     fi
+    # shellcheck disable=SC2153 # the test sets FAKE_SSH_HOME
     HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
         PATH="$bin:$PATH" sh -c "$cmd"
     status=$?
