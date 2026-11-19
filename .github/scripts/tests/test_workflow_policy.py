@@ -229,6 +229,21 @@ class CiWorkflowTests(unittest.TestCase):
         released = set(dist_config()["dist"]["targets"])
         self.assertLessEqual(released, set(narrow["graph"]["targets"]))
 
+    def test_fuzz_build_job(self):
+        # Every fuzz target must build and pass its seeds on a pull request
+        # that touches code. The nightly comes from fuzz/rust-toolchain.toml.
+        self.ci_script_runs("fuzz-build", 'cargo "+$nightly" fuzz build --target "$triple"')
+        job = jobs(self.ci)["fuzz-build"]
+        self.assertEqual(job["needs"], "changes")
+        self.assertEqual(job["if"], "needs.changes.outputs.code == 'true'")
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        text = job_text("ci.yml", "fuzz-build")
+        self.assertIn("fuzz/rust-toolchain.toml", text)
+        self.assertRegex(text, r"tool: cargo-fuzz@\d+\.\d+\.\d+\n")
+        # Not cargo-binstall, which install-action would hand the GitHub token.
+        self.assertIn("fallback: cargo-install", text)
+        self.assertIn("workspaces: fuzz", text)
+
     def test_dependency_review_on_prs_only(self):
         found = False
         for j in jobs(self.ci).values():

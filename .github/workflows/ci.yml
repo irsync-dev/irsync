@@ -253,6 +253,41 @@ jobs:
       - name: Check the dependencies
         run: tools/ci.sh deny
 
+  # Builds the fuzz targets (fuzz/) and runs each on its seeds, so a target
+  # that stops compiling, or a crash that comes back, fails the pull request.
+  # The long runs are in nightly.yml.
+  fuzz-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The fuzz targets build with this nightly only; RUSTUP_TOOLCHAIN
+      # makes every step below use it instead of the stable one.
+      - name: Install Rust (the nightly in fuzz/rust-toolchain.toml)
+        run: |
+          nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
+          rustup toolchain install "$nightly" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$nightly" >> "$GITHUB_ENV"
+          rustup run "$nightly" rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      # install-action has no release binary of its own for cargo-fuzz;
+      # cargo-install builds it from crates.io instead of the default
+      # fallback, cargo-binstall, which would be handed the GitHub token.
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: cargo-fuzz@0.13.2
+          fallback: cargo-install
+      - name: Build the fuzz targets and run their seeds
+        run: tools/ci.sh fuzz-build
+
   # The licenses of every crate in Cargo.lock, for every platform: the deny
   # job looks only at the platforms irsync is built for. A failure here
   # shows on a pull request without blocking it (continue-on-error), but it
@@ -295,7 +330,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, check, release-build, workflows, shellcheck, deny, deny-license-check, dependency-review]
+    needs: [changes, check, release-build, workflows, shellcheck, deny, fuzz-build, deny-license-check, dependency-review]
     runs-on: ubuntu-latest
     permissions:
       contents: read

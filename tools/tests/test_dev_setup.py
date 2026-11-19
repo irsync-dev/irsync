@@ -41,7 +41,7 @@ RISCV = 'case "$1" in -m) echo riscv64 ;; *) echo Linux ;; esac'
 
 # The part of its download URL that tells a tool apart.
 URL_KEY = {"cargo-nextest": "nextest-rs", "cargo-deny": "cargo-deny",
-           "cargo-dist": "cargo-dist", "mdbook": "mdBook"}
+           "cargo-dist": "cargo-dist", "mdbook": "mdBook", "cargo-fuzz": "rust-fuzz"}
 
 
 class DevSetupCheckTests(unittest.TestCase):
@@ -201,7 +201,7 @@ class DevSetupCheckTests(unittest.TestCase):
         # What tools/ci.sh needs beyond the build: none of it is here.
         r, out = self.check(python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
         self.assertEqual(r.returncode, 0, out)
-        for tool in ["cargo-nextest", "cargo-deny", "cargo-dist", "PyYAML", "actionlint"]:
+        for tool in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "cargo-dist", "PyYAML", "actionlint"]:
             self.assertRegex(out, rf"missing +{tool}.*tools/ci\.sh.*\(optional\)")
 
     def test_ci_tools_found(self):
@@ -266,7 +266,8 @@ exit 0""")
     def setup_in_copy(self, nextest, **tools):
         """Runs a copy of the script in a tree whose ci.yml pins another nextest."""
         repo = os.path.join(self.tmp, "repo")
-        files = ["tools/dev-setup.sh", "rust-toolchain.toml", "Cargo.toml", "dist-workspace.toml",
+        files = ["tools/dev-setup.sh", "rust-toolchain.toml", "fuzz/rust-toolchain.toml",
+                 "Cargo.toml", "dist-workspace.toml",
                  ".github/workflows/site.yml", ".github/workflows/ci.yml",
                  ".github/scripts/install-packaging-tools.sh"]
         for f in files:
@@ -339,6 +340,7 @@ echo "$sha" > "$HOME/expected-hash"
         self.assertEqual(self.pins(), {
             "cargo-nextest": first(r"cargo-nextest@([0-9.]+)", *wf, "ci.yml"),
             "cargo-deny": first(r"cargo-deny@([0-9.]+)", *wf, "ci.yml"),
+            "cargo-fuzz": first(r"cargo-fuzz@([0-9.]+)", *wf, "ci.yml"),
             "cargo-dist": first(r'^cargo-dist-version *= *"(.*)"', "dist-workspace.toml"),
             "mdbook": first(r"^ *MDBOOK_VERSION: *([0-9.]+)", *wf, "site.yml"),
         })
@@ -349,16 +351,17 @@ echo "$sha" > "$HOME/expected-hash"
             self.assertRegex(out, rf"running +download {crate} {re.escape(pin)} \(x86_64-unknown-linux-musl\)")
             self.assertRegex(out, rf"ok +{crate} {re.escape(pin)}\n")
         self.assertNotIn("install", calls)
-        for b in ["cargo-nextest", "cargo-deny", "dist", "mdbook", "actionlint"]:
+        for b in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "dist", "mdbook", "actionlint"]:
             self.assertTrue(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", b)), b)
         # Only the binary, not the archive's other files.
-        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 5)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 6)
 
     def test_setup_on_a_mac_takes_the_universal_nextest(self):
         out, calls = self.setup(uname=MAC, **self.good_downloads())
         self.assertRegex(out, r"download cargo-nextest \S+ \(aarch64-apple-darwin\)")
         self.assertRegex(out, r"ok +cargo-nextest")
-        self.assertNotIn("install", calls)
+        # cargo-fuzz has no release binary for an arm64 Mac; cargo builds it.
+        self.assertEqual(re.findall(r"install --locked (\S+)", calls), ["cargo-fuzz"])
 
     def test_setup_refuses_a_tampered_tool_and_does_not_compile(self):
         out, calls = self.setup(
@@ -401,7 +404,8 @@ echo "$sha" > "$HOME/expected-hash"
         out, calls = self.setup(
             uname=LINUX, curl='echo "curl called" >&2; exit 99',
             cargo=f'case "$1" in nextest) echo "cargo-nextest {p["cargo-nextest"]}" ;; '
-                  f'deny) echo "cargo-deny {p["cargo-deny"]}" ;; esac',
+                  f'deny) echo "cargo-deny {p["cargo-deny"]}" ;; '
+                  f'fuzz) echo "cargo-fuzz {p["cargo-fuzz"]}" ;; esac',
             dist=f'echo "dist {p["cargo-dist"]}"', mdbook=f'echo "mdbook v{p["mdbook"]}"',
             actionlint=f"echo {self.actionlint_pin()}")
         self.assertNotIn("curl called", out)
@@ -577,6 +581,44 @@ esac"""
         self.assertRegex(out, rf"missing  nfpm {re.escape(pin)}, have 0\.0\.1, .*\n" + install)
         r, out = self.check(nfpm=f"echo {pin}")
         self.assertRegex(out, rf"ok +nfpm {re.escape(pin)}\n")
+
+    def fuzz_nightly(self):
+        with open(os.path.join(ROOT, "fuzz", "rust-toolchain.toml")) as f:
+            return re.search(r'^channel = "(.*)"$', f.read(), re.M).group(1)
+
+    def test_fuzz_nightly_is_optional_and_named(self):
+        nightly = self.fuzz_nightly()
+        r, out = self.check(rustup=f"""case "$1 $2" in
+  "run {nightly}") exit 1 ;;
+  "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
+  "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
+  *) echo "rustup 1.29.3" ;;
+esac""")
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, rf"missing  Rust {re.escape(nightly)}, for tools/ci\.sh fuzz-build \(optional\)\n"
+                              rf" {{15}}rustup toolchain install {re.escape(nightly)} --profile minimal "
+                              r"--component rust-src --component miri --component llvm-tools-preview\n")
+
+    def test_fuzz_nightly_found(self):
+        r, out = self.check()
+        self.assertRegex(out, rf"ok +Rust {re.escape(self.fuzz_nightly())} \(fuzz/rust-toolchain\.toml\)\n")
+
+    def test_setup_installs_the_fuzz_nightly(self):
+        nightly = self.fuzz_nightly()
+        log = os.path.join(self.tmp, "rustup.log")
+        out, calls = self.setup(uname=LINUX, curl="exit 6", rustup=f"""echo "$*" >> {log}
+case "$1 $2" in
+  "run {nightly}") [ -e {log}.done ] || exit 1; echo "rustc 1.0.0-nightly" ;;
+  "toolchain install") [ "$3" = {nightly} ] && : > {log}.done ;;
+  "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
+  "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
+  "target list") printf 'x86_64-unknown-linux-musl\\n' ;;
+  *) echo "rustup 1.29.3" ;;
+esac""")
+        with open(log) as f:
+            self.assertIn(f"toolchain install {nightly} --profile minimal --component rust-src "
+                          "--component miri --component llvm-tools-preview\n", f.read())
+        self.assertRegex(out, rf"ok +Rust {re.escape(nightly)} ")
 
     def test_old_rust_is_refused(self):
         r, out = self.check(rustup="""case "$1 $2" in
