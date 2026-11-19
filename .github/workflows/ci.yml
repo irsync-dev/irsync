@@ -194,12 +194,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install PyYAML
-        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
-      # For the sign-release.sh tests with the real minisign, which fail
-      # without it when CI is set. From the Ubuntu archive, like pandoc.
-      - name: Install minisign
-        run: sudo apt-get update && sudo apt-get install -y minisign
+      # PyYAML is for the workflow rule tests. minisign is for the
+      # sign-release.sh tests with the real minisign, which fail without it
+      # when CI is set. Both come from the Ubuntu archive, like pandoc, so
+      # nothing is fetched from PyPI.
+      - name: Install PyYAML and minisign
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml minisign
       - name: Install actionlint
         run: |
           set -euo pipefail
