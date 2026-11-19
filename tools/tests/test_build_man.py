@@ -152,12 +152,25 @@ class BuildManTests(unittest.TestCase):
     def test_irsync_section_order(self):
         heads = re.findall(r"^\.SH (.+)$", read(self.irsync), re.M)
         self.assertEqual(heads[:5], ["NAME", "SYNOPSIS", "DESCRIPTION", "EXAMPLES", "OPERANDS"])
-        self.assertEqual(heads[-6:], ["REMOTE ADDRESSES", "ENVIRONMENT", "FILES",
-                                      "EXIT STATUS", "LIMITATIONS", "SEE ALSO"])
+        self.assertEqual(heads[-8:], ["REMOTE ADDRESSES", "ENVIRONMENT", "FILES",
+                                      "EXIT STATUS", "LIMITATIONS", "SEE ALSO",
+                                      "AUTHORS", "LICENSE"])
         self.assertIn("MANAGEMENT COMMANDS", heads)
         self.assertLess(heads.index("SUBCOMMANDS"), heads.index("MANAGEMENT COMMANDS"))
         for sub in ("HOST", "EXPORT", "GRANT"):  # subsections, not sections
             self.assertNotIn(sub, heads)
+
+    def test_every_page_ends_with_authors_and_license(self):
+        with open(os.path.join(ROOT, "LICENSE")) as f:
+            holder = re.search(r"^Copyright \(c\) (.+)$", f.read(), re.M).group(1)
+        for page in self.pages:
+            heads = re.findall(r"^\.SH (.+)$", read(page), re.M)
+            self.assertEqual(heads[-3:], ["SEE ALSO", "AUTHORS", "LICENSE"], page)
+            text = render(page)
+            self.assertIn("Michael Wildpaner", section(text, "AUTHORS"), page)
+            license = " ".join(section(text, "LICENSE").split())
+            self.assertIn(f"Copyright (c) {holder}", license, page)
+            self.assertIn("MIT License", license, page)
 
     def test_every_page_has_a_synopsis(self):
         for page in self.pages:

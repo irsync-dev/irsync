@@ -22,3 +22,12 @@ FILES in irsync(1).
 # SEE ALSO
 
 irsync(1), fileset(1), https://irsync.org/book/
+
+# AUTHORS
+
+Michael Wildpaner and the irsync contributors.
+
+# LICENSE
+
+Copyright (c) 2026 Michael Wildpaner. irsync is free software under the MIT
+License: https://github.com/irsync-dev/irsync/blob/main/LICENSE

@@ -393,9 +393,9 @@ $export_line" ;;
   so the manual pages were not installed. Check that you own that directory
   and can write to it, then run again."
   elif [ "$on_path" = yes ]; then
-    say "the manual is in place: man irsync"
+    say "the manual is in place: man irsync (also man fileset and man irsync.toml)"
   else
-    say "the manual is in place: man irsync finds it once ~/.local/bin is on your PATH"
+    say "the manual is in place: man irsync (also man fileset and man irsync.toml) finds it once ~/.local/bin is on your PATH"
   fi
 }
 

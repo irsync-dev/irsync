@@ -587,7 +587,7 @@ class InstallTests(Base):
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
         last = r.stderr.rstrip("\n").split("\n")[-1]
-        self.assertIn("man irsync", last)
+        self.assertIn("man irsync (also man fileset and man irsync.toml)", last)
         self.assertIn("PATH", last)
 
         home = os.path.join(self.tmp, "home2")
@@ -596,7 +596,7 @@ class InstallTests(Base):
         r = self.install(home=home, env={"PATH": path})
         self.assertEqual(r.returncode, 0, r.stderr)
         last = r.stderr.rstrip("\n").split("\n")[-1]
-        self.assertIn("man irsync", last)
+        self.assertIn("man irsync (also man fileset and man irsync.toml)", last)
         self.assertNotIn("PATH", last)
 
     def test_home_with_trailing_slash_no_false_hint(self):
