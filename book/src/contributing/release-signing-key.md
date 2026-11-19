@@ -146,8 +146,9 @@ is:
 .github/scripts/sign-release.sh --key "$KEYDIR/irsync-release.key" 1.2.3
 ```
 
-It asks for the password once, signs every file on the draft release and
-publishes it. Unplug the stick when it is done.
+It asks for the password once and signs every file on the draft release.
+Check the draft on GitHub, then run the same command with `--publish`
+before the version to publish it. Unplug the stick when it is done.
 
 ## A second key
 

@@ -176,7 +176,7 @@ class BumpVersionTests(unittest.TestCase):
                       r.stdout)
         # The gate ends at a draft; signing it is the last step.
         self.assertEqual(r.stdout.rstrip().splitlines()[-1].strip(),
-                         ".github/scripts/sign-release.sh 1.3.0-beta.1")
+                         ".github/scripts/sign-release.sh --publish 1.3.0-beta.1")
         self.assertNotIn("git tag", r.stdout)
         self.assertNotIn("git push origin main", r.stdout)
 
@@ -879,7 +879,7 @@ class SignTests(FakeGh):
             self.extra_state = {"keys_at_commit": f.read(), "attested_commit": COMMIT,
                                 "attested_ref": "refs/heads/pinned/v1.2.3"}
 
-    def sign(self, *opts, answer="y\n", version="1.2.3", keys=None):
+    def sign(self, *opts, answer="y\n", version="1.2.3", keys=None, publish=True):
         self.set_state(releases={f"v{version}": self.release}, tags=self.tags,
                        generated="", **self.extra_state)
         open(self.minisign_log, "w").close()
@@ -889,6 +889,8 @@ class SignTests(FakeGh):
                 f.write(keys)
             self.env["IRSYNC_SIGN_KEYS_FILE"] = path
             self.set_state(**dict(self.state(), keys_at_commit=keys))
+        if publish:
+            opts = ("--publish", *opts)
         return subprocess.run([SIGN, "--key", TEST_KEY, *opts, version], env=self.env,
                               input=answer, capture_output=True, text=True)
 
@@ -1040,7 +1042,7 @@ class SignTests(FakeGh):
                 with self.subTest(version=version, status=status):
                     self.extra_state.update(compare=status,
                                             attested_ref=f"refs/heads/pinned/v{version}")
-                    r = self.sign("--no-publish", version=version)
+                    r = self.sign(version=version, publish=False)
                     self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                     self.assertEqual(self.calls("api")[0][1],
                                      f"repos/irsync-dev/irsync/compare/{COMMIT}...{branch}")
@@ -1078,9 +1080,10 @@ class SignTests(FakeGh):
                 self.assertIn("Sign these files? [y/N]", r.stdout + r.stderr)
                 self.assert_nothing_signed()
 
-    def test_no_publish_stops_after_upload(self):
-        r = self.sign("--no-publish")
+    def test_without_publish_stops_after_upload(self):
+        r = self.sign(publish=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"--key {TEST_KEY} --publish 1.2.3", r.stdout)
         self.assertEqual(sorted(self.uploaded()), sorted(n + ".minisig" for n in self.files))
         self.assertEqual(self.calls("api", "-X", "PATCH"), [])
         self.assertEqual(self.calls("workflow"), [])
@@ -1109,7 +1112,7 @@ class SignTests(FakeGh):
         named = lines[-1].split()[1].lstrip("*")
         with self.subTest("good"):
             self.release["assets"] = dict(self.files, **{"sha256.sum": good})
-            r = self.sign("--no-publish")
+            r = self.sign(publish=False)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         with self.subTest("bad"):
             self.release["assets"] = dict(self.files, **{"sha256.sum": bad})
@@ -1196,7 +1199,8 @@ class SignTests(FakeGh):
                 self.assertEqual(self.minisign_calls(), [])
 
     def test_usage(self):
-        for args in [[], ["--bogus", "1.2.3"], ["1.2.3", "1.2.4"], ["--key"]]:
+        for args in [[], ["--bogus", "1.2.3"], ["1.2.3", "1.2.4"], ["--key"],
+                     ["--no-publish", "1.2.3"]]:
             with self.subTest(args=args):
                 r = subprocess.run([SIGN, *args], env=self.env, capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2)
