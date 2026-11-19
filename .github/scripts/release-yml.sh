@@ -16,6 +16,7 @@
 # Never edit release.yml by hand. Run this script from anywhere in the repo.
 set -euo pipefail
 
+# shellcheck disable=SC2015 # usage only runs when the test is false
 [ $# -eq 1 ] && { [ "$1" = write ] || [ "$1" = check ]; } ||
     { echo "usage: $0 write|check" >&2; exit 2; }
 mode=$1

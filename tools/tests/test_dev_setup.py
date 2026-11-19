@@ -186,6 +186,17 @@ class DevSetupCheckTests(unittest.TestCase):
             r, out = self.check(minisign=f'[ "$1" = -v ] && echo {line}')
             self.assertRegex(out, rf"ok +minisign {re.escape(version)}\n", line)
 
+    def test_shellcheck_is_optional_and_named(self):
+        r, out = self.check()
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"missing  shellcheck, to check the shell scripts \(optional\)\n"
+                              r" {15}(sudo apt install shellcheck|brew install shellcheck|"
+                              r"sudo pkg install hs-ShellCheck)\n")
+
+    def test_shellcheck_found(self):
+        r, out = self.check(shellcheck='printf "ShellCheck - shell script analysis tool\\nversion: 0.11.0\\n"')
+        self.assertRegex(out, r"ok +shellcheck 0\.11\.0\n")
+
     def test_ci_tools_are_optional_and_named(self):
         # What tools/ci.sh needs beyond the build: none of it is here.
         r, out = self.check(python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')

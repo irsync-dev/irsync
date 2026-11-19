@@ -41,6 +41,7 @@ for pair in x86_64:amd64:x86_64 aarch64:arm64:aarch64; do
 
     export IRSYNC_VERSION="$version" IRSYNC_ARCH="$deb_arch" IRSYNC_BIN_DIR="$bin" \
         IRSYNC_MAN_DIR="$mandir"
+    # shellcheck disable=SC1007 # empty for this command only
     IRSYNC_RELEASE= nfpm package --config "$here/nfpm.yaml" --packager deb \
         --target "$out/irsync_${version}_${deb_arch}.deb"
     IRSYNC_RELEASE=1 nfpm package --config "$here/nfpm.yaml" --packager rpm \

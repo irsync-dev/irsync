@@ -16,6 +16,7 @@ set -eu
 
 zero=0000000000000000000000000000000000000000
 tmp=$(mktemp -d)
+# shellcheck disable=SC2329 # called by the trap below
 cleanup() {
     for wt in "$tmp"/*; do
         [ -d "$wt" ] && git worktree remove --force "$wt" >/dev/null 2>&1

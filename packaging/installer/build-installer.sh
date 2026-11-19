@@ -21,6 +21,7 @@ out=$2
 rm -f "$out"
 
 # CDPATH= keeps cd from searching CDPATH and printing where it went.
+# shellcheck disable=SC1007 # CDPATH empty for this cd only
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 template=$here/irsync-installer.sh.in
 dist_toml=$here/../dist/dist.toml

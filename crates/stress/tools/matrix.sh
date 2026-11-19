@@ -93,6 +93,7 @@ for r in $ROWS; do
   fi
   rm -rf "$t"
 done
+# shellcheck disable=SC2086 # one word per row
 echo "settings ok for:" $ROWS
 [ -n "${DRY:-}" ] && exit 0
 
