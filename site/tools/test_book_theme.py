@@ -129,6 +129,26 @@ class BookThemeTest(unittest.TestCase):
         for name in ("mdbook-theme-rust", "mdbook-theme-coal", "mdbook-theme-ayu", "mdbook-theme-navy", '"Dark"'):
             self.assertIn(name, js)
 
+    def test_switcher_script_is_loaded(self):
+        # site/tools/switcher.py writes the markup; the script opens it.
+        toml = _read("book", "book.toml")
+        self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/switcher\.js"')
+        js = _read("book", "theme", "switcher.js")
+        for name in ("irsync-book-toggle", "irsync-book-list", "aria-expanded", "data-same-page",
+                     "Escape"):
+            self.assertIn(name, js)
+
+    def test_switcher_click_reaches_mdbook(self):
+        # mdbook closes its theme list on a click elsewhere on the page; the
+        # switcher's button must not swallow that click.
+        self.assertNotIn("stopPropagation", _read("book", "theme", "switcher.js").split("keydown")[0])
+
+    def test_switcher_takes_the_popup_colours(self):
+        rule = re.search(r"#irsync-book-list\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(rule)
+        self.assertIn("var(--theme-popup-bg)", rule.group(1))
+        self.assertIn("var(--theme-popup-border)", rule.group(1))
+
 
 if __name__ == "__main__":
     unittest.main()

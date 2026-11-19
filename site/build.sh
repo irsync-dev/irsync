@@ -80,6 +80,10 @@ while read -r path version commit _; do
   python3 "$root/site/tools/strip_font_link.py" "$out/$path"
 done <"$out/VERSIONS"
 
+# The version switcher in every book's top bar. It needs every book built:
+# each link goes to the same page in the other book if that book has it.
+python3 "$root/site/tools/switcher.py" "$out"
+
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
 for f in 404.html robots.txt _headers install.sh; do

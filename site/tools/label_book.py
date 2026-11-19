@@ -7,8 +7,6 @@ working copy under target/: today's book.toml and theme, and the pages
 (book/src) of the version's commit. This tool makes such a copy say what it
 is, before mdbook builds it:
 
-- the title in the bar at the top of every page: "irsync VERSION", or
-  "irsync unreleased";
 - the address the book is served at, for mdbook's 404 page;
 - "Edit this page" only for the unreleased book: a released page cannot be
   edited at its tag;
@@ -33,8 +31,8 @@ class BookError(Exception):
 
 
 def _settings(text, path, version):
-    """book.toml with the title and the address of this copy."""
-    title = f"irsync {version}" if version else "irsync unreleased"
+    """book.toml with the address of this copy. The title is the same in
+    every copy; the version switcher says which one it is."""
     lines = text.splitlines(keepends=True)
 
     def only(name, start):
@@ -44,7 +42,6 @@ def _settings(text, path, version):
                             f"to set the {name}")
         return found[0]
 
-    lines[only("title", 'title = "irsync"\n')] = f'title = "{title}"\n'
     lines[only("site-url", 'site-url = "/book/"\n')] = f'site-url = "/{path}/"\n'
     edit = only("edit-url-template", "edit-url-template = ")
     if version:
