@@ -154,6 +154,7 @@ class SignatureTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(r.stdout, "", "the installer must not run")
         self.assertIn(message, r.stderr)
+        self.assertNotIn("good signature", r.stderr)
 
     def test_keys_match_release_keys_file(self):
         pub = (ROOT / "packaging" / "signing" / "release-keys.pub").read_text()
@@ -164,7 +165,10 @@ class SignatureTest(unittest.TestCase):
 
     def test_good_signature_with_minisign(self):
         self.add_minisign()
-        self.assert_ran(self.run_install())
+        r = self.run_install()
+        self.assert_ran(r)
+        self.assertIn("good signature on irsync-installer.sh (checked with minisign), "
+                      "trusted comment: irsync v9.9.9", r.stderr)
 
     def test_good_signature_with_irsync(self):
         log = self.tmp / "irsync.log"
@@ -173,7 +177,10 @@ if [ "$1 $2" = "verify-signature --help" ]; then echo "check a minisign signatur
 printf '%s\\n' "$*" > {log}
 exit 0
 """)
-        self.assert_ran(self.run_install())
+        r = self.run_install()
+        self.assert_ran(r)
+        self.assertIn("good signature on irsync-installer.sh (checked with irsync), "
+                      "trusted comment: irsync v9.9.9", r.stderr)
         call = log.read_text()
         self.assertIn(f"--public-key {self.test_key}", call)
         self.assertIn("--trusted-comment irsync v9.9.9", call)

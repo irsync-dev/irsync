@@ -55,10 +55,16 @@ hidden from `irsync --help`.
 
 `install.sh` checks the signature of the installer it downloads, using irsync
 (if the installed one has `verify-signature`) or minisign. It stops without
-running anything if the check fails. With neither tool it warns; add
-`--require-signature` to make it fail instead. If you run
-`irsync-installer.sh` straight from the release page, nothing checks its
-signature. Check it yourself as above.
+running anything if the check fails. After a good check it says so, with
+the signature's trusted comment:
+
+```text
+irsync: good signature on irsync-installer.sh (checked with minisign), trusted comment: irsync v0.1.0-beta.5
+```
+
+With neither tool it warns; add `--require-signature` to make it fail
+instead. If you run `irsync-installer.sh` straight from the release page,
+nothing checks its signature. Check it yourself as above.
 
 ## An archive or the installer
 
