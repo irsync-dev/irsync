@@ -160,8 +160,9 @@ when its title page does not start with a heading.
 
 The build also writes `VERSIONS` next to `BUILD`: one line per book, with
 its path, version, commit and `published`, `unpublished` (a release that is
-being built) or `dev`. `https://dev.irsync.org/VERSIONS` shows what staging
-holds. The promote reads it (see
+being built) or `dev`. The `dev` line has no version (`-`), and its commit
+is the one the site was built from, the same as in `BUILD`.
+`https://dev.irsync.org/VERSIONS` shows what staging holds. The promote reads it (see
 [Promoting to irsync.org](#promoting-to-irsyncorg)).
 
 ### Linking from the landing page

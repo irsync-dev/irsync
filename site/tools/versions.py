@@ -178,12 +178,22 @@ def from_git(repo):
 
 # One copy of the documentation on the site, at /PATH/. `state` is
 # "published", "unpublished" (a release that is being built) or "dev" (the
-# working tree, with no version).
+# working tree, with no version). `commit` is where the pages come from; for
+# the working tree, the commit that is checked out.
 Book = namedtuple("Book", "path version commit state")
 
 
-def books(found):
-    """The books the site holds, from what `releases` found.
+def head(repo):
+    """The commit that is checked out: what the BUILD file of the site names."""
+    ok, out = _git(repo, "rev-parse", "HEAD^{commit}")
+    if not ok:
+        raise VersionsError(f"cannot read the commit of {repo}: {out}")
+    return out
+
+
+def books(found, head=None):
+    """The books the site holds, from what `releases` found. `head` is the
+    commit of the working tree.
 
     /book/ is the main version, the one the install command installs.
     /stable/, /beta/ and /alpha/ are the newest of each channel, also when
@@ -196,9 +206,9 @@ def books(found):
 
     best = newest(found)
     shown = pick({version: r.date for version, r in found.items()})
-    out = [book("book", shown[0].version) if shown else Book("book", None, None, "dev")]
+    out = [book("book", shown[0].version) if shown else Book("book", None, head, "dev")]
     out += [book(c, best[c]) for c in CHANNELS if c in best]
-    out.append(Book("dev", None, None, "dev"))
+    out.append(Book("dev", None, head, "dev"))
     return out
 
 
@@ -263,8 +273,9 @@ def unpublished(text):
         if path not in _PATHS or state not in _STATES:
             raise VersionsError(f"unknown path or state: {line!r}")
         if state == "dev":
-            if (version, commit) != ("-", "-"):
-                raise VersionsError(f"a dev book has no version: {line!r}")
+            # "-" for the commit: a build from before the line carried one.
+            if version != "-" or not re.fullmatch(r"-|[0-9a-f]{40}", commit):
+                raise VersionsError(f"a dev book has no version, and a commit or -: {line!r}")
             continue
         if parse(version) is None or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise VersionsError(f"not a release version and a commit: {line!r}")
@@ -356,7 +367,7 @@ def main(argv=None):
             page = render(args.src.read_text(encoding="utf-8"), pick(from_git(args.repo)))
             args.dst.write_text(page, encoding="utf-8")
         elif args.command == "books":
-            sys.stdout.write(books_text(books(releases(args.repo))))
+            sys.stdout.write(books_text(books(releases(args.repo), head(args.repo))))
         elif args.command == "pages":
             pages(args.repo, args.commit, args.dest)
         elif args.command == "promotable":
