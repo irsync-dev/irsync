@@ -209,10 +209,11 @@ The release tag is a lightweight tag made by GitHub, not an annotated one.
 
 The install script `site/install.sh` (served as `irsync.org/install.sh`)
 picks the newest release for its channel: stable by default, `--beta` for
-betas and stable, `--alpha` for all. Other arguments go to the installer
-`irsync-installer.sh` that `release.yml` attached to the release. It puts
-the programs in `~/.local/bin` and the three man pages in
-`~/.local/share/man/man1` and `man5`, and has no updater. It writes no
+betas and stable, `--alpha` for all. `--require-signature` makes it fail
+when it cannot check the installer's minisign signature. Other arguments
+go to the installer `irsync-installer.sh` that `release.yml` attached to
+the release. It puts the programs in `~/.local/bin` and the three man
+pages in `~/.local/share/man/man1` and `man5`, and has no updater. It writes no
 receipt and never edits the shell's startup files. If `~/.local/bin` is not
 on `PATH`, it prints the line to add. `--uninstall` removes the two
 programs, the three pages and an old receipt file. Before it places

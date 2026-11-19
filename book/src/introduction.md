@@ -42,6 +42,13 @@ curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- -
 
 The first stable release will be v0.1.0. Until it is out, add `--beta`.
 
+The script checks the installer's signature before it runs it, with irsync
+or [minisign](https://jedisct1.github.io/minisign/) if either is installed.
+If neither is, it warns and goes on. Add `--require-signature` (next to
+`--beta`, before any other argument) to make it stop instead. Releases before
+v0.1.0-beta.5 have no signatures: the script installs them without a check,
+or refuses them with `--require-signature`.
+
 Then `man irsync`, `man fileset` and `man irsync.toml` work. The script
 never edits your shell startup files. If `~/.local/bin` is not on your
 `PATH`, it says how to add it; on Linux, logging out and in again is
