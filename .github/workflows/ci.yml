@@ -28,6 +28,11 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read-only by default; a job that needs more says so itself. The release
+# gate grants its call of this workflow contents: read.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -74,6 +79,8 @@ jobs:
         include: ${{ fromJSON(inputs.plan && '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""},{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]' || '[{"os":"ubuntu-latest","target":""},{"os":"macos-latest","target":""}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install Rust (the version in rust-toolchain.toml)
         run: |
           rustup toolchain install
@@ -174,7 +181,7 @@ jobs:
         run: tools/ci.sh release-build
 
   # The workflow rules (.github/scripts/tests, including the supply chain
-  # policy in test_workflow_policy.py) and actionlint, on every change: a
+  # policy in test_workflow_policy.py), actionlint and zizmor, on every change: a
   # workflow change is code too. Cheap, so it doesn't wait for `changes`.
   workflows:
     runs-on: ubuntu-latest
@@ -202,7 +209,15 @@ jobs:
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
-      - name: Workflow rule tests and actionlint
+      # zizmor finds security problems in the workflows. install-action
+      # checks the download against the SHA-256 it keeps for the version.
+      # No fallback: cargo-binstall would be handed the GitHub token.
+      - name: Install zizmor
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: zizmor@1.32.0
+          fallback: none
+      - name: Workflow rule tests, actionlint and zizmor
         run: tools/ci.sh workflows
 
   # shellcheck on every shell script, on every change: site/install.sh is a

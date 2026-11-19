@@ -169,6 +169,35 @@ class CiWorkflowTests(unittest.TestCase):
         # dist's side of our installer, which build-global-artifacts runs.
         self.ci_script_runs("release-build", "dist build --artifacts=global || { clean_up; exit 1; }")
 
+    def test_zizmor_in_ci(self):
+        # zizmor, a linter for the security of GitHub workflows, runs next
+        # to actionlint, at a pinned version. tools/dev-setup.sh reads the
+        # pin from here.
+        self.ci_script_runs("workflows", "zizmor --offline .github/workflows")
+        steps = jobs(self.ci)["workflows"]["steps"]
+        install = [s for s in steps if step_uses(s, "taiki-e/install-action")]
+        self.assertEqual(len(install), 1)
+        self.assertRegex(install[0]["with"]["tool"], r"^zizmor@\d+\.\d+\.\d+$")
+        # Never cargo-binstall, which install-action would hand the GitHub
+        # token, nor a build from source.
+        self.assertEqual(install[0]["with"]["fallback"], "none")
+
+    def test_zizmor_ignores_have_reasons(self):
+        # A finding is ignored only in .github/zizmor.yml, each with a
+        # reason on its line.
+        path = os.path.join(ROOT, ".github", "zizmor.yml")
+        with open(path) as f:
+            text = f.read()
+        config = yaml.safe_load(text)
+        entries = 0
+        for rule, conf in config["rules"].items():
+            self.assertEqual(set(conf), {"ignore"}, rule)
+            entries += len(conf["ignore"])
+        self.assertGreater(entries, 0)
+        for line in text.splitlines():
+            if re.match(r"^\s*- ", line):
+                self.assertRegex(line, r"^\s*- \S+ +# \S", line)
+
     def test_shellcheck_in_ci_on_every_change(self):
         # site/install.sh is a shell script, and a site-only pull request
         # skips the jobs that wait for `changes`; this one must not.

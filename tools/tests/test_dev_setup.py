@@ -41,7 +41,8 @@ RISCV = 'case "$1" in -m) echo riscv64 ;; *) echo Linux ;; esac'
 
 # The part of its download URL that tells a tool apart.
 URL_KEY = {"cargo-nextest": "nextest-rs", "cargo-deny": "cargo-deny",
-           "cargo-dist": "cargo-dist", "mdbook": "mdBook", "cargo-fuzz": "rust-fuzz"}
+           "cargo-dist": "cargo-dist", "mdbook": "mdBook", "cargo-fuzz": "rust-fuzz",
+           "zizmor": "zizmorcore"}
 
 
 class DevSetupCheckTests(unittest.TestCase):
@@ -79,6 +80,14 @@ class DevSetupCheckTests(unittest.TestCase):
         r = subprocess.run([SCRIPT, "--check"], env=env, capture_output=True, text=True)
         self.assertNotIn("curl called", r.stderr)
         return r, r.stdout + r.stderr
+
+    def test_help_prints_the_whole_header(self):
+        r = subprocess.run([SCRIPT, "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(r.stdout.startswith("Sets up a development machine"), r.stdout)
+        self.assertTrue(r.stdout.rstrip().endswith("only warn."), r.stdout)
+        for tool in ["zizmor", "shellcheck", "actionlint"]:
+            self.assertIn(tool, r.stdout)
 
     def test_good_system_tools_pass(self):
         r, out = self.check()
@@ -228,7 +237,8 @@ class DevSetupCheckTests(unittest.TestCase):
         # What tools/ci.sh needs beyond the build: none of it is here.
         r, out = self.check(python3='case "$1" in -c) exit 1 ;; *) echo "Python 3.12.3" ;; esac')
         self.assertEqual(r.returncode, 0, out)
-        for tool in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "cargo-dist", "PyYAML", "actionlint"]:
+        for tool in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "cargo-dist", "PyYAML", "actionlint",
+                     "zizmor"]:
             self.assertRegex(out, rf"missing +{tool}.*tools/ci\.sh.*\(optional\)")
 
     def test_ci_tools_found(self):
@@ -326,6 +336,9 @@ exit 0""")
                 crate, target = key.split(":")
                 if crate == "cargo-nextest" and target.endswith("apple-darwin"):
                     target = "universal-apple-darwin"
+                # zizmor has glibc builds only; they run on any Linux with it.
+                if crate == "zizmor":
+                    target = target.replace("-linux-musl", "-linux-gnu")
                 arms.append(f'*{URL_KEY[crate]}*{target}*) name={crate}; pin={self.pins()[crate]}; sha={sha} ;;')
         for plat, sha in re.findall(r"^ +(\w+_\w+)\) echo ([0-9a-f]{64}) ;;$", script, re.M):
             arms.append(f'*actionlint*{plat}*) name=actionlint; pin={self.actionlint_pin()}; sha={sha} ;;')
@@ -375,6 +388,7 @@ echo "$sha" > "$HOME/expected-hash"
             "cargo-nextest": first(r"cargo-nextest@([0-9.]+)", *wf, "ci.yml"),
             "cargo-deny": first(r"cargo-deny@([0-9.]+)", *wf, "ci.yml"),
             "cargo-fuzz": first(r"cargo-fuzz@([0-9.]+)", *wf, "ci.yml"),
+            "zizmor": first(r"zizmor@([0-9.]+)", *wf, "ci.yml"),
             "cargo-dist": first(r'^cargo-dist-version *= *"(.*)"', "dist-workspace.toml"),
             "mdbook": first(r"^ *MDBOOK_VERSION: *([0-9.]+)", *wf, "site.yml"),
         })
@@ -385,10 +399,11 @@ echo "$sha" > "$HOME/expected-hash"
             self.assertRegex(out, rf"running +download {crate} {re.escape(pin)} \(x86_64-unknown-linux-musl\)")
             self.assertRegex(out, rf"ok +{crate} {re.escape(pin)}\n")
         self.assertNotIn("install", calls)
-        for b in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "dist", "mdbook", "actionlint", "shellcheck"]:
+        for b in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "zizmor", "dist", "mdbook", "actionlint",
+                  "shellcheck"]:
             self.assertTrue(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", b)), b)
         # Only the binary, not the archive's other files.
-        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 7)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 8)
 
     def test_setup_on_a_mac_takes_the_universal_nextest(self):
         out, calls = self.setup(uname=MAC, **self.good_downloads())
@@ -441,11 +456,12 @@ echo "$sha" > "$HOME/expected-hash"
                   f'deny) echo "cargo-deny {p["cargo-deny"]}" ;; '
                   f'fuzz) echo "cargo-fuzz {p["cargo-fuzz"]}" ;; esac',
             dist=f'echo "dist {p["cargo-dist"]}"', mdbook=f'echo "mdbook v{p["mdbook"]}"',
+            zizmor=f'echo "zizmor {p["zizmor"]}"',
             actionlint=f"echo {self.actionlint_pin()}",
             shellcheck=self.fake_shellcheck(self.shellcheck_pin()))
         self.assertNotIn("curl called", out)
         self.assertNotIn("install", calls)
-        self.assertNotRegex(out, r"missing +(cargo-|mdbook|actionlint|shellcheck)")
+        self.assertNotRegex(out, r"missing +(cargo-|mdbook|actionlint|shellcheck|zizmor)")
 
     def test_setup_names_the_directory_missing_from_path(self):
         out, calls = self.setup(uname=LINUX, path_has_cargo_bin=False, **self.good_downloads())

@@ -1,4 +1,4 @@
-"""Tests for tools/ci.sh: the freebsd-build and fuzz jobs."""
+"""Tests for tools/ci.sh: the freebsd-build, fuzz, workflows and miri jobs."""
 import os
 import platform
 import re
@@ -79,6 +79,11 @@ class CiScriptTests(unittest.TestCase):
         targets = sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "fuzz", "fuzz_targets")))
         for t in targets:
             self.assertTrue(any(f" {t} fuzz/corpus/{t} fuzz/seeds/{t} " in l for l in runs), t)
+
+    def test_workflows_needs_zizmor(self):
+        r = self.run_with(["workflows"], "exit 0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("zizmor not found; tools/dev-setup.sh", r.stderr)
 
     def test_job_builds_then_packs(self):
         with open(CI) as f:

@@ -1,0 +1,22 @@
+# Findings of zizmor (tools/ci.sh workflows) that are ignored, each with
+# its reason. Fix a finding rather than add it here.
+rules:
+  cache-poisoning:
+    ignore:
+      - ci.yml # ci.yml tests and publishes nothing; release.yml builds the release files without a restored cache
+  excessive-permissions:
+    ignore:
+      - release.yml # written by dist
+  template-injection:
+    ignore:
+      - release.yml # written by dist
+  unpinned-images:
+    ignore:
+      - release.yml # written by dist
+  secrets-inherit:
+    ignore:
+      - release-resume.yml # on purpose: environment secrets reach a called workflow only with inherit, and none is stored repo-wide
+  self-repository:
+    ignore:
+      - release-gate.yml # actionlint 1.7.7 rejects the $/ form zizmor suggests
+      - release-resume.yml # actionlint 1.7.7 rejects the $/ form zizmor suggests

@@ -15,7 +15,7 @@
 #                  the license check for every platform's dependencies
 #                  (deny-license-check.toml); on GitHub it blocks a
 #                  release, not a pull request
-#   workflows      the workflow rule tests and actionlint
+#   workflows      the workflow rule tests, actionlint and zizmor
 #   shell-scripts  shellcheck on every shell script in the repository
 #   release-build  the release build for this machine's Linux musl target,
 #                  dist's global build, and our installer run on the result
@@ -105,6 +105,7 @@ needs_deny_license_check() { needs_deny; }
 needs_workflows() {
     need "PyYAML (the Python yaml module)" python3 -c "import yaml"
     need actionlint actionlint -version
+    need zizmor zizmor --version
 }
 needs_shell_scripts() { need shellcheck shellcheck --version; }
 needs_fuzz_build() {
@@ -183,12 +184,17 @@ job_deny_license_check() {
 }
 
 # The workflow rules, including the supply chain policy in
-# .github/scripts/tests/test_workflow_policy.py, then actionlint.
+# .github/scripts/tests/test_workflow_policy.py, then actionlint and
+# zizmor, which looks for security problems. zizmor reads the findings to
+# ignore, each with its reason, from .github/zizmor.yml. --offline: no
+# GitHub API calls, so no token is needed and a run here and on GitHub
+# finds the same.
 job_workflows() {
     run python3 -m unittest discover -s .github/scripts/tests
     # actionlint's own shellcheck run is off: it would also lint the
     # generated release.yml.
     run actionlint -shellcheck= -pyflakes=
+    run zizmor --offline .github/workflows
 }
 
 # Every tracked shell script: the ones named *.sh, and any other file whose
