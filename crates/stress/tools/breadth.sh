@@ -64,7 +64,7 @@ run() {
 export -f run
 
 : > "$OUT/summary.txt"
-# shellcheck disable=SC2086  # SEEDS is "first last" for seq
+# shellcheck disable=SC2086,SC2016  # SEEDS is "first last" for seq; run expands in bash -c
 for seed in $(seq $SEEDS); do for dir in push pull; do echo "$dir $seed"; done; done \
   | xargs -P "$JOBS" -n 2 "$BASH" -c 'run "$0" "$1"'
 

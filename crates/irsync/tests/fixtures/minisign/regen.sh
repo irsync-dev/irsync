@@ -5,7 +5,7 @@
 # tests in src/signature.rs must still pass afterwards.
 set -eu
 cd "$(dirname "$0")"
-rm -f a.key a.pub b.key b.pub data.txt *.minisig
+rm -f a.key a.pub b.key b.pub data.txt ./*.minisig
 minisign -G -W -f -p a.pub -s a.key
 minisign -G -W -f -p b.pub -s b.key
 printf 'irsync signature test data\n' > data.txt

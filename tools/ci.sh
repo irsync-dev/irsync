@@ -116,10 +116,10 @@ needs_freebsd_build() {
 }
 
 job_check() {
-    # ${target[@]+...} below: bash 3.2 on macOS calls an empty array unset.
-    local target=() profile=ci
+    # ${target_args[@]+...} below: bash 3.2 on macOS calls an empty array unset.
+    local target_args=() profile=ci
     if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
-        target=(--target "$CARGO_BUILD_TARGET")
+        target_args=(--target "$CARGO_BUILD_TARGET")
     fi
     # GitHub's macOS runners are slow, so there the ci-macos profile leaves
     # out slow tests that Linux covers (.config/nextest.toml). A Mac of your
@@ -136,16 +136,16 @@ job_check() {
     # cargo command runs them. A missing pandoc or mandoc fails here instead
     # of skipping the man page tests.
     MAN_TESTS_REQUIRED=1 run python3 -m unittest discover -s tools/tests
-    run cargo clippy --locked --workspace --all-targets --all-features ${target[@]+"${target[@]}"} -- -D warnings
+    run cargo clippy --locked --workspace --all-targets --all-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
     # Keeps the build without the otel feature compiling.
-    run cargo clippy --locked --workspace --all-targets --no-default-features ${target[@]+"${target[@]}"} -- -D warnings
+    run cargo clippy --locked --workspace --all-targets --no-default-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
     # nextest runs each test in its own process, tests from all files side
     # by side, and kills a hung test (see .config/nextest.toml).
     # --run-ignored all adds the slow netstress tests.
     run cargo nextest run --locked --workspace --all-features --profile "$profile" \
-        --run-ignored all ${target[@]+"${target[@]}"}
+        --run-ignored all ${target_args[@]+"${target_args[@]}"}
     # nextest does not run doc tests.
-    run cargo test --locked --workspace --all-features --doc ${target[@]+"${target[@]}"}
+    run cargo test --locked --workspace --all-features --doc ${target_args[@]+"${target_args[@]}"}
 }
 
 # Known vulnerabilities, unmaintained or yanked crates, licenses and sources,
@@ -164,7 +164,8 @@ job_deny_license_check() {
 # .github/scripts/tests/test_workflow_policy.py, then actionlint.
 job_workflows() {
     run python3 -m unittest discover -s .github/scripts/tests
-    # shellcheck is off: it would also lint the generated release.yml.
+    # actionlint's own shellcheck run is off: it would also lint the
+    # generated release.yml.
     run actionlint -shellcheck= -pyflakes=
 }
 

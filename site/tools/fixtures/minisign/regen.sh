@@ -5,7 +5,7 @@
 # release key. Run it in this directory; the key and signatures all change.
 set -eu
 cd "$(dirname "$0")"
-rm -f test.key test.pub irsync-installer.sh *.minisig
+rm -f test.key test.pub irsync-installer.sh ./*.minisig
 minisign -G -W -f -p test.pub -s test.key
 printf '#!/bin/sh\necho "fake installer ran: $*"\n' > irsync-installer.sh
 minisign -S -s test.key -m irsync-installer.sh -x irsync-installer.sh.minisig -t 'irsync v9.9.9'

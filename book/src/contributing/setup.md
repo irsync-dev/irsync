@@ -53,6 +53,8 @@ package manager (`apt`, `brew`, `pkg`).
 - **groff**, optional. `test_groff_renders_without_warnings` renders each
   page with it and skips without it. It runs on Linux CI. On a Mac,
   `nix-shell -p groff` is one way to get it.
+- **shellcheck**, optional. It finds quoting and other bugs in the shell
+  scripts: `shellcheck site/install.sh`.
 - **minisign 0.10 or newer**, optional. Maintainers sign releases with it
   ([The release signing key](release-signing-key.md)), and it makes the
   signature test files. Older versions write a signature format that irsync

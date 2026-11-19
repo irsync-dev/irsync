@@ -70,6 +70,7 @@ hint() {
             cc) echo "sudo pkg install llvm" ;;
             node) echo "sudo pkg install node npm" ;;
             pandoc) echo "sudo pkg install hs-pandoc" ;;
+            shellcheck) echo "sudo pkg install hs-ShellCheck" ;;
             *) echo "sudo pkg install $1" ;;
         esac
     else
@@ -518,6 +519,14 @@ if [ -n "$minisign_v" ] && version_ge "$minisign_v" 0.10; then
     ok "minisign $minisign_v"
 else
     warn "minisign 0.10 or newer${minisign_v:+, have $minisign_v}, to sign releases" "$(hint minisign)"
+fi
+
+# The shellcheck tool finds quoting and other bugs in shell scripts. It prints
+# its version on the second line, "version: 0.11.0".
+if have shellcheck; then
+    ok "shellcheck $({ shellcheck --version 2>/dev/null || true; } | sed -n 's/^version: *//p')"
+else
+    warn "shellcheck, to check the shell scripts" "$(hint shellcheck)"
 fi
 
 if [ "$os" = Linux ]; then
