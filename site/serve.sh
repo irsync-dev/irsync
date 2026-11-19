@@ -24,7 +24,7 @@ npx -y "chokidar-cli@$CHOKIDAR_VERSION" 'book/**' 'site/**' \
   -c site/build.sh &
 
 npx -y "browser-sync@$BROWSER_SYNC_VERSION" start --server target/site \
-  --port "$port" --files target/site --no-notify --no-ui --no-open &
+  --extensions html --port "$port" --files target/site --no-notify --no-ui --no-open &
 
 # npx runs each tool as a child of its own, so killing the npx processes
 # would leave the tools running; signal the whole process group instead.

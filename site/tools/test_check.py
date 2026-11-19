@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check import (check_flags, check_fonts, check_links, check_moved, cli_flags,
+from check import (check_flags, check_fonts, check_html_links, check_links, check_moved, cli_flags,
                    documented_commands)
 
 
@@ -52,6 +52,21 @@ class LinkTests(TmpCase):
         )
         write(self.d, "b.html", '<h1 id="here">b</h1>')
         self.assertEqual(check_links(self.d), [])
+
+    def test_address_without_html_resolves_to_the_page(self):
+        # The site links to x for x.html, as Cloudflare serves it.
+        write(self.d, "a.html", '<a href="b#here">b</a><a href="sub/">s</a><a href="c">c</a>')
+        write(self.d, "b.html", '<h1 id="here">b</h1>')
+        write(self.d, "sub/index.html", "<p>s</p>")
+        problems = check_links(self.d)
+        self.assertEqual(problems, ["a.html: c: no such file"])
+
+    def test_html_addresses_are_reported(self):
+        write(self.d, "a.html", '<a href="b.html">b</a><a href="b">b</a>'
+                                '<a href="https://x.org/b.html">x</a>')
+        write(self.d, "b.html", "<p>b</p>")
+        self.assertEqual(check_html_links(self.d),
+                         ["a.html: b.html: link to b instead; the site redirects .html addresses"])
 
 
 class FontTests(TmpCase):

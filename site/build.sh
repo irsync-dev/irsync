@@ -124,3 +124,7 @@ done
 cp "$fontsource/barlow/LICENSE" "$out/fonts/barlow-OFL.txt"
 cp "$fontsource/inter/LICENSE" "$out/fonts/inter-OFL.txt"
 cp "$fontsource/jetbrains-mono/LICENSE" "$out/fonts/jetbrains-mono-OFL.txt"
+
+# Last, once every page is in place: link to the pages without .html, the
+# addresses Cloudflare serves them at (see pretty_urls.py).
+python3 "$root/site/tools/pretty_urls.py" "$out"
