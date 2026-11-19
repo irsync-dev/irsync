@@ -432,6 +432,49 @@ async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
     r.finish(&Outcome::default(), Duration::from_secs(1));
 }
 
+#[tokio::test]
+async fn the_last_of_several_sessions_leaves_its_done_lines_too() {
+    let buf = Buf::default();
+    let mut r = feed(
+        reporter(&buf, true, 0, false, false),
+        vec![
+            Event::SessionStart { index: 0, of: 2 },
+            Event::FileDone(rp("a"), 5),
+            Event::SessionStart { index: 1, of: 2 },
+            Event::Total {
+                party: Party::Local,
+                files: 2,
+                bytes: 14,
+            },
+            Event::Total {
+                party: Party::Peer,
+                files: 0,
+                bytes: 0,
+            },
+            Event::FileDone(rp("b"), 7),
+            Event::FileDone(rp("c"), 7),
+        ],
+    )
+    .await;
+    r.clear();
+    r.finish(&Outcome::default(), Duration::from_secs(1));
+    let t = buf.text();
+    // A printed line ends where its text ends; a block line is padded and
+    // followed by the sequences that erase it.
+    let printed = |phase: &str, tail: &str| {
+        t.lines()
+            .any(|l| l.contains(phase) && l.trim_end_matches('\r').ends_with(tail))
+    };
+    assert!(
+        printed(
+            "transfer  done",
+            "2 files  avg 0B/s sent  0B/s synced  0:00:00"
+        ),
+        "{t:?}"
+    );
+    assert!(printed("list      done", "2 entries  14"), "{t:?}");
+}
+
 #[test]
 fn every_line_of_the_block_reaches_the_terminal_even_if_it_never_changes() {
     use irsync::cli::progress::screen::{Screen, WriterTerm};

@@ -40,7 +40,8 @@
 //! are fitted to the terminal width, which is re-read on every redraw (at most
 //! every 100 ms, at once on a connection state change). At the end of a
 //! session the block is erased before the trailer; with several sources each
-//! finished session leaves its `done` lines in the scrollback.
+//! finished session, the last one too, leaves its `done` lines in the
+//! scrollback.
 //!
 //! The work is split three ways:
 //! - [`state`](mod@state): [`Live`], what the block knows, folded from events
@@ -296,7 +297,14 @@ impl Reporter {
         if let Some(d) = &mut self.live.delete {
             d.finished = true;
         }
-        self.draw(true);
+        if self.live.session.1 > 1 {
+            // No `SessionStart` follows the last of several sessions: its
+            // `done` lines join the earlier ones' in the scrollback here.
+            self.screen.clear();
+            self.print_finished_session();
+        } else {
+            self.draw(true);
+        }
         self
     }
 
