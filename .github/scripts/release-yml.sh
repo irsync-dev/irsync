@@ -55,6 +55,26 @@ if ! grep -q -- ' --draft artifacts/\*' <<<"$create"; then
     exit 1
 fi
 
+# The host job attaches artifacts/* to the release. dist-manifest.json gets
+# there through the artifact list, read seconds after the manifest is
+# uploaded, and that list can miss it: the beta.6 drafts had no manifest, so
+# sign-release.sh refused them. The host job's own copy, written by
+# `dist host` a few steps earlier, goes in directly instead, before the
+# attest step.
+cleanup='rm -f artifacts/*-dist-manifest.json'
+found=$(grep -cxF -- "          $cleanup" "$workflow" || true)
+if [ "$found" -ne 1 ]; then
+    echo "release-yml.sh: expected one '$cleanup' line in what dist wrote, found $found; did dist change its template?" >&2
+    exit 1
+fi
+awk -v line="          $cleanup" '
+    { print }
+    $0 == line {
+        print "          # Our own copy, not the artifact: the artifact list can miss it."
+        print "          cp dist-manifest.json artifacts/dist-manifest.json"
+    }' "$workflow" >"$tmp/manifest"
+cp "$tmp/manifest" "$workflow"
+
 cp "$workflow" "$tmp/generated"
 restore
 if [ "$mode" = write ]; then
