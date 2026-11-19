@@ -84,6 +84,18 @@ def job_text(name, job_id):
 
 
 class PinTests(unittest.TestCase):
+    def test_top_level_permissions_read_only(self):
+        for name, wf in load_workflows().items():
+            if name == "release.yml":  # written by dist
+                continue
+            perms = wf.get("permissions")
+            self.assertIsInstance(perms, dict, f"{name}: no top-level permissions block")
+            self.assertNotIn("write", perms.values(), name)
+
+    def test_no_unpinned_pip_install(self):
+        for name in workflow_files():
+            self.assertNotRegex(read(name), r"pip3? install(?!.*--require-hashes)", name)
+
     def test_third_party_actions_pinned(self):
         bad = []
         for name, i, line in raw_uses_lines():
