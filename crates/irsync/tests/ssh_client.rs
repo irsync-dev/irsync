@@ -258,7 +258,7 @@ fn install_refuses_a_platform_without_a_release() {
     assert!(
         msg.contains(
             "Install irsync on both machines and set the server up by hand: \
-             https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand"
+             https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand"
         ),
         "{msg}"
     );

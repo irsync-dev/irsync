@@ -17,8 +17,8 @@ fixes.
 ## How irsync protects data
 
 How keys, grants and relays work is explained in
-[Identity and trust](https://irsync.org/book/explanation/identity-and-trust.html)
-and [Connections](https://irsync.org/book/explanation/connections.html).
+[Identity and trust](https://irsync.org/book/explanation/identity-and-trust)
+and [Connections](https://irsync.org/book/explanation/connections).
 
 ## How releases are built
 
@@ -26,7 +26,7 @@ Every release is built by GitHub Actions from a tag that can't be moved
 after it's pushed. Each archive, installer and package carries a signed
 attestation of the commit and workflow that built it, and a published
 release can't be changed. To check a download, see
-[Verify a download](https://irsync.org/book/how-to/verify-a-download.html).
+[Verify a download](https://irsync.org/book/how-to/verify-a-download).
 
 The apt and dnf repositories at dist.irsync.org are signed by the key
 `irsync releases <releases@irsync.org>`, with this fingerprint:

@@ -33,7 +33,7 @@ main() {
   version='@VERSION@'
   base_url='@BASE_URL@'
   page=https://github.com/irsync-dev/irsync/releases
-  cleanup=https://irsync.org/book/how-to/clean-up.html
+  cleanup=https://irsync.org/book/how-to/clean-up
 
   say() { printf 'irsync: %s\n' "$*" >&2; }
   die() { say "$*"; exit 1; }

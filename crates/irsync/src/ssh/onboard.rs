@@ -18,7 +18,7 @@ use crate::manage::{self, hosts::HostFlags};
 pub const ROOT_ACCOUNT: &str = "irsync does not set up a daemon as root";
 
 /// Where the book explains running the daemon under its own account.
-const RUN_THE_DAEMON_URL: &str = "https://irsync.org/book/how-to/run-the-daemon.html";
+const RUN_THE_DAEMON_URL: &str = "https://irsync.org/book/how-to/run-the-daemon";
 
 /// One host alias that onboarding wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
