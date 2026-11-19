@@ -27,12 +27,6 @@ version = 2
 yanked = "deny"
 unmaintained = "all"
 ignore = [
-    # TEMPORARY, awaiting the maintainer's decision. The fix (rusqlite 0.41,
-    # SQLite 3.54) is held back on purpose: see the rusqlite line in
-    # Cargo.toml and the test lookups_are_never_re_prepared. The exposure is
-    # real: fileset opens the .fileset.sqlite manifest inside a tree, which
-    # may have been copied from someone else.
-    { id = "RUSTSEC-2026-0459", reason = "TEMPORARY: SQLite fix held back by the 3.54 re-prepare regression; fileset opens manifests that may come from others, so this needs a decision, not a standing exception." },
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable. Only filegen uses it (via serde_yaml_ng), to read its own test specs; filegen is a test tool and is not shipped." },
 ]

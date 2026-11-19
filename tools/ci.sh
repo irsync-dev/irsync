@@ -153,7 +153,7 @@ job_check() {
 # Known vulnerabilities, unmaintained or yanked crates, licenses and sources,
 # as set in deny.toml, for the platforms irsync is built for.
 job_deny() {
-    run cargo deny --locked check
+    run cargo deny --locked check -D advisory-not-detected
 }
 
 # The licenses of every crate in Cargo.lock, whatever platform it is built
