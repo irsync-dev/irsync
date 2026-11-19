@@ -59,6 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # The build reads the release versions from the tags and the
           # release-X.Y branches (site/tools/versions.py).
           fetch-depth: 0
@@ -115,6 +116,7 @@ jobs:
       # files come from the staging build.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: |
             site/wrangler.jsonc
             site/tools/versions.py

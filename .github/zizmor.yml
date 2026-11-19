@@ -1,0 +1,32 @@
+# Findings of zizmor (tools/ci.sh workflows) that are ignored, each with
+# its reason. Fix a finding rather than add it here.
+#
+# zizmor can also ignore a single line (file.yml:LINE), but that line
+# number moves with every edit above it. The ignores below are for whole
+# files on purpose.
+rules:
+  cache-poisoning:
+    # A cache step in ci.yml is fine as long as ci.yml only tests: it must
+    # never build or upload anything that is released. Release files come
+    # from release.yml, which restores no cache.
+    ignore:
+      - ci.yml # file-wide on purpose: ci.yml tests and publishes nothing; release.yml builds the release files without a restored cache
+  excessive-permissions:
+    ignore:
+      - release.yml # written by dist
+  template-injection:
+    ignore:
+      - release.yml # written by dist
+  unpinned-images:
+    ignore:
+      - release.yml # written by dist
+  secrets-inherit:
+    ignore:
+      - release-resume.yml # on purpose: environment secrets reach a called workflow only with inherit, and none is stored repo-wide
+  self-repository:
+    # zizmor suggests calling our own workflows as `uses: $/.github/workflows/X.yml`
+    # instead of `uses: ./.github/workflows/X.yml`. actionlint 1.7.7, which CI
+    # pins, reports the `$/` form as an error, so the files keep `./`.
+    ignore:
+      - release-gate.yml # file-wide on purpose: keeps uses ./.github/workflows/..., because actionlint 1.7.7 rejects the $/ form zizmor suggests
+      - release-resume.yml # file-wide on purpose: keeps uses ./.github/workflows/..., because actionlint 1.7.7 rejects the $/ form zizmor suggests

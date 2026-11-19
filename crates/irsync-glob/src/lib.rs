@@ -36,6 +36,8 @@
 //! Any change in what a pattern matches is a breaking change for users' filter
 //! files and scripts.
 
+#![forbid(unsafe_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tok {
     Lit(u8),
@@ -287,6 +289,7 @@ mod tests {
     /// Many stars on a long repetitive input: the work must grow with pattern length
     /// times input length, not multiply with every star.
     #[test]
+    #[cfg_attr(miri, ignore = "timed: Miri runs far slower than the time limit")]
     fn many_stars_do_not_take_exponential_time() {
         let mut name = vec![b'a'; 200];
         name.extend_from_slice(b".jpg");

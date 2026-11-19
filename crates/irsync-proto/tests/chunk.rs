@@ -25,6 +25,7 @@ fn empty_input_has_zero_chunks_and_blake3_of_empty() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn chunks_cover_input_exactly() {
     let data = xorshift_bytes(1, 5 << 20);
     let d = digest_bytes(&data);
@@ -38,6 +39,7 @@ fn chunks_cover_input_exactly() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn chunk_sizes_within_bounds() {
     let data = xorshift_bytes(2, 5 << 20);
     let d = digest_bytes(&data);
@@ -52,6 +54,7 @@ fn chunk_sizes_within_bounds() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn chunk_hash_is_blake3_of_slice() {
     let data = xorshift_bytes(3, 3 << 20);
     let d = digest_bytes(&data);
@@ -62,6 +65,7 @@ fn chunk_hash_is_blake3_of_slice() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn whole_hash_is_blake3_of_input() {
     let data = xorshift_bytes(4, 3 << 20);
     assert_eq!(digest_bytes(&data).hash, *blake3::hash(&data).as_bytes());
@@ -80,6 +84,7 @@ fn small_file_is_single_chunk() {
 /// All-zero input never hits a content cut point, so every chunk but the tail
 /// is forced to the maximum size.
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn low_entropy_input_is_cut_at_max() {
     let max = CHUNK_PARAMS.max as usize;
     let data = vec![0u8; 2 * max + 1000];
@@ -92,6 +97,7 @@ fn low_entropy_input_is_cut_at_max() {
 
 /// A tail shorter than the minimum is kept as its own (short) last chunk.
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn sub_minimum_tail_is_its_own_chunk() {
     let max = CHUNK_PARAMS.max as usize;
     let data = vec![0u8; max + 7];
@@ -145,6 +151,7 @@ fn hex(b: &[u8; 32]) -> String {
 /// The expected chunk list is pinned in tests/golden/chunk_1mib.json so other
 /// implementations can reproduce the chunk boundaries exactly.
 #[test]
+#[cfg_attr(miri, ignore = "megabytes of input: hours under Miri")]
 fn golden_vector_matches() {
     let data = xorshift_bytes(0x9E37_79B9_7F4A_7C15, 1 << 20);
     let d = digest_bytes(&data);

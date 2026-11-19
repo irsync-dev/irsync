@@ -46,6 +46,7 @@ fn literal_bytes(ops: &[Op]) -> usize {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "a fresh sum at every position: hours under Miri")]
 fn rolling_checksum_matches_a_fresh_computation_at_every_position() {
     for block in [MIN_BLOCK, 700, 1024, 3000, MAX_BLOCK] {
         let bytes = data(4 * block + 17, block as u32);
@@ -73,6 +74,7 @@ fn block_length_grows_with_the_basis_within_bounds() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn an_unchanged_chunk_is_one_copy() {
     let old = data(256 * KIB, 1);
     let basis = Basis::sign(0, &old);
@@ -85,6 +87,7 @@ fn an_unchanged_chunk_is_one_copy() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn one_changed_byte_costs_about_one_block_of_literal() {
     let old = data(256 * KIB, 2);
     let mut new = old.clone();
@@ -102,6 +105,7 @@ fn one_changed_byte_costs_about_one_block_of_literal() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn an_insertion_shifts_the_rest_but_still_matches() {
     let old = data(200 * KIB, 3);
     let mut new = old[..50_000].to_vec();
@@ -118,6 +122,7 @@ fn an_insertion_shifts_the_rest_but_still_matches() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn a_deletion_still_matches_on_both_sides_of_it() {
     let old = data(200 * KIB, 4);
     let mut new = old[..60_000].to_vec();
@@ -133,6 +138,7 @@ fn a_deletion_still_matches_on_both_sides_of_it() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn copies_carry_the_basis_offset_in_the_old_file() {
     let old = data(300 * KIB, 5);
     let region = 100 * KIB..250 * KIB;
@@ -152,6 +158,7 @@ fn copies_carry_the_basis_offset_in_the_old_file() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "hundreds of KiB through the codec: minutes under Miri")]
 fn an_unrelated_basis_yields_a_literal_as_large_as_the_chunk() {
     let old = data(128 * KIB, 6);
     let new = data(128 * KIB, 7);

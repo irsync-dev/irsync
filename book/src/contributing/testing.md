@@ -250,6 +250,61 @@ Otherwise fix it like any bug, with a test in the crate's own tests that
 fails before the fix. Add the input to `fuzz/seeds/<target>/` too:
 `fuzz-build` then keeps it fixed.
 
+## Static analysis
+
+Three tools read the code and the workflows for security bugs, and two
+lints guard unsafe code: one in the compiler, one in clippy.
+
+**Unsafe code.** Rust code marked `unsafe` can do what the compiler cannot
+check, such as call the operating system. Two workspace lints (in the root
+`Cargo.toml`) guard it. The compiler's `unsafe_op_in_unsafe_fn` asks for an
+`unsafe` block around each unsafe call, also inside an `unsafe fn`.
+Clippy's `undocumented_unsafe_blocks` refuses an `unsafe` block without a
+`// SAFETY:` comment above it. The comment says why that call is sound: which rule
+holds, and what in the code keeps it. The crates with no unsafe code,
+`irsync-glob`, `irsync-proto` and `netstress`, forbid it. `tools/ci.sh
+check` runs clippy.
+
+**zizmor** looks for security problems in the GitHub workflows, such as a
+token left on disk after a checkout or a workflow with more permissions
+than it needs. It runs in the `workflows` job, next to actionlint:
+
+```sh
+tools/ci.sh workflows
+```
+
+`tools/dev-setup.sh` installs it. Fix what it finds. If a finding is wrong
+for us, ignore it in `.github/zizmor.yml`, with the reason on the same
+line. Findings in `release.yml` are ignored there, because dist writes
+that file.
+
+**CodeQL**, GitHub's code analysis, reads the Rust code and the workflows
+(`.github/workflows/codeql.yml`). It runs on every pull request, on every
+push to `main` and once a week. It does not run on your machine. Its
+findings show under the repository's **Security** tab, in **Code
+scanning**, and on the changed lines of a pull request. It is not part of
+`CI result` yet.
+
+**Miri** runs tests in an interpreter that stops at *undefined behaviour*:
+memory use the language does not allow, such as reading past the end of a
+buffer. A normal test run can pass right over it. Miri is about a hundred
+times slower, and it cannot make most system calls. So it runs only the
+tests that need none: `irsync-glob`, `irsync-proto`, the delta codec
+tests (`crates/irsync/tests/sub_chunk.rs`), and the parts of `fileset`
+that compare, escape and match names. The list, and what is left out
+and why, is `miri_packages` in `tools/ci.sh`. It uses the nightly from
+`fuzz/rust-toolchain.toml`, which `tools/dev-setup.sh` installs with
+Miri:
+
+```sh
+tools/ci.sh miri
+```
+
+It takes a few minutes, so it is not in a run of every job. The nightly
+workflow runs it every night. A test that is too slow under Miri, or
+makes a system call, is marked
+`#[cfg_attr(miri, ignore = "reason")]`.
+
 ## Receiving a changed file
 
 The properties described in

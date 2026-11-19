@@ -6,8 +6,8 @@
 # Installs what it can without root: rustup itself, the toolchain from
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
 # the nightly from fuzz/rust-toolchain.toml, and cargo-nextest, cargo-deny,
-# cargo-fuzz, dist, actionlint, shellcheck and mdbook. Those seven are
-# downloaded from their release pages and checked against SHA-256s kept
+# cargo-fuzz, zizmor, dist, actionlint, shellcheck and mdbook. Those eight
+# are downloaded from their release pages and checked against SHA-256s kept
 # here; cargo builds one of the crates only where it has no binary for the
 # machine, or the hashes here are for another version than CI's (actionlint
 # and shellcheck are not crates; where there is no binary, the script names
@@ -30,7 +30,8 @@ check_only=false
 case ${1:-} in
     "") ;;
     --check) check_only=true ;;
-    -h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The comment block at the top, without its marks.
+    -h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "usage: $0 [--check]" >&2; exit 2 ;;
 esac
 
@@ -284,6 +285,7 @@ tool_hashes_for() {
         cargo-nextest) echo 0.9.151 ;;
         cargo-deny) echo 0.20.2 ;;
         cargo-fuzz) echo 0.13.2 ;;
+        zizmor) echo 1.32.0 ;;
         cargo-dist) echo 0.34.0 ;;
         mdbook) echo 0.5.2 ;;
     esac
@@ -293,6 +295,8 @@ tool_hashes_for() {
 # archive. mdbook publishes none: download its archives and hash them.
 # cargo-fuzz publishes none either; GitHub shows each asset's SHA-256 on
 # the release page. It has binaries for x86_64 Linux and Intel Macs only.
+# zizmor's are on its release page too; on Linux they are glibc builds, which
+# tool_archive picks for the musl target.
 tool_sha256() {
     case $1:$2 in
         cargo-nextest:x86_64-unknown-linux-musl) echo 6b284d6fde9670dfb6ee10ea9d9abbc85f95643d3f592472d420d82e257b3a6c ;;
@@ -306,6 +310,10 @@ tool_sha256() {
         cargo-deny:aarch64-apple-darwin) echo fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3 ;;
         cargo-fuzz:x86_64-unknown-linux-musl) echo b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c ;;
         cargo-fuzz:x86_64-apple-darwin) echo 27f1565e4d71b61ba57213e86feeb1a7adde0f6072b0bea6ffc6a1466f2e7853 ;;
+        zizmor:x86_64-unknown-linux-musl) echo bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b ;;
+        zizmor:aarch64-unknown-linux-musl) echo cb152b207f815116d7fa1c1ee4614f61578803351395052908095e79adfd9fd0 ;;
+        zizmor:x86_64-apple-darwin) echo 6983143c719ada6845a69cc4dd2bacc215f971662fecd8bbd2678388e5ce5969 ;;
+        zizmor:aarch64-apple-darwin) echo 6efed18c4539a663fd3c851a2be9533fd8456c4e646d9416206da059154a0d3c ;;
         cargo-dist:x86_64-unknown-linux-musl) echo f274b9889e93333a52cdcab86b93ab04b875b8ef4eebc7f8589514e0aff827e6 ;;
         cargo-dist:aarch64-unknown-linux-musl) echo aac7d48901f5283b53e136dd0498782c88a3350dfa4a5e88f4c3e0ba7e486eea ;;
         cargo-dist:x86_64-apple-darwin) echo 6aa89bb1e7c18f51ae8b148ce2fc6ab00ac46ed8173d4f2ed9afa12101218773 ;;
@@ -329,6 +337,7 @@ tool_archive() {
             ;;
         cargo-deny) echo "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-$t.tar.gz cargo-deny-$v-$t/cargo-deny" ;;
         cargo-fuzz) echo "https://github.com/rust-fuzz/cargo-fuzz/releases/download/$v/cargo-fuzz-$v-$t.tar.gz cargo-fuzz" ;;
+        zizmor) echo "https://github.com/zizmorcore/zizmor/releases/download/v$v/zizmor-${t/-linux-musl/-linux-gnu}.tar.gz zizmor" ;;
         cargo-dist) echo "https://github.com/axodotdev/cargo-dist/releases/download/v$v/cargo-dist-$t.tar.xz cargo-dist-$t/dist" ;;
         mdbook) echo "https://github.com/rust-lang/mdBook/releases/download/v$v/mdbook-v$v-$t.tar.gz mdbook" ;;
     esac
@@ -405,9 +414,11 @@ dist_pin=$(sed -n 's/^cargo-dist-version *= *"\(.*\)"/\1/p' "$root/dist-workspac
 mdbook_pin=$(sed -n 's/^ *MDBOOK_VERSION: *\([0-9.]*\).*/\1/p' "$root/.github/workflows/site.yml" | sed -n 1p)
 deny_pin=$(sed -n 's/.*cargo-deny@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
 fuzz_pin=$(sed -n 's/.*cargo-fuzz@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
+zizmor_pin=$(sed -n 's/.*zizmor@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
 cargo_tool cargo-nextest "$nextest_pin" "cargo nextest --version" "for tools/ci.sh check"
 cargo_tool cargo-deny "$deny_pin" "cargo deny --version" "for tools/ci.sh deny"
 cargo_tool cargo-fuzz "$fuzz_pin" "cargo fuzz --version" "for tools/ci.sh fuzz-build"
+cargo_tool zizmor "$zizmor_pin" "zizmor --version" "for tools/ci.sh workflows"
 cargo_tool cargo-dist "$dist_pin" "dist --version" "for release builds and tools/ci.sh release-build"
 cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site"
 

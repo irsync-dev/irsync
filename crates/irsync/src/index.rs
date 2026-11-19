@@ -149,10 +149,15 @@ impl Reader<'_> {
     pub fn reprepared(&self) -> Vec<(String, i32)> {
         use rusqlite::ffi;
         let mut out = Vec::new();
-        // SAFETY: the handle is this connection's, borrowed for the whole
-        // walk; the statements it lists stay prepared (in its cache) while
-        // the connection is borrowed, and only their SQL and counters are
-        // read.
+        // SAFETY: `handle` is this open connection's raw pointer; `self`
+        // is borrowed for the whole walk and a rusqlite `Connection` is not
+        // `Sync`, so no other thread uses it meanwhile. The statements
+        // `sqlite3_next_stmt` lists stay prepared (in rusqlite's cache)
+        // while the connection is borrowed, since nothing here finalizes
+        // one. `sqlite3_sql` is not null for a statement rusqlite prepared
+        // (always with prepare_v2 or v3), and the text stays valid until
+        // the statement is finalized; it is copied out before the next
+        // call. Only SQL text and counters are read.
         unsafe {
             let db = self.conn.handle();
             let mut st = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());

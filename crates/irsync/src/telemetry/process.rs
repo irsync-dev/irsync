@@ -99,14 +99,17 @@ mod tests {
         // test process has only a few descriptors, so stop at 65536 to
         // keep the walk short.
         const CAP: c_long = 1 << 16;
-        // SAFETY: sysconf only reads a limit.
+        // SAFETY: sysconf takes a constant name, reads a limit and returns
+        // it as a number; it touches no memory of ours.
         let limit = match unsafe { sysconf(_SC_OPEN_MAX) } {
             n if n > 0 => n.min(CAP),
             _ => CAP,
         };
         (0..limit as c_int)
-            // SAFETY: F_GETFD only reads the flags of `fd`, or fails with
-            // EBADF when no such descriptor is open.
+            // SAFETY: F_GETFD takes no third argument and only returns the
+            // flags of `fd`, or fails with EBADF when no such descriptor is
+            // open. It changes nothing, so asking about a descriptor some
+            // other code owns is harmless.
             .filter(|&fd| unsafe { fcntl(fd, F_GETFD) } != -1)
             .count() as u64
     }

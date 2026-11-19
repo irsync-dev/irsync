@@ -14,8 +14,14 @@ fn first_signal_wins_install_clears_and_syscalls_restart() {
     // SA_RESTART: a step in flight finishes instead of failing with EINTR.
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
         let probe = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        // SAFETY: the installed action is put straight back.
+        // SAFETY: the default action runs no code of ours, so installing
+        // it cannot break a handler's rules. No signal is raised before
+        // the old action goes back on the next line, and this is the only
+        // test in this binary, so nothing else in the process races it.
         let installed = unsafe { sigaction(sig, &probe) }.unwrap();
+        // SAFETY: puts back the action `filegen::signals::install` set,
+        // whose handler is safe to run at any time (see its own SAFETY
+        // comment).
         unsafe { sigaction(sig, &installed) }.unwrap();
         assert!(installed.flags().contains(SaFlags::SA_RESTART), "{sig:?}");
     }

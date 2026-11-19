@@ -32,8 +32,9 @@ starts a fresh CI run that includes the fixes from `main`.
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain, the
 nightly in `fuzz/rust-toolchain.toml`, cargo-nextest, cargo-deny,
-cargo-fuzz, dist, mdbook), actionlint and shellcheck, at CI's versions,
-and checks the system tools; `tools/dev-setup.sh --check` only reports.
+cargo-fuzz, zizmor, dist, mdbook), actionlint and shellcheck, at CI's
+versions, and checks the system tools; `tools/dev-setup.sh --check` only
+reports.
 
 ## Tests
 
@@ -70,13 +71,22 @@ pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
 `deny-license-check` (licenses for every platform; blocks a release only),
-`workflows` (after a change under `.github/`), `shell-scripts` (shellcheck
-on every shell script), `fuzz-build` (builds the fuzz targets in `fuzz/`
-and runs their seeds; Linux only) and `release-build` (after a
-change to the release build or packaging; Linux only).
+`workflows` (after a change under `.github/`; actionlint and zizmor),
+`shell-scripts` (shellcheck on every shell script), `fuzz-build` (builds
+the fuzz targets in `fuzz/` and runs their seeds; Linux only) and
+`release-build` (after a change to the release build or packaging; Linux
+only).
 
 `FUZZ_SECONDS=300 tools/ci.sh fuzz` fuzzes each target for that long; it
 runs only when named. See "Fuzzing" in `book/src/contributing/testing.md`.
+
+`tools/ci.sh miri` runs the tests in `miri_packages` (in `tools/ci.sh`)
+under Miri, which catches undefined behaviour in unsafe code. It is slow
+and runs only when named; the nightly workflow runs it too. See "Static
+analysis" in `book/src/contributing/testing.md`.
+
+Every `unsafe` block needs a `// SAFETY:` comment saying why that call is
+sound; clippy refuses one without.
 
 `tools/ci.sh freebsd-build` builds the FreeBSD tarball, on FreeBSD x86_64
 only. CI does not run it; the hand-started FreeBSD workflow does (see

@@ -10,6 +10,13 @@ use irsync::ssh::release::fetch;
 mod release;
 
 /// Tests that set process-wide env must not overlap.
+///
+/// It is also what makes each `set_var` and `remove_var` below sound:
+/// those are unsafe because another thread reading the environment
+/// through libc at the same moment could see freed memory. Every test in
+/// this file that does more than call a pure function holds this lock for
+/// its whole run, so while one changes the environment no other test's
+/// code runs. (nextest also runs each test in a process of its own.)
 static ENV: Mutex<()> = Mutex::new(());
 
 struct World {
@@ -25,13 +32,13 @@ struct World {
 
 fn world() -> World {
     let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
-    // SAFETY: serialized by ENV; no other thread reads these concurrently.
+    // SAFETY: `guard` holds ENV (see there).
     unsafe { std::env::remove_var("TMPDIR") };
     let outer = tempfile::tempdir().unwrap();
     let rel = tempfile::tempdir().unwrap();
     let tmpdir = outer.path().join("tmp dir");
     std::fs::create_dir(&tmpdir).unwrap();
-    // SAFETY: as above.
+    // SAFETY: `guard` still holds ENV.
     unsafe {
         std::env::set_var("TMPDIR", &tmpdir);
         std::env::set_var("IRSYNC_TEST_RELEASE_URL", release::url_of(rel.path()));

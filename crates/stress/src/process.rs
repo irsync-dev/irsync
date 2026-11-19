@@ -26,11 +26,15 @@ const RETRY_DELAY: Duration = Duration::from_millis(10);
 /// `spawn` alone leaves the signal handler's foreground child slot alone
 /// (the daemon has its own slot); `status` and `output` set it.
 pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
-    // SAFETY: between fork and exec the closure only calls `signal`,
-    // `sigemptyset`, `sigaddset` and `pthread_sigmask`, which are
-    // async-signal-safe and do not allocate. Registered once, outside the
-    // ETXTBSY retry loop; a caller passing the same `Command` again only
-    // stacks an identical, harmless reset.
+    // SAFETY: the closure runs in the child between fork and exec, where
+    // only async-signal-safe calls are allowed (another thread may have
+    // held a lock at the fork). It only calls `signal`, `sigemptyset`,
+    // `sigaddset` and `pthread_sigmask`, which are, and builds an
+    // `io::Error` from an errno number, which does not allocate. The
+    // sigset lives on the closure's stack, and `sigemptyset` initialises
+    // it before anything reads it. Registered once, outside the ETXTBSY
+    // retry loop; a caller passing the same `Command` again only stacks an
+    // identical, harmless reset.
     unsafe {
         cmd.pre_exec(|| {
             for sig in [libc::SIGINT, libc::SIGTERM] {
@@ -164,7 +168,9 @@ mod tests {
             "process::tests::the_child_starts_with_sigint_and_sigterm_not_ignored",
         ])
         .env(IGNORING_PARENT, "1");
-        // SAFETY: `signal` is async-signal-safe and does not allocate.
+        // SAFETY: the closure runs between fork and exec, where only
+        // async-signal-safe calls are allowed. It only calls `signal`,
+        // which is, with constant arguments, and allocates nothing.
         unsafe {
             cmd.pre_exec(|| {
                 libc::signal(libc::SIGINT, libc::SIG_IGN);

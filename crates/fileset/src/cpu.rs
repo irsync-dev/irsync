@@ -10,7 +10,8 @@ pub fn thread_cpu_time() -> Option<Duration> {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: `ts` is a valid, writable timespec.
+    // SAFETY: `&mut ts` points to a local, initialised timespec that
+    // outlives the call; clock_gettime writes only that one struct.
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     if ret != 0 {
         return None;
@@ -44,7 +45,10 @@ fn split() -> Option<(usize, usize)> {
     fn sysctl_u32(name: &std::ffi::CStr) -> Option<u32> {
         let mut value: u32 = 0;
         let mut size = std::mem::size_of::<u32>();
-        // SAFETY: `value` is a writable u32 and `size` holds its length.
+        // SAFETY: `name` is a CStr, so NUL-terminated. `value` is a local
+        // u32 and `size` holds its length, so sysctlbyname writes at most
+        // 4 bytes there (and the size it wrote into `size`). No new value
+        // is set: null and 0.
         let ret = unsafe {
             libc::sysctlbyname(
                 name.as_ptr(),

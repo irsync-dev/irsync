@@ -651,7 +651,10 @@ fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::
     cmd.stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out);
-    // SAFETY: setsid is async-signal-safe and touches no Rust state.
+    // SAFETY: the closure runs in the child between fork and exec, where
+    // only async-signal-safe calls are allowed. It only calls setsid,
+    // which is, and on failure turns its errno into an `io::Error`, which
+    // does not allocate.
     unsafe {
         cmd.pre_exec(|| {
             nix::unistd::setsid()

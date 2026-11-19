@@ -283,7 +283,10 @@ fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
         fp_offset: offset as libc::off_t,
         fp_length: len as libc::off_t,
     };
-    // SAFETY: `arg` is a valid fpunchhole_t that outlives the call.
+    // SAFETY: F_PUNCHHOLE reads a `fpunchhole_t` through its pointer
+    // argument; `&arg` points to a fully initialised one on the stack that
+    // outlives the call, and the kernel only reads it. `f` is borrowed, so
+    // its descriptor stays open.
     let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_PUNCHHOLE, &arg) };
     Ok(r == 0)
 }

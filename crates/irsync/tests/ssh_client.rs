@@ -17,6 +17,13 @@ use irsync::ssh::payload::Contents;
 mod release;
 
 /// Tests that set process-wide env must not overlap.
+///
+/// It is also what makes each `set_var` and `remove_var` below sound:
+/// those are unsafe because another thread reading the environment
+/// through libc at the same moment could see freed memory. Every test in
+/// this file that does more than call a pure function holds this lock for
+/// its whole run, so while one changes the environment no other test's
+/// code runs. (nextest also runs each test in a process of its own.)
 static ENV: Mutex<()> = Mutex::new(());
 
 /// Neither `fileset` nor the man pages.
@@ -62,7 +69,7 @@ fn fake_at(uname: Option<&str>, home_name: &str) -> Fake {
     std::fs::create_dir(&aux).unwrap();
     let log = aux.join("ssh.log");
     let err = aux.join("ssh.err");
-    // SAFETY: serialized by ENV; no other thread reads these concurrently.
+    // SAFETY: `guard` holds ENV (see there).
     unsafe {
         std::env::set_var("FAKE_SSH_HOME", &home);
         std::env::set_var("FAKE_SSH_LOG", &log);
@@ -130,7 +137,7 @@ fn rsh_splits_like_rsync() {
         Rsh::from_opts(Some("ssh -p 2222")).argv(),
         ["ssh", "-p", "2222"]
     );
-    // SAFETY: serialized by ENV.
+    // SAFETY: `_g` holds ENV (see there).
     unsafe { std::env::remove_var("IRSYNC_RSH") };
     assert_eq!(Rsh::from_opts(None).argv(), ["ssh"]);
 }
@@ -267,7 +274,7 @@ fn install_refuses_a_platform_without_a_release() {
 
 /// Point the release download at `url`, signed with the test key.
 fn set_release_url(url: &str) {
-    // SAFETY: the caller holds ENV through its `Fake`.
+    // SAFETY: every caller holds ENV through its `Fake` (see ENV).
     unsafe {
         std::env::set_var("IRSYNC_TEST_RELEASE_URL", url);
         std::env::set_var("IRSYNC_TEST_RELEASE_KEYS", release::keys_file());
@@ -443,7 +450,7 @@ fn home_with_a_space() {
 #[test]
 fn server_without_tar_changes_nothing() {
     let f = fake(None);
-    // SAFETY: serialized by ENV, held in `f`.
+    // SAFETY: `f` holds ENV (see there).
     unsafe { std::env::set_var("FAKE_SSH_HIDE", "tar") };
     let p = probe(&f.rsh, "myserver").unwrap();
     let e = ensure_installed(&f.rsh, "myserver", &p, false)
@@ -607,7 +614,7 @@ fn remote_commands_run_under_sh() {
     let p = probe(&wrapper, "myserver").unwrap();
     // FAKE_SSH_UNAME still reaches the inner sh.
     assert_eq!((p.os, p.arch), (Some("linux"), None));
-    // SAFETY: serialized by ENV, held in `f`.
+    // SAFETY: `f` holds ENV (see there).
     unsafe { std::env::remove_var("FAKE_SSH_UNAME") };
     let p = probe(&wrapper, "myserver").unwrap();
     let r = ensure_installed(&wrapper, "myserver", &p, false).unwrap();
@@ -631,7 +638,7 @@ fn remote_commands_run_under_sh() {
 fn probe_reports_the_host_name() {
     let f = fake(None);
     assert_eq!(probe(&f.rsh, "myserver").unwrap().hostname, None);
-    // SAFETY: serialized by ENV (held by `f`).
+    // SAFETY: `f` holds ENV (see there).
     unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "myserver.example.com") };
     let p = probe(&f.rsh, "192.168.1.5").unwrap();
     assert_eq!(p.hostname.as_deref(), Some("myserver"));
@@ -640,6 +647,7 @@ fn probe_reports_the_host_name() {
     let p = probe(&f.rsh, "192.168.1.5").unwrap();
     assert_eq!(p.hostname.as_deref(), Some("myserver"));
     assert!(p.installed.is_some());
+    // SAFETY: `f` still holds ENV.
     unsafe { std::env::set_var("FAKE_SSH_HOSTNAME", "localhost") };
     assert_eq!(probe(&f.rsh, "192.168.1.5").unwrap().hostname, None);
 }
@@ -675,15 +683,17 @@ fn client_name_travels_as_hex() {
 #[test]
 fn client_host_name_is_the_short_usable_one() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
-    // SAFETY: serialized by ENV.
+    // SAFETY: `_g` holds ENV (see there).
     unsafe { std::env::set_var("IRSYNC_TEST_HOSTNAME", "myclient.example.com") };
     assert_eq!(client_host_name().unwrap(), "myclient");
+    // SAFETY: `_g` still holds ENV.
     unsafe { std::env::set_var("IRSYNC_TEST_HOSTNAME", "localhost") };
     let e = client_host_name().unwrap_err().to_string();
     assert!(
         e.contains("\"localhost\"") && e.contains("host name"),
         "{e}"
     );
+    // SAFETY: `_g` still holds ENV.
     unsafe { std::env::remove_var("IRSYNC_TEST_HOSTNAME") };
     // The real one: what `uname -n` prints, cut short, or an error when
     // that is no usable name.
@@ -824,7 +834,7 @@ fn a_rejected_copy_keeps_the_old_binary() {
 fn probe_keeps_its_lines_apart_when_one_is_empty() {
     let f = fake(None);
     // No stand-in from the fake ssh: the `uname` below is the one found.
-    // SAFETY: serialized by ENV (held by `f`).
+    // SAFETY: `f` holds ENV (see there).
     unsafe { std::env::remove_var("FAKE_SSH_HOSTNAME") };
     let bin = f.aux.join("fake-bin");
     std::fs::create_dir(&bin).unwrap();

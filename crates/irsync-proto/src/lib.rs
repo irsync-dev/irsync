@@ -1,5 +1,7 @@
 //! Wire protocol types for irsync, generated from `proto/irsync/v1`.
 
+#![forbid(unsafe_code)]
+
 pub mod chunk;
 
 pub mod v1 {

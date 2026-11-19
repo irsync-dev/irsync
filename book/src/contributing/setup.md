@@ -21,10 +21,10 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
 rustup, the toolchain with rustfmt and clippy, the musl target on Linux, the
 nightly the fuzz targets build with, and cargo-nextest, cargo-deny,
-cargo-fuzz, dist, actionlint, shellcheck and mdbook. The nightly is a large
-download, and only fuzzing and Miri need it. Those seven tools are
-downloaded from their release pages and checked against SHA-256s kept in
-the script. Cargo builds a tool only where its project has no binary for
+cargo-fuzz, zizmor, dist, actionlint, shellcheck and mdbook. The nightly
+is a large download, and only fuzzing and Miri need it. Those eight tools
+are downloaded from their release pages and checked against SHA-256s kept
+in the script. Cargo builds a tool only where its project has no binary for
 your machine, or when the script's hashes are for another version than
 CI's. There is no shellcheck binary for FreeBSD; there the script names the
 package. They are held to the versions CI uses: if you have another
@@ -111,12 +111,18 @@ The `fuzz-build` job builds the fuzz targets in `fuzz/` with their pinned
 nightly and runs each on its checked-in inputs. The long fuzz runs are in a
 nightly workflow; see [Fuzzing](testing.md#fuzzing).
 
+The `miri` job runs the tests that can run under Miri, which catches
+undefined behaviour in unsafe code. It is slow, so it runs only when you
+name it, and every night on GitHub; see
+[Static analysis](testing.md#static-analysis).
+
 The `deny` job checks the dependencies with `cargo deny`, for the platforms
 irsync is built for. The `deny-license-check` job checks the licenses of
 every platform's dependencies; on GitHub its failure blocks a release, not
-a pull request. The `workflows` job runs the workflow rule tests and actionlint,
-which needs PyYAML and actionlint ([Supply chain](supply-chain.md)). The
-`shell-scripts` job runs shellcheck on every shell script, on every pull
+a pull request. The `workflows` job runs the workflow rule tests, actionlint
+and zizmor, which needs PyYAML, actionlint and zizmor
+([Supply chain](supply-chain.md),
+[Static analysis](testing.md#static-analysis)). The `shell-scripts` job runs shellcheck on every shell script, on every pull
 request. A warning that is wrong for one line is turned off on that line,
 with the reason in a comment.
 

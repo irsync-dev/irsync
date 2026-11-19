@@ -19,3 +19,6 @@ protox.workspace = true
 serde.workspace = true
 serde_json = "1"
 prost-types = "0.14"
+
+[lints]
+workspace = true
