@@ -148,8 +148,6 @@ book has the current look.
 The build makes a working copy of each book under `target/site-books/` and
 never changes `book/` itself. `site/tools/label_book.py` labels the copy:
 
-- The title in the bar at the top of every page is `irsync 0.1.0-beta.5`;
-  in `/dev/` it is `irsync unreleased`.
 - The title page says which version it documents, under its heading.
 - "Edit this page" is only in `/dev/`. A released page cannot be edited at
   its tag.
@@ -232,7 +230,8 @@ Light and Dark; `book/theme/picker.js` removes Rust, Coal and Ayu and
 shows Navy as Dark. A reader who chose one of the removed themes earlier
 still gets the light or dark look.
 
-The book's title in the menu bar ("irsync") links to the landing page at
+The book's title in the menu bar ("irsync Documentation", the same in every
+book) links to the landing page at
 `/`, as the landing page's own "irsync" links home; mdbook has no setting
 for this, so `book/theme/home-link.js` adds the link. A click on the bar
 around the title still scrolls to the top. A bare `mdbook serve` has no

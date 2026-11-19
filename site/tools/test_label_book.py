@@ -29,7 +29,7 @@ class PrepareTests(unittest.TestCase):
 
     def test_released(self):
         book.prepare(self.work, "beta", "0.1.0-beta.5")
-        self.assertIn('title = "irsync 0.1.0-beta.5"\n', self.toml())
+        self.assertIn('title = "irsync Documentation"\n', self.toml())
         self.assertIn('site-url = "/beta/"\n', self.toml())
         self.assertNotIn("edit-url-template", self.toml())
         self.assertEqual(self.intro(),
@@ -38,7 +38,7 @@ class PrepareTests(unittest.TestCase):
 
     def test_dev(self):
         book.prepare(self.work, "dev", None)
-        self.assertIn('title = "irsync unreleased"\n', self.toml())
+        self.assertIn('title = "irsync Documentation"\n', self.toml())
         self.assertIn('site-url = "/dev/"\n', self.toml())
         self.assertIn("edit-url-template", self.toml())
         self.assertIn("\n\nThis is the documentation of the unreleased development version of irsync. "
@@ -54,7 +54,13 @@ class PrepareTests(unittest.TestCase):
         before = self.toml()
         book.prepare(self.work, "dev", None)
         changed = [l for l in before.splitlines() if l not in self.toml().splitlines()]
-        self.assertEqual(changed, ['title = "irsync"', 'site-url = "/book/"'])
+        self.assertEqual(changed, ['site-url = "/book/"'])
+
+    def test_title_is_left_alone(self):
+        toml = self.toml().replace('title = "irsync Documentation"', 'title = "Something else"')
+        (self.work / "book.toml").write_text(toml, encoding="utf-8")
+        book.prepare(self.work, "beta", "0.1.0-beta.5")
+        self.assertIn('title = "Something else"\n', self.toml())
 
     def test_refuses(self):
         cases = [("docs", "1.0.0", "path"), ("beta", "1.0.0; rm", "version"),
@@ -63,7 +69,7 @@ class PrepareTests(unittest.TestCase):
             with self.assertRaisesRegex(book.BookError, word):
                 book.prepare(self.work, path, version)
         # Nothing was written by a refused call.
-        self.assertIn('title = "irsync"\n', self.toml())
+        self.assertIn('site-url = "/book/"\n', self.toml())
 
     def test_introduction_without_a_heading(self):
         (self.work / "src" / "introduction.md").write_text("irsync is…\n", encoding="utf-8")
@@ -77,21 +83,22 @@ class PrepareTests(unittest.TestCase):
             book.prepare(self.work, "beta", "0.1.0-beta.5")
 
     def test_setting_missing_from_book_toml(self):
-        (self.work / "book.toml").write_text('[book]\ntitle = "other"\n', encoding="utf-8")
-        with self.assertRaisesRegex(book.BookError, "title"):
+        (self.work / "book.toml").write_text('[book]\ntitle = "irsync Documentation"\n',
+                                             encoding="utf-8")
+        with self.assertRaisesRegex(book.BookError, "site-url"):
             book.prepare(self.work, "beta", "0.1.0-beta.5")
 
     def test_cli(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.work), "alpha", "0.1.0-alpha.4"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('title = "irsync 0.1.0-alpha.4"', self.toml())
+        self.assertIn('site-url = "/alpha/"', self.toml())
 
     def test_cli_dash_is_no_version(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.work), "dev", "-"],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('title = "irsync unreleased"', self.toml())
+        self.assertIn('site-url = "/dev/"', self.toml())
 
     def test_cli_error(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.work), "nope", "-"],
