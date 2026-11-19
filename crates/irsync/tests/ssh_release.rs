@@ -154,7 +154,10 @@ fn fetch_fails_without_signature() {
     let e = fetch(&tag, w.target).unwrap_err().to_string();
     assert_eq!(
         e,
-        format!("the release {tag} has no signature for sha256.sum; refusing to use the download")
+        format!(
+            "the release {tag} has no signature for sha256.sum, or GitHub answered with an error; \
+             refusing to use the download"
+        )
     );
     assert_eq!(w.left_in_tmpdir(), 0);
 }
