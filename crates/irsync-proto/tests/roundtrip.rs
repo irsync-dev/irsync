@@ -23,6 +23,7 @@ fn hello_roundtrips() {
         inplace: true,
         fsync: true,
         paranoid: true,
+        bwlimit: Some(1 << 20),
         single_file: true,
         append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
         build: Some(irsync_proto::v1::BuildInfo {
