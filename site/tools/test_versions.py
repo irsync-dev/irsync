@@ -223,7 +223,7 @@ class BooksTests(unittest.TestCase):
             versions.Book("beta", "0.1.0-beta.5", "b" * 40, "published"),
             # Obsolete on the homepage, still a book.
             versions.Book("alpha", "0.1.0-alpha.4", "a" * 40, "published"),
-            versions.Book("dev", None, None, "dev")])
+            versions.Book("dev", None, None, None)])
 
     def test_stable_is_the_main_book_and_old_channels_stay(self):
         found = {"1.0.0": R("2027-03-03", "c" * 40, True),
@@ -236,23 +236,23 @@ class BooksTests(unittest.TestCase):
         self.assertEqual(got[3].state, "unpublished")
 
     def test_no_version_at_all(self):
-        self.assertEqual(versions.books({}), [versions.Book("book", None, None, "dev"),
-                                              versions.Book("dev", None, None, "dev")])
+        self.assertEqual(versions.books({}), [versions.Book("book", None, None, None),
+                                              versions.Book("dev", None, None, None)])
 
     def test_text(self):
         found = {"0.1.0-beta.5": R("2026-11-19", "b" * 40, True)}
         self.assertEqual(versions.books_text(versions.books(found)),
                          f"book 0.1.0-beta.5 {'b' * 40} published\n"
                          f"beta 0.1.0-beta.5 {'b' * 40} published\n"
-                         "dev - - dev\n")
+                         "dev - - -\n")
 
-    def test_the_working_tree_books_carry_the_commit_of_the_build(self):
+    def test_the_working_tree_books_carry_the_commit_and_the_branch_of_the_build(self):
         # The same commit as the BUILD file.
         found = {"0.1.0-beta.5": R("2026-11-19", "b" * 40, True)}
-        self.assertEqual(versions.books(found, "d" * 40)[-1],
-                         versions.Book("dev", None, "d" * 40, "dev"))
-        self.assertEqual(versions.books_text(versions.books({}, "d" * 40)),
-                         f"book - {'d' * 40} dev\ndev - {'d' * 40} dev\n")
+        self.assertEqual(versions.books(found, "d" * 40, "main")[-1],
+                         versions.Book("dev", None, "d" * 40, "main"))
+        self.assertEqual(versions.books_text(versions.books({}, "d" * 40, "main")),
+                         f"book - {'d' * 40} main\ndev - {'d' * 40} main\n")
 
 
 class NewestTests(unittest.TestCase):
@@ -381,11 +381,23 @@ class CliTests(RepoCase):
         self.commit("0.1.0-beta.5", "2026-11-20T12:00:00+00:00")
         head = self.git("rev-parse", "HEAD")
         self.assertNotEqual(head, sha)
+        branch = self.git("symbolic-ref", "--short", "HEAD")
         r = subprocess.run([sys.executable, str(TOOL), "books", str(self.repo)],
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, f"book 0.1.0-beta.5 {sha} published\n"
-                                   f"beta 0.1.0-beta.5 {sha} published\ndev - {head} dev\n")
+                                   f"beta 0.1.0-beta.5 {sha} published\ndev - {head} {branch}\n")
+
+    def test_books_without_a_branch(self):
+        # A checkout of a commit, not of a branch.
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        self.git("tag", "v0.1.0-beta.5")
+        sha = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach")
+        r = subprocess.run([sys.executable, str(TOOL), "books", str(self.repo)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[-1], f"dev - {sha} -")
 
     def test_no_tags_exits_1_and_writes_nothing(self):
         self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
@@ -473,12 +485,17 @@ class PromotableTests(unittest.TestCase):
                  "1.1.0-beta.1": versions.Release("2027-04-01", SHA, False)}
         self.assertEqual(versions.unpublished(versions.books_text(versions.books(found))), ["1.1.0-beta.1"])
         self.assertEqual(versions.unpublished(versions.books_text(versions.books({}))), [])
-        self.assertEqual(versions.unpublished(versions.books_text(versions.books(found, "d" * 40))),
-                         ["1.1.0-beta.1"])
-        self.assertEqual(versions.unpublished(versions.books_text(versions.books({}, "d" * 40))), [])
+        self.assertEqual(versions.unpublished(versions.books_text(
+            versions.books(found, "d" * 40, "main"))), ["1.1.0-beta.1"])
+        self.assertEqual(versions.unpublished(versions.books_text(
+            versions.books({}, "d" * 40, "fix/a-branch"))), [])
 
-    def test_a_dev_line_without_a_commit_is_still_accepted(self):
-        # Builds made before the dev line carried one.
+    def test_a_branch_named_like_a_state_is_not_a_state(self):
+        self.assertEqual(versions.unpublished(
+            f"book 1.0.0 {SHA} published\ndev - {SHA} unpublished\n"), [])
+
+    def test_the_dev_line_of_an_older_build_is_still_accepted(self):
+        # It had no commit, and "dev" where the branch is now.
         self.assertEqual(versions.unpublished(f"book 1.0.0 {SHA} published\ndev - - dev\n"), [])
 
     def test_refuses_what_it_cannot_read(self):
@@ -490,6 +507,11 @@ class PromotableTests(unittest.TestCase):
                      "<html>Not found</html>\n",
                      f"book 1.0.0 {SHA} published\ndev 1.0.0 {SHA} dev\n",
                      f"book 1.0.0 {SHA} published\ndev - abc123 dev\n",
+                     f"book 1.0.0 {SHA} published\ndev - {SHA} \n",
+                     # Only /book/ and /dev/ can be the working tree, and a
+                     # release line names no branch.
+                     f"book 1.0.0 {SHA} published\nbeta - {SHA} main\ndev - {SHA} main\n",
+                     f"book 1.0.0 {SHA} main\ndev - {SHA} main\n",
                      # No main book, the main book twice, dev not last.
                      "dev - - dev\n",
                      f"beta 1.0.0-beta.1 {SHA} published\ndev - - dev\n",

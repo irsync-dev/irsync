@@ -52,17 +52,17 @@ mkdir -p "$out"
 # The books. versions.py lists them, one per line: PATH VERSION COMMIT STATE.
 # The list ships as VERSIONS, so a promote can tell what a build holds. Each
 # book is built from a working copy: today's settings and theme, and the
-# pages of its version's commit (of this working tree for STATE dev), which
+# pages of its version's commit (of this working tree for VERSION -), which
 # label_book.py labels with the version. Nothing under book/ is changed.
 python3 "$root/site/tools/versions.py" books "$root" >"$out/VERSIONS"
 books=$root/target/site-books
-while read -r path version commit state; do
+while read -r path version commit _; do
   work=$books/$path
   rm -rf "$work"
   mkdir -p "$work"
   cp "$root/book/book.toml" "$work/"
   cp -R "$root/book/theme" "$work/theme"
-  if [ "$state" = dev ]; then
+  if [ "$version" = - ]; then
     cp -R "$root/book/src" "$work/src"
   else
     # All of that commit's pages or none: versions.py says what went wrong.
