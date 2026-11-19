@@ -1,5 +1,7 @@
 #!/bin/sh
-# Build the site: landing page at / and the book at /book/.
+# Build the site: the landing page at /, and the book once per release
+# channel: /book/ (the main version), /stable/, /beta/, /alpha/ and /dev/
+# (this working tree). See "The books" in book/src/contributing/website.md.
 # Usage: site/build.sh [OUT]   (default: target/site)
 set -eu
 
@@ -46,12 +48,40 @@ tokens --light "html.light, html.rust" --dark "html.coal, html.navy, html.ayu" \
 # Start from an empty output, so files removed from site/ do not linger.
 rm -rf "$out"
 mkdir -p "$out"
-mdbook build "$root/book" -d "$out/book"
-# The book uses the system font stacks from the tokens. The empty
-# book/theme/fonts/fonts.css keeps mdbook's web fonts out; drop that file too,
-# and its link from every page.
-rm -rf "$out/book/fonts"
-python3 "$root/site/tools/strip_font_link.py" "$out/book"
+
+# The books. versions.py lists them, one per line: PATH VERSION COMMIT STATE.
+# The list ships as VERSIONS, so a promote can tell what a build holds. Each
+# book is built from a working copy: today's settings and theme, and the
+# pages of its version's commit (of this working tree for STATE dev), which
+# label_book.py labels with the version. Nothing under book/ is changed.
+python3 "$root/site/tools/versions.py" books "$root" >"$out/VERSIONS"
+books=$root/target/site-books
+while read -r path version commit state; do
+  work=$books/$path
+  rm -rf "$work" "$work.pages"
+  mkdir -p "$work"
+  cp "$root/book/book.toml" "$work/"
+  cp -R "$root/book/theme" "$work/theme"
+  if [ "$state" = dev ]; then
+    cp -R "$root/book/src" "$work/src"
+  else
+    mkdir -p "$work.pages"
+    git -C "$root" archive "$commit" book/src 2>/dev/null | tar -x -C "$work.pages" 2>/dev/null || true
+    if [ ! -d "$work.pages/book/src" ]; then
+      echo "no book/src in $version ($commit)" >&2
+      exit 1
+    fi
+    mv "$work.pages/book/src" "$work/src"
+    rm -rf "$work.pages"
+  fi
+  python3 "$root/site/tools/label_book.py" "$work" "$path" "$version"
+  mdbook build "$work" -d "$out/$path"
+  # The book uses the system font stacks from the tokens. The empty
+  # theme/fonts/fonts.css keeps mdbook's web fonts out; drop that file too,
+  # and its link from every page.
+  rm -rf "$out/$path/fonts"
+  python3 "$root/site/tools/strip_font_link.py" "$out/$path"
+done <"$out/VERSIONS"
 
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
