@@ -460,16 +460,19 @@ async fn the_last_of_several_sessions_leaves_its_done_lines_too() {
     r.finish(&Outcome::default(), Duration::from_secs(1));
     let t = buf.text();
     // A printed line ends where its text ends; a block line is padded and
-    // followed by the sequences that erase it.
-    let printed = |phase: &str, tail: &str| {
-        t.lines()
-            .any(|l| l.contains(phase) && l.trim_end_matches('\r').ends_with(tail))
+    // followed by the sequences that erase it. The elapsed time at the end
+    // of the transfer line is left out: it depends on how long the test ran.
+    let printed = |phase: &str, text: &str| {
+        t.lines().any(|l| {
+            let l = l.trim_end_matches('\r');
+            l.find(phase).is_some_and(|at| {
+                let l = &l[at..];
+                l.contains(text) && !l.contains('\x1b') && l == l.trim_end()
+            })
+        })
     };
     assert!(
-        printed(
-            "transfer  done",
-            "2 files  avg 0B/s sent  0B/s synced  0:00:00"
-        ),
+        printed("transfer  done", "2 files  avg 0B/s sent  0B/s synced  0:0"),
         "{t:?}"
     );
     assert!(printed("list      done", "2 entries  14"), "{t:?}");
