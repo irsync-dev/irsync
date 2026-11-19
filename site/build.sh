@@ -55,9 +55,11 @@ python3 "$root/site/tools/strip_font_link.py" "$out/book"
 
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
-for f in index.html 404.html robots.txt _headers install.sh; do
+for f in 404.html robots.txt _headers install.sh; do
   cp "$root/site/$f" "$out/"
 done
+# The landing page itself, with the release versions from git written in.
+python3 "$root/site/tools/versions.py" "$root" "$root/site/index.html" "$out/index.html"
 
 # Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in
 # site/package-lock.json, compile site/tailwind.css into style.css. npm ci

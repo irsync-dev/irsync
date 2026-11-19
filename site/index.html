@@ -60,10 +60,13 @@
             href="./"
             >irsync</a
           >
-          <span
+          <!-- The build fills the marked regions on this page from the
+               release versions in git (site/tools/versions.py). The badge
+               shows only while there is no stable release. -->
+          <!-- versions:prerelease --><span
             class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-semibold text-on-signal"
-            >beta</span
-          >
+            ><!-- versions:channel -->beta<!-- /versions:channel --></span
+          ><!-- /versions:prerelease -->
         </p>
         <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
           <li>
@@ -163,9 +166,13 @@
                 aria-hidden="true"
                 >1</span
               >
-              <h3 id="install" class="font-condensed text-label leading-7">Install</h3>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4">
+                <h3 id="install" class="font-condensed text-label leading-7">Install</h3>
+                <!-- One line per current release: channel, version, date. -->
+                <p class="flex flex-col items-end text-small text-muted"><!-- versions:lines --><!-- /versions:lines --></p>
+              </div>
               <div class="cmd mt-2">
-                <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
+                <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap" id="install-tail"><!-- versions:tail -->sh -s -- --beta<!-- /versions:tail --></span></span></pre>
               </div>
               <p class="mt-2 text-small text-muted">
                 Linux and macOS. Installs <code>irsync</code> and
@@ -198,15 +205,15 @@
               </p>
             </li>
           </ol>
-          <p
+          <!-- versions:prerelease --><p
             class="mt-5 border-l-4 border-signal py-1 pl-4 text-small"
             role="note"
           >
-            <strong class="font-condensed font-semibold">Beta.</strong>
+            <strong class="font-condensed font-semibold"><!-- versions:Channel -->Beta<!-- /versions:Channel -->.</strong>
             The command line and the protocol may still change: keep a backup.
             Windows, extended attributes and ACLs are not supported yet.
             <a href="book/reference/limitations.html">Known limitations</a>.
-          </p>
+          </p><!-- /versions:prerelease -->
         </section>
       </section>
     </main>

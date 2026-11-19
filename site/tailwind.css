@@ -76,6 +76,9 @@
 }
 @source "./index.html";
 @source "./404.html";
+/* The version lines of the landing page are written by the build; their
+   classes are in the tool. */
+@source "./tools/versions.py";
 
 /* The palette comes from tokens.css; light and dark follow the system. */
 :root {

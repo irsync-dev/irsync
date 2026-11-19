@@ -17,7 +17,9 @@ The design is docs/superpowers/specs/2026-11-19-site-release-versions-design.md.
 
 import re
 import subprocess
+import sys
 from collections import namedtuple
+from pathlib import Path
 
 CHANNELS = ("stable", "beta", "alpha")
 _RANK = {"alpha": 0, "beta": 1, "stable": 2}
@@ -26,6 +28,20 @@ _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta)\.(\d+))?")
 _RELEASE_BRANCH = re.compile(r"refs/remotes/origin/release-\d+\.\d+")
 _WORKSPACE_VERSION = re.compile(
     r'^\[workspace\.package\][^\[]*?^version\s*=\s*"([^"]*)"', re.MULTILINE)
+
+# How the install command on the page ends, by the channel it installs.
+_TAIL = {"stable": "sh", "beta": "sh -s -- --beta", "alpha": "sh -s -- --alpha"}
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+# One version on the page. The script in index.html turns span.version into a
+# button that copies the install command ending in data-tail. Tailwind reads
+# the classes from this file (@source in site/tailwind.css).
+_LINE = (
+    '<span class="inline-flex items-baseline gap-x-1.5 font-condensed font-normal whitespace-nowrap">'
+    '<strong class="font-semibold">{label}</strong> '
+    '<span class="version" data-tail="{tail}">{version}</span> '
+    '<span>· {date}</span></span>'
+)
 
 
 class VersionsError(Exception):
@@ -125,3 +141,62 @@ def from_git(repo):
         if ok and date:
             found[version] = date
     return found
+
+
+def _fill(html, name, fill):
+    """Replace every `versions:NAME` region of `html`, markers included.
+
+    `fill` gets what the region holds and returns what takes its place.
+    """
+    region = re.compile(rf"<!-- versions:{name} -->(.*?)<!-- /versions:{name} -->", re.DOTALL)
+    html, n = region.subn(lambda m: fill(m.group(1)), html)
+    if n == 0:
+        raise VersionsError(f"site/index.html: marker {name} not found")
+    return html
+
+
+def _day(iso):
+    year, month, day = iso.split("-")
+    return f"{int(day)} {_MONTHS[int(month) - 1]} {year}"
+
+
+def render(html, shown):
+    """The landing page `html` with its `versions:` regions filled in.
+
+    lines       one line per shown version
+    tail        the end of the install command, for the main version
+    prerelease  kept while the main version is a beta or an alpha, else dropped
+    channel     the main version's channel, inside a prerelease region
+    Channel     the same, capitalised
+    """
+    main = shown[0].channel if shown else None
+    pre = main in ("beta", "alpha")
+    lines = "".join(
+        _LINE.format(label=s.channel.capitalize(), tail=_TAIL[s.channel],
+                     version=s.version, date=_day(s.date))
+        for s in shown)
+    html = _fill(html, "lines", lambda _: lines)
+    html = _fill(html, "tail", lambda _: _TAIL.get(main, "sh"))
+    # The names are checked on the whole page first: a dropped prerelease
+    # region takes its channel markers with it.
+    html = _fill(html, "channel", lambda _: main if pre else "")
+    html = _fill(html, "Channel", lambda _: main.capitalize() if pre else "")
+    return _fill(html, "prerelease", lambda inner: inner if pre else "")
+
+
+def main(argv):
+    if len(argv) != 4:
+        print("usage: versions.py REPO IN_HTML OUT_HTML", file=sys.stderr)
+        return 2
+    repo, src, dst = map(Path, argv[1:])
+    try:
+        page = render(src.read_text(), pick(from_git(repo)))
+    except VersionsError as e:
+        print(f"versions.py: {e}", file=sys.stderr)
+        return 1
+    dst.write_text(page)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

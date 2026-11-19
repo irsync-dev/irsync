@@ -178,5 +178,89 @@ class FromGitTests(RepoCase):
         self.assertEqual(versions.from_git(ROOT)["0.1.0-beta.5"], "2026-11-19")
 
 
+INDEX = (ROOT / "site" / "index.html").read_text()
+
+
+class RenderTests(unittest.TestCase):
+    def page(self, *vs):
+        return versions.render(INDEX, versions.pick({v: "2026-11-19" for v in vs}))
+
+    def test_beta_only(self):
+        out = self.page("0.1.0-beta.5", "0.1.0-alpha.4")
+        self.assertIn('<strong class="font-semibold">Beta</strong> '
+                      '<span class="version" data-tail="sh -s -- --beta">0.1.0-beta.5</span> '
+                      '<span>· 19 Nov 2026</span>', out)
+        self.assertEqual(out.count('class="version"'), 1)
+        self.assertIn('id="install-tail">sh -s -- --beta</span>', out)
+        self.assertIn(">beta</span", out)        # the badge
+        self.assertIn("Beta.</strong>", out)     # the note
+        self.assertNotIn("versions:", out)       # no marker survives
+
+    def test_stable_with_newer_beta_and_alpha(self):
+        out = self.page("0.1.2", "0.2.0-beta.1", "0.3.0-alpha.1")
+        order = [out.index(v) for v in (">0.1.2<", ">0.2.0-beta.1<", ">0.3.0-alpha.1<")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn('<strong class="font-semibold">Stable</strong> '
+                      '<span class="version" data-tail="sh">0.1.2<', out)
+        self.assertIn('data-tail="sh -s -- --beta">0.2.0-beta.1<', out)
+        self.assertIn('data-tail="sh -s -- --alpha">0.3.0-alpha.1<', out)
+        self.assertIn('id="install-tail">sh</span>', out)
+        self.assertNotIn('role="note"', out)
+        self.assertNotIn("bg-signal", out)       # the badge is gone
+        self.assertNotIn("versions:", out)
+
+    def test_alpha_only(self):
+        out = self.page("0.1.0-alpha.4")
+        self.assertIn('id="install-tail">sh -s -- --alpha</span>', out)
+        self.assertIn(">alpha</span", out)
+        self.assertIn("Alpha.</strong>", out)
+
+    def test_nothing_released(self):
+        out = self.page()
+        self.assertNotIn('class="version"', out)
+        self.assertIn('id="install-tail">sh</span>', out)
+        self.assertNotIn('role="note"', out)
+        self.assertNotIn("bg-signal", out)
+
+    def test_single_digit_day(self):
+        out = versions.render(INDEX, versions.pick({"1.0.0": "2027-03-03"}))
+        self.assertIn("· 3 Mar 2027", out)
+
+    def test_the_rest_of_the_page_is_untouched(self):
+        out = self.page("0.1.0-beta.5")
+        self.assertIn("Resilient file sync over any network", out)
+        self.assertIn('<h3 id="install"', out)
+        self.assertIn("https://irsync.org/install.sh | ", out)
+
+    def test_missing_marker_fails(self):
+        for name in ["lines", "tail", "prerelease", "channel", "Channel"]:
+            broken = INDEX.replace(f"<!-- versions:{name} -->", "")
+            with self.assertRaisesRegex(versions.VersionsError, f"marker {name} not found"):
+                versions.render(broken, [])
+
+
+class CliTests(RepoCase):
+    def run_tool(self, out):
+        return subprocess.run(
+            [sys.executable, str(TOOL), str(self.repo), str(ROOT / "site/index.html"), str(out)],
+            capture_output=True, text=True)
+
+    def test_writes_the_page(self):
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        self.git("tag", "v0.1.0-beta.5")
+        out = self.repo / "out.html"
+        r = self.run_tool(out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(">0.1.0-beta.5<", out.read_text())
+
+    def test_no_tags_exits_1_and_writes_nothing(self):
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        out = self.repo / "out.html"
+        r = self.run_tool(out)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("versions.py: no release tags", r.stderr)
+        self.assertFalse(out.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
