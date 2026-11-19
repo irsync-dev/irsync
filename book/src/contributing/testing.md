@@ -252,13 +252,15 @@ fails before the fix. Add the input to `fuzz/seeds/<target>/` too:
 
 ## Static analysis
 
-Three tools read the code and the workflows for security bugs. A fourth
-check is in the compiler.
+Three tools read the code and the workflows for security bugs, and two
+lints guard unsafe code: one in the compiler, one in clippy.
 
 **Unsafe code.** Rust code marked `unsafe` can do what the compiler cannot
-check, such as call the operating system. The workspace lints (in the root
-`Cargo.toml`) make clippy refuse an `unsafe` block without a `// SAFETY:`
-comment above it. The comment says why that call is sound: which rule
+check, such as call the operating system. Two workspace lints (in the root
+`Cargo.toml`) guard it. The compiler's `unsafe_op_in_unsafe_fn` asks for an
+`unsafe` block around each unsafe call, also inside an `unsafe fn`.
+Clippy's `undocumented_unsafe_blocks` refuses an `unsafe` block without a
+`// SAFETY:` comment above it. The comment says why that call is sound: which rule
 holds, and what in the code keeps it. The crates with no unsafe code,
 `irsync-glob`, `irsync-proto` and `netstress`, forbid it. `tools/ci.sh
 check` runs clippy.

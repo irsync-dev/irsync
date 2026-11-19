@@ -357,8 +357,10 @@ fn local_time(secs: i64) -> String {
     // valid value.
     let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: both pointers come from references to locals that outlive
-    // the call. localtime_r is the thread-safe variant: it reads `t` and
-    // writes only into `tm`, not into shared static storage.
+    // the call. localtime_r reads `t` and returns its result only through
+    // `tm`, not in a static buffer as localtime does. It also reads TZ and
+    // updates libc's own time-zone state, which libc guards with a lock;
+    // nothing in irsync changes the environment while it runs.
     let ok = unsafe { !nix::libc::localtime_r(&t, &mut tm).is_null() };
     if !ok {
         return format!("@{secs}");

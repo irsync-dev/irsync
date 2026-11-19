@@ -121,8 +121,8 @@ irsync is built for. The `deny-license-check` job checks the licenses of
 every platform's dependencies; on GitHub its failure blocks a release, not
 a pull request. The `workflows` job runs the workflow rule tests, actionlint
 and zizmor, which needs PyYAML, actionlint and zizmor
-([Supply chain](supply-chain.md), [Static analysis](testing.md#static-analysis)). The
-`shell-scripts` job runs shellcheck on every shell script, on every pull
+([Supply chain](supply-chain.md),
+[Static analysis](testing.md#static-analysis)). The `shell-scripts` job runs shellcheck on every shell script, on every pull
 request. A warning that is wrong for one line is turned off on that line,
 with the reason in a comment.
 

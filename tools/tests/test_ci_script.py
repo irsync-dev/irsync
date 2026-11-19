@@ -104,7 +104,12 @@ class CiScriptTests(unittest.TestCase):
         self.assertIn("Miri not found; tools/dev-setup.sh", r.stderr)
 
     def test_miri_runs_each_listed_crate_with_the_nightly(self):
-        r = self.run_with(["miri"], "exit 0")
+        # The fake cargo logs its arguments one per line, so a word that
+        # reached it whole, or two words glued together, shows.
+        log = os.path.join(tempfile.mkdtemp(prefix="ci-miri-log-"), "args")
+        self.addCleanup(shutil.rmtree, os.path.dirname(log), ignore_errors=True)
+        r = self.run_with(["miri"], f'[ "$2" = miri ] && [ "$3" = test ] && '
+                                    f'{{ printf "%s\\n" "$@"; echo END; }} >> {log}; exit 0')
         self.assertEqual(r.returncode, 0, r.stderr)
         runs = [l for l in r.stdout.splitlines() if l.startswith("== cargo ")]
         self.assertTrue(runs, r.stdout)
@@ -112,6 +117,13 @@ class CiScriptTests(unittest.TestCase):
             self.assertRegex(line, r"^== cargo \+nightly-\S+ miri test --locked -p \S+")
         self.assertTrue(any(" -p irsync-glob" in l for l in runs), runs)
         self.assertTrue(any(" -p irsync-proto" in l for l in runs), runs)
+        # job_miri splits a multi-word entry into words on purpose: each
+        # word must reach cargo as an argument of its own.
+        with open(log) as f:
+            calls = [c.strip("\n").split("\n") for c in f.read().split("END\n") if c.strip()]
+        args = [c[c.index("-p") + 1:] for c in calls]
+        self.assertIn(["irsync", "--test", "sub_chunk"], args)
+        self.assertIn(["fileset", "--lib", "--", "compare::", "escape::", "glob::"], args)
 
     def test_miri_only_when_named(self):
         # Slow: never part of a run of every job.

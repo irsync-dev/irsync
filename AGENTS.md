@@ -71,10 +71,11 @@ pandoc and mandoc.
 
 `tools/ci.sh` with no job runs CI's other jobs too: `deny` (dependencies),
 `deny-license-check` (licenses for every platform; blocks a release only),
-`workflows` (after a change under `.github/`; actionlint and zizmor), `shell-scripts` (shellcheck
-on every shell script), `fuzz-build` (builds the fuzz targets in `fuzz/`
-and runs their seeds; Linux only) and `release-build` (after a
-change to the release build or packaging; Linux only).
+`workflows` (after a change under `.github/`; actionlint and zizmor),
+`shell-scripts` (shellcheck on every shell script), `fuzz-build` (builds
+the fuzz targets in `fuzz/` and runs their seeds; Linux only) and
+`release-build` (after a change to the release build or packaging; Linux
+only).
 
 `FUZZ_SECONDS=300 tools/ci.sh fuzz` fuzzes each target for that long; it
 runs only when named. See "Fuzzing" in `book/src/contributing/testing.md`.
