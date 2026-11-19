@@ -48,3 +48,10 @@ path = "fuzz_targets/frame.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "delta"
+path = "fuzz_targets/delta.rs"
+test = false
+doc = false
+bench = false
