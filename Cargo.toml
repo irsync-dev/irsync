@@ -39,11 +39,7 @@ tracing-opentelemetry = { version = "0.34", default-features = false, features =
 tonic = { version = "0.14", default-features = false }
 rustls = { version = "0.23", default-features = false }
 ssh-key = { version = "0.6", features = ["ed25519", "encryption", "std"] }
-# Held at 0.40 (SQLite 3.53): SQLite 3.54 re-prepares a statement whose
-# ORDER BY an index satisfies after every sqlite3_clear_bindings(), which
-# rusqlite's statement cache calls on each return. Index lookups would be
-# re-prepared on every call; `lookups_are_never_re_prepared` catches it.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 jwalk = "0.9"
 nix = "0.31"
 clap = { version = "4", features = ["derive"] }

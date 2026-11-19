@@ -504,6 +504,21 @@ struct Readers {
     freed: Condvar,
 }
 
+/// Keeps SQLite from choosing a query plan by the values bound to a
+/// statement (its "query planner stability guarantee"). Since SQLite 3.54 a
+/// plan can depend on the value bound in `col = ?`, and every
+/// sqlite3_clear_bindings() then expires the statement. rusqlite's
+/// statement cache calls that on each return, so each lookup with a join
+/// or an ORDER BY would be prepared again;
+/// `lookups_are_never_re_prepared` catches it.
+fn stable_plans(conn: &Connection) -> rusqlite::Result<()> {
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG,
+        true,
+    )?;
+    Ok(())
+}
+
 impl Readers {
     fn get(&self) -> Result<Connection> {
         let mut g = self.idle.lock().unwrap_or_else(|e| e.into_inner());
@@ -521,6 +536,7 @@ impl Readers {
                 )
                 .and_then(|c| {
                     c.busy_timeout(Duration::from_secs(5))?;
+                    stable_plans(&c)?;
                     c.pragma_update(None, "mmap_size", MMAP_SIZE)?;
                     Ok(c)
                 });
@@ -816,6 +832,7 @@ impl Index {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "mmap_size", MMAP_SIZE)?;
+        stable_plans(&conn)?;
         // Every transaction on this connection writes, several after a
         // read: take the write lock up front, so another process's commit
         // in between is waited out rather than failing the upgrade.
