@@ -164,6 +164,50 @@ differ, the code is what shipped.
     Losing the key means a new key and a changed `release-keys.pub`. A
     second maintainer can add their own key to that file.
 
+19. **A stale advisory exception fails the dependency check.** `cargo deny`
+    runs with `-D advisory-not-detected`, in `tools/ci.sh` and in
+    `advisories.yml`. Why: an exception in `deny.toml` that no longer
+    matches anything would stay for ever and hide the next advisory against
+    that crate. Cost if wrong: a crate's fix can make the check fail until
+    the exception is removed, which is a one-line change.
+
+20. **Fuzzing with cargo-fuzz, in `fuzz/`.** One target per entry point that
+    reads bytes from a peer or another program. The seeds checked in under
+    `fuzz/seeds/` run on every pull request (`fuzz-build`). Each target is
+    fuzzed for ten minutes every night (`nightly.yml`), on a corpus kept
+    in the Actions cache. A crash fails the run and the failing inputs are
+    uploaded as the `fuzz-artifacts` artifact, which is public. The
+    maintainer chose to keep the upload: a red run is useless without the
+    input, and anyone can run the same public fuzzer on the same code. The
+    book says what to do with a crash that looks exploitable. No hosted
+    fuzzing service for now. Cost if wrong: an input that shows a hole is
+    public until the run is deleted. Revisit a hosted service if the
+    nightly run finds too little or the maintainer wants crashes kept
+    private.
+
+21. **Static analysis in layers, with CodeQL advisory first.** Rules:
+    `unsafe_op_in_unsafe_fn` and clippy's `undocumented_unsafe_blocks`, so
+    every `unsafe` block says why it is sound; crates with no unsafe code
+    forbid it. zizmor lints the workflows in the `workflows` job, with
+    exceptions in `.github/zizmor.yml` that each give a reason. CodeQL runs
+    on the Rust code and the workflows, but is not part of `CI result`
+    until it has been quiet for a few weeks. Why: a check that cries wolf
+    on its first day would block every pull request. Miri runs the tests it
+    can run, on the crates that need no system calls, every night. Why not
+    on every pull request: it is about a hundred times slower. Cost if
+    wrong: undefined behaviour in unsafe code is found a day late. Making
+    CodeQL required is a settings change once it has proved quiet.
+
+22. **Private vulnerability reporting is on, and reports are answered within
+    7 days.** `SECURITY.md` offers GitHub's **Report a vulnerability**
+    button and `security@irsync.org`. The 7 days is the maintainer's
+    number. Why: a reporter should have a private place that is not an
+    email address, and a reply time makes the policy something people can
+    rely on. `tools/github_settings.py` holds the setting and `check`
+    reports it if it is off, so it can't drift unseen. Cost if wrong: one
+    maintainer has to keep to 7 days. Turning the setting on needs an org
+    admin.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
