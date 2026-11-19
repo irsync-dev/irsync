@@ -298,6 +298,17 @@ class CiWorkflowTests(unittest.TestCase):
             [r.strip() for r in runs],
         )
 
+    def test_codeql(self):
+        wf = load_workflows()["codeql.yml"]
+        on = triggers(wf)
+        self.assertIn("pull_request", on)
+        self.assertEqual(on["push"]["branches"], ["main"])
+        self.assertTrue(on["schedule"][0]["cron"])
+        self.assertEqual(wf["permissions"], {"contents": "read"})
+        job = next(iter(jobs(wf).values()))
+        self.assertEqual(job["permissions"], {"contents": "read", "security-events": "write"})
+        self.assertEqual(sorted(job["strategy"]["matrix"]["language"]), ["actions", "rust"])
+
     def test_nightly_fuzz(self):
         wf = load_workflows()["nightly.yml"]
         on = triggers(wf)
