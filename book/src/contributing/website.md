@@ -150,7 +150,9 @@ It enforces four things:
   command line (in a code block, or an inline code span starting with
   `irsync `) and in the first column of the tables in
   [Command line](../reference/command-line.md) is one that the given binary
-  lists in `--help`, of the top-level command or a subcommand. The book,
+  lists in `--help`, of the top-level command or a subcommand. A command
+  that the help hides, such as `irsync verify-signature`, counts once a
+  page uses it: the checker asks for that command's own `--help`. The book,
   `site/index.html` and `README.md` are checked.
 
 ## Serving locally

@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check import check_flags, check_fonts, check_links, check_moved, cli_flags
+from check import (check_flags, check_fonts, check_links, check_moved, cli_flags,
+                   documented_commands)
 
 
 def write(root, rel, text):
@@ -176,6 +177,42 @@ class FlagTests(TmpCase):
         binary.chmod(0o755)
         flags = cli_flags(binary)
         self.assertTrue({"-v", "--verbose", "--exclude", "-h", "--help"} <= flags, flags)
+
+    def fake_cli(self):
+        """A CLI with a listed command `sync` and a hidden command `secret`.
+        Any other first word is a positional: it gets the top-level help."""
+        binary = Path(self.d) / "fakebin"
+        binary.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "sync) printf 'Usage: fakebin sync [OPTIONS]\\n\\nOptions:\\n      --archive  Keep\\n' ;;\n"
+            "secret) printf 'Usage: fakebin secret [OPTIONS] <FILE>\\n\\nOptions:\\n      --deep <X>  Dig\\n' ;;\n"
+            "*) printf 'Usage: fakebin [OPTIONS] [COMMAND]\\n\\nCommands:\\n  sync  Copy\\n\\nOptions:\\n  -q, --quiet  Hush\\n' ;;\n"
+            "esac\n")
+        binary.chmod(0o755)
+        return binary
+
+    def test_cli_flags_misses_a_hidden_command_unless_named(self):
+        binary = self.fake_cli()
+        self.assertEqual(cli_flags(binary), {"-q", "--quiet", "--archive"})
+        self.assertEqual(cli_flags(binary, also=["secret"]), {"-q", "--quiet", "--archive", "--deep"})
+
+    def test_cli_flags_ignores_a_named_word_that_is_no_command(self):
+        # `fakebin photos --help` prints the top-level help: photos is an argument.
+        binary = self.fake_cli()
+        self.assertEqual(cli_flags(binary, also=["photos", "sync"]), {"-q", "--quiet", "--archive"})
+
+    def test_documented_commands(self):
+        p = write(self.d, "page.md",
+                  "Run `irsync secret --deep 1 file` or `irsync -av a b`.\n\n"
+                  "```sh\n$ irsync sync -a x y\nirsync photos host:\nrsync other --x\n```\n")
+        self.assertEqual(documented_commands([p]), {"secret", "sync", "photos"})
+
+    def test_flag_of_a_hidden_command_is_known(self):
+        binary = self.fake_cli()
+        p = write(self.d, "page.md", "```sh\nirsync secret --deep 1 file\n```\n")
+        flags = cli_flags(binary, also=documented_commands([p]))
+        self.assertEqual(check_flags([p], flags), [])
 
 
 if __name__ == "__main__":
