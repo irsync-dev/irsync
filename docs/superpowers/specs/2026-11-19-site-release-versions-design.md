@@ -196,9 +196,10 @@ in the commit, in the commit's own time zone, as `git log` shows it
 
 ### The signing script
 
-When `.github/scripts/sign-release.sh` has published the release and
-started the resume run (so not with `--no-publish`, and not when a step
-failed), it ends by printing how to promote the site:
+When `.github/scripts/sign-release.sh` runs with `--publish`, and has
+published the release and started the resume run, it ends by printing how
+to promote the site. Without `--publish` the release stays a draft and the
+script prints nothing about the site; the same when a step fails.
 
 ```
 To put v1.2.3 on irsync.org: check that https://dev.irsync.org/ shows it, then run:
@@ -208,7 +209,7 @@ To put v1.2.3 on irsync.org: check that https://dev.irsync.org/ shows it, then r
 The ref is always `main`, for a patch release too: the promote job runs
 only there. The script only prints the command; it does not start the
 promote. The script's tests in `.github/scripts/tests/` cover the new
-output, and that `--no-publish` does not print it.
+output, and that a run without `--publish` does not print it.
 - `site/deploy.sh staging` builds from the local checkout, so it shows
   what the local tags say. Its docs say to `git fetch --tags` first.
 
