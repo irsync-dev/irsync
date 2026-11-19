@@ -24,6 +24,21 @@ updates:
       - dependency-name: noq-proto
         versions: ["1.4.0"]
 
+  # The fuzz targets (fuzz/) have a Cargo.lock of their own.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      fuzz:
+        patterns: ["*"]
+    # As above.
+    ignore:
+      - dependency-name: noq-proto
+        versions: ["1.4.0"]
+
   - package-ecosystem: github-actions
     directory: /
     # dist writes release.yml; a Dependabot edit there would fail CI's

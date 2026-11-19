@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/*"]
+# The fuzz targets build on nightly, with a lock file of their own.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

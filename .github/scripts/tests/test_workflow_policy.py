@@ -117,14 +117,17 @@ class DependabotTests(unittest.TestCase):
         with open(path) as f:
             cfg = yaml.safe_load(f)
         self.assertEqual(cfg["version"], 2)
-        by_eco = {u["package-ecosystem"]: u for u in cfg["updates"]}
-        self.assertEqual(set(by_eco), {"cargo", "github-actions"})
-        for eco, u in by_eco.items():
-            self.assertEqual(u["schedule"]["interval"], "weekly", eco)
-            self.assertEqual(u["cooldown"]["default-days"], 7, eco)
+        # Cargo twice: the workspace, and the fuzz targets with their own
+        # Cargo.lock.
+        by_dir = {(u["package-ecosystem"], u["directory"]): u for u in cfg["updates"]}
+        self.assertEqual(len(by_dir), len(cfg["updates"]), "an ecosystem and directory twice")
+        self.assertEqual(set(by_dir), {("cargo", "/"), ("cargo", "/fuzz"), ("github-actions", "/")})
+        for key, u in by_dir.items():
+            self.assertEqual(u["schedule"]["interval"], "weekly", key)
+            self.assertEqual(u["cooldown"]["default-days"], 7, key)
             groups = list(u["groups"].values())
-            self.assertEqual(len(groups), 1, eco)
-            self.assertEqual(groups[0]["patterns"], ["*"], eco)
+            self.assertEqual(len(groups), 1, key)
+            self.assertEqual(groups[0]["patterns"], ["*"], key)
 
 
 class CiWorkflowTests(unittest.TestCase):
@@ -229,6 +232,21 @@ class CiWorkflowTests(unittest.TestCase):
         released = set(dist_config()["dist"]["targets"])
         self.assertLessEqual(released, set(narrow["graph"]["targets"]))
 
+    def test_fuzz_build_job(self):
+        # Every fuzz target must build and pass its seeds on a pull request
+        # that touches code. The nightly comes from fuzz/rust-toolchain.toml.
+        self.ci_script_runs("fuzz-build", 'cargo "+$nightly" fuzz build --target "$triple"')
+        job = jobs(self.ci)["fuzz-build"]
+        self.assertEqual(job["needs"], "changes")
+        self.assertEqual(job["if"], "needs.changes.outputs.code == 'true'")
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        text = job_text("ci.yml", "fuzz-build")
+        self.assertIn("fuzz/rust-toolchain.toml", text)
+        self.assertRegex(text, r"tool: cargo-fuzz@\d+\.\d+\.\d+\n")
+        # Not cargo-binstall, which install-action would hand the GitHub token.
+        self.assertIn("fallback: cargo-install", text)
+        self.assertIn("workspaces: fuzz", text)
+
     def test_dependency_review_on_prs_only(self):
         found = False
         for j in jobs(self.ci).values():
@@ -250,6 +268,33 @@ class CiWorkflowTests(unittest.TestCase):
             "cargo deny --locked check advisories -D advisory-not-detected",
             [r.strip() for r in runs],
         )
+
+    def test_nightly_fuzz(self):
+        wf = load_workflows()["nightly.yml"]
+        on = triggers(wf)
+        self.assertTrue(on["schedule"][0]["cron"])
+        self.assertIn("workflow_dispatch", on)
+        self.assertEqual(wf["permissions"], {"contents": "read"})
+        text = job_text("nightly.yml", "fuzz")
+        self.assertIn("tools/ci.sh fuzz", text)
+        self.assertIn("FUZZ_SECONDS: 600", text)
+        self.assertIn("if: failure()", text)        # the crash upload
+        self.assertIn("fuzz/artifacts", text)
+        # The corpus carries over from night to night, also after a crash.
+        steps = jobs(wf)["fuzz"]["steps"]
+        restore = [s for s in steps if step_uses(s, "actions/cache/restore")]
+        save = [s for s in steps if step_uses(s, "actions/cache/save")]
+        self.assertEqual(len(restore), 1)
+        self.assertEqual(len(save), 1)
+        self.assertEqual(restore[0]["with"]["path"], "fuzz/corpus")
+        self.assertEqual(save[0]["with"]["path"], "fuzz/corpus")
+        self.assertEqual(save[0]["if"], "always()")
+        self.assertIn("${{ github.run_id }}", restore[0]["with"]["key"])
+        self.assertTrue(restore[0]["with"]["key"].startswith(restore[0]["with"]["restore-keys"].strip()))
+        # The same cargo-fuzz as ci.yml, which tools/dev-setup.sh reads.
+        pin = re.compile(r"cargo-fuzz@([0-9.]+)")
+        self.assertEqual(pin.findall(text), pin.findall(job_text("ci.yml", "fuzz-build")))
+        self.assertIn("fallback: cargo-install", text)
 
 
 def dist_config():

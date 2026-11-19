@@ -1,0 +1,8 @@
+# The one nightly this repository uses: cargo-fuzz and Miri need one. The
+# rest of the build stays on the stable version in ../rust-toolchain.toml.
+# tools/ci.sh and tools/dev-setup.sh read the channel line. Move it on
+# purpose, to a nightly at least a week old on which `cargo fuzz build`
+# and `cargo miri setup` both work.
+[toolchain]
+channel = "nightly-2026-11-10"
+components = ["rust-src", "miri", "llvm-tools-preview"]

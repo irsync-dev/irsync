@@ -1,0 +1,5 @@
+target
+artifacts
+coverage
+# The corpus libFuzzer grows. The inputs worth keeping are in seeds/.
+corpus

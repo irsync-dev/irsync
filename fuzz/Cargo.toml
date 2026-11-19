@@ -1,0 +1,70 @@
+# The fuzz targets: see "Fuzzing" in book/src/contributing/testing.md.
+# Outside the main workspace (its Cargo.toml excludes this directory), so
+# the stable build never sees them. They build with the nightly in
+# rust-toolchain.toml here.
+[package]
+name = "irsync-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Without OpenTelemetry: nothing fuzzed here uses it.
+irsync = { path = "../crates/irsync", default-features = false }
+irsync-proto = { path = "../crates/irsync-proto" }
+irsync-glob = { path = "../crates/irsync-glob" }
+fileset = { path = "../crates/fileset" }
+prost = "0.14"
+tempfile = "3"
+
+# A workspace of its own.
+[workspace]
+
+# The same iroh as the main workspace (see the patch in ../Cargo.toml).
+[patch.crates-io]
+iroh = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "relpath"
+path = "fuzz_targets/relpath.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta"
+path = "fuzz_targets/delta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glob"
+path = "fuzz_targets/glob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false

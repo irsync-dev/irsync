@@ -626,6 +626,11 @@ class CiResultTests(unittest.TestCase):
         r = self.run_result({"a": {"result": "success"}, "b": {"result": "skipped"}})
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_skipped_fuzz_build_passes(self):
+        # A docs-only pull request skips fuzz-build like the other builds.
+        r = self.run_result({"changes": {"result": "success"}, "fuzz-build": {"result": "skipped"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_cancelled_need_fails(self):
         r = self.run_result({"a": {"result": "success"}, "check": {"result": "cancelled"}})
         self.assertEqual(r.returncode, 1)

@@ -5,14 +5,15 @@
 #
 # Installs what it can without root: rustup itself, the toolchain from
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
-# and cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five are
-# downloaded from their release pages and checked against SHA-256s kept
-# here; cargo builds one only where it has no binary for the machine, or the
-# hashes here are for another version than CI's. They are held to the
-# versions CI uses: another version is replaced. Points git at the repo's
-# hooks. Checks the rest, which comes from the system package manager, and
-# says which package to install (apt, brew, or pkg on FreeBSD). Safe to run
-# again. With all of it in place, tools/ci.sh runs the CI checks here.
+# the nightly from fuzz/rust-toolchain.toml, and cargo-nextest, cargo-deny,
+# cargo-fuzz, dist, actionlint and mdbook. Those six are downloaded from
+# their release pages and checked against SHA-256s kept here; cargo builds
+# one only where it has no binary for the machine, or the hashes here are
+# for another version than CI's. They are held to the versions CI uses:
+# another version is replaced. Points git at the repo's hooks. Checks the
+# rest, which comes from the system package manager, and says which package
+# to install (apt, brew, or pkg on FreeBSD). Safe to run again. With all of
+# it in place, tools/ci.sh runs the CI checks here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
 # something required is missing, else 0. Missing optional tools, and ones
@@ -27,7 +28,7 @@ check_only=false
 case ${1:-} in
     "") ;;
     --check) check_only=true ;;
-    -h | --help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "usage: $0 [--check]" >&2; exit 2 ;;
 esac
 
@@ -166,6 +167,21 @@ if $rust_ready && [ "$os" = Linux ]; then
     fi
 fi
 
+# The nightly the fuzz targets build with: the one nightly pin.
+if have rustup; then
+    nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$root/fuzz/rust-toolchain.toml")
+    nightly_install=(rustup toolchain install "$nightly" --profile minimal
+        --component rust-src --component miri --component llvm-tools-preview)
+    if ! rustup run "$nightly" rustc --version >/dev/null 2>&1 && ! $check_only; then
+        run "${nightly_install[@]}" || true
+    fi
+    if rustup run "$nightly" rustc --version >/dev/null 2>&1; then
+        ok "Rust $nightly (fuzz/rust-toolchain.toml)"
+    else
+        warn "Rust $nightly, for tools/ci.sh fuzz-build" "${nightly_install[*]}"
+    fi
+fi
+
 # The first x.y.z in the first line a version command prints, or nothing.
 tool_version() {
     { $1 2>/dev/null || true; } | first_version
@@ -265,6 +281,7 @@ tool_hashes_for() {
     case $1 in
         cargo-nextest) echo 0.9.151 ;;
         cargo-deny) echo 0.20.2 ;;
+        cargo-fuzz) echo 0.13.2 ;;
         cargo-dist) echo 0.34.0 ;;
         mdbook) echo 0.5.2 ;;
     esac
@@ -272,6 +289,8 @@ tool_hashes_for() {
 # The SHA-256 of a tool's release archive for a target, or nothing where
 # there is none. nextest, deny and dist publish a .sha256 file next to each
 # archive. mdbook publishes none: download its archives and hash them.
+# cargo-fuzz publishes none either; GitHub shows each asset's SHA-256 on
+# the release page. It has binaries for x86_64 Linux and Intel Macs only.
 tool_sha256() {
     case $1:$2 in
         cargo-nextest:x86_64-unknown-linux-musl) echo 6b284d6fde9670dfb6ee10ea9d9abbc85f95643d3f592472d420d82e257b3a6c ;;
@@ -283,6 +302,8 @@ tool_sha256() {
         cargo-deny:aarch64-unknown-linux-musl) echo 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d ;;
         cargo-deny:x86_64-apple-darwin) echo 248da7f581724e470071990c088ffc55c811981715f4cbdb258621fb79f8b7a6 ;;
         cargo-deny:aarch64-apple-darwin) echo fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3 ;;
+        cargo-fuzz:x86_64-unknown-linux-musl) echo b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c ;;
+        cargo-fuzz:x86_64-apple-darwin) echo 27f1565e4d71b61ba57213e86feeb1a7adde0f6072b0bea6ffc6a1466f2e7853 ;;
         cargo-dist:x86_64-unknown-linux-musl) echo f274b9889e93333a52cdcab86b93ab04b875b8ef4eebc7f8589514e0aff827e6 ;;
         cargo-dist:aarch64-unknown-linux-musl) echo aac7d48901f5283b53e136dd0498782c88a3350dfa4a5e88f4c3e0ba7e486eea ;;
         cargo-dist:x86_64-apple-darwin) echo 6aa89bb1e7c18f51ae8b148ce2fc6ab00ac46ed8173d4f2ed9afa12101218773 ;;
@@ -305,6 +326,7 @@ tool_archive() {
             echo "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$v/cargo-nextest-$v-$t.tar.gz cargo-nextest"
             ;;
         cargo-deny) echo "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-$t.tar.gz cargo-deny-$v-$t/cargo-deny" ;;
+        cargo-fuzz) echo "https://github.com/rust-fuzz/cargo-fuzz/releases/download/$v/cargo-fuzz-$v-$t.tar.gz cargo-fuzz" ;;
         cargo-dist) echo "https://github.com/axodotdev/cargo-dist/releases/download/v$v/cargo-dist-$t.tar.xz cargo-dist-$t/dist" ;;
         mdbook) echo "https://github.com/rust-lang/mdBook/releases/download/v$v/mdbook-v$v-$t.tar.gz mdbook" ;;
     esac
@@ -348,7 +370,7 @@ cargo_tool() {
             bin=${archive#* }
             bin=${bin##*/}
             case $crate in
-                cargo-nextest | cargo-deny) there_v=$(version_in_cargo_bin "$bin" "${crate#cargo-}" --version) ;;
+                cargo-nextest | cargo-deny | cargo-fuzz) there_v=$(version_in_cargo_bin "$bin" "${crate#cargo-}" --version) ;;
                 *) there_v=$(version_in_cargo_bin "$bin" --version) ;;
             esac
             # Already downloaded, but PATH does not lead to it: say so below,
@@ -380,8 +402,10 @@ nextest_pin=$(sed -n 's/.*cargo-nextest@\([0-9.]*\).*/\1/p' "$root/.github/workf
 dist_pin=$(sed -n 's/^cargo-dist-version *= *"\(.*\)"/\1/p' "$root/dist-workspace.toml")
 mdbook_pin=$(sed -n 's/^ *MDBOOK_VERSION: *\([0-9.]*\).*/\1/p' "$root/.github/workflows/site.yml" | sed -n 1p)
 deny_pin=$(sed -n 's/.*cargo-deny@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
+fuzz_pin=$(sed -n 's/.*cargo-fuzz@\([0-9.]*\).*/\1/p' "$root/.github/workflows/ci.yml" | sed -n 1p)
 cargo_tool cargo-nextest "$nextest_pin" "cargo nextest --version" "for tools/ci.sh check"
 cargo_tool cargo-deny "$deny_pin" "cargo deny --version" "for tools/ci.sh deny"
+cargo_tool cargo-fuzz "$fuzz_pin" "cargo fuzz --version" "for tools/ci.sh fuzz-build"
 cargo_tool cargo-dist "$dist_pin" "dist --version" "for release builds and tools/ci.sh release-build"
 cargo_tool mdbook "$mdbook_pin" "mdbook --version" "to build the book and site"
 
