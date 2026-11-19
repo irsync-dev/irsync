@@ -656,3 +656,38 @@ async fn resumed_session_reports_the_listed_totals() {
     })
     .await;
 }
+
+/// A session resumed from its stored plan plans nothing again, so the
+/// number of created items (`--stats`) has to come from the first
+/// connection's planning: the same count as an undisturbed run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_session_reports_the_created_count() {
+    within60(async {
+        let opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let plain = Harness::new().await;
+            twenty_files(plain.src(flow));
+            let want = plain
+                .run(&opts, flow)
+                .await
+                .unwrap_or_else(|e| panic!("{flow:?}: {e:#}"))
+                .created;
+            // The files and the directory.
+            assert_eq!(want, FILES as u64 + 1, "{flow:?}");
+
+            let h = Harness::new().await;
+            twenty_files(h.src(flow));
+            h.daemon.sender_parallel(4);
+            h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+            let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
+            let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert_eq!(reconnects, 1, "{flow:?}");
+            assert!(
+                out.resumed,
+                "{flow:?}: the second connection did not resume"
+            );
+            assert_eq!(out.created, want, "{flow:?}");
+        }
+    })
+    .await;
+}

@@ -890,6 +890,7 @@ impl Persister {
         skipped: u64,
         peer_listing_incomplete: bool,
         listed: &crate::scan::ListStats,
+        created: u64,
     ) {
         let p = &mut self.rec.plan;
         p.plan_complete = true;
@@ -898,7 +899,17 @@ impl Persister {
         p.skipped = skipped;
         p.peer_listing_incomplete = peer_listing_incomplete;
         p.listed = Some(listed.to_wire());
+        p.created = created;
         self.dirty = true;
+    }
+
+    /// The created count changed after the plan was complete (a file
+    /// planned again).
+    pub fn created(&mut self, created: u64) {
+        if self.rec.plan.created != created {
+            self.rec.plan.created = created;
+            self.dirty = true;
+        }
     }
 
     /// Deletions made by every connection of this session so far.

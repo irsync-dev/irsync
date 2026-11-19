@@ -113,7 +113,8 @@ impl Receiver {
                 .as_ref()
                 .map(crate::scan::ListStats::from_wire)
                 .unwrap_or_default(),
-            created: 0,
+            // Nor planned again: the count of the first connection's plan.
+            created: plan.created,
             max_id,
             regular: HashSet::new(),
             kept_links: Default::default(),

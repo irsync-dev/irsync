@@ -30,6 +30,9 @@ message SessionPlan {
   // Receiver, once complete: what the sender's listing held. A resumed
   // session lists nothing, and reports these. Absent from an older record.
   ListTotals listed = 8;
+  // Receiver, once complete: items planned that the destination did not
+  // have. A resumed session plans nothing, and reports this count.
+  uint64 created = 9;
 }
 message SessionProgress {
   repeated uint64 done_file_ids = 1; // files acknowledged DONE
