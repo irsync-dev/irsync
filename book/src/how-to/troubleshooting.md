@@ -44,7 +44,7 @@ Then check that `irsync daemon` is running on the server.
 
 ```text
 irsync: myserver is not a saved alias; setting it up over ssh
-irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand
+irsync: "myserver" is not an alias in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand
 ```
 
 **Cause.** When the server's OS or CPU differs from the client's, the ssh

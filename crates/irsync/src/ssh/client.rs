@@ -22,8 +22,7 @@ pub const REMOTE_BIN: &str = ".local/bin/irsync";
 pub const OLD_REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
 
 /// Where the book explains the setup without ssh.
-const BY_HAND_URL: &str =
-    "https://irsync.org/book/tutorial/first-sync.html#set-the-server-up-by-hand";
+const BY_HAND_URL: &str = "https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand";
 
 /// Printed first by the probe so a login banner before it can be ignored.
 const PROBE_MARKER: &str = "irsync-probe";

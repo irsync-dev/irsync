@@ -325,7 +325,9 @@ class BuildManTests(unittest.TestCase):
         # A how-to guide keeps its URL; an explanation is named as a page
         # of the book.
         text = render(self.irsync)
-        self.assertIn("https://irsync.org/book/how-to/seed-the-index.html", text)
+        self.assertIn("https://irsync.org/book/how-to/seed-the-index", text)
+        # The site's short addresses, not the .html ones it redirects.
+        self.assertNotIn(".html", text)
         self.assertNotIn("https://irsync.org/book/explanation/", text)
         self.assertIn("in the book", text)
 
@@ -333,8 +335,8 @@ class BuildManTests(unittest.TestCase):
         # A book page's URL is given once; later links to it still say
         # where the page is.
         text = " ".join(render(self.irsync).split())
-        self.assertEqual(text.count("https://irsync.org/book/how-to/clean-up.html"), 1)
-        self.assertIn("Clean up state: https://irsync.org/book/how-to/clean-up.html", text)
+        self.assertEqual(text.count("https://irsync.org/book/how-to/clean-up"), 1)
+        self.assertIn("Clean up state: https://irsync.org/book/how-to/clean-up", text)
         self.assertIn("is in \u201cClean up state\u201d in the book.", text)
         self.assertIn("See \u201cSeed the index\u201d in the book.", text)
         files = " ".join(section(render(self.irsync), "FILES").split())

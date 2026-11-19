@@ -186,7 +186,8 @@ local function link(el, chapter, state, notes)
     return in_book()
   end
   state.linked[path] = true
-  local url = BOOK .. path:gsub("%.md$", ".html") .. (anchor ~= "" and "#" .. anchor or "")
+  -- The site serves x.html at x, and redirects x.html there.
+  local url = BOOK .. path:gsub("%.md$", "") .. (anchor ~= "" and "#" .. anchor or "")
   table.insert(notes, { text = text:clone(), url = url })
   return text
 end

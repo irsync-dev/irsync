@@ -968,7 +968,8 @@ class UninstallTests(Base):
         r = self.install("--uninstall")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.under_home(), {".config/irsync/irsync.toml"})
-        self.assertIn("https://irsync.org/book/how-to/clean-up.html", r.stderr)
+        # The site's short address, not the .html one it redirects.
+        self.assertRegex(r.stderr, r"https://irsync\.org/book/how-to/clean-up(?!\.html)")
         self.assertIn("~/.config/irsync", r.stderr)
         self.assertIn("~/.local/state/irsync", r.stderr)
         # Directories stay.

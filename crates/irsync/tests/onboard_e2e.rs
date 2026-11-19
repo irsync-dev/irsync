@@ -1361,7 +1361,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
         "{err}"
     );
     assert!(
-        err.contains("https://irsync.org/book/how-to/run-the-daemon.html"),
+        err.contains("https://irsync.org/book/how-to/run-the-daemon"),
         "{err}"
     );
     assert_eq!(w.ssh_calls(), 1, "only the probe");
