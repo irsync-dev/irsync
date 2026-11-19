@@ -68,17 +68,25 @@ The three cases differ only in the branch. All the steps are the same.
 
    For a patch, use `--ref release-1.2`. In the browser: Actions, Release
    gate, Run workflow, pick the branch, enter the version.
-5. When the gate is done, it prints `Draft ready. Sign and publish it:` and
-   the command. Plug in the USB stick with the release key and run it, with
-   the version:
+5. When the gate is done, it prints `Draft ready. Sign it:` and the
+   commands. Plug in the USB stick with the release key and sign the draft,
+   with the version:
 
    ```sh
    .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key 1.2.3
    ```
 
    It checks the draft, asks you to confirm, asks for the key's password
-   once, signs every file, publishes the release and starts the resume run.
-   See [Signing the release](#signing-the-release).
+   once, signs every file and uploads the signatures. The release stays a
+   draft. Look at it on GitHub.
+6. Publish it by running the same command with `--publish`:
+
+   ```sh
+   .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key --publish 1.2.3
+   ```
+
+   It signs again, publishes the release and starts the resume run. See
+   [Signing the release](#signing-the-release).
 
 For a pre-release, use a version such as `1.2.3-beta.1` or `1.2.3-alpha.1`.
 For `1.3.0`, the resume run also creates the branch `release-1.3` at the
@@ -262,7 +270,8 @@ Actions tab under the release workflow: it may still be running.
   refuses to start: cancel that run first (`gh run cancel <id>`), or wait
   for it to end.
 - If the draft was created but the gate lost track of the `release.yml`
-  run, the draft is fine. Sign and publish it with `sign-release.sh`.
+  run, the draft is fine. Sign it with `sign-release.sh`, then publish it
+  with `sign-release.sh --publish`.
 
 **Signing failed.** See [Signing the release](#signing-the-release).
 
@@ -351,9 +360,13 @@ in. It stops at the first check that fails:
    draft, which creates the tag, checks that the release is immutable and
    starts `release-resume.yml` on the tag.
 
+Step 7 only happens with `--publish`. Without it, the script stops after
+step 6 and the release stays a signed draft: look at it, then run the
+script again with `--publish`. Publishing can't be undone, so it never
+happens by accident.
+
 `--key PATH` names the secret key file. Without it, minisign uses
-`~/.minisign/minisign.key`. `--no-publish` stops after step 6: use it to
-look at the signed draft first, then run the script again to publish.
+`~/.minisign/minisign.key`.
 
 **Where the key lives.** The secret key is a password-protected file on a
 USB stick, and a copy is on a second stick kept somewhere else. The password

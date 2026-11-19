@@ -1,7 +1,8 @@
 #!/bin/bash
-# Usage: sign-release.sh [--key PATH] [--no-publish] VERSION
+# Usage: sign-release.sh [--key PATH] [--publish] VERSION
 #
-# Signs the draft GitHub Release of VERSION with minisign, then publishes it.
+# Signs the draft GitHub Release of VERSION with minisign. With --publish it
+# then publishes it; without, the release stays a draft you can look at.
 # VERSION is written without the "v" (1.3.0, 1.3.0-beta.1). The release gate
 # ends at the draft and says when to run this. Run it on your own computer:
 # the signing key never goes to GitHub.
@@ -25,7 +26,7 @@
 #  9. The signatures are uploaded (replacing old ones). The release is still
 #     the same one, and GitHub's sha256 of every file and signature on it is
 #     that of the file that was signed.
-# 10. Unless --no-publish: the tag must still not exist (a tag pushed by hand
+# 10. Only with --publish: the tag must still not exist (a tag pushed by hand
 #     while the draft waited would take over the release). The release is
 #     published, must then be immutable with the same files (checked as in
 #     9), and release-resume.yml is started.
@@ -35,7 +36,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 [--key PATH] [--no-publish] VERSION" >&2
+    echo "usage: $0 [--key PATH] [--publish] VERSION" >&2
     exit 2
 }
 die() {
@@ -44,7 +45,7 @@ die() {
 }
 
 key=
-publish=true
+publish=false
 version=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -53,8 +54,8 @@ while [ $# -gt 0 ]; do
             key=$2
             shift 2
             ;;
-        --no-publish)
-            publish=false
+        --publish)
+            publish=true
             shift
             ;;
         -*) usage ;;
@@ -292,7 +293,11 @@ check_release true "Not publishing; the release is still a draft. Check it, then
 echo "Signed $tag and uploaded the signatures."
 
 if ! $publish; then
-    echo "The release is still a draft (--no-publish). To publish it, run this script again without --no-publish."
+    echo "The release is still a draft. Check it on GitHub, then publish it (this signs it again):"
+    cmd=("$0")
+    [ -z "$key" ] || cmd+=(--key "$key")
+    printf ' %q' "${cmd[@]}" --publish "$version"
+    echo
     exit 0
 fi
 
