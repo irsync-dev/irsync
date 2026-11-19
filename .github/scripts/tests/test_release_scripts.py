@@ -350,6 +350,16 @@ class ResumeTests(FakeGh):
                                    branches=("main", "release-1.3")))
         self.assertEqual(out["new-branch"], "")
 
+    def test_failed_branch_lookup_stops(self):
+        # Not "the branch is not there", which would make it again.
+        self.set_state(releases={"v1.3.0": self.PUBLISHED}, tags=["v1.3.0"],
+                       branches=["main", "release-1.3"], generated="x",
+                       api_fails=["git/matching-refs/heads/"])
+        r = self.run_script(RESUME, "v1.3.0", "false")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("Could not look up the branch release-1.3", r.stderr)
+        self.assertNotIn("new-branch=", r.stdout)
+
     def test_patch_and_prerelease_get_no_branch(self):
         self.assertEqual(self.out(self.resume("v1.3.1", False, self.PUBLISHED))["new-branch"], "")
         self.assertEqual(self.out(self.resume("v1.3.0-beta.1", False, self.PRE))["new-branch"], "")
@@ -490,6 +500,16 @@ class StartCheckTests(FakeGh):
         r = self.start("1.3.0", "refs/heads/main")
         self.assertEqual(r.returncode, 1)
         self.assertIn("gh workflow run release-resume.yml --ref v1.3.0 -f tag=v1.3.0", r.stderr)
+
+    def test_failed_lookup_stops(self):
+        # A failed gh call must not read as "the tag (or branch) is not there".
+        for path in ["git/matching-refs/tags/", "git/matching-refs/heads/"]:
+            with self.subTest(path=path):
+                self.set_state(releases={}, tags=[], branches=["main"], api_fails=[path])
+                r = self.start("1.3.0", "refs/heads/main")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn(f"Could not read repos/irsync-dev/irsync/{path}", r.stderr)
+                self.assertNotIn("tag=", r.stdout)
 
     def test_tag_pushed_by_hand(self):
         self.set_state(releases={}, tags=["v1.3.0"], branches=["main"])
@@ -1275,6 +1295,43 @@ class RealMinisignSignTests(SignTests):
             self.skipTest("needs minisign 0.10 or newer")
         super().setUp()
 
+
+
+class NoPipeIntoGrepQTests(unittest.TestCase):
+    """A script with pipefail must not pipe into grep -q.
+
+    grep -q stops reading at the first match. Whatever writes into the pipe
+    after that fails (SIGPIPE), and pipefail turns the match into a miss: a
+    signed file read as missing, an existing tag read as not there. It
+    depends on timing, so it fails only now and then. Search a variable with
+    <<< instead.
+    """
+
+    def test_no_pipe_into_grep_q(self):
+        files = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True,
+                               text=True, check=True).stdout.split("\0")
+        found = []
+        for name in files:
+            path = os.path.join(ROOT, name)
+            if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            try:
+                with open(path) as f:
+                    text = f.read()
+            except UnicodeDecodeError:
+                continue
+            if not (name.endswith(".sh") or text.startswith("#!") and "sh" in text.split("\n", 1)[0]):
+                continue
+            if "pipefail" not in text:
+                continue
+            for n, line in enumerate(text.splitlines(), 1):
+                if re.search(r"\|\s*grep\s+(-\w*\s+)*-\w*q", line):
+                    found.append(f"{name}:{n}: {line.strip()}")
+        self.assertEqual(found, [])
+
+    def test_the_check_finds_one(self):
+        self.assertRegex("    printf '%s\\n' \"$x\" | grep -qxF -- \"$y\" || bad=1",
+                         r"\|\s*grep\s+(-\w*\s+)*-\w*q")
 
 if __name__ == "__main__":
     unittest.main()

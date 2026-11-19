@@ -15,6 +15,7 @@ State lives in the JSON file named by FAKE_GH_STATE:
     assets right after a release upload, or after publishing)
   new_id_on_upload: int (the release gets this databaseId on upload)
   compare: str (the status of compare/A...B; default "ahead")
+  api_fails: [path, ...] (gh api fails for an endpoint repos/OWNER/REPO/path...)
   keys_at_commit: str (packaging/signing/release-keys.pub in any commit)
   attested_commit, attested_ref: str (what attestation verify checks
     --source-digest and --source-ref against, when set)
@@ -147,6 +148,8 @@ elif args[0] == "api":
     repo = os.environ["GH_REPO"]
     tags_prefix = f"repos/{repo}/git/matching-refs/tags/"
     heads_prefix = f"repos/{repo}/git/matching-refs/heads/"
+    if any(endpoint.startswith(f"repos/{repo}/{p}") for p in state.get("api_fails", [])):
+        fail("gh: Bad Gateway (HTTP 502)")
     if endpoint.startswith(tags_prefix):
         for t in state["tags"]:
             if t.startswith(endpoint[len(tags_prefix):]):

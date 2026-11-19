@@ -28,7 +28,8 @@ while IFS= read -r tag; do
         [ "$tag" = "$ok" ] && skip=true
     done
     $skip && continue
-    printf '%s\n' "$releases" | grep -qxF -- "$tag" || stray+=("$tag")
+    # <<<, not a pipe: see sign-release.sh.
+    grep -qxF -- "$tag" <<<"$releases" || stray+=("$tag")
 done < <(printf '%s\n' "$tags" | sort -V)
 
 if [ ${#stray[@]} -gt 0 ]; then

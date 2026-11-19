@@ -37,6 +37,9 @@
 # IRSYNC_SIGN_KEYS_FILE replaces release-keys.pub; it is for the tests. It is
 # still compared with the keys file in the release's commit.
 set -euo pipefail
+# Never pipe into grep -q here: grep stops reading at the first match, the
+# command writing into the pipe then fails (SIGPIPE), and pipefail turns a
+# match into a miss. Search a variable with <<< instead.
 
 usage() {
     echo "usage: $0 [--key PATH] [--publish] VERSION" >&2
@@ -145,7 +148,7 @@ missing=$(LC_ALL=C comm -13 <(printf '%s\n' "$have") <(printf '%s\n' "$want") | 
 extra=$(LC_ALL=C comm -23 <(printf '%s\n' "$have") <(printf '%s\n' "$want") | grep . || true)
 # An old signature is fine (it is replaced), but only for a release file.
 while IFS= read -r name; do
-    if ! printf '%s\n' "$want" | grep -qxF -- "${name%.minisig}"; then
+    if ! grep -qxF -- "${name%.minisig}" <<<"$want"; then
         extra+=${extra:+$'\n'}$name
     fi
 done < <(printf '%s\n' "$assets" | grep '\.minisig$' || true)
@@ -183,7 +186,7 @@ done
 while read -r sum name || [ -n "$sum" ]; do
     [ -n "$sum" ] || continue
     name=${name#\*}
-    printf '%s\n' "$want" | grep -qxF -- "$name" ||
+    grep -qxF -- "$name" <<<"$want" ||
         die "sha256.sum names $name, which is not a release file."
     [ "$(sha256_of "$dir/$name")" = "$sum" ] || bad+=("$name (in sha256.sum)")
 done <"$dir/sha256.sum"
@@ -276,7 +279,7 @@ check_release() {
         want+=("sha256:$(sha256_of "$dir/$f") $f" "sha256:$(sha256_of "$dir/$f.minisig") $f.minisig")
     done
     for line in "${want[@]}"; do
-        printf '%s\n' "$digests" | grep -qxF -- "$line" || bad+=("${line#* }")
+        grep -qxF -- "$line" <<<"$digests" || bad+=("${line#* }")
     done
     n=$(printf '%s\n' "$digests" | grep -c . || true)
     [ "$n" -eq ${#want[@]} ] || bad+=("(it holds $n files, not ${#want[@]})")
@@ -307,7 +310,7 @@ fi
 # 10. Publish. The tag must not exist yet: publishing the draft creates it.
 tags=$(gh api --paginate "repos/$repo/git/matching-refs/tags/$tag" --jq '.[].ref | ltrimstr("refs/tags/")') ||
     die "Could not look up the tag $tag. The release is still a draft."
-if printf '%s\n' "$tags" | grep -qxF -- "$tag"; then
+if grep -qxF -- "$tag" <<<"$tags"; then
     die "The tag $tag exists, but its release is still a draft: someone pushed the tag by hand. Not publishing. Delete the draft and release the next version."
 fi
 # Not `gh release edit --draft=false`: that marks every release Latest, even
