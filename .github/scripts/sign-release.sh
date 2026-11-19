@@ -29,8 +29,10 @@
 # 10. Only with --publish: the tag must still not exist (a tag pushed by hand
 #     while the draft waited would take over the release). The release is
 #     published, must then be immutable with the same files (checked as in
-#     9), and release-resume.yml is started. It then prints how to promote
-#     the site to irsync.org; it does not start that.
+#     9), and release-resume.yml is started. It then re-runs the newest
+#     staging build of the site, so the site reads this release from its
+#     tag, and prints how to promote the site to irsync.org; it does not
+#     start that.
 #
 # IRSYNC_SIGN_KEYS_FILE replaces release-keys.pub; it is for the tests. It is
 # still compared with the keys file in the release's commit.
@@ -319,7 +321,20 @@ echo "Published $tag."
 gh workflow run release-resume.yml --ref "$tag" -f tag="$tag" ||
     die "Could not start release-resume.yml. Start it with: gh workflow run release-resume.yml --ref $tag -f tag=$tag"
 echo "Started release-resume.yml for $tag: packages, Homebrew and release notes."
-# The site is promoted by hand (book/src/contributing/website.md). Staging
-# has shown this version since its bump was merged.
-echo "To put $tag on irsync.org: check that https://dev.irsync.org/ shows it, then run:"
+
+# Rebuild the staging site. It has shown this version since its bump was
+# merged, built from the branch, which may have moved on since. Now the tag
+# exists, so a build reads the release from the tag, and the promote job
+# accepts it (book/src/contributing/website.md). The release is published
+# either way: a site that cannot be rebuilt is a message, not a failure.
+newest_site_run=(gh run list --workflow site.yml --branch main --event push --limit 1
+    --json databaseId --jq '.[0].databaseId // empty')
+if site_run=$("${newest_site_run[@]}") && [ -n "$site_run" ] && gh run rerun "$site_run"; then
+    echo "Rebuilding the staging site (run $site_run), so it shows $tag as published."
+else
+    echo "Could not rebuild the staging site. When its newest run on main is finished, re-run it:"
+    echo "  gh run rerun \"\$(gh run list --workflow site.yml --branch main --event push --limit 1 --json databaseId --jq '.[0].databaseId')\""
+fi
+# The site is promoted by hand.
+echo "To put $tag on irsync.org: wait for that run, check that https://dev.irsync.org/ shows it, then run:"
 echo "  gh workflow run site.yml --ref main"
