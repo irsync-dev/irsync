@@ -830,3 +830,65 @@ fn reconnecting_and_done_transfer_lines_fit_every_width() {
         }
     }
 }
+
+#[test]
+fn a_resumed_plan_starts_the_percent_at_what_is_settled() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 4,
+            bytes: 1000,
+        },
+        t,
+    );
+    l.apply(&Event::Settled(600), t);
+    assert_eq!(l.transfer_fraction(), (600, 1000));
+    l.apply(&Event::FileStart(rp("c"), 400), t);
+    l.apply(&Event::FileBytes(rp("c"), 100), t);
+    assert_eq!(l.transfer_fraction(), (700, 1000));
+    l.apply(&Event::FileDone(rp("c"), 400), t);
+    assert_eq!(l.transfer_fraction(), (1000, 1000));
+}
+
+/// A reconnect within one run: the block has counted the skipped and the
+/// finished files itself, and the resumed plan's settled bytes take them in.
+#[test]
+fn settled_bytes_are_not_added_to_what_the_block_counted_itself() {
+    use irsync::session::reconnect::ConnState;
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 4,
+            bytes: 1000,
+        },
+        t,
+    );
+    l.apply(&Event::PeerSkipped(100), t);
+    l.apply(&Event::Skipped(rp("a"), 100), t);
+    l.apply(&Event::FileStart(rp("b"), 200), t);
+    l.apply(&Event::FileBytes(rp("b"), 200), t);
+    l.apply(&Event::FileDone(rp("b"), 200), t);
+    // In flight when the connection drops, with a matched estimate.
+    l.apply(&Event::FileStart(rp("c"), 600), t);
+    l.apply(&Event::FileMatched(rp("c"), 50), t);
+    l.apply(&Event::FileBytes(rp("c"), 300), t);
+    assert_eq!(l.transfer_fraction(), (750, 1000));
+    assert_eq!(l.matched, 50);
+
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 1 }), t);
+    // Both skips and the finished file; `c` is requested again.
+    l.apply(&Event::Settled(400), t);
+    assert_eq!(l.transfer_fraction(), (400, 1000));
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.matched, 0, "the dropped row's estimate");
+    assert_eq!(l.xfr, 1, "files finished in this run stay counted");
+
+    // What the receiver kept of `c` comes back as matched.
+    l.apply(&Event::FileStart(rp("c"), 600), t);
+    l.apply(&Event::FileMatched(rp("c"), 300), t);
+    l.apply(&Event::FileBytes(rp("c"), 300), t);
+    l.apply(&Event::FileDone(rp("c"), 600), t);
+    assert_eq!(l.transfer_fraction(), (1000, 1000));
+}

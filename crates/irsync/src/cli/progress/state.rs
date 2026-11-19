@@ -159,6 +159,10 @@ pub struct Live {
     pub skipped_before: u64,
     /// Latest `PeerSkipped`.
     pub skipped_peer: u64,
+    /// Latest `Settled`: what a connection resuming a stored plan found
+    /// dealt with before it. It takes in the skips and the files done up
+    /// to then, so the percent counts it or the skips, whichever is larger.
+    pub settled: u64,
     pub xfr: u64,
     pub rows: BTreeMap<RelPath, Row>,
     pub conn: ConnState,
@@ -186,6 +190,7 @@ impl Live {
             skipped_local: 0,
             skipped_before: 0,
             skipped_peer: 0,
+            settled: 0,
             xfr: 0,
             rows: BTreeMap::new(),
             conn: ConnState::Connecting,
@@ -329,6 +334,16 @@ impl Live {
                 self.skipped_local = self.skipped_local.saturating_add(*size);
             }
             Event::PeerSkipped(n) => self.skipped_peer = self.skipped_peer.max(*n),
+            Event::Settled(n) => {
+                // The files done so far are part of `n`, and every other
+                // file is requested again: its row starts over, and its
+                // matched estimate is reported anew.
+                self.settled = *n;
+                self.done_bytes = 0;
+                let estimates: u64 = self.rows.values().map(|r| r.matched_counted).sum();
+                self.matched = self.matched.saturating_sub(estimates);
+                self.rows.clear();
+            }
             Event::Scanned {
                 party,
                 entries,
@@ -458,10 +473,13 @@ impl Live {
             Party::Peer => self.peer.bytes,
         };
         let in_flight: u64 = self.rows.values().map(Row::position).sum();
+        let skipped = self
+            .skipped_before
+            .max(self.skipped_local)
+            .saturating_add(self.skipped_peer);
         let done = self
             .done_bytes
-            .saturating_add(self.skipped_before.max(self.skipped_local))
-            .saturating_add(self.skipped_peer)
+            .saturating_add(skipped.max(self.settled))
             .saturating_add(in_flight);
         (done.min(total), total)
     }

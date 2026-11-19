@@ -246,6 +246,9 @@ message Heartbeat {
   // request: what the sender's listing held on the first connection. Nothing
   // is listed again, and the sender's progress display needs the total.
   ListTotals listed = 5;
+  // With `listed`: how many of its bytes need nothing more on this
+  // connection (files found up to date, or placed by an earlier one).
+  uint64 listed_settled = 6;
 }
 message Control {
   reserved 4; // ChunkList, one frame per list (never shipped)

@@ -398,7 +398,11 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                     // Only a receiver sends these, so this side is the
                     // source.
                     if let Some(listed) = &h.listed {
-                        bus.emit_listed(Party::Local, &crate::scan::ListStats::from_wire(listed));
+                        bus.emit_listed(
+                            Party::Local,
+                            &crate::scan::ListStats::from_wire(listed),
+                            h.listed_settled,
+                        );
                     }
                     if h.skipped_bytes > 0 {
                         bus.emit(Event::PeerSkipped(h.skipped_bytes));

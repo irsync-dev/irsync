@@ -857,3 +857,90 @@ async fn a_restarted_client_that_resumes_knows_the_total_before_any_data() {
     })
     .await;
 }
+
+/// A client started again resumes the stored session. Its percent starts
+/// at what the first run left settled (files up to date, files placed) and
+/// ends at the total; without that it stops short and jumps to `done`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
+    use irsync::cli::progress::state::Live;
+    use irsync::cli::DeleteMode;
+    const FILES: u64 = 10;
+    const SIZE: u64 = 2 << 20;
+    const SAME: u64 = 1 << 20;
+    const TOTAL: u64 = FILES * SIZE + SAME;
+    within30(async {
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            let src = h.src(flow);
+            fs::write(src.join("same.txt"), vec![7u8; SAME as usize]).unwrap();
+            run(&h, &opts(&[]), flow).await;
+            for i in 0..FILES {
+                fs::write(src.join(format!("f{i:02}.bin")), noise(SIZE as usize, i + 1)).unwrap();
+            }
+            h.daemon.sender_parallel(2);
+            let fast = ReconnectOpts {
+                backoff_min: Duration::from_millis(100),
+                ..ReconnectOpts::default()
+            };
+            // First "process": the connection drops and it gives up. A
+            // pull is cut once it has placed four files; the daemon's fault
+            // cannot see a push's files finish, so that is cut by bytes.
+            let once = ReconnectOpts {
+                max: Duration::ZERO,
+                ..fast
+            };
+            if flow == Flow::Push {
+                h.daemon.fault.drop_after_bytes(9 << 20);
+            }
+            let fault = h.daemon.fault.clone();
+            let mut placed = 0;
+            let arm = move |e: &Event| {
+                if flow == Flow::Pull && matches!(e, Event::FileDone(..)) {
+                    placed += 1;
+                    if placed == 4 {
+                        fault.drop_after_bytes(0);
+                    }
+                }
+            };
+            let (first, events) = try_run_with(&h, &opts(&[]), flow, once, arm).await;
+            assert!(first.is_err(), "{flow:?}: the first run should fail");
+            let done: u64 = events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::FileDone(_, size) => Some(*size),
+                    _ => None,
+                })
+                .sum();
+            if flow == Flow::Pull {
+                assert!(done >= 4 * SIZE, "{flow:?}: placed {done} bytes");
+            }
+
+            // Second "process": a new reporter.
+            let (out, events) = run_with(&h, &opts(&[]), flow, fast, |_| {}).await;
+            assert!(out.resumed, "{flow:?}: the second run did not resume");
+            let source = match flow {
+                Flow::Push => Party::Local,
+                Flow::Pull => Party::Peer,
+            };
+            let now = std::time::Instant::now();
+            let mut live = Live::new(source, DeleteMode::Off, now);
+            let mut at_first_data = None;
+            for e in &events {
+                if matches!(e, Event::FileBytes(..)) && at_first_data.is_none() {
+                    at_first_data = Some(live.transfer_fraction().0);
+                }
+                live.apply(e, now);
+            }
+            let start = at_first_data.unwrap_or_else(|| panic!("{flow:?}: no data sent"));
+            assert!(
+                start >= SAME + done,
+                "{flow:?}: the percent starts at {start} bytes, with {SAME} up to date and {done} placed"
+            );
+            // Not capped into place: what the second run finishes is the rest.
+            assert_eq!(live.settled + live.done_bytes, TOTAL, "{flow:?}");
+            assert_eq!(live.transfer_fraction(), (TOTAL, TOTAL), "{flow:?}");
+        }
+    })
+    .await;
+}

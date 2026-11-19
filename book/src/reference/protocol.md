@@ -241,9 +241,10 @@ progress: hashing, writing, finalizing, deleting, or traffic. It carries what
 the other side cannot otherwise see: the directory this side's walk is in,
 the bytes its planner found up to date, and its deletion count. An idle side sends none,
 so a stuck side still times out. A receiver that resumes its stored plan sends
-one extra `Heartbeat` before its first request, with `listed`: the totals of
-the sender's listing on the first connection. Nothing is listed again, and the
-sender shows its progress against these. See
+one extra `Heartbeat` before its first request, with `listed`, the totals of
+the sender's listing on the first connection, and `listed_settled`, how many of
+those bytes need nothing more: files found up to date or already placed.
+Nothing is listed again, and the sender shows its progress from these. See
 [Sessions and resume](../explanation/sessions-and-resume.md#timeouts).
 
 ## Persisted state
