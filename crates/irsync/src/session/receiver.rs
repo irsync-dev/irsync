@@ -438,6 +438,9 @@ impl Receiver {
         };
         if let Some(report) = &mut self.report {
             report.created += u64::from(again.created && again.request.is_some());
+            if self.plan_complete {
+                self.persist.created(report.created);
+            }
             // Its directory's mtime moves: applied again in the directory pass.
             report.touched.insert(parent_of(&path));
         }
@@ -562,6 +565,7 @@ impl Receiver {
             report.skipped,
             self.peer_listing_incomplete,
             &report.listed,
+            report.created,
         );
         self.plan_complete = true;
     }
