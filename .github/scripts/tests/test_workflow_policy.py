@@ -269,6 +269,33 @@ class CiWorkflowTests(unittest.TestCase):
             [r.strip() for r in runs],
         )
 
+    def test_nightly_fuzz(self):
+        wf = load_workflows()["nightly.yml"]
+        on = triggers(wf)
+        self.assertTrue(on["schedule"][0]["cron"])
+        self.assertIn("workflow_dispatch", on)
+        self.assertEqual(wf["permissions"], {"contents": "read"})
+        text = job_text("nightly.yml", "fuzz")
+        self.assertIn("tools/ci.sh fuzz", text)
+        self.assertIn("FUZZ_SECONDS: 600", text)
+        self.assertIn("if: failure()", text)        # the crash upload
+        self.assertIn("fuzz/artifacts", text)
+        # The corpus carries over from night to night, also after a crash.
+        steps = jobs(wf)["fuzz"]["steps"]
+        restore = [s for s in steps if step_uses(s, "actions/cache/restore")]
+        save = [s for s in steps if step_uses(s, "actions/cache/save")]
+        self.assertEqual(len(restore), 1)
+        self.assertEqual(len(save), 1)
+        self.assertEqual(restore[0]["with"]["path"], "fuzz/corpus")
+        self.assertEqual(save[0]["with"]["path"], "fuzz/corpus")
+        self.assertEqual(save[0]["if"], "always()")
+        self.assertIn("${{ github.run_id }}", restore[0]["with"]["key"])
+        self.assertTrue(restore[0]["with"]["key"].startswith(restore[0]["with"]["restore-keys"].strip()))
+        # The same cargo-fuzz as ci.yml, which tools/dev-setup.sh reads.
+        pin = re.compile(r"cargo-fuzz@([0-9.]+)")
+        self.assertEqual(pin.findall(text), pin.findall(job_text("ci.yml", "fuzz-build")))
+        self.assertIn("fallback: cargo-install", text)
+
 
 def dist_config():
     with open(os.path.join(ROOT, "dist-workspace.toml"), "rb") as f:
