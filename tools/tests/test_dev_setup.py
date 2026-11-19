@@ -186,16 +186,43 @@ class DevSetupCheckTests(unittest.TestCase):
             r, out = self.check(minisign=f'[ "$1" = -v ] && echo {line}')
             self.assertRegex(out, rf"ok +minisign {re.escape(version)}\n", line)
 
+    def shellcheck_pin(self):
+        with open(SCRIPT) as f:
+            return re.search(r"^shellcheck_pin=(\S+)$", f.read(), re.M).group(1)
+
+    def fake_shellcheck(self, version):
+        # It prints its version on the second line.
+        return f'printf "ShellCheck - shell script analysis tool\\nversion: {version}\\n"'
+
     def test_shellcheck_is_optional_and_named(self):
-        r, out = self.check()
+        pin = re.escape(self.shellcheck_pin())
+        r, out = self.check(uname=LINUX)
         self.assertEqual(r.returncode, 0, out)
-        self.assertRegex(out, r"missing  shellcheck, for tools/ci.sh shell-scripts \(optional\)\n"
-                              r" {15}(sudo apt install shellcheck|brew install shellcheck|"
-                              r"sudo pkg install hs-ShellCheck)\n")
+        self.assertRegex(out, rf"missing  shellcheck {pin}, for tools/ci.sh shell-scripts \(optional\)\n"
+                              r" {15}tools/dev-setup\.sh\n")
+        # No release binary for FreeBSD: the package instead.
+        r, out = self.check(uname=FREEBSD)
+        self.assertRegex(out, rf"missing  shellcheck {pin}, for tools/ci.sh shell-scripts \(optional\)\n"
+                              r" {15}sudo pkg install hs-ShellCheck\n")
 
     def test_shellcheck_found(self):
-        r, out = self.check(shellcheck='printf "ShellCheck - shell script analysis tool\\nversion: 0.11.0\\n"')
-        self.assertRegex(out, r"ok +shellcheck 0\.11\.0\n")
+        r, out = self.check(shellcheck=self.fake_shellcheck(self.shellcheck_pin()))
+        self.assertRegex(out, rf"ok +shellcheck {re.escape(self.shellcheck_pin())}\n")
+
+    def test_another_shellcheck_version_is_reported(self):
+        r, out = self.check(uname=LINUX, shellcheck=self.fake_shellcheck("0.9.0"))
+        self.assertEqual(r.returncode, 0, out)
+        self.assertRegex(out, r"missing +shellcheck \S+, have 0\.9\.0, .*\(optional\)\n +tools/dev-setup\.sh\n")
+
+    def test_shellcheck_pin_matches_ci(self):
+        with open(SCRIPT) as f:
+            script = f.read()
+        x86_64 = re.search(r"linux\.x86_64\) echo ([0-9a-f]{64}) ;;", script).group(1)
+        with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
+            text = f.read()
+        self.assertIn(f"SHELLCHECK_VERSION: {self.shellcheck_pin()}\n", text)
+        self.assertIn(f"SHELLCHECK_SHA256: {x86_64}\n", text)
+        self.assertIn("shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz", text)
 
     def test_ci_tools_are_optional_and_named(self):
         # What tools/ci.sh needs beyond the build: none of it is here.
@@ -302,6 +329,8 @@ exit 0""")
                 arms.append(f'*{URL_KEY[crate]}*{target}*) name={crate}; pin={self.pins()[crate]}; sha={sha} ;;')
         for plat, sha in re.findall(r"^ +(\w+_\w+)\) echo ([0-9a-f]{64}) ;;$", script, re.M):
             arms.append(f'*actionlint*{plat}*) name=actionlint; pin={self.actionlint_pin()}; sha={sha} ;;')
+        for plat, sha in re.findall(r"^ +(\w+\.\w+)\) echo ([0-9a-f]{64}) ;;$", script, re.M):
+            arms.append(f'*shellcheck*{plat}*) name=shellcheck; pin={self.shellcheck_pin()}; sha={sha} ;;')
         curl = """out=; url=
 while [ $# -gt 0 ]; do
   case $1 in -o) out=$2; shift ;; https://*) url=$1 ;; esac
@@ -315,11 +344,16 @@ file=${url##*/}
 case $name in
   cargo-deny) member=${file%%.tar.gz}/cargo-deny ;;
   cargo-dist) member=${file%%.tar.xz}/dist ;;
+  shellcheck) member=shellcheck-v$pin/shellcheck ;;
   *) member=$name ;;
 esac
 d=$(mktemp -d)
 mkdir -p "$(dirname "$d/$member")"
-printf '#!/bin/sh\\necho "%%s %%s"\\n' "$name" "$pin" > "$d/$member"
+if [ "$name" = shellcheck ]; then
+  printf '#!/bin/sh\\necho ShellCheck\\necho "version: %%s"\\n' "$pin" > "$d/$member"
+else
+  printf '#!/bin/sh\\necho "%%s %%s"\\n' "$name" "$pin" > "$d/$member"
+fi
 chmod +x "$d/$member"
 echo other > "$d/README.md"
 case $url in
@@ -351,10 +385,10 @@ echo "$sha" > "$HOME/expected-hash"
             self.assertRegex(out, rf"running +download {crate} {re.escape(pin)} \(x86_64-unknown-linux-musl\)")
             self.assertRegex(out, rf"ok +{crate} {re.escape(pin)}\n")
         self.assertNotIn("install", calls)
-        for b in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "dist", "mdbook", "actionlint"]:
+        for b in ["cargo-nextest", "cargo-deny", "cargo-fuzz", "dist", "mdbook", "actionlint", "shellcheck"]:
             self.assertTrue(os.path.exists(os.path.join(self.tmp, ".cargo", "bin", b)), b)
         # Only the binary, not the archive's other files.
-        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 6)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp, ".cargo", "bin"))), 7)
 
     def test_setup_on_a_mac_takes_the_universal_nextest(self):
         out, calls = self.setup(uname=MAC, **self.good_downloads())
@@ -375,7 +409,7 @@ echo "$sha" > "$HOME/expected-hash"
     def test_setup_does_not_install_a_real_archive_with_another_hash(self):
         # A tampered release is a working archive; only the hash tells.
         out, calls = self.setup(uname=LINUX, curl=self.good_downloads()["curl"])
-        for tool in [*self.pins(), "actionlint"]:
+        for tool in [*self.pins(), "actionlint", "shellcheck"]:
             self.assertRegex(out, rf"refused +{tool} download: SHA-256 is [0-9a-f]{{64}}, expected")
         cargo_bin = os.path.join(self.tmp, ".cargo", "bin")
         self.assertEqual(os.listdir(cargo_bin) if os.path.exists(cargo_bin) else [], [])
@@ -407,14 +441,15 @@ echo "$sha" > "$HOME/expected-hash"
                   f'deny) echo "cargo-deny {p["cargo-deny"]}" ;; '
                   f'fuzz) echo "cargo-fuzz {p["cargo-fuzz"]}" ;; esac',
             dist=f'echo "dist {p["cargo-dist"]}"', mdbook=f'echo "mdbook v{p["mdbook"]}"',
-            actionlint=f"echo {self.actionlint_pin()}")
+            actionlint=f"echo {self.actionlint_pin()}",
+            shellcheck=self.fake_shellcheck(self.shellcheck_pin()))
         self.assertNotIn("curl called", out)
         self.assertNotIn("install", calls)
-        self.assertNotRegex(out, r"missing +(cargo-|mdbook|actionlint)")
+        self.assertNotRegex(out, r"missing +(cargo-|mdbook|actionlint|shellcheck)")
 
     def test_setup_names_the_directory_missing_from_path(self):
         out, calls = self.setup(uname=LINUX, path_has_cargo_bin=False, **self.good_downloads())
-        for tool in [*self.pins(), "actionlint"]:
+        for tool in [*self.pins(), "actionlint", "shellcheck"]:
             self.assertRegex(out, rf"missing +{tool} .*it is in \S+/\.cargo/bin.*\n +add \S+/\.cargo/bin to PATH\n")
         self.assertNotIn("install", calls)
 
@@ -427,19 +462,21 @@ echo "$sha" > "$HOME/expected-hash"
         self.assertNotIn("download", out)
         self.assertRegex(out, r"missing +mdbook \S+, have 0\.0\.1, .*\n +put \S+/\.cargo/bin first in PATH\n")
         self.assertRegex(out, r"missing +actionlint .*\n +add \S+/\.cargo/bin to PATH\n")
+        self.assertRegex(out, r"missing +shellcheck .*\n +add \S+/\.cargo/bin to PATH\n")
         self.assertNotIn("install", calls)
 
     def test_setup_says_why_a_download_failed(self):
         out, calls = self.setup(uname=LINUX, curl="exit 6")
         self.assertRegex(out, r"failed +mdbook download: could not fetch https://github\.com/rust-lang/mdBook/\S+\n")
         self.assertRegex(out, r"failed +actionlint download: could not fetch https://")
+        self.assertRegex(out, r"failed +shellcheck download: could not fetch https://")
 
     def test_setup_says_when_it_cannot_unpack(self):
         # The right hash, but no archive behind it.
         g = self.good_downloads()
         out, calls = self.setup(uname=LINUX, sha256sum=g["sha256sum"],
                                 curl=g["curl"] + '\necho "not an archive" > "$out"')
-        for tool in [*self.pins(), "actionlint"]:
+        for tool in [*self.pins(), "actionlint", "shellcheck"]:
             self.assertRegex(out, rf"failed +{tool} download: could not unpack")
         self.assertNotIn("install", calls)
 

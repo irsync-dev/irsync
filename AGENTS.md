@@ -32,9 +32,8 @@ starts a fresh CI run that includes the fixes from `main`.
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain, the
 nightly in `fuzz/rust-toolchain.toml`, cargo-nextest, cargo-deny,
-cargo-fuzz, dist, mdbook) and actionlint, at CI's versions, and checks
-the system tools;
-`tools/dev-setup.sh --check` only reports.
+cargo-fuzz, dist, mdbook), actionlint and shellcheck, at CI's versions,
+and checks the system tools; `tools/dev-setup.sh --check` only reports.
 
 ## Tests
 

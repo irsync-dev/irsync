@@ -214,7 +214,7 @@ jobs:
       contents: read
     env:
       SHELLCHECK_VERSION: 0.11.0
-      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+      SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -224,11 +224,11 @@ jobs:
       - name: Install shellcheck
         run: |
           set -euo pipefail
-          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check -
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/shellcheck.tar.gz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.gz" | sha256sum --check -
           mkdir "$RUNNER_TEMP/shellcheck"
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP/shellcheck" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          tar -xzf "$RUNNER_TEMP/shellcheck.tar.gz" -C "$RUNNER_TEMP/shellcheck" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
       - name: shellcheck
         run: tools/ci.sh shell-scripts

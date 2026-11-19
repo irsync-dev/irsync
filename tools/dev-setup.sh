@@ -6,14 +6,16 @@
 # Installs what it can without root: rustup itself, the toolchain from
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
 # the nightly from fuzz/rust-toolchain.toml, and cargo-nextest, cargo-deny,
-# cargo-fuzz, dist, actionlint and mdbook. Those six are downloaded from
-# their release pages and checked against SHA-256s kept here; cargo builds
-# one only where it has no binary for the machine, or the hashes here are
-# for another version than CI's. They are held to the versions CI uses:
-# another version is replaced. Points git at the repo's hooks. Checks the
-# rest, which comes from the system package manager, and says which package
-# to install (apt, brew, or pkg on FreeBSD). Safe to run again. With all of
-# it in place, tools/ci.sh runs the CI checks here.
+# cargo-fuzz, dist, actionlint, shellcheck and mdbook. Those seven are
+# downloaded from their release pages and checked against SHA-256s kept
+# here; cargo builds one of the crates only where it has no binary for the
+# machine, or the hashes here are for another version than CI's (actionlint
+# and shellcheck are not crates; where there is no binary, the script names
+# what to install). They are held to the versions CI uses: another version
+# is replaced. Points git at the repo's hooks. Checks the rest, which comes
+# from the system package manager, and says which package to install (apt,
+# brew, or pkg on FreeBSD). Safe to run again. With all of it in place,
+# tools/ci.sh runs the CI checks here.
 #
 # --check changes nothing; it only reports. The exit status is 1 when
 # something required is missing, else 0. Missing optional tools, and ones
@@ -460,6 +462,71 @@ else
     warn "actionlint $actionlint_pin, have $actionlint_v, for tools/ci.sh workflows" "tools/dev-setup.sh"
 fi
 
+# For tools/ci.sh shell-scripts: shellcheck. Like actionlint, the release
+# binary is downloaded, checked against the SHA-256 below and put next to the
+# cargo tools; there is none for FreeBSD, which gets the package's hint. To
+# move to a new version, change it in ci.yml and take these lines from the
+# release page (each .tar.gz's sha256); tools/tests/test_dev_setup.py holds
+# the two together.
+shellcheck_pin=0.11.0
+shellcheck_sha256() {
+    case $1 in
+        linux.x86_64) echo b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6 ;;
+        linux.aarch64) echo 68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc ;;
+        darwin.x86_64) echo c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51 ;;
+        darwin.aarch64) echo 339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f ;;
+    esac
+}
+shellcheck_plat() {
+    local cpu
+    case $(uname -m) in
+        x86_64 | amd64) cpu=x86_64 ;;
+        aarch64 | arm64) cpu=aarch64 ;;
+        *) return 0 ;;
+    esac
+    echo "$(echo "$os" | tr '[:upper:]' '[:lower:]').$cpu"
+}
+# Returns 1 if it cannot install; the caller reports.
+install_shellcheck() {
+    local plat want
+    plat=$(shellcheck_plat)
+    want=$(shellcheck_sha256 "$plat")
+    [ -n "$want" ] || return 1
+    fetch_tool shellcheck "$shellcheck_pin" "$plat" \
+        "https://github.com/koalaman/shellcheck/releases/download/v$shellcheck_pin/shellcheck-v$shellcheck_pin.$plat.tar.gz" \
+        "$want" "shellcheck-v$shellcheck_pin/shellcheck" || return 1
+}
+# It prints its version on the second line: "version: 0.11.0".
+shellcheck_version() {
+    { "$1" --version 2>/dev/null || true; } | sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p'
+}
+# Where there is no release binary to download, the package manager.
+if [ -n "$(shellcheck_sha256 "$(shellcheck_plat)")" ]; then
+    shellcheck_how=tools/dev-setup.sh
+else
+    shellcheck_how=$(hint shellcheck)
+fi
+shellcheck_v=$(shellcheck_version shellcheck)
+shellcheck_fetched=false
+if [ "$shellcheck_v" != "$shellcheck_pin" ] && ! $check_only; then
+    # As for the cargo tools: not again when it is there and PATH hides it.
+    if [ "$(shellcheck_version "$cargo_bin/shellcheck")" = "$shellcheck_pin" ] || install_shellcheck; then
+        shellcheck_fetched=true
+    fi
+    shellcheck_v=$(shellcheck_version shellcheck)
+fi
+if [ "$shellcheck_v" = "$shellcheck_pin" ]; then
+    ok "shellcheck $shellcheck_v"
+elif $shellcheck_fetched && [ -z "$shellcheck_v" ]; then
+    warn "shellcheck $shellcheck_pin, for tools/ci.sh shell-scripts; it is in $cargo_bin" "add $cargo_bin to PATH"
+elif $shellcheck_fetched; then
+    warn "shellcheck $shellcheck_pin, have $shellcheck_v, for tools/ci.sh shell-scripts; $shellcheck_pin is in $cargo_bin" "put $cargo_bin first in PATH"
+elif [ -z "$shellcheck_v" ]; then
+    warn "shellcheck $shellcheck_pin, for tools/ci.sh shell-scripts" "$shellcheck_how"
+else
+    warn "shellcheck $shellcheck_pin, have $shellcheck_v, for tools/ci.sh shell-scripts" "$shellcheck_how"
+fi
+
 # ---------------------------------------------------------------- System
 step "System tools (install these with your package manager)"
 
@@ -543,14 +610,6 @@ if [ -n "$minisign_v" ] && version_ge "$minisign_v" 0.10; then
     ok "minisign $minisign_v"
 else
     warn "minisign 0.10 or newer${minisign_v:+, have $minisign_v}, to sign releases" "$(hint minisign)"
-fi
-
-# The shellcheck tool finds quoting and other bugs in shell scripts. It prints
-# its version on the second line, "version: 0.11.0".
-if have shellcheck; then
-    ok "shellcheck $({ shellcheck --version 2>/dev/null || true; } | sed -n 's/^version: *//p')"
-else
-    warn "shellcheck, for tools/ci.sh shell-scripts" "$(hint shellcheck)"
 fi
 
 if [ "$os" = Linux ]; then
