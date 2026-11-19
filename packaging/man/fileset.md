@@ -14,5 +14,4 @@ Michael Wildpaner and the irsync contributors.
 
 # LICENSE
 
-Copyright (c) 2026 Michael Wildpaner. irsync is free software under the MIT
-License: https://github.com/irsync-dev/irsync/blob/main/LICENSE
+irsync is free software under the MIT License.
