@@ -47,4 +47,4 @@ kept offline.
 The project's OpenSSF Scorecard result is at
 [scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/irsync-dev/irsync).
 The low checks we accept are listed in
-[Supply chain security](https://irsync.org/book/contributing/supply-chain).
+[Supply chain security](https://irsync.org/dev/contributing/supply-chain).

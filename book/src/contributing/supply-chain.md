@@ -135,8 +135,7 @@ Packaging is: irsync has no package registry).
 | SAST | 7 | CodeQL has checked 10 of the last 30 commits. It only started recently. | Rises by itself as new commits are checked. |
 
 The scores move when the repository changes and when Scorecard changes its
-checks, so read the live result for the current numbers. After the first run
-on `main`, this table is compared with the published result and corrected.
+checks, so read the live result for the current numbers.
 
 ## Checking the settings
 
