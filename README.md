@@ -13,16 +13,16 @@ daemon side is reached by its iroh identity, not by an address.
 irsync takes rsync's common flags, but it is not a drop-in replacement: it
 has its own protocol, so both ends must run irsync, and some rsync options,
 such as `-X`, `-A` and `-z`, are missing. See
-[Known limitations](https://irsync.org/book/reference/limitations.html).
+[Known limitations](https://irsync.org/book/reference/limitations).
 
 Traffic is encrypted end to end, and each side is known by its key. The client
 only connects to the daemon key it was given, and the daemon only lets in
 client keys it has granted; see
-[Identity and trust](https://irsync.org/book/explanation/identity-and-trust.html).
+[Identity and trust](https://irsync.org/book/explanation/identity-and-trust).
 When no direct path can be found, traffic goes through a relay, by default one
 of the public relays run by n0, the developers of iroh. A relay cannot read
 the data. You can run your own, or refuse relays with `--no-relay`; see
-[Connect directly or through a relay](https://irsync.org/book/how-to/direct-and-relay.html).
+[Connect directly or through a relay](https://irsync.org/book/how-to/direct-and-relay).
 
 > **Beta.** irsync is beta software. The command line and the network
 > protocol may still change before the first stable release, and versions may
@@ -154,26 +154,26 @@ RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
 Check a file with `minisign -Vm FILE -P <key>`, and make sure the trusted
 comment reads `irsync vX.Y.Z` for your version. More ways to check, with
 `gh attestation verify` too, are in
-[Verify a download](https://irsync.org/book/how-to/verify-a-download.html).
+[Verify a download](https://irsync.org/book/how-to/verify-a-download).
 Releases from before signing started have no signatures.
 
 ## Documentation
 
 The project's website is [irsync.org](https://irsync.org), and the book is at
 https://irsync.org/book/. Start with
-[Your first sync](https://irsync.org/book/tutorial/first-sync.html), look up
-flags in the [command-line reference](https://irsync.org/book/reference/command-line.html),
+[Your first sync](https://irsync.org/book/tutorial/first-sync), look up
+flags in the [command-line reference](https://irsync.org/book/reference/command-line),
 and see [CONTRIBUTING.md](CONTRIBUTING.md) to work on irsync itself. If a
 first sync goes wrong, see
-[Troubleshoot a first sync](https://irsync.org/book/how-to/troubleshooting.html).
+[Troubleshoot a first sync](https://irsync.org/book/how-to/troubleshooting).
 Before relying on it, read the
-[Known limitations](https://irsync.org/book/reference/limitations.html):
+[Known limitations](https://irsync.org/book/reference/limitations):
 Windows is not supported, extended attributes and ACLs are not copied, and
 relayed connections are much slower than direct ones.
 
 `fileset` is a separate tool that shares no code with irsync. Use it to verify
 copies made by any tool and to find bitrot; see the
-[introduction to fileset](https://irsync.org/book/fileset/introduction.html).
+[introduction to fileset](https://irsync.org/book/fileset/introduction).
 
 ## Getting help
 
