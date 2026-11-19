@@ -241,8 +241,10 @@
       </ul>
     </footer>
 
-    <!-- Adds a copy button to each command. Without script the page is the
-         same, minus the buttons. -->
+    <!-- Adds a copy button to each command, and turns each release version
+         into a button that copies the install command of its channel.
+         Without script the page is the same, minus the buttons: the
+         versions are plain text. -->
     <script>
       if (navigator.clipboard) {
         for (const cmd of document.querySelectorAll(".cmd")) {
@@ -259,6 +261,27 @@
             });
           };
           cmd.append(button);
+        }
+        // The install command, ending the way the version's channel needs
+        // (data-tail, written by the build).
+        const tail = document.getElementById("install-tail");
+        for (const version of document.querySelectorAll(".version")) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className =
+            "btn btn-xs h-auto border-base-300 px-2 py-0.5 [font:inherit] text-base-content";
+          button.textContent = version.textContent;
+          button.title = "Copy the install command for " + version.textContent;
+          button.onclick = () => {
+            const command = tail.closest(".copy").cloneNode(true);
+            command.querySelector("#install-tail").textContent = version.dataset.tail;
+            navigator.clipboard.writeText(command.textContent).then(() => {
+              const label = button.textContent;
+              button.textContent = "Copied";
+              setTimeout(() => (button.textContent = label), 1500);
+            });
+          };
+          version.replaceWith(button);
         }
       }
     </script>

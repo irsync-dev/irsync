@@ -71,8 +71,8 @@ if [ ! -f "$site/node_modules/.package-lock.json" ] ||
 fi
 "$site/node_modules/.bin/tailwindcss" --cwd "$site" -i tailwind.css -o "$out/style.css" --minify
 
-# The web fonts of the landing page and the book: Barlow for headings and
-# labels, Inter for running text, JetBrains Mono for code. Only the faces
+# The web fonts of the landing page and the book: Barlow for headings,
+# labels and the release versions, Inter for running text, JetBrains Mono for code. Only the faces
 # tailwind.css and book/theme/irsync.css name, Latin only, and each
 # family's licence (SIL Open Font License), which must ship with it. The
 # two Barlow packages carry the same Barlow Project licence.
@@ -80,6 +80,7 @@ fontsource=$site/node_modules/@fontsource
 mkdir -p "$out/fonts"
 for f in barlow/files/barlow-latin-400-normal.woff2 \
   barlow/files/barlow-latin-600-normal.woff2 \
+  barlow-semi-condensed/files/barlow-semi-condensed-latin-400-normal.woff2 \
   barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2 \
   inter/files/inter-latin-400-normal.woff2 \
   inter/files/inter-latin-400-italic.woff2 \

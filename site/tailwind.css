@@ -39,6 +39,14 @@
 @font-face {
   font-family: "Barlow Semi Condensed";
   font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("fonts/barlow-semi-condensed-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  font-style: normal;
   font-weight: 600;
   font-display: fallback;
   src: url("fonts/barlow-semi-condensed-latin-600-normal.woff2") format("woff2");
