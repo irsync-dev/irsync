@@ -417,3 +417,84 @@ html .hljs-deletion {
 html .hljs-deletion {
   color: var(--ir-danger-ink);
 }
+
+/* The version switcher (site/tools/switcher.py writes it into the built
+   books, theme/switcher.js opens it). The button reads like the bar's
+   other controls; the list looks like the theme list. */
+.irsync-book {
+  position: relative;
+  display: inline-block;
+}
+
+#irsync-book-toggle {
+  width: auto;
+  padding: 0 0.6rem;
+  font-family: var(--ir-font-display);
+  font-size: calc(var(--ir-text-body) * var(--ir-book-rem));
+  color: var(--icons);
+  background: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#irsync-book-toggle::after {
+  content: "▾";
+  margin-left: 0.3em;
+}
+
+#irsync-book-toggle:hover,
+#irsync-book-toggle[aria-expanded="true"] {
+  color: var(--icons-hover);
+}
+
+#irsync-book-list {
+  position: absolute;
+  top: calc(var(--menu-bar-height) - 0.4rem);
+  right: 0;
+  z-index: 1000;
+  margin: 0;
+  padding: 0.2rem 0;
+  list-style: none;
+  text-align: left;
+  font-family: var(--ir-font-display);
+  font-size: calc(var(--ir-text-body) * var(--ir-book-rem));
+  line-height: var(--ir-text-body-line);
+  background: var(--theme-popup-bg);
+  border: 1px solid var(--theme-popup-border);
+  border-radius: var(--ir-radius-md);
+}
+
+#irsync-book-list[hidden] {
+  display: none;
+}
+
+#irsync-book-list a {
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+  padding: 0.2rem 1.2rem;
+  color: var(--fg);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+#irsync-book-list a:hover,
+#irsync-book-list a:focus {
+  background: var(--theme-hover);
+}
+
+#irsync-book-list a[aria-current="true"] {
+  font-weight: 600;
+}
+
+#irsync-book-list a[aria-current="true"]::before {
+  content: "✓";
+  margin-left: -0.9rem;
+  width: 0.9rem;
+}
+
+.irsync-book-version {
+  color: var(--ir-muted);
+  font-weight: 400;
+}

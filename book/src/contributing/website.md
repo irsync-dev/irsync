@@ -156,6 +156,17 @@ never changes `book/` itself. `site/tools/label_book.py` labels the copy:
 The build stops with an error when a version's commit has no `book/src`, or
 when its title page does not start with a heading.
 
+Once mdbook has built all of them, `site/tools/switcher.py` adds the
+version switcher to the top bar of every page: a button with the book's
+channel (`Beta`), which opens the list of the books, Stable, Beta and Alpha
+with their versions (those that exist), then Dev. `/book/` is not in the
+list; there, the channel it copies is ticked. Each link is written for the
+page it is on: the same page in the other book if that book has it, else
+that book's title page. So `check.py` checks every one of them, like any
+other link. `book/theme/switcher.js` only opens and closes the list, and
+keeps the `#anchor` when the link stays on the same page. A plain
+`mdbook build book` or `mdbook serve book` has no switcher.
+
 The build also writes `VERSIONS` next to `BUILD`: one line per book, with
 its path, version, commit and `published` or `unpublished` (a release that
 is being built). The `dev` line has no version (`-`). Its commit is the one
@@ -236,6 +247,10 @@ book) links to the landing page at
 for this, so `book/theme/home-link.js` adds the link. A click on the bar
 around the title still scrolls to the top. A bare `mdbook serve` has no
 landing page, so the link leads nowhere there.
+
+The version switcher (see [The books](#the-books)) reads like the bar's
+other controls, and its list looks like the theme list (`irsync.css`,
+`#irsync-book-toggle` and `#irsync-book-list`).
 
 ## The checker
 
