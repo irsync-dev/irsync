@@ -199,9 +199,7 @@ fn set_times(path: &Path, m: &fs::Metadata) -> Result<()> {
 /// As root, gives `to` `m`'s owner; before any chmod, since a chown
 /// clears set-id bits. Others cannot, and keep their own.
 fn copy_owner(to: &Path, m: &fs::Metadata) -> Result<()> {
-    // SAFETY: geteuid takes no arguments, cannot fail and only returns a
-    // number.
-    if unsafe { libc::geteuid() } != 0 {
+    if !nix::unistd::geteuid().is_root() {
         return Ok(());
     }
     std::os::unix::fs::lchown(to, Some(m.uid()), Some(m.gid()))
@@ -285,9 +283,7 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
             .with_context(|| format!("mkfifo {}", to.display()))?;
         copy_owner(to, &m)?;
         fs::set_permissions(to, fs::Permissions::from_mode(m.mode() & 0o7777))?;
-    // SAFETY: geteuid takes no arguments, cannot fail and only returns a
-    // number.
-    } else if (ft.is_block_device() || ft.is_char_device()) && unsafe { libc::geteuid() } == 0 {
+    } else if (ft.is_block_device() || ft.is_char_device()) && nix::unistd::geteuid().is_root() {
         let sflag = if ft.is_block_device() {
             SFlag::S_IFBLK
         } else {
