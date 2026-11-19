@@ -138,6 +138,11 @@ class BookThemeTest(unittest.TestCase):
                      "Escape"):
             self.assertIn(name, js)
 
+    def test_switcher_click_reaches_mdbook(self):
+        # mdbook closes its theme list on a click elsewhere on the page; the
+        # switcher's button must not swallow that click.
+        self.assertNotIn("stopPropagation", _read("book", "theme", "switcher.js").split("keydown")[0])
+
     def test_switcher_takes_the_popup_colours(self):
         rule = re.search(r"#irsync-book-list\s*\{([^}]*)\}", RULES)
         self.assertIsNotNone(rule)

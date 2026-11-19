@@ -36,8 +36,8 @@
     }
   }
 
+  // The click goes on to the page, so mdbook closes its theme list.
   button.addEventListener("click", function (event) {
-    event.stopPropagation();
     if (list.hidden) {
       // A click made with Enter or Space has no click count.
       open(event.detail === 0);

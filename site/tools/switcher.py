@@ -71,13 +71,13 @@ def menu(entries, here, page, pages_of):
     for e in entries:
         same = page != "404.html" and page in pages_of.get(e.path, ())
         href = f"{up}{e.path}/{page if same else 'index.html'}"
-        attrs = [f'href="{html.escape(href)}"', 'role="menuitem"']
+        attrs = [f'href="{html.escape(href)}"']
         if e.path == here:
             attrs.append('aria-current="true"')
         if same:
             attrs.append("data-same-page")
         version = html.escape(e.version or "unreleased")
-        items.append(f'<li role="none"><a {" ".join(attrs)}>{e.label} '
+        items.append(f'<li><a {" ".join(attrs)}>{e.label} '
                      f'<span class="irsync-book-version">{version}</span></a></li>')
     label = LABELS.get(here, here)
     return (
@@ -85,7 +85,7 @@ def menu(entries, here, page, pages_of):
         '<button id="irsync-book-toggle" class="icon-button" type="button" '
         'title="Switch version" aria-haspopup="true" aria-expanded="false" '
         f'aria-controls="irsync-book-list">{label}</button>'
-        '<ul id="irsync-book-list" role="menu" aria-label="Versions" hidden>'
+        '<ul id="irsync-book-list" aria-label="Versions" hidden>'
         + "".join(items) + "</ul></div>"
     )
 
@@ -117,6 +117,11 @@ def apply(site_dir):
                 for p in paths}
     for path in paths:
         here = ticked(text, path)
+        # A book whose title page has no top bar would get no switcher at
+        # all, and every link check would still pass: stop instead.
+        index = site_dir / path / "index.html"
+        if not index.is_file() or _BAR not in index.read_text(encoding="utf-8"):
+            raise SwitcherError(f"{path}/index.html: no top bar ({_BAR}) to put the switcher in")
         for page in sorted(pages_of[path]):
             f = site_dir / path / page
             before = f.read_text(encoding="utf-8")

@@ -62,6 +62,11 @@ class MenuTests(unittest.TestCase):
         self.assertIn("unreleased", menu)
         self.assertIn("0.1.0-alpha.4", menu)
 
+    def test_a_list_of_links_not_a_menu(self):
+        # Menu roles promise arrow keys; these are plain links behind a button.
+        menu = switcher.menu(switcher.entries(TODAY), "beta", PAGE, self.all_pages())
+        self.assertNotIn("role=", menu)
+
     def test_missing_page_goes_to_the_title_page(self):
         pages = self.all_pages()
         pages["alpha"] = {"index.html"}
@@ -111,6 +116,17 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual((self.site / book / "toc.html").read_text(encoding="utf-8"),
                              "<ol></ol>\n")
         self.assertEqual(check.check_links(self.site), [])
+
+    def test_a_book_without_a_top_bar_stops(self):
+        # A future mdbook that names the bar differently must not drop the
+        # switcher in silence.
+        (self.site / "VERSIONS").write_text(NO_RELEASE, encoding="utf-8")
+        for book in ("book", "dev"):
+            (self.site / book).mkdir()
+            (self.site / book / "index.html").write_text("<div class=\"bar\"></div>\n",
+                                                         encoding="utf-8")
+        with self.assertRaisesRegex(switcher.SwitcherError, "book/index.html: no top bar"):
+            switcher.apply(self.site)
 
     def test_cli_error(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.site)],
