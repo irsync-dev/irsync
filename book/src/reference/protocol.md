@@ -116,6 +116,10 @@ The client sends `Hello` on the control stream:
   re-check, which the receiver asks for with `Settle`, so a daemon honours it
   in both directions. Only the sending side clones or hashes each file again,
   so on a push the daemon does neither;
+- `bwlimit` (field 32): `--bwlimit` in bytes per second. The side that sends
+  the file data paces it, so the daemon honours it only when it sends (a
+  pull); on a push the client paces itself. Absent or 0 means no limit. A
+  daemon older than the field ignores it and sends at full speed;
 - `traceparent` and `tracestate`, the client's W3C trace context (empty: no
   trace). A daemon that exports traces makes its `session` span a child of it;
 - `build`: the client's `BuildInfo` (package version, short git commit, dirty

@@ -170,7 +170,8 @@ impl RoleOpts {
     /// and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
     /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, fsync,
-    /// append, local reuse).
+    /// append, local reuse). `--bwlimit` and `--paranoid`'s extra hashing
+    /// are the sending side's, honoured only when the daemon sends.
     fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
         let delete = match hello.delete_mode() {
             _ if !receives => DeleteMode::Off,
@@ -216,7 +217,9 @@ impl RoleOpts {
             partial_dir: (receives && !hello.partial_dir.is_empty())
                 .then(|| PathBuf::from(OsStr::from_bytes(&hello.partial_dir))),
             parallel: DEFAULT_PARALLEL,
-            bwlimit: None,
+            // The sending side paces the data: honoured when the daemon
+            // sends. It only slows what this client is sent.
+            bwlimit: hello.bwlimit.filter(|&b| !receives && b != 0),
             delete,
             delete_excluded: receives && hello.delete_excluded,
             max_delete: hello.max_delete,
@@ -294,6 +297,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
     hello.inplace = o.inplace;
     hello.fsync = o.fsync;
     hello.paranoid = o.paranoid;
+    hello.bwlimit = o.bwlimit;
     hello.append = match o.append {
         Append::Off => WireAppend::AppendOff,
         Append::Append => WireAppend::Append,

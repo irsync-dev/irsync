@@ -107,6 +107,10 @@ message Hello {
   // before the receiver places it; a receiving daemon (a push) does neither.
   bool paranoid = 30;
   bool single_file = 31; // name (21) is the source basename on a push and the receiver's file name on a pull
+  // --bwlimit in bytes per second, honoured by a sending daemon (a pull),
+  // which paces the file data it sends. On a push the client paces its
+  // own sending and the daemon ignores this. Absent or 0: no limit.
+  optional uint64 bwlimit = 32;
 }
 // One export the asking key may use.
 message ExportEntry {

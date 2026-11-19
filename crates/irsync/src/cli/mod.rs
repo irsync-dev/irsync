@@ -857,9 +857,9 @@ pub struct SyncArgs {
     /// Read include patterns from FILE, one per line, as --exclude-from.
     #[arg(long, value_name = "FILE", action = ArgAction::Append)]
     pub include_from: Vec<String>,
-    /// Rate limit: KiB/s by default; suffixes K, M, G are 1024-based (also
-    /// KiB), KB, MB, GB 1000-based, `b` bytes; decimals allowed (1.5M);
-    /// 0 = unlimited.
+    /// Rate limit on file data, push or pull: KiB/s by default; suffixes
+    /// K, M, G are 1024-based (also KiB), KB, MB, GB 1000-based, `b` bytes;
+    /// decimals allowed (1.5M); 0 = unlimited.
     #[arg(long, value_name = "RATE", value_parser = parse_bwlimit)]
     pub bwlimit: Option<u64>,
     /// Apply owner and group ids as sent, instead of mapping the sender's
