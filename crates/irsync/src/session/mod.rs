@@ -533,6 +533,10 @@ pub enum Event {
     Skipped(RelPath, u64),
     /// Bytes of source files the peer's planner skipped so far (cumulative).
     PeerSkipped(u64),
+    /// This connection resumes a stored plan: bytes of the source that need
+    /// nothing more (found up to date, or placed by an earlier connection).
+    /// Every other file is requested again.
+    Settled(u64),
     /// File data bytes moved on a data stream (aggregate, as before).
     Bytes(u64),
     /// Listing progress for one side.
@@ -596,8 +600,9 @@ impl EventBus {
     /// A connection that resumes a stored plan lists nothing. Reports what
     /// `source`'s listing held on the first connection as that side's
     /// finished walk, and the other side's walk as finished too, so the
-    /// progress display has its total from the start.
-    pub fn emit_listed(&self, source: Party, listed: &crate::scan::ListStats) {
+    /// progress display has its total from the start, and `settled`, how
+    /// many of those bytes need nothing more (see [`Event::Settled`]).
+    pub fn emit_listed(&self, source: Party, listed: &crate::scan::ListStats, settled: u64) {
         let other = match source {
             Party::Local => Party::Peer,
             Party::Peer => Party::Local,
@@ -618,6 +623,7 @@ impl EventBus {
             files: 0,
             bytes: 0,
         });
+        self.emit(Event::Settled(settled));
     }
 }
 
@@ -656,6 +662,7 @@ impl Busy {
             deleted: self.deleted.load(Relaxed),
             delete_total: self.delete_total.load(Relaxed),
             listed: None,
+            listed_settled: 0,
         }
     }
 }

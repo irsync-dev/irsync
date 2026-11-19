@@ -35,6 +35,8 @@ impl Receiver {
         .unwrap_or_default();
         self.errors.extend(mkdir_errors);
         let mut requested = 0usize;
+        // Bytes of the files requested again, for the progress displays.
+        let mut open_bytes = 0u64;
         let max_id = plan.entries.iter().map(|e| e.file_id).max().unwrap_or(0);
         // The files sent on this connection: the only ones the sender's
         // final re-check looks at again (it listed nothing).
@@ -55,6 +57,7 @@ impl Receiver {
             }
             let action = Action::try_from(e.action).unwrap_or(Action::Whole);
             regular.insert(path.clone());
+            open_bytes = open_bytes.saturating_add(entry.size);
             self.queued.push_back((
                 e.file_id,
                 path,
@@ -67,14 +70,18 @@ impl Receiver {
         }
         tracing::info!(requested, "resuming the stored plan");
         // Nothing is listed again: both progress displays get the first
-        // connection's totals, the sender's ahead of the first request.
+        // connection's totals, the sender's ahead of the first request, and
+        // how much of that needs nothing more: all but the files requested.
         if let Some(listed) = &plan.listed {
+            let settled = listed.total_size.saturating_sub(open_bytes);
             self.ctx.hooks.bus.emit_listed(
                 super::super::Party::Peer,
                 &crate::scan::ListStats::from_wire(listed),
+                settled,
             );
             self.out.send(Msg::Heartbeat(irsync_proto::v1::Heartbeat {
                 listed: Some(*listed),
+                listed_settled: settled,
                 ..self.ctx.busy.heartbeat()
             }));
         }
