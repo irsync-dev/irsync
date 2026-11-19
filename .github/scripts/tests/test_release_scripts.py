@@ -943,6 +943,10 @@ class SignTests(FakeGh):
                               "-f", "tag=v1.2.3"])
         self.assertLess(patch, resume)
         self.assertEqual(calls[-1], calls[resume])
+        # It ends by saying how to promote the site; it does not start it.
+        self.assertTrue(r.stdout.endswith(
+            "To put v1.2.3 on irsync.org: check that https://dev.irsync.org/ shows it, then run:\n"
+            "  gh workflow run site.yml --ref main\n"), r.stdout)
         rel = self.state()["releases"]["v1.2.3"]
         self.assertFalse(rel["isDraft"])
         for name in self.files:
@@ -1088,6 +1092,7 @@ class SignTests(FakeGh):
         self.assertEqual(self.calls("api", "-X", "PATCH"), [])
         self.assertEqual(self.calls("workflow"), [])
         self.assertTrue(self.state()["releases"]["v1.2.3"]["isDraft"])
+        self.assertNotIn("irsync.org", r.stdout)
 
     def test_replaces_stale_signatures(self):
         self.release["assets"]["irsync.rb.minisig"] = "stale"
@@ -1189,6 +1194,7 @@ class SignTests(FakeGh):
         self.assert_refused(r, "immutable")
         self.assertEqual(len(self.calls("api", "-X", "PATCH")), 1)
         self.assertEqual(self.calls("workflow"), [])
+        self.assertNotIn("irsync.org", r.stdout)
 
     def test_bad_version_fails_before_gh(self):
         for version in ["v1.2.3", "1.2", "1.2.3;id"]:

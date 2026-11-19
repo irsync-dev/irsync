@@ -29,7 +29,8 @@
 # 10. Only with --publish: the tag must still not exist (a tag pushed by hand
 #     while the draft waited would take over the release). The release is
 #     published, must then be immutable with the same files (checked as in
-#     9), and release-resume.yml is started.
+#     9), and release-resume.yml is started. It then prints how to promote
+#     the site to irsync.org; it does not start that.
 #
 # IRSYNC_SIGN_KEYS_FILE replaces release-keys.pub; it is for the tests. It is
 # still compared with the keys file in the release's commit.
@@ -318,3 +319,7 @@ echo "Published $tag."
 gh workflow run release-resume.yml --ref "$tag" -f tag="$tag" ||
     die "Could not start release-resume.yml. Start it with: gh workflow run release-resume.yml --ref $tag -f tag=$tag"
 echo "Started release-resume.yml for $tag: packages, Homebrew and release notes."
+# The site is promoted by hand (book/src/contributing/website.md). Staging
+# has shown this version since its bump was merged.
+echo "To put $tag on irsync.org: check that https://dev.irsync.org/ shows it, then run:"
+echo "  gh workflow run site.yml --ref main"
