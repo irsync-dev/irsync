@@ -20,7 +20,10 @@ extern "C" fn handler(sig: libc::c_int) {
         && sig == libc::SIGINT
     {
         // A second Ctrl-C while shutting down: leave now.
-        // SAFETY: `_exit` is async-signal-safe and never returns.
+        // SAFETY: `_exit` is safe to call from a signal handler: it ends
+        // the process without running destructors or atexit hooks, so no
+        // Rust state the interrupted thread was in the middle of is
+        // touched.
         unsafe { libc::_exit(130) };
     }
 }
@@ -39,7 +42,11 @@ pub fn install() -> Arc<AtomicI32> {
         SigSet::empty(),
     );
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
-        // SAFETY: the handler only touches an atomic and calls `_exit`.
+        // SAFETY: nix marks sigaction unsafe because the handler runs at
+        // any point in any thread. `handler` reads `FLAG` with
+        // `OnceLock::get` (an atomic load; it was set above), does one
+        // compare-exchange and may call `_exit`, all safe in a signal
+        // handler. It takes no lock and does not allocate.
         unsafe { sigaction(sig, &action) }.expect("installing a signal handler");
     }
     Arc::clone(flag)

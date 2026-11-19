@@ -10,6 +10,14 @@ edition = "2021"
 rust-version = "1.96"
 license = "MIT"
 
+# unsafe code must say why it is sound: an unsafe call inside an unsafe fn
+# needs its own unsafe block, and every unsafe block a SAFETY comment.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [workspace.dependencies]
 prost = "0.14"
 prost-reflect = "0.16"

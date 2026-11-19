@@ -114,8 +114,10 @@ pub fn walk_meta(root: &Path) -> Result<BTreeMap<Vec<u8>, Meta>> {
 #[cfg(target_os = "linux")]
 fn reflink(src: &File, dst: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    // SAFETY: FICLONE takes the source descriptor as its integer argument
-    // and touches no memory of ours.
+    // SAFETY: both descriptors belong to `File`s borrowed for the call, so
+    // they stay open. FICLONE takes the source descriptor as a plain
+    // integer, not a pointer, so the kernel reads and writes no memory of
+    // ours.
     let r = unsafe { libc::ioctl(dst.as_raw_fd(), libc::FICLONE, src.as_raw_fd()) };
     if r == 0 {
         Ok(())
@@ -130,7 +132,9 @@ fn clonefile(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
     let f = CString::new(from.as_os_str().as_bytes())?;
     let t = CString::new(to.as_os_str().as_bytes())?;
-    // SAFETY: both are valid NUL-terminated strings that outlive the call.
+    // SAFETY: `f` and `t` are CStrings, so NUL-terminated (CString::new
+    // refused an inner NUL above), and they live until the end of this
+    // function, past the call. clonefile only reads them.
     let r = unsafe { libc::clonefile(f.as_ptr(), t.as_ptr(), 0) };
     if r == 0 {
         Ok(())
@@ -195,6 +199,8 @@ fn set_times(path: &Path, m: &fs::Metadata) -> Result<()> {
 /// As root, gives `to` `m`'s owner; before any chmod, since a chown
 /// clears set-id bits. Others cannot, and keep their own.
 fn copy_owner(to: &Path, m: &fs::Metadata) -> Result<()> {
+    // SAFETY: geteuid takes no arguments, cannot fail and only returns a
+    // number.
     if unsafe { libc::geteuid() } != 0 {
         return Ok(());
     }
@@ -279,6 +285,8 @@ fn copy_entry(from: &Path, to: &Path, st: &mut CopyState) -> Result<()> {
             .with_context(|| format!("mkfifo {}", to.display()))?;
         copy_owner(to, &m)?;
         fs::set_permissions(to, fs::Permissions::from_mode(m.mode() & 0o7777))?;
+    // SAFETY: geteuid takes no arguments, cannot fail and only returns a
+    // number.
     } else if (ft.is_block_device() || ft.is_char_device()) && unsafe { libc::geteuid() } == 0 {
         let sflag = if ft.is_block_device() {
             SFlag::S_IFBLK

@@ -123,14 +123,17 @@ pub fn supplementary_groups() -> Vec<u32> {
         #[link_name = "getgroups$DARWIN_EXTSN"]
         fn getgroups(size: c_int, list: *mut gid_t) -> c_int;
     }
-    // SAFETY: a zero count with a null buffer only asks for the group count.
+    // SAFETY: with a size of 0, getgroups writes nothing and only returns
+    // the number of groups, so a null buffer is allowed.
     let n = unsafe { getgroups(0, std::ptr::null_mut()) };
     if n <= 0 {
         return Vec::new();
     }
     // gid_t is u32 on Linux and macOS alike.
     let mut buf: Vec<gid_t> = vec![0; n as usize];
-    // SAFETY: `buf` holds `n` writable gid_t slots.
+    // SAFETY: `buf` holds `n` writable gid_t slots and getgroups writes at
+    // most the size it is given. If the groups grew since the first call,
+    // it fails with EINVAL and writes nothing; the result is then empty.
     let n = unsafe { getgroups(n as c_int, buf.as_mut_ptr()) };
     buf.truncate(n.max(0) as usize);
     buf

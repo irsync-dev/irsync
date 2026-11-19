@@ -67,8 +67,10 @@ fn file_flags() -> OFlag {
 #[cfg(target_os = "linux")]
 pub fn reflink(src: &File, dst: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    // SAFETY: FICLONE takes the source descriptor as its integer argument
-    // and touches no memory of ours.
+    // SAFETY: both descriptors belong to `File`s borrowed for the call, so
+    // they stay open. FICLONE takes the source descriptor as a plain
+    // integer, not a pointer, so the kernel reads and writes no memory of
+    // ours.
     let r = unsafe { nix::libc::ioctl(dst.as_raw_fd(), nix::libc::FICLONE, src.as_raw_fd()) };
     if r == 0 {
         Ok(())
@@ -359,8 +361,11 @@ fn make_clone(src: &File, dir: &OwnedFd, name: &OsStr) -> io::Result<File> {
         ) -> std::os::raw::c_int;
     }
     let d = CString::new(name.as_bytes())?;
-    // SAFETY: the descriptors are open, and `d` is a NUL-terminated name
-    // that outlives the call.
+    // SAFETY: `src` and `dir` are borrowed for the call, so both
+    // descriptors stay open. `d` is a CString (CString::new refused an
+    // inner NUL above), so NUL-terminated, and lives past the call;
+    // fclonefileat only reads it. The declaration above matches the one
+    // in macOS's <sys/clonefile.h>.
     if unsafe { fclonefileat(src.as_raw_fd(), dir.as_raw_fd(), d.as_ptr(), 0) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -931,8 +936,11 @@ mod tests {
             .write(true)
             .open(&src)
             .unwrap();
-        // SAFETY: a fresh shared mapping of `len` bytes of a file of that
-        // size; the writes stay inside it and it is unmapped below.
+        // SAFETY: a null address lets the kernel pick a free spot, so the
+        // new mapping cannot overlap memory Rust already uses. The file
+        // was just written with `len` bytes, so every mapped page is
+        // backed by the file. The result is checked against MAP_FAILED
+        // below before any use.
         let map = unsafe {
             nix::libc::mmap(
                 std::ptr::null_mut(),
@@ -944,7 +952,10 @@ mod tests {
             )
         };
         assert_ne!(map, nix::libc::MAP_FAILED, "mmap failed");
-        // SAFETY: `map` is valid for `len` bytes.
+        // SAFETY: `map` is a writable mapping of `len` (8192) bytes, not
+        // MAP_FAILED (asserted above); the two 100-byte writes land at
+        // offsets 0 and `len - 100`, inside it. No Rust reference points
+        // into the mapping.
         unsafe {
             std::ptr::write_bytes(map as *mut u8, b'z', 100);
             std::ptr::write_bytes((map as *mut u8).add(len - 100), b'y', 100);
@@ -952,13 +963,16 @@ mod tests {
         let clones = Clones::new("me").within(t.path().to_path_buf());
         let cloned = clones.clone_file(&src).unwrap();
         let Some(c) = cloned else {
-            // SAFETY: unmapping what was mapped above.
+            // SAFETY: `map` and `len` are exactly the mapping made above,
+            // still mapped, and nothing uses it after this.
             unsafe { nix::libc::munmap(map, len) };
             eprintln!("skipping: {} cannot clone", target.display());
             return;
         };
         let got = std::fs::read(&c.path).unwrap();
-        // SAFETY: unmapping what was mapped above.
+        // SAFETY: `map` and `len` are exactly the mapping made above,
+        // still mapped (the other unmap returned early), and nothing uses
+        // it after this.
         unsafe { nix::libc::munmap(map, len) };
         assert_eq!(&got[..100], &[b'z'; 100][..], "clone misses mmap writes");
         assert_eq!(

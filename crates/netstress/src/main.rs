@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::process::exit;
 
 use clap::error::ErrorKind;

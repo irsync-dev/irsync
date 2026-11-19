@@ -35,22 +35,25 @@ extern "C" fn handler(_sig: libc::c_int) {
     // `_exit`: all async-signal-safe.
     let child = CHILD_PID.load(Ordering::SeqCst);
     if child != 0 {
-        // SAFETY: `kill` is async-signal-safe.
+        // SAFETY: `kill` takes two integers and touches no memory of ours,
+        // and POSIX lists it as safe to call from a signal handler.
         unsafe { libc::kill(child, libc::SIGINT) };
     }
     let background = BACKGROUND_PID.load(Ordering::SeqCst);
     if background != 0 {
-        // SAFETY: `kill` is async-signal-safe.
+        // SAFETY: as for the child above.
         unsafe { libc::kill(background, libc::SIGTERM) };
     }
     if let Some(slot) = DAEMON_PID.get() {
         let pid = slot.load(Ordering::SeqCst);
         if pid != 0 {
-            // SAFETY: `kill` is async-signal-safe.
+            // SAFETY: as for the child above.
             unsafe { libc::kill(pid, libc::SIGINT) };
         }
     }
-    // SAFETY: `_exit` is async-signal-safe and never returns.
+    // SAFETY: `_exit` is safe to call from a signal handler: it ends the
+    // process without running destructors or atexit hooks, so no Rust
+    // state the interrupted thread was in the middle of is touched.
     unsafe { libc::_exit(130) };
 }
 
@@ -68,7 +71,12 @@ pub fn install() -> Arc<AtomicI32> {
         SigSet::empty(),
     );
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
-        // SAFETY: the handler only loads atomics, calls `kill` and `_exit`.
+        // SAFETY: nix marks sigaction unsafe because the handler runs at
+        // any point in any thread. `handler` only loads atomics (and
+        // `DAEMON_PID`, set above before the handler can run, is read with
+        // `OnceLock::get`, an atomic load), and calls `kill` and `_exit`,
+        // which are safe in a signal handler. It takes no lock and does not
+        // allocate.
         unsafe { sigaction(sig, &action) }.expect("installing a signal handler");
     }
     Arc::clone(slot)

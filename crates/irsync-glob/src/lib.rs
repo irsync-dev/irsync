@@ -36,6 +36,8 @@
 //! Any change in what a pattern matches is a breaking change for users' filter
 //! files and scripts.
 
+#![forbid(unsafe_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tok {
     Lit(u8),

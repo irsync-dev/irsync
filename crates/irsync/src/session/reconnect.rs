@@ -352,9 +352,13 @@ fn describe_refusal(r: &SessionRefused, remote: &str, client: &EndpointId) -> Op
 fn local_time(secs: i64) -> String {
     // `time_t`, inferred: naming the alias is deprecated on musl.
     let t = secs as _;
-    // SAFETY: an all-zero `tm` is a valid value; `localtime_r` only writes
-    // into the `tm` it is given and reads `t`.
+    // SAFETY: `tm` is a plain C struct of integers (and, on some systems, a
+    // pointer to the zone name, which may be null), so all zero bytes is a
+    // valid value.
     let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers come from references to locals that outlive
+    // the call. localtime_r is the thread-safe variant: it reads `t` and
+    // writes only into `tm`, not into shared static storage.
     let ok = unsafe { !nix::libc::localtime_r(&t, &mut tm).is_null() };
     if !ok {
         return format!("@{secs}");

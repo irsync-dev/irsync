@@ -105,3 +105,6 @@ vergen-gitcl = "10"
 [[bench]]
 name = "index"
 harness = false
+
+[lints]
+workspace = true
