@@ -2,7 +2,9 @@ name: Site
 
 # A push to main that touches the site, the book, or what the site check reads
 # (the CLI's flags, files the book refers to) builds it, checks it and deploys
-# it to staging (Worker irsync-dev, dev.irsync.org). Running the workflow by
+# it to staging (Worker irsync-dev, dev.irsync.org). So does a push that changes
+# Cargo.toml: the landing page shows the release versions, and a version bump
+# is such a push, so staging shows a release from its bump on. Running the workflow by
 # hand promotes the newest staging build to production (Worker irsync-pub,
 # irsync.org): the same files, downloaded from that run's artifact, not rebuilt.
 #
@@ -16,6 +18,7 @@ on:
       - book/**
       - site/**
       - README.md
+      - Cargo.toml
       - crates/**
       - proto/**
       - docs/**
@@ -46,6 +49,10 @@ jobs:
     concurrency: site-staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The build reads the release versions from the tags and the
+          # release-X.Y branches (site/tools/versions.py).
+          fetch-depth: 0
       - name: Install Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
