@@ -592,6 +592,33 @@ impl EventBus {
             let _ = self.0.send(ev);
         }
     }
+
+    /// A connection that resumes a stored plan lists nothing. Reports what
+    /// `source`'s listing held on the first connection as that side's
+    /// finished walk, and the other side's walk as finished too, so the
+    /// progress display has its total from the start.
+    pub fn emit_listed(&self, source: Party, listed: &crate::scan::ListStats) {
+        let other = match source {
+            Party::Local => Party::Peer,
+            Party::Peer => Party::Local,
+        };
+        self.emit(Event::Scanned {
+            party: source,
+            entries: listed.files(),
+            bytes: listed.total_size,
+            at: None,
+        });
+        self.emit(Event::Total {
+            party: source,
+            files: listed.reg,
+            bytes: listed.total_size,
+        });
+        self.emit(Event::Total {
+            party: other,
+            files: 0,
+            bytes: 0,
+        });
+    }
 }
 
 impl Default for EventBus {
@@ -628,6 +655,7 @@ impl Busy {
             skipped_bytes: self.skipped_bytes.load(Relaxed),
             deleted: self.deleted.load(Relaxed),
             delete_total: self.delete_total.load(Relaxed),
+            listed: None,
         }
     }
 }

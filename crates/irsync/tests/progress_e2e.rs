@@ -40,8 +40,20 @@ async fn run_with(
     o: &SyncOptions,
     flow: Flow,
     ropts: ReconnectOpts,
-    mut on_event: impl FnMut(&Event) + Send + 'static,
+    on_event: impl FnMut(&Event) + Send + 'static,
 ) -> (Outcome, Vec<Event>) {
+    let (out, events) = try_run_with(h, o, flow, ropts, on_event).await;
+    (out.expect("sync session"), events)
+}
+
+/// [`run_with`] for a session that may fail.
+async fn try_run_with(
+    h: &Harness,
+    o: &SyncOptions,
+    flow: Flow,
+    ropts: ReconnectOpts,
+    mut on_event: impl FnMut(&Event) + Send + 'static,
+) -> (anyhow::Result<Outcome>, Vec<Event>) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let local = h.local_side();
     let mut rx = local.hooks.bus.subscribe();
@@ -73,7 +85,7 @@ async fn run_with(
     let (out, _) = h.run_reconnect(o, flow, ropts, local).await;
     let _ = stop.send(());
     let events = collector.await.expect("event collector");
-    (out.expect("sync session"), events)
+    (out, events)
 }
 
 /// Itemize lines as (path, code with the direction normalised to `>`).
@@ -781,6 +793,67 @@ async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
             "the outcome records the error: {:?}",
             out.errors
         );
+    })
+    .await;
+}
+
+/// A client started again resumes the stored session, and neither side
+/// lists again. The progress block still needs the source's total: without
+/// it the transfer line reads `0/0`, with no percent, for the whole run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_client_that_resumes_knows_the_total_before_any_data() {
+    use irsync::cli::progress::state::Live;
+    use irsync::cli::DeleteMode;
+    const FILES: u64 = 10;
+    const SIZE: usize = 2 << 20;
+    within30(async {
+        for flow in [Flow::Push, Flow::Pull] {
+            let h = Harness::new().await;
+            for i in 0..FILES {
+                fs::write(h.src(flow).join(format!("f{i:02}.bin")), noise(SIZE, i + 1)).unwrap();
+            }
+            h.daemon.sender_parallel(4);
+            h.daemon.fault.drop_after_bytes(5 * SIZE as u64);
+            let fast = ReconnectOpts {
+                backoff_min: Duration::from_millis(100),
+                ..ReconnectOpts::default()
+            };
+            // First "process": the connection drops and it gives up.
+            let once = ReconnectOpts {
+                max: Duration::ZERO,
+                ..fast
+            };
+            let (first, _) = try_run_with(&h, &opts(&[]), flow, once, |_| {}).await;
+            assert!(first.is_err(), "{flow:?}: the first run should fail");
+
+            // Second "process": a new reporter, which has seen no listing.
+            let (out, events) = run_with(&h, &opts(&[]), flow, fast, |_| {}).await;
+            assert!(out.resumed, "{flow:?}: the second run did not resume");
+            let source = match flow {
+                Flow::Push => Party::Local,
+                Flow::Pull => Party::Peer,
+            };
+            let now = std::time::Instant::now();
+            let mut live = Live::new(source, DeleteMode::Off, now);
+            let mut data = false;
+            for e in &events {
+                if matches!(e, Event::FileBytes(..)) {
+                    data = true;
+                    break;
+                }
+                live.apply(e, now);
+            }
+            assert!(data, "{flow:?}: the second run sent no data");
+            assert_eq!(
+                live.transfer_fraction().1,
+                FILES * SIZE as u64,
+                "{flow:?}: the total when the first data moves"
+            );
+            assert!(
+                live.local.done && live.peer.done,
+                "{flow:?}: the list line still says walking"
+            );
+        }
     })
     .await;
 }

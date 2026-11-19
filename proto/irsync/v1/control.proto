@@ -242,6 +242,10 @@ message Heartbeat {
   uint64 skipped_bytes = 2; // bytes of source files this side's planner found up to date (cumulative)
   uint64 deleted = 3;       // paths this side's deletion pass removed so far
   uint64 delete_total = 4;  // its candidate count once known, else 0
+  // A receiver that resumes its stored plan, once, before its first
+  // request: what the sender's listing held on the first connection. Nothing
+  // is listed again, and the sender's progress display needs the total.
+  ListTotals listed = 5;
 }
 message Control {
   reserved 4; // ChunkList, one frame per list (never shipped)
