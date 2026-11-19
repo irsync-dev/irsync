@@ -204,6 +204,40 @@ def books_text(books):
     return "".join(f"{b.path} {b.version or '-'} {b.commit or '-'} {b.state}\n" for b in books)
 
 
+_PATHS = ("book", *CHANNELS, "dev")
+_STATES = ("published", "unpublished", "dev")
+
+
+def unpublished(text):
+    """The versions a built site holds that are not published, from its
+    VERSIONS file (see books_text). Such a build must not be promoted: it
+    names a version nobody can install, and its book was read from a branch
+    that may have moved on since.
+
+    A file that cannot be read for sure is an error, never "all published".
+    """
+    lines = text.splitlines()
+    out = []
+    for line in lines:
+        fields = line.split(" ")
+        if len(fields) != 4:
+            raise VersionsError(f"not PATH VERSION COMMIT STATE: {line!r}")
+        path, version, commit, state = fields
+        if path not in _PATHS or state not in _STATES:
+            raise VersionsError(f"unknown path or state: {line!r}")
+        if state == "dev":
+            if (version, commit) != ("-", "-"):
+                raise VersionsError(f"a dev book has no version: {line!r}")
+            continue
+        if parse(version) is None or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise VersionsError(f"not a release version and a commit: {line!r}")
+        if state == "unpublished" and version not in out:
+            out.append(version)
+    if not any(line.startswith("dev ") for line in lines):
+        raise VersionsError("no dev line: the file is cut short")
+    return out
+
+
 # How often each region is on the page. prerelease: the badge and the note.
 _REGIONS = {"lines": 1, "tail": 1, "channel": 1, "Channel": 1, "prerelease": 2}
 
@@ -268,6 +302,8 @@ def main(argv=None):
     p.add_argument("dst", type=Path)
     p = sub.add_parser("books", help="list the books to build: PATH VERSION COMMIT STATE")
     p.add_argument("repo", type=Path)
+    p = sub.add_parser("promotable", help="fail if a built site's VERSIONS holds an unpublished version")
+    p.add_argument("file", type=Path)
     args = ap.parse_args(argv)
     try:
         if args.command == "render":
@@ -275,6 +311,19 @@ def main(argv=None):
             args.dst.write_text(page, encoding="utf-8")
         elif args.command == "books":
             sys.stdout.write(books_text(books(releases(args.repo))))
+        elif args.command == "promotable":
+            try:
+                text = args.file.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                raise VersionsError(f"{args.file} is missing: this build was made before "
+                                    "VERSIONS existed. Re-run the staging build.") from None
+            try:
+                held = unpublished(text)
+            except VersionsError as e:
+                raise VersionsError(f"{args.file}: {e}") from None
+            if held:
+                raise VersionsError(f"this build holds {', '.join(held)}, which is not published. "
+                                    "Publish the release, re-run the staging build, then promote.")
     except VersionsError as e:
         print(f"versions.py: {e}", file=sys.stderr)
         return 1

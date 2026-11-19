@@ -384,5 +384,65 @@ class CliTests(RepoCase):
         self.assertFalse(out.exists())
 
 
+SHA = "b" * 40
+
+
+class PromotableTests(unittest.TestCase):
+    def test_all_published(self):
+        self.assertEqual(versions.unpublished(
+            f"book 0.1.0-beta.5 {SHA} published\nbeta 0.1.0-beta.5 {SHA} published\ndev - - dev\n"), [])
+
+    def test_names_the_unpublished_once(self):
+        text = (f"book 0.1.0-beta.6 {SHA} unpublished\nbeta 0.1.0-beta.6 {SHA} unpublished\n"
+                f"alpha 0.1.0-alpha.4 {SHA} published\ndev - - dev\n")
+        self.assertEqual(versions.unpublished(text), ["0.1.0-beta.6"])
+
+    def test_what_the_build_writes_is_accepted(self):
+        found = {"1.0.0": versions.Release("2027-03-03", SHA, True),
+                 "1.1.0-beta.1": versions.Release("2027-04-01", SHA, False)}
+        self.assertEqual(versions.unpublished(versions.books_text(versions.books(found))), ["1.1.0-beta.1"])
+        self.assertEqual(versions.unpublished(versions.books_text(versions.books({}))), [])
+
+    def test_refuses_what_it_cannot_read(self):
+        for text in ["", "\n", "book 1.0.0 published\ndev - - dev\n",
+                     f"book 1.0.0 {SHA} maybe\ndev - - dev\n",
+                     f"docs 1.0.0 {SHA} published\ndev - - dev\n",
+                     f"book 1.0.0 {SHA} published\n",
+                     f"book not-a-version {SHA} published\ndev - - dev\n",
+                     "<html>Not found</html>\n"]:
+            with self.assertRaises(versions.VersionsError, msg=repr(text)):
+                versions.unpublished(text)
+
+    def run_cli(self, text):
+        d = Path(tempfile.mkdtemp(prefix="site-promotable-"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        f = d / "VERSIONS"
+        if text is not None:
+            f.write_text(text)
+        return subprocess.run([sys.executable, str(TOOL), "promotable", str(f)],
+                              capture_output=True, text=True)
+
+    def test_cli_published(self):
+        r = self.run_cli(f"book 0.1.0-beta.5 {SHA} published\ndev - - dev\n")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+    def test_cli_unpublished(self):
+        r = self.run_cli(f"book 0.1.0-beta.6 {SHA} unpublished\ndev - - dev\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("versions.py: this build holds 0.1.0-beta.6, which is not published. "
+                      "Publish the release, re-run the staging build, then promote.", r.stderr)
+
+    def test_cli_missing_file(self):
+        r = self.run_cli(None)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is missing: this build was made before VERSIONS existed. "
+                      "Re-run the staging build.", r.stderr)
+
+    def test_cli_garbage(self):
+        r = self.run_cli("garbage\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("versions.py: ", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,8 @@ name: Site
 # is such a push, so staging shows a release from its bump on. Running the workflow by
 # hand promotes the newest staging build to production (Worker irsync-pub,
 # irsync.org): the same files, downloaded from that run's artifact, not rebuilt.
+# It refuses a build that holds a version which is not published yet (the
+# build's VERSIONS file says so), unless it is started with allow-unpublished.
 #
 # Each Worker has its own deploy token, allowed to change only that Worker:
 # CLOUDFLARE_API_TOKEN_DEV and CLOUDFLARE_API_TOKEN_PUB.
@@ -26,6 +28,13 @@ on:
       - tools/**
       - .github/workflows/site.yml
   workflow_dispatch:
+    inputs:
+      allow-unpublished:
+        description: >-
+          Promote although the build holds a version that is not published
+          (an abandoned bump, or a fix that cannot wait)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -102,10 +111,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      # Only the deploy settings; the files come from the staging build.
+      # Only the deploy settings and the check of what the build holds; the
+      # files come from the staging build.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: site/wrangler.jsonc
+          sparse-checkout: |
+            site/wrangler.jsonc
+            site/tools/versions.py
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -113,13 +125,26 @@ jobs:
       - name: Download the newest staging build
         run: |
           # --event push: a promote run of this workflow succeeds too, but has no artifact.
-          id=$(gh run list --workflow site.yml --branch main --event push --status success \
-            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          if [ -z "$id" ]; then
-            echo "no successful staging run on main" >&2
+          # The newest run whatever its state: taking the newest green one
+          # would ship the build before a failed or still running one.
+          run=$(gh run list --workflow site.yml --branch main --event push \
+            --limit 1 --json databaseId,status,conclusion \
+            --jq '.[0] | select(. != null) | "\(.databaseId) \(.status) \(.conclusion)"')
+          if [ -z "$run" ]; then
+            echo "no staging run on main" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2086 # three words: id, status, conclusion
+          set -- $run
+          id=$1 status=$2 conclusion=$3
+          if [ "$status" != completed ] || [ "$conclusion" != success ]; then
+            echo "the newest staging run on main is not finished and green ($status/$conclusion): wait for it, or fix it, then promote" >&2
             exit 1
           fi
           gh run download "$id" -n site -D site-out
+      - name: Refuse a version that is not published
+        if: ${{ !inputs.allow-unpublished }}
+        run: python3 site/tools/versions.py promotable site-out/VERSIONS
       - name: Deploy to irsync-pub
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PUB }}
