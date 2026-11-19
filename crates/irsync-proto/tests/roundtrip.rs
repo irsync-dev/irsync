@@ -160,6 +160,13 @@ fn control_oneof_roundtrips() {
             would_delete_omitted: 4,
             created: 5,
             transferred_size: 6,
+            listed: Some(irsync_proto::v1::ListTotals {
+                reg: 7,
+                dir: 8,
+                link: 9,
+                special: 10,
+                total_size: 11,
+            }),
         }),
         Msg::Error(Error {
             code: 7,

@@ -88,7 +88,12 @@ impl Receiver {
                 .collect(),
             touched: HashSet::new(),
             deletes: None,
-            listed: Default::default(),
+            // Nothing is listed again: the first connection's totals.
+            listed: plan
+                .listed
+                .as_ref()
+                .map(crate::scan::ListStats::from_wire)
+                .unwrap_or_default(),
             created: 0,
             max_id,
             regular: HashSet::new(),

@@ -880,6 +880,7 @@ impl Persister {
         errors: Vec<PathError>,
         skipped: u64,
         peer_listing_incomplete: bool,
+        listed: &crate::scan::ListStats,
     ) {
         let p = &mut self.rec.plan;
         p.plan_complete = true;
@@ -887,6 +888,7 @@ impl Persister {
         p.errors = errors;
         p.skipped = skipped;
         p.peer_listing_incomplete = peer_listing_incomplete;
+        p.listed = Some(listed.to_wire());
         self.dirty = true;
     }
 

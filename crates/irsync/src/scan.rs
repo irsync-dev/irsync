@@ -69,6 +69,26 @@ impl ListStats {
     pub fn files(&self) -> u64 {
         self.reg + self.dir + self.link + self.special
     }
+
+    pub fn to_wire(&self) -> irsync_proto::v1::ListTotals {
+        irsync_proto::v1::ListTotals {
+            reg: self.reg,
+            dir: self.dir,
+            link: self.link,
+            special: self.special,
+            total_size: self.total_size,
+        }
+    }
+
+    pub fn from_wire(t: &irsync_proto::v1::ListTotals) -> ListStats {
+        ListStats {
+            reg: t.reg,
+            dir: t.dir,
+            link: t.link,
+            special: t.special,
+            total_size: t.total_size,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

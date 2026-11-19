@@ -180,7 +180,7 @@ export.
 | `CheckLinksEnd` | receiver to sender | The last `CheckLink` has been sent. With `-H` it is always sent, even with no links to check, before `SessionDone`. |
 | `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise that name fails. |
 | `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
-| `SessionDone` | receiver to sender | The session's totals, errors and deletions. |
+| `SessionDone` | receiver to sender | The session's totals, errors and deletions, and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
 | `Error` | daemon to client | A refusal, as above. |
 
 Every message on the control stream is a `Control` frame with exactly one of
