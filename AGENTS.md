@@ -101,5 +101,9 @@ cargo test -p netstress -- --include-ignored
   macOS ships an older rsync: `brew install rsync`.
 - **`cargo test -p stress` alone does not build the binaries it needs.** Use
   `cargo test --workspace`, or run `cargo build --workspace` first.
+- **The site holds the book once per release channel**, and `/book/` is
+  the released one, not `main`. Read "The books" in
+  `book/src/contributing/website.md` before you link to a new book page
+  from the landing page.
 - **Formatting is checked on push** by `.githooks/pre-push`. Install it once
   per clone: `git config core.hooksPath .githooks`.

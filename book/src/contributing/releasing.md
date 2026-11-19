@@ -61,8 +61,10 @@ The three cases differ only in the branch. All the steps are the same.
    jobs, which run the Linux release build the way the release will. Then
    merge it: `gh pr merge --merge`. On `main`, the merge also rebuilds the
    site: [dev.irsync.org](https://dev.irsync.org/) shows the new version
-   from then on, before it is published (see
-   [The release versions](website.md#the-release-versions)).
+   and its documentation from then on, before it is published (see
+   [The release versions](website.md#the-release-versions) and
+   [The books](website.md#the-books)). Until the release is published,
+   the site cannot be promoted to irsync.org.
 4. Start the release gate on that branch, with the version:
 
    ```sh
@@ -88,24 +90,22 @@ The three cases differ only in the branch. All the steps are the same.
    .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key --publish 1.2.3
    ```
 
-   It signs again, publishes the release and starts the resume run. See
-   [Signing the release](#signing-the-release).
+   It signs again, publishes the release and starts the resume run. It
+   also re-runs the newest staging build of the site, which now reads the
+   release from its tag. See [Signing the release](#signing-the-release).
 7. Put the new version on irsync.org. The script ends by printing the
-   command. Check that [dev.irsync.org](https://dev.irsync.org/) shows the
-   version, then run it:
+   command. Wait for the staging run it started, check that
+   [dev.irsync.org](https://dev.irsync.org/) shows the version and that
+   `/book/` there documents it, then run:
 
    ```sh
    gh workflow run site.yml --ref main
    ```
 
-   See [Promoting to irsync.org](website.md#promoting-to-irsyncorg). Don't
-   promote before the release is published: the page would name a version
-   nobody can install yet.
+   See [Promoting to irsync.org](website.md#promoting-to-irsyncorg).
 
-A patch release's bump lands on `release-X.Y`, and that does not rebuild
-the site. The site picks the patch up with its next build on `main`: a
-push there that touches the site or the book. Wait for that build before
-you promote.
+This is the same for a patch release. Its bump lands on `release-X.Y`,
+which does not rebuild the site, but publishing it does.
 
 For a pre-release, use a version such as `1.2.3-beta.1` or `1.2.3-alpha.1`.
 For `1.3.0`, the resume run also creates the branch `release-1.3` at the
@@ -268,6 +268,12 @@ The tag is created when you publish the draft, so a failure before that
 leaves no tag behind. Fix the cause and start the gate again with the same
 version. It deletes a leftover draft.
 
+**The site cannot be promoted.** From the merge of the bump until the
+release is published, the promote refuses the staging build: it shows a
+version nobody can install yet. Publish the release, or, if the release is
+abandoned, land the next bump or promote with `allow-unpublished` (see
+[Promoting to irsync.org](website.md#promoting-to-irsyncorg)).
+
 **The check failed.** Nothing ran. Read the error. Usually the version in
 the two files does not match, or you are on the wrong branch, or the branch
 `release-X.Y` is missing or already there. Fix it and start the gate again.
@@ -378,8 +384,13 @@ in. It stops at the first check that fails:
 6. It uploads the `.minisig` files and checks that every file has one.
 7. It checks that the tag still does not exist. Then it publishes the
    draft, which creates the tag, checks that the release is immutable and
-   starts `release-resume.yml` on the tag. It ends by printing the command
-   that promotes the site to irsync.org; it does not run it.
+   starts `release-resume.yml` on the tag. Then it re-runs the newest
+   staging build of the site, so the site reads this release from its tag.
+   If that cannot be started, for example because that run is still going,
+   it prints the commands to do it by hand; the release is published either
+   way. GitHub lets a run be re-run for 30 days. After that, a push to
+   `main` that touches `site/` or `book/` rebuilds the site. It ends by printing the command that promotes the site to
+   irsync.org; it does not run it.
 
 Step 7 only happens with `--publish`. Without it, the script stops after
 step 6 and the release stays a signed draft: look at it, then run the

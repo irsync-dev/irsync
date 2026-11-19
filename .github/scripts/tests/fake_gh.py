@@ -135,6 +135,13 @@ elif args[:2] == ["attestation", "verify"]:
     print("Verification succeeded!")
 elif args[:2] == ["workflow", "run"]:
     pass
+elif args[:2] == ["run", "list"]:
+    # The newest site.yml run, as sign-release.sh asks for it (--jq gives the id).
+    if not state.get("no_site_run"):
+        print(state.get("site_run", 7001))
+elif args[:2] == ["run", "rerun"]:
+    if state.get("site_rerun_fails"):
+        fail("run 7001 cannot be rerun; This workflow is already running")
 elif args[0] == "api":
     endpoint = positional(1)[0]
     repo = os.environ["GH_REPO"]

@@ -942,10 +942,44 @@ class SignTests(FakeGh):
         resume = calls.index(["workflow", "run", "release-resume.yml", "--ref", "v1.2.3",
                               "-f", "tag=v1.2.3"])
         self.assertLess(patch, resume)
-        self.assertEqual(calls[-1], calls[resume])
+        # Then it rebuilds the staging site: the tag exists now, so the site
+        # build reads the release from it.
+        site = calls.index(["run", "list", "--workflow", "site.yml", "--branch", "main",
+                            "--event", "push", "--limit", "1", "--json", "databaseId",
+                            "--jq", ".[0].databaseId // empty"])
+        rerun = calls.index(["run", "rerun", "7001"])
+        self.assertLess(resume, site)
+        self.assertLess(site, rerun)
+        self.assertEqual(calls[-1], calls[rerun])
+        self.assertIn("Rebuilding the staging site (run 7001), so it shows v1.2.3 as published.\n",
+                      r.stdout)
         # It ends by saying how to promote the site; it does not start it.
         self.assertTrue(r.stdout.endswith(
-            "To put v1.2.3 on irsync.org: check that https://dev.irsync.org/ shows it, then run:\n"
+            "To put v1.2.3 on irsync.org: wait for that run, check that https://dev.irsync.org/ shows it, then run:\n"
+            "  gh workflow run site.yml --ref main\n"), r.stdout)
+
+    def test_publish_survives_a_failed_site_rerun(self):
+        # The release is published by then: a site that cannot be rebuilt is
+        # a message, not a failure.
+        self.extra_state["site_rerun_fails"] = True
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.state()["releases"]["v1.2.3"]["isDraft"])
+        self.assertIn("Could not rebuild the staging site.", r.stdout)
+        self.assertIn("gh run rerun", r.stdout)
+        self.assertNotIn("Rebuilding the staging site", r.stdout)
+        self.assertTrue(r.stdout.endswith(
+            "To put v1.2.3 on irsync.org: wait for that run, check that https://dev.irsync.org/ shows it, then run:\n"
+            "  gh workflow run site.yml --ref main\n"), r.stdout)
+
+    def test_publish_survives_no_site_run(self):
+        self.extra_state["no_site_run"] = True
+        r = self.sign()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.calls("run", "rerun"), [])
+        self.assertIn("Could not rebuild the staging site.", r.stdout)
+        self.assertTrue(r.stdout.endswith(
+            "To put v1.2.3 on irsync.org: wait for that run, check that https://dev.irsync.org/ shows it, then run:\n"
             "  gh workflow run site.yml --ref main\n"), r.stdout)
         rel = self.state()["releases"]["v1.2.3"]
         self.assertFalse(rel["isDraft"])
@@ -1093,6 +1127,7 @@ class SignTests(FakeGh):
         self.assertEqual(self.calls("workflow"), [])
         self.assertTrue(self.state()["releases"]["v1.2.3"]["isDraft"])
         self.assertNotIn("irsync.org", r.stdout)
+        self.assertEqual(self.calls("run"), [])
 
     def test_replaces_stale_signatures(self):
         self.release["assets"]["irsync.rb.minisig"] = "stale"
@@ -1195,6 +1230,7 @@ class SignTests(FakeGh):
         self.assertEqual(len(self.calls("api", "-X", "PATCH")), 1)
         self.assertEqual(self.calls("workflow"), [])
         self.assertNotIn("irsync.org", r.stdout)
+        self.assertEqual(self.calls("run"), [])
 
     def test_bad_version_fails_before_gh(self):
         for version in ["v1.2.3", "1.2", "1.2.3;id"]:

@@ -5,8 +5,12 @@
 #   site/deploy.sh staging   build target/site, run the site tool tests and the
 #                            site check, deploy it to the Worker irsync-dev
 #                            (dev.irsync.org), keep a copy in target/site-staging/
-#   site/deploy.sh promote   deploy target/site-staging/ unchanged to the Worker
-#                            irsync-pub (irsync.org)
+#   site/deploy.sh promote [--allow-unpublished]
+#                            deploy target/site-staging/ unchanged to the Worker
+#                            irsync-pub (irsync.org). Refuses a build that holds
+#                            a version which is not published yet, unless
+#                            --allow-unpublished is given (an abandoned bump, or
+#                            a fix that cannot wait)
 #
 # Credentials: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or `wrangler login`.
 # The CI tokens are each limited to one Worker, so staging and promote need
@@ -22,7 +26,7 @@ staging=$root/target/site-staging
 staging_url=https://dev.irsync.org
 
 usage() {
-  echo "usage: site/deploy.sh staging|promote" >&2
+  echo "usage: site/deploy.sh staging | promote [--allow-unpublished]" >&2
   exit 2
 }
 
@@ -31,7 +35,13 @@ worker_deploy() { # DIR WORKER
     --config "$root/site/wrangler.jsonc" --name "$2" --assets "$1"
 }
 
-[ $# -eq 1 ] || usage
+allow_unpublished=false
+case $# in
+  1) ;;
+  2) [ "$1" = promote ] && [ "$2" = --allow-unpublished ] || usage
+     allow_unpublished=true ;;
+  *) usage ;;
+esac
 
 case $1 in
   staging)
@@ -73,6 +83,10 @@ case $1 in
       echo "refusing to promote: $staging holds $build, but $staging_url serves $served;" \
         "run site/deploy.sh staging again" >&2
       exit 1
+    fi
+    # irsync.org must not show a version nobody can install yet.
+    if [ "$allow_unpublished" = false ]; then
+      python3 "$root/site/tools/versions.py" promotable "$staging/VERSIONS"
     fi
     worker_deploy "$staging" irsync-pub
     echo "promoted $build"

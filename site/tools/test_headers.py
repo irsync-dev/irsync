@@ -64,7 +64,31 @@ class HeadersTest(unittest.TestCase):
     def setUp(self):
         self.rules = parse_headers(HEADERS.read_text())
 
-    def test_noindex_only_for_staging_hosts(self):
+    def noindex(self, url):
+        served = {}
+        for pattern, headers in self.rules.items():
+            if pattern_matches(pattern, url):
+                served.update(headers)
+        return served.get("X-Robots-Tag") == "noindex"
+
+    def test_production_indexes_the_landing_page_and_the_main_book(self):
+        for path in ["/", "/book/", "/book/introduction.html", "/install.sh", "/404.html"]:
+            self.assertFalse(self.noindex("https://irsync.org" + path), path)
+
+    def test_production_does_not_index_the_other_books(self):
+        # /book/ is the one indexed copy; these are a copy of it, an old
+        # channel or unreleased.
+        for path in ["/stable/", "/stable/x.html", "/beta/", "/alpha/print.html",
+                     "/dev/", "/dev/contributing/setup.html"]:
+            self.assertTrue(self.noindex("https://irsync.org" + path), path)
+
+    def test_staging_hosts_index_nothing(self):
+        for host in ["https://dev.irsync.org", "https://irsync-pub.example.workers.dev",
+                     "https://0a1b2c3d-irsync-dev.example.workers.dev"]:
+            for path in ["/", "/book/", "/beta/", "/install.sh"]:
+                self.assertTrue(self.noindex(host + path), host + path)
+
+    def test_noindex_rules_are_only_these(self):
         noindex = {
             pattern
             for pattern, headers in self.rules.items()
@@ -73,13 +97,14 @@ class HeadersTest(unittest.TestCase):
         self.assertEqual(
             noindex,
             {
+                "/stable/*",
+                "/beta/*",
+                "/alpha/*",
+                "/dev/*",
                 "https://dev.irsync.org/*",
                 "https://:worker.:account.workers.dev/*",
             },
         )
-        for pattern, headers in self.rules.items():
-            if pattern_matches(pattern, "https://irsync.org/"):
-                self.assertNotIn("X-Robots-Tag", headers, pattern)
 
     def test_every_host_gets_the_safety_headers(self):
         everywhere = {}

@@ -359,6 +359,31 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(env_name(job), "site", job_id)
         self.assertTrue(found)
 
+    def test_promote_checks_the_versions_before_it_deploys(self):
+        # irsync.org must not show a version that is not published: the
+        # promote job reads the build's VERSIONS before it deploys.
+        steps = jobs(load_workflows()["site.yml"])["promote"]["steps"]
+        runs = [str(s.get("run", "")) for s in steps]
+        check = [i for i, r in enumerate(runs) if "versions.py promotable site-out/VERSIONS" in r]
+        deploy = [i for i, s in enumerate(steps)
+                  if "CLOUDFLARE_API_TOKEN_PUB" in str(s.get("env", ""))]
+        self.assertEqual(len(check), 1, runs)
+        self.assertEqual(len(deploy), 1)
+        self.assertLess(check[0], deploy[0])
+        # Only the explicit input skips it.
+        self.assertEqual(steps[check[0]].get("if"), "${{ !inputs.allow-unpublished }}")
+        inputs = triggers(load_workflows()["site.yml"])["workflow_dispatch"]["inputs"]
+        self.assertEqual(inputs["allow-unpublished"]["default"], False)
+
+    def test_promote_takes_the_newest_staging_run_whatever_its_state(self):
+        # With --status success it would ship the run before a failed or
+        # running one, without a word.
+        steps = jobs(load_workflows()["site.yml"])["promote"]["steps"]
+        download = [str(s.get("run", "")) for s in steps if "gh run download" in str(s.get("run", ""))]
+        self.assertEqual(len(download), 1)
+        self.assertNotIn("--status success", download[0])
+        self.assertIn("conclusion", download[0])
+
     def test_dist_homebrew_replaced(self):
         # dist 0.34.0 writes `uses: $/.github/...` for a local custom publish
         # job, so the release gate publishes the formula instead (see

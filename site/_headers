@@ -18,6 +18,21 @@
 https://dev.irsync.org/*
   X-Robots-Tag: noindex
 
+# The site holds the book five times. Only /book/, the main version, is
+# indexed. The others are a copy of it, an older channel or unreleased, and
+# must not outrank it.
+/stable/*
+  X-Robots-Tag: noindex
+
+/beta/*
+  X-Robots-Tag: noindex
+
+/alpha/*
+  X-Robots-Tag: noindex
+
+/dev/*
+  X-Robots-Tag: noindex
+
 # site/wrangler.jsonc turns off the workers.dev hosts. Should one be turned
 # on, it is not indexed either: <worker>.<account>.workers.dev, and the
 # preview hosts <version>-<worker>.<account>.workers.dev.
