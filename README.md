@@ -124,10 +124,7 @@ Push a photo library from a client to a server you can already reach with
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-This is rsync's command line, with `irsync` in place of `rsync`.
-`irsync sync -av ~/Photos/ myserver:/srv/photos/` is the same command with
-its name spelled out, the safer form in scripts. `irsync list myserver`
-lists the exports the server shares with this client.
+This is rsync's command line, with `irsync` in place of `rsync`. `irsync list myserver` lists the exports the server shares with this client.
 
 The first time, irsync sets the server up over SSH: it installs irsync there
 (with fileset and the manual pages), gives this client's key access, starts the daemon and saves `myserver` as a host alias. It prints what it did.
