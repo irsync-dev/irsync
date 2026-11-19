@@ -58,21 +58,18 @@ python3 "$root/site/tools/versions.py" books "$root" >"$out/VERSIONS"
 books=$root/target/site-books
 while read -r path version commit state; do
   work=$books/$path
-  rm -rf "$work" "$work.pages"
+  rm -rf "$work"
   mkdir -p "$work"
   cp "$root/book/book.toml" "$work/"
   cp -R "$root/book/theme" "$work/theme"
   if [ "$state" = dev ]; then
     cp -R "$root/book/src" "$work/src"
   else
-    mkdir -p "$work.pages"
-    git -C "$root" archive "$commit" book/src 2>/dev/null | tar -x -C "$work.pages" 2>/dev/null || true
-    if [ ! -d "$work.pages/book/src" ]; then
-      echo "no book/src in $version ($commit)" >&2
+    # All of that commit's pages or none: versions.py says what went wrong.
+    python3 "$root/site/tools/versions.py" pages "$root" "$commit" "$work/src" || {
+      echo "cannot build the book of $version" >&2
       exit 1
-    fi
-    mv "$work.pages/book/src" "$work/src"
-    rm -rf "$work.pages"
+    }
   fi
   python3 "$root/site/tools/label_book.py" "$work" "$path" "$version"
   mdbook build "$work" -d "$out/$path"

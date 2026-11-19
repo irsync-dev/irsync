@@ -384,6 +384,65 @@ class CliTests(RepoCase):
         self.assertFalse(out.exists())
 
 
+class PagesTests(RepoCase):
+    """The pages of a commit, for one book."""
+
+    def book_commit(self, text):
+        d = self.repo / "book" / "src"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "introduction.md").write_text(text)
+        (d / "sub").mkdir(exist_ok=True)
+        (d / "sub" / "page.md").write_text("# Page\n")
+        self.git("add", "book")
+        self.git("commit", "-q", "-m", "book")
+        return self.git("rev-parse", "HEAD")
+
+    def test_extracts_the_pages_of_that_commit(self):
+        old = self.book_commit("# Old\n")
+        self.book_commit("# New\n")
+        (self.repo / "book" / "src" / "introduction.md").write_text("# Uncommitted\n")
+        dest = self.repo / "out" / "src"
+        versions.pages(self.repo, old, dest)
+        self.assertEqual((dest / "introduction.md").read_text(), "# Old\n")
+        self.assertEqual((dest / "sub" / "page.md").read_text(), "# Page\n")
+
+    def test_commit_without_a_book(self):
+        self.commit("0.1.0-beta.1", "2026-11-14T12:00:00+00:00")
+        sha = self.git("rev-parse", "HEAD")
+        dest = self.repo / "out" / "src"
+        with self.assertRaisesRegex(versions.VersionsError, f"no book/src in {sha}"):
+            versions.pages(self.repo, sha, dest)
+        self.assertFalse(dest.exists())
+
+    def test_unknown_commit_says_what_git_said(self):
+        self.commit("0.1.0-beta.1", "2026-11-14T12:00:00+00:00")
+        dest = self.repo / "out" / "src"
+        with self.assertRaises(versions.VersionsError) as e:
+            versions.pages(self.repo, "0" * 40, dest)
+        self.assertNotIn("no book/src", str(e.exception))
+        self.assertIn("0" * 40, str(e.exception))
+        self.assertFalse(dest.exists())
+
+    def test_refuses_to_write_over_something(self):
+        sha = self.book_commit("# Old\n")
+        dest = self.repo / "out" / "src"
+        dest.mkdir(parents=True)
+        with self.assertRaisesRegex(versions.VersionsError, "exists"):
+            versions.pages(self.repo, sha, dest)
+
+    def test_cli(self):
+        sha = self.book_commit("# Old\n")
+        dest = self.repo / "out" / "src"
+        r = subprocess.run([sys.executable, str(TOOL), "pages", str(self.repo), sha, str(dest)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((dest / "introduction.md").is_file())
+        r = subprocess.run([sys.executable, str(TOOL), "pages", str(self.repo), "0" * 40,
+                            str(self.repo / "out2")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("versions.py: ", r.stderr)
+
+
 SHA = "b" * 40
 
 
@@ -409,7 +468,12 @@ class PromotableTests(unittest.TestCase):
                      f"docs 1.0.0 {SHA} published\ndev - - dev\n",
                      f"book 1.0.0 {SHA} published\n",
                      f"book not-a-version {SHA} published\ndev - - dev\n",
-                     "<html>Not found</html>\n"]:
+                     "<html>Not found</html>\n",
+                     # No main book, the main book twice, dev not last.
+                     "dev - - dev\n",
+                     f"beta 1.0.0-beta.1 {SHA} published\ndev - - dev\n",
+                     f"book 1.0.0 {SHA} published\nbook 1.0.0 {SHA} published\ndev - - dev\n",
+                     f"book 1.0.0 {SHA} published\ndev - - dev\nbeta 1.1.0-beta.1 {SHA} unpublished\n"]:
             with self.assertRaises(versions.VersionsError, msg=repr(text)):
                 versions.unpublished(text)
 

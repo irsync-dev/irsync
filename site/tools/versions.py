@@ -16,9 +16,12 @@ The design is docs/superpowers/specs/2026-11-19-site-release-versions-design.md.
 """
 
 import argparse
+import io
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
 from collections import namedtuple
 from pathlib import Path
 
@@ -199,6 +202,40 @@ def books(found):
     return out
 
 
+def pages(repo, commit, dest):
+    """Write the book's pages (book/src) as they are in `commit` to `dest`.
+
+    All or nothing: git has to hand over the whole tree before anything is
+    written, and `dest` appears only once it is complete. A book built from
+    half its pages would still carry the version's name.
+    """
+    dest = Path(dest)
+    if dest.exists():
+        raise VersionsError(f"{dest} exists already")
+    ok, out = _git(repo, "cat-file", "-e", f"{commit}^{{commit}}")
+    if not ok:
+        raise VersionsError(f"cannot read the commit {commit} in {repo}: {out}")
+    ok, kind = _git(repo, "cat-file", "-t", f"{commit}:book/src")
+    if not ok or kind != "tree":
+        raise VersionsError(f"no book/src in {commit}")
+    r = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", commit, "book/src"],
+                       capture_output=True)
+    if r.returncode != 0:
+        raise VersionsError(f"cannot read book/src of {commit}: "
+                            f"{r.stderr.decode(errors='replace').strip()}")
+    tmp = dest.with_name(dest.name + ".part")
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tar:
+            tar.extractall(tmp, filter="data")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        (tmp / "book" / "src").rename(dest)
+    except (tarfile.TarError, OSError) as e:
+        raise VersionsError(f"cannot unpack book/src of {commit}: {e}") from e
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def books_text(books):
     """The VERSIONS file of a built site: PATH VERSION COMMIT STATE per book."""
     return "".join(f"{b.path} {b.version or '-'} {b.commit or '-'} {b.state}\n" for b in books)
@@ -233,8 +270,13 @@ def unpublished(text):
             raise VersionsError(f"not a release version and a commit: {line!r}")
         if state == "unpublished" and version not in out:
             out.append(version)
-    if not any(line.startswith("dev ") for line in lines):
-        raise VersionsError("no dev line: the file is cut short")
+    # The shape the build writes: the main book once, no path twice, and the
+    # dev book last. Anything else is a file that was cut short or made up.
+    paths = [line.split(" ")[0] for line in lines]
+    if paths.count("book") != 1 or len(set(paths)) != len(paths):
+        raise VersionsError("it must list every book once, the main book among them")
+    if not paths or paths[-1] != "dev":
+        raise VersionsError("no dev line at the end: the file is cut short")
     return out
 
 
@@ -302,6 +344,10 @@ def main(argv=None):
     p.add_argument("dst", type=Path)
     p = sub.add_parser("books", help="list the books to build: PATH VERSION COMMIT STATE")
     p.add_argument("repo", type=Path)
+    p = sub.add_parser("pages", help="write the book/src of a commit to a new directory")
+    p.add_argument("repo", type=Path)
+    p.add_argument("commit")
+    p.add_argument("dest", type=Path)
     p = sub.add_parser("promotable", help="fail if a built site's VERSIONS holds an unpublished version")
     p.add_argument("file", type=Path)
     args = ap.parse_args(argv)
@@ -311,6 +357,8 @@ def main(argv=None):
             args.dst.write_text(page, encoding="utf-8")
         elif args.command == "books":
             sys.stdout.write(books_text(books(releases(args.repo))))
+        elif args.command == "pages":
+            pages(args.repo, args.commit, args.dest)
         elif args.command == "promotable":
             try:
                 text = args.file.read_text(encoding="utf-8")

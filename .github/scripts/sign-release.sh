@@ -332,8 +332,10 @@ newest_site_run=(gh run list --workflow site.yml --branch main --event push --li
 if site_run=$("${newest_site_run[@]}") && [ -n "$site_run" ] && gh run rerun "$site_run"; then
     echo "Rebuilding the staging site (run $site_run), so it shows $tag as published."
 else
-    echo "Could not rebuild the staging site. When its newest run on main is finished, re-run it:"
-    echo "  gh run rerun \"\$(gh run list --workflow site.yml --branch main --event push --limit 1 --json databaseId --jq '.[0].databaseId')\""
+    echo "Could not rebuild the staging site. Wait until its newest run on main is finished, then re-run it:"
+    echo "  gh run list --workflow site.yml --branch main --event push --limit 1"
+    echo "  gh run rerun <its id>"
+    echo "If GitHub refuses (a run can be re-run for 30 days), any push to main that touches site/ or book/ rebuilds it."
 fi
 # The site is promoted by hand.
 echo "To put $tag on irsync.org: wait for that run, check that https://dev.irsync.org/ shows it, then run:"

@@ -387,8 +387,9 @@ in. It stops at the first check that fails:
    starts `release-resume.yml` on the tag. Then it re-runs the newest
    staging build of the site, so the site reads this release from its tag.
    If that cannot be started, for example because that run is still going,
-   it prints the command to do it by hand; the release is published either
-   way. It ends by printing the command that promotes the site to
+   it prints the commands to do it by hand; the release is published either
+   way. GitHub lets a run be re-run for 30 days. After that, a push to
+   `main` that touches `site/` or `book/` rebuilds the site. It ends by printing the command that promotes the site to
    irsync.org; it does not run it.
 
 Step 7 only happens with `--publish`. Without it, the script stops after
