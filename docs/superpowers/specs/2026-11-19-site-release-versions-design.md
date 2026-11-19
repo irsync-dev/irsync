@@ -192,8 +192,23 @@ in the commit, in the commit's own time zone, as `git log` shows it
   (`fetch-depth: 0`), and also runs for a push to `main` that changes
   `Cargo.toml`. The bump PR's merge is such a push, so dev.irsync.org shows
   the new version from then on.
-- Nothing changes in the release gate, `sign-release.sh`, the resume run
-  or the promote job.
+- Nothing changes in the release gate, the resume run or the promote job.
+
+### The signing script
+
+When `.github/scripts/sign-release.sh` has published the release and
+started the resume run (so not with `--no-publish`, and not when a step
+failed), it ends by printing how to promote the site:
+
+```
+To put v1.2.3 on irsync.org: check that https://dev.irsync.org/ shows it, then run:
+  gh workflow run site.yml --ref main
+```
+
+The ref is always `main`, for a patch release too: the promote job runs
+only there. The script only prints the command; it does not start the
+promote. The script's tests in `.github/scripts/tests/` cover the new
+output, and that `--no-publish` does not print it.
 - `site/deploy.sh staging` builds from the local checkout, so it shows
   what the local tags say. Its docs say to `git fetch --tags` first.
 
@@ -213,7 +228,8 @@ next site build on `main`.
 - `book/src/contributing/website.md`: the new tool, where the versions
   come from, the new font face, the tags a build needs.
 - `book/src/contributing/releasing.md`: the site follows the bump merge;
-  promote after publishing; the patch-release gap.
+  promote after publishing, with the command `sign-release.sh` prints;
+  the patch-release gap.
 
 ## Constraints
 
