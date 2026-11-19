@@ -19,12 +19,10 @@ updates:
         patterns: ["*"]
     # noq-proto 1.4.0 closes connections whose reader falls behind (see
     # Cargo.toml). A later release is proposed as usual, and the tests
-    # decide. noq-udp stays on the same minor version as noq-proto.
+    # decide.
     ignore:
       - dependency-name: noq-proto
         versions: ["1.4.0"]
-      - dependency-name: noq-udp
-        versions: ["1.4.x"]
 
   - package-ecosystem: github-actions
     directory: /
