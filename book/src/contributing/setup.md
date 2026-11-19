@@ -19,10 +19,10 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 ## Requirements
 
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
-rustup, the toolchain with rustfmt and clippy, the musl target on Linux, and
-cargo-nextest, cargo-deny, dist, actionlint and mdbook. Those five tools
-are downloaded from their release pages and checked against SHA-256s kept
-in the script. Cargo builds a tool only where its project has no binary
+rustup, the toolchain with rustfmt and clippy, the musl target on Linux, the
+nightly the fuzz targets build with, and cargo-nextest, cargo-deny,
+cargo-fuzz, dist, actionlint and mdbook. Those six tools are downloaded
+from their release pages and checked against SHA-256s kept in the script. Cargo builds a tool only where its project has no binary
 for your machine, or when the script's hashes are for another version than
 CI's. They are held to the versions CI uses: if you have
 another version, it is replaced. It points git at the repo's hooks. System tools such as
@@ -106,6 +106,10 @@ The `freebsd-build` job builds the FreeBSD tarball with the same build
 script. It runs on FreeBSD x86_64 only, and CI does not run it. GitHub runs
 it in a workflow you start by hand: see
 [Testing a version on FreeBSD](releasing.md#testing-a-version-on-freebsd).
+
+The `fuzz-build` job builds the fuzz targets in `fuzz/` with their pinned
+nightly and runs each on its checked-in inputs. The long fuzz runs are in a
+nightly workflow; see [Fuzzing](testing.md#fuzzing).
 
 The `deny` job checks the dependencies with `cargo deny`, for the platforms
 irsync is built for. The `deny-license-check` job checks the licenses of

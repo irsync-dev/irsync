@@ -141,6 +141,103 @@ The end-to-end tests of `stress` and `netstress` run the real binaries.
 build the fault binaries into `target/netsim/debug` themselves the first
 time, which takes a few minutes.
 
+## Fuzzing
+
+Fuzzing feeds a function millions of made-up inputs and watches for a
+crash. The fuzzer, libFuzzer, keeps each input that reaches code no input
+before it reached, and builds new inputs from those. The kept inputs are
+the *corpus*.
+
+What is fuzzed is the code that reads bytes from a peer or from another
+program. There is one *target* (a small program around one entry point)
+per file in `fuzz/fuzz_targets/`:
+
+| Target | What it reads | Checks beyond "no crash" |
+| --- | --- | --- |
+| `frame` | a stream of frames, through `read_body`, each decoded as every message type irsync reads off the wire | a decoded message encodes and decodes to the same value |
+| `delta` | an old file and a `DataChunk`, rebuilt with `delta::decode` | `decode(encode(new, basis), basis) == new` |
+| `glob` | a pattern and a path, split at a NUL byte, through `Glob::new` and `matches` | the match ends |
+| `manifest` | a file opened as `.fileset.sqlite` the way `fileset list` opens it, then every entry | none |
+| `relpath` | bytes given to `RelPath::new` | an accepted path is not absolute and has no empty, `.` or `..` component and no NUL |
+
+A target fails on a panic, a crash, an input that takes over 10 seconds
+or memory over 2 GiB.
+
+`fuzz/` is a project of its own, outside the workspace. cargo-fuzz needs a
+nightly Rust, so it builds with the nightly named in
+`fuzz/rust-toolchain.toml`; everything else stays on the stable version.
+`tools/dev-setup.sh` installs that nightly and cargo-fuzz.
+
+To build every target and run each on its *seeds*, the inputs checked in
+under `fuzz/seeds/<target>/`:
+
+```sh
+tools/ci.sh fuzz-build
+```
+
+CI runs this on every pull request that changes code. The first build
+takes a few minutes. To fuzz each target for five minutes:
+
+```sh
+FUZZ_SECONDS=300 tools/ci.sh fuzz
+```
+
+Without `FUZZ_SECONDS` it is one minute each. The corpus grows in
+`fuzz/corpus/<target>/`, which git ignores, and the next run starts from
+it. The nightly workflow (`.github/workflows/nightly.yml`) does the same
+for ten minutes per target, every night, and keeps the corpus in the
+Actions cache.
+
+To run one target by hand until you stop it with Ctrl-C:
+
+```sh
+nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
+cargo +$nightly fuzz run --target x86_64-unknown-linux-gnu relpath \
+    fuzz/corpus/relpath fuzz/seeds/relpath
+```
+
+Name your own machine after `--target` (`rustc -vV` prints it as `host`).
+Without it, the cargo-fuzz that `tools/dev-setup.sh` downloads on Linux
+builds for musl, which the address checks libFuzzer builds in do not
+support.
+
+### Adding a target
+
+1. Write `fuzz/fuzz_targets/NAME.rs` around one public function, and add a
+   `[[bin]]` for it to `fuzz/Cargo.toml`. If the function is private, add a
+   small `#[doc(hidden)] pub` entry point rather than copying the code.
+2. Put at least three real inputs in `fuzz/seeds/NAME/`: bytes the code
+   reads in normal use, such as a real encoded message. Fuzzing then starts
+   deep in the code, not at its first check.
+3. Run it for a minute. libFuzzer's `cov:` number (how much code the
+   inputs reach) must rise above its value on the `INITED` line, which is
+   what the seeds alone reach. If it does not, the target misses the code.
+
+`tools/ci.sh` finds every file in `fuzz/fuzz_targets/`.
+
+### When a target fails
+
+libFuzzer writes the failing input to `fuzz/artifacts/<target>/`. A failed
+nightly run uploads that directory as the `fuzz-artifacts` artifact of the
+run. To run the input again:
+
+```sh
+cargo +$nightly fuzz run --target x86_64-unknown-linux-gnu relpath \
+    fuzz/artifacts/relpath/crash-...
+```
+
+Then decide whether someone could exploit it: memory unsafety, a write
+outside the destination tree, or a small input from a peer that makes
+irsync use memory or CPU without bound. If so, keep it private. Do not
+put the input or a description of it in an issue, a pull request or a
+commit; delete the run's artifact once you have it, and report it as
+[SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+says.
+
+Otherwise fix it like any bug, with a test in the crate's own tests that
+fails before the fix. Add the input to `fuzz/seeds/<target>/` too:
+`fuzz-build` then keeps it fixed.
+
 ## Receiving a changed file
 
 The properties described in
