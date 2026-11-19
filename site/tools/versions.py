@@ -143,15 +143,29 @@ def from_git(repo):
     return found
 
 
+# How often each region is on the page. prerelease: the badge and the note.
+_REGIONS = {"lines": 1, "tail": 1, "channel": 1, "Channel": 1, "prerelease": 2}
+
+
 def _fill(html, name, fill):
     """Replace every `versions:NAME` region of `html`, markers included.
 
-    `fill` gets what the region holds and returns what takes its place.
+    `fill` gets what the region holds and returns what takes its place. The
+    page must hold the region as often as _REGIONS says, with every marker
+    paired: a lost marker would let one region run on to the next one's end.
     """
-    region = re.compile(rf"<!-- versions:{name} -->(.*?)<!-- /versions:{name} -->", re.DOTALL)
-    html, n = region.subn(lambda m: fill(m.group(1)), html)
+    opening, closing = f"<!-- versions:{name} -->", f"<!-- /versions:{name} -->"
+    n = html.count(opening)
     if n == 0:
         raise VersionsError(f"site/index.html: marker {name} not found")
+    if n != _REGIONS[name] or html.count(closing) != n:
+        raise VersionsError(
+            f"site/index.html: marker {name} found {n} times, expected {_REGIONS[name]}, "
+            f"with {html.count(closing)} closing")
+    region = re.compile(re.escape(opening) + "(.*?)" + re.escape(closing), re.DOTALL)
+    html, done = region.subn(lambda m: fill(m.group(1)), html)
+    if done != n:
+        raise VersionsError(f"site/index.html: marker {name} is not paired up")
     return html
 
 
@@ -190,11 +204,11 @@ def main(argv):
         return 2
     repo, src, dst = map(Path, argv[1:])
     try:
-        page = render(src.read_text(), pick(from_git(repo)))
+        page = render(src.read_text(encoding="utf-8"), pick(from_git(repo)))
     except VersionsError as e:
         print(f"versions.py: {e}", file=sys.stderr)
         return 1
-    dst.write_text(page)
+    dst.write_text(page, encoding="utf-8")
     return 0
 
 

@@ -54,9 +54,9 @@ single-mode yellow kept for the beta warning only.
   [Barlow](https://github.com/jpt/barlow) (`font-display`), a typeface
   modelled on road signs, for the headline, buttons, the header and the
   footer, in regular (400) and semibold (600); its narrower Barlow Semi
-  Condensed (`font-condensed`, semibold only) for the labels in running
+  Condensed (`font-condensed`), in semibold for the labels in running
   text, at the size of the text around them ("No open ports.", "Beta."),
-  and for the step headings; its regular weight (400) for the release
+  and for the step headings, and in regular (400) for the release
   versions. [Inter](https://rsms.me/inter/)
   (`font-body`) for running text, and
   [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (`font-mono`) for

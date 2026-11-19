@@ -238,12 +238,39 @@ class RenderTests(unittest.TestCase):
             with self.assertRaisesRegex(versions.VersionsError, f"marker {name} not found"):
                 versions.render(broken, [])
 
+    def test_damaged_prerelease_marker_fails(self):
+        # The badge and the note each have a region. Losing one marker must not
+        # pass: with a stable out, one region would swallow the page between.
+        stable = versions.pick({"1.0.0": "2027-03-03"})
+        beta = versions.pick({"0.1.0-beta.5": "2026-11-19"})
+        first_close = INDEX.replace("<!-- /versions:prerelease -->", "", 1)
+        first_open = INDEX.replace("<!-- versions:prerelease -->", "", 1)
+        badge_unmarked = first_close.replace("<!-- versions:prerelease -->", "", 1)
+        for broken in (first_close, first_open, badge_unmarked):
+            for shown in (stable, beta, []):
+                with self.assertRaisesRegex(versions.VersionsError, "marker prerelease"):
+                    versions.render(broken, shown)
+
+    def test_a_marker_too_many_fails(self):
+        doubled = INDEX.replace("</main>", "<!-- versions:tail -->x<!-- /versions:tail --></main>")
+        with self.assertRaisesRegex(versions.VersionsError, "marker tail found 2 times, expected 1"):
+            versions.render(doubled, [])
+
 
 class CliTests(RepoCase):
-    def run_tool(self, out):
+    def run_tool(self, out, env=None):
         return subprocess.run(
             [sys.executable, str(TOOL), str(self.repo), str(ROOT / "site/index.html"), str(out)],
-            capture_output=True, text=True)
+            env=env, capture_output=True, text=True)
+
+    def test_writes_utf8_whatever_the_locale(self):
+        self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")
+        self.git("tag", "v0.1.0-beta.5")
+        out = self.repo / "out.html"
+        env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+        r = self.run_tool(out, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("· 19 Nov 2026", out.read_text(encoding="utf-8"))
 
     def test_writes_the_page(self):
         self.commit("0.1.0-beta.5", "2026-11-19T12:00:00+00:00")

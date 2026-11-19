@@ -270,13 +270,15 @@
           button.type = "button";
           button.className =
             "btn btn-xs h-auto border-base-300 px-2 py-0.5 [font:inherit] text-base-content";
-          button.textContent = version.textContent;
-          button.title = "Copy the install command for " + version.textContent;
+          // Kept here, not read back from the button: a second click while
+          // it says "Copied" must not make that its label.
+          const label = version.textContent;
+          button.textContent = label;
+          button.title = "Copy the install command for " + label;
           button.onclick = () => {
             const command = tail.closest(".copy").cloneNode(true);
             command.querySelector("#install-tail").textContent = version.dataset.tail;
             navigator.clipboard.writeText(command.textContent).then(() => {
-              const label = button.textContent;
               button.textContent = "Copied";
               setTimeout(() => (button.textContent = label), 1500);
             });
