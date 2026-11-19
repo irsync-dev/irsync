@@ -222,6 +222,20 @@ To use another weight or style, add its `@font-face` rule, the file to
 the copy list in `site/build.sh`, and, for the landing page, a preload
 link if it shows on the first screen.
 
+### Addresses without `.html`
+
+Cloudflare serves a page `x.html` at the address `x`, and answers `x.html`
+with a redirect to `x`; `dir/index.html` is served at `dir/`. mdbook writes
+every link with `.html`, so each click in the book cost a redirect, and its
+sidebar never marked the current chapter: it compares its links with the
+address. So the last step of the build, `site/tools/pretty_urls.py`, drops
+`.html` from every link inside the site: in the pages (the landing page
+too), in each book's sidebar script (`toc-HASH.js`) and in its search index
+(`searchindex-HASH.js`). The files keep their names. Write links in
+`site/index.html` and the book's pages with `.html` (or `.md`) as before;
+the build rewrites them. If a newer mdbook writes the sidebar script or the
+search index so that the tool finds no link in it, the build stops.
+
 `site/build.sh OUT` builds into `OUT` instead; `OUT` must be under `target/`,
 because the build deletes it first. The check is on the resolved path, so a
 `target/` that is a symlink to somewhere outside the checkout is refused too.
@@ -261,12 +275,15 @@ python3 -m unittest discover -s site/tools -p 'test_*.py'
 ```
 
 `check.py` prints one line per problem and exits non-zero if there is any.
-It enforces four things:
+It enforces five things:
 
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
-  resolves to a file, and every `#fragment` to an `id` on the target page.
+  resolves to a file (`x` to `x.html`, as Cloudflare serves it), and every
+  `#fragment` to an `id` on the target page.
   External links are not fetched. This covers the landing page and all
   five books.
+- **No `.html` addresses.** No link inside the built site ends in `.html`
+  (see [Addresses without `.html`](#addresses-without-html)).
 - **No fonts but the site's own.** No font file and no `fonts/` directory
   is in the build, except Barlow, Inter and JetBrains Mono in the
   top-level `fonts/`.
@@ -298,6 +315,8 @@ it runs `chokidar-cli` (the watcher) and `browser-sync` (the server) through
 `npx`, at the versions pinned at its top. Ctrl-C stops both.
 
 The local server ignores `_headers`; the headers apply on Cloudflare only.
+Like Cloudflare, it serves `x.html` at `x` (browser-sync's `--extensions
+html`).
 
 ## Staging and production
 

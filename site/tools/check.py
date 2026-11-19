@@ -74,6 +74,9 @@ def check_links(site_dir):
             target = target.resolve()
             if target.is_dir():
                 target = target / "index.html"
+            elif not target.exists() and target.with_name(target.name + ".html").is_file():
+                # x for x.html, as Cloudflare serves the page (pretty_urls.py).
+                target = target.with_name(target.name + ".html")
             if not target.is_file():
                 problems.append(f"{rel_src}: {ref}: no such file")
                 continue
@@ -82,6 +85,25 @@ def check_links(site_dir):
                     pages[target] = _parse(target)
                 if unquote(parts.fragment) not in pages[target].ids:
                     problems.append(f"{rel_src}: {ref}: no id #{parts.fragment}")
+    return problems
+
+
+def check_html_links(site_dir):
+    """No link inside the site ends in .html. Cloudflare serves x.html at x
+    and redirects x.html there; mdbook's sidebar only marks the current
+    chapter when the link and the address agree (site/tools/pretty_urls.py)."""
+    site_dir = Path(site_dir).resolve()
+    problems = []
+    for src in sorted(site_dir.rglob("*.html")):
+        for ref in _parse(src).refs:
+            parts = urlsplit(ref)
+            if parts.scheme or parts.netloc or not parts.path.endswith(".html"):
+                continue
+            better = parts.path[: -len(".html")]
+            if better == "index" or better.endswith("/index"):
+                better = better[: -len("index")] or "./"
+            problems.append(f"{src.relative_to(site_dir)}: {ref}: link to {better} instead; "
+                            "the site redirects .html addresses")
     return problems
 
 
@@ -298,7 +320,8 @@ def main(argv=None):
             text=True,
         ).stdout.strip()
     )
-    problems = check_links(args.site_dir) + check_fonts(args.site_dir)
+    problems = check_links(args.site_dir) + check_html_links(args.site_dir)
+    problems += check_fonts(args.site_dir)
     problems += check_moved(repo, MOVED_FILES)
     if args.irsync:
         pages = sorted((repo / "book/src").rglob("*.md"))
