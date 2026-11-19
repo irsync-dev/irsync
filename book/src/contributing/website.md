@@ -159,9 +159,11 @@ The build stops with an error when a version's commit has no `book/src`, or
 when its title page does not start with a heading.
 
 The build also writes `VERSIONS` next to `BUILD`: one line per book, with
-its path, version, commit and `published`, `unpublished` (a release that is
-being built) or `dev`. `https://dev.irsync.org/VERSIONS` shows what staging
-holds. The promote reads it (see
+its path, version, commit and `published` or `unpublished` (a release that
+is being built). The `dev` line has no version (`-`). Its commit is the one
+the site was built from, the same as in `BUILD`, and its last field is the
+branch that was built, `main` on staging.
+`https://dev.irsync.org/VERSIONS` shows what staging holds. The promote reads it (see
 [Promoting to irsync.org](#promoting-to-irsyncorg)).
 
 ### Linking from the landing page

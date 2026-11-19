@@ -176,14 +176,27 @@ def from_git(repo):
     return {version: r.date for version, r in releases(repo).items()}
 
 
-# One copy of the documentation on the site, at /PATH/. `state` is
-# "published", "unpublished" (a release that is being built) or "dev" (the
-# working tree, with no version).
+# One copy of the documentation on the site, at /PATH/. `commit` is where
+# its pages come from. For a release, `state` is "published" or "unpublished"
+# (a release that is being built). A book of the working tree has no version:
+# its commit is the one that is checked out, and its state is the name of the
+# branch, None when no branch is checked out.
 Book = namedtuple("Book", "path version commit state")
 
 
-def books(found):
-    """The books the site holds, from what `releases` found.
+def head(repo):
+    """What is checked out: (commit, branch). The commit is what the BUILD
+    file of the site names. The branch is None for a checkout of a commit."""
+    ok, commit = _git(repo, "rev-parse", "HEAD^{commit}")
+    if not ok:
+        raise VersionsError(f"cannot read the commit of {repo}: {commit}")
+    ok, branch = _git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+    return commit, branch if ok and branch else None
+
+
+def books(found, commit=None, branch=None):
+    """The books the site holds, from what `releases` found. `commit` and
+    `branch` say what the working tree is (see `head`).
 
     /book/ is the main version, the one the install command installs.
     /stable/, /beta/ and /alpha/ are the newest of each channel, also when
@@ -196,9 +209,9 @@ def books(found):
 
     best = newest(found)
     shown = pick({version: r.date for version, r in found.items()})
-    out = [book("book", shown[0].version) if shown else Book("book", None, None, "dev")]
+    out = [book("book", shown[0].version) if shown else Book("book", None, commit, branch)]
     out += [book(c, best[c]) for c in CHANNELS if c in best]
-    out.append(Book("dev", None, None, "dev"))
+    out.append(Book("dev", None, commit, branch))
     return out
 
 
@@ -238,11 +251,11 @@ def pages(repo, commit, dest):
 
 def books_text(books):
     """The VERSIONS file of a built site: PATH VERSION COMMIT STATE per book."""
-    return "".join(f"{b.path} {b.version or '-'} {b.commit or '-'} {b.state}\n" for b in books)
+    return "".join(f"{b.path} {b.version or '-'} {b.commit or '-'} {b.state or '-'}\n" for b in books)
 
 
 _PATHS = ("book", *CHANNELS, "dev")
-_STATES = ("published", "unpublished", "dev")
+_STATES = ("published", "unpublished")
 
 
 def unpublished(text):
@@ -260,12 +273,18 @@ def unpublished(text):
         if len(fields) != 4:
             raise VersionsError(f"not PATH VERSION COMMIT STATE: {line!r}")
         path, version, commit, state = fields
-        if path not in _PATHS or state not in _STATES:
-            raise VersionsError(f"unknown path or state: {line!r}")
-        if state == "dev":
-            if (version, commit) != ("-", "-"):
-                raise VersionsError(f"a dev book has no version: {line!r}")
+        if path not in _PATHS:
+            raise VersionsError(f"unknown path: {line!r}")
+        if version == "-":
+            # A book of the working tree: its last field is a branch name,
+            # whatever that is. "-" for the commit, and "dev" for the branch:
+            # a build from before the line carried them.
+            if path not in ("book", "dev") or not state \
+                    or not re.fullmatch(r"-|[0-9a-f]{40}", commit):
+                raise VersionsError(f"not a book of the working tree: {line!r}")
             continue
+        if state not in _STATES:
+            raise VersionsError(f"unknown state: {line!r}")
         if parse(version) is None or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise VersionsError(f"not a release version and a commit: {line!r}")
         if state == "unpublished" and version not in out:
@@ -356,7 +375,7 @@ def main(argv=None):
             page = render(args.src.read_text(encoding="utf-8"), pick(from_git(args.repo)))
             args.dst.write_text(page, encoding="utf-8")
         elif args.command == "books":
-            sys.stdout.write(books_text(books(releases(args.repo))))
+            sys.stdout.write(books_text(books(releases(args.repo), *head(args.repo))))
         elif args.command == "pages":
             pages(args.repo, args.commit, args.dest)
         elif args.command == "promotable":
