@@ -117,14 +117,17 @@ class DependabotTests(unittest.TestCase):
         with open(path) as f:
             cfg = yaml.safe_load(f)
         self.assertEqual(cfg["version"], 2)
-        by_eco = {u["package-ecosystem"]: u for u in cfg["updates"]}
-        self.assertEqual(set(by_eco), {"cargo", "github-actions"})
-        for eco, u in by_eco.items():
-            self.assertEqual(u["schedule"]["interval"], "weekly", eco)
-            self.assertEqual(u["cooldown"]["default-days"], 7, eco)
+        # Cargo twice: the workspace, and the fuzz targets with their own
+        # Cargo.lock.
+        by_dir = {(u["package-ecosystem"], u["directory"]): u for u in cfg["updates"]}
+        self.assertEqual(len(by_dir), len(cfg["updates"]), "an ecosystem and directory twice")
+        self.assertEqual(set(by_dir), {("cargo", "/"), ("cargo", "/fuzz"), ("github-actions", "/")})
+        for key, u in by_dir.items():
+            self.assertEqual(u["schedule"]["interval"], "weekly", key)
+            self.assertEqual(u["cooldown"]["default-days"], 7, key)
             groups = list(u["groups"].values())
-            self.assertEqual(len(groups), 1, eco)
-            self.assertEqual(groups[0]["patterns"], ["*"], eco)
+            self.assertEqual(len(groups), 1, key)
+            self.assertEqual(groups[0]["patterns"], ["*"], key)
 
 
 class CiWorkflowTests(unittest.TestCase):
