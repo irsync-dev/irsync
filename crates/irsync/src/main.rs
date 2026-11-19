@@ -88,6 +88,17 @@ fn main() {
             *keep_old,
             files,
         )),
+        Some(Command::VerifySignature {
+            signature,
+            public_key,
+            trusted_comment,
+            file,
+        }) => std::process::exit(run_verify_signature(
+            file,
+            signature.as_deref(),
+            public_key,
+            trusted_comment.as_deref(),
+        )),
         None => unreachable!("try_parse_from always sets a command"),
     }
 }
@@ -1713,6 +1724,58 @@ fn finish(cmd: &str, r: anyhow::Result<()>) -> i32 {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("irsync {cmd}: {e:#}");
+            1
+        }
+    }
+}
+
+/// `irsync verify-signature`: 0 good, 1 bad, missing or untrusted, 2 usage.
+fn run_verify_signature(
+    file: &std::path::Path,
+    signature: Option<&std::path::Path>,
+    public_keys: &[String],
+    trusted_comment: Option<&str>,
+) -> i32 {
+    if public_keys.iter().any(|k| k.trim().is_empty()) {
+        eprintln!("irsync: --public-key: no key given");
+        return 2;
+    }
+    let keys = if public_keys.is_empty() {
+        irsync::signature::release_keys()
+    } else {
+        match public_keys
+            .iter()
+            .map(|k| irsync::signature::parse_keys(k))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(v) => v.into_iter().flatten().collect(),
+            Err(e) => {
+                eprintln!("irsync: --public-key: {e}");
+                return 2;
+            }
+        }
+    };
+    let sig = signature.map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let mut name = file.as_os_str().to_owned();
+        name.push(".minisig");
+        name.into()
+    });
+    match irsync::signature::verify_file(file, &sig, &keys, trusted_comment) {
+        Ok(v) => {
+            println!(
+                "good signature: {}, key {}, trusted comment: {}",
+                file.display(),
+                v.key_id,
+                v.trusted_comment
+            );
+            0
+        }
+        Err(irsync::signature::SignatureError::Io { path, source }) if path == file => {
+            eprintln!("irsync: cannot read {}: {source}", file.display());
+            1
+        }
+        Err(e) => {
+            eprintln!("irsync: bad signature for {}: {e}", file.display());
             1
         }
     }

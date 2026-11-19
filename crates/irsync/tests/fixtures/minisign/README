@@ -1,0 +1,13 @@
+Test keys and signatures for src/signature.rs. Never use them for anything real.
+tests/common/release.rs also signs fake releases with a.key while tests run.
+The secret keys have no password and are public.
+
+a.pub, b.pub        two key pairs (a.key, b.key are the secret halves)
+data.txt            the signed file
+data.txt.a.minisig        signed by a, trusted comment "irsync v1.2.3"
+data.txt.b.minisig        signed by b, same comment
+data.txt.old.minisig      signed by a, trusted comment "irsync v1.2.2"
+data.txt.legacy.minisig   signed by a with minisign -l (not prehashed)
+data.txt.corrupt.minisig  a signature with its second line cut short
+
+To make them again, run ./regen.sh (needs minisign 0.10 or newer).
