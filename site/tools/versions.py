@@ -34,14 +34,17 @@ _WORKSPACE_VERSION = re.compile(
 _TAIL = {"stable": "sh", "beta": "sh -s -- --beta", "alpha": "sh -s -- --alpha"}
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
-# One version on the page. The script in index.html turns span.version into a
-# button that copies the install command ending in data-tail. Tailwind reads
-# the classes from this file (@source in site/tailwind.css).
+# One version on the page. The label links to the channel's book, the date
+# to the release on GitHub (that page appears when the release is
+# published). The script in index.html turns span.version into a button that
+# copies the install command ending in data-tail. Tailwind reads the classes
+# from this file (@source in site/tailwind.css).
+_RELEASE_URL = "https://github.com/irsync-dev/irsync/releases/tag/v{version}"
 _LINE = (
     '<span class="inline-flex items-baseline gap-x-1.5 font-condensed font-normal whitespace-nowrap">'
-    '<strong class="font-semibold">{label}</strong> '
+    '<strong class="font-semibold"><a class="text-muted" href="{channel}/">{label}</a></strong> '
     '<span class="version" data-tail="{tail}">{version}</span> '
-    '<span>· {date}</span></span>'
+    '<span>· <a class="text-muted" href="' + _RELEASE_URL + '">{date}</a></span></span>'
 )
 
 
@@ -244,7 +247,7 @@ def render(html, shown):
     main = shown[0].channel if shown else None
     pre = main in ("beta", "alpha")
     lines = "".join(
-        _LINE.format(label=s.channel.capitalize(), tail=_TAIL[s.channel],
+        _LINE.format(channel=s.channel, label=s.channel.capitalize(), tail=_TAIL[s.channel],
                      version=s.version, date=_day(s.date))
         for s in shown)
     html = _fill(html, "lines", lambda _: lines)
