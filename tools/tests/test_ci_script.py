@@ -57,6 +57,16 @@ class CiScriptTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("cargo-fuzz not found; tools/dev-setup.sh", r.stderr)
 
+    def test_fuzz_build_refuses_a_stale_lock_first(self):
+        # cargo fuzz has no --locked; cargo metadata --locked fails on a
+        # fuzz/Cargo.lock that is out of date, before anything is built.
+        r = self.run_with(["fuzz-build"], "exit 0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = [l for l in r.stdout.splitlines() if l.startswith("== cargo ")]
+        self.assertRegex(lines[0], r"^== cargo \+\S+ metadata --locked --format-version 1 "
+                                   r"--manifest-path fuzz/Cargo\.toml$")
+        self.assertIn(" fuzz build ", lines[1])
+
     def test_fuzz_seconds_reaches_libfuzzer(self):
         # A cargo-fuzz that passes and runs nothing.
         r = self.run_with(["fuzz"], "exit 0", env={"FUZZ_SECONDS": "7"})

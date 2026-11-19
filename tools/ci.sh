@@ -75,6 +75,11 @@ run() {
     printf '\n== %s\n' "$*"
     "$@"
 }
+# The same, without the command's own output.
+run_quiet() {
+    printf '\n== %s\n' "$*"
+    "$@" >/dev/null
+}
 
 missing=0
 # need NAME COMMAND...: the command succeeds if the tool is there.
@@ -231,6 +236,9 @@ fuzz_target_triple() {
 job_fuzz_build() {
     local triple t
     triple=$(fuzz_target_triple)
+    # cargo fuzz has no --locked and would quietly update a stale
+    # fuzz/Cargo.lock; this fails on one instead.
+    run_quiet cargo "+$nightly" metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml
     run cargo "+$nightly" fuzz build --target "$triple"
     for t in $(fuzz_targets); do
         run cargo "+$nightly" fuzz run --target "$triple" "$t" "fuzz/seeds/$t" -- -runs=0
