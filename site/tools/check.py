@@ -178,8 +178,24 @@ def _help(binary, path):
     ).stdout
 
 
-def cli_flags(binary, _path=()):
-    """Every --long and -s option of `binary --help`, and of its subcommands."""
+def _is_command(binary, name):
+    """Whether `name` is a command of `binary`, listed in its help or not.
+
+    `binary NAME --help` describes the command when NAME is one, and the
+    whole program when NAME is only an argument; the usage line tells.
+    """
+    r = subprocess.run([str(binary), name, "--help"], capture_output=True, text=True)
+    usage = re.search(r"^Usage: \S+ (\S+)", r.stdout, re.MULTILINE)
+    return r.returncode == 0 and usage is not None and usage.group(1) == name
+
+
+def cli_flags(binary, _path=(), also=()):
+    """Every --long and -s option of `binary --help`, and of its subcommands.
+
+    The help does not list a hidden command, such as `irsync
+    verify-signature`. `also` names words to try as top-level commands too;
+    those that are not commands are ignored.
+    """
     text = _help(binary, _path)
     flags = set()
     commands = []
@@ -196,6 +212,7 @@ def cli_flags(binary, _path=()):
             m = _COMMAND.match(line)
             if m and m.group(1) != "help":
                 commands.append(m.group(1))
+    commands += sorted(n for n in set(also) - set(commands) if _is_command(binary, n))
     for name in commands:
         flags |= cli_flags(binary, (*_path, name))
     return flags
@@ -210,10 +227,10 @@ def _flags_in(text):
     return _LONG_FLAG.findall(text)
 
 
-def check_flags(paths, flags):
-    """--flags on documented irsync command lines, and in the first column of
-    the tables of book/src/reference/command-line.md, must exist in `flags`."""
-    problems = []
+def _documented(paths):
+    """(path, line number, text) of every place whose flags are checked: the
+    irsync command lines in code blocks and inline code, and the first
+    column of the tables of book/src/reference/command-line.md."""
     for path in map(Path, paths):
         try:
             text = path.read_text(encoding="utf-8")
@@ -222,26 +239,45 @@ def check_flags(paths, flags):
         is_table_page = path.as_posix().endswith("book/src/reference/command-line.md")
         in_fence = False
         for lineno, line in enumerate(text.splitlines(), 1):
-            candidates = []
             if line.lstrip().startswith(("```", "~~~")):
                 in_fence = not in_fence
                 continue
             if in_fence:
                 stripped = line.strip()
                 if _COMMAND_LINE.match(stripped):
-                    candidates.append(stripped)
+                    yield path, lineno, stripped
             else:
                 for span in _SPAN.findall(line):
                     if _COMMAND_LINE.match(span.strip()):
-                        candidates.append(span)
+                        yield path, lineno, span
                 if is_table_page and line.lstrip().startswith("|"):
                     cells = line.strip().strip("|").split("|")
                     if cells:
-                        candidates.append(cells[0])
-            for cand in candidates:
-                for flag in _flags_in(cand):
-                    if flag not in flags:
-                        problems.append(f"{path}:{lineno}: unknown flag {flag}")
+                        yield path, lineno, cells[0]
+
+
+_FIRST_WORD = re.compile(r"^(?:\$ )?irsync ([a-z][a-z0-9-]*)(?:\s|$)")
+
+
+def documented_commands(paths):
+    """The first word after `irsync` on every documented command line: the
+    commands the pages use, and some words that are only arguments."""
+    words = set()
+    for _path, _lineno, text in _documented(paths):
+        m = _FIRST_WORD.match(text.strip())
+        if m:
+            words.add(m.group(1))
+    return words
+
+
+def check_flags(paths, flags):
+    """--flags on documented irsync command lines, and in the first column of
+    the tables of book/src/reference/command-line.md, must exist in `flags`."""
+    problems = []
+    for path, lineno, text in _documented(paths):
+        for flag in _flags_in(text):
+            if flag not in flags:
+                problems.append(f"{path}:{lineno}: unknown flag {flag}")
     return problems
 
 
@@ -267,7 +303,8 @@ def main(argv=None):
     if args.irsync:
         pages = sorted((repo / "book/src").rglob("*.md"))
         pages += [repo / "site/index.html", repo / "README.md"]
-        problems += check_flags(pages, cli_flags(args.irsync))
+        # The pages may use a command the help hides; its flags count too.
+        problems += check_flags(pages, cli_flags(args.irsync, also=documented_commands(pages)))
     for p in problems:
         print(p)
     return 1 if problems else 0
