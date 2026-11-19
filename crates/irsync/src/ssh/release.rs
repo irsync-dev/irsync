@@ -134,8 +134,14 @@ pub fn fetch(tag: &str, target: &str) -> Result<Fetched> {
     let sums_sig = dir.path().join(SUMS_SIG);
     let url = format!("{base}/{SUMS_SIG}");
     if let Some((tool, code)) = try_download(&url, &sums_sig, allow_file)? {
+        // The server answered with an error. sha256.sum just downloaded,
+        // so a 404 (no signature) is the likely cause, but an outage or a
+        // rate limit answers the same way.
         if is_missing(tool, code) {
-            bail!("the release {tag} has no signature for {SUMS}; refusing to use the download");
+            bail!(
+                "the release {tag} has no signature for {SUMS}, or GitHub answered with an error; \
+                 refusing to use the download"
+            );
         }
         bail!("{}", download_failure(tool, code, tag, &url));
     }

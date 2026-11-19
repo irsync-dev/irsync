@@ -26,8 +26,10 @@ config=dist-workspace.toml
 workflow=.github/workflows/release.yml
 
 tmp=$(mktemp -d)
+# Removed however this script ends, also when a copy below fails.
+trap 'rm -rf "$tmp"' EXIT
 # dist cannot be pointed at another config, so it works on the real files.
-# Put them back however this script ends.
+# Put them back however this script ends, once there are copies to put back.
 cp "$config" "$tmp/config"
 cp "$workflow" "$tmp/workflow"
 restore() {
