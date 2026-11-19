@@ -135,8 +135,11 @@ fn sent_rows_leave_the_block_but_keep_their_bytes() {
         t,
     );
     l.apply(&Event::FileStart(rp("a"), 100), t);
-    l.apply(&Event::FileBytes(rp("a"), 100), t);
+    l.apply(&Event::FileBytes(rp("a"), 60), t);
     assert_eq!(l.in_flight(), 1);
+    // Written in full: it leaves at once, ahead of its `FileSent`.
+    l.apply(&Event::FileBytes(rp("a"), 40), t);
+    assert_eq!(l.in_flight(), 0);
     l.apply(&Event::FileSent(rp("a")), t);
     assert_eq!(l.in_flight(), 0);
     assert_eq!(l.transfer_fraction().0, 100);
@@ -891,4 +894,55 @@ fn settled_bytes_are_not_added_to_what_the_block_counted_itself() {
     l.apply(&Event::FileBytes(rp("c"), 300), t);
     l.apply(&Event::FileDone(rp("c"), 600), t);
     assert_eq!(l.transfer_fraction(), (1000, 1000));
+}
+
+/// A push writes a small file to its stream at once, then waits for the
+/// receiver's acknowledgement with no event for the row. It is not drawn
+/// (so never as `stalled`) and still counts toward the percent.
+#[test]
+fn a_fully_written_row_waits_out_of_sight_and_is_never_stalled() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(
+        &Event::Total {
+            party: Party::Local,
+            files: 2,
+            bytes: 2000,
+        },
+        t,
+    );
+    l.apply(&Event::FileStart(rp("a"), 1000), t);
+    l.apply(&Event::FileBytes(rp("a"), 400), t);
+    l.apply(&Event::FileStart(rp("b"), 1000), t);
+    l.apply(&Event::FileBytes(rp("b"), 1000), t);
+    assert_eq!(l.in_flight(), 1, "only the file still being written");
+
+    let later = t + STALL_AFTER + Duration::from_secs(1);
+    l.tick(later);
+    let frame = render(&l, &Geometry::fixed(100, 40), later);
+    assert!(
+        !frame.iter().any(|line| line.contains("100%")),
+        "{frame:#?}"
+    );
+    assert_eq!(
+        frame.iter().filter(|line| line.contains("stalled")).count(),
+        1,
+        "the half-written file, with no data for 3 s: {frame:#?}"
+    );
+    // Kept past the expiry of a shown row, for the percent.
+    l.tick(t + ROW_EXPIRY + Duration::from_secs(1));
+    assert_eq!(l.transfer_fraction(), (1000, 2000));
+    l.apply(&Event::FileDone(rp("b"), 1000), t);
+    assert_eq!(l.transfer_fraction(), (1000, 2000));
+}
+
+/// A matched estimate can say the whole file is in place before its data
+/// is asked for; when it shrinks the row is drawn again.
+#[test]
+fn a_row_comes_back_when_its_matched_estimate_shrinks() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileStart(rp("a"), 1000), t);
+    l.apply(&Event::FileMatched(rp("a"), 1000), t);
+    assert_eq!(l.in_flight(), 0);
+    l.apply(&Event::FileMatched(rp("a"), 600), t);
+    assert_eq!(l.in_flight(), 1);
 }

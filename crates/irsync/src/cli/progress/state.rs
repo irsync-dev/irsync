@@ -58,8 +58,10 @@ pub struct Row {
     /// row made by an early `FileMatched` is pending until then: it counts
     /// toward the percent but is not shown.
     pub opened: bool,
-    /// Every stream is done and only the receiver's ack is outstanding:
-    /// counts toward the percent until `FileDone`, not shown.
+    /// Every byte is written or matched, or every stream is done, and
+    /// only the receiver's ack is outstanding: counts toward the percent
+    /// until `FileDone`, not shown. A new stream for the file (a
+    /// re-request) or a matched estimate that shrinks brings the row back.
     pub sent: bool,
     /// This file's share of [`Live::matched`]: its latest `FileMatched`.
     /// Kept when the row is hashed again, so a retry replaces it.
@@ -85,6 +87,14 @@ impl Row {
     /// Whether the row is drawn and counted in flight.
     pub fn shown(&self) -> bool {
         self.opened && !self.sent
+    }
+
+    /// Every byte of the file is written to its streams or matched. What
+    /// is left is the receiver's acknowledgement, which on a busy link can
+    /// take long and brings no event: the file is waiting, not stalled,
+    /// and counts as sent from here on, well before its `FileSent`.
+    fn written(&self) -> bool {
+        self.size > 0 && self.position() >= self.size
     }
 
     /// Position in the file, capped at `size` once that is known (a row
@@ -284,7 +294,7 @@ impl Live {
                 }
                 row.rate_bytes = row.rate_bytes.saturating_add(*n);
                 row.opened = true;
-                row.sent = false;
+                row.sent = row.written();
                 row.last_event = now;
             }
             Event::FileMatched(p, n) => {
@@ -302,6 +312,7 @@ impl Live {
                 });
                 // Each report is the file's latest estimate, which shrinks
                 // as more chunks are requested: it replaces the last one.
+                let was_written = row.written();
                 self.matched = self
                     .matched
                     .saturating_add(*n)
@@ -315,6 +326,11 @@ impl Live {
                             matched: *n,
                         }
                     }
+                }
+                // Only a change either way: a late estimate for a file whose
+                // streams are done (`FileSent`) leaves it sent.
+                if row.written() != was_written {
+                    row.sent = row.written();
                 }
                 row.last_event = now;
             }
