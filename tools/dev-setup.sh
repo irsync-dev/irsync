@@ -526,7 +526,7 @@ fi
 if have shellcheck; then
     ok "shellcheck $({ shellcheck --version 2>/dev/null || true; } | sed -n 's/^version: *//p')"
 else
-    warn "shellcheck, to check the shell scripts" "$(hint shellcheck)"
+    warn "shellcheck, for tools/ci.sh shell-scripts" "$(hint shellcheck)"
 fi
 
 if [ "$os" = Linux ]; then

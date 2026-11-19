@@ -54,7 +54,8 @@ package manager (`apt`, `brew`, `pkg`).
   page with it and skips without it. It runs on Linux CI. On a Mac,
   `nix-shell -p groff` is one way to get it.
 - **shellcheck**, optional. It finds quoting and other bugs in the shell
-  scripts: `shellcheck site/install.sh`.
+  scripts. The `shell-scripts` job fails without it. CI uses version
+  0.11.0; another version may warn about other things.
 - **minisign 0.10 or newer**, optional. Maintainers sign releases with it
   ([The release signing key](release-signing-key.md)), and it makes the
   signature test files. Older versions write a signature format that irsync
@@ -110,7 +111,10 @@ The `deny` job checks the dependencies with `cargo deny`, for the platforms
 irsync is built for. The `deny-license-check` job checks the licenses of
 every platform's dependencies; on GitHub its failure blocks a release, not
 a pull request. The `workflows` job runs the workflow rule tests and actionlint,
-which needs PyYAML and actionlint ([Supply chain](supply-chain.md)).
+which needs PyYAML and actionlint ([Supply chain](supply-chain.md)). The
+`shell-scripts` job runs shellcheck on every shell script, on every pull
+request. A warning that is wrong for one line is turned off on that line,
+with the reason in a comment.
 
 Two things run only on GitHub: the macOS and arm64 runs, and the dependency
 review of a pull request.
