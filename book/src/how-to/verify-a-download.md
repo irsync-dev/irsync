@@ -51,6 +51,15 @@ The signature file, `.minisig` added to the name, must be next to the file.
 Exit status 0 means a good signature, 1 a bad or missing one. This command is
 hidden from `irsync --help`.
 
+## The install script
+
+`install.sh` checks the signature of the installer it downloads, using irsync
+(if the installed one has `verify-signature`) or minisign. It stops without
+running anything if the check fails. With neither tool it warns; add
+`--require-signature` to make it fail instead. If you run
+`irsync-installer.sh` straight from the release page, nothing checks its
+signature. Check it yourself as above.
+
 ## An archive or the installer
 
 Download the file from the

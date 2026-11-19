@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -7,6 +9,8 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "install.sh"
 BASE = "https://github.com/irsync-dev/irsync/releases/download"
+ROOT = Path(__file__).resolve().parent.parent.parent
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "minisign"
 
 
 class InstallTest(unittest.TestCase):
@@ -87,6 +91,168 @@ class InstallTest(unittest.TestCase):
 
     def test_ignores_unknown_tag_shapes(self):
         self.assertEqual(self.picked(["v0.2.1", "nightly", "v0.3.0-rc.1"], "--alpha"), "v0.2.1")
+
+
+class SignatureTest(unittest.TestCase):
+    """install.sh checks the installer's minisign signature before running it."""
+
+    # What install.sh needs besides a verifier.
+    TOOLS = ["sh", "grep", "sed", "awk", "mktemp", "rm", "cat", "printf"]
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.tmp = Path(self.tmpdir.name)
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        for tool in self.TOOLS:
+            (self.bin / tool).symlink_to(shutil.which(tool))
+        self.test_key = (FIXTURES / "test.pub").read_text().splitlines()[1]
+
+    def add_minisign(self):
+        real = shutil.which("minisign")
+        if real is None:
+            if os.environ.get("CI"):
+                self.fail("minisign is not installed, and CI is set")
+            self.skipTest("minisign is not installed")
+        (self.bin / "minisign").symlink_to(real)
+
+    def add_stub(self, name, body):
+        stub = self.bin / name
+        stub.write_text("#!/bin/sh\n" + body)
+        stub.chmod(0o755)
+
+    def download_dir(self, sig="irsync-installer.sh.minisig", installer=None):
+        d = self.tmp / "dl"
+        d.mkdir(exist_ok=True)
+        text = (installer if installer is not None
+                else (FIXTURES / "irsync-installer.sh").read_text())
+        (d / "irsync-installer.sh").write_text(text)
+        if sig is not None:
+            shutil.copy(FIXTURES / sig, d / "irsync-installer.sh.minisig")
+        return d
+
+    def run_install(self, *args, tag="v9.9.9", sig="irsync-installer.sh.minisig",
+                    keys=None, installer=None):
+        releases = self.tmp / "releases.json"
+        releases.write_text(json.dumps([{"tag_name": tag, "draft": False}]))
+        env = {
+            "PATH": str(self.bin),
+            "TMPDIR": str(self.tmp),
+            "IRSYNC_INSTALL_RELEASES_FILE": str(releases),
+            "IRSYNC_INSTALL_DOWNLOAD_DIR": str(self.download_dir(sig, installer)),
+            "IRSYNC_INSTALL_PUBLIC_KEYS": keys or self.test_key,
+        }
+        return subprocess.run([str(self.bin / "sh"), str(SCRIPT), *args], env=env,
+                              capture_output=True, text=True)
+
+    def assert_ran(self, r):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("fake installer ran", r.stdout)
+
+    def assert_stopped(self, r, message):
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(r.stdout, "", "the installer must not run")
+        self.assertIn(message, r.stderr)
+
+    def test_keys_match_release_keys_file(self):
+        pub = (ROOT / "packaging" / "signing" / "release-keys.pub").read_text()
+        wanted = [l for l in pub.splitlines() if l and not l.startswith("untrusted comment:")]
+        m = re.search(r'^\s*keys="([^"]*)"', SCRIPT.read_text(), re.MULTILINE)
+        self.assertIsNotNone(m, "no keys= in install.sh")
+        self.assertEqual(m.group(1).split(), wanted)
+
+    def test_good_signature_with_minisign(self):
+        self.add_minisign()
+        self.assert_ran(self.run_install())
+
+    def test_good_signature_with_irsync(self):
+        log = self.tmp / "irsync.log"
+        self.add_stub("irsync", f"""
+if [ "$1 $2" = "verify-signature --help" ]; then echo "check a minisign signature"; exit 0; fi
+printf '%s\\n' "$*" > {log}
+exit 0
+""")
+        self.assert_ran(self.run_install())
+        call = log.read_text()
+        self.assertIn(f"--public-key {self.test_key}", call)
+        self.assertIn("--trusted-comment irsync v9.9.9", call)
+        self.assertIn("--signature", call)
+
+    def test_bad_signature_fails(self):
+        self.add_minisign()
+        other = "RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ"
+        self.assert_stopped(self.run_install(keys=other), "does not match")
+
+    def test_tampered_installer_fails(self):
+        self.add_minisign()
+        r = self.run_install(installer="#!/bin/sh\necho fake installer ran: evil\n")
+        self.assert_stopped(r, "does not match")
+
+    def test_failing_irsync_stops(self):
+        self.add_stub("irsync", """
+if [ "$1" = verify-signature ] && [ "$2" = --help ]; then echo minisign; exit 0; fi
+exit 1
+""")
+        self.assert_stopped(self.run_install(), "does not match")
+
+    def test_missing_signature_fails(self):
+        self.add_minisign()
+        r = self.run_install(sig=None)
+        self.assert_stopped(r, "missing signature")
+        self.assertIn("irsync-installer.sh.minisig", r.stderr)
+
+    def test_wrong_tag_comment_fails(self):
+        self.add_minisign()
+        r = self.run_install(sig="irsync-installer.sh.v9.9.8.minisig")
+        self.assert_stopped(r, "does not match")
+
+    def test_old_irsync_on_path_falls_through(self):
+        self.add_minisign()
+        self.add_stub("irsync", f"""
+if [ "$1 $2" = "verify-signature --help" ]; then echo "error: unrecognized subcommand"; exit 2; fi
+echo "old irsync was called: $*" >&2
+exit 99
+""")
+        r = self.run_install()
+        self.assert_ran(r)
+        self.assertNotIn("old irsync was called", r.stderr)
+
+    def test_no_verifier_warns(self):
+        r = self.run_install()
+        self.assert_ran(r)
+        self.assertIn("cannot check the installer's signature (install minisign to check it); "
+                      "relying on HTTPS and checksums", r.stderr)
+
+    def test_no_verifier_require_signature_fails(self):
+        r = self.run_install("--require-signature")
+        self.assert_stopped(r, "cannot check the installer's signature")
+
+    def test_no_verifier_require_signature_downloads_nothing(self):
+        r = self.run_install("--require-signature", sig=None)
+        self.assert_stopped(r, "cannot check the installer's signature")
+        self.assertNotIn("missing signature", r.stderr)
+
+    def test_require_signature_not_passed_on(self):
+        self.add_minisign()
+        for flags in (["--require-signature", "--beta"], ["--beta", "--require-signature"]):
+            r = self.run_install(*flags, "--no-modify-path")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "fake installer ran: --no-modify-path")
+
+    def test_require_signature_with_a_verifier_runs(self):
+        self.add_minisign()
+        self.assert_ran(self.run_install("--require-signature"))
+
+    def test_before_first_signed_skips_check(self):
+        # No signature file and no verifier, even with --require-signature.
+        r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.4", sig=None)
+        self.assert_ran(r)
+        self.assertIn("not checking", r.stderr)
+
+    def test_first_signed_is_checked(self):
+        r = self.run_install("--beta", "--require-signature", tag="v0.1.0-beta.5")
+        self.assert_stopped(r, "cannot check the installer's signature")
 
 
 class ShellTest(unittest.TestCase):
