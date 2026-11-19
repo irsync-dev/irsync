@@ -1,6 +1,7 @@
 # irsync
 
 [![CI](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/irsync-dev/irsync/badge)](https://scorecard.dev/viewer/?uri=github.com/irsync-dev/irsync)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Status: beta](https://img.shields.io/badge/status-beta-orange.svg)
 

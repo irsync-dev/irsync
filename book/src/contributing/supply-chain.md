@@ -104,6 +104,40 @@ maintainer can do. Why each choice was made is in
 - A report is answered within 7 days.
 - `tools/github_settings.py check` reports the setting if it is turned off.
 
+## The Scorecard
+
+The [OpenSSF Scorecard](https://scorecard.dev) grades a public repository on
+about 18 security habits, such as pinned Actions, a security policy and
+fuzzing, and gives each a score from 0 to 10 and the project an overall
+score out of 10. `scorecard.yml` runs it on every push to `main`, every
+week, and when the branch protection settings change. The result is at
+[scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/irsync-dev/irsync),
+the badge in the README links to it, and the findings also show in the
+Security tab.
+
+The score describes the project as it is. We do not change anything only to
+raise it. At the time of writing (2026-11-19) it is about 5.4 out of 10. Most
+of the gap is in the checks below, which we accept or which rise with time.
+Every check not listed here scores 10 (or is marked "not applicable", as
+Packaging is: irsync has no package registry).
+
+| Check | Score | Why it is low | What we do |
+| --- | --- | --- | --- |
+| Maintained | 0 | The repository is younger than 90 days. | Rises by itself in February 2027. |
+| Code-Review | 0 | No change has been approved by a second person, because irsync has one maintainer. | Accepted. Changes when more maintainers join (see below). |
+| Branch-Protection | 3 | `main` needs a pull request and a passing `CI result`, but no approving review (one maintainer). It also does not require a branch to be up to date before merging, which would mean a rebase for every pull request. | Accepted. The approval part changes when more maintainers join. |
+| Contributors | 0 | All contributors belong to one organisation. | Accepted. We can't change this. |
+| CII-Best-Practices | 0 | irsync has no OpenSSF Best Practices badge. It is a form the maintainer fills in. | Later. |
+| Signed-Releases | 1 | Scorecard looks at the last five releases. Only the newest is signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
+| Token-Permissions | 0 | `release.yml` is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
+| Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in `release.yml` (two places) and the rustup install in `tools/dev-setup.sh`. Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
+| Vulnerabilities | 5 | Scorecard reads every entry in `Cargo.lock`, including crates that are not built for the platforms irsync ships on. It reports five advisories. `cargo deny` checks the shipped platforms and is clean. | Follow-up: trace where these crates come from, and drop them or record why they stay. |
+| SAST | 7 | CodeQL has checked 10 of the last 30 commits. It only started recently. | Rises by itself as new commits are checked. |
+
+The scores move when the repository changes and when Scorecard changes its
+checks, so read the live result for the current numbers. After the first run
+on `main`, this table is compared with the published result and corrected.
+
 ## Checking the settings
 
 `tools/github_settings.py` holds the settings for `irsync-dev/irsync`,
