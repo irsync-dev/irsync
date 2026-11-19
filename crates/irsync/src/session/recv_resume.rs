@@ -66,6 +66,18 @@ impl Receiver {
             requested += 1;
         }
         tracing::info!(requested, "resuming the stored plan");
+        // Nothing is listed again: both progress displays get the first
+        // connection's totals, the sender's ahead of the first request.
+        if let Some(listed) = &plan.listed {
+            self.ctx.hooks.bus.emit_listed(
+                super::super::Party::Peer,
+                &crate::scan::ListStats::from_wire(listed),
+            );
+            self.out.send(Msg::Heartbeat(irsync_proto::v1::Heartbeat {
+                listed: Some(*listed),
+                ..self.ctx.busy.heartbeat()
+            }));
+        }
         self.pump();
         self.report = Some(PlannerReport {
             skipped: plan.skipped,
