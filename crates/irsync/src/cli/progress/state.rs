@@ -168,6 +168,9 @@ pub struct Live {
     pub conn: ConnState,
     pub delete: Option<DeletePhase>,
     pub transfer_done: bool,
+    /// The session ended with an error (`SessionEnd`): its closing lines
+    /// say `failed`, not `done`.
+    pub session_failed: bool,
     /// (index, of)
     pub session: (usize, usize),
     pub start: Instant,
@@ -196,6 +199,7 @@ impl Live {
             conn: ConnState::Connecting,
             delete: (delete != DeleteMode::Off).then(|| DeletePhase::new(delete)),
             transfer_done: false,
+            session_failed: false,
             session: (0, 1),
             start,
             failed: 0,
@@ -383,6 +387,7 @@ impl Live {
                     }
                 }
             }
+            Event::SessionEnd(s) => self.session_failed = s.failed,
             Event::SessionStart { index, of } => {
                 if *index > 0 {
                     self.reset(now);
@@ -493,6 +498,17 @@ impl Live {
     /// Rows shown: hashing or with a stream open, not yet sent in full.
     pub fn in_flight(&self) -> usize {
         self.rows.values().filter(|r| r.shown()).count()
+    }
+
+    /// The session is over: the transfer line closes, and the delete line
+    /// too unless the session failed (a failed one keeps it as it stood).
+    pub fn close(&mut self) {
+        self.transfer_done = true;
+        if !self.session_failed {
+            if let Some(d) = &mut self.delete {
+                d.finished = true;
+            }
+        }
     }
 
     /// Clears per-session state for a new session; keeps `conn`, the source

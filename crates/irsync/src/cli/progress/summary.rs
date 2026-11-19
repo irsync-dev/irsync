@@ -37,6 +37,9 @@ pub struct SessionSummary {
     /// The session's QUIC bytes, as in the `sent`/`received` trailer.
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// The session ended with an error (files that failed in a session
+    /// that ran to its end do not count).
+    pub failed: bool,
 }
 
 /// `0.4s`, `21.0s`, `2:47`, `1:02:03`.
@@ -325,6 +328,7 @@ mod tests {
             files_hashed: 2107,
             bytes_sent: 3 * gib + gib * 52 / 100,
             bytes_received: 41 * mib,
+            failed: false,
         }
     }
 
