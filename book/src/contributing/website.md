@@ -11,7 +11,7 @@ landing page at `/` and this book at `/book/`.
 | `site/tailwind.css` | The landing page's stylesheet: the Tailwind CSS and daisyUI source that the build compiles into `style.css`. |
 | `site/package.json`, `site/package-lock.json` | The npm packages the stylesheet is built with, pinned. Not deployed. |
 | `site/tokens.json` | The design tokens of the landing page and the book: colours, font stacks, text sizes, radius. |
-| `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `check.py` (the checker) and their tests. Not deployed. |
+| `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `versions.py` (see [The release versions](#the-release-versions)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
 | `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`; `picker.js`, which trims the theme picker; `home-link.js`, which links the title to the landing page). |
@@ -54,9 +54,10 @@ single-mode yellow kept for the beta warning only.
   [Barlow](https://github.com/jpt/barlow) (`font-display`), a typeface
   modelled on road signs, for the headline, buttons, the header and the
   footer, in regular (400) and semibold (600); its narrower Barlow Semi
-  Condensed (`font-condensed`, semibold only) for the labels in running
+  Condensed (`font-condensed`), in semibold for the labels in running
   text, at the size of the text around them ("No open ports.", "Beta."),
-  and for the step headings. [Inter](https://rsms.me/inter/)
+  and for the step headings, and in regular (400) for the release
+  versions. [Inter](https://rsms.me/inter/)
   (`font-body`) for running text, and
   [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (`font-mono`) for
   commands. The stacks and the text sizes are in `site/tokens.json`. Text
@@ -66,9 +67,62 @@ single-mode yellow kept for the beta warning only.
 - **The route.** The steps under Get started are stations on one aqua line
   (the `station` utility); keep it for content that really is a sequence.
 
+## The release versions
+
+On the line of the "Install" heading, the landing page shows the current
+irsync versions, one per release channel: the channel, the version and its
+date. They are for someone who has irsync already and wants to know
+whether to install again. Each version is a button that copies the install
+command of its channel.
+
+Of each channel only the newest version counts. Then:
+
+- The stable is shown.
+- The beta is shown if it is newer than the stable.
+- The alpha is shown if it is newer than the stable and the beta, even a
+  beta that is itself not shown.
+
+| Newest stable / beta / alpha | Shown |
+| --- | --- |
+| none / 0.1.0-beta.5 / 0.1.0-alpha.4 | beta |
+| 0.1.0 / 0.1.0-beta.7 / 0.1.0-alpha.4 | stable |
+| 0.1.0 / 0.2.0-beta.1 / 0.2.0-alpha.3 | stable, beta |
+| 0.1.2 / 0.2.0-beta.1 / 0.3.0-alpha.1 | stable, beta, alpha |
+
+The first one shown is the main version. The install command on the page
+installs it: the command ends in `| sh` for a stable, and in
+`| sh -s -- --beta` or `| sh -s -- --alpha` otherwise. The "beta" badge in
+the header and the yellow note under the steps show only while there is no
+stable release, and name the main version's channel.
+
+`site/tools/versions.py` works this out when the site is built, from git.
+The page looks nothing up in the browser.
+
+- A published release is its `v*` tag. GitHub creates the tag when the
+  release is published.
+- A release that is being built is the version in `Cargo.toml`, on the
+  checked-out commit and on every `origin/release-X.Y` branch, when no tag
+  has it yet. So the site shows a release from the merge of its bump on.
+- The date is the day of the commit the tag points at, as `git log` shows
+  it. For a release that is being built, it is the day its version came
+  onto the branch.
+
+`site/index.html` marks the places the build fills in with comment pairs,
+`<!-- versions:NAME -->` and `<!-- /versions:NAME -->`: `lines` (the
+version lines), `tail` (the end of the install command), `prerelease` (the
+badge and the note, dropped once there is a stable), and `channel` and
+`Channel` (the channel's name inside those). Opened straight from the
+repository, the page shows no versions. The markup of a version line is
+in `versions.py`; `site/tailwind.css` reads its classes from there.
+
+The build stops with an error when a marker is missing from the page, or
+when the checkout has no release tags. Fetch them with
+`git fetch --tags`.
+
 ## Building
 
-The build needs mdbook, Python 3 and Node.js with npm. mdbook must be the
+The build needs mdbook, Python 3 and Node.js with npm. It reads the release
+versions from git, so it needs a checkout with the release tags. mdbook must be the
 version CI builds the site with, so the pages come out the same everywhere;
 the build stops on any other. `tools/dev-setup.sh` installs that version:
 
@@ -77,9 +131,11 @@ site/build.sh
 ```
 
 It empties `target/site/`, generates the token CSS for both, builds the book
-into `target/site/book/`, copies the landing page files into `target/site/`
+into `target/site/book/`, copies the landing page files into `target/site/`,
+writes the release versions into `index.html`
 and compiles `site/tailwind.css` into `target/site/style.css`. Tailwind
-keeps only the classes that `site/index.html` and `site/404.html` use. The
+keeps only the classes that `site/index.html`, `site/404.html` and the
+version lines in `site/tools/versions.py` use. The
 Tailwind CLI, daisyUI and the fonts (`@fontsource/barlow`,
 `@fontsource/barlow-semi-condensed`, `@fontsource/inter` and
 `@fontsource/jetbrains-mono`) come from `site/node_modules/` (git-ignored);
@@ -88,7 +144,7 @@ the build runs `npm ci` there first when it is missing or older than
 `site/package.json` and run `npm install` in `site/`, which updates the lock
 file.
 
-The build copies the WOFF2 files that the stylesheets name, nine in all,
+The build copies the WOFF2 files that the stylesheets name, ten in all,
 and each family's licence (the SIL Open Font License, which must ship
 with the fonts) into `target/site/fonts/`. They are the only font files on
 the site. The book shares them: `book/theme/irsync.css` loads them from
@@ -231,7 +287,10 @@ This is the normal way. `.github/workflows/site.yml` has two jobs.
 
 The `staging` job runs on every push to `main` that touches `book/`,
 `site/`, `README.md`, the workflow, or what the checker reads beyond them
-(`crates/`, `proto/`, `docs/`, `.githooks/`, `tools/`). It runs the tool
+(`crates/`, `proto/`, `docs/`, `.githooks/`, `tools/`). It also runs when
+`Cargo.toml` changes: the merge of a version bump is such a push, and
+staging then shows the new version. It checks out the full history, for
+the release tags the build reads. It runs the tool
 tests, builds the site, runs the checker, keeps `target/site` as the run
 artifact `site`, and deploys it to `irsync-dev`. If a check fails, nothing is
 deployed.
@@ -313,6 +372,9 @@ and `promote` the `irsync-pub` one.
 site/deploy.sh staging
 site/deploy.sh promote
 ```
+
+Run `git fetch --tags` first: the page shows the versions your checkout
+knows.
 
 `staging` refuses a working tree with uncommitted or untracked changes. It
 builds `target/site/`, writes the `HEAD` commit to `target/site/BUILD`,

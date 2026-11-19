@@ -39,6 +39,14 @@
 @font-face {
   font-family: "Barlow Semi Condensed";
   font-style: normal;
+  font-weight: 400;
+  font-display: fallback;
+  src: url("fonts/barlow-semi-condensed-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  font-style: normal;
   font-weight: 600;
   font-display: fallback;
   src: url("fonts/barlow-semi-condensed-latin-600-normal.woff2") format("woff2");
@@ -76,6 +84,9 @@
 }
 @source "./index.html";
 @source "./404.html";
+/* The version lines of the landing page are written by the build; their
+   classes are in the tool. */
+@source "./tools/versions.py";
 
 /* The palette comes from tokens.css; light and dark follow the system. */
 :root {

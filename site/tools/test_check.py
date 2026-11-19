@@ -64,6 +64,7 @@ class FontTests(TmpCase):
     def test_barlow_in_top_level_fonts_passes(self):
         write(self.d, "fonts/barlow-latin-400-normal.woff2", "")
         write(self.d, "fonts/barlow-latin-600-normal.woff2", "")
+        write(self.d, "fonts/barlow-semi-condensed-latin-400-normal.woff2", "")
         write(self.d, "fonts/barlow-semi-condensed-latin-600-normal.woff2", "")
         write(self.d, "fonts/barlow-OFL.txt", "")
         self.assertEqual(check_fonts(self.d), [])

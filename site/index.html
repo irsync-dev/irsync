@@ -60,10 +60,13 @@
             href="./"
             >irsync</a
           >
-          <span
+          <!-- The build fills the marked regions on this page from the
+               release versions in git (site/tools/versions.py). The badge
+               shows only while there is no stable release. -->
+          <!-- versions:prerelease --><span
             class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-semibold text-on-signal"
-            >beta</span
-          >
+            ><!-- versions:channel -->beta<!-- /versions:channel --></span
+          ><!-- /versions:prerelease -->
         </p>
         <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
           <li>
@@ -163,9 +166,13 @@
                 aria-hidden="true"
                 >1</span
               >
-              <h3 id="install" class="font-condensed text-label leading-7">Install</h3>
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4">
+                <h3 id="install" class="font-condensed text-label leading-7">Install</h3>
+                <!-- One line per current release: channel, version, date. -->
+                <p class="flex flex-col items-end text-small text-muted"><!-- versions:lines --><!-- /versions:lines --></p>
+              </div>
               <div class="cmd mt-2">
-                <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap">sh -s -- --beta</span></span></pre>
+                <pre><span class="prompt">$</span> <span class="copy">curl <span class="whitespace-nowrap">--proto '=https'</span> <span class="whitespace-nowrap">--tlsv1.2</span> <span class="whitespace-nowrap">-LsSf</span> https://irsync.org/install.sh | <span class="whitespace-nowrap" id="install-tail"><!-- versions:tail -->sh -s -- --beta<!-- /versions:tail --></span></span></pre>
               </div>
               <p class="mt-2 text-small text-muted">
                 Linux and macOS. Installs <code>irsync</code> and
@@ -195,20 +202,18 @@
                   >Set the server up by hand</a
                 >.
                 <em>Interrupted? Run the same command again; it resumes.</em>
-                In scripts, <code>irsync sync -av …</code> is the same command
-                with its name spelled out.
               </p>
             </li>
           </ol>
-          <p
+          <!-- versions:prerelease --><p
             class="mt-5 border-l-4 border-signal py-1 pl-4 text-small"
             role="note"
           >
-            <strong class="font-condensed font-semibold">Beta.</strong>
+            <strong class="font-condensed font-semibold"><!-- versions:Channel -->Beta<!-- /versions:Channel -->.</strong>
             The command line and the protocol may still change: keep a backup.
             Windows, extended attributes and ACLs are not supported yet.
             <a href="book/reference/limitations.html">Known limitations</a>.
-          </p>
+          </p><!-- /versions:prerelease -->
         </section>
       </section>
     </main>
@@ -236,8 +241,10 @@
       </ul>
     </footer>
 
-    <!-- Adds a copy button to each command. Without script the page is the
-         same, minus the buttons. -->
+    <!-- Adds a copy button to each command, and turns each release version
+         into a button that copies the install command of its channel.
+         Without script the page is the same, minus the buttons: the
+         versions are plain text. -->
     <script>
       if (navigator.clipboard) {
         for (const cmd of document.querySelectorAll(".cmd")) {
@@ -254,6 +261,29 @@
             });
           };
           cmd.append(button);
+        }
+        // The install command, ending the way the version's channel needs
+        // (data-tail, written by the build).
+        const tail = document.getElementById("install-tail");
+        for (const version of document.querySelectorAll(".version")) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className =
+            "btn btn-xs h-auto border-base-300 px-2 py-0.5 [font:inherit] text-base-content";
+          // Kept here, not read back from the button: a second click while
+          // it says "Copied" must not make that its label.
+          const label = version.textContent;
+          button.textContent = label;
+          button.title = "Copy the install command for " + label;
+          button.onclick = () => {
+            const command = tail.closest(".copy").cloneNode(true);
+            command.querySelector("#install-tail").textContent = version.dataset.tail;
+            navigator.clipboard.writeText(command.textContent).then(() => {
+              button.textContent = "Copied";
+              setTimeout(() => (button.textContent = label), 1500);
+            });
+          };
+          version.replaceWith(button);
         }
       }
     </script>

@@ -55,9 +55,11 @@ python3 "$root/site/tools/strip_font_link.py" "$out/book"
 
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
-for f in index.html 404.html robots.txt _headers install.sh; do
+for f in 404.html robots.txt _headers install.sh; do
   cp "$root/site/$f" "$out/"
 done
+# The landing page itself, with the release versions from git written in.
+python3 "$root/site/tools/versions.py" "$root" "$root/site/index.html" "$out/index.html"
 
 # Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in
 # site/package-lock.json, compile site/tailwind.css into style.css. npm ci
@@ -69,8 +71,8 @@ if [ ! -f "$site/node_modules/.package-lock.json" ] ||
 fi
 "$site/node_modules/.bin/tailwindcss" --cwd "$site" -i tailwind.css -o "$out/style.css" --minify
 
-# The web fonts of the landing page and the book: Barlow for headings and
-# labels, Inter for running text, JetBrains Mono for code. Only the faces
+# The web fonts of the landing page and the book: Barlow for headings,
+# labels and the release versions, Inter for running text, JetBrains Mono for code. Only the faces
 # tailwind.css and book/theme/irsync.css name, Latin only, and each
 # family's licence (SIL Open Font License), which must ship with it. The
 # two Barlow packages carry the same Barlow Project licence.
@@ -78,6 +80,7 @@ fontsource=$site/node_modules/@fontsource
 mkdir -p "$out/fonts"
 for f in barlow/files/barlow-latin-400-normal.woff2 \
   barlow/files/barlow-latin-600-normal.woff2 \
+  barlow-semi-condensed/files/barlow-semi-condensed-latin-400-normal.woff2 \
   barlow-semi-condensed/files/barlow-semi-condensed-latin-600-normal.woff2 \
   inter/files/inter-latin-400-normal.woff2 \
   inter/files/inter-latin-400-italic.woff2 \
