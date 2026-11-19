@@ -203,6 +203,15 @@ message PathError {
   bytes path = 1;
   string message = 2;
 }
+// What the sender's listing held, by kind: the totals `--stats` and the
+// "total size" trailer print. Hard links count as regular files.
+message ListTotals {
+  uint64 reg = 1;
+  uint64 dir = 2;
+  uint64 link = 3;
+  uint64 special = 4;
+  uint64 total_size = 5; // summed size of the regular files
+}
 message SessionDone {
   uint64 files = 1;
   uint64 bytes = 2;
@@ -214,6 +223,11 @@ message SessionDone {
   uint64 would_delete_omitted = 8; // would-delete paths beyond the cap
   uint64 created = 9; // items the receiver created new (for --stats)
   uint64 transferred_size = 10; // summed size of the files it placed
+  // What the receiver counted in the sender's listing, over every
+  // connection of the session. A sender that resumed from the receiver's
+  // stored plan listed nothing itself and reports these. Absent from an
+  // older receiver.
+  ListTotals listed = 11;
 }
 message Itemized {
   bytes path = 1;

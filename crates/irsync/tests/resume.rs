@@ -622,3 +622,37 @@ async fn never_reached_is_marked_and_first_dial_is_bounded() {
     })
     .await;
 }
+
+/// A session resumed from its stored plan lists nothing again, so what it
+/// reports as listed (`--stats`, the "total size" trailer) has to come from
+/// the first connection's listing: the same totals as an undisturbed run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_session_reports_the_listed_totals() {
+    within60(async {
+        let opts = archive_opts();
+        for flow in [Flow::Push, Flow::Pull] {
+            let plain = Harness::new().await;
+            twenty_files(plain.src(flow));
+            let want = plain
+                .run(&opts, flow)
+                .await
+                .unwrap_or_else(|e| panic!("{flow:?}: {e:#}"))
+                .listed;
+            assert_eq!(want.total_size, TOTAL, "{flow:?}");
+
+            let h = Harness::new().await;
+            twenty_files(h.src(flow));
+            h.daemon.sender_parallel(4);
+            h.daemon.fault.drop_after_bytes(10 * MIB as u64);
+            let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
+            let out = out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
+            assert_eq!(reconnects, 1, "{flow:?}");
+            assert!(
+                out.resumed,
+                "{flow:?}: the second connection did not resume"
+            );
+            assert_eq!(out.listed, want, "{flow:?}");
+        }
+    })
+    .await;
+}

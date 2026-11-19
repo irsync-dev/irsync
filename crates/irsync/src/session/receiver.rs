@@ -556,8 +556,13 @@ impl Receiver {
                 message: m.clone(),
             })
             .collect();
-        self.persist
-            .complete(dirs, errors, report.skipped, self.peer_listing_incomplete);
+        self.persist.complete(
+            dirs,
+            errors,
+            report.skipped,
+            self.peer_listing_incomplete,
+            &report.listed,
+        );
         self.plan_complete = true;
     }
 
@@ -1759,6 +1764,7 @@ pub(super) async fn run(
         transferred_size: r.transferred_size,
         deleted_omitted,
         would_delete_omitted,
+        listed: Some(report.listed.to_wire()),
     }));
     // Finished: a later run with the same key starts a new session.
     r.persist.finish().await;

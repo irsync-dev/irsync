@@ -27,6 +27,9 @@ message SessionPlan {
   uint64 skipped = 5; // receiver: regular files found up to date
   bool peer_listing_incomplete = 6; // receiver: the sender's listing was incomplete
   bytes remote_id = 7; // daemon: the client EndpointId that owns the session
+  // Receiver, once complete: what the sender's listing held. A resumed
+  // session lists nothing, and reports these. Absent from an older record.
+  ListTotals listed = 8;
 }
 message SessionProgress {
   repeated uint64 done_file_ids = 1; // files acknowledged DONE

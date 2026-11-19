@@ -244,6 +244,9 @@ struct SenderRole {
     transferred_size: u64,
     /// Items the receiver reported creating.
     created: u64,
+    /// What the receiver counted in our listing (`SessionDone`): reported
+    /// when this connection resumed its stored plan and listed nothing.
+    peer_listed: Option<crate::scan::ListStats>,
     /// Files in flight (no final ack yet, not given up). Leave through
     /// [`SenderRole::remove_file`].
     files: HashMap<u64, SFile>,
@@ -1400,6 +1403,7 @@ impl SenderRole {
                 .emit(super::Event::WouldDelete(p.clone()));
         }
         self.created = d.created;
+        self.peer_listed = d.listed.as_ref().map(crate::scan::ListStats::from_wire);
         // The receiver knows what it placed: a file whose content was
         // already there is acknowledged DONE but settled in place, a
         // metadata-only update rather than a transfer.
@@ -1927,6 +1931,7 @@ pub(super) async fn run(
         bytes: 0,
         transferred_size: 0,
         created: 0,
+        peer_listed: None,
         tasks: SendTasks::default(),
         errors: Vec::new(),
         persist,
@@ -2119,7 +2124,12 @@ pub(super) async fn run(
             }
             Err(e) => vec![(RelPath::root(), format!("listing failed: {e}"))],
         },
-        Listing::Undecided(_) | Listing::FromPlan => Vec::new(),
+        // No walk of ours: the receiver kept the totals of the listing it
+        // planned from (none from a receiver older than the field).
+        Listing::Undecided(_) | Listing::FromPlan => {
+            listed = s.peer_listed.unwrap_or_default();
+            Vec::new()
+        }
     };
     errors.append(&mut s.errors);
     Ok(Outcome {
@@ -2265,6 +2275,7 @@ mod tests {
             bytes: 0,
             transferred_size: 0,
             created: 0,
+            peer_listed: None,
             tasks: SendTasks::default(),
             errors: Vec::new(),
             persist: Persister::start(&ctx).await,
