@@ -46,9 +46,9 @@ The three cases differ only in the branch. All the steps are the same.
 
    It stops if you are on the wrong branch. It sets the version in
    `Cargo.toml` (`[workspace.package]`) and `packaging/dist/dist.toml`, and
-   updates `Cargo.lock` to match. It commits the three files as
-   `Release v1.2.3` on a new branch, `bump-v1.2.3`. It doesn't push or
-   tag. It prints the commands for the next steps.
+   updates `Cargo.lock` and `fuzz/Cargo.lock` to match. It commits the four
+   files as `Release v1.2.3` on a new branch, `bump-v1.2.3`. It doesn't
+   push or tag. It prints the commands for the next steps.
 2. Open a pull request against the branch the release is cut from. Use
    `--base`:
 
@@ -114,13 +114,14 @@ released commit.
 Don't start the gate twice for the same version while one run is going. The
 second run deletes the draft the first one made.
 
-If you change the version by hand instead, keep all three files in step.
+If you change the version by hand instead, keep all four files in step.
 These checks catch a mismatch:
 
 - A test (`crates/irsync/tests/release_version.rs`) fails if `Cargo.toml` and
   `dist.toml` differ.
 - CI builds with `--locked`, so it fails if `Cargo.lock` is out of date. The
-  release build uses `--locked` too, and would fail later.
+  release build uses `--locked` too, and would fail later. The `fuzz-build`
+  job does the same for `fuzz/Cargo.lock`.
 - The release gate stops within seconds if the two files don't hold the
   version you gave it.
 

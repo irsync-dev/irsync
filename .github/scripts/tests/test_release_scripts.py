@@ -126,17 +126,24 @@ class BumpVersionTests(unittest.TestCase):
                         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         self.write("Cargo.toml",
-                   '[workspace]\nmembers = ["a"]\nresolver = "2"\n\n'
+                   '[workspace]\nmembers = ["a"]\nexclude = ["fuzz"]\nresolver = "2"\n\n'
                    '[workspace.metadata.other]\nversion = "9.9.9"\n\n'
                    '[workspace.package]\nedition = "2021"\nversion = "1.2.3"\n')
         self.write("a/Cargo.toml",
                    '[package]\nname = "a"\nversion.workspace = true\nedition.workspace = true\n')
         self.write("a/src/lib.rs", "")
+        # Like the real fuzz/: outside the workspace, with a lock file of its
+        # own that records a's version.
+        self.write("fuzz/Cargo.toml",
+                   '[package]\nname = "a-fuzz"\nversion = "0.0.0"\nedition = "2021"\n'
+                   'publish = false\n\n[dependencies]\na = { path = "../a" }\n')
+        self.write("fuzz/src/lib.rs", "")
         self.write("packaging/dist/dist.toml",
                    '# Keep `version` equal to the workspace version.\n\n'
                    '[package]\nname = "irsync"\nversion = "1.2.3"\nlicense = "MIT"\n')
         self.run_ok("git", "init", "-q", "-b", "main")
         self.run_ok("cargo", "generate-lockfile", "--quiet")
+        self.run_ok("cargo", "generate-lockfile", "--quiet", "--manifest-path", "fuzz/Cargo.toml")
         self.run_ok("git", "add", "-A")
         self.run_ok("git", "commit", "-q", "-m", "start")
 
@@ -190,10 +197,14 @@ class BumpVersionTests(unittest.TestCase):
         self.assertTrue(dist.startswith("# Keep `version` equal"), dist)
         self.assertIn('version = "1.3.0-beta.1"\nlicense = "MIT"\n', dist)
         self.assertIn('name = "a"\nversion = "1.3.0-beta.1"\n', self.read("Cargo.lock"))
+        # The fuzz targets' own lock file too: CI builds them with --locked.
+        self.assertIn('name = "a"\nversion = "1.3.0-beta.1"\n', self.read("fuzz/Cargo.lock"))
+        self.run_ok("cargo", "metadata", "--locked", "--format-version", "1",
+                    "--manifest-path", "fuzz/Cargo.toml")
         self.assertEqual(self.run_ok("git", "log", "-1", "--format=%s"), "Release v1.3.0-beta.1\n")
         self.assertEqual(self.run_ok("git", "status", "--porcelain"), "")
         self.assertEqual(self.run_ok("git", "show", "--name-only", "--format=").split(),
-                         ["Cargo.lock", "Cargo.toml", "packaging/dist/dist.toml"])
+                         ["Cargo.lock", "Cargo.toml", "fuzz/Cargo.lock", "packaging/dist/dist.toml"])
         self.run_ok(CHECK, "--versions", "v1.3.0-beta.1")
 
     def assert_refused(self, r, message):
