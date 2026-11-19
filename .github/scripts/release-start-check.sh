@@ -33,9 +33,18 @@ if [ -n "${GITHUB_REF-}" ] && [ "$GITHUB_REF" != "refs/heads/$branch" ]; then
     exit 1
 fi
 
-if gh api --paginate "repos/$GH_REPO/git/matching-refs/tags/$tag" \
-        --jq '.[].ref | ltrimstr("refs/tags/")' | grep -qxF -- "$tag"; then
-    if gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' | grep -qxF -- "$tag"; then
+# Each answer goes into a variable first, then grep -q searches it. Piped
+# into grep -q, gh can fail writing after grep has found the match and
+# stopped reading, and pipefail then turns the match into a miss. A failed
+# gh call stops the script; it must not read as "not there".
+gh_lines() {
+    gh api --paginate "$1" --jq "$2" ||
+        { echo "::error::Could not read $1 from GitHub." >&2; exit 1; }
+}
+tags=$(gh_lines "repos/$GH_REPO/git/matching-refs/tags/$tag" '.[].ref | ltrimstr("refs/tags/")')
+if grep -qxF -- "$tag" <<<"$tags"; then
+    releases=$(gh_lines "repos/$GH_REPO/releases" '.[].tag_name')
+    if grep -qxF -- "$tag" <<<"$releases"; then
         echo "::error::$tag is already released. To finish it, run: gh workflow run release-resume.yml --ref $tag -f tag=$tag" >&2
     else
         echo "::error::The tag $tag exists but has no GitHub Release: it was pushed by hand. This number can't be used; release the next version." >&2
@@ -53,8 +62,8 @@ if [ "$branch" != main ] || [[ $version =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
         release_branch=$branch
     fi
     exists=false
-    if gh api --paginate "repos/$GH_REPO/git/matching-refs/heads/$release_branch" \
-            --jq '.[].ref | ltrimstr("refs/heads/")' | grep -qxF -- "$release_branch"; then
+    heads=$(gh_lines "repos/$GH_REPO/git/matching-refs/heads/$release_branch" '.[].ref | ltrimstr("refs/heads/")')
+    if grep -qxF -- "$release_branch" <<<"$heads"; then
         exists=true
     fi
     if [ "$branch" = main ]; then

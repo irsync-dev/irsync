@@ -47,7 +47,8 @@ fi
 # Not sed -i: BSD and GNU sed take its argument differently.
 sed 's/\(gh release create .*\) artifacts\/\*/\1 --draft artifacts\/*/' "$workflow" >"$tmp/draft"
 cp "$tmp/draft" "$workflow"
-if ! grep 'gh release create' "$workflow" | grep -q -- ' --draft artifacts/\*'; then
+create=$(grep 'gh release create' "$workflow")
+if ! grep -q -- ' --draft artifacts/\*' <<<"$create"; then
     echo "release-yml.sh: could not add --draft before artifacts/*; did dist change its template?" >&2
     exit 1
 fi

@@ -49,8 +49,12 @@ fi
 new_branch=
 if [ "$dry_run" != true ] && [[ $tag =~ ^v([0-9]+\.[0-9]+)\.0$ ]]; then
     candidate=release-${BASH_REMATCH[1]}
-    if ! gh api --paginate "repos/$GH_REPO/git/matching-refs/heads/$candidate" \
-            --jq '.[].ref | ltrimstr("refs/heads/")' | grep -qxF -- "$candidate"; then
+    # Into a variable, then grep -q: piped, gh can fail writing after grep
+    # stopped at the match, and pipefail would turn the match into a miss.
+    heads=$(gh api --paginate "repos/$GH_REPO/git/matching-refs/heads/$candidate" \
+        --jq '.[].ref | ltrimstr("refs/heads/")') ||
+        { echo "::error::Could not look up the branch $candidate." >&2; exit 1; }
+    if ! grep -qxF -- "$candidate" <<<"$heads"; then
         new_branch=$candidate
     fi
 fi
