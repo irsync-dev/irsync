@@ -20,10 +20,14 @@
 #   release-build  the release build for this machine's Linux musl target,
 #                  dist's global build, and our installer run on the result
 #   freebsd-build  the FreeBSD tarball; FreeBSD x86_64 only
+#   fuzz-build     builds the fuzz targets in fuzz/ and runs each on its
+#                  seeds (fuzz/seeds), with the nightly in
+#                  fuzz/rust-toolchain.toml
+#   fuzz           runs each fuzz target for FUZZ_SECONDS; only when named
 #
-# With no job it runs all of them, the quick ones first. release-build runs
-# on Linux only and freebsd-build on FreeBSD only; a run of everything
-# leaves each out elsewhere.
+# With no job it runs all of them but fuzz, the quick ones first.
+# fuzz-build and release-build run on Linux only, freebsd-build on FreeBSD
+# only; a run of everything leaves each out elsewhere.
 #
 # tools/dev-setup.sh installs or names the tools this needs. Two things only
 # GitHub does: the macOS and arm64 runs, and the dependency review of a pull
@@ -34,6 +38,7 @@
 #                       for the musl runs of a release)
 #   CI_RELEASE_TARGET   release-build builds this target instead of
 #                       $(uname -m)-unknown-linux-musl
+#   FUZZ_SECONDS        how long fuzz runs each target (default 60)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -42,25 +47,28 @@ os=$(uname -s)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
-all_jobs="workflows shell-scripts deny deny-license-check check release-build"
+all_jobs="workflows shell-scripts deny deny-license-check check fuzz-build release-build"
 jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | deny-license-check | workflows | shell-scripts | release-build | freebsd-build) jobs="$jobs $arg" ;;
-        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build)" >&2; exit 2 ;;
+        check | deny | deny-license-check | workflows | shell-scripts | fuzz-build | fuzz | release-build | freebsd-build) jobs="$jobs $arg" ;;
+        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build fuzz)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
     jobs=$all_jobs
     if [ "$os" = FreeBSD ]; then
         jobs="workflows shell-scripts deny deny-license-check check freebsd-build"
-        echo "ci.sh: leaving out release-build, which runs on Linux only"
+        echo "ci.sh: leaving out fuzz-build and release-build, which run on Linux only"
     elif [ "$os" != Linux ]; then
         jobs="workflows shell-scripts deny deny-license-check check"
-        echo "ci.sh: leaving out release-build, which runs on Linux only"
+        echo "ci.sh: leaving out fuzz-build and release-build, which run on Linux only"
     fi
 fi
+
+# The nightly the fuzz targets build with: the one pin in the repository.
+nightly=$(sed -n 's/^channel = "\(.*\)"/\1/p' fuzz/rust-toolchain.toml)
 
 # Prints a command, then runs it.
 run() {
@@ -94,6 +102,11 @@ needs_workflows() {
     need actionlint actionlint -version
 }
 needs_shell_scripts() { need shellcheck shellcheck --version; }
+needs_fuzz_build() {
+    need cargo-fuzz cargo fuzz --version
+    need "Rust $nightly (fuzz/rust-toolchain.toml)" rustup run "$nightly" rustc --version
+}
+needs_fuzz() { needs_fuzz_build; }
 needs_release_build() {
     if [ "$os" != Linux ]; then
         echo "ci.sh: release-build runs on Linux only" >&2
@@ -192,6 +205,52 @@ job_shell_scripts() {
         esac
     done < <(git ls-files -z)
     run shellcheck "${files[@]}"
+}
+
+# The fuzz targets: fuzz/fuzz_targets/NAME.rs, with its seeds in
+# fuzz/seeds/NAME.
+fuzz_targets() {
+    local f
+    for f in fuzz/fuzz_targets/*.rs; do
+        f=${f##*/}
+        echo "${f%.rs}"
+    done
+}
+
+# The target the fuzz targets build for. cargo-fuzz picks the one it was
+# itself built for, and its release binary for Linux is a musl build,
+# which the address sanitizer does not support.
+fuzz_target_triple() {
+    rustup run "$nightly" rustc -vV | sed -n 's/^host: //p'
+}
+
+# Every fuzz target builds, and none fails on its seeds: a target that no
+# longer compiles, or a fixed crash that is back, fails here.
+job_fuzz_build() {
+    local triple t
+    triple=$(fuzz_target_triple)
+    run cargo "+$nightly" fuzz build --target "$triple"
+    for t in $(fuzz_targets); do
+        run cargo "+$nightly" fuzz run --target "$triple" "$t" "fuzz/seeds/$t" -- -runs=0
+    done
+}
+
+# Each fuzz target for FUZZ_SECONDS. The corpus libFuzzer grows is kept in
+# fuzz/corpus/NAME (the nightly workflow caches it); the seeds are read,
+# never written. A failing input lands in fuzz/artifacts/NAME. Every target
+# runs, also after one has failed.
+job_fuzz() {
+    local triple t secs=${FUZZ_SECONDS:-60} failed=""
+    triple=$(fuzz_target_triple)
+    for t in $(fuzz_targets); do
+        mkdir -p "fuzz/corpus/$t"
+        run cargo "+$nightly" fuzz run --target "$triple" "$t" "fuzz/corpus/$t" "fuzz/seeds/$t" -- \
+            "-max_total_time=$secs" -timeout=10 -rss_limit_mb=2048 || failed="$failed $t"
+    done
+    if [ -n "$failed" ]; then
+        echo "ci.sh: fuzz targets failed:$failed; the inputs are in fuzz/artifacts/" >&2
+        exit 1
+    fi
 }
 
 # The release build itself (dist and packaging/dist/build.sh), so a broken
