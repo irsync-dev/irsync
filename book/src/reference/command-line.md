@@ -247,7 +247,16 @@ few seconds when a large, mostly unchanged file starts. On a narrow terminal
 the transfer count goes first, then goodput, then the synced rate. While the
 block is drawn, failed files show in its
 `errors` section instead of scrolling, and the full list goes to stderr once the
-block is cleared at the end. `-q` turns the block off. When stdout is not a
+block is cleared at the end.
+
+A push of several sources draws the block once per source, one after the
+other. Each one starts with a line that names it, such as
+`session 2/3  ~/Photos -> myserver:backup`: the source's place in the run
+and the two operands as typed. When a source is finished, that line and
+its `done` lines stay on the terminal. A run with one source has no such
+line.
+
+`-q` turns the block off. When stdout is not a
 terminal, or `TERM` is `dumb`, the block is not drawn and the output is plain
 lines.
 

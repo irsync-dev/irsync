@@ -4,6 +4,16 @@ use irsync::fs::paths::RelPath;
 use irsync::session::{Event, Party};
 use std::time::{Duration, Instant};
 
+/// Session `index` of `of`: source `src0`, `src1`… to `nas:/backup`.
+fn session_start(index: usize, of: usize) -> Event {
+    Event::SessionStart {
+        index,
+        of,
+        from: format!("src{index}"),
+        to: "nas:/backup".into(),
+    }
+}
+
 fn rp(s: &str) -> RelPath {
     RelPath::new(s.as_bytes()).unwrap()
 }
@@ -234,7 +244,7 @@ fn second_session_resets_counters_but_keeps_connection() {
     let (mut l, t) = (live(), Instant::now());
     l.apply(&Event::Conn(ConnState::Relay), t);
     l.apply(&Event::FileDone(rp("a"), 7), t);
-    l.apply(&Event::SessionStart { index: 1, of: 2 }, t);
+    l.apply(&session_start(1, 2), t);
     assert_eq!((l.xfr, l.done_bytes, l.session), (0, 0, (1, 2)));
     assert_eq!(l.conn, ConnState::Relay);
 }
@@ -725,7 +735,7 @@ fn a_new_session_clears_matched_and_samples() {
     let (mut l, t) = (live(), Instant::now());
     l.apply(&Event::FileMatched(rp("f"), 1000), t);
     l.tick(t);
-    l.apply(&Event::SessionStart { index: 1, of: 2 }, t);
+    l.apply(&session_start(1, 2), t);
     assert_eq!(l.matched, 0);
     assert!(l.samples.is_empty());
 }
@@ -1152,4 +1162,52 @@ fn hashing_rows_rank_between_moving_and_idle_ones() {
     l.apply(&Event::FileHashing(rp("f2"), 1 << 20), t);
     let lines = render(&l, &Geometry::fixed(120, 40), t);
     assert_eq!(row_names(&lines), ["f3", "f2", "f1"]);
+}
+
+#[test]
+fn one_of_several_sessions_is_named_above_its_lines() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&session_start(1, 3), t);
+    l.apply(&Event::FileStart(rp("a"), 10), t);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert!(lines[0].starts_with('─'), "{lines:?}");
+    assert_eq!(lines[1], "session 2/3  src1 -> nas:/backup");
+    assert!(lines[2].starts_with("list      "), "{lines:?}");
+
+    // Long operands are cut to the width, never wrapped.
+    l.apply(
+        &Event::SessionStart {
+            index: 2,
+            of: 3,
+            from: "x".repeat(200),
+            to: "nas:/backup".into(),
+        },
+        t,
+    );
+    l.apply(&Event::FileStart(rp("a"), 10), t);
+    let lines = render(&l, &Geometry::fixed(60, 40), t);
+    assert!(lines[1].starts_with("session 3/3  xxx"), "{lines:?}");
+    assert_eq!(lines[1].chars().count(), 60);
+}
+
+#[test]
+fn a_run_with_one_source_has_no_session_line() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&session_start(0, 1), t);
+    l.apply(&Event::FileStart(rp("a"), 10), t);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert!(lines[1].starts_with("list      "), "{lines:?}");
+    assert!(lines.iter().all(|l| !l.contains("session")), "{lines:?}");
+}
+
+#[test]
+fn the_session_line_takes_a_row_not_extra_height() {
+    let t = Instant::now();
+    let mut l = live();
+    l.apply(&session_start(0, 2), t);
+    for i in 0..40 {
+        l.apply(&Event::FileStart(rp(&format!("f{i:02}")), 100), t);
+    }
+    let lines = render(&l, &Geometry::fixed(100, 24), t);
+    assert!(lines.len() <= 12, "{}", lines.len());
 }

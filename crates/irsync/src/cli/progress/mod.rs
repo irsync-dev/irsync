@@ -43,7 +43,9 @@
 //! every 100 ms, at once on a connection state change). At the end of a
 //! session the block is erased before the trailer; with several sources each
 //! finished session, the last one too, leaves its `done` lines in the
-//! scrollback.
+//! scrollback. Such a run names the session in a line above `list`, as
+//! `session 2/3  ./photos -> nas:/backup` (the `-vv` summary's words), in
+//! the block and in the lines left behind, so the pairs can be told apart.
 //!
 //! The work is split three ways:
 //! - [`state`](mod@state): [`Live`], what the block knows, folded from events
@@ -82,8 +84,10 @@ use render::{render, Geometry};
 use screen::{Screen, WriterTerm};
 use state::Live;
 
-/// The 10-character prefixes of the phase lines in a rendered block.
-const PHASES: [&str; 3] = ["list      ", "transfer  ", "delete    "];
+/// How the lines a finished session leaves behind start in a rendered
+/// block: the heading of one session among several, and the phase lines
+/// with their 10-character prefixes.
+const PHASES: [&str; 4] = ["session ", "list      ", "transfer  ", "delete    "];
 
 /// Redraw the progress block at most this often.
 const REDRAW: Duration = Duration::from_millis(100);
