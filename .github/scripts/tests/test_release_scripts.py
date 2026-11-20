@@ -761,6 +761,9 @@ class ReleaseYmlTests(unittest.TestCase):
     CREATE = ('          gh release create "$TAG" --title "$T" --notes-file n.txt'
               ' artifacts/*\n')
     DRAFT = CREATE.replace(" artifacts/*", " --draft artifacts/*")
+    CLEANUP = "          rm -f artifacts/*-dist-manifest.json\n"
+    COPY = ("          # Our own copy, not the artifact: the artifact list can miss it.\n"
+            "          cp dist-manifest.json artifacts/dist-manifest.json\n")
 
     def setUp(self):
         self.repo = tempfile.mkdtemp(prefix="relyml-")
@@ -788,8 +791,8 @@ class ReleaseYmlTests(unittest.TestCase):
         with open(os.path.join(self.repo, name)) as f:
             return f.read()
 
-    def run_script(self, mode, create_lines=1):
-        workflow = "jobs:\n" + self.CREATE * create_lines + "done\n"
+    def run_script(self, mode, create_lines=1, cleanup_lines=1):
+        workflow = "jobs:\n" + self.CLEANUP * cleanup_lines + self.CREATE * create_lines + "done\n"
         env = dict(os.environ, PATH=self.bindir + os.pathsep + os.environ["PATH"],
                    FAKE_WORKFLOW=workflow)
         return subprocess.run([RELEASE_YML, mode], cwd=self.repo, env=env,
@@ -799,11 +802,13 @@ class ReleaseYmlTests(unittest.TestCase):
         self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
         self.assertEqual(self.read_repo(".github/workflows/release.yml"), self.OLD)
 
+    WRITTEN = "jobs:\n" + CLEANUP + COPY + DRAFT + "done\n"
+
     def test_write_adds_draft_before_artifacts(self):
         r = self.run_script("write")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read_repo(".github/workflows/release.yml"),
-                         "jobs:\n" + self.DRAFT + "done\n")
+                         self.WRITTEN)
         self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
 
     def test_no_create_line_fails(self):
@@ -818,6 +823,21 @@ class ReleaseYmlTests(unittest.TestCase):
         self.assertIn("found 2", r.stderr)
         self.assert_untouched()
 
+    def test_write_copies_the_manifest_into_artifacts(self):
+        # Right after dist's cleanup, so the attest step and the release see it.
+        r = self.run_script("write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(self.CLEANUP + self.COPY, self.read_repo(".github/workflows/release.yml"))
+
+    def test_no_cleanup_line_fails(self):
+        for n in [0, 2]:
+            with self.subTest(cleanup_lines=n):
+                r = self.run_script("write", cleanup_lines=n)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(f"found {n}", r.stderr)
+                self.assertIn("dist-manifest.json", r.stderr)
+                self.assert_untouched()
+
     def test_check_fails_with_a_diff(self):
         r = self.run_script("check")
         self.assertEqual(r.returncode, 1)
@@ -830,7 +850,7 @@ class ReleaseYmlTests(unittest.TestCase):
         r = self.run_script("check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.read_repo(".github/workflows/release.yml"),
-                         "jobs:\n" + self.DRAFT + "done\n")
+                         self.WRITTEN)
         self.assertEqual(self.read_repo("dist-workspace.toml"), self.CONFIG)
 
     def test_dist_failure_restores_files(self):
