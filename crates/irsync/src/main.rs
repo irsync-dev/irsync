@@ -1427,7 +1427,9 @@ fn index_roots(
             let index = Index::open(&state, &root)
                 .with_context(|| format!("open index for {}", root.display()))?
                 .into_handle();
-            let r = irsync::warm::index_root(index, &root, HASH_WORKERS, dry_run)
+            let root_handle = irsync::fs::beneath::Root::open(&root)
+                .with_context(|| format!("open {}", root.display()))?;
+            let r = irsync::warm::index_root(index, root_handle, HASH_WORKERS, dry_run)
                 .await
                 .with_context(|| format!("indexing {}", root.display()))?;
             for (p, msg) in &r.errors {

@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -30,8 +29,9 @@ use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::file_entry::Kind;
 
 use crate::filter::FilterSet;
+use crate::fs::beneath::Root;
 use crate::fs::paths::RelPath;
-use crate::hasher::Hasher;
+use crate::hasher::{HashHook, Hasher};
 use crate::index::IndexHandle;
 use crate::scan::{walk, ScanSummary, WalkOpts};
 
@@ -94,17 +94,34 @@ pub struct WarmReport {
 /// Walks `root` and hashes every regular file whose index row is not fresh
 /// (size, mtime, ctime and inode unchanged), `workers` at a time, storing
 /// the digests in `index`. irsync's own temporary files are left out. With
-/// `dry_run` nothing is read; the report counts what would be.
+/// `dry_run` nothing is read; the report counts what would be. Every file
+/// is read through `root`, the one open folder of this pass, so a folder
+/// swapped for a symlink during the pass is never followed.
 pub async fn index_root(
     index: IndexHandle,
-    root: &Path,
+    root: Arc<Root>,
     workers: usize,
     dry_run: bool,
 ) -> io::Result<WarmReport> {
+    index_root_with(index, root, workers, dry_run, None).await
+}
+
+/// [`index_root`], telling `hook` the bytes read so far of each file the
+/// hasher reads (a test changes the tree mid-pass).
+pub async fn index_root_with(
+    index: IndexHandle,
+    root: Arc<Root>,
+    workers: usize,
+    dry_run: bool,
+    hook: Option<HashHook>,
+) -> io::Result<WarmReport> {
     let workers = workers.max(1);
-    let hasher = Hasher::new(index, crate::fs::beneath::Root::lazy(root), workers);
+    let mut hasher = Hasher::new(index, root.clone(), workers);
+    if let Some(h) = hook {
+        hasher = hasher.with_hash_hook(h);
+    }
     let (rx, summary) = walk(
-        root.to_path_buf(),
+        root.path().to_path_buf(),
         Arc::new(FilterSet::new(vec![])),
         WalkOpts {
             follow_root_symlink: true,

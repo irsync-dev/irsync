@@ -10,9 +10,20 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
+use irsync::fs::beneath::Root;
 use irsync::fs::paths::RelPath;
 use irsync::index::Index;
-use irsync::warm::{index_root, CANDIDATES, MIN_SIZE};
+use irsync::warm::{index_root as index_root_in, CANDIDATES, MIN_SIZE};
+
+/// [`index_root_in`] on the folder at `path`.
+async fn index_root(
+    ix: irsync::index::IndexHandle,
+    path: &Path,
+    workers: usize,
+    dry_run: bool,
+) -> std::io::Result<irsync::warm::WarmReport> {
+    index_root_in(ix, Root::open(path).unwrap(), workers, dry_run).await
+}
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
@@ -306,4 +317,46 @@ async fn a_daemon_with_warm_index_hashes_its_export_at_start() {
         assert_eq!(h.daemon_files_hashed(), 0);
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_up_never_hashes_through_a_swapped_folder() {
+    let state = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(root.path(), "d/f", &data(100 * KIB, 7));
+    write(outside.path(), "f", &data(30 * KIB, 8));
+    let ix = Index::open(state.path(), root.path())
+        .unwrap()
+        .into_handle();
+    // Just before the file is opened, its folder is replaced by a link.
+    let (r, o) = (root.path().to_path_buf(), outside.path().to_path_buf());
+    let swapped = std::sync::atomic::AtomicBool::new(false);
+    let hook: irsync::hasher::HashHook = std::sync::Arc::new(move |path: &RelPath, bytes| {
+        if bytes == 0
+            && path.as_bytes() == b"d/f"
+            && !swapped.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            fs::rename(r.join("d"), r.join("d.moved")).unwrap();
+            std::os::unix::fs::symlink(&o, r.join("d")).unwrap();
+        }
+    });
+    let rep = irsync::warm::index_root_with(
+        ix.clone(),
+        Root::open(root.path()).unwrap(),
+        4,
+        false,
+        Some(hook),
+    )
+    .await
+    .unwrap();
+
+    // The outside file is never read: no digest of its size is stored.
+    let e = ix.lock().unwrap().get_entry(&rel("d/f")).unwrap();
+    assert!(
+        e.and_then(|e| e.digest)
+            .is_none_or(|d| d.size == (100 * KIB) as u64),
+        "{rep:?}"
+    );
+    assert_ne!(rep.bytes, (30 * KIB) as u64, "{rep:?}");
 }

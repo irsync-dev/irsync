@@ -411,7 +411,8 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
             shared.tasks.clone(),
         );
         tokio::spawn(async move {
-            let warm = crate::warm::index_root(index, &root, HASH_WORKERS, false);
+            // Opened when first needed: the export's folder may not be there yet.
+            let warm = crate::warm::index_root(index, Root::lazy(&root), HASH_WORKERS, false);
             tokio::select! {
                 _ = stop.cancelled() => {}
                 r = warm => match r {
@@ -1464,7 +1465,7 @@ pub async fn gc_skipping(
                 .len() as u32
         };
         report.entries_removed =
-            prune_entries(&mut ix, &root, &seen, &walk_errors, &skipped, dry_run)?;
+            prune_entries(&mut ix, &parts_root, &seen, &walk_errors, &skipped, dry_run)?;
         report.errors.extend(walk_errors);
         if !dry_run {
             ix.set_last_gc_at(unix_now()).map_err(io_err)?;
@@ -1483,15 +1484,16 @@ pub async fn gc_skipping(
 /// (the index lock is held: a receiver cannot index it meanwhile). A walk
 /// that found no file at all prunes nothing: the root may be a mount point
 /// whose filesystem is not mounted.
+// The `stat` field types differ by platform; the casts are no-ops here.
+#[allow(clippy::unnecessary_cast)]
 fn prune_entries(
     ix: &mut crate::index::Index,
-    root: &Path,
+    root: &Root,
     seen: &std::collections::HashMap<RelPath, (u64, u64)>,
     errors: &[(RelPath, String)],
     skipped: &dyn Fn(&RelPath) -> bool,
     dry_run: bool,
 ) -> io::Result<usize> {
-    use std::os::unix::fs::MetadataExt;
     if seen.is_empty() {
         return Ok(0);
     }
@@ -1511,10 +1513,14 @@ fn prune_entries(
         {
             continue;
         }
-        let here = std::fs::symlink_metadata(root.join(path.to_os()))
+        // Looked at through the open root: a folder swapped for a symlink
+        // holds no file of ours, so the entry counts as gone.
+        let here = root
+            .parent(&path, beneath::Missing::Refuse)
+            .and_then(|(dir, name)| dir.stat(&name))
             .ok()
-            .filter(|m| m.is_file())
-            .map(|m| (m.ino(), m.len()));
+            .filter(|st| crate::fs::safe::is_regular_mode(st.st_mode as u32))
+            .map(|st| (st.st_ino as u64, st.st_size as u64));
         if here == Some((inode, size)) {
             continue;
         }

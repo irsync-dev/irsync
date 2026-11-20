@@ -706,3 +706,39 @@ async fn outer_gc_leaves_a_nested_export_alone() {
     let ix = f.ix.lock().unwrap();
     assert!(ix.partial_paths().unwrap().contains(&rel("photos/b")));
 }
+
+#[tokio::test]
+async fn gc_never_stats_or_removes_through_a_swapped_folder() {
+    let state = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let (r, o) = (root.path(), outside.path());
+    let ix = Index::open(state.path(), r).unwrap().into_handle();
+    std::fs::write(r.join("other"), b"content").unwrap();
+    index_file(&ix, r, "other");
+    std::fs::create_dir(r.join("d")).unwrap();
+    std::fs::write(r.join("d/f"), b"content").unwrap();
+    index_file(&ix, r, "d/f");
+    // The folder goes away and a link to another place takes its name. That
+    // place holds the same file (one inode) and an old part of the same name.
+    std::fs::rename(r.join("d"), r.join("d.moved")).unwrap();
+    std::os::unix::fs::symlink(o, r.join("d")).unwrap();
+    std::fs::hard_link(r.join("d.moved/f"), o.join("f")).unwrap();
+    std::fs::write(o.join(".irsync.f.part"), b"x").unwrap();
+    touch_ago(&o.join(".irsync.f.part"), 8);
+    ix.lock()
+        .unwrap()
+        .put_partial(&rel("d/f"), &partial(now() - 9 * DAY as i64))
+        .unwrap();
+
+    let rep = gc(ix.clone(), r, Duration::from_secs(7 * DAY), false)
+        .await
+        .unwrap();
+    assert!(o.join("f").exists());
+    assert!(o.join(".irsync.f.part").exists(), "outside part kept");
+    assert!(rep.parts_removed.is_empty(), "{rep:?}");
+    // Nothing of ours is at d/f now, so its row goes.
+    let ix = ix.lock().unwrap();
+    assert!(ix.get_entry(&rel("d/f")).unwrap().is_none());
+    assert!(ix.get_entry(&rel("other")).unwrap().is_some());
+}
