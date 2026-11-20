@@ -227,3 +227,66 @@ async fn single_file_session_takes_no_directory_under_its_name() {
         b"already here"
     );
 }
+
+/// The receiver holds the same exclude rules as the sender. A sender that
+/// lists an excluded path anyway must not get it placed: the user said
+/// those paths are not part of the sync, and an excluded file that is
+/// already in the destination must stay as it is.
+#[tokio::test]
+async fn excluded_paths_in_the_peers_listing_are_refused() {
+    use irsync::cli::{Args, SyncOptions};
+    let h = Harness::new().await;
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(h.local.path().join("real.txt"), b"real content").unwrap();
+    fs::write(h.export.path().join("keep.o"), b"mine").unwrap();
+
+    let opts = SyncOptions::from_args(
+        &Args::try_parse_from([
+            "irsync",
+            "-a",
+            "--exclude",
+            "*.o",
+            "--exclude",
+            "build/",
+            "src/",
+            "host:m/",
+        ])
+        .unwrap(),
+    );
+    let mut local = h.local_side();
+    local.filters = Arc::new(irsync::filter::FilterSet::from_rules(&opts.filters).unwrap());
+    let target = outside.path().as_os_str().as_encoded_bytes().to_vec();
+    local.hooks.inject_listing = Some(Arc::new(move |e: &FileEntry| {
+        if e.path.is_empty() {
+            vec![
+                entry(b"build", Kind::Directory, 0, b""),
+                entry(b"build/in", Kind::Symlink, 0, &target),
+                entry(b"evil.o", Kind::Symlink, 0, &target),
+                entry(b"keep.o", Kind::Symlink, 0, &target),
+            ]
+        } else {
+            Vec::new()
+        }
+    }));
+    let out = within30(h.run_side(&opts, Flow::Push, local))
+        .await
+        .expect("session");
+
+    let export = h.export.path();
+    assert_eq!(fs::read(export.join("real.txt")).unwrap(), b"real content");
+    for gone in ["build", "build/in", "evil.o"] {
+        assert!(
+            fs::symlink_metadata(export.join(gone)).is_err(),
+            "{gone} was placed"
+        );
+    }
+    assert_eq!(fs::read(export.join("keep.o")).unwrap(), b"mine");
+    for refused in ["build", "evil.o", "keep.o"] {
+        assert!(
+            has_error(&out, refused.as_bytes(), "excluded"),
+            "{refused}: {:?}",
+            out.errors
+        );
+    }
+    assert_eq!(out.exit_code(), 23);
+}
