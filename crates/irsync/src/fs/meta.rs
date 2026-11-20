@@ -78,7 +78,11 @@ pub fn stat_entry_with_ctime(st: FileStat, rel: &RelPath) -> (FileEntry, (i64, u
 
 // The `stat` field types differ by platform; some casts are no-ops here.
 #[allow(clippy::unnecessary_cast)]
-fn entry_of(st: FileStat, rel: &RelPath, link_target: Vec<u8>) -> (FileEntry, (i64, u32)) {
+pub(crate) fn entry_of(
+    st: FileStat,
+    rel: &RelPath,
+    link_target: Vec<u8>,
+) -> (FileEntry, (i64, u32)) {
     let mode = st.st_mode as u32;
     let kind = kind_of(mode);
     // Linux and macOS both expose st_mtime / st_mtime_nsec through nix's libc FileStat.
@@ -141,14 +145,14 @@ pub fn supplementary_groups() -> Vec<u32> {
 
 /// Whether this process runs as root, and the groups it is a member of
 /// (effective and supplementary).
-struct ProcessIds {
-    root: bool,
+pub(crate) struct ProcessIds {
+    pub(crate) root: bool,
     groups: Vec<u32>,
 }
 
 /// [`ProcessIds`], read once: irsync never changes its ids, and asking
 /// the kernel for every file placed costs two syscalls each time.
-fn process_ids() -> &'static ProcessIds {
+pub(crate) fn process_ids() -> &'static ProcessIds {
     static IDS: std::sync::OnceLock<ProcessIds> = std::sync::OnceLock::new();
     IDS.get_or_init(|| {
         let mut groups = supplementary_groups();
@@ -161,7 +165,7 @@ fn process_ids() -> &'static ProcessIds {
 }
 
 /// Whether this process may chown to `gid`: as root, or as a member of it.
-fn may_chgrp(gid: u32) -> bool {
+pub(crate) fn may_chgrp(gid: u32) -> bool {
     let ids = process_ids();
     ids.root || ids.groups.contains(&gid)
 }
@@ -215,7 +219,7 @@ pub fn apply_metadata_fd_owned(
     apply_fd(fd.as_fd(), e, opts, Some(now))
 }
 
-fn apply_fd(
+pub(crate) fn apply_fd(
     fd: std::os::fd::BorrowedFd<'_>,
     e: &FileEntry,
     opts: &ApplyOpts,

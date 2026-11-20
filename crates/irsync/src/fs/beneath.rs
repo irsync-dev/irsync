@@ -9,21 +9,31 @@
 //!
 //! Opened folders are kept in a small least-recently-used cache, so the
 //! next file in the same folder does not walk the path again. A [`Dir`] a
-//! caller holds stays valid after the cache drops it.
+//! caller holds stays valid after the cache drops it. A cached handle follows
+//! the folder, not its name, so callers call [`Root::forget`] after removing
+//! or renaming a folder.
+//!
+//! A [`Dir`] also carries the file operations that act on one name inside it
+//! (`openat`, `unlinkat`, and friends), so no operation walks a path again.
 
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::errno::Errno;
-use nix::fcntl::{openat, OFlag, AT_FDCWD};
-use nix::sys::stat::{mkdirat, Mode};
+use nix::fcntl::{openat, readlinkat, renameat, AtFlags, OFlag, AT_FDCWD};
+use nix::sys::stat::{fstat, fstatat, mkdirat, utimensat, FileStat, Mode, SFlag, UtimensatFlags};
+use nix::sys::time::TimeSpec;
+use nix::unistd::{fchownat, symlinkat, unlinkat, Gid, Uid, UnlinkatFlags};
 
+use crate::fs::meta::{apply_fd, entry_of, may_chgrp, process_ids, ApplyOpts};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{errno, is_symlink_errno, split_last};
+use crate::fs::safe::{errno, is_regular_mode, is_symlink_errno, nofollow_error, split_last};
 use crate::fs::transient::retry;
 
 /// How many folder handles a [`Root`] keeps by default.
@@ -52,11 +62,263 @@ impl AsFd for Dir {
     }
 }
 
+/// A name must be one path component, so it cannot lead out of the folder.
+fn check_name(name: &OsStr) -> io::Result<()> {
+    let b = name.as_bytes();
+    if b.is_empty() || b == b"." || b == b".." || b.contains(&b'/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a single file name: {}", name.to_string_lossy()),
+        ));
+    }
+    Ok(())
+}
+
+/// Flags for every open of a file by name: never follow a symlink there,
+/// never block on a FIFO there.
+fn name_flags() -> OFlag {
+    OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC
+}
+
+/// Makes a FIFO or device node. macOS has no `mkfifoat` or `mknodat` in
+/// nix, so it calls libc, which declares both.
+#[cfg(not(target_vendor = "apple"))]
+fn make_node(dir: &Dir, name: &OsStr, kind: Kind, perm: Mode, rdev: u64) -> io::Result<()> {
+    let sflag = match kind {
+        // mkfifoat, not mknodat: FreeBSD's mknod makes device nodes only.
+        Kind::Fifo => return nix::unistd::mkfifoat(dir, name, perm).map_err(errno),
+        Kind::CharDev => SFlag::S_IFCHR,
+        Kind::BlockDev => SFlag::S_IFBLK,
+        _ => SFlag::S_IFSOCK,
+    };
+    nix::sys::stat::mknodat(dir, name, sflag, perm, rdev as _).map_err(errno)
+}
+
+#[cfg(target_vendor = "apple")]
+fn make_node(dir: &Dir, name: &OsStr, kind: Kind, perm: Mode, rdev: u64) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let c = std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let fd = dir.as_fd().as_raw_fd();
+    let rc = match kind {
+        // SAFETY: `c` is a valid NUL-terminated string that outlives the call,
+        // and `fd` is an open folder handle held by `dir`.
+        Kind::Fifo => unsafe { nix::libc::mkfifoat(fd, c.as_ptr(), perm.bits() as _) },
+        k => {
+            let sflag = match k {
+                Kind::CharDev => SFlag::S_IFCHR,
+                Kind::BlockDev => SFlag::S_IFBLK,
+                _ => SFlag::S_IFSOCK,
+            };
+            // SAFETY: as above.
+            unsafe { nix::libc::mknodat(fd, c.as_ptr(), sflag.bits() | perm.bits(), rdev as _) }
+        }
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 impl Dir {
     /// Where this folder is, relative to the root it came from (for messages).
     pub fn rel(&self) -> &RelPath {
         &self.rel
     }
+
+    /// `name` as a path below the root, for messages.
+    fn shown(&self, name: &OsStr) -> PathBuf {
+        PathBuf::from(OsStr::from_bytes(self.rel.as_bytes())).join(name)
+    }
+
+    /// Opens `name` with `flags`, never following a symlink there.
+    fn open_name(&self, name: &OsStr, flags: OFlag, mode: Mode) -> io::Result<File> {
+        check_name(name)?;
+        let fd = retry(|| openat(self, name, flags | name_flags(), mode).map_err(errno))
+            .map_err(|e| nofollow_error(e, &self.shown(name)))?;
+        Ok(File::from(fd))
+    }
+
+    /// Opens `name` read-only. It must be a regular file; a symlink, FIFO or
+    /// folder is refused with the same messages as `open_regular_nofollow`.
+    pub fn open_regular(&self, name: &OsStr) -> io::Result<(File, FileStat)> {
+        let f = self.open_name(name, OFlag::O_RDONLY, Mode::empty())?;
+        let st = fstat(&f).map_err(errno)?;
+        if !is_regular_mode(st.st_mode as u32) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", self.shown(name).display()),
+            ));
+        }
+        Ok((f, st))
+    }
+
+    /// Opens `name` for reading and writing; `create` makes it if missing.
+    /// A symlink at the name is refused, not followed.
+    pub fn open_rw(&self, name: &OsStr, create: bool) -> io::Result<File> {
+        let mut flags = OFlag::O_RDWR;
+        if create {
+            flags |= OFlag::O_CREAT;
+        }
+        self.open_name(name, flags, Mode::from_bits_truncate(0o666))
+    }
+
+    /// Opens `name` read-only, or write-only if the mode does not allow
+    /// reading. Never creates it.
+    pub fn open_any(&self, name: &OsStr) -> io::Result<File> {
+        self.open_name(name, OFlag::O_RDONLY, Mode::empty())
+            .or_else(|_| self.open_name(name, OFlag::O_WRONLY, Mode::empty()))
+    }
+
+    /// `lstat` of `name`.
+    pub fn stat(&self, name: &OsStr) -> io::Result<FileStat> {
+        check_name(name)?;
+        fstatat(self, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)
+    }
+
+    /// Where the symlink `name` points.
+    pub fn read_link(&self, name: &OsStr) -> io::Result<Vec<u8>> {
+        check_name(name)?;
+        let t = readlinkat(self, name).map_err(errno)?;
+        Ok(t.as_bytes().to_vec())
+    }
+
+    /// The entry and ctime of `name`, as `lstat_entry_with_ctime` gives for
+    /// `rel`.
+    pub fn entry(&self, name: &OsStr, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+        let st = self.stat(name)?;
+        let link = if is_link(&st) {
+            self.read_link(name)?
+        } else {
+            Vec::new()
+        };
+        Ok(entry_of(st, rel, link))
+    }
+
+    /// Makes `name` a folder, removing a non-folder in the way (a symlink is
+    /// removed, not followed).
+    pub fn mkdir_replacing(&self, name: &OsStr) -> io::Result<()> {
+        check_name(name)?;
+        let make = || mkdirat(self, name, Mode::from_bits_truncate(0o777)).map_err(errno);
+        match fstatat(self, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(st) if is_dir(&st) => Ok(()),
+            Ok(_) => {
+                unlinkat(self, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
+                make()
+            }
+            Err(Errno::ENOENT) => make(),
+            Err(e) => Err(errno(e)),
+        }
+    }
+
+    pub fn symlink(&self, target: &OsStr, name: &OsStr) -> io::Result<()> {
+        check_name(name)?;
+        symlinkat(target, self, name).map_err(errno)
+    }
+
+    /// Makes a FIFO or device node from the entry, as `fs::meta::create_special`.
+    /// The mode is subject to the umask; follow with [`Dir::apply_node_metadata`].
+    pub fn create_special(&self, name: &OsStr, e: &FileEntry) -> io::Result<()> {
+        check_name(name)?;
+        let kind = e.kind();
+        if !matches!(
+            kind,
+            Kind::Fifo | Kind::CharDev | Kind::BlockDev | Kind::Socket
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a special file kind",
+            ));
+        }
+        let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
+        make_node(self, name, kind, perm, e.rdev)
+    }
+
+    /// Moves `name` to `to_name` in the folder `to`.
+    pub fn rename(&self, name: &OsStr, to: &Dir, to_name: &OsStr) -> io::Result<()> {
+        check_name(name)?;
+        check_name(to_name)?;
+        renameat(self, name, to, to_name).map_err(errno)
+    }
+
+    /// Removes `name` (not a folder).
+    pub fn unlink(&self, name: &OsStr) -> io::Result<()> {
+        check_name(name)?;
+        unlinkat(self, name, UnlinkatFlags::NoRemoveDir).map_err(errno)
+    }
+
+    /// Sets owner, mode and times of this folder itself, through its handle.
+    pub fn apply_metadata(&self, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
+        apply_fd(self.as_fd(), e, opts, None)
+    }
+
+    /// Sets owner, mode and times of a symlink or special file at `name`.
+    /// Never follows a symlink: if `name` is one, only the link itself is
+    /// changed, and its mode is left alone.
+    pub fn apply_node_metadata(
+        &self,
+        name: &OsStr,
+        e: &FileEntry,
+        opts: &ApplyOpts,
+    ) -> io::Result<()> {
+        check_name(name)?;
+        let owner = opts.owner && process_ids().root;
+        let group = opts.group && may_chgrp(e.gid);
+        if owner || group {
+            let uid = owner.then(|| Uid::from_raw(e.uid));
+            let gid = group.then(|| Gid::from_raw(e.gid));
+            fchownat(self, name, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
+        }
+        if opts.perms && e.kind() != Kind::Symlink {
+            self.chmod_node(name, Mode::from_bits_truncate((e.mode & 0o7777) as _))?;
+        }
+        if opts.times {
+            let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
+            utimensat(self, name, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno)?;
+        }
+        Ok(())
+    }
+
+    /// `chmod` of `name` that cannot reach through a symlink.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    fn chmod_node(&self, name: &OsStr, mode: Mode) -> io::Result<()> {
+        use nix::sys::stat::{fchmodat, FchmodatFlags};
+        fchmodat(self, name, mode, FchmodatFlags::NoFollowSymlink).map_err(errno)
+    }
+
+    /// Linux cannot `chmod` a name without following it, so open the node
+    /// with `O_PATH` (which does not follow), refuse a symlink, and chmod
+    /// that open handle through `/proc`. Without `/proc` this fails, and
+    /// nothing is followed.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn chmod_node(&self, name: &OsStr, mode: Mode) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        let fd = openat(
+            self,
+            name,
+            OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(errno)?;
+        if is_link(&fstat(&fd).map_err(errno)?) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("refusing to follow symlink {}", self.shown(name).display()),
+            ));
+        }
+        let proc = format!("/proc/self/fd/{}", fd.as_raw_fd());
+        std::fs::set_permissions(proc, std::fs::Permissions::from_mode(mode.bits() as u32))
+    }
+}
+
+fn is_link(st: &FileStat) -> bool {
+    SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFLNK
+}
+
+fn is_dir(st: &FileStat) -> bool {
+    SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR
 }
 
 /// Least recently used first, most recent last. Small, so a plain list is
@@ -262,6 +524,7 @@ mod tests {
     use super::*;
     use nix::fcntl::AtFlags;
     use nix::sys::stat::fstatat;
+    use nix::sys::time::TimeSpec;
     use std::os::unix::fs::{symlink, DirBuilderExt, MetadataExt, PermissionsExt};
 
     fn r(s: &[u8]) -> RelPath {
@@ -392,20 +655,18 @@ mod tests {
         std::fs::create_dir_all(d.path().join("d/sub")).unwrap();
         let root = Root::open(d.path()).unwrap();
         root.dir(&r(b"d/sub"), Missing::Refuse).unwrap();
-        let old = root.dir(&r(b"d"), Missing::Refuse).unwrap();
-        let old_ino = nix::sys::stat::fstat(&old).unwrap().st_ino as u64;
+        root.dir(&r(b"d"), Missing::Refuse).unwrap();
         std::fs::remove_dir(d.path().join("d/sub")).unwrap();
         std::fs::remove_dir(d.path().join("d")).unwrap();
         std::fs::create_dir(d.path().join("d")).unwrap();
         let new_ino = std::fs::metadata(d.path().join("d")).unwrap().ino();
+        root.dir(&r(b"dd"), Missing::Create).unwrap();
         root.forget(&r(b"d"));
-        assert_eq!(root.cached(), 0);
+        // Only "d" and below went; the sibling "dd" stays cached.
+        assert_eq!(root.cached(), 1);
         let fresh = root.dir(&r(b"d"), Missing::Refuse).unwrap();
         let got = nix::sys::stat::fstat(&fresh).unwrap().st_ino as u64;
         assert_eq!(got, new_ino);
-        // The old inode may be reused by the filesystem; the point is that
-        // the handle is the new folder's, which the line above proves.
-        let _ = old_ino;
     }
 
     #[test]
@@ -436,5 +697,223 @@ mod tests {
         // Same again with the cache cold, from a fresh root.
         let root2 = Root::open_with_cache(d.path(), 1).unwrap();
         root2.dir(&r(&rel), Missing::Refuse).unwrap();
+    }
+
+    fn os(s: &str) -> &OsStr {
+        OsStr::new(s)
+    }
+
+    fn entry_with(kind: Kind, mode: u32, mtime: i64) -> FileEntry {
+        FileEntry {
+            kind: kind as i32,
+            mode,
+            mtime_sec: mtime,
+            ..Default::default()
+        }
+    }
+
+    /// A root over a fresh folder, and a second folder standing for "outside".
+    fn setup() -> (tempfile::TempDir, tempfile::TempDir, Dir) {
+        let d = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dir = Root::open(d.path())
+            .unwrap()
+            .dir(&RelPath::root(), Missing::Refuse)
+            .unwrap();
+        (d, out, dir)
+    }
+
+    #[test]
+    fn open_regular_refuses_symlink_fifo_and_folder() {
+        let (d, out, dir) = setup();
+        std::fs::write(d.path().join("f"), b"hi").unwrap();
+        std::fs::write(out.path().join("o"), b"x").unwrap();
+        symlink(out.path().join("o"), d.path().join("s")).unwrap();
+        nix::unistd::mkfifo(&d.path().join("p"), Mode::from_bits_truncate(0o644)).unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let (mut f, st) = dir.open_regular(os("f")).unwrap();
+        assert_eq!(st.st_size, 2);
+        let mut s = String::new();
+        io::Read::read_to_string(&mut f, &mut s).unwrap();
+        assert_eq!(s, "hi");
+        let e = dir.open_regular(os("s")).err().unwrap();
+        assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
+        for n in ["p", "sub"] {
+            let e = dir.open_regular(os(n)).err().unwrap();
+            assert!(e.to_string().contains("is not a regular file"), "{e}");
+        }
+    }
+
+    #[test]
+    fn open_rw_never_follows_a_symlink_at_the_name() {
+        let (d, out, dir) = setup();
+        std::fs::write(out.path().join("there"), b"x").unwrap();
+        symlink(out.path().join("there"), d.path().join("a")).unwrap();
+        symlink(out.path().join("missing"), d.path().join("b")).unwrap();
+        for n in ["a", "b"] {
+            for create in [false, true] {
+                let e = dir.open_rw(os(n), create).err().unwrap();
+                assert!(e.to_string().contains("symlink"), "{n} {create}: {e}");
+            }
+            assert!(dir.open_any(os(n)).is_err());
+        }
+        assert!(!out.path().join("missing").exists());
+        assert_eq!(std::fs::read(out.path().join("there")).unwrap(), b"x");
+        // Honest use: create, then reopen.
+        dir.open_rw(os("new"), true).unwrap();
+        dir.open_rw(os("new"), false).unwrap();
+        dir.open_any(os("new")).unwrap();
+        assert_eq!(
+            kind(dir.open_rw(os("nope"), false)),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn names_with_a_slash_or_dots_are_refused() {
+        let (d, _out, dir) = setup();
+        let other = Root::open(d.path())
+            .unwrap()
+            .dir(&RelPath::root(), Missing::Refuse)
+            .unwrap();
+        let e = entry_with(Kind::Fifo, 0o644, 0);
+        let rel = r(b"x");
+        let opts = ApplyOpts::default();
+        for n in ["a/b", "..", ".", ""] {
+            let n = os(n);
+            let bad = io::ErrorKind::InvalidInput;
+            assert_eq!(kind(dir.open_regular(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.open_rw(n, true)), bad, "{n:?}");
+            assert_eq!(kind(dir.open_any(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.stat(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.read_link(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.entry(n, &rel)), bad, "{n:?}");
+            assert_eq!(kind(dir.mkdir_replacing(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.symlink(os("t"), n)), bad, "{n:?}");
+            assert_eq!(kind(dir.create_special(n, &e)), bad, "{n:?}");
+            assert_eq!(kind(dir.rename(n, &other, os("ok"))), bad, "{n:?}");
+            assert_eq!(kind(dir.rename(os("ok"), &other, n)), bad, "{n:?}");
+            assert_eq!(kind(dir.unlink(n)), bad, "{n:?}");
+            assert_eq!(kind(dir.apply_node_metadata(n, &e, &opts)), bad, "{n:?}");
+        }
+    }
+
+    #[test]
+    fn mkdir_replacing_replaces_a_symlink_without_following() {
+        let (d, out, dir) = setup();
+        std::fs::write(out.path().join("keep"), b"x").unwrap();
+        symlink(out.path(), d.path().join("n")).unwrap();
+        std::fs::write(d.path().join("f"), b"x").unwrap();
+        dir.mkdir_replacing(os("n")).unwrap();
+        dir.mkdir_replacing(os("f")).unwrap();
+        dir.mkdir_replacing(os("fresh")).unwrap();
+        dir.mkdir_replacing(os("fresh")).unwrap();
+        for n in ["n", "f", "fresh"] {
+            let m = std::fs::symlink_metadata(d.path().join(n)).unwrap();
+            assert!(m.is_dir(), "{n}");
+        }
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 1);
+        assert!(out.path().join("keep").exists());
+    }
+
+    #[test]
+    fn rename_moves_between_two_dirs() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("a")).unwrap();
+        std::fs::create_dir(d.path().join("b")).unwrap();
+        std::fs::write(d.path().join("a/f"), b"x").unwrap();
+        let root = Root::open(d.path()).unwrap();
+        let a = root.dir(&r(b"a"), Missing::Refuse).unwrap();
+        let b = root.dir(&r(b"b"), Missing::Refuse).unwrap();
+        a.rename(os("f"), &b, os("g")).unwrap();
+        assert!(!d.path().join("a/f").exists());
+        assert_eq!(std::fs::read(d.path().join("b/g")).unwrap(), b"x");
+        b.symlink(os("g"), os("l")).unwrap();
+        assert_eq!(b.read_link(os("l")).unwrap(), b"g");
+        b.unlink(os("l")).unwrap();
+        b.unlink(os("g")).unwrap();
+        assert_eq!(kind(b.unlink(os("g"))), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn entry_matches_lstat_entry_with_ctime() {
+        use crate::fs::meta::lstat_entry_with_ctime;
+        let (d, out, dir) = setup();
+        std::fs::write(d.path().join("file"), b"hello").unwrap();
+        std::fs::create_dir(d.path().join("folder")).unwrap();
+        symlink(out.path(), d.path().join("link")).unwrap();
+        nix::unistd::mkfifo(&d.path().join("fifo"), Mode::from_bits_truncate(0o644)).unwrap();
+        for n in ["file", "folder", "link", "fifo"] {
+            let rel = r(n.as_bytes());
+            let want = lstat_entry_with_ctime(d.path(), &rel).unwrap();
+            assert_eq!(dir.entry(os(n), &rel).unwrap(), want, "{n}");
+        }
+        let link = dir.entry(os("link"), &r(b"link")).unwrap().0;
+        assert_eq!(link.link_target, out.path().as_os_str().as_bytes());
+    }
+
+    #[test]
+    fn create_special_makes_a_fifo() {
+        let (d, _out, dir) = setup();
+        let e = entry_with(Kind::Fifo, 0o644, 0);
+        dir.create_special(os("p"), &e).unwrap();
+        let m = std::fs::symlink_metadata(d.path().join("p")).unwrap();
+        assert!(std::os::unix::fs::FileTypeExt::is_fifo(&m.file_type()));
+        assert_eq!(
+            kind(dir.create_special(os("q"), &entry_with(Kind::Regular, 0o644, 0))),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn apply_metadata_sets_the_folder_through_its_handle() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let root = Root::open(d.path()).unwrap();
+        let sub = root.dir(&r(b"sub"), Missing::Refuse).unwrap();
+        let e = entry_with(Kind::Directory, 0o750, 1_600_000_000);
+        let opts = ApplyOpts {
+            perms: true,
+            times: true,
+            ..Default::default()
+        };
+        sub.apply_metadata(&e, &opts).unwrap();
+        let m = std::fs::metadata(d.path().join("sub")).unwrap();
+        assert_eq!(m.permissions().mode() & 0o7777, 0o750);
+        assert_eq!(m.mtime(), 1_600_000_000);
+    }
+
+    #[test]
+    fn apply_node_metadata_never_reaches_a_symlink_target() {
+        let (d, out, dir) = setup();
+        let target = out.path().join("o");
+        std::fs::write(&target, b"x").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        nix::sys::stat::utimensat(
+            AT_FDCWD,
+            &target,
+            &TimeSpec::new(1, 0),
+            &TimeSpec::new(1, 0),
+            nix::sys::stat::UtimensatFlags::FollowSymlink,
+        )
+        .unwrap();
+        symlink(&target, d.path().join("n")).unwrap();
+        let opts = ApplyOpts {
+            perms: true,
+            times: true,
+            ..Default::default()
+        };
+        // The entry says FIFO, but the name is a symlink: nothing may follow it.
+        let _ = dir.apply_node_metadata(os("n"), &entry_with(Kind::Fifo, 0o644, 2), &opts);
+        let m = std::fs::metadata(&target).unwrap();
+        assert_eq!(m.permissions().mode() & 0o7777, 0o600);
+        assert_eq!(m.mtime(), 1);
+        // Honest use: a real FIFO gets its mode and time.
+        let fifo = entry_with(Kind::Fifo, 0o640, 5);
+        dir.create_special(os("p"), &fifo).unwrap();
+        dir.apply_node_metadata(os("p"), &fifo, &opts).unwrap();
+        let m = std::fs::symlink_metadata(d.path().join("p")).unwrap();
+        assert_eq!(m.permissions().mode() & 0o7777, 0o640);
+        assert_eq!(m.mtime(), 5);
     }
 }
