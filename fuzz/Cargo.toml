@@ -26,10 +26,10 @@ tempfile = "3"
 
 # The same iroh as the main workspace (see the patch in ../Cargo.toml).
 [patch.crates-io]
-iroh = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-dns = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
 
 [profile.release]
 debug = 1

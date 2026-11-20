@@ -17,12 +17,6 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
-    # noq-proto 1.4.0 closes connections whose reader falls behind (see
-    # Cargo.toml). A later release is proposed as usual, and the tests
-    # decide.
-    ignore:
-      - dependency-name: noq-proto
-        versions: ["1.4.0"]
 
   # The fuzz targets (fuzz/) have a Cargo.lock of their own.
   - package-ecosystem: cargo
@@ -34,10 +28,6 @@ updates:
     groups:
       fuzz:
         patterns: ["*"]
-    # As above.
-    ignore:
-      - dependency-name: noq-proto
-        versions: ["1.4.0"]
 
   - package-ecosystem: github-actions
     directory: /

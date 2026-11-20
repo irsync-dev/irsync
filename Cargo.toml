@@ -24,18 +24,15 @@ prost-reflect = "0.16"
 prost-build = "0.14"
 protox = "0.10"
 tokio = { version = "1", features = ["full"] }
-iroh = "1.3"
-iroh-base = "1.3"
+iroh = "1.5"
+iroh-base = "1.5"
 n0-watcher = "1"
 noq-udp = { version = "1.4", default-features = false }
-# Held below 1.4: noq-proto 1.4.0 closes the connection ("too many gaps in
-# stream buffer") once about 2000 full packets wait unread on one stream,
-# with or without loss: it never merges them. That is under 3 MiB of our
-# 8 MiB stream window, so any reader that falls behind ends the session;
-# `backpressure.rs` and `blocking_pool.rs` hit it. Fixed upstream in
-# n0-computer/noq#866, not yet released. .github/dependabot.yml ignores
-# that version; lift both together.
-noq-proto = "~1.3"
+# Not 1.4.0: it closes the connection ("too many gaps in stream buffer")
+# once about 2000 full packets wait unread on one stream, so any reader
+# that falls behind ends the session; `backpressure.rs` and
+# `blocking_pool.rs` hit it. Fixed in 1.5.0 (n0-computer/noq#866).
+noq-proto = "1.5"
 iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
 fastcdc = "5"
@@ -88,15 +85,16 @@ serde-saphyr = { version = "2.1", default-features = false, features = ["seriali
 unicode-normalization = "0.1"
 libc = "0.2"
 
-# iroh 1.3.0 plus one fix: noq reads tokio's clock, so tests on tokio's
-# paused clock can skip ahead (n0-computer/iroh#4676). Drop this once a
+# iroh 1.5.0 plus one commit, taken from upstream: noq reads tokio's
+# clock, so tests on tokio's paused clock can skip ahead
+# (n0-computer/iroh#4677, merged right after 1.5.0). Drop this once a
 # release has it. The other crates come from the same commit so that each
 # has one source.
 [patch.crates-io]
-iroh = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-base = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-dns = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
-iroh-relay = { git = "https://github.com/irsync-dev/iroh", rev = "28466cc54f86df7a587249f8d54fb747988a3d3f" }
+iroh = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-base = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-dns = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
 
 # Debug and test builds keep only what a backtrace needs: file names and
 # line numbers. Full debug info tripled the time to link the test binaries

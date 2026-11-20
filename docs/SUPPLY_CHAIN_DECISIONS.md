@@ -78,13 +78,13 @@ differ, the code is what shipped.
    platforms irsync is built for count (`targets` in `deny.toml`); the
    licenses of all the others are still checked before a release
    (`deny-license-check.toml`). Cost if wrong: a platform we build for
-   but forgot to list goes unchecked. Accepted today:
-   - `paste` (RUSTSEC-2024-0436): unmaintained, with no known hole. A
-     build-time macro reached through iroh.
+   but forgot to list goes unchecked. Nothing is accepted today.
 
-   `unsafe-libyaml` (RUSTSEC-2024-0449) was accepted here until `filegen`
-   moved to a YAML library written in safe Rust (`serde-saphyr`), which
-   removed it from the build.
+   Two advisories were accepted here until their crates left the build:
+   `unsafe-libyaml` (RUSTSEC-2024-0449), when `filegen` moved to a YAML
+   library written in safe Rust (`serde-saphyr`), and `paste`
+   (RUSTSEC-2024-0436), a build-time macro, when iroh 1.5 brought a
+   `netwatch` that no longer uses it.
 
    Cost if wrong: a known hole ships.
 

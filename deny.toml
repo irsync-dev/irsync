@@ -26,9 +26,7 @@ version = 2
 #   { id = "RUSTSEC-2026-0000", reason = "no fixed version yet; irsync never calls foo()" },
 yanked = "deny"
 unmaintained = "all"
-ignore = [
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
-]
+ignore = []
 
 [licenses]
 version = 2
@@ -60,10 +58,10 @@ allow = [
 confidence-threshold = 0.9
 
 [sources]
-# crates.io, and our iroh fork (pinned to a commit in Cargo.toml). Nothing else.
+# crates.io, and upstream iroh (pinned to a commit in Cargo.toml). Nothing else.
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/irsync-dev/iroh"]
+allow-git = ["https://github.com/n0-computer/iroh"]
 
 [bans]
 multiple-versions = "warn"
