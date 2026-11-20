@@ -220,6 +220,8 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
         return Vec::new();
     }
     let mut lines = vec![rule(g)];
+    let heading = session_line(live, g);
+    lines.extend(heading.clone());
     lines.push(list_line(live, g));
     lines.push(transfer_line(live, g, now));
     let ended_failed = live.transfer_done && live.session_failed;
@@ -229,7 +231,8 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
         .map(|d| delete_line(d, ended_failed, g));
     let errors = error_lines(live, g);
 
-    let fixed = 1 + 2 + usize::from(delete.is_some()) + 1 + errors.len();
+    let fixed =
+        1 + usize::from(heading.is_some()) + 2 + usize::from(delete.is_some()) + 1 + errors.len();
     let cap = (g.height / 2).saturating_sub(fixed).max(3);
     let mut rows: Vec<(&RelPath, &Row)> = live.rows.iter().filter(|(_, r)| r.shown()).collect();
     order_rows(&mut rows, cap, now);
@@ -301,6 +304,16 @@ fn order_rows(rows: &mut [(&RelPath, &Row)], cap: usize, now: Instant) {
             .cmp(&activity(b.1, now))
             .then_with(|| by_size(a, b))
     });
+}
+
+/// `session 2/3  ./photos -> nas:/backup`: which source the block is for,
+/// in the words of the `-vv` summary. Only in a run of several sources
+/// (one session each), where the blocks could not be told apart.
+fn session_line(live: &Live, g: &Geometry) -> Option<String> {
+    let (index, of) = live.session;
+    let (from, to) = live.operands.as_ref().filter(|_| of > 1)?;
+    let text = format!("session {}/{of}  {from} -> {to}", index + 1);
+    Some(plain_line(text, g))
 }
 
 fn has_activity(live: &Live) -> bool {

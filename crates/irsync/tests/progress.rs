@@ -43,6 +43,16 @@ fn arch() -> Preserve {
     }
 }
 
+/// Session `index` of `of`: source `src0`, `src1`… to `nas:/backup`.
+fn session_start(index: usize, of: usize) -> Event {
+    Event::SessionStart {
+        index,
+        of,
+        from: format!("src{index}"),
+        to: "nas:/backup".into(),
+    }
+}
+
 fn rp(s: &str) -> RelPath {
     RelPath::new(s.as_bytes()).unwrap()
 }
@@ -370,7 +380,7 @@ async fn plain_reporter_output_is_unchanged_with_new_events() {
                 done: 0,
                 total: Some(1),
             },
-            Event::SessionStart { index: 0, of: 1 },
+            session_start(0, 1),
             Event::Failed(rp("b"), "boom".into()),
             Event::FileDone(rp("a"), 10),
         ],
@@ -407,7 +417,7 @@ async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
     let mut r = feed(
         reporter(&buf, true, 0, false, false),
         vec![
-            Event::SessionStart { index: 0, of: 2 },
+            session_start(0, 2),
             Event::Total {
                 party: Party::Local,
                 files: 1,
@@ -416,7 +426,7 @@ async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
             Event::FileStart(rp("a"), 5),
             Event::FileBytes(rp("a"), 5),
             Event::FileDone(rp("a"), 5),
-            Event::SessionStart { index: 1, of: 2 },
+            session_start(1, 2),
             Event::FileStart(rp("b"), 7),
         ],
     )
@@ -429,6 +439,15 @@ async fn a_second_session_leaves_the_first_ones_done_lines_in_the_scrollback() {
         .find("transfer  done")
         .expect("first session's done line printed");
     assert!(t[first_done..].contains("1 files"), "{t:?}");
+    // Its heading says which source the lines are for.
+    let heading = t
+        .find("session 1/2  src0 -> nas:/backup")
+        .expect("first session's heading printed");
+    assert!(heading < first_done, "{t:?}");
+    assert!(
+        f[1].starts_with("session 2/2  src1 -> nas:/backup"),
+        "{f:?}"
+    );
     r.finish(&Outcome::default(), Duration::from_secs(1));
 }
 
@@ -438,9 +457,9 @@ async fn the_last_of_several_sessions_leaves_its_done_lines_too() {
     let mut r = feed(
         reporter(&buf, true, 0, false, false),
         vec![
-            Event::SessionStart { index: 0, of: 2 },
+            session_start(0, 2),
             Event::FileDone(rp("a"), 5),
-            Event::SessionStart { index: 1, of: 2 },
+            session_start(1, 2),
             Event::Total {
                 party: Party::Local,
                 files: 2,
@@ -476,6 +495,7 @@ async fn the_last_of_several_sessions_leaves_its_done_lines_too() {
         "{t:?}"
     );
     assert!(printed("list      done", "2 entries  14"), "{t:?}");
+    assert!(printed("session 2/2", "src1 -> nas:/backup"), "{t:?}");
 }
 
 #[test]
@@ -621,7 +641,7 @@ async fn no_summary_without_verbose() {
     let buf = Buf::default();
     let r = reporter(&buf, false, 0, true, false);
     let events = (0..2)
-        .flat_map(|i| [Event::SessionStart { index: i, of: 2 }, summary(i, 2)])
+        .flat_map(|i| [session_start(i, 2), summary(i, 2)])
         .collect();
     let mut r = feed(r, events).await;
     let out = Outcome {
@@ -640,7 +660,7 @@ async fn no_summary_without_verbose() {
 async fn a_summary_per_session_prints_above_the_trailer_under_vv() {
     let buf = Buf::default();
     let events = (0..3)
-        .flat_map(|i| [Event::SessionStart { index: i, of: 3 }, summary(i, 3)])
+        .flat_map(|i| [session_start(i, 3), summary(i, 3)])
         .collect();
     let mut r = feed(reporter(&buf, false, 2, false, false), events).await;
     r.finish(&Outcome::default(), Duration::from_secs(1));
@@ -654,7 +674,7 @@ async fn a_summary_per_session_prints_above_the_trailer_under_vv() {
 #[tokio::test]
 async fn v_alone_prints_no_session_summary() {
     let buf = Buf::default();
-    let events = vec![Event::SessionStart { index: 0, of: 1 }, summary(0, 1)];
+    let events = vec![session_start(0, 1), summary(0, 1)];
     let mut r = feed(reporter(&buf, false, 1, false, false), events).await;
     r.finish(&Outcome::default(), Duration::from_secs(1));
     let t = buf.text();
@@ -729,12 +749,12 @@ async fn a_failed_session_leaves_failed_not_done() {
         let mut r = feed(
             reporter(&buf, true, 0, false, false),
             vec![
-                Event::SessionStart { index: 0, of: 2 },
+                session_start(0, 2),
                 Event::FileStart(rp("a"), 5),
                 Event::FileBytes(rp("a"), 5),
                 Event::FileDone(rp("a"), 5),
                 session_end(0, 2, failed_at == 0),
-                Event::SessionStart { index: 1, of: 2 },
+                session_start(1, 2),
                 Event::FileStart(rp("b"), 7),
                 Event::FileBytes(rp("b"), 7),
                 Event::FileDone(rp("b"), 7),
@@ -765,10 +785,10 @@ async fn a_failed_session_does_not_show_its_delete_pass_as_done() {
     let mut r = feed(
         r,
         vec![
-            Event::SessionStart { index: 0, of: 2 },
+            session_start(0, 2),
             Event::FileDone(rp("a"), 5),
             session_end(0, 2, true),
-            Event::SessionStart { index: 1, of: 2 },
+            session_start(1, 2),
             Event::FileDone(rp("b"), 7),
             session_end(1, 2, false),
         ],

@@ -562,10 +562,13 @@ pub enum Event {
         done: u64,
         total: Option<u64>,
     },
-    /// A new session (one source) starts: its 0-based index and the count.
+    /// A new session (one source) starts: its 0-based index, the count,
+    /// and the source and destination operands as typed.
     SessionStart {
         index: usize,
         of: usize,
+        from: String,
+        to: String,
     },
     /// A session (one source) ended, well or not: where its time went.
     SessionEnd(std::sync::Arc<crate::cli::progress::summary::SessionSummary>),

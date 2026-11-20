@@ -184,6 +184,9 @@ pub struct Live {
     pub session_failed: bool,
     /// (index, of)
     pub session: (usize, usize),
+    /// The session's source and destination operands as typed, once it
+    /// has started.
+    pub operands: Option<(String, String)>,
     pub start: Instant,
     /// `Failed` events over the whole run (every session).
     pub failed: u64,
@@ -212,6 +215,7 @@ impl Live {
             transfer_done: false,
             session_failed: false,
             session: (0, 1),
+            operands: None,
             start,
             failed: 0,
             recent_errors: VecDeque::new(),
@@ -437,11 +441,17 @@ impl Live {
                 }
             }
             Event::SessionEnd(s) => self.session_failed = s.failed,
-            Event::SessionStart { index, of } => {
+            Event::SessionStart {
+                index,
+                of,
+                from,
+                to,
+            } => {
                 if *index > 0 {
                     self.reset(now);
                 }
                 self.session = (*index, *of);
+                self.operands = Some((from.clone(), to.clone()));
             }
             Event::Conn(c) => {
                 if matches!(c, ConnState::Reconnecting { .. }) {

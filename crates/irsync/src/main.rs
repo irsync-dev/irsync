@@ -979,7 +979,14 @@ async fn sync(
     let (mut sessions, mut failed) = (0, 0);
     let of = pairs.len();
     for (index, (src, dst)) in pairs.into_iter().enumerate() {
-        bus.emit(Event::SessionStart { index, of });
+        let operand_from = args.sync_args().src()[index].clone();
+        let operand_to = args.sync_args().dest().unwrap_or_default().to_string();
+        bus.emit(Event::SessionStart {
+            index,
+            of,
+            from: operand_from.clone(),
+            to: operand_to.clone(),
+        });
         let (opts, settings, host_entry) = (&conn.opts, &conn.settings, conn.host_entry.as_ref());
         let (local, remote) = match direction {
             Direction::ClientSends => (src, dst),
@@ -1040,8 +1047,6 @@ async fn sync(
         };
         sessions += 1;
         let started = Instant::now();
-        let operand_from = args.sync_args().src()[index].clone();
-        let operand_to = args.sync_args().dest().unwrap_or_default().to_string();
         // Why checking the host over ssh failed, while the daemon is tried
         // once more.
         let mut ssh_failed: Option<anyhow::Error> = None;
