@@ -26,6 +26,10 @@ How keys, grants and relays work is explained in
 [Identity and trust](https://irsync.org/book/explanation/identity-and-trust)
 and [Connections](https://irsync.org/book/explanation/connections).
 
+Who can send irsync data, what stops each of them, and what irsync does not
+defend against is in the
+[Threat model](https://irsync.org/dev/explanation/threat-model).
+
 ## How releases are built
 
 Every release is built by GitHub Actions from a tag that can't be moved
