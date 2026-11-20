@@ -1145,3 +1145,68 @@ fn chunk_list_with_tiny_chunks_is_refused() {
         "{err}"
     );
 }
+
+fn names_in(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut names: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The file's directory is swapped for a link out of the tree after the
+/// writer was opened (a second session of the same peer can do that).
+/// Nothing is created out there: not the `.part`, not a directory.
+#[tokio::test]
+async fn a_directory_swapped_for_a_link_gets_no_part_file() {
+    let e = env();
+    let outside = tempfile::tempdir().unwrap();
+    let data = content(81);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    fs::remove_dir(e.root.join("dir")).unwrap();
+    symlink(outside.path(), e.root.join("dir")).unwrap();
+    let err = w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap_err();
+    assert!(format!("{err:?}").contains("symlink"), "{err:?}");
+    assert!(names_in(outside.path()).is_empty());
+}
+
+/// The swap comes after the data is written: the file is not renamed into
+/// the directory the link leads to, and a file of that name there stays.
+#[tokio::test]
+async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
+    let e = env();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("f.bin"), b"keep").unwrap();
+    let data = content(83);
+    let cl = chunk_list(&data);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    fs::rename(e.root.join("dir"), e.root.join("moved")).unwrap();
+    symlink(outside.path(), e.root.join("dir")).unwrap();
+    assert!(w.finalize(&entry(data.len() as u64), &OPTS).await.is_err());
+    assert_eq!(names_in(outside.path()), ["f.bin"]);
+    assert_eq!(fs::read(outside.path().join("f.bin")).unwrap(), b"keep");
+}
+
+/// A relative partial dir is a path below the root like any other: a link
+/// at its name is not followed, so no `.part` and no directory is made
+/// where it leads.
+#[tokio::test]
+async fn a_partial_dir_that_is_a_link_is_not_followed() {
+    let e = env();
+    let outside = tempfile::tempdir().unwrap();
+    symlink(outside.path(), e.root.join("p")).unwrap();
+    let data = content(85);
+    let cl = chunk_list(&data);
+    let pd = irsync::recv::PartialDir::new(Path::new("p"));
+    let opened = FileWriter::open(&e.root, &rel(), &cl, Some(&pd), e.index.clone());
+    let failed = match opened {
+        Err(_) => true,
+        Ok(mut w) => w.write_chunk(0, piece(&data, &cl, 0)).await.is_err(),
+    };
+    assert!(failed, "the write went through the link");
+    assert!(names_in(outside.path()).is_empty());
+    assert!(!final_path(&e.root).exists());
+}

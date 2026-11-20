@@ -45,7 +45,11 @@ impl Receiver {
         let phase = self.ctx.phase(PhaseKind::Delete);
         phase.span().record("mode", format!("{:?}", pass.mode()));
         let executed = pass
-            .execute(self.ctx.root.clone(), incomplete)
+            .execute_below(
+                self.ctx.base.clone(),
+                self.ctx.scope.prefix.clone(),
+                incomplete,
+            )
             .instrument(phase.span().clone())
             .await;
         drop(phase);

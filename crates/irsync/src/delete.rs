@@ -238,6 +238,21 @@ impl DeletePass {
         root: PathBuf,
         listing_incomplete: bool,
     ) -> Result<DeleteReport, DeleteRefused> {
+        self.execute_below(root, RelPath::root(), listing_incomplete)
+            .await
+    }
+
+    /// [`DeletePass::execute`] for a tree at `prefix` below `base`: every
+    /// removal opens its directory from `base`, so no component of
+    /// `prefix` is followed as a symlink either. A daemon's session root
+    /// lies below its export, and the other side may have changed what is
+    /// on the way since the session began.
+    pub async fn execute_below(
+        self,
+        root: PathBuf,
+        prefix: RelPath,
+        listing_incomplete: bool,
+    ) -> Result<DeleteReport, DeleteRefused> {
         if self.unreliable || (listing_incomplete && !self.ignore_errors) {
             tracing::warn!(
                 candidates = self.candidates.len(),
@@ -245,14 +260,14 @@ impl DeletePass {
             );
             return Err(DeleteRefused);
         }
-        let res = tokio::task::spawn_blocking(move || self.run(&root)).await;
+        let res = tokio::task::spawn_blocking(move || self.run(&root, &prefix)).await;
         Ok(res.unwrap_or_else(|e| DeleteReport {
             errors: vec![(RelPath::root(), format!("deletion pass failed: {e}"))],
             ..DeleteReport::default()
         }))
     }
 
-    fn run(mut self, root: &Path) -> DeleteReport {
+    fn run(mut self, root: &Path, prefix: &RelPath) -> DeleteReport {
         // Deepest first; among equals, reverse path order (children before
         // their directory however the names sort).
         self.candidates.sort_by(|(a, _), (b, _)| {
@@ -289,7 +304,7 @@ impl DeletePass {
                     count += 1;
                     break 'one;
                 }
-                match remove_one(root, &path, &mut parent) {
+                match remove_one(root, &below(prefix, &path), &mut parent) {
                     Ok(true) => {
                         tracing::info!(?path, "deleted");
                         rep.deleted.push(path);
@@ -376,6 +391,17 @@ fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// `path` below `prefix`.
+fn below(prefix: &RelPath, path: &RelPath) -> RelPath {
+    match (prefix.as_bytes(), path.as_bytes()) {
+        ([], _) => path.clone(),
+        (_, []) => prefix.clone(),
+        (a, b) => {
+            RelPath::new(&[a, b"/", b].concat()).expect("joining canonical paths stays canonical")
+        }
+    }
+}
+
 /// Removes one path relative to its parent directory, which is opened from
 /// `root` component by component with `O_NOFOLLOW` (see
 /// [`open_dir_beneath`]) and held while the path is checked and removed: a
@@ -460,6 +486,50 @@ mod tests {
         let order: Vec<&[u8]> = rep.deleted.iter().map(|p| p.as_bytes()).collect();
         assert_eq!(order, [&b"d/e/f"[..], b"d/g", b"d/e", b"h", b"d"]);
         assert_eq!(std::fs::read_dir(t.path()).unwrap().count(), 0);
+    }
+
+    /// A daemon's session root lies below its export. If a component of it
+    /// is swapped for a link after the session began, the pass must not
+    /// delete in the tree the link leads to.
+    #[tokio::test]
+    async fn a_session_root_swapped_for_a_link_is_not_deleted_through() {
+        let (export, outside) = (tempfile::tempdir().unwrap(), tree());
+        // The candidates were collected from the real session root `s`.
+        std::fs::create_dir(export.path().join("s")).unwrap();
+        let mut p = pass(None, false, false);
+        plan_all(&mut p);
+        std::fs::remove_dir(export.path().join("s")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), export.path().join("s")).unwrap();
+
+        let rep = p
+            .execute_below(export.path().to_path_buf(), rel("s"), false)
+            .await
+            .unwrap();
+        assert!(rep.deleted.is_empty(), "{:?}", rep.deleted);
+        assert!(!rep.errors.is_empty());
+        for kept in ["d/e/f", "d/g", "h"] {
+            assert!(outside.path().join(kept).exists(), "{kept} was deleted");
+        }
+
+        // Below a real directory the same pass deletes.
+        let export = tempfile::tempdir().unwrap();
+        std::fs::create_dir(export.path().join("s")).unwrap();
+        std::fs::create_dir_all(export.path().join("s/d/e")).unwrap();
+        std::fs::write(export.path().join("s/d/e/f"), b"f").unwrap();
+        std::fs::write(export.path().join("s/d/g"), b"g").unwrap();
+        std::fs::write(export.path().join("s/h"), b"h").unwrap();
+        let mut p = pass(None, false, false);
+        plan_all(&mut p);
+        let rep = p
+            .execute_below(export.path().to_path_buf(), rel("s"), false)
+            .await
+            .unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert_eq!(rep.deleted.len(), 5);
+        assert_eq!(
+            std::fs::read_dir(export.path().join("s")).unwrap().count(),
+            0
+        );
     }
 
     #[tokio::test]
