@@ -498,8 +498,38 @@ impl Root {
     }
 
     /// The folder `rel` below the root; `RelPath::root()` is the root itself.
+    ///
+    /// The walk starts from the deepest folder already open. A cached handle
+    /// follows its folder, not its name: if that folder was removed (and
+    /// maybe made again), the walk from it fails with `NotFound`. Then the
+    /// cached handles under `rel`'s top folder are dropped and the walk
+    /// starts again once from the root; its `NotFound` is the answer.
     pub fn dir(&self, rel: &RelPath, missing: Missing) -> io::Result<Dir> {
-        let root_fd = self.root_fd()?;
+        match self.walk(rel, missing, true) {
+            Err((e, true)) if e.kind() == io::ErrorKind::NotFound => {
+                if let Some(top) = rel.components().next() {
+                    self.forget(
+                        &RelPath::root()
+                            .join(top)
+                            .expect("a component of a RelPath is valid"),
+                    );
+                }
+                self.walk(rel, missing, false).map_err(|(e, _)| e)
+            }
+            r => r.map_err(|(e, _)| e),
+        }
+    }
+
+    /// [`Root::dir`]'s walk, from the deepest cached folder when `cached`,
+    /// else from the root. A failure says whether the walk started from a
+    /// cached folder.
+    fn walk(
+        &self,
+        rel: &RelPath,
+        missing: Missing,
+        cached: bool,
+    ) -> Result<Dir, (io::Error, bool)> {
+        let root_fd = self.root_fd().map_err(|e| (e, false))?;
         if rel.as_bytes().is_empty() {
             return Ok(Dir {
                 fd: root_fd,
@@ -507,10 +537,9 @@ impl Root {
             });
         }
         let total = rel.components().count();
-        // Start from the deepest folder already open.
         let mut start = (RelPath::root(), root_fd);
         let mut skip = 0;
-        {
+        if cached {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             let mut prefix = rel.clone();
             let mut depth = total;
@@ -535,7 +564,7 @@ impl Root {
         let (mut at, mut fd) = start;
         for name in rel.components().skip(skip) {
             at = at.join(name).expect("a component of a RelPath is valid");
-            let next = Arc::new(open_child(&fd, name, rel, missing)?);
+            let next = Arc::new(open_child(&fd, name, rel, missing).map_err(|e| (e, skip > 0))?);
             opened.push((at.clone(), next.clone()));
             fd = next;
         }
@@ -688,6 +717,25 @@ mod tests {
             &root.dir(&r(b"f/x"), Missing::Refuse).err().unwrap()
         ));
         assert!(!is_not_a_folder(&io::Error::other("other")));
+    }
+
+    #[test]
+    fn a_walk_from_a_stale_cached_folder_starts_again_from_the_root() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("d")).unwrap();
+        let root = Root::open(d.path()).unwrap();
+        root.dir(&r(b"d"), Missing::Refuse).unwrap();
+        assert_eq!(root.cached(), 1);
+        std::fs::remove_dir(d.path().join("d")).unwrap();
+        std::fs::create_dir(d.path().join("d")).unwrap();
+        let e = root.dir(&r(b"d/e"), Missing::Create).unwrap();
+        assert!(d.path().join("d/e").is_dir(), "not made in the new d");
+        let got = nix::sys::stat::fstat(e.as_fd()).unwrap().st_ino;
+        assert_eq!(got, std::fs::metadata(d.path().join("d/e")).unwrap().ino());
+        assert_eq!(
+            kind(root.dir(&r(b"d/x"), Missing::Refuse)),
+            io::ErrorKind::NotFound
+        );
     }
 
     #[test]

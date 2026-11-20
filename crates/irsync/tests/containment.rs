@@ -641,6 +641,33 @@ async fn a_folder_made_again_mid_session_still_takes_files() {
 }
 
 #[tokio::test]
+async fn a_folder_made_again_mid_session_takes_files_in_a_new_subfolder() {
+    // `d` is open from the first file; made again without `e`, the
+    // second file's folder `d/e` is made in the new `d`.
+    let h = Harness::new().await;
+    fs::create_dir_all(h.local.path().join("d/e")).unwrap();
+    fs::write(h.local.path().join("d/a"), bytes(100_000, 10)).unwrap();
+    fs::write(h.local.path().join("d/e/b"), bytes(100_000, 11)).unwrap();
+    let export = h.export.path().to_path_buf();
+    let fired = Arc::new(AtomicBool::new(false));
+    let f = fired.clone();
+    let hook: irsync::session::EventHook = Arc::new(move |event: &str, path: &RelPath| {
+        if event == "part-open" && path.as_bytes() == b"d/e/b" && !f.swap(true, Ordering::SeqCst) {
+            fs::remove_dir_all(export.join("d")).unwrap();
+            fs::create_dir(export.join("d")).unwrap();
+        }
+    });
+    h.daemon.hooks.lock().unwrap().max_inflight = Some(1);
+    let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(
+        fs::read(h.export.path().join("d/e/b")).unwrap(),
+        bytes(100_000, 11)
+    );
+}
+
+#[tokio::test]
 async fn a_folder_made_again_before_placing_still_takes_files() {
     // With the parts kept elsewhere, the destination folder is opened at
     // the rename: `d` removed and made again after the first file was

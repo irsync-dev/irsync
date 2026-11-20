@@ -199,13 +199,13 @@ impl PartialDir {
 /// Where a file and its part file live: each a folder below a root, and a
 /// name in it. Nothing is opened here; the folders are opened when needed.
 #[derive(Clone)]
-pub struct Place {
-    pub root: Arc<Root>,
-    pub dest_dir_rel: RelPath,
-    pub dest_name: OsString,
-    pub part_root: Arc<Root>,
-    pub part_dir_rel: RelPath,
-    pub part_name: OsString,
+struct Place {
+    root: Arc<Root>,
+    dest_dir_rel: RelPath,
+    dest_name: OsString,
+    part_root: Arc<Root>,
+    part_dir_rel: RelPath,
+    part_name: OsString,
 }
 
 /// Where `rel` below `root` and its `.part` go.
@@ -286,17 +286,14 @@ impl Place {
     }
 }
 
-/// Drops the cached handles of `rel`'s top folder and everything below it,
-/// so the next use opens the folders by name again. A cached handle follows
-/// its folder, not the name: once the folder was removed (and maybe made
-/// again), a new file cannot be made in it.
+/// Drops the cached handle of the folder `rel` (and those below it), so
+/// the next use opens it by name again. A held handle follows its folder,
+/// not the name: once the folder was removed (and maybe made again), no new
+/// file can be made in it. ([`Root::dir`] itself starts again from the
+/// root when a cached folder on the way is gone.)
 fn forget_folder(root: &Root, rel: &RelPath) {
-    if let Some(top) = rel.components().next() {
-        root.forget(
-            &RelPath::root()
-                .join(top)
-                .expect("a component of a RelPath is valid"),
-        );
+    if !rel.as_bytes().is_empty() {
+        root.forget(rel);
     }
 }
 
@@ -578,9 +575,10 @@ fn rename_into_place(
 ) -> io::Result<()> {
     let rename = |dest_dir: Dir| part_dir.rename(&place.part_name, &dest_dir, &place.dest_name);
     let mut res = place.dest_dir(part_dir).and_then(rename);
+    // A failing check means no retry: the rename's own error is reported.
     if matches!(&res, Err(e) if e.kind() == io::ErrorKind::NotFound)
         && !place.same_dir()
-        && names_file(held, part_dir, &place.part_name)?
+        && names_file(held, part_dir, &place.part_name).unwrap_or(false)
     {
         forget_folder(&place.root, &place.dest_dir_rel);
         res = place.dest_dir(part_dir).and_then(rename);
