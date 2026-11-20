@@ -888,7 +888,7 @@ pub(super) async fn replan(
     entry: &FileEntry,
     links_known: bool,
 ) -> io::Result<Replanned> {
-    let (root, rel) = (ctx.root.clone(), path.clone());
+    let (root, rel) = (ctx.session_root.clone(), path.clone());
     let dst = blocking(
         move || match crate::fs::meta::lstat_entry_with_ctime(&root, &rel) {
             Ok((entry, _)) => Ok(Some(entry)),

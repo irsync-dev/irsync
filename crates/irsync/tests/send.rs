@@ -70,7 +70,11 @@ async fn fixture() -> Fixture {
     let idx = Index::open(state.path(), root.path())
         .unwrap()
         .into_handle();
-    let hasher = Arc::new(Hasher::new(idx, root.path().to_path_buf(), 2));
+    let hasher = Arc::new(Hasher::new(
+        idx,
+        irsync::fs::beneath::Root::open(root.path()).unwrap(),
+        2,
+    ));
     let (a, b) = loopback_pair().await;
     let (client, server) = connect_pair(&a, &b).await;
     Fixture {
@@ -92,7 +96,7 @@ fn sender(f: &Fixture, parallel: usize, split: u64, bw: Option<u64>) -> Sender {
     Sender::new(
         f.client.clone(),
         [7; 16],
-        f.root.path().to_path_buf(),
+        irsync::fs::beneath::Root::open(f.root.path()).unwrap(),
         f.hasher.clone(),
         parallel,
         split,

@@ -745,7 +745,7 @@ fn list_single(
     filters: &FilterSet,
     tx: &mpsc::Sender<ScanEvent>,
 ) -> ScanSummary {
-    use crate::fs::meta::lstat_entry_with_ctime;
+    use crate::scan::lstat_path;
     let mut sum = ScanSummary::default();
     let gap = |sum: &mut ScanSummary, path: RelPath, message: String| {
         sum.incomplete = true;
@@ -757,7 +757,7 @@ fn list_single(
             root = real;
         }
     }
-    match lstat_entry_with_ctime(&root, &RelPath::root()) {
+    match lstat_path(&root, &RelPath::root()) {
         Ok((entry, ctime)) => {
             sum.entries += 1;
             let _ = tx.try_send(ScanEvent::Entry(ScanItem {
@@ -771,7 +771,7 @@ fn list_single(
             return sum;
         }
     }
-    match lstat_entry_with_ctime(&root, &single.local) {
+    match lstat_path(&root, &single.local) {
         Ok((mut entry, ctime)) => {
             let is_dir = entry.kind() == Kind::Directory;
             if filters.matches(&single.local, is_dir) == Verdict::Exclude {

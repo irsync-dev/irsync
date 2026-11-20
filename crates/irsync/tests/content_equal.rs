@@ -270,7 +270,8 @@ async fn settling_in_place_discards_a_leftover_part_file() {
 fn plant_row(state: &Path, root: &Path, rel: &str, content: &[u8]) {
     use irsync::fs::meta::lstat_entry_with_ctime;
     let rel = irsync::fs::paths::RelPath::new(rel.as_bytes()).unwrap();
-    let (entry, ctime) = lstat_entry_with_ctime(root, &rel).unwrap();
+    let (entry, ctime) =
+        lstat_entry_with_ctime(&irsync::fs::beneath::Root::open(root).unwrap(), &rel).unwrap();
     let digest = irsync_proto::chunk::digest_bytes(content);
     irsync::index::Index::open(state, root)
         .unwrap()

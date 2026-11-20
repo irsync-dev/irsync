@@ -909,8 +909,9 @@ mod tests {
             eprintln!("skipping: {} cannot clone", target.display());
             return;
         };
-        let (entry, ctime) =
-            crate::fs::meta::lstat_entry_with_ctime(&src, &RelPath::root()).unwrap();
+        let root = crate::fs::beneath::Root::open(t.path()).unwrap();
+        let rel = RelPath::new(b"f").unwrap();
+        let (entry, ctime) = crate::fs::meta::lstat_entry_with_ctime(&root, &rel).unwrap();
         assert_eq!(c.stat, Freshness::of_entry(&entry, ctime));
         std::fs::write(&src, b"after!").unwrap();
         assert_eq!(std::fs::read(&c.path).unwrap(), b"before");

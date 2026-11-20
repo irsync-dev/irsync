@@ -1,3 +1,4 @@
+use irsync::fs::beneath::Root;
 use irsync::fs::meta::lstat_entry_with_ctime;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::Hasher;
@@ -23,7 +24,7 @@ fn set_mtime(path: &Path, sec: i64, nsec: i64) {
 
 fn item(root: &Path, name: &[u8]) -> ScanItem {
     let path = RelPath::new(name).unwrap();
-    let (entry, ctime) = lstat_entry_with_ctime(root, &path).unwrap();
+    let (entry, ctime) = lstat_entry_with_ctime(&Root::open(root).unwrap(), &path).unwrap();
     ScanItem { path, entry, ctime }
 }
 
@@ -33,7 +34,7 @@ fn setup() -> (tempfile::TempDir, tempfile::TempDir, Hasher) {
     let idx = Index::open(state.path(), root.path())
         .unwrap()
         .into_handle();
-    let h = Hasher::new(idx, root.path().to_path_buf(), 2);
+    let h = Hasher::new(idx, Root::open(root.path()).unwrap(), 2);
     (root, state, h)
 }
 
@@ -176,7 +177,7 @@ async fn large_files_are_read_a_few_at_a_time() {
     let idx = Index::open(state.path(), root.path())
         .unwrap()
         .into_handle();
-    let h = Hasher::new(idx, root.path().to_path_buf(), WORKERS).with_progress(progress);
+    let h = Hasher::new(idx, Root::open(root.path()).unwrap(), WORKERS).with_progress(progress);
     for kind in ["big", "small"] {
         let items: Vec<_> = (0..WORKERS)
             .map(|i| item(root.path(), format!("{kind}{i}").as_bytes()))

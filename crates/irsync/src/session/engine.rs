@@ -375,9 +375,10 @@ pub(super) struct Ctx {
     /// The session root: listing paths are relative to it.
     pub root: PathBuf,
     /// The root the index was opened for (`root` = `base` + `scope.prefix`).
-    /// The hashers, `Sender` and `FileWriter` work on `base` + index keys.
+    /// The `FileWriter` works on `base` + index keys.
     pub base: PathBuf,
-    /// The open folder `base`: index keys are relative to it.
+    /// The open folder `base`: index keys are relative to it. The hashers
+    /// and the `Sender` open files below it.
     pub base_root: Arc<Root>,
     /// The open session root (`root`): listing paths are relative to it.
     pub session_root: Arc<Root>,
@@ -776,14 +777,15 @@ pub(super) async fn run_client_inner(
         None
     };
 
-    // The local folder, opened once it is needed and kept from then on.
+    // The local folder, opened once it is needed and kept for this
+    // session. Each session (each reconnect attempt) opens it anew: the
+    // folder at that path may have been removed and made again since the
+    // last one.
     #[cfg(feature = "test-hooks")]
-    let local_root = match local.hooks.dir_cache {
-        Some(cap) => Root::lazy_with_cache(&local.root, cap),
-        None => local.root_dir.clone(),
-    };
+    let cache = local.hooks.dir_cache.unwrap_or(beneath::DIR_CACHE);
     #[cfg(not(feature = "test-hooks"))]
-    let local_root = local.root_dir.clone();
+    let cache = beneath::DIR_CACHE;
+    let local_root = Root::lazy_with_cache(&local.root, cache);
     if !sends && !opts.dry_run {
         // The user named this folder: symlinks on the way to it are theirs.
         // It is opened right after it is made, so the session keeps that
@@ -817,7 +819,7 @@ pub(super) async fn run_client_inner(
     // `-c`: no index row is trusted; every file this side lists or
     // compares is read.
     let hasher = if opts.checksum {
-        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
+        Hasher::new(index.clone(), local_root.clone(), HASH_WORKERS)
             .with_force(true)
             .with_activity(activity.clone())
             .with_progress(on_hash.clone())
@@ -825,15 +827,16 @@ pub(super) async fn run_client_inner(
     } else {
         // Shares the side's worker limit and counters across attempts.
         Hasher::clone(&local.hasher)
+            .with_root(local_root.clone())
             .with_progress(on_hash.clone())
             .with_meter(meter.clone())
     };
-    let forced = Hasher::new(index.clone(), local.root.clone(), 1)
+    let forced = Hasher::new(index.clone(), local_root.clone(), 1)
         .with_force(true)
         .with_activity(activity.clone())
         .with_progress(on_hash)
         .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
+    let verify = Hasher::new(index.clone(), local_root.clone(), HASH_WORKERS)
         .with_force(true)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
@@ -848,7 +851,7 @@ pub(super) async fn run_client_inner(
         (hasher, forced, verify)
     };
     #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match &local.hooks.during_hash {
+    let (hasher, forced, verify) = match hash_hook(&local.hooks) {
         Some(h) => (
             hasher.with_hash_hook(h.clone()),
             forced.with_hash_hook(h.clone()),
@@ -924,6 +927,25 @@ fn client_single(
         _ => local.clone(),
     };
     Ok(Some(SingleFile { wire, local }))
+}
+
+/// The hashers' hook in a test build: records `hash-open` before a file
+/// is opened to be read for its digest, then tells the side's
+/// `during_hash` hook. None when the side has neither.
+#[cfg(feature = "test-hooks")]
+fn hash_hook(hooks: &SideHooks) -> Option<crate::hasher::HashHook> {
+    if hooks.events.is_none() && hooks.on_event.is_none() && hooks.during_hash.is_none() {
+        return None;
+    }
+    let hooks = hooks.clone();
+    Some(Arc::new(move |path: &RelPath, bytes: u64| {
+        if bytes == 0 {
+            hooks.event("hash-open", path);
+        }
+        if let Some(h) = &hooks.during_hash {
+            h(path, bytes);
+        }
+    }))
 }
 
 /// What [`prepare_root`] does with missing components of the session root.
@@ -1294,22 +1316,62 @@ async fn serve_daemon_inner(
         telemetry::enabled(),
     );
     let index = index.metered(meter.clone());
+    // This side's test hooks (none in a normal build).
+    let hooks = {
+        #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
+        let mut h = SideHooks::default();
+        #[cfg(feature = "test-hooks")]
+        {
+            let p = shared.daemon_hooks.lock().unwrap().clone();
+            h.events = Some(shared.events.clone());
+            h.slow_finalize = *shared.slow_finalize.lock().unwrap();
+            h.slow_plan = p.slow_plan;
+            h.slow_place = p.slow_place;
+            h.max_inflight = p.max_inflight;
+            h.dir_cache = p.dir_cache;
+            h.listing_peak = p.listing_peak;
+            h.listing_waits = p.listing_waits;
+            h.peer_events_peak = p.peer_events_peak;
+            h.out_peak = p.out_peak;
+            h.basis_budget = p.basis_budget;
+            h.basis_peak = p.basis_peak;
+            h.send_tasks_peak = p.send_tasks_peak;
+            h.tamper_frames = p.tamper_frames;
+            h.close_quiet = p.close_quiet;
+            h.close_timeout = p.close_timeout;
+            h.stop_reading_after_done = p.stop_reading_after_done;
+            h.list_budget = p.list_budget;
+            h.list_peak = p.list_peak;
+            h.lists_ahead_peak = p.lists_ahead_peak;
+            h.slow_peer_events = p.slow_peer_events;
+            h.cut_listing_after = p.cut_listing_after;
+            h.inject_listing = p.inject_listing;
+            h.during_hash = p.during_hash;
+            h.on_event = p.on_event;
+            h.on_first_chunk_sent = p.on_first_chunk_sent;
+            h.file_report = p.file_report;
+            h.skip_place_stat = p.skip_place_stat;
+            h.clones_within = p.clones_within;
+            h.no_change_checks = p.no_change_checks;
+        }
+        h
+    };
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
-    let hasher = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
+    let hasher = Hasher::new(index.clone(), export.clone(), HASH_WORKERS)
         .with_force(hello.checksum)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
-    let forced = Hasher::new(index.clone(), export_root.clone(), 1)
+    let forced = Hasher::new(index.clone(), export.clone(), 1)
         .with_force(true)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
+    let verify = Hasher::new(index.clone(), export.clone(), HASH_WORKERS)
         .with_force(true)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
     #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = if shared.daemon_hooks.lock().unwrap().no_change_checks {
+    let (hasher, forced, verify) = if hooks.no_change_checks {
         (
             hasher.without_change_check(),
             forced.without_change_check(),
@@ -1319,7 +1381,7 @@ async fn serve_daemon_inner(
         (hasher, forced, verify)
     };
     #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
+    let (hasher, forced, verify) = match hash_hook(&hooks) {
         Some(h) => (
             hasher.with_hash_hook(h.clone()),
             forced.with_hash_hook(h.clone()),
@@ -1384,44 +1446,7 @@ async fn serve_daemon_inner(
         },
         single,
         privs: Privs::current(),
-        hooks: {
-            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
-            let mut h = SideHooks::default();
-            #[cfg(feature = "test-hooks")]
-            {
-                let p = shared.daemon_hooks.lock().unwrap().clone();
-                h.events = Some(shared.events.clone());
-                h.slow_finalize = *shared.slow_finalize.lock().unwrap();
-                h.slow_plan = p.slow_plan;
-                h.slow_place = p.slow_place;
-                h.max_inflight = p.max_inflight;
-                h.dir_cache = p.dir_cache;
-                h.listing_peak = p.listing_peak;
-                h.listing_waits = p.listing_waits;
-                h.peer_events_peak = p.peer_events_peak;
-                h.out_peak = p.out_peak;
-                h.basis_budget = p.basis_budget;
-                h.basis_peak = p.basis_peak;
-                h.send_tasks_peak = p.send_tasks_peak;
-                h.tamper_frames = p.tamper_frames;
-                h.close_quiet = p.close_quiet;
-                h.close_timeout = p.close_timeout;
-                h.stop_reading_after_done = p.stop_reading_after_done;
-                h.list_budget = p.list_budget;
-                h.list_peak = p.list_peak;
-                h.lists_ahead_peak = p.lists_ahead_peak;
-                h.slow_peer_events = p.slow_peer_events;
-                h.cut_listing_after = p.cut_listing_after;
-                h.inject_listing = p.inject_listing;
-                h.during_hash = p.during_hash;
-                h.on_first_chunk_sent = p.on_first_chunk_sent;
-                h.file_report = p.file_report;
-                h.skip_place_stat = p.skip_place_stat;
-                h.clones_within = p.clones_within;
-                h.no_change_checks = p.no_change_checks;
-            }
-            h
-        },
+        hooks,
     };
     run_role(
         Arc::new(ctx),
@@ -1903,7 +1928,11 @@ pub(super) async fn test_ctx() -> TestCtx {
     let index = crate::index::Index::open(state.path(), root.path())
         .unwrap()
         .into_handle();
-    let hasher = Arc::new(Hasher::new(index.clone(), root.path().to_path_buf(), 1));
+    let hasher = Arc::new(Hasher::new(
+        index.clone(),
+        Root::open(root.path()).unwrap(),
+        1,
+    ));
     let ctx = Ctx {
         conn,
         session_id: [7; 16],

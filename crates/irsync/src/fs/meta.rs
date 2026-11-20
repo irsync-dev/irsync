@@ -1,15 +1,15 @@
 //! POSIX metadata: `lstat` into a `FileEntry`, and symlink-safe application.
 
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::paths::RelPath;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::fcntl::{AtFlags, AT_FDCWD};
 use nix::sys::stat::{
-    fchmodat, fstat, lstat, mknod, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
+    fchmodat, fstat, mknod, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
 };
 use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, Gid, Uid};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 /// Which metadata `apply_metadata` should set.
@@ -40,26 +40,24 @@ fn kind_of(mode: u32) -> Kind {
     }
 }
 
-/// `lstat` the entry at `root/rel` (never following a final symlink).
-/// Fills everything except `whole_hash`.
+/// `lstat` the entry at `root/rel` (never following a final symlink),
+/// opening `root` for this one call. Fills everything except `whole_hash`.
 pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
-    lstat_entry_with_ctime(root, rel).map(|(e, _)| e)
+    let root = Root::open(root)?;
+    lstat_entry_with_ctime(&root, rel).map(|(e, _)| e)
 }
 
-/// Like [`lstat_entry`], also returning the inode change time `(sec, nsec)`.
-pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
-    let full = if rel.as_bytes().is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel.to_os())
-    };
-    let st = lstat(&full)?;
-    let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
-        std::fs::read_link(&full)?.as_os_str().as_bytes().to_vec()
-    } else {
-        Vec::new()
-    };
-    Ok(entry_of(st, rel, link_target))
+/// The entry at `rel` below the open `root` (never following a final
+/// symlink) and its inode change time `(sec, nsec)`. The folders on the
+/// way are opened one at a time and a symlink among them is refused. `rel`
+/// may be the root itself.
+pub fn lstat_entry_with_ctime(root: &Root, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+    if rel.as_bytes().is_empty() {
+        let dir = root.dir(rel, Missing::Refuse)?;
+        return Ok(stat_entry_with_ctime(fstat(&dir).map_err(errno)?, rel));
+    }
+    let (dir, name) = root.parent(rel, Missing::Refuse)?;
+    dir.entry(&name, rel)
 }
 
 /// [`lstat_entry_with_ctime`] of the file open as `file` (never a

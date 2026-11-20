@@ -102,7 +102,7 @@ pub async fn index_root(
     dry_run: bool,
 ) -> io::Result<WarmReport> {
     let workers = workers.max(1);
-    let hasher = Hasher::new(index, root.to_path_buf(), workers);
+    let hasher = Hasher::new(index, crate::fs::beneath::Root::lazy(root), workers);
     let (rx, summary) = walk(
         root.to_path_buf(),
         Arc::new(FilterSet::new(vec![])),

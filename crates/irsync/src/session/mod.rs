@@ -477,6 +477,7 @@ pub struct DaemonHooks {
     pub cut_listing_after: Option<usize>,
     pub inject_listing: Option<ListingHook>,
     pub during_hash: Option<crate::hasher::HashHook>,
+    pub on_event: Option<EventHook>,
     pub on_first_chunk_sent: Option<FirstChunkHook>,
     pub file_report: Option<PathBuf>,
     pub skip_place_stat: bool,
@@ -493,6 +494,10 @@ pub type EventLog = Arc<std::sync::Mutex<Vec<String>>>;
 #[cfg(feature = "test-hooks")]
 pub type FirstChunkHook =
     Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// Test hook: told of each event a side records (see [`SideHooks::on_event`]).
+#[cfg(feature = "test-hooks")]
+pub type EventHook = Arc<dyn Fn(&str, &RelPath) + Send + Sync>;
 
 /// Test hook: runs at a point in a file's handling (see [`SideHooks`]).
 #[cfg(feature = "test-hooks")]
@@ -857,6 +862,13 @@ pub struct SideHooks {
     /// [`crate::hasher::HashHook`]; a test changes the file mid-pass).
     #[cfg(feature = "test-hooks")]
     pub during_hash: Option<crate::hasher::HashHook>,
+    /// Both roles: told of every event as it is recorded, whether or not
+    /// `events` is set, on the thread that records it (a test acts at
+    /// that point). The sender records `hash-open` before a file is read
+    /// for its digest (before it is opened, unless it is read from a
+    /// clone) and `send-open` before it is opened to send chunks.
+    #[cfg(feature = "test-hooks")]
+    pub on_event: Option<EventHook>,
 }
 
 /// Test hook: a connection drop after a number of frames of one kind
@@ -1003,15 +1015,20 @@ impl SideHooks {
         crate::file_report::record(event, path, why);
     }
 
-    /// Records one receiver event (test hook; a no-op otherwise).
+    /// Records one event (test hook; a no-op otherwise).
     #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
     pub(crate) fn event(&self, what: &str, path: &RelPath) {
         #[cfg(feature = "test-hooks")]
-        if let Some(log) = &self.events {
-            log.lock().unwrap_or_else(|e| e.into_inner()).push(format!(
-                "{what}:{}",
-                String::from_utf8_lossy(path.as_bytes())
-            ));
+        {
+            if let Some(log) = &self.events {
+                log.lock().unwrap_or_else(|e| e.into_inner()).push(format!(
+                    "{what}:{}",
+                    String::from_utf8_lossy(path.as_bytes())
+                ));
+            }
+            if let Some(f) = &self.on_event {
+                f(what, path);
+            }
         }
     }
 }
@@ -1028,13 +1045,13 @@ impl std::fmt::Debug for SideHooks {
 #[derive(Clone)]
 pub struct LocalSide {
     pub root: PathBuf,
-    /// `root`, opened the first time it is needed (a pull may make it
-    /// first) and shared by every session over this side.
-    pub root_dir: Arc<crate::fs::beneath::Root>,
     /// rsync's trailing-slash rule as typed (part of the session key; the
     /// root itself is already resolved, see [`resolve_roots`]).
     pub contents_only: bool,
     pub index: IndexHandle,
+    /// Shares its worker limits and counters with every session over this
+    /// side; each session gives it the folder it opened (see
+    /// [`Hasher::with_root`]).
     pub hasher: Arc<Hasher>,
     pub filters: Arc<FilterSet>,
     pub hooks: SideHooks,
@@ -1049,9 +1066,10 @@ impl LocalSide {
         index: IndexHandle,
         filters: Arc<FilterSet>,
     ) -> LocalSide {
-        let hasher = Arc::new(Hasher::new(index.clone(), root.clone(), HASH_WORKERS));
+        // Never opened: each session hands the hasher its own root.
+        let unopened = crate::fs::beneath::Root::lazy(&root);
+        let hasher = Arc::new(Hasher::new(index.clone(), unopened, HASH_WORKERS));
         LocalSide {
-            root_dir: crate::fs::beneath::Root::lazy(&root),
             root,
             contents_only,
             index,

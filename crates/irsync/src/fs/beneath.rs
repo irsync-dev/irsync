@@ -946,8 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_matches_lstat_entry_with_ctime() {
-        use crate::fs::meta::lstat_entry_with_ctime;
+    fn entry_matches_a_stat_by_path() {
         let (d, out, dir) = setup();
         std::fs::write(d.path().join("file"), b"hello").unwrap();
         std::fs::create_dir(d.path().join("folder")).unwrap();
@@ -955,7 +954,7 @@ mod tests {
         nix::unistd::mkfifo(&d.path().join("fifo"), Mode::from_bits_truncate(0o644)).unwrap();
         for n in ["file", "folder", "link", "fifo"] {
             let rel = r(n.as_bytes());
-            let want = lstat_entry_with_ctime(d.path(), &rel).unwrap();
+            let want = crate::scan::lstat_path(d.path(), &rel).unwrap();
             assert_eq!(dir.entry(os(n), &rel).unwrap(), want, "{n}");
         }
         let link = dir.entry(os("link"), &r(b"link")).unwrap().0;

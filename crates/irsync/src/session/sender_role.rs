@@ -11,8 +11,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +38,7 @@ use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::clone::{Cloned, Clones};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
@@ -408,7 +407,7 @@ impl SenderRole {
                     let (size, item) = match walked {
                         Some(walked) => (walked.size, None),
                         None => {
-                            let (base, rel) = (ctx.base.clone(), key.clone());
+                            let (base, rel) = (ctx.base_root.clone(), key.clone());
                             let (entry, ctime) =
                                 blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
                             if entry.kind() != Kind::Regular {
@@ -457,9 +456,9 @@ impl SenderRole {
                     }
                     let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
-                        let full = ctx.full_key(&key);
+                        let root = ctx.base_root.clone();
                         let check = !ctx.hooks.no_change_checks();
-                        blocking(move || tail_digest(&full, &key, from, check)).await
+                        blocking(move || tail_digest(&root, &key, from, check)).await
                     } else {
                         let since = super::wait_start(&ctx.meter);
                         let digest = match (walked, item) {
@@ -1468,7 +1467,7 @@ impl PlaceCheck {
         if ctx.hooks.no_change_checks() {
             return Verdict::Place;
         }
-        let (base, rel) = (ctx.base.clone(), self.key.clone());
+        let (base, rel) = (ctx.base_root.clone(), self.key.clone());
         let (entry, ctime) = match blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
             Ok(s) => s,
             Err(e) if self.cloned => {
@@ -1501,9 +1500,9 @@ impl PlaceCheck {
                 "no longer a regular file",
             ))
         } else if let Some(from) = self.append_from {
-            let (full, key) = (ctx.full_key(&self.key), self.key.clone());
+            let (root, key) = (ctx.base_root.clone(), self.key.clone());
             ctx.verify
-                .bounded_read(entry.size, move || tail_digest(&full, &key, from, true))
+                .bounded_read(entry.size, move || tail_digest(&root, &key, from, true))
                 .await
         } else {
             let item = ScanItem {
@@ -1526,18 +1525,14 @@ impl PlaceCheck {
     }
 }
 
-/// The chunk list of `full` (index key `key`) from `from` on (an `APPEND`
-/// tail): chunked from that offset, records at absolute offsets, no
-/// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
-/// file changes while it is read.
-fn tail_digest(
-    full: &std::path::Path,
-    key: &RelPath,
-    from: u64,
-    check: bool,
-) -> io::Result<Hashed> {
+/// The chunk list of the file at index key `key` below `root` from `from`
+/// on (an `APPEND` tail): chunked from that offset, records at absolute
+/// offsets, no whole-file hash. Like [`crate::hasher::Hasher::digest`], it
+/// fails if the file changes while it is read.
+fn tail_digest(root: &Root, key: &RelPath, from: u64, check: bool) -> io::Result<Hashed> {
     // The open's type check already took the file's stat.
-    let (file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+    let (dir, name) = root.parent(key, Missing::Refuse)?;
+    let (file, st) = dir.open_regular(&name)?;
     tail_digest_at(file, st, key, from, check)
 }
 
@@ -1656,7 +1651,7 @@ async fn recheck(
                 .map(|(path, before)| {
                     c.activity
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let found = match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                    let found = match lstat_entry_with_ctime(&c.base_root, &c.key(&path)) {
                         Ok((entry, _)) if entry.kind() != Kind::Regular => Rechecked::Vanished,
                         Ok((entry, ctime)) if Freshness::of_entry(&entry, ctime) == before => {
                             Rechecked::Same
@@ -1761,7 +1756,7 @@ async fn check_links(
                     if !admits(&c, &path) {
                         return Some((path, None));
                     }
-                    match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                    match lstat_entry_with_ctime(&c.base_root, &c.key(&path)) {
                         Ok((e, ctime)) if Freshness::of_entry(&e, ctime) == want => None,
                         Ok((e, _)) if e.kind() == Kind::Regular => Some((path, Some(e))),
                         _ => Some((path, None)),
@@ -1812,41 +1807,40 @@ fn admits(ctx: &Ctx, path: &RelPath) -> bool {
     if ctx.single.as_ref().is_some_and(|s| *path != s.wire) {
         return false;
     }
-    walk_admits(&ctx.root, ctx.local(path), &ctx.filters)
+    walk_admits(&ctx.session_root, ctx.local(path), &ctx.filters)
 }
 
 /// Whether the walk (from `root`, with `filters`) would list `path` as a
 /// regular file: no component is a symlink or excluded, the file is regular
 /// and is not one of irsync's own temporary files.
-fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
+fn walk_admits(root: &Root, path: &RelPath, filters: &FilterSet) -> bool {
     if path.as_bytes().is_empty() || is_own_temp(path) {
         return false;
     }
+    // The names first: no folder on the way is a clone folder, and no
+    // part of the path is excluded.
     let comps: Vec<&[u8]> = path.components().collect();
-    let (mut rel, mut full) = (Vec::new(), root.to_path_buf());
+    let mut rel = Vec::new();
     for (i, c) in comps.iter().enumerate() {
         if i > 0 {
             rel.push(b'/');
         }
         rel.extend_from_slice(c);
-        full.push(std::ffi::OsStr::from_bytes(c));
         let last = i + 1 == comps.len();
         let Ok(r) = RelPath::new(&rel) else {
             return false;
         };
-        let Ok(md) = std::fs::symlink_metadata(&full) else {
-            return false;
-        };
-        let kind_ok = if last {
-            md.is_file()
-        } else {
-            md.is_dir() && !crate::scan::is_clone_dir(c)
-        };
-        if !kind_ok || filters.matches(&r, !last) == FilterVerdict::Exclude {
+        if (!last && crate::scan::is_clone_dir(c))
+            || filters.matches(&r, !last) == FilterVerdict::Exclude
+        {
             return false;
         }
     }
-    true
+    // Then what is there: every folder on the way is opened without
+    // following a symlink, and the file in the last one is regular.
+    root.parent(path, Missing::Refuse)
+        .and_then(|(dir, name)| dir.stat(&name))
+        .is_ok_and(|st| crate::fs::safe::is_regular_mode(st.st_mode as u32))
 }
 
 /// Runs the sender role until the receiver's `SessionDone`.
@@ -1859,8 +1853,10 @@ pub(super) async fn run(
     mut peer: PeerEvents,
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
-    let root = ctx.root.clone();
-    let root_ok = blocking(move || Ok(std::fs::metadata(&root).is_ok_and(|m| m.is_dir())))
+    // Opens the root now (a client's is opened on first use), so the
+    // session keeps this folder whatever happens to its name later.
+    let root = ctx.session_root.clone();
+    let root_ok = blocking(move || Ok(root.dir(&RelPath::root(), Missing::Refuse).is_ok()))
         .await
         .unwrap_or(false);
     if !root_ok {
@@ -1870,13 +1866,18 @@ pub(super) async fn run(
     let sender = Arc::new(Sender::new(
         ctx.conn.clone(),
         ctx.session_id,
-        ctx.base.clone(),
+        ctx.base_root.clone(),
         ctx.hasher.clone(),
         ctx.opts.parallel,
         DEFAULT_SPLIT_THRESHOLD,
         ctx.opts.bwlimit,
     ));
     sender.set_meter(ctx.meter.clone());
+    #[cfg(feature = "test-hooks")]
+    {
+        let hooks = ctx.hooks.clone();
+        sender.set_before_open(Arc::new(move |key| hooks.event("send-open", key)));
+    }
     {
         let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
         #[cfg(feature = "test-hooks")]
@@ -2251,7 +2252,7 @@ mod tests {
         let sender = Arc::new(Sender::new(
             ctx.conn.clone(),
             ctx.session_id,
-            ctx.base.clone(),
+            ctx.base_root.clone(),
             ctx.hasher.clone(),
             1,
             DEFAULT_SPLIT_THRESHOLD,
@@ -2425,7 +2426,7 @@ mod tests {
         let rel = RelPath::new(b"a").unwrap();
         let key = s.ctx.key(&rel);
         std::fs::write(s.ctx.full_key(&key), b"content").unwrap();
-        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base, &key).unwrap();
+        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base_root, &key).unwrap();
         let mut f = in_flight("a", Some(empty_digest()));
         // Retried once: generation 1 is digested (its stat is the source's
         // now), and its list waits for room; list 1 (generation 0) went out.
@@ -2488,7 +2489,7 @@ mod tests {
         let rel = RelPath::new(path.as_bytes()).unwrap();
         let key = s.ctx.key(&rel);
         std::fs::write(s.ctx.full_key(&key), b"content").unwrap();
-        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base, &key).unwrap();
+        let (entry, ctime) = lstat_entry_with_ctime(&s.ctx.base_root, &key).unwrap();
         let mut f = in_flight(path, Some(empty_digest()));
         f.hash_stat = Some(Freshness::of_entry(&entry, ctime));
         f.lists_sent = 1;

@@ -260,7 +260,7 @@ pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile>
 /// Hashes the regular file at index key `key` through the session's
 /// hasher (cached when its row is fresh), so its chunks are in the index.
 async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
-    let (base, rel) = (ctx.base.clone(), key.clone());
+    let (base, rel) = (ctx.base_root.clone(), key.clone());
     let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel))
         .await
         .ok()?;
@@ -1145,7 +1145,7 @@ async fn record(
     stat: Option<(FileEntry, (i64, u32))>,
 ) {
     let (base, key, index, mut digest) = (
-        ctx.base.clone(),
+        ctx.base_root.clone(),
         ctx.key(path),
         ctx.index().clone(),
         digest.clone(),

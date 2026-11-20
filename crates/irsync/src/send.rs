@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,6 +26,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::delta::{encode, encoded_len, Basis, Op};
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::clone::Cloned;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed, Hasher};
@@ -97,7 +97,8 @@ pub type ProgressFn = Arc<dyn Fn(&RelPath, SendProgress) + Send + Sync>;
 struct Inner {
     conn: Connection,
     session_id: Vec<u8>,
-    root: PathBuf,
+    /// Files are opened below this folder, by index key.
+    root: Arc<Root>,
     hasher: Arc<Hasher>,
     split_threshold: u64,
     sem: Arc<Semaphore>,
@@ -114,7 +115,14 @@ struct Inner {
     meter: std::sync::OnceLock<Arc<Meter>>,
     #[cfg(feature = "test-hooks")]
     truncate: std::sync::OnceLock<Arc<TruncateHook>>,
+    /// Told of a file just before it is opened to send chunks (test hook).
+    #[cfg(feature = "test-hooks")]
+    before_open: std::sync::OnceLock<OpenHook>,
 }
+
+/// Test hook: told of a file's index key before it is opened to be sent.
+#[cfg(feature = "test-hooks")]
+pub type OpenHook = Arc<dyn Fn(&RelPath) + Send + Sync>;
 
 /// Test hook: finishes a data stream early, after `after_chunks` chunks,
 /// as if it had been cut short (once, or every time).
@@ -182,7 +190,7 @@ impl Sender {
     pub fn new(
         conn: Connection,
         session_id: [u8; 16],
-        root: PathBuf,
+        root: Arc<Root>,
         hasher: Arc<Hasher>,
         parallel: usize,
         split_threshold: u64,
@@ -205,6 +213,8 @@ impl Sender {
                 meter: std::sync::OnceLock::new(),
                 #[cfg(feature = "test-hooks")]
                 truncate: std::sync::OnceLock::new(),
+                #[cfg(feature = "test-hooks")]
+                before_open: std::sync::OnceLock::new(),
             }),
         };
         report_sends(Arc::downgrade(&s.inner));
@@ -241,6 +251,12 @@ impl Sender {
     #[cfg(feature = "test-hooks")]
     pub fn set_truncate(&self, hook: Arc<TruncateHook>) {
         let _ = self.inner.truncate.set(hook);
+    }
+
+    /// Installs (once) a hook told of each file before it is opened.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_before_open(&self, hook: OpenHook) {
+        let _ = self.inner.before_open.set(hook);
     }
 
     /// High-water mark of simultaneously open data streams.
@@ -307,7 +323,6 @@ impl Sender {
         }
         let ranges = split_ranges(&sorted, digest, self.inner.split_threshold);
         let digest = Arc::new(digest.clone());
-        let full = self.inner.root.join(path.to_os());
         let name = Arc::new(name);
         let rel = Arc::new(path.clone());
         let bases = Arc::new(bases);
@@ -341,9 +356,8 @@ impl Sender {
                 }
             }
             let inner = self.inner.clone();
-            let (digest, full, clone, name, rel, cancelled, bases, sent) = (
+            let (digest, clone, name, rel, cancelled, bases, sent) = (
                 digest.clone(),
-                full.clone(),
                 clone.clone(),
                 name.clone(),
                 rel.clone(),
@@ -361,7 +375,6 @@ impl Sender {
                 let res = inner
                     .send_range(
                         file_id,
-                        &full,
                         clone.as_deref(),
                         &name,
                         &rel,
@@ -492,7 +505,6 @@ impl Inner {
     async fn send_range(
         &self,
         file_id: u64,
-        full: &Path,
         clone: Option<&Cloned>,
         name: &str,
         rel: &RelPath,
@@ -502,10 +514,19 @@ impl Inner {
         sent: &AtomicU64,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
-        // Never follow a symlink swapped in since the file was listed.
+        #[cfg(feature = "test-hooks")]
+        if let (None, Some(h)) = (clone, self.before_open.get()) {
+            h(rel);
+        }
+        // Never follow a symlink swapped in since the file was listed, at
+        // the name or on the way to it.
         let file = match clone {
             Some(c) => c.file.try_clone(),
-            None => crate::fs::safe::open_regular_nofollow(full),
+            None => self
+                .root
+                .parent(rel, Missing::Refuse)
+                .and_then(|(dir, name)| dir.open_regular(&name))
+                .map(|(f, _)| f),
         };
         let file = Arc::new(file.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?);
         // Verify the first chunk before opening a stream: the common

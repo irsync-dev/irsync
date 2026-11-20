@@ -494,7 +494,8 @@ async fn gc_handles_shortened_part_names() {
 
 /// Indexes `root/path` as it is on disk now.
 fn index_file(ix: &irsync::index::IndexHandle, root: &Path, path: &str) {
-    let (e, ctime) = irsync::fs::meta::lstat_entry_with_ctime(root, &rel(path)).unwrap();
+    let root = irsync::fs::beneath::Root::open(root).unwrap();
+    let (e, ctime) = irsync::fs::meta::lstat_entry_with_ctime(&root, &rel(path)).unwrap();
     ix.lock()
         .unwrap()
         .put_entry(&rel(path), &e, ctime, None)

@@ -1,7 +1,6 @@
 //! Parallel directory walk that streams entries in `RelPath` order.
 
 use crate::filter::{FilterSet, Verdict};
-use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::v1::FileEntry;
@@ -112,6 +111,30 @@ pub struct WalkOpts {
     pub threads: usize,
     /// Deepest entries to list (the root is depth 0); `None` for the whole tree.
     pub max_depth: Option<usize>,
+}
+
+/// The entry at `root/rel` and its inode change time, looked at by path
+/// (never following a final symlink). The walk reads folders by path, and
+/// so does this, for it alone.
+pub(crate) fn lstat_path(
+    root: &Path,
+    rel: &RelPath,
+) -> std::io::Result<(irsync_proto::v1::FileEntry, (i64, u32))> {
+    use nix::sys::stat::SFlag;
+    use std::os::unix::ffi::OsStrExt;
+    let full = if rel.as_bytes().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel.to_os())
+    };
+    let st = nix::sys::stat::lstat(&full)?;
+    let link_target =
+        if SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFLNK {
+            std::fs::read_link(&full)?.as_os_str().as_bytes().to_vec()
+        } else {
+            Vec::new()
+        };
+    Ok(crate::fs::meta::entry_of(st, rel, link_target))
 }
 
 fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
@@ -233,7 +256,7 @@ fn run_walk(
         emit(ScanEvent::Gap { path: rel, message })
     };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
-        match lstat_entry_with_ctime(&root, &rel) {
+        match lstat_path(&root, &rel) {
             Ok((entry, ctime)) => {
                 if !emit(ScanEvent::Entry(ScanItem {
                     path: rel,

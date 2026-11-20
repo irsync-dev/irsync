@@ -6,6 +6,7 @@
 //! `digest` re-reads every file, storing what it read so the next plain
 //! run is quick again.
 
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::paths::RelPath;
 use crate::index::{IndexHandle, NewEntry};
 use crate::scan::ScanItem;
@@ -14,7 +15,6 @@ use irsync_proto::chunk::{digest_reader, FileDigest};
 use irsync_proto::v1::file_entry::Kind;
 use irsync_proto::v1::{FileEntry, Hash};
 use std::io;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -40,7 +40,8 @@ pub const LARGE_WORKERS: usize = 4;
 #[derive(Clone)]
 pub struct Hasher {
     index: IndexHandle,
-    root: PathBuf,
+    /// The folder index keys are relative to; files are opened below it.
+    root: Arc<Root>,
     sem: Arc<Semaphore>,
     /// Taken before `sem` by a file of at least [`LARGE_FILE`] bytes.
     large: Arc<Semaphore>,
@@ -228,7 +229,7 @@ fn lookup(index: &IndexHandle, path: &RelPath, want: Freshness) -> io::Result<Op
 impl Hasher {
     /// `workers` bounds how many files are read concurrently (minimum 1),
     /// and at most [`LARGE_WORKERS`] of them large.
-    pub fn new(index: IndexHandle, root: PathBuf, workers: usize) -> Hasher {
+    pub fn new(index: IndexHandle, root: Arc<Root>, workers: usize) -> Hasher {
         let workers = workers.max(1);
         Hasher {
             index,
@@ -244,6 +245,13 @@ impl Hasher {
             #[cfg(feature = "test-hooks")]
             no_change_check: false,
         }
+    }
+
+    /// The same hasher (sharing its limits and counters), opening files
+    /// below `root`.
+    pub fn with_root(mut self, root: Arc<Root>) -> Self {
+        self.root = root;
+        self
     }
 
     /// Do not stat a file after reading it (test only).
@@ -444,7 +452,7 @@ impl Hasher {
         drop(queued);
         let index = self.index.clone();
         let stats = self.stats.clone();
-        let full = self.root.join(path.to_os());
+        let root = self.root.clone();
         let force = self.force;
         let activity = self.activity.clone();
         let progress = self.progress.clone();
@@ -462,8 +470,10 @@ impl Hasher {
             if let Some(h) = &hook {
                 h(&path, 0);
             }
-            // Never follow a symlink swapped in since the walk lstat'ed it.
-            let (file, st) = crate::fs::safe::open_regular_nofollow_stat(&full)?;
+            // Never follow a symlink swapped in since the walk lstat'ed it,
+            // at the name or on the way to it.
+            let (dir, name) = root.parent(&path, Missing::Refuse)?;
+            let (file, st) = dir.open_regular(&name)?;
             let at_open = crate::fs::meta::stat_entry_with_ctime(st, &path);
             let opened = Freshness::of_entry(&at_open.0, at_open.1);
             let (mut entry, ctime) = stat.unwrap_or(at_open);
@@ -524,10 +534,12 @@ mod tests {
         let index = crate::index::Index::open(state.path(), root.path())
             .unwrap()
             .into_handle();
-        let h = Hasher::new(index, root.path().to_path_buf(), 1);
+        let h = Hasher::new(index, Root::open(root.path()).unwrap(), 1);
         std::fs::write(root.path().join("f"), b"some content").unwrap();
         let path = RelPath::new(b"f").unwrap();
-        let (entry, ctime) = crate::fs::meta::lstat_entry_with_ctime(root.path(), &path).unwrap();
+        let (entry, ctime) =
+            crate::fs::meta::lstat_entry_with_ctime(&Root::open(root.path()).unwrap(), &path)
+                .unwrap();
         let item = ScanItem {
             path: path.clone(),
             entry,

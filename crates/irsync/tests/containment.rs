@@ -1,15 +1,21 @@
 //! A hostile sender must not make the receiver write, link or chmod outside
 //! its root: listings naming irsync's own temp files and hard links whose
-//! targets were not received as regular files are refused.
+//! targets were not received as regular files are refused. And a sender
+//! reads only files below its root, whatever happens to the folders on the
+//! way while it works.
 
 mod common;
 
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, assert_trees_equal, Flow, Harness};
+use irsync::fs::paths::RelPath;
+use irsync::session::reconnect::ReconnectOpts;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -254,4 +260,185 @@ async fn a_wide_tree_finishes_under_a_low_handle_limit() {
         .expect("pull");
     no_emfile(&out);
     assert_trees_equal(h.export.path(), h.local.path(), &opts.preserve);
+}
+
+/// The file outside the export a swapped folder would lead to.
+const SECRET: &[u8] = b"private key";
+/// `d/secret` inside the export: the same size as [`SECRET`].
+const INSIDE: &[u8] = b"public data";
+
+/// Makes `outside/secret` and the export's `d/secret`, with other
+/// content of the same size and the same mtime, so only the content tells
+/// them apart. Returns the outside folder.
+fn plant_secret(export: &Path) -> tempfile::TempDir {
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("secret"), SECRET).unwrap();
+    fs::create_dir(export.join("d")).unwrap();
+    fs::write(export.join("d/secret"), INSIDE).unwrap();
+    let mtime = fs::metadata(outside.path().join("secret"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    fs::File::options()
+        .write(true)
+        .open(export.join("d/secret"))
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    outside
+}
+
+/// Moves the export's `d` aside and puts a symlink to `outside` in its
+/// place.
+fn swap_d(export: &Path, outside: &Path) {
+    fs::rename(export.join("d"), export.join("d.real")).unwrap();
+    symlink(outside, export.join("d")).unwrap();
+}
+
+/// A hook that swaps `d` (once) when the event `what` is recorded for
+/// `d/secret`; `fired` says it did.
+fn swap_on(
+    what: &'static str,
+    export: &Path,
+    outside: &Path,
+    fired: &Arc<AtomicBool>,
+) -> irsync::session::EventHook {
+    let (export, outside, fired) = (export.to_path_buf(), outside.to_path_buf(), fired.clone());
+    Arc::new(move |event: &str, path: &RelPath| {
+        if event == what && path.as_bytes() == b"d/secret" && !fired.swap(true, Ordering::SeqCst) {
+            swap_d(&export, &outside);
+        }
+    })
+}
+
+/// Nothing from outside arrived: the client's `d/secret` is missing or
+/// holds the inside content, and the file failed.
+fn assert_nothing_from_outside(local: &Path, out: &irsync::session::Outcome) {
+    if let Ok(got) = fs::read(local.join("d/secret")) {
+        assert_eq!(got, INSIDE, "content from outside the export arrived");
+    }
+    assert!(
+        out.errors.iter().any(|(p, _)| p.as_bytes() == b"d/secret"),
+        "{:?}",
+        out.errors
+    );
+    assert_eq!(out.exit_code(), 23);
+}
+
+/// Pulls with `hook` on the daemon and the given folder cache.
+async fn pull_with_hook(
+    h: &Harness,
+    hook: irsync::session::EventHook,
+    dir_cache: Option<usize>,
+) -> irsync::session::Outcome {
+    {
+        let mut hooks = h.daemon.hooks.lock().unwrap();
+        hooks.on_event = Some(hook);
+        hooks.dir_cache = dir_cache;
+    }
+    within30(h.run_side(&archive_opts(), Flow::Pull, h.local_side()))
+        .await
+        .expect("pull")
+}
+
+#[tokio::test]
+async fn pull_swap_before_hashing_sends_nothing_from_outside() {
+    let h = Harness::new().await;
+    let outside = plant_secret(h.export.path());
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("hash-open", h.export.path(), outside.path(), &fired);
+    let out = pull_with_hook(&h, hook, None).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_nothing_from_outside(h.local.path(), &out);
+}
+
+#[tokio::test]
+async fn pull_swap_before_sending_sends_nothing_from_outside() {
+    let h = Harness::new().await;
+    let outside = plant_secret(h.export.path());
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("send-open", h.export.path(), outside.path(), &fired);
+    // No folder cache: the hashing would otherwise leave `d` open, and the
+    // send would read the real folder through that handle (see the next
+    // test). Without it, the send walks from the root again.
+    let out = pull_with_hook(&h, hook, Some(0)).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_nothing_from_outside(h.local.path(), &out);
+}
+
+#[tokio::test]
+async fn pull_swap_before_sending_reads_the_folder_already_open() {
+    let h = Harness::new().await;
+    let outside = plant_secret(h.export.path());
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("send-open", h.export.path(), outside.path(), &fired);
+    let out = pull_with_hook(&h, hook, None).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    // The folder was opened to hash the file: the send goes on through
+    // that handle, which still is the real folder, now `d.real`.
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(fs::read(h.local.path().join("d/secret")).unwrap(), INSIDE);
+}
+
+/// No reconnects: the first failure ends the run.
+fn no_reconnect() -> ReconnectOpts {
+    ReconnectOpts {
+        max: Duration::ZERO,
+        ..fast()
+    }
+}
+
+/// Default reconnect options with a 100 ms first backoff.
+fn fast() -> ReconnectOpts {
+    ReconnectOpts {
+        backoff_min: Duration::from_millis(100),
+        ..ReconnectOpts::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_pull_refuses_a_symlinked_parent() {
+    let h = Harness::new().await;
+    let outside = plant_secret(h.export.path());
+    // The first run drops the connection as soon as `d/secret` is hashed,
+    // so the client keeps a plan that names it.
+    let fault = h.daemon.fault.clone();
+    h.daemon.hooks.lock().unwrap().on_event = Some(Arc::new(move |event: &str, path: &RelPath| {
+        if event == "hash-open" && path.as_bytes() == b"d/secret" {
+            fault.drop_after_bytes(0);
+        }
+    }));
+    let opts = archive_opts();
+    let (first, _) =
+        within30(h.run_reconnect(&opts, Flow::Pull, no_reconnect(), h.local_side())).await;
+    assert!(first.is_err(), "the first run should fail");
+    h.daemon.hooks.lock().unwrap().on_event = None;
+    swap_d(h.export.path(), outside.path());
+    let (second, _) = within30(h.run_reconnect(&opts, Flow::Pull, fast(), h.local_side())).await;
+    let second = second.unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(second.resumed, "the second run did not resume");
+    assert_nothing_from_outside(h.local.path(), &second);
+}
+
+#[tokio::test]
+async fn each_session_opens_the_local_folder_anew() {
+    // Sessions over one client side (as reconnect attempts are) do not
+    // keep the folder of an earlier one: removed and made again, the
+    // folder at the path is the one read.
+    let h = Harness::new().await;
+    fs::write(h.local.path().join("a"), b"first").unwrap();
+    let side = h.local_side();
+    let opts = archive_opts();
+    let out = within30(h.run_side(&opts, Flow::Push, side.clone()))
+        .await
+        .expect("first push");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    fs::remove_dir_all(h.local.path()).unwrap();
+    fs::create_dir(h.local.path()).unwrap();
+    fs::write(h.local.path().join("b"), b"second").unwrap();
+    let out = within30(h.run_side(&opts, Flow::Push, side))
+        .await
+        .expect("second push");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(fs::read(h.export.path().join("b")).unwrap(), b"second");
 }
