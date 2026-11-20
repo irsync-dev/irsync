@@ -476,6 +476,23 @@ impl Planner {
                 return;
             }
         }
+        // Both sides hold the same rules, and an honest sender never lists
+        // what they exclude. One that does is refused: the user took these
+        // paths out of the sync, and what is there under them stays. (A
+        // single file is filtered by the sender, under its source name.)
+        if self.ctx.single.is_none()
+            && !path.as_bytes().is_empty()
+            && self.ctx.filters.matches(&path, is_dir) == Verdict::Exclude
+        {
+            self.error(
+                &path,
+                "excluded by the filter rules, but listed by the sender",
+            );
+            if is_dir {
+                self.failed_dirs.insert(path);
+            }
+            return;
+        }
         if src.entry.kind() == Kind::Symlink && !self.popts.preserve.links {
             tracing::debug!(?path, "skipping symlink (links not preserved)");
             return;
