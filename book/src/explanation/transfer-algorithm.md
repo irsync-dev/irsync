@@ -79,6 +79,9 @@ edit. irsync narrows that to blocks:
   against a 64 Ki-bit filter, then the signatures, then the strong hash, and
   emits copies of old-file ranges and literals. If the result is not at least
   a quarter smaller than the chunk, the chunk goes raw.
+- The receiver takes copies only from whole blocks it signed for that chunk.
+  A sender that could ask for any byte of the old file could find out what
+  the file holds, one guess at a time.
 - The receiver rebuilds the chunk and verifies its 32-byte hash. A chunk that
   does not verify (the old file changed in place, a hostile operation list, a
   collision of the 8-byte hash) is requested again, without a basis.

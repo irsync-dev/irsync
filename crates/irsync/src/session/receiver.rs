@@ -1152,6 +1152,7 @@ impl Receiver {
             )),
             path: f.path.clone(),
             old,
+            offered: Arc::default(),
             gate,
             idx_base,
         };

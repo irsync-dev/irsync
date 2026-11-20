@@ -36,7 +36,7 @@ use super::control::{Ev, Out};
 use super::engine::{blocking, Ctx};
 use super::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
 use super::receiver::Done;
-use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
+use crate::delta::{decode, encoded_len, Basis, Op, Region, MIN_BLOCK};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
@@ -69,6 +69,9 @@ pub(super) struct Route {
     /// The old destination file (`DELTA`), held open while bases over it
     /// are out: copies in the sender's operations read from it.
     pub old: Option<Arc<File>>,
+    /// The region of `old` signed and offered for each chunk (by our
+    /// index): copies are taken from there only (see [`Region`]).
+    pub offered: Offered,
     /// `--inplace`: admits writes in ascending chunk order.
     pub gate: Option<Arc<Gate>>,
     /// `APPEND`: the sender's list is the tail only, so its chunk indices
@@ -79,6 +82,18 @@ pub(super) struct Route {
 /// The sender's index of our chunk `idx` (see [`Route::idx_base`]).
 pub(super) fn sender_idx(base: u32, idx: u32) -> u32 {
     idx - base
+}
+
+/// The regions offered as bases, by chunk index; shared by a route's clones.
+pub(super) type Offered = Arc<std::sync::Mutex<HashMap<u32, Region>>>;
+
+/// Notes that `wire`, the basis of chunk `idx`, is about to go out.
+fn offer(route: &Route, idx: u32, wire: &ChunkBasis) {
+    route
+        .offered
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(idx, Region::of(wire));
 }
 
 pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
@@ -635,6 +650,7 @@ async fn offer_batched(
             // Holding nothing: others free what this waits for.
             held.take(n).await;
         }
+        offer(&route, spec.0, &wire);
         out.send_paced(Msg::ChunkBasis(wire)).await;
         ctx.hooks.event("basis", &route.path);
         batch.push(spec.0);
@@ -694,6 +710,7 @@ async fn offer_in_place(
                         // No room: the chunk goes raw. Nothing waits here,
                         // since only this task's own request frees room.
                         if held.try_take(basis_wire_len(&wire)) {
+                            offer(&route, idx, &wire);
                             out.send_paced(Msg::ChunkBasis(wire)).await;
                             ctx.hooks.event("basis", &route.path);
                         }
@@ -819,6 +836,20 @@ async fn rebuild(
         .get(idx)
         .map(|c| c.len as usize)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chunk index out of range"))?;
+    // Only from the blocks this side signed for the chunk.
+    let region = route
+        .offered
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(idx as u32))
+        .copied()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "operations for a chunk no basis was offered for",
+            )
+        })?;
+    region.admit(&ops)?;
     blocking(move || {
         // Rebuilding mixes disk reads with literal bytes; all of it is the read side of the chunk.
         let _timed = meter.start(Activity::Read);
@@ -1469,6 +1500,7 @@ mod tests {
             pending: Arc::default(),
             path: RelPath::new(b"old").unwrap(),
             old: Some(old.clone()),
+            offered: Arc::default(),
             gate: None,
             idx_base: 0,
         };
@@ -1508,6 +1540,70 @@ mod tests {
             .count();
         assert_eq!(bases, 0, "bases signed for a retired writer");
         assert!(frames.is_empty(), "{} frames sent", frames.len());
+    }
+
+    /// A sender must not get old content copied that this side did not
+    /// sign for the chunk, nor less than a whole block of it: with single
+    /// bytes it could find out what the old file holds, one guess at a time.
+    #[tokio::test]
+    async fn copies_come_only_from_whole_blocks_offered_for_the_chunk() {
+        let t = super::super::engine::test_ctx().await;
+        let ctx = t.ctx.clone();
+        const LEN: u32 = 64 * 1024;
+        let path = ctx.root.join("old");
+        let bytes: Vec<u8> = (0..2 * LEN).map(|i| (i * 7919 % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let route = Route {
+            gen: 1,
+            slot: Arc::new(tokio::sync::Mutex::new(None)),
+            digest: Arc::new(FileDigest {
+                size: bytes.len() as u64,
+                hash: [0; 32],
+                chunks: chunks(&[LEN; 2]),
+            }),
+            pending: Arc::default(),
+            path: RelPath::new(b"old").unwrap(),
+            old: Some(Arc::new(File::open(&path).unwrap())),
+            offered: Arc::default(),
+            gate: None,
+            idx_base: 0,
+        };
+        let whole = |n: u32| {
+            let mut ops = vec![Op::Literal(vec![9; (LEN - n) as usize])];
+            ops.push(Op::Copy { offset: 0, len: n });
+            ops
+        };
+        let meter = || ctx.meter.clone();
+        // No basis offered for the chunk: no copies at all.
+        let err = rebuild(&route, 0, whole(1), meter()).await.unwrap_err();
+        assert!(err.to_string().contains("no basis"), "{err}");
+        assert!(rebuild(&route, 0, whole(4096), meter()).await.is_err());
+
+        // Chunk 0 is offered the first 16 blocks of 4096 bytes.
+        let block = 4096;
+        route.offered.lock().unwrap().insert(
+            0,
+            Region {
+                offset: 0,
+                block,
+                blocks: 16,
+            },
+        );
+        let built = rebuild(&route, 0, whole(block), meter()).await.unwrap();
+        assert_eq!(built[(LEN - block) as usize..], bytes[..block as usize]);
+        // One byte, a part of a block, or a block outside the offer.
+        for n in [1, block - 1, block + 1] {
+            let err = rebuild(&route, 0, whole(n), meter()).await.unwrap_err();
+            assert!(err.to_string().contains("offered blocks"), "{n}: {err}");
+        }
+        let mut outside = vec![Op::Literal(vec![9; (LEN - block) as usize])];
+        outside.push(Op::Copy {
+            offset: u64::from(LEN),
+            len: block,
+        });
+        assert!(rebuild(&route, 0, outside, meter()).await.is_err());
+        // The offer was for chunk 0 only.
+        assert!(rebuild(&route, 1, whole(block), meter()).await.is_err());
     }
 
     #[test]
