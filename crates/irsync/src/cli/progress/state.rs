@@ -54,9 +54,10 @@ pub struct Row {
     pub rate_bytes: u64,
     /// Bytes per second, last computed.
     pub rate: f64,
-    /// The local side is working on the file (a hash or an open stream). A
-    /// row made by an early `FileMatched` is pending until then: it counts
-    /// toward the percent but is not shown.
+    /// The local side is working on the file (a hash, an open stream, data
+    /// coming in). A row made by an early `FileMatched`, or by the
+    /// receiver's `FileOpened`, is pending until then: it counts toward
+    /// the percent but is not shown.
     pub opened: bool,
     /// Every byte is written or matched, or every stream is done, and
     /// only the receiver's ack is outstanding: counts toward the percent
@@ -275,6 +276,32 @@ impl Live {
                 row.rate_bytes = 0;
                 row.rate = 0.0;
             }
+            Event::FileOpened(p, size) => {
+                // The receiver is ready, the sender has yet to get to the
+                // file: pending until its first bytes, however long that
+                // takes. What the row has (a file planned again on a new
+                // connection) is kept.
+                let row = self.rows.entry(p.clone()).or_insert_with(|| {
+                    Row::new(
+                        *size,
+                        RowState::Moving {
+                            literal: 0,
+                            matched: 0,
+                        },
+                        now,
+                    )
+                });
+                row.size = *size;
+                if row.state == RowState::Hashing {
+                    row.state = RowState::Moving {
+                        literal: 0,
+                        matched: 0,
+                    };
+                }
+                row.opened = false;
+                row.sent = false;
+                row.last_event = now;
+            }
             Event::FileBytes(p, n) => {
                 self.literal = self.literal.saturating_add(*n);
                 let row = self.rows.entry(p.clone()).or_insert_with(|| {
@@ -296,8 +323,14 @@ impl Live {
                         }
                     }
                 }
+                if !row.opened {
+                    // The first bytes of a row that was pending: its rate
+                    // starts here, not when the wait began.
+                    row.opened = true;
+                    row.rate_from = now;
+                    row.rate_bytes = 0;
+                }
                 row.rate_bytes = row.rate_bytes.saturating_add(*n);
-                row.opened = true;
                 row.sent = row.written();
                 row.last_event = now;
             }

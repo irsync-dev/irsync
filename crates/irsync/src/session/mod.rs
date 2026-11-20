@@ -509,8 +509,12 @@ pub enum Party {
 /// final [`Outcome`] is authoritative for totals.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// A data stream for this file is open (both roles); its size.
+    /// The sender opened a data stream for this file; its size.
     FileStart(RelPath, u64),
+    /// The receiver opened this file for writing and asked for its data;
+    /// its size. No data has come yet, and with many files ahead of it
+    /// none may come for a while: `FileBytes` says when it does.
+    FileOpened(RelPath, u64),
     /// A hasher started reading this file; its size.
     FileHashing(RelPath, u64),
     /// The hasher finished reading this file.

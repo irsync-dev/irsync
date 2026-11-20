@@ -222,7 +222,9 @@ including those beyond the rows drawn. It is not the session's window of up to
 4,096 files in flight described in
 [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams):
 a file in that window that is neither being hashed nor has a stream open has
-no row and is not counted.
+no row and is not counted. On a pull the client cannot see the server's
+streams, so a file gets its row when its first data arrives; until then it
+is waiting its turn, not stalled.
 
 The transfer line shows two rates over the last 5 seconds, as in
 `41.20MB/s sent  380.00MB/s synced  goodput 9.2×`. `sent` is the file data

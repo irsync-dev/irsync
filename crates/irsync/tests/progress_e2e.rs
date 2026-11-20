@@ -279,12 +279,26 @@ async fn per_file_events_in_both_directions() {
             let h = Harness::new().await;
             fs::write(h.src(flow).join("big.bin"), vec![3u8; 3_000_000]).unwrap();
             let (out, events) = run(&h, &opts(&[]), flow).await;
-            assert!(
-                events
-                    .iter()
-                    .any(|e| matches!(e, Event::FileStart(p, 3_000_000) if big(p))),
-                "{flow:?}: no FileStart with size: {events:?}"
-            );
+            // The sender starts the row when its stream opens. The
+            // receiver only knows it is ready: it says so, with the size,
+            // before any data, and never claims a stream of its own.
+            let at = |want: fn(&Event) -> bool| events.iter().position(want);
+            let start = at(|e| matches!(e, Event::FileStart(p, 3_000_000) if big(p)));
+            let opened = at(|e| matches!(e, Event::FileOpened(p, 3_000_000) if big(p)));
+            let first_bytes = at(|e| matches!(e, Event::FileBytes(p, _) if big(p)));
+            match flow {
+                Flow::Push => {
+                    assert!(start.is_some(), "no FileStart with size: {events:?}");
+                    assert_eq!(opened, None, "{events:?}");
+                }
+                Flow::Pull => {
+                    assert_eq!(start, None, "{events:?}");
+                    assert!(
+                        opened.is_some() && opened < first_bytes,
+                        "no FileOpened before the data: {events:?}"
+                    );
+                }
+            }
             let bytes: u64 = events
                 .iter()
                 .filter_map(|e| match e {
