@@ -107,6 +107,25 @@ fn octal(out: &mut String, b: u8) {
     out.push_str(&format!("\\{b:03o}"));
 }
 
+/// Text from the other side (an error message, a name, a code) as it is
+/// safe to print: control characters become `\ooo`, so it stays on one
+/// line and cannot drive the terminal. Unlike a path, a backslash is left
+/// as it is, so that ordinary messages read as written.
+pub fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            let mut buf = [0u8; 4];
+            c.encode_utf8(&mut buf)
+                .bytes()
+                .for_each(|b| octal(&mut out, b));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn escape_path(p: &[u8]) -> String {
     let mut out = String::new();
     let mut rest = p;
@@ -156,6 +175,19 @@ mod tests {
         );
         assert_eq!(format!("{:?}", RelPath::new(b"\xff").unwrap()), r#""\377""#);
         assert_eq!(format!("{:?}", RelPath::root()), r#""""#);
+    }
+
+    #[test]
+    fn escape_text_keeps_a_message_on_one_harmless_line() {
+        assert_eq!(
+            escape_text("plain: caf\u{e9} (os error 2)"),
+            "plain: caf\u{e9} (os error 2)"
+        );
+        assert_eq!(escape_text(r"C:\dir"), r"C:\dir");
+        assert_eq!(
+            escape_text("a\x1b[2J\r\nb\x07\u{9b}c\x7f"),
+            r"a\033[2J\015\012b\007\302\233c\177"
+        );
     }
 
     #[test]

@@ -147,7 +147,7 @@ pub(super) fn commas(n: u64) -> String {
     out
 }
 
-pub use crate::fs::paths::escape_path;
+pub use crate::fs::paths::{escape_path, escape_text};
 
 /// A path as shown in a line: `./` for the session root.
 pub(super) fn shown(p: &RelPath) -> String {
@@ -347,7 +347,8 @@ impl Reporter {
             }
             Event::Itemized(p, code) => {
                 if self.itemize {
-                    self.line(&format!("{code} {}", shown(&p)));
+                    // The code comes from the receiver on a push.
+                    self.line(&format!("{} {}", escape_text(&code), shown(&p)));
                 }
             }
             Event::Hardlinked(p, target) => {
@@ -374,7 +375,12 @@ impl Reporter {
             // shows it and main lists every failure once the block is gone.
             Event::Failed(p, msg) => {
                 if !self.screen.is_tty() {
-                    let line = format!("irsync: {}: {msg}\n", p.to_os().to_string_lossy());
+                    // Both may be the peer's: a name it listed, its message.
+                    let line = format!(
+                        "irsync: {}: {}\n",
+                        escape_path(p.as_bytes()),
+                        escape_text(&msg)
+                    );
                     let _ = self.errors.write_all(line.as_bytes());
                     let _ = self.errors.flush();
                     *self.shown.entry((p, msg)).or_default() += 1;

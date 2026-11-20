@@ -800,3 +800,43 @@ async fn a_failed_session_does_not_show_its_delete_pass_as_done() {
     assert_eq!(t.matches("delete    not run").count(), 1, "{t:?}");
     assert_eq!(t.matches("delete    done").count(), 1, "{t:?}");
 }
+
+/// Text from the other side (an error message, an itemize code) and file
+/// names must not reach the terminal raw: control characters could clear
+/// the screen or forge a line.
+const HOSTILE: &str = "boom\x1b[2J\x1b[H\rirsync: all files synced\nok";
+
+fn no_control(text: &str) -> bool {
+    !text.chars().any(|c| c.is_control() && c != '\n')
+}
+
+#[tokio::test]
+async fn a_failed_file_line_escapes_the_peers_text() {
+    let (out, err) = (Buf::default(), Buf::default());
+    let r = reporter(&out, false, 0, false, false).with_errors(Box::new(err.clone()));
+    let path = RelPath::new(b"dir/na\x1b[31mme\xff").unwrap();
+    feed(r, vec![Event::Failed(path, HOSTILE.into())]).await;
+    assert_eq!(
+        err.text(),
+        "irsync: dir/na\\033[31mme\\377: boom\\033[2J\\033[H\\015irsync: all files synced\\012ok\n"
+    );
+}
+
+#[test]
+fn the_errors_section_escapes_the_peers_text() {
+    let buf = Buf::default();
+    let mut r = reporter(&buf, true, 0, false, false);
+    r.handle(Event::Failed(rp("a"), HOSTILE.into()));
+    let f = r.frame(std::time::Instant::now());
+    let line = f.iter().find(|l| l.contains("boom")).unwrap();
+    assert!(no_control(line), "{line:?}");
+    assert!(line.contains("boom\\033[2J"), "{line:?}");
+}
+
+#[tokio::test]
+async fn an_itemized_line_escapes_the_peers_code() {
+    let buf = Buf::default();
+    let r = reporter(&buf, false, 0, false, true);
+    feed(r, vec![Event::Itemized(rp("f"), ">f\x1b[2J\r+++".into())]).await;
+    assert_eq!(buf.text(), ">f\\033[2J\\015+++ f\n");
+}

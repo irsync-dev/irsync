@@ -569,7 +569,7 @@ fn error_lines(live: &Live, g: &Geometry) -> Vec<String> {
     head.push(&commas(live.failed), Some(&red()), g);
     let mut lines = vec![cut(head, g)];
     for (path, msg) in &live.recent_errors {
-        let tail = format!(": {msg}");
+        let tail = format!(": {}", super::escape_text(msg));
         let room = g.width.saturating_sub(2 + cells(&tail));
         let path = truncate_middle(&shown(path), room.max(4), g);
         lines.push(plain_line(format!("  {path}{tail}"), g));

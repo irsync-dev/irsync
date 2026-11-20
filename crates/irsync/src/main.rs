@@ -21,7 +21,7 @@ use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::settings::Settings;
 use irsync::filter::FilterSet;
-use irsync::fs::paths::escape_path;
+use irsync::fs::paths::{escape_path, escape_text};
 use irsync::identity::{
     load_client_identity, load_or_generate, parse_endpoint_id, KeySource, PassphraseSource,
 };
@@ -251,7 +251,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             for path in &outcome.vanished {
                 eprintln!(
                     "irsync: {}: vanished during the sync",
-                    path.to_os().to_string_lossy()
+                    escape_path(path.as_bytes())
                 );
             }
             if outcome.vanished_omitted > 0 {
@@ -263,7 +263,11 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             // Those the reporter printed as they happened are not repeated.
             for (path, msg) in &outcome.errors {
                 if !reporter.as_mut().is_some_and(|r| r.take_shown(path, msg)) {
-                    eprintln!("irsync: {}: {msg}", path.to_os().to_string_lossy());
+                    eprintln!(
+                        "irsync: {}: {}",
+                        escape_path(path.as_bytes()),
+                        escape_text(msg)
+                    );
                 }
             }
             if outcome.max_delete_reached {
@@ -275,7 +279,8 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             combine_exit_codes(&[outcome], failed, sessions)
         }
         Err(e) => {
-            eprintln!("irsync: {e:#}");
+            // A refusal or a close reason is the daemon's own text.
+            eprintln!("irsync: {}", escape_text(&format!("{e:#}")));
             1
         }
     };
@@ -879,7 +884,7 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
     match rt.block_on(list_exports_of(&operand, opts, &log)) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("irsync: {e:#}");
+            eprintln!("irsync: {}", escape_text(&format!("{e:#}")));
             1
         }
     }
@@ -931,7 +936,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         } else {
             "ro"
         };
-        println!("{} {} {access}", e.name, escape_path(&e.path));
+        println!("{} {} {access}", escape_text(&e.name), escape_path(&e.path));
     }
     conn.close(0u32.into(), b"done");
     c.endpoint.close().await;
@@ -1175,7 +1180,9 @@ async fn sync(
                 summary.failed = true;
                 bus.emit(Event::SessionEnd(Arc::new(summary)));
                 // Keep what earlier sources achieved; report this one and go on.
-                log.eprintln(&format!("irsync: {}: {e:#}", path.display()));
+                // The error may carry the daemon's own words.
+                let e = escape_text(&format!("{e:#}"));
+                log.eprintln(&format!("irsync: {}: {e}", path.display()));
                 failed += 1;
                 continue;
             }
