@@ -543,7 +543,7 @@ fn open_locked_part(
 
 /// [`open_locked_part`] in the `.part`'s folder, made if missing. A
 /// cached handle of a folder removed meanwhile (and maybe made again) takes
-/// no new file (`NotFound`): then the folder is opened by name again and
+/// no new file (`NotFound`, or `ESTALE` on NFS): then the folder is opened by name again and
 /// the open tried once more. Returns the folder with the file.
 fn open_part_in_dir(
     place: &Place,
@@ -552,7 +552,7 @@ fn open_part_in_dir(
 ) -> io::Result<(Dir, File, std::fs::Metadata)> {
     let dir = place.part_dir()?;
     match open_locked_part(&dir, &place.part_name, shown, activity) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+        Err(e) if crate::fs::beneath::is_gone(&e) => {
             forget_folder(&place.part_root, &place.part_dir_rel);
             let dir = place.part_dir()?;
             let (file, meta) = open_locked_part(&dir, &place.part_name, shown, activity)?;
@@ -564,7 +564,7 @@ fn open_part_in_dir(
 
 /// Renames the held `.part` (`held`, in `part_dir`) over the destination,
 /// both through open folders. A destination folder whose cached handle was
-/// removed meanwhile fails with `NotFound` while the `.part` is still
+/// removed meanwhile fails with `NotFound` (or `ESTALE` on NFS) while the `.part` is still
 /// there: then it is opened by name again and the rename tried once more.
 fn rename_into_place(
     place: &Place,
@@ -576,7 +576,7 @@ fn rename_into_place(
     let rename = |dest_dir: Dir| part_dir.rename(&place.part_name, &dest_dir, &place.dest_name);
     let mut res = place.dest_dir(part_dir).and_then(rename);
     // A failing check means no retry: the rename's own error is reported.
-    if matches!(&res, Err(e) if e.kind() == io::ErrorKind::NotFound)
+    if matches!(&res, Err(e) if crate::fs::beneath::is_gone(e))
         && !place.same_dir()
         && names_file(held, part_dir, &place.part_name).unwrap_or(false)
     {
@@ -1063,16 +1063,18 @@ impl FileWriter {
             .await
     }
 
-    /// Read chunk `idx`'s bytes from `from` at `offset`, then write them
-    /// like `write_copied`, all in one blocking call.
-    /// `from` is the source's folder and name.
+    /// Read chunk `idx`'s bytes from the file `key` below `root` at
+    /// `offset`, then write them like `write_copied`, all in one blocking
+    /// call. The source's folder is opened in that call too: opening can
+    /// wait and retry, so it stays off the async threads.
     pub async fn copy_local(
         &mut self,
         idx: u32,
-        from: (Dir, OsString),
+        root: Arc<Root>,
+        key: RelPath,
         offset: u64,
     ) -> io::Result<()> {
-        self.put_chunk(idx, Source::Local { from, offset }, false)
+        self.put_chunk(idx, Source::Local { root, key, offset }, false)
             .await
     }
 
@@ -1096,10 +1098,10 @@ impl FileWriter {
         let (opened, data, hole, res) = tokio::task::spawn_blocking(move || {
             let data = match src {
                 Source::Bytes(data) => data,
-                Source::Local { from, offset } => {
+                Source::Local { root, key, offset } => {
                     let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
                     let mut buf = vec![0u8; c.len as usize];
-                    let (dir, name) = from;
+                    let (dir, name) = root.parent(&key, Missing::Refuse)?;
                     dir.open_regular(&name)?.0.read_exact_at(&mut buf, offset)?;
                     if let Some(m) = &meter {
                         m.add(Counter::DiskRead, buf.len() as u64);
@@ -1464,9 +1466,10 @@ impl Verified {
 /// Where [`FileWriter::put_chunk`] takes a chunk's bytes from.
 enum Source {
     Bytes(Vec<u8>),
-    /// Read at `offset` of the regular file `from` (its folder and name).
+    /// Read at `offset` of the regular file `key` below `root`.
     Local {
-        from: (Dir, OsString),
+        root: Arc<Root>,
+        key: RelPath,
         offset: u64,
     },
 }

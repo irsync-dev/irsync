@@ -935,10 +935,8 @@ pub(super) async fn copy_local_chunks(
             Some(data) => write_into(&ctx, &route, w, idx, data, false).await,
             None => {
                 let was_open = w.is_open();
-                let res = match ctx.parent_key(&from, Missing::Refuse) {
-                    Ok(dir_name) => w.copy_local(idx, dir_name, offset).await,
-                    Err(e) => Err(e),
-                };
+                let key = ctx.local_key(&from).into_owned();
+                let res = w.copy_local(idx, ctx.base_root.clone(), key, offset).await;
                 if !was_open && w.is_open() {
                     ctx.hooks.event("open", &route.path);
                 }

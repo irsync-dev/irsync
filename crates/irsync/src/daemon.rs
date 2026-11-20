@@ -1518,7 +1518,7 @@ fn prune_entries(
             .parent(&path, beneath::Missing::Refuse)
             .and_then(|(dir, name)| dir.stat(&name))
             .ok()
-            .filter(|st| crate::fs::safe::is_regular_mode(st.st_mode as u32))
+            .filter(|st| crate::fs::safe::is_regular_mode(st.st_mode as _))
             // The `stat` field types differ by platform; the casts are no-ops here.
             .map(|st| {
                 #[allow(clippy::unnecessary_cast)]

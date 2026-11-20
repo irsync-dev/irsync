@@ -1847,7 +1847,7 @@ fn walk_admits(root: &Root, path: &RelPath, filters: &FilterSet) -> bool {
     // following a symlink, and the file in the last one is regular.
     root.parent(path, Missing::Refuse)
         .and_then(|(dir, name)| dir.stat(&name))
-        .is_ok_and(|st| crate::fs::safe::is_regular_mode(st.st_mode as u32))
+        .is_ok_and(|st| crate::fs::safe::is_regular_mode(st.st_mode as _))
 }
 
 /// Runs the sender role until the receiver's `SessionDone`.

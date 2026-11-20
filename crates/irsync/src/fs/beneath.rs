@@ -350,8 +350,8 @@ impl Dir {
 
     /// Linux cannot `chmod` a name without following it, so open the node
     /// with `O_PATH` (which does not follow), refuse a symlink, and chmod
-    /// that open handle through `/proc`. Without `/proc` this fails, and
-    /// nothing is followed.
+    /// that open handle through `/proc`. Without `/proc` this fails with an
+    /// error that says so, and nothing is followed.
     #[cfg(target_os = "linux")]
     fn chmod_node(&self, name: &OsStr, mode: Mode) -> io::Result<()> {
         use nix::sys::stat::fstat;
@@ -371,8 +371,28 @@ impl Dir {
             ));
         }
         let proc = format!("/proc/self/fd/{}", fd.as_raw_fd());
-        std::fs::set_permissions(proc, std::fs::Permissions::from_mode(mode.bits() as u32))
+        std::fs::set_permissions(proc, std::fs::Permissions::from_mode(mode.bits() as _)).map_err(
+            |e| {
+                if e.kind() != io::ErrorKind::NotFound {
+                    return e;
+                }
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "set mode of {}: setting the mode of a special file or an \
+                         unreadable folder needs /proc: {e}",
+                        self.shown(name).display()
+                    ),
+                )
+            },
+        )
     }
+}
+
+/// `e` says the folder or file is gone: `NotFound`, or `ESTALE`, which
+/// NFS reports for a handle whose folder was removed (and maybe made again).
+pub fn is_gone(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(nix::libc::ESTALE)
 }
 
 /// `st` is a symlink's.
@@ -534,19 +554,14 @@ impl Root {
     ///
     /// The walk starts from the deepest folder already open. A cached handle
     /// follows its folder, not its name: if that folder was removed (and
-    /// maybe made again), the walk from it fails with `NotFound`. Then the
-    /// cached handles under `rel`'s top folder are dropped and the walk
-    /// starts again once from the root; its `NotFound` is the answer.
+    /// maybe made again), the walk from it fails with `NotFound` (or
+    /// `ESTALE` on NFS, see [`is_gone`]). Then the cached handles at and
+    /// below that folder are dropped and the walk starts again once from the
+    /// root; its error is the answer.
     pub fn dir(&self, rel: &RelPath, missing: Missing) -> io::Result<Dir> {
         match self.walk(rel, missing, true) {
-            Err((e, true)) if e.kind() == io::ErrorKind::NotFound => {
-                if let Some(top) = rel.components().next() {
-                    self.forget(
-                        &RelPath::root()
-                            .join(top)
-                            .expect("a component of a RelPath is valid"),
-                    );
-                }
+            Err((e, Some(start))) if is_gone(&e) => {
+                self.forget(&start);
                 self.walk(rel, missing, false).map_err(|(e, _)| e)
             }
             r => r.map_err(|(e, _)| e),
@@ -554,15 +569,15 @@ impl Root {
     }
 
     /// [`Root::dir`]'s walk, from the deepest cached folder when `cached`,
-    /// else from the root. A failure says whether the walk started from a
-    /// cached folder.
+    /// else from the root. A failure names the cached folder the walk
+    /// started from, if it started from one.
     fn walk(
         &self,
         rel: &RelPath,
         missing: Missing,
         cached: bool,
-    ) -> Result<Dir, (io::Error, bool)> {
-        let root_fd = self.root_fd().map_err(|e| (e, false))?;
+    ) -> Result<Dir, (io::Error, Option<RelPath>)> {
+        let root_fd = self.root_fd().map_err(|e| (e, None))?;
         if rel.as_bytes().is_empty() {
             return Ok(Dir {
                 fd: root_fd,
@@ -594,10 +609,12 @@ impl Root {
         }
         // Walk the rest without holding the lock: opens can wait.
         let mut opened = Vec::new();
+        let from = (skip > 0).then(|| start.0.clone());
         let (mut at, mut fd) = start;
         for name in rel.components().skip(skip) {
             at = at.join(name).expect("a component of a RelPath is valid");
-            let next = Arc::new(open_child(&fd, name, rel, missing).map_err(|e| (e, skip > 0))?);
+            let next =
+                Arc::new(open_child(&fd, name, rel, missing).map_err(|e| (e, from.clone()))?);
             opened.push((at.clone(), next.clone()));
             fd = next;
         }
@@ -777,6 +794,37 @@ mod tests {
         );
     }
 
+    /// Only the stale folder the walk started from is dropped: its parent
+    /// and a sibling stay cached.
+    #[test]
+    fn a_stale_cached_folder_is_dropped_alone() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("d/s")).unwrap();
+        std::fs::create_dir(d.path().join("d/keep")).unwrap();
+        let root = Root::open(d.path()).unwrap();
+        root.dir(&r(b"d/s"), Missing::Refuse).unwrap();
+        let keep = root.dir(&r(b"d/keep"), Missing::Refuse).unwrap();
+        // d, d/s, d/keep.
+        assert_eq!(root.cached(), 3);
+        std::fs::remove_dir(d.path().join("d/s")).unwrap();
+        std::fs::create_dir(d.path().join("d/s")).unwrap();
+        root.dir(&r(b"d/s/e"), Missing::Create).unwrap();
+        assert!(d.path().join("d/s/e").is_dir(), "not made in the new d/s");
+        // d, d/keep, and the fresh d/s and d/s/e.
+        assert_eq!(root.cached(), 4);
+        let again = root.dir(&r(b"d/keep"), Missing::Refuse).unwrap();
+        assert!(Arc::ptr_eq(&keep.fd, &again.fd), "d/keep was opened again");
+    }
+
+    #[test]
+    fn is_gone_takes_not_found_and_estale() {
+        assert!(is_gone(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(is_gone(&io::Error::from_raw_os_error(nix::libc::ENOENT)));
+        assert!(is_gone(&io::Error::from_raw_os_error(nix::libc::ESTALE)));
+        assert!(!is_gone(&io::Error::from_raw_os_error(nix::libc::EACCES)));
+        assert!(!is_gone(&io::Error::other("other")));
+    }
+
     #[test]
     fn dir_create_makes_missing_folders_only() {
         let d = tempfile::tempdir().unwrap();
@@ -888,7 +936,7 @@ mod tests {
         // Only "d" and below went; the sibling "dd" stays cached.
         assert_eq!(root.cached(), 1);
         let fresh = root.dir(&r(b"d"), Missing::Refuse).unwrap();
-        let got = nix::sys::stat::fstat(&fresh).unwrap().st_ino as u64;
+        let got: u64 = nix::sys::stat::fstat(&fresh).unwrap().st_ino as _;
         assert_eq!(got, new_ino);
     }
 

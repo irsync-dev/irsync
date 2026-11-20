@@ -1070,7 +1070,6 @@ fn first_missing(export: &Root, rel: &RelPath) -> Option<io::Error> {
     None
 }
 
-/// Serves one session on the daemon after `Hello` was validated: replies
 /// Where a session lives on the daemon: the export's directory, its name
 /// and the resolved path below it (the push basename already joined).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1086,6 +1085,7 @@ pub struct Place {
     pub single: Option<SingleFile>,
 }
 
+/// Serves one session on the daemon after `Hello` was validated: replies
 /// `HelloAck` and plays the role opposite to the client's.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_daemon(

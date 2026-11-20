@@ -271,7 +271,7 @@ pub(super) fn place_hardlink(
         .map_err(|e| ctx("hard link target", e))?;
     let (ldir, lname) = root.parent(path, Missing::Refuse)?;
     let tm = tdir.stat(&tname).map_err(|e| ctx("hard link target", e))?;
-    if !is_regular_mode(tm.st_mode as u32) {
+    if !is_regular_mode(tm.st_mode as _) {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
     let tmp = temp_sibling(&lname);

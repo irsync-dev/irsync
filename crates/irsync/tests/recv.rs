@@ -1,11 +1,11 @@
-use irsync::fs::beneath::{Missing, Root};
+use irsync::fs::beneath::Root;
 use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
@@ -334,15 +334,14 @@ async fn partial_dir_and_copy_local() {
     let pd = e.root.join(".partials");
     let pdir = irsync::recv::PartialDir::new(e.r.clone(), RelPath::new(b".partials").unwrap());
     let mut w = FileWriter::open(&e.r, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
-    let from = || {
-        let dir = e.r.dir(&RelPath::root(), Missing::Refuse).unwrap();
-        (dir, OsString::from("src.bin"))
-    };
+    let from = || RelPath::new(b"src.bin").unwrap();
     // A wrong source offset is caught by the hash check.
-    let err = w.copy_local(0, from(), 1).await.unwrap_err();
+    let err = w.copy_local(0, e.r.clone(), from(), 1).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     for (idx, c) in cl.chunks.iter().enumerate() {
-        w.copy_local(idx as u32, from(), c.offset).await.unwrap();
+        w.copy_local(idx as u32, e.r.clone(), from(), c.offset)
+            .await
+            .unwrap();
     }
     assert!(pd.join("dir/.irsync.f.bin.part").exists());
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
