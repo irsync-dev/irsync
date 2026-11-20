@@ -27,6 +27,8 @@ version is refused with `VERSION_MISMATCH`.
 | Chunk list | At most 2^24 records |
 | List room | 2^24 records per connection, across all files |
 | `NeedChunks` | At most 2^18 chunk indices per message |
+| `Hello.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
+| Path in `PlanItem` and `CheckLink` | At most 64 KiB, and a valid relative path; anything else is a protocol error |
 | Chunk basis | Blocks of 512 B to 4 KiB, at most 8,192 blocks; at most 32 MiB of bases held per session |
 | `DataChunk` | One chunk per frame, at most 1 MiB of data |
 | Heartbeat | At most one every 500 ms |

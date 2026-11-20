@@ -98,6 +98,8 @@ client's session, or exhaust the daemon.
 - A session can be resumed only by the key that started it.
 - Messages are limited to 16 MiB, the queues between the two sides have
   fixed sizes, and an idle connection is dropped after `idle_timeout`.
+- The filter rules a client sends are limited in number and size before the
+  daemon compiles them, and so is a path the other side names for a file.
 
 **What is left:**
 

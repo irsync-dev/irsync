@@ -1105,6 +1105,11 @@ async fn serve_daemon_inner(
         );
         return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
     }
+    // The rules come from the peer: checked before they are compiled, so
+    // their size is bounded by more than the frame.
+    if let Err(msg) = crate::filter::check_limits(hello.filters.iter().map(|r| &r.pattern[..])) {
+        return refuse(&conn, &mut send, &tap, Code::Unknown, msg).await;
+    }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
         blocking(move || prepare_root(&m, &r, missing)).await

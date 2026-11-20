@@ -138,3 +138,25 @@ fn many_stars_do_not_take_exponential_time() {
         started.elapsed()
     );
 }
+
+/// A session's rules are limited in size and number: the daemon compiles
+/// what a client sends, so neither side takes more.
+#[test]
+fn rules_over_the_limits_are_refused() {
+    use irsync::filter::{MAX_PATTERN, MAX_PATTERN_BYTES, MAX_RULES};
+    let fits = "x".repeat(MAX_PATTERN);
+    assert!(FilterSet::from_rules(&[ex(&fits)]).is_ok());
+    let err = FilterSet::from_rules(&[ex(&format!("{fits}x"))]).unwrap_err();
+    assert!(err.to_string().contains("longer than the limit"), "{err}");
+
+    let many: Vec<FilterRule> = (0..=MAX_RULES).map(|_| ex("a")).collect();
+    assert!(FilterSet::from_rules(&many[..MAX_RULES]).is_ok());
+    let err = FilterSet::from_rules(&many).unwrap_err();
+    assert!(err.to_string().contains("filter rules"), "{err}");
+
+    let big: Vec<FilterRule> = (0..=MAX_PATTERN_BYTES / MAX_PATTERN)
+        .map(|_| ex(&fits))
+        .collect();
+    let err = FilterSet::from_rules(&big).unwrap_err();
+    assert!(err.to_string().contains("together"), "{err}");
+}
