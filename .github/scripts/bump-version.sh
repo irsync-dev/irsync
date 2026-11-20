@@ -3,8 +3,9 @@
 #
 # Prepares a release commit: sets <version> (for example 1.2.3 or
 # 1.2.3-beta.1, without a "v") in Cargo.toml ([workspace.package]) and in
-# packaging/dist/dist.toml, updates Cargo.lock to match, and commits the three
-# files as "Release v<version>" on a new branch, bump-v<version>.
+# packaging/dist/dist.toml, updates Cargo.lock and fuzz/Cargo.lock to match,
+# and commits the four files as "Release v<version>" on a new branch,
+# bump-v<version>.
 #
 # Run it on the branch the release is cut from: release-X.Y for a patch
 # (X.Y.Z with Z > 0), main for everything else (release-branch.sh has the
@@ -79,9 +80,15 @@ EOF
 # Write the new version into Cargo.lock without touching any other package.
 cargo update --workspace --quiet
 cargo metadata --locked --format-version 1 >/dev/null
+# The fuzz targets are a project of their own, outside the workspace, with
+# a lock file of their own. It records the workspace crates' versions too,
+# and CI builds it with --locked. --workspace here takes in the crates it
+# uses by path, and nothing from crates.io.
+cargo update --manifest-path fuzz/Cargo.toml --workspace --quiet
+cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 >/dev/null
 
 git switch --quiet -c "$branch"
-git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock packaging/dist/dist.toml
+git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock fuzz/Cargo.lock packaging/dist/dist.toml
 git log --oneline -1
 
 cat <<EOF
