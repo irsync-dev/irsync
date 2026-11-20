@@ -198,7 +198,7 @@ impl Dir {
     }
 
     /// Opens `name` read-only. It must be a regular file; a symlink, FIFO or
-    /// folder is refused with the same messages as `open_regular_nofollow`.
+    /// folder is refused with a message that says so.
     pub fn open_regular(&self, name: &OsStr) -> io::Result<(File, FileStat)> {
         let f = self.open_name(name, OFlag::O_RDONLY, Mode::empty())?;
         let st = require_regular_stat(&f, &self.shown(name))?;

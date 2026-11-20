@@ -39,6 +39,8 @@ fn kind_of(mode: u32) -> Kind {
 
 /// `lstat` the entry at `root/rel` (never following a final symlink),
 /// opening `root` for this one call. Fills everything except `whole_hash`.
+/// Opening a root costs a few system calls each time, so this is not for
+/// hot paths: keep an open [`Root`] and use [`lstat_entry_with_ctime`].
 pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
     let root = Root::open(root)?;
     lstat_entry_with_ctime(&root, rel).map(|(e, _)| e)

@@ -84,6 +84,18 @@ long names with the same beginning still get different temporary files.
 Names that start with `.irsync.` and end in `.part` or `.tmp` are never
 listed, never accepted from a peer and never created as destinations.
 
+irsync opens every folder below a session's root one name at a time and never
+through a symlink. The root itself may be reached through symlinks; below it,
+a symlink is synced as a symlink and never followed. A relative
+`--partial-dir` must be a real folder (or missing) all the way down.
+
+A folder irsync cannot read, because its user has no read permission on it,
+cannot be written into or listed. Its own permissions and times can still be
+set.
+
+On macOS older than 13, irsync cannot make FIFOs or device nodes; the error
+says "special files need macOS 13 or newer".
+
 With `--paranoid`, the sending side keeps reflink clones in a folder named
 `.irsync-clones-<uid>` (the uid in decimal) in a writable directory on each
 file's filesystem. A directory named exactly `.irsync-clones-` followed by

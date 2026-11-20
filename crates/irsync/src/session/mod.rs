@@ -1066,7 +1066,7 @@ impl LocalSide {
         index: IndexHandle,
         filters: Arc<FilterSet>,
     ) -> LocalSide {
-        // Never opened: each session hands the hasher its own root.
+        // Not used for opens until a session hands the hasher its own root.
         let unopened = crate::fs::beneath::Root::lazy(&root);
         let hasher = Arc::new(Hasher::new(index.clone(), unopened, HASH_WORKERS));
         LocalSide {

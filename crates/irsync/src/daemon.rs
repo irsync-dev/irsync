@@ -895,6 +895,7 @@ fn place_in(
     src_name: &[u8],
 ) -> Result<bool, PlaceError> {
     use std::os::unix::ffi::OsStrExt;
+    // The destination's path, for messages only; nothing is opened by it.
     let dest = if rel.as_bytes().is_empty() {
         export_root.to_path_buf()
     } else {
