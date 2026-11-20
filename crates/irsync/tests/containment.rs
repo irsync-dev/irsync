@@ -141,3 +141,89 @@ async fn hardlink_to_failed_target_rejected() {
     assert!(fs::symlink_metadata(h.export.path().join("zzz")).is_err());
     assert_eq!(fs::read(h.export.path().join("zz/t")).unwrap(), b"stale");
 }
+
+/// A single-file session is for one file. A sender that lists more must
+/// not get anything else placed in the directory that holds it.
+#[tokio::test]
+async fn single_file_session_takes_only_its_file() {
+    let h = Harness::new().await;
+    let outside = tempfile::tempdir().unwrap();
+    let src = h.local.path().join("one");
+    fs::write(&src, b"the one file").unwrap();
+    fs::write(h.export.path().join("kept"), b"already here").unwrap();
+
+    let (parent, name) = irsync::session::single::split_last(&src);
+    let mut hello = Harness::hello(Flow::Push);
+    hello.path = b"m".to_vec();
+    hello.contents_only = true;
+    hello.single_file = true;
+    hello.name = name.clone();
+    let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
+    local.contents_only = false;
+    let target = outside.path().as_os_str().as_encoded_bytes().to_vec();
+    local.hooks.inject_listing = Some(Arc::new(move |e: &FileEntry| match &e.path[..] {
+        // Listed in order around the real entry, so the listing is valid.
+        b"" => vec![
+            entry(b"extra", Kind::Symlink, 0, &target),
+            entry(b"kept", Kind::Symlink, 0, &target),
+        ],
+        b"one" => vec![
+            entry(b"zdir", Kind::Directory, 0, b""),
+            entry(b"zdir/link", Kind::Symlink, 0, &target),
+        ],
+        _ => Vec::new(),
+    }));
+    let out = within30(h.run_hello(&archive_opts(), hello, local))
+        .await
+        .expect("session");
+
+    let export = h.export.path();
+    assert_eq!(fs::read(export.join("one")).unwrap(), b"the one file");
+    for extra in ["extra", "zdir", "zdir/link"] {
+        assert!(
+            fs::symlink_metadata(export.join(extra)).is_err(),
+            "{extra} was placed"
+        );
+        assert!(
+            has_error(&out, extra.as_bytes(), "single file"),
+            "{extra}: {:?}",
+            out.errors
+        );
+    }
+    // A file that was there is not replaced either.
+    assert_eq!(fs::read(export.join("kept")).unwrap(), b"already here");
+    assert!(has_error(&out, b"kept", "single file"), "{:?}", out.errors);
+    assert_eq!(out.exit_code(), 23);
+}
+
+/// The one name of a single-file session is never made a directory.
+#[tokio::test]
+async fn single_file_session_takes_no_directory_under_its_name() {
+    let h = Harness::new().await;
+    // The file is gone from the source, so the honest listing has only the
+    // root; the directory under the file's name is the sender's invention.
+    let src = h.local.path().join("one");
+    fs::write(h.export.path().join("one"), b"already here").unwrap();
+
+    let (parent, name) = irsync::session::single::split_last(&src);
+    let mut hello = Harness::hello(Flow::Push);
+    hello.single_file = true;
+    hello.name = name.clone();
+    let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
+    local.contents_only = false;
+    local.hooks.inject_listing = Some(Arc::new(|e: &FileEntry| {
+        if e.path.is_empty() {
+            vec![entry(b"one", Kind::Directory, 0, b"")]
+        } else {
+            Vec::new()
+        }
+    }));
+    let out = within30(h.run_hello(&archive_opts(), hello, local))
+        .await
+        .expect("session");
+    assert!(has_error(&out, b"one", "single file"), "{:?}", out.errors);
+    assert_eq!(
+        fs::read(h.export.path().join("one")).unwrap(),
+        b"already here"
+    );
+}

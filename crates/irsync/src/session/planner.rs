@@ -433,6 +433,20 @@ impl Planner {
             }
             return;
         }
+        if let Some(single) = &self.ctx.single {
+            // The session is for one file, under one name. Anything else a
+            // sender lists is refused: it would land next to that file, in
+            // a directory the user never offered as a destination.
+            // Nor is the one name ever a directory: a sender offers a
+            // single file only for an entry that is not one.
+            if !path.as_bytes().is_empty() && (path != single.wire || is_dir) {
+                self.error(&path, "not the single file this session is for");
+                if is_dir {
+                    self.failed_dirs.insert(path);
+                }
+                return;
+            }
+        }
         if path.as_bytes().is_empty() {
             if !is_dir {
                 self.error(&path, "source root is not a directory");
