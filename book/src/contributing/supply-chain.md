@@ -116,7 +116,7 @@ the badge in the README links to it, and the findings also show in the
 Security tab.
 
 The score describes the project as it is. We do not change anything only to
-raise it. At the time of writing (2026-11-19) it is about 5.4 out of 10. Most
+raise it. At the time of writing (2026-11-20) it is 6.0 out of 10. Most
 of the gap is in the checks below, which we accept or which rise with time.
 Every check not listed here scores 10 (or is marked "not applicable", as
 Packaging is: irsync has no package registry).
@@ -128,11 +128,10 @@ Packaging is: irsync has no package registry).
 | Branch-Protection | 3 | `main` needs a pull request and a passing `CI result`, but no approving review (one maintainer). It also does not require a branch to be up to date before merging, which would mean a rebase for every pull request. | Accepted. The approval part changes when more maintainers join. |
 | Contributors | 0 | All contributors belong to one organisation. | Accepted. We can't change this. |
 | CII-Best-Practices | 0 | irsync has no OpenSSF Best Practices badge. It is a form the maintainer fills in. | Later. |
-| Signed-Releases | 1 | Scorecard looks at the last five releases. Only the newest is signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
+| Signed-Releases | 3 | Scorecard looks at the last five releases. Only the two newest are signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
 | Token-Permissions | 0 | `release.yml` is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
 | Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in `release.yml` (two places) and the rustup install in `tools/dev-setup.sh`. Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
-| Vulnerabilities | 9 | Scorecard reads every entry in `Cargo.lock`, also for crates that are not built for the platforms irsync ships on. After the move to `ssh-key` 0.7 one advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` checks what is built for the shipped platforms and is clean, with no exceptions. | Accepted until upstream drops it. See [issue 154](https://github.com/irsync-dev/irsync/issues/154). |
-| SAST | 7 | CodeQL has checked 10 of the last 30 commits. It only started recently. | Rises by itself as new commits are checked. |
+| Vulnerabilities | 9 | Scorecard reads every entry in `Cargo.lock`, also for crates that are not built for the platforms irsync ships on. One advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` checks what is built for the shipped platforms and is clean, with no exceptions. | We asked upstream to drop it. See [issue 174](https://github.com/irsync-dev/irsync/issues/174). |
 
 The scores move when the repository changes and when Scorecard changes its
 checks, so read the live result for the current numbers.
