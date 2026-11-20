@@ -1,10 +1,12 @@
 mod common;
 
-use irsync::fs::meta::{apply_metadata, create_special, lstat_entry, ApplyOpts};
+use irsync::fs::beneath::{Missing, Root};
+use irsync::fs::meta::{apply_metadata_fd, lstat_entry, ApplyOpts};
 use irsync::fs::paths::{is_contained, RelPath};
 use irsync_proto::v1::file_entry::Kind;
 use nix::sys::stat::{utimensat, UtimensatFlags};
 use nix::sys::time::TimeSpec;
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -92,7 +94,11 @@ fn create_special_fifo() {
     e.kind = Kind::Fifo as i32;
     e.mode = 0o10644;
     e.rdev = 0;
-    create_special(&d.path().join("pipe"), &e).unwrap();
+    let dir = Root::open(d.path())
+        .unwrap()
+        .dir(&RelPath::root(), Missing::Refuse)
+        .unwrap();
+    dir.create_special(OsStr::new("pipe"), &e).unwrap();
     let got = lstat_entry(d.path(), &rp(b"pipe")).unwrap();
     assert_eq!(got.kind(), Kind::Fifo);
 }
@@ -136,7 +142,7 @@ fn apply_metadata_sets_mode_and_mtime() {
     fs::set_permissions(&src, fs::Permissions::from_mode(0o751)).unwrap();
     set_mtime(&src, 1_600_000_000, 5, true);
     let e = lstat_entry(d.path(), &rp(b"src")).unwrap();
-    apply_metadata(&dst, &e, &ALL).unwrap();
+    apply_metadata_fd(fs::File::open(&dst).unwrap(), &e, &ALL).unwrap();
     let m = fs::metadata(&dst).unwrap();
     assert_eq!(m.mode() & 0o7777, 0o751);
     assert_eq!(m.mtime(), 1_600_000_000);
@@ -156,7 +162,12 @@ fn apply_metadata_on_symlink_does_not_follow() {
     let e = lstat_entry(d.path(), &rp(b"link")).unwrap();
 
     set_mtime(&link, 1_000_000_000, 0, false);
-    apply_metadata(&link, &e, &ALL).unwrap();
+    let dir = Root::open(d.path())
+        .unwrap()
+        .dir(&RelPath::root(), Missing::Refuse)
+        .unwrap();
+    dir.apply_node_metadata(OsStr::new("link"), &e, &ALL)
+        .unwrap();
 
     assert_eq!(fs::metadata(&target).unwrap().mtime(), 1_500_000_000);
     assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o644);

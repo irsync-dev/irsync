@@ -20,9 +20,9 @@
 //! created, changed or requested.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -40,8 +40,8 @@ use super::recv_io::{index_old_file, OldFile};
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::Verdict;
-use crate::fs::beneath::DIR_CACHE;
-use crate::fs::meta::{apply_metadata, create_special};
+use crate::fs::beneath::{Dir, Missing, Root, DIR_CACHE};
+use crate::fs::meta::{apply_metadata_fd, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
 use crate::telemetry::meter::Activity;
@@ -202,75 +202,85 @@ fn shares_inode(d: &Side) -> bool {
     d.entry.kind() == Kind::Regular && d.entry.nlink > 1
 }
 
-/// `.irsync.<name>.tmp` next to `full` (shortened to fit `NAME_MAX` when
+/// `.irsync.<name>.tmp` for `name` (shortened to fit `NAME_MAX` when
 /// needed), for atomic replacement of links and specials.
-fn temp_sibling(full: &Path) -> PathBuf {
-    let name = full.file_name().map_or(&b""[..], |n| n.as_bytes());
-    let name = crate::recv::temp_name(name, b".tmp");
-    full.with_file_name(std::ffi::OsStr::from_bytes(&name))
+fn temp_sibling(name: &OsStr) -> OsString {
+    OsString::from_vec(crate::recv::temp_name(name.as_bytes(), b".tmp"))
 }
 
-/// Creates `full` from `make`, applies metadata, then renames it into place.
+/// Creates a temporary next to `name` in `dir` with `make`, applies
+/// metadata to it, then renames it to `name`.
 fn place_via_temp(
-    full: &Path,
-    make: impl FnOnce(&Path) -> io::Result<()>,
+    dir: &Dir,
+    name: &OsStr,
+    make: impl FnOnce(&Dir, &OsStr) -> io::Result<()>,
     entry: &FileEntry,
-    apply: &crate::fs::meta::ApplyOpts,
+    apply: &ApplyOpts,
 ) -> io::Result<()> {
-    let tmp = temp_sibling(full);
-    match std::fs::remove_file(&tmp) {
+    let tmp = temp_sibling(name);
+    match dir.unlink(&tmp) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    let res = make(&tmp)
-        .and_then(|()| apply_metadata(&tmp, entry, apply))
-        .and_then(|()| std::fs::rename(&tmp, full));
+    let res = make(dir, &tmp)
+        .and_then(|()| dir.apply_node_metadata(&tmp, entry, apply))
+        .and_then(|()| dir.rename(&tmp, dir, name));
     if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = dir.unlink(&tmp);
     }
     res
 }
 
-/// Places `root/path` as a hard link to the regular file `root/target`
-/// (`link`), or, without `-H` on this side, as an independent copy of it
-/// with `entry`'s metadata. Both parents are resolved from `root` without
-/// following any symlink, and every operation is relative to those
-/// directory descriptors, so neither name can lead out of `root`. Whatever
-/// is at `path` is replaced (never followed); a directory in the way is an
-/// error.
+/// Sets `entry`'s metadata on `name` in `dir` as it is: a regular file
+/// through an open handle, anything else by name without following it.
+fn apply_in_place(dir: &Dir, name: &OsStr, entry: &FileEntry, apply: &ApplyOpts) -> io::Result<()> {
+    if entry.kind() == Kind::Regular {
+        match dir.open_regular(name) {
+            Ok((file, _)) => return apply_metadata_fd(&file, entry, apply),
+            // A file this side may not read: by name, which never follows
+            // a symlink either.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {}
+            Err(e) => return Err(e),
+        }
+    }
+    dir.apply_node_metadata(name, entry, apply)
+}
+
+/// Places `path` as a hard link to the regular file `target` (`link`),
+/// or, without `-H` on this side, as an independent copy of it with
+/// `entry`'s metadata, both below `root`. Every operation is relative to
+/// the two parent folders opened from `root`, so neither name can lead out
+/// of it. Whatever is at `path` is replaced (never followed); a directory
+/// in the way is an error.
 pub(super) fn place_hardlink(
-    root: &Path,
+    root: &Root,
     target: &RelPath,
     path: &RelPath,
     link: bool,
     entry: &FileEntry,
-    apply: &crate::fs::meta::ApplyOpts,
+    apply: &ApplyOpts,
 ) -> io::Result<()> {
-    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
-    use nix::fcntl::{renameat, AtFlags, OFlag};
-    use nix::sys::stat::{fstatat, Mode};
-    use nix::unistd::{linkat, unlinkat, UnlinkatFlags};
-    use std::ffi::OsStr;
+    use crate::fs::safe::{errno, is_regular_mode};
+    use nix::fcntl::{AtFlags, OFlag};
+    use nix::sys::stat::Mode;
+    use nix::unistd::linkat;
 
     let ctx = |what: &str, e: io::Error| io::Error::new(e.kind(), format!("{what}: {e}"));
-    let (tdir, tname) = split_last(target)?;
-    let (ldir, lname) = split_last(path)?;
-    let (tname, lname) = (OsStr::from_bytes(&tname), OsStr::from_bytes(&lname));
-    let tfd = open_dir_beneath(root, &tdir).map_err(|e| ctx("hard link target", e))?;
-    let lfd = open_dir_beneath(root, &ldir)?;
-    let tm = fstatat(&tfd, tname, AtFlags::AT_SYMLINK_NOFOLLOW)
-        .map_err(|e| ctx("hard link target", errno(e)))?;
+    let (tdir, tname) = root
+        .parent(target, Missing::Refuse)
+        .map_err(|e| ctx("hard link target", e))?;
+    let (ldir, lname) = root.parent(path, Missing::Refuse)?;
+    let tm = tdir.stat(&tname).map_err(|e| ctx("hard link target", e))?;
     if !is_regular_mode(tm.st_mode as u32) {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    let tmp = crate::recv::temp_name(lname.as_bytes(), b".tmp");
-    let tmp = OsStr::from_bytes(&tmp);
-    match unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir) {
-        Ok(()) | Err(nix::Error::ENOENT) => {}
-        Err(e) => return Err(errno(e)),
+    let tmp = temp_sibling(&lname);
+    match ldir.unlink(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
     }
     let made = if link {
-        if let Ok(m) = fstatat(&lfd, lname, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        if let Ok(m) = ldir.stat(&lname) {
             // Already linked (renaming a link over itself would leave the temp).
             if m.st_dev == tm.st_dev && m.st_ino == tm.st_ino {
                 return Ok(());
@@ -278,40 +288,57 @@ pub(super) fn place_hardlink(
         }
         // The link shares the target's inode and with it the target's
         // metadata; no flags: a symlink at the target name is never followed.
-        linkat(&tfd, tname, &lfd, tmp, AtFlags::empty()).map_err(errno)
+        linkat(
+            &tdir,
+            tname.as_os_str(),
+            &ldir,
+            tmp.as_os_str(),
+            AtFlags::empty(),
+        )
+        .map_err(errno)
     } else {
         (|| {
-            let nofollow = OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-            let src = nix::fcntl::openat(&tfd, tname, OFlag::O_RDONLY | nofollow, Mode::empty())
-                .map_err(errno)?;
-            let mut src = std::fs::File::from(src);
-            crate::fs::safe::require_regular(&src, Path::new(tname))?;
-            let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | nofollow;
-            let dst = nix::fcntl::openat(&lfd, tmp, flags, Mode::from_bits_truncate(0o600))
-                .map_err(errno)?;
+            let (mut src, _) = tdir.open_regular(&tname)?;
+            let flags = OFlag::O_WRONLY
+                | OFlag::O_CREAT
+                | OFlag::O_EXCL
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_NONBLOCK
+                | OFlag::O_CLOEXEC;
+            let dst = crate::fs::transient::retry(|| {
+                nix::fcntl::openat(
+                    &ldir,
+                    tmp.as_os_str(),
+                    flags,
+                    Mode::from_bits_truncate(0o600),
+                )
+                .map_err(errno)
+            })?;
             let mut dst = std::fs::File::from(dst);
             io::copy(&mut src, &mut dst)?;
-            crate::fs::meta::apply_metadata_fd(&dst, entry, apply)
+            apply_metadata_fd(&dst, entry, apply)
         })()
     };
-    let res = made.and_then(|()| renameat(&lfd, tmp, &lfd, lname).map_err(errno));
+    let res = made.and_then(|()| ldir.rename(&tmp, &ldir, &lname));
     if res.is_err() {
-        let _ = unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir);
+        let _ = ldir.unlink(&tmp);
     }
     res
 }
 
-/// Makes `full` a directory, replacing a non-directory in the way.
-pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
-    match std::fs::symlink_metadata(full) {
-        Ok(m) if m.is_dir() => Ok(()),
-        Ok(_) => {
-            std::fs::remove_file(full)?;
-            std::fs::create_dir(full)
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::create_dir(full),
-        Err(e) => Err(e),
+/// Makes the folder `path` below the session root, replacing a non-folder
+/// in the way. Its parent must be there already.
+pub(super) fn mkdir_replacing(ctx: &Ctx, path: &RelPath) -> io::Result<()> {
+    if path.as_bytes().is_empty() {
+        // The root itself: it is there, it was opened.
+        return ctx.dir(path, Missing::Refuse).map(drop);
     }
+    let (dir, name) = ctx.parent(path, Missing::Refuse)?;
+    ctx.hooks.event("node", path);
+    dir.mkdir_replacing(&name)?;
+    // A folder cached under this name is not the one there now.
+    ctx.forget(path);
+    Ok(())
 }
 
 /// The entries of a listing; a gap records its path in `gap` (the earliest
@@ -565,7 +592,6 @@ impl Planner {
             }
             return;
         }
-        let full = self.ctx.full(&path);
         let apply = self.ctx.apply_opts(&src.entry);
         let entry = src.entry.clone();
         let res = match decision {
@@ -612,7 +638,8 @@ impl Planner {
                 // Making an entry is placing it, not planning.
                 drop(planning);
                 let placing = meter.start(Activity::Place);
-                let res = blocking(move || mkdir_replacing(&full)).await;
+                let (ctx, p) = (self.ctx.clone(), path.clone());
+                let res = blocking(move || mkdir_replacing(&ctx, &p)).await;
                 drop(placing);
                 match res {
                     Ok(()) => {
@@ -644,20 +671,24 @@ impl Planner {
             Decision::MetaOnly => {
                 drop(planning);
                 let _placing = meter.start(Activity::Place);
-                blocking(move || apply_metadata(&full, &entry, &apply)).await
+                let (ctx, p) = (self.ctx.clone(), path.clone());
+                blocking(move || {
+                    let (dir, name) = ctx.parent(&p, Missing::Refuse)?;
+                    apply_in_place(&dir, &name, &entry, &apply)
+                })
+                .await
             }
             Decision::Symlink => {
                 self.touch_parent(&path);
                 drop(planning);
                 let _placing = meter.start(Activity::Place);
+                let (ctx, p) = (self.ctx.clone(), path.clone());
                 blocking(move || {
-                    let target = std::ffi::OsStr::from_bytes(&entry.link_target).to_owned();
-                    place_via_temp(
-                        &full,
-                        |tmp| std::os::unix::fs::symlink(&target, tmp),
-                        &entry,
-                        &apply,
-                    )
+                    let (dir, name) = ctx.parent(&p, Missing::Refuse)?;
+                    ctx.hooks.event("node", &p);
+                    let target = OsStr::from_bytes(&entry.link_target);
+                    let make = |dir: &Dir, tmp: &OsStr| dir.symlink(target, tmp);
+                    place_via_temp(&dir, &name, make, &entry, &apply)
                 })
                 .await
             }
@@ -665,8 +696,12 @@ impl Planner {
                 self.touch_parent(&path);
                 drop(planning);
                 let _placing = meter.start(Activity::Place);
+                let (ctx, p) = (self.ctx.clone(), path.clone());
                 blocking(move || {
-                    place_via_temp(&full, |tmp| create_special(tmp, &entry), &entry, &apply)
+                    let (dir, name) = ctx.parent(&p, Missing::Refuse)?;
+                    ctx.hooks.event("node", &p);
+                    let make = |dir: &Dir, tmp: &OsStr| dir.create_special(tmp, &entry);
+                    place_via_temp(&dir, &name, make, &entry, &apply)
                 })
                 .await
             }
@@ -937,8 +972,17 @@ pub(super) async fn replan(
     let request = match decision {
         Decision::Skip => None,
         Decision::MetaOnly => {
-            let (full, entry, apply) = (ctx.full(path), entry.clone(), ctx.apply_opts(entry));
-            blocking(move || apply_metadata(&full, &entry, &apply)).await?;
+            let (ctx, p, entry, apply) = (
+                ctx.clone(),
+                path.clone(),
+                entry.clone(),
+                ctx.apply_opts(entry),
+            );
+            blocking(move || {
+                let (dir, name) = ctx.parent(&p, Missing::Refuse)?;
+                apply_in_place(&dir, &name, &entry, &apply)
+            })
+            .await?;
             None
         }
         Decision::Delta => Some((Action::Delta, 0)),
@@ -1110,19 +1154,20 @@ mod tests {
         let r = |s: &[u8]| RelPath::new(s).unwrap();
         let e = FileEntry::default();
         let none = ApplyOpts::default();
+        let dir = Root::open(root.path()).unwrap();
         for link in [true, false] {
             // Target through a symlinked directory.
-            let err = place_hardlink(root.path(), &r(b"esc/secret"), &r(b"l"), link, &e, &none)
-                .unwrap_err();
+            let err =
+                place_hardlink(&dir, &r(b"esc/secret"), &r(b"l"), link, &e, &none).unwrap_err();
             assert!(err.to_string().contains("symlink"), "{err}");
             assert!(!root.path().join("l").exists());
             // Link name through a symlinked directory.
-            assert!(place_hardlink(root.path(), &r(b"t"), &r(b"esc/l"), link, &e, &none).is_err());
+            assert!(place_hardlink(&dir, &r(b"t"), &r(b"esc/l"), link, &e, &none).is_err());
             assert!(!out.path().join("l").exists());
         }
         // A symlink as the target itself is not a regular file.
         std::os::unix::fs::symlink(out.path().join("secret"), root.path().join("s")).unwrap();
-        assert!(place_hardlink(root.path(), &r(b"s"), &r(b"l"), true, &e, &none).is_err());
+        assert!(place_hardlink(&dir, &r(b"s"), &r(b"l"), true, &e, &none).is_err());
         assert_eq!(
             std::fs::metadata(out.path().join("secret"))
                 .unwrap()
@@ -1130,14 +1175,14 @@ mod tests {
             1
         );
         // The normal case links, and a second run keeps the link.
-        place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
-        place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
+        place_hardlink(&dir, &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
+        place_hardlink(&dir, &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
         let (a, b) = (
             std::fs::metadata(root.path().join("t")).unwrap(),
             std::fs::metadata(root.path().join("l")).unwrap(),
         );
         assert_eq!(a.ino(), b.ino());
-        place_hardlink(root.path(), &r(b"t"), &r(b"c"), false, &e, &none).unwrap();
+        place_hardlink(&dir, &r(b"t"), &r(b"c"), false, &e, &none).unwrap();
         assert_eq!(std::fs::read(root.path().join("c")).unwrap(), b"t");
         assert_ne!(
             std::fs::metadata(root.path().join("c")).unwrap().ino(),

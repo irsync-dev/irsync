@@ -3,16 +3,13 @@
 use crate::fs::beneath::{Missing, Root};
 use crate::fs::paths::RelPath;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
-use nix::fcntl::{AtFlags, AT_FDCWD};
-use nix::sys::stat::{
-    fchmodat, fstat, mknod, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
-};
+use nix::sys::stat::{fstat, FileStat, Mode, SFlag};
 use nix::sys::time::TimeSpec;
-use nix::unistd::{fchownat, Gid, Uid};
+use nix::unistd::{Gid, Uid};
 use std::io;
 use std::path::Path;
 
-/// Which metadata `apply_metadata` should set.
+/// Which metadata [`apply_metadata_fd`] should set.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApplyOpts {
     pub perms: bool,
@@ -168,35 +165,17 @@ pub(crate) fn may_chgrp(gid: u32) -> bool {
     ids.root || ids.groups.contains(&gid)
 }
 
-/// Apply the selected metadata of `e` to `path`, without following symlinks.
-/// Ownership is applied first (chown clears setuid bits), then mode, then times.
+/// Apply the selected metadata of `e` through an open descriptor (never by
+/// path, so nothing can be swapped in underneath). Ownership is applied
+/// first (chown clears setuid bits), then mode, then times. A symlink or
+/// special file is done by name with
+/// [`Dir::apply_node_metadata`](crate::fs::beneath::Dir::apply_node_metadata).
 ///
 /// The ids are the entry's as the receiver localized them (the sender's
 /// names mapped to this side's ids unless `--numeric-ids`). Like rsync
 /// without privilege, the owner is set only when running as root and the
 /// group only as root or a member of it; otherwise they are silently left
 /// alone.
-pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
-    let owner = opts.owner && process_ids().root;
-    let group = opts.group && may_chgrp(e.gid);
-    if owner || group {
-        let uid = owner.then(|| Uid::from_raw(e.uid));
-        let gid = group.then(|| Gid::from_raw(e.gid));
-        fchownat(AT_FDCWD, path, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
-    }
-    if opts.perms && e.kind() != Kind::Symlink {
-        let mode = Mode::from_bits_truncate((e.mode & 0o7777) as _);
-        fchmodat(AT_FDCWD, path, mode, FchmodatFlags::FollowSymlink).map_err(errno)?;
-    }
-    if opts.times {
-        let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
-        utimensat(AT_FDCWD, path, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno)?;
-    }
-    Ok(())
-}
-
-/// [`apply_metadata`] through an open descriptor of a regular file (never
-/// by path, so nothing can be swapped in underneath).
 pub fn apply_metadata_fd(
     fd: impl std::os::fd::AsFd,
     e: &FileEntry,
@@ -240,24 +219,4 @@ pub(crate) fn apply_fd(
         futimens(fd, &t, &t).map_err(errno)?;
     }
     Ok(())
-}
-
-/// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
-/// `mkfifo` and `mknod` are umask-subject, so callers follow with `apply_metadata` to set exact mode.
-pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
-    let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
-    let kind = match e.kind() {
-        // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
-        Kind::Fifo => return nix::unistd::mkfifo(path, perm).map_err(errno),
-        Kind::CharDev => SFlag::S_IFCHR,
-        Kind::BlockDev => SFlag::S_IFBLK,
-        Kind::Socket => SFlag::S_IFSOCK,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "not a special file kind",
-            ))
-        }
-    };
-    mknod(path, kind, perm, e.rdev as _).map_err(errno)
 }

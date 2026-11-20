@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, assert_trees_equal, sync_trees, Flow};
-use irsync::fs::meta::{apply_metadata, lstat_entry, ApplyOpts};
+use irsync::fs::beneath::{Missing, Root};
+use irsync::fs::meta::{apply_metadata_fd, lstat_entry, ApplyOpts};
 use irsync::fs::paths::RelPath;
 
 const MIB: usize = 1024 * 1024;
@@ -342,7 +343,8 @@ fn owner_skipped_without_root() {
         owner: true,
         group: true,
     };
-    apply_metadata(&dir.path().join("f"), &e, &opts).expect("ownership is skipped, not an error");
+    let f = fs::File::open(dir.path().join("f")).unwrap();
+    apply_metadata_fd(&f, &e, &opts).expect("ownership is skipped, not an error");
     let after = lstat_entry(dir.path(), &rel).unwrap();
     assert_eq!(after.uid, before.uid);
     assert_eq!(after.gid, before.gid);
@@ -361,10 +363,12 @@ fn device_needs_privilege() {
         rdev: nix::libc::makedev(1, 3) as _,
         ..Default::default()
     };
-    let err = irsync::fs::meta::create_special(&dir.path().join("null"), &e).unwrap_err();
+    let root = Root::open(dir.path()).unwrap();
+    let at = root.dir(&RelPath::root(), Missing::Refuse).unwrap();
+    let err = at.create_special("null".as_ref(), &e).unwrap_err();
     assert_eq!(err.raw_os_error(), Some(nix::libc::EPERM), "{err}");
     e.kind = irsync_proto::v1::file_entry::Kind::BlockDev as i32;
-    let err = irsync::fs::meta::create_special(&dir.path().join("blk"), &e).unwrap_err();
+    let err = at.create_special("blk".as_ref(), &e).unwrap_err();
     assert_eq!(err.raw_os_error(), Some(nix::libc::EPERM), "{err}");
 }
 

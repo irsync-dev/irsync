@@ -39,7 +39,7 @@ use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{open_export, prepare_root, serve_daemon, Missing, Place};
-use crate::session::single::{is_one_component, place_file, PlaceError, SingleFile};
+use crate::session::single::{is_one_component, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, HASH_WORKERS};
@@ -837,8 +837,8 @@ fn admit<'a>(
 
 /// A single-file session at `rel` in the export at `export_root`: the
 /// directory that holds the file (export-relative) and the file's names.
-/// A push places the file by rsync's rules ([`place_file`]); a pull sends
-/// the file `rel` names, under the receiver's name `hello.name`. Nothing
+/// A push places the file by rsync's rules ([`place_in`]); a pull sends the
+/// file `rel` names, under the receiver's name `hello.name`. Nothing
 /// is looked at through a symlink: the directories above the file are
 /// checked as `prepare_root` checks a session root, first.
 fn place_single(
@@ -849,30 +849,26 @@ fn place_single(
     if hello.direction == Direction::DaemonSends as i32 {
         return source_single(export, rel, hello);
     }
-    use std::os::unix::ffi::OsStrExt;
     // A missing directory is created later, by the session.
-    prepare_root(export, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
-    let export_root = export.path();
-    let dest = if rel.as_bytes().is_empty() {
-        export_root.to_path_buf()
-    } else {
-        export_root.join(rel.to_os())
+    let (_, parent) =
+        prepare_root(export, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
+    let in_dir = place_in(
+        &parent,
+        rel,
+        export.path(),
+        hello.contents_only,
+        &hello.name,
+    )
+    .map_err(|e| match e {
+        PlaceError::SymlinkToDirectory(_) => (Code::BadPath, format!("bad session path: {e}")),
+        e => (Code::BadPath, e.to_string()),
+    })?;
+    let (root, name) = match rel.components().last() {
+        Some(last) if !in_dir => (rel.parent(), last),
+        _ => (rel.clone(), &hello.name[..]),
     };
-    let placed =
-        place_file(&dest, hello.contents_only, &hello.name, false).map_err(|e| match e {
-            PlaceError::SymlinkToDirectory(_) => (Code::BadPath, format!("bad session path: {e}")),
-            e => (Code::BadPath, e.to_string()),
-        })?;
-    let root = placed
-        .root
-        .strip_prefix(export_root)
-        .ok()
-        .and_then(|r| RelPath::new(r.as_os_str().as_bytes()).ok());
-    let name = RelPath::new(&placed.name)
-        .ok()
-        .filter(|_| is_one_component(&placed.name));
-    match (root, name) {
-        (Some(root), Some(name)) => Ok((
+    match RelPath::new(name).ok().filter(|_| is_one_component(name)) {
+        Some(name) => Ok((
             root,
             SingleFile {
                 wire: name.clone(),
@@ -881,6 +877,74 @@ fn place_single(
         )),
         _ => Err((Code::BadPath, "invalid path".into())),
     }
+}
+
+/// The rules of [`place_file`](crate::session::single::place_file) for a
+/// push to `rel` in the export at `export_root`, looked at through
+/// `parent`, the open folder above `rel` (in which nothing exists if it
+/// is missing): whether the file goes inside `rel` (a folder), or is
+/// `rel` itself. A symlink at `rel` is
+/// only looked through to refuse one to a folder; nothing is written
+/// through it.
+fn place_in(
+    parent: &Root,
+    rel: &RelPath,
+    export_root: &Path,
+    contents_only: bool,
+    src_name: &[u8],
+) -> Result<bool, PlaceError> {
+    use std::os::unix::ffi::OsStrExt;
+    let dest = if rel.as_bytes().is_empty() {
+        export_root.to_path_buf()
+    } else {
+        export_root.join(rel.to_os())
+    };
+    let last = rel.components().last();
+    let in_dir = match last {
+        // The export root itself, a folder.
+        None => true,
+        Some(name) => {
+            let name = std::ffi::OsStr::from_bytes(name);
+            // Its own stat, and whether a symlink there leads to a folder.
+            let looked = parent
+                .dir(&RelPath::root(), beneath::Missing::Refuse)
+                .and_then(|d| {
+                    let st = d.stat(name)?;
+                    let to_dir = beneath::is_link(&st)
+                        && nix::sys::stat::fstatat(&d, name, nix::fcntl::AtFlags::empty())
+                            .is_ok_and(|t| beneath::is_dir(&t));
+                    Ok((st, to_dir))
+                });
+            match looked {
+                Ok((st, _)) if beneath::is_dir(&st) => true,
+                // Only decides; nothing is written through the link.
+                Ok((_, true)) => return Err(PlaceError::SymlinkToDirectory(dest)),
+                Ok(_) if contents_only => return Err(PlaceError::NotADirectory(dest)),
+                Ok(_) => false,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => contents_only,
+                Err(e) => return Err(PlaceError::Io(dest, e)),
+            }
+        }
+    };
+    if in_dir {
+        let target = dest.join(std::ffi::OsStr::from_bytes(src_name));
+        let folder = match last {
+            Some(name) => RelPath::root()
+                .join(name)
+                .expect("a component of a RelPath is valid"),
+            None => RelPath::root(),
+        };
+        let found = parent
+            .dir(&folder, beneath::Missing::Refuse)
+            .and_then(|d| d.stat(std::ffi::OsStr::from_bytes(src_name)));
+        match found {
+            Ok(st) if beneath::is_dir(&st) => return Err(PlaceError::IsADirectory(target)),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(PlaceError::Io(target, e)),
+        }
+    }
+    Ok(in_dir)
 }
 
 /// The pull half of [`place_single`]: `rel` must name an existing entry
@@ -1181,39 +1245,29 @@ enum Removal {
 /// holds no part of ours, so it counts as missing.
 // The `stat` field types differ by platform; the mode cast is a no-op here.
 #[allow(clippy::unnecessary_cast)]
-fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
-    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
-    use nix::fcntl::AtFlags;
-    use nix::sys::stat::fstatat;
-    use nix::unistd::{unlinkat, UnlinkatFlags};
+fn remove_part(root: &Root, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
+    use crate::fs::safe::is_regular_mode;
     if !rel.components().last().is_some_and(is_part_name) {
         return Ok(Removal::Skipped);
     }
-    let (dir, name) = split_last(rel)?;
-    let name = &name[..];
-    let dfd = match open_dir_beneath(root, &dir) {
-        Ok(fd) => fd,
-        // A symlinked or non-directory component (`InvalidInput`), or gone.
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
-            ) =>
-        {
+    let (dir, name) = match root.parent(rel, beneath::Missing::Refuse) {
+        Ok(found) => found,
+        // A symlinked or non-directory component, or gone.
+        Err(e) if e.kind() == io::ErrorKind::NotFound || beneath::is_not_a_folder(&e) => {
             return Ok(Removal::Missing);
         }
         Err(e) => return Err(e),
     };
-    match fstatat(&dfd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+    match dir.stat(&name) {
         Ok(st) if is_regular_mode(st.st_mode as u32) && st.st_mtime <= cutoff => {
             if !dry_run {
-                unlinkat(&dfd, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
+                dir.unlink(&name)?;
             }
             Ok(Removal::Removed)
         }
         Ok(_) => Ok(Removal::Skipped),
-        Err(nix::Error::ENOENT) => Ok(Removal::Missing),
-        Err(e) => Err(errno(e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Removal::Missing),
+        Err(e) => Err(e),
     }
 }
 
@@ -1314,6 +1368,8 @@ pub async fn gc_skipping(
     }
 
     let root = root.to_path_buf();
+    // Opened at its first use; while it is missing every part is too.
+    let parts_root = Root::lazy(&root);
     tokio::task::spawn_blocking(move || -> io::Result<GcReport> {
         let mut ix = index.lock().map_err(|_| io_err("index lock poisoned"))?;
         let mut referenced: Vec<Vec<u8>> = Vec::new();
@@ -1357,7 +1413,7 @@ pub async fn gc_skipping(
             }
             let Some(part) = part_of(&dest) else { continue };
             handled.insert(part.clone());
-            match remove_part(&root, &part, cutoff, dry_run) {
+            match remove_part(&parts_root, &part, cutoff, dry_run) {
                 Ok(Removal::Removed) => report.parts_removed.push(part),
                 Ok(Removal::Missing) => report.rows_without_file += 1,
                 Ok(Removal::Skipped) => {
@@ -1390,7 +1446,7 @@ pub async fn gc_skipping(
                 report.parts_kept += 1;
                 continue;
             }
-            match remove_part(&root, &part, cutoff, dry_run) {
+            match remove_part(&parts_root, &part, cutoff, dry_run) {
                 Ok(Removal::Removed) => report.parts_removed.push(part),
                 Ok(Removal::Missing | Removal::Skipped) => {}
                 Err(e) => {

@@ -25,7 +25,7 @@ impl Receiver {
             Ok(dirs
                 .into_iter()
                 .filter_map(|d| {
-                    mkdir_replacing(&ctx.full(&d))
+                    mkdir_replacing(&ctx, &d)
                         .err()
                         .map(|e| (d, format!("mkdir: {e}")))
                 })

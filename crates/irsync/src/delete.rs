@@ -7,8 +7,9 @@
 //! - it refuses when either listing was incomplete, unless `ignore_errors`;
 //! - it never follows symlinks: each path is removed with `unlinkat`
 //!   relative to its parent directory, opened from the root without
-//!   following any symlink and held across the check and the removal; a
-//!   candidate whose parent is no longer a real directory is an error;
+//!   following any symlink (see [`crate::fs::beneath`]) and held across the
+//!   check and the removal; a candidate whose parent is no longer a real
+//!   directory is an error;
 //! - directories are removed with `AT_REMOVEDIR` only, after their contents
 //!   (deepest first); a directory that still holds something is an error for
 //!   that path, never a recursive removal, except irsync's own leftover
@@ -19,22 +20,19 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io;
-use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
-use nix::dir::Dir;
-use nix::fcntl::{openat, AtFlags, OFlag};
+use nix::fcntl::{openat, OFlag};
 use nix::sys::stat::Mode;
-use nix::sys::stat::{fstatat, SFlag};
 use nix::unistd::{unlinkat, UnlinkatFlags};
 
 use crate::cli::DeleteMode;
+use crate::fs::beneath::{is_dir, Dir, Missing, Root};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{errno, open_dir_beneath, split_last};
+use crate::fs::safe::errno;
 use crate::recv::is_temp_name;
 use crate::telemetry::meter::{Activity, Meter};
 
@@ -235,7 +233,7 @@ impl DeletePass {
     /// Refuses when `listing_incomplete` unless `ignore_errors`.
     pub async fn execute(
         self,
-        root: PathBuf,
+        root: Arc<Root>,
         listing_incomplete: bool,
     ) -> Result<DeleteReport, DeleteRefused> {
         if self.unreliable || (listing_incomplete && !self.ignore_errors) {
@@ -252,7 +250,7 @@ impl DeletePass {
         }))
     }
 
-    fn run(mut self, root: &Path) -> DeleteReport {
+    fn run(mut self, root: &Root) -> DeleteReport {
         // Deepest first; among equals, reverse path order (children before
         // their directory however the names sort).
         self.candidates.sort_by(|(a, _), (b, _)| {
@@ -263,7 +261,6 @@ impl DeletePass {
         let _timed = meter.as_deref().map(|m| m.start(Activity::Delete));
         let mut rep = DeleteReport::default();
         let mut count = self.spent;
-        let mut parent: ParentCache = None;
         let candidates = std::mem::take(&mut self.candidates);
         let total = candidates.len() as u64;
         let report = |handled: u64| {
@@ -289,7 +286,7 @@ impl DeletePass {
                     count += 1;
                     break 'one;
                 }
-                match remove_one(root, &path, &mut parent) {
+                match remove_one(root, &path) {
                     Ok(true) => {
                         tracing::info!(?path, "deleted");
                         rep.deleted.push(path);
@@ -315,10 +312,6 @@ impl DeletePass {
     }
 }
 
-/// The parent directory last opened by [`remove_one`]: candidates come
-/// deepest first in reverse path order, so siblings share it.
-type ParentCache = Option<(RelPath, OwnedFd)>;
-
 /// Clears irsync's own temporaries (`.irsync.<name>.part` / `.tmp`, see
 /// [`is_temp_name`]) from the directory `name` in `parent`, so that what an
 /// interrupted sync left there does not keep a directory the source
@@ -326,14 +319,17 @@ type ParentCache = Option<(RelPath, OwnedFd)>;
 /// `.part`s (each is locked while its writer runs): otherwise they stay,
 /// and removing the directory fails as for any that is not empty. Their
 /// progress records go at the next GC, which finds the parts missing.
-fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
+fn clear_temporaries(parent: &Dir, name: &OsStr) -> io::Result<()> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     // Not a directory we can open: removing it reports why.
     let Ok(fd) = openat(parent, name, flags, Mode::empty()) else {
         return Ok(());
     };
     let mut temps = Vec::new();
-    for entry in Dir::from_fd(fd.try_clone()?).map_err(errno)?.iter() {
+    for entry in nix::dir::Dir::from_fd(fd.try_clone()?)
+        .map_err(errno)?
+        .iter()
+    {
         let n = entry.map_err(errno)?.file_name().to_bytes().to_vec();
         if n == b"." || n == b".." {
             continue;
@@ -377,41 +373,39 @@ fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
 }
 
 /// Removes one path relative to its parent directory, which is opened from
-/// `root` component by component with `O_NOFOLLOW` (see
-/// [`open_dir_beneath`]) and held while the path is checked and removed: a
-/// parent swapped for a symlink cannot redirect the removal outside the
-/// tree. `unlinkat(AT_REMOVEDIR)` for a directory (fails unless empty),
-/// plain `unlinkat` for anything else, symlinks included (never followed).
-/// `Ok(false)` when it is already gone; a parent that is no longer a real
-/// directory is an error.
-fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Result<bool> {
-    let (dir, name) = split_last(path)?;
-    if parent.as_ref().is_none_or(|(p, _)| *p != dir) {
-        *parent = None;
-        match open_dir_beneath(root, &dir) {
-            Ok(fd) => *parent = Some((dir, fd)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e),
-        }
-    }
-    let Some((_, fd)) = parent.as_ref() else {
-        unreachable!("the parent was just opened")
+/// `root` component by component without following a symlink (the root
+/// keeps recent ones open, so siblings share it) and held while the path is
+/// checked and removed: a parent swapped for a symlink cannot redirect the
+/// removal outside the tree. `unlinkat(AT_REMOVEDIR)` for a directory
+/// (fails unless empty), plain `unlinkat` for anything else, symlinks
+/// included (never followed). `Ok(false)` when it is already gone; a
+/// parent that is no longer a real directory is an error.
+fn remove_one(root: &Root, path: &RelPath) -> io::Result<bool> {
+    let (dir, name) = match root.parent(path, Missing::Refuse) {
+        Ok(found) => found,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
     };
-    let name = OsStr::from_bytes(&name);
-    let st = match fstatat(fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+    let st = match dir.stat(&name) {
         Ok(st) => st,
-        Err(nix::Error::ENOENT) => return Ok(false),
-        Err(e) => return Err(errno(e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
     };
-    let is_dir = SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR;
-    let flag = if is_dir {
-        clear_temporaries(fd, name)?;
+    let folder = is_dir(&st);
+    let flag = if folder {
+        clear_temporaries(&dir, &name)?;
         UnlinkatFlags::RemoveDir
     } else {
         UnlinkatFlags::NoRemoveDir
     };
-    match unlinkat(fd, name, flag) {
-        Ok(()) => Ok(true),
+    match unlinkat(&dir, name.as_os_str(), flag) {
+        Ok(()) => {
+            if folder {
+                // A handle kept for it would follow the removed folder.
+                root.forget(path);
+            }
+            Ok(true)
+        }
         Err(nix::Error::ENOENT) => Ok(false),
         Err(e) => Err(errno(e)),
     }
@@ -455,7 +449,10 @@ mod tests {
         let t = tree();
         let mut p = pass(None, false, false);
         plan_all(&mut p);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.errors.is_empty(), "{:?}", rep.errors);
         let order: Vec<&[u8]> = rep.deleted.iter().map(|p| p.as_bytes()).collect();
         assert_eq!(order, [&b"d/e/f"[..], b"d/g", b"d/e", b"h", b"d"]);
@@ -468,13 +465,16 @@ mod tests {
         let mut p = pass(None, false, false);
         plan_all(&mut p);
         assert_eq!(
-            p.execute(t.path().to_path_buf(), true).await,
+            p.execute(Root::open(t.path()).unwrap(), true).await,
             Err(DeleteRefused)
         );
         assert!(t.path().join("d/e/f").exists());
         let mut p = pass(None, false, true);
         plan_all(&mut p);
-        let rep = p.execute(t.path().to_path_buf(), true).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), true)
+            .await
+            .unwrap();
         assert_eq!(rep.deleted.len(), 5);
         // A malformed listing is refused even with ignore_errors.
         let t = tree();
@@ -482,7 +482,7 @@ mod tests {
         plan_all(&mut p);
         p.mark_unreliable();
         assert_eq!(
-            p.execute(t.path().to_path_buf(), false).await,
+            p.execute(Root::open(t.path()).unwrap(), false).await,
             Err(DeleteRefused)
         );
         assert!(t.path().join("h").exists());
@@ -493,7 +493,10 @@ mod tests {
         let t = tree();
         let mut p = pass(Some(2), true, false);
         plan_all(&mut p);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.deleted.is_empty());
         assert_eq!(rep.would_delete, [rel("d/e/f"), rel("d/g")]);
         assert!(rep.stopped_at_max);
@@ -502,7 +505,10 @@ mod tests {
         let mut p = pass(Some(3), false, false);
         p.set_spent(1);
         plan_all(&mut p);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert_eq!(rep.deleted, [rel("d/e/f"), rel("d/g")]);
         assert!(rep.stopped_at_max);
     }
@@ -517,7 +523,10 @@ mod tests {
         // Even a planned path through the link stays untouched.
         p.plan(rel("link/precious"), Kind::Regular);
         p.plan(rel("link"), Kind::Symlink);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert_eq!(rep.deleted, [rel("link")]);
         assert!(outside.path().join("precious").exists());
         // The path under a parent that is no longer a directory is an
@@ -537,7 +546,10 @@ mod tests {
         std::fs::write(t.path().join("d/.irsync.l.tmp"), b"").unwrap();
         let mut p = pass(None, false, false);
         p.plan(rel("d"), Kind::Directory);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.errors.is_empty(), "{:?}", rep.errors);
         assert_eq!(rep.deleted, [rel("d")]);
         assert!(!t.path().join("d").exists());
@@ -558,7 +570,10 @@ mod tests {
         let mut p = pass(None, false, false);
         p.plan(rel("busy"), Kind::Directory);
         p.plan(rel("full"), Kind::Directory);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.deleted.is_empty(), "{:?}", rep.deleted);
         assert_eq!(rep.errors.len(), 2, "{:?}", rep.errors);
         assert!(t.path().join("busy/.irsync.f.part").exists());
@@ -572,7 +587,10 @@ mod tests {
         let mut p = pass(None, false, false);
         // `d/g` and `d/e/f` are not candidates: `d` cannot go.
         p.plan(rel("d"), Kind::Directory);
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.deleted.is_empty());
         assert_eq!(rep.errors.len(), 1);
         assert_eq!(rep.errors[0].0, rel("d"));
@@ -625,7 +643,10 @@ mod tests {
         p.plan(rel("d/e"), Kind::Directory);
         p.plan(rel("d/e/f"), Kind::Regular);
         p.protect(&rel("d/g"));
-        let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+        let rep = p
+            .execute(Root::open(t.path()).unwrap(), false)
+            .await
+            .unwrap();
         assert!(rep.errors.is_empty(), "{:?}", rep.errors);
         assert_eq!(rep.deleted, [rel("d/e/f"), rel("d/e")]);
         assert!(t.path().join("d/g").exists());

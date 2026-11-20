@@ -156,23 +156,6 @@ fn small_tree(dir: &std::path::Path) {
     symlink("one", dir.join("a/ln")).unwrap();
 }
 
-/// Asserts the trees below `a` and `b` are equal; the roots' own
-/// metadata is not compared.
-fn assert_contents_equal(a: &std::path::Path, b: &std::path::Path) {
-    let names = |d: &std::path::Path| {
-        let mut v: Vec<_> = fs::read_dir(d)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        v.sort();
-        v
-    };
-    assert_eq!(names(a), names(b));
-    for n in names(a) {
-        assert_trees_equal(&a.join(&n), &b.join(&n), &archive_opts().preserve);
-    }
-}
-
 #[tokio::test]
 async fn a_root_given_through_a_symlink_works_both_ways() {
     // The export path and the local folder are both symlinks to the real
@@ -200,16 +183,14 @@ async fn a_root_given_through_a_symlink_works_both_ways() {
         .await
         .expect("push");
     assert!(out.errors.is_empty(), "{:?}", out.errors);
-    // The root's own times are still applied by path, so to the symlink
-    // that names it; only what is below it is compared.
-    assert_contents_equal(&src, &export);
+    assert_trees_equal(&src, &export, &opts.preserve);
 
     let pull = Harness::side_for(&links.path().join("dst"), h.client_state.path());
     let out = within30(h.run_side(&opts, Flow::Pull, pull))
         .await
         .expect("pull");
     assert!(out.errors.is_empty(), "{:?}", out.errors);
-    assert_contents_equal(&export, &dst);
+    assert_trees_equal(&export, &dst, &opts.preserve);
 }
 
 #[tokio::test]
@@ -496,6 +477,19 @@ async fn push_with_hook(
         .expect("push")
 }
 
+/// `n` bytes that do not repeat, so chunk boundaries fall by content.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
 /// Some bytes to push, `n` long.
 fn bytes(n: usize, seed: u8) -> Vec<u8> {
     (0..n).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
@@ -694,4 +688,144 @@ async fn a_folder_made_again_before_placing_still_takes_files() {
         fs::read(h.export.path().join("d/b")).unwrap(),
         bytes(100_000, 9)
     );
+}
+
+/// Pushes a local `d` holding what `make` puts there, swapping the
+/// export's `d` for a symlink to the canary folder just before `d/<name>`
+/// is made on the daemon.
+async fn push_node_with_swap(name: &'static [u8], make: impl FnOnce(&Path)) {
+    let h = Harness::new().await;
+    let outside = canary();
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    make(&h.local.path().join("d"));
+    let fired = Arc::new(AtomicBool::new(false));
+    let at: &'static [u8] = Box::leak([b"d/", name].concat().into_boxed_slice());
+    let hook = swap_on("node", at, h.export.path(), outside.path(), &fired);
+    let _ = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_canary(outside.path());
+}
+
+#[tokio::test]
+async fn symlink_placed_while_the_parent_is_swapped_stays_inside() {
+    push_node_with_swap(b"l", |d| symlink("target", d.join("l")).unwrap()).await;
+}
+
+#[tokio::test]
+async fn fifo_placed_while_the_parent_is_swapped_stays_inside() {
+    push_node_with_swap(b"p", |d| {
+        nix::unistd::mkfifo(
+            &d.join("p"),
+            nix::sys::stat::Mode::from_bits_truncate(0o640),
+        )
+        .unwrap()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn folder_metadata_never_reaches_a_swapped_folder() {
+    // `d` is swapped once its file is placed, before the folders get
+    // their metadata: the outside folder keeps its mode and times.
+    let h = Harness::new().await;
+    let outside = canary();
+    let d = h.local.path().join("d");
+    fs::create_dir(&d).unwrap();
+    fs::write(d.join("x"), bytes(1000, 12)).unwrap();
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o750)).unwrap();
+    let before = fs::metadata(outside.path()).unwrap();
+    assert_ne!(before.mode() & 0o7777, 0o750);
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("placed", b"d/x", h.export.path(), outside.path(), &fired);
+    let _ = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    let after = fs::metadata(outside.path()).unwrap();
+    assert_eq!(
+        after.mode(),
+        before.mode(),
+        "the outside folder's mode changed"
+    );
+    assert_eq!(
+        (after.mtime(), after.mtime_nsec()),
+        (before.mtime(), before.mtime_nsec()),
+        "the outside folder's times changed"
+    );
+    assert_canary(outside.path());
+}
+
+#[tokio::test]
+async fn local_chunk_copies_never_read_through_a_swapped_folder() {
+    // The export holds `d/src`, indexed. A pushed file shares its first
+    // chunks, so the daemon plans to copy them from `d/src`. Then `d`
+    // is swapped for a folder outside holding a copy of `src`, and the
+    // real one is removed: the chunks must come from the sender.
+    let h = Harness::new().await;
+    let shared = noise(4 << 20, 13);
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    fs::write(h.local.path().join("d/src"), &shared).unwrap();
+    let out = push_with_hook(&h, None, &archive_opts()).await;
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("src"), &shared).unwrap();
+    fs::remove_dir_all(h.local.path().join("d")).unwrap();
+    let mut new = shared.clone();
+    new.extend_from_slice(&noise(2 << 20, 14));
+    fs::write(h.local.path().join("new"), &new).unwrap();
+    let (export, out_dir, fired) = (
+        h.export.path().to_path_buf(),
+        outside.path().to_path_buf(),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let f = fired.clone();
+    let hook: irsync::session::EventHook = Arc::new(move |event: &str, path: &RelPath| {
+        if event == "need" && path.as_bytes() == b"new" && !f.swap(true, Ordering::SeqCst) {
+            swap_d(&export, &out_dir);
+            fs::remove_file(export.join("d.real/src")).unwrap();
+        }
+    });
+    let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    if !out.errors.iter().any(|(p, _)| p.as_bytes() == b"new") {
+        assert_eq!(fs::read(h.export.path().join("new")).unwrap(), new);
+        assert!(
+            out.bytes_transferred >= new.len() as u64,
+            "only {} bytes came from the sender: the rest was read outside",
+            out.bytes_transferred
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resumed_plan_does_not_make_folders_through_a_symlink() {
+    // The first push stops while `d/b/f` is written, so the daemon keeps a
+    // complete plan. The resumed push makes the planned folders again; `d`
+    // is swapped for a symlink to outside just before `d/b` is made.
+    let h = Harness::new().await;
+    let outside = canary();
+    fs::create_dir_all(h.local.path().join("d/b")).unwrap();
+    fs::write(h.local.path().join("d/b/f"), bytes(2 << 20, 15)).unwrap();
+    let fault = h.daemon.fault.clone();
+    h.daemon.hooks.lock().unwrap().on_event = Some(Arc::new(move |event: &str, path: &RelPath| {
+        if event == "part-open" && path.as_bytes() == b"d/b/f" {
+            fault.drop_after_bytes(0);
+        }
+    }));
+    let opts = archive_opts();
+    let (first, _) =
+        within30(h.run_reconnect(&opts, Flow::Push, no_reconnect(), h.local_side())).await;
+    assert!(first.is_err(), "the first run should fail");
+    let fired = Arc::new(AtomicBool::new(false));
+    h.daemon.hooks.lock().unwrap().on_event = Some(swap_on(
+        "node",
+        b"d/b",
+        h.export.path(),
+        outside.path(),
+        &fired,
+    ));
+    let (second, _) = within30(h.run_reconnect(&opts, Flow::Push, fast(), h.local_side())).await;
+    let second = second.unwrap_or_else(|e| panic!("{e:#}"));
+    assert!(second.resumed, "the second run did not resume");
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_canary(outside.path());
 }

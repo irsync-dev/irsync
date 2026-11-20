@@ -159,7 +159,14 @@ impl Receiver {
                         ))
                     } else {
                         let apply = ctx.apply_opts(&l.entry);
-                        place_hardlink(&ctx.root, &l.target, &l.path, link, &l.entry, &apply)
+                        place_hardlink(
+                            &ctx.session_root,
+                            &l.target,
+                            &l.path,
+                            link,
+                            &l.entry,
+                            &apply,
+                        )
                     };
                     (l.file_id, l.path, l.target, res)
                 })

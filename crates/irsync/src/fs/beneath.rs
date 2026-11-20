@@ -272,8 +272,9 @@ impl Dir {
         symlinkat(target, self, name).map_err(errno)
     }
 
-    /// Makes a FIFO or device node from the entry, as `fs::meta::create_special`.
-    /// The mode is subject to the umask; follow with [`Dir::apply_node_metadata`].
+    /// Makes a FIFO or device node from the entry (its permission bits and
+    /// `rdev`). The mode is subject to the umask; follow with
+    /// [`Dir::apply_node_metadata`].
     pub fn create_special(&self, name: &OsStr, e: &FileEntry) -> io::Result<()> {
         check_name(name)?;
         let kind = e.kind();
@@ -369,7 +370,8 @@ impl Dir {
     }
 }
 
-fn is_link(st: &FileStat) -> bool {
+/// `st` is a symlink's.
+pub(crate) fn is_link(st: &FileStat) -> bool {
     SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFLNK
 }
 

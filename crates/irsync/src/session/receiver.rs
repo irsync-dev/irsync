@@ -50,7 +50,7 @@ use super::Outcome;
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::FilterSet;
-use crate::fs::meta::apply_metadata;
+use crate::fs::beneath::Missing;
 use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
@@ -1487,7 +1487,12 @@ impl Receiver {
                     continue;
                 }
                 let apply = ctx.apply_opts(&d.entry);
-                if let Err(e) = apply_metadata(&ctx.full(&d.path), &d.entry, &apply) {
+                // Through the folder's own handle: a name swapped for a
+                // symlink is refused, never followed.
+                let res = ctx
+                    .dir(&d.path, Missing::Refuse)
+                    .and_then(|dir| dir.apply_metadata(&d.entry, &apply));
+                if let Err(e) = res {
                     errors.push((d.path.clone(), format!("directory metadata: {e}")));
                 }
             }
@@ -1611,10 +1616,11 @@ pub(super) async fn run(
     } else {
         let prior = Prior::new(&stored, |id| r.persist.is_done(id));
         let (local_tx, local_rx) = mpsc::channel(LISTING_QUEUE);
-        let root = ctx.root.clone();
-        let root_missing = blocking(move || Ok(std::fs::symlink_metadata(&root).is_err()))
-            .await
-            .unwrap_or(false);
+        let root = ctx.session_root.clone();
+        let root_missing =
+            blocking(move || Ok(root.dir(&RelPath::root(), Missing::Refuse).is_err()))
+                .await
+                .unwrap_or(false);
         if ctx.opts.dry_run && root_missing {
             // A dry run does not create the root: there is nothing to list.
             drop(local_tx);

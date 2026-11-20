@@ -426,17 +426,6 @@ impl Ctx {
         }
     }
 
-    /// Absolute path of `rel` under the session root, for messages and
-    /// logging only: open folders through [`Ctx::parent`].
-    pub fn full(&self, rel: &RelPath) -> PathBuf {
-        let rel = self.local(rel);
-        if rel.as_bytes().is_empty() {
-            self.root.clone()
-        } else {
-            self.root.join(rel.to_os())
-        }
-    }
-
     /// The index key of a session-relative path.
     pub fn key(&self, rel: &RelPath) -> RelPath {
         self.scope.key(self.local(rel))
@@ -501,10 +490,21 @@ impl Ctx {
 
     /// The parent folder and local name of the listing path `rel` (maps a
     /// single file's wire name), below the session root.
-    // No caller yet: the file operations move onto these next.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn parent(&self, rel: &RelPath, missing: beneath::Missing) -> io::Result<(Dir, OsString)> {
         self.session_root.parent(self.local(rel), missing)
+    }
+
+    /// The folder at the listing path `rel` below the session root (the
+    /// root itself for the empty path).
+    pub fn dir(&self, rel: &RelPath, missing: beneath::Missing) -> io::Result<Dir> {
+        self.session_root.dir(self.local(rel), missing)
+    }
+
+    /// Drops the cached folders at or below the listing path `rel`, in
+    /// both roots, after what was there was removed or replaced.
+    pub fn forget(&self, rel: &RelPath) {
+        self.session_root.forget(self.local(rel));
+        self.base_root.forget(&self.key(rel));
     }
 
     /// The same for an index key, below `base_root`.

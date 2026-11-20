@@ -19,7 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -37,6 +36,7 @@ use super::engine::{blocking, Ctx};
 use super::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
 use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, MIN_BLOCK};
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
@@ -318,11 +318,11 @@ async fn warm_candidates(ctx: &Ctx, size: u64) {
 
 /// Opens the destination if it is still the file `old` was hashed from:
 /// same size, mtime, ctime, device and inode.
-async fn unchanged_file(ctx: &Ctx, key: &RelPath, old: &OldFile) -> Option<File> {
-    let full = ctx.full_key(key);
+async fn unchanged_file(ctx: &Arc<Ctx>, key: &RelPath, old: &OldFile) -> Option<File> {
+    let (ctx, key) = (ctx.clone(), key.clone());
     let (entry, ctime) = (old.entry.clone(), old.ctime);
     blocking(move || {
-        let file = crate::fs::safe::open_regular_nofollow(&full)?;
+        let (file, _) = open_key(&ctx, &key)?;
         let m = file.metadata()?;
         let same = m.len() == entry.size
             && m.mtime() == entry.mtime_sec
@@ -445,7 +445,7 @@ pub(super) async fn open_writer(
     if reuse && action == Action::Whole && !digest.chunks.is_empty() {
         warm_candidates(&ctx, digest.size).await;
     }
-    let lookup_base = ctx.base.clone();
+    let lookup_base = ctx.base_root.clone();
     // The writer, and where its missing chunks can be copied from, in one
     // blocking call.
     let (mut w, found) = blocking(move || {
@@ -536,8 +536,8 @@ pub(super) async fn open_writer(
         .then(|| Arc::new(Gate::new(&w.missing_chunks(), digest.chunks.len())));
     let mut old = old_file;
     if !bases.is_empty() && old.is_none() {
-        let full = ctx.full_key(&key);
-        match blocking(move || crate::fs::safe::open_regular_nofollow(&full)).await {
+        let (c, k) = (ctx.clone(), key.clone());
+        match blocking(move || open_key(&c, &k).map(|(f, _)| f)).await {
             Ok(f) => old = Some(Arc::new(f)),
             Err(e) => {
                 tracing::debug!(?path, error = %e, "old file not opened; no bases");
@@ -865,17 +865,21 @@ pub(super) async fn settle_identical(
     Ok(())
 }
 
-/// Reads `len` bytes at `offset` of `from` (a regular file, never a symlink).
-async fn read_local(
-    from: PathBuf,
-    offset: u64,
-    len: u32,
-    meter: Arc<Meter>,
-) -> io::Result<Vec<u8>> {
+/// Opens the regular file at the index key `key` (never a symlink),
+/// through the folders below `base_root`.
+fn open_key(ctx: &Ctx, key: &RelPath) -> io::Result<(File, nix::sys::stat::FileStat)> {
+    let (dir, name) = ctx.parent_key(key, Missing::Refuse)?;
+    dir.open_regular(&name)
+}
+
+/// Reads `len` bytes at `offset` of the file at the index key `from` (a
+/// regular file, never a symlink).
+async fn read_local(ctx: Arc<Ctx>, from: RelPath, offset: u64, len: u32) -> io::Result<Vec<u8>> {
     blocking(move || {
+        let meter = &ctx.meter;
         let _timed = meter.start(Activity::Read);
         let mut buf = vec![0u8; len as usize];
-        crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
+        open_key(&ctx, &from)?.0.read_exact_at(&mut buf, offset)?;
         meter.add(Counter::DiskRead, u64::from(len));
         Ok(buf)
     })
@@ -909,7 +913,7 @@ pub(super) async fn copy_local_chunks(
         let data = if alone {
             None
         } else {
-            match read_local(ctx.full_key(&from), offset, len, ctx.meter.clone()).await {
+            match read_local(ctx.clone(), from.clone(), offset, len).await {
                 Ok(d) => Some(d),
                 Err(e) => {
                     tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
@@ -931,7 +935,7 @@ pub(super) async fn copy_local_chunks(
             Some(data) => write_into(&ctx, &route, w, idx, data, false).await,
             None => {
                 let was_open = w.is_open();
-                let res = match ctx.parent_key(&from, crate::fs::beneath::Missing::Refuse) {
+                let res = match ctx.parent_key(&from, Missing::Refuse) {
                     Ok(dir_name) => w.copy_local(idx, dir_name, offset).await,
                     Err(e) => Err(e),
                 };
@@ -961,14 +965,14 @@ type ChunkHit = (u32, Option<(RelPath, u64)>);
 const SOURCES_PER_PAGE: usize = 16;
 
 /// Where each of the `wanted` chunks (index, hash) can be copied from
-/// locally, per the index under `base`. A source file that is gone or was
-/// replaced (another inode or size than indexed) is passed over for the
-/// next file holding the chunk, and queued to be dropped from the index,
-/// so no copy is planned from it; bytes changed in place are still caught
-/// when the copied chunk is verified.
+/// locally, per the index under the folder `base`. A source file that is
+/// gone or was replaced (another inode or size than indexed) is passed
+/// over for the next file holding the chunk, and queued to be dropped from
+/// the index, so no copy is planned from it; bytes changed in place are
+/// still caught when the copied chunk is verified.
 fn local_sources(
     index: &IndexHandle,
-    base: &Path,
+    base: &Root,
     wanted: &[(u32, [u8; 32])],
 ) -> io::Result<Vec<ChunkHit>> {
     let mut hits: Vec<_> = wanted.iter().map(|&(i, _)| (i, None)).collect();
@@ -1022,14 +1026,16 @@ fn local_sources(
 
 /// Whether the file at `h.path` under `base` is still the regular file the
 /// index describes, by inode and size.
-fn still_indexed(base: &Path, h: &ChunkHolder) -> bool {
-    let full = if h.path.as_bytes().is_empty() {
-        base.to_path_buf()
-    } else {
-        base.join(h.path.to_os())
-    };
-    std::fs::symlink_metadata(&full)
-        .is_ok_and(|m| m.is_file() && m.ino() == h.inode && m.len() == h.size)
+// The `stat` field types differ by platform; some casts are no-ops here.
+#[allow(clippy::unnecessary_cast)]
+fn still_indexed(base: &Root, h: &ChunkHolder) -> bool {
+    base.parent(&h.path, Missing::Refuse)
+        .and_then(|(dir, name)| dir.stat(&name))
+        .is_ok_and(|st| {
+            crate::fs::safe::is_regular_mode(st.st_mode as u32)
+                && st.st_ino as u64 == h.inode
+                && st.st_size as u64 == h.size
+        })
 }
 
 /// Writes a chunk, from the sender (`remote`) or a local file, into the

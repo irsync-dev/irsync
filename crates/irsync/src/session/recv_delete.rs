@@ -45,7 +45,7 @@ impl Receiver {
         let phase = self.ctx.phase(PhaseKind::Delete);
         phase.span().record("mode", format!("{:?}", pass.mode()));
         let executed = pass
-            .execute(self.ctx.root.clone(), incomplete)
+            .execute(self.ctx.session_root.clone(), incomplete)
             .instrument(phase.span().clone())
             .await;
         drop(phase);
@@ -54,6 +54,8 @@ impl Receiver {
                 for p in &rep.deleted {
                     // Its row would offer chunks nothing holds any more.
                     self.ctx.index().queue_forget(self.ctx.key(p));
+                    // The pass forgot its own handles; the index root's too.
+                    self.ctx.base_root.forget(&self.ctx.key(p));
                     self.ctx.hooks.event("delete", p);
                     let bus = &self.ctx.hooks.bus;
                     bus.emit(crate::session::Event::Itemized(

@@ -579,7 +579,7 @@ async fn delete_pass_reports_progress_per_candidate() {
     let s = seen.clone();
     pass.set_progress(Arc::new(move |d, t| s.lock().unwrap().push((d, t))));
     let rep = pass
-        .execute(root.path().to_path_buf(), false)
+        .execute(irsync::fs::beneath::Root::open(root.path()).unwrap(), false)
         .await
         .unwrap();
     assert_eq!(rep.deleted.len(), 2);
