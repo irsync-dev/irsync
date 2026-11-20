@@ -233,7 +233,8 @@ impl Reader for SqliteReader {
 /// plan can depend on the value bound in `col = ?`, and every
 /// sqlite3_clear_bindings() then expires the statement. rusqlite's
 /// statement cache calls that on each return, so the per-entry lookup
-/// would be prepared again on every call.
+/// would be prepared again on every call;
+/// `lookups_and_writes_are_never_re_prepared` catches it.
 fn stable_plans(conn: &Connection) -> Result<()> {
     use rusqlite::config::DbConfig;
     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG, true)?;
@@ -689,6 +690,81 @@ mod tests {
             flags: Flags::default(),
             generation: 1,
         }
+    }
+
+    /// The statements prepared on `conn` that SQLite has re-prepared
+    /// since, with how often.
+    fn reprepared(conn: &Connection) -> Vec<(String, i32)> {
+        use rusqlite::ffi;
+        let mut out = Vec::new();
+        // SAFETY: `handle` is this open connection's raw pointer; `conn`
+        // is borrowed for the whole walk and a rusqlite `Connection` is not
+        // `Sync`, so no other thread uses it meanwhile. The statements
+        // `sqlite3_next_stmt` lists stay prepared (in rusqlite's cache)
+        // while the connection is borrowed, since nothing here finalizes
+        // one. `sqlite3_sql` is not null for a statement rusqlite prepared,
+        // and the text stays valid until the statement is finalized; it is
+        // copied out before the next call. Only SQL text and counters are
+        // read.
+        unsafe {
+            let db = conn.handle();
+            let mut st = ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
+            while !st.is_null() {
+                let n = ffi::sqlite3_stmt_status(st, ffi::SQLITE_STMTSTATUS_REPREPARE, 0);
+                if n > 0 {
+                    let sql = std::ffi::CStr::from_ptr(ffi::sqlite3_sql(st));
+                    out.push((sql.to_string_lossy().into_owned(), n));
+                }
+                st = ffi::sqlite3_next_stmt(db, st);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn lookups_and_writes_are_never_re_prepared() {
+        // A statement whose plan depends on a bound value is prepared again
+        // by SQLite on every new binding (see `stable_plans`), which costs
+        // as much as the lookup it serves. The statements run once per
+        // entry, with varied bindings, must stay prepared: on the store's
+        // own connection and on a reader's.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m.sqlite");
+        let mut s = SqliteStore::open(&p, OpenMode::Create).unwrap();
+        let mut with_xattrs = dir_entry();
+        with_xattrs.xattrs = vec![
+            (b"user.a".to_vec(), b"1".to_vec()),
+            (b"user.b".to_vec(), b"2".to_vec()),
+        ];
+        let items: Vec<_> = (0..40u32)
+            .map(|i| {
+                let e = if i % 2 == 0 {
+                    with_xattrs.clone()
+                } else {
+                    dir_entry()
+                };
+                (format!("d/f{i:02}").into_bytes(), e)
+            })
+            .collect();
+        for batch in items.chunks(7) {
+            s.put_batch(batch).unwrap();
+        }
+        let reader = SqliteReader {
+            path: p.clone(),
+            idle: Mutex::new(Vec::new()),
+        };
+        let paths: Vec<&[u8]> = items.iter().map(|(k, _)| &k[..]).collect();
+        for (k, e) in &items {
+            assert_eq!(s.get(k).unwrap().unwrap().xattrs, e.xattrs);
+            assert_eq!(reader.get(k).unwrap().unwrap().xattrs, e.xattrs);
+            assert!(s.get(b"d/none").unwrap().is_none());
+        }
+        assert_eq!(reader.get_many(&paths).unwrap().len(), items.len());
+        let none = Vec::<(String, i32)>::new();
+        assert_eq!(reprepared(&s.conn), none);
+        let idle = reader.idle.lock().unwrap();
+        assert_eq!(idle.len(), 1);
+        assert_eq!(reprepared(&idle[0]), none);
     }
 
     #[test]

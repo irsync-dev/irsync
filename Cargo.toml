@@ -54,7 +54,7 @@ rustls = { version = "0.23", default-features = false }
 # `crypto-bigint` into Cargo.lock, both with open advisories, and a second
 # copy of the curve crates beside iroh's. Move to 0.7.0 when it is released.
 ssh-key = { version = "=0.7.0-rc.12", features = ["ed25519", "encryption", "getrandom", "std"] }
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 jwalk = "0.9"
 nix = "0.32"
 clap = { version = "4", features = ["derive"] }
