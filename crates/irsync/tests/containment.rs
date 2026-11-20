@@ -786,14 +786,26 @@ async fn local_chunk_copies_never_read_through_a_swapped_folder() {
     });
     let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
     assert!(fired.load(Ordering::SeqCst), "the hook never fired");
-    if !out.errors.iter().any(|(p, _)| p.as_bytes() == b"new") {
-        assert_eq!(fs::read(h.export.path().join("new")).unwrap(), new);
-        assert!(
-            out.bytes_transferred >= new.len() as u64,
-            "only {} bytes came from the sender: the rest was read outside",
-            out.bytes_transferred
-        );
-    }
+    // The planned copies fail (the real `src` is gone, the swapped `d` is
+    // refused), so the chunks are requested again and the file arrives.
+    assert!(
+        !out.errors.iter().any(|(p, _)| p.as_bytes() == b"new"),
+        "{:?}",
+        out.errors
+    );
+    assert_eq!(fs::read(h.export.path().join("new")).unwrap(), new);
+    assert!(
+        out.bytes_transferred >= new.len() as u64,
+        "only {} bytes came from the sender: the rest was read outside",
+        out.bytes_transferred
+    );
+    // Outside is as it was: only `src`, unchanged.
+    let names: Vec<_> = fs::read_dir(outside.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["src"], "something appeared outside the export");
+    assert_eq!(fs::read(outside.path().join("src")).unwrap(), shared);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

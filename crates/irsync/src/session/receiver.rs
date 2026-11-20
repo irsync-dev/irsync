@@ -1488,10 +1488,22 @@ impl Receiver {
                 }
                 let apply = ctx.apply_opts(&d.entry);
                 // Through the folder's own handle: a name swapped for a
-                // symlink is refused, never followed.
-                let res = ctx
-                    .dir(&d.path, Missing::Refuse)
-                    .and_then(|dir| dir.apply_metadata(&d.entry, &apply));
+                // symlink is refused, never followed. A folder this side may
+                // not read cannot be opened: by name from its parent, which
+                // never follows a symlink either (the root has no parent).
+                let res = match ctx.dir(&d.path, Missing::Refuse) {
+                    Ok(dir) => dir.apply_metadata(&d.entry, &apply),
+                    Err(e)
+                        if e.kind() == io::ErrorKind::PermissionDenied
+                            && !d.path.as_bytes().is_empty() =>
+                    {
+                        ctx.parent(&d.path, Missing::Refuse)
+                            .and_then(|(parent, name)| {
+                                parent.apply_node_metadata(&name, &d.entry, &apply)
+                            })
+                    }
+                    Err(e) => Err(e),
+                };
                 if let Err(e) = res {
                     errors.push((d.path.clone(), format!("directory metadata: {e}")));
                 }

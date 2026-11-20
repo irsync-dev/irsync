@@ -335,9 +335,10 @@ pub(super) fn mkdir_replacing(ctx: &Ctx, path: &RelPath) -> io::Result<()> {
     }
     let (dir, name) = ctx.parent(path, Missing::Refuse)?;
     ctx.hooks.event("node", path);
-    dir.mkdir_replacing(&name)?;
-    // A folder cached under this name is not the one there now.
-    ctx.forget(path);
+    if dir.mkdir_replacing(&name)? {
+        // A folder cached under this name is not the one there now.
+        ctx.forget(path);
+    }
     Ok(())
 }
 

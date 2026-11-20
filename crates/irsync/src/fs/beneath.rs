@@ -252,12 +252,17 @@ impl Dir {
     }
 
     /// Makes `name` a folder, removing a non-folder in the way (a symlink is
-    /// removed, not followed).
-    pub fn mkdir_replacing(&self, name: &OsStr) -> io::Result<()> {
+    /// removed, not followed). `true` when it made one, `false` when a
+    /// folder was there already.
+    pub fn mkdir_replacing(&self, name: &OsStr) -> io::Result<bool> {
         check_name(name)?;
-        let make = || mkdirat(self, name, Mode::from_bits_truncate(0o777)).map_err(errno);
+        let make = || {
+            mkdirat(self, name, Mode::from_bits_truncate(0o777))
+                .map(|()| true)
+                .map_err(errno)
+        };
         match fstatat(self, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(st) if is_dir(&st) => Ok(()),
+            Ok(st) if is_dir(&st) => Ok(false),
             Ok(_) => {
                 unlinkat(self, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
                 make()
@@ -309,9 +314,9 @@ impl Dir {
         apply_fd(self.as_fd(), e, opts, None)
     }
 
-    /// Sets owner, mode and times of a symlink or special file at `name`.
-    /// Never follows a symlink: if `name` is one, only the link itself is
-    /// changed, and its mode is left alone.
+    /// Sets owner, mode and times of a symlink, special file or folder at
+    /// `name`. Never follows a symlink: if `name` is one, only the link
+    /// itself is changed, and its mode is left alone.
     pub fn apply_node_metadata(
         &self,
         name: &OsStr,
@@ -990,10 +995,10 @@ mod tests {
         std::fs::write(out.path().join("keep"), b"x").unwrap();
         symlink(out.path(), d.path().join("n")).unwrap();
         std::fs::write(d.path().join("f"), b"x").unwrap();
-        dir.mkdir_replacing(os("n")).unwrap();
-        dir.mkdir_replacing(os("f")).unwrap();
-        dir.mkdir_replacing(os("fresh")).unwrap();
-        dir.mkdir_replacing(os("fresh")).unwrap();
+        assert!(dir.mkdir_replacing(os("n")).unwrap());
+        assert!(dir.mkdir_replacing(os("f")).unwrap());
+        assert!(dir.mkdir_replacing(os("fresh")).unwrap());
+        assert!(!dir.mkdir_replacing(os("fresh")).unwrap());
         for n in ["n", "f", "fresh"] {
             let m = std::fs::symlink_metadata(d.path().join(n)).unwrap();
             assert!(m.is_dir(), "{n}");

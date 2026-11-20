@@ -679,3 +679,42 @@ async fn name_max_entries_transfer() {
         assert!(left.is_empty(), "{flow:?}: {left:?}");
     }
 }
+
+#[tokio::test]
+async fn metadata_reaches_a_folder_without_read_permission() {
+    // The daemon cannot open `d` (no read permission): its new mode and
+    // times are still set, by name.
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipped: running as root");
+        return;
+    }
+    let h = common::Harness::new().await;
+    let (src, dst) = (h.local.path().join("d"), h.export.path().join("d"));
+    fs::create_dir(&src).unwrap();
+    fs::create_dir(&dst).unwrap();
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&dst, fs::Permissions::from_mode(0o311)).unwrap();
+    let t = nix::sys::time::TimeSpec::new(4_000_000_000, 0);
+    nix::sys::stat::utimensat(
+        nix::fcntl::AT_FDCWD,
+        &src,
+        &t,
+        &t,
+        nix::sys::stat::UtimensatFlags::FollowSymlink,
+    )
+    .unwrap();
+    let out = within60(h.run(&archive_opts(), Flow::Push)).await.unwrap();
+    let m = fs::metadata(&dst).unwrap();
+    // Readable again, so the temp folder can be removed whatever happens.
+    fs::set_permissions(&dst, fs::Permissions::from_mode(0o755)).unwrap();
+    // The daemon's own walk cannot read `d` and says so; nothing else fails.
+    assert!(
+        out.errors
+            .iter()
+            .all(|(_, e)| e.contains("listing is incomplete") || e.contains("walk:")),
+        "{:?}",
+        out.errors
+    );
+    assert_eq!(m.mode() & 0o7777, 0o755);
+    assert_eq!(m.mtime(), 4_000_000_000);
+}
