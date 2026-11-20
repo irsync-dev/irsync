@@ -214,3 +214,38 @@ fn written_is_the_alias_of_an_id_that_has_one() {
     assert_eq!(spec(2).written(&hosts), id(2).to_string());
     assert_eq!(PeerSpec::Alias("zed".into()).written(&hosts), "zed");
 }
+
+/// A save keeps the mode the file has, so it never opens up a config its
+/// owner closed. A new config is for the owner only.
+#[test]
+fn save_keeps_the_files_mode_and_a_new_file_is_private() {
+    use irsync::manage::lock_config;
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+
+    let fresh = d.path().join("new.toml");
+    let mut doc = load_doc(&fresh).unwrap();
+    doc["client"] = toml_edit::table();
+    save_doc(&fresh, &doc).unwrap();
+    assert_eq!(mode(&fresh), 0o600);
+
+    let locked = d.path().join("locked.toml");
+    let lock = lock_config(&locked).unwrap();
+    let mut doc = lock.load().unwrap();
+    doc["client"] = toml_edit::table();
+    lock.save(&mut doc).unwrap();
+    assert_eq!(mode(&locked), 0o600);
+
+    for kept in [0o640, 0o644, 0o600] {
+        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(kept)).unwrap();
+        doc["client"]["parallel"] = toml_edit::value(i64::from(kept));
+        save_doc(&fresh, &doc).unwrap();
+        assert_eq!(mode(&fresh), kept, "save_doc");
+        let lock = lock_config(&fresh).unwrap();
+        let mut doc = lock.load().unwrap();
+        doc["client"]["parallel"] = toml_edit::value(1);
+        lock.save(&mut doc).unwrap();
+        assert_eq!(mode(&fresh), kept, "lock.save");
+    }
+}

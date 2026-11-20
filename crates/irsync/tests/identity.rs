@@ -610,3 +610,18 @@ fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
         );
     }
 }
+
+/// A new key is for its owner only; one that was opened up is noticed.
+#[test]
+fn a_key_other_users_can_read_is_noticed() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("id");
+    generate_openssh(&p, "test@irsync").unwrap();
+    assert!(!irsync::identity::open_to_others(&p));
+    for open in [0o640, 0o604, 0o620] {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(open)).unwrap();
+        assert!(irsync::identity::open_to_others(&p), "{open:o}");
+    }
+    assert!(!irsync::identity::open_to_others(&d.path().join("missing")));
+}

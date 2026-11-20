@@ -49,6 +49,8 @@ fn main() {
     let args = Args::parse();
     // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
     let _ = irsync::fs::rlimit::raise_nofile();
+    // Read the umask now, while this is the only thread.
+    let _ = irsync::fs::meta::default_file_mode();
     let (log, files) = (args.log, &args.files);
     if !matches!(
         args.cmd,

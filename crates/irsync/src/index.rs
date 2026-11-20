@@ -9,6 +9,7 @@ use irsync_proto::v1::{FileEntry, Hash, RangeSet};
 use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -825,7 +826,11 @@ impl Index {
             .map(|b| format!("{b:02x}"))
             .collect();
         let dir = state_dir.join("index");
-        std::fs::create_dir_all(&dir)?;
+        // The index holds the names and hashes of every file in the tree:
+        // its directory is for the owner only, also one made by an older
+        // build.
+        crate::fs::private::create_dir_all(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         // One file per schema version: an older build keeps its own, and
         // the two never see each other's tables.
         let file = dir.join(format!("{name}.v{SCHEMA_VERSION}.sqlite"));

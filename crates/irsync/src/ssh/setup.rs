@@ -10,6 +10,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -640,10 +641,13 @@ fn daemon_command(exe: &Path, paths: &Paths) -> Command {
 /// Starts `exe daemon -vv` in its own session, output appended to `log`, and
 /// waits until it holds the lock.
 fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(state).with_context(|| format!("creating {}", state.display()))?;
+    crate::fs::private::create_dir_all(state)
+        .with_context(|| format!("creating {}", state.display()))?;
+    // The log names files and peers: for the owner only.
     let out = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(log)
         .with_context(|| format!("opening {}", log.display()))?;
     let start = out.metadata().map(|m| m.len()).unwrap_or(0);

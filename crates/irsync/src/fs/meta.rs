@@ -215,6 +215,20 @@ pub fn apply_metadata_fd_owned(
     apply_fd(fd.as_fd(), e, opts, Some(now))
 }
 
+/// The mode a new regular file gets under this process's umask: what a
+/// file created private is given when it is placed without `-p`.
+pub fn default_file_mode() -> u32 {
+    static MODE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        // The umask can only be read by setting it. For the moment between
+        // the two calls, files other threads create are private, never
+        // more open. `main` asks once before it starts any thread.
+        let old = nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
+        nix::sys::stat::umask(old);
+        0o666 & !(old.bits() as u32)
+    })
+}
+
 fn apply_fd(
     fd: std::os::fd::BorrowedFd<'_>,
     e: &FileEntry,

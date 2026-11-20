@@ -74,7 +74,7 @@ pub fn acquire(state_dir: &Path) -> Result<DaemonLock, LockError> {
         path: path.clone(),
         source,
     };
-    std::fs::create_dir_all(state_dir).map_err(io)?;
+    crate::fs::private::create_dir_all(state_dir).map_err(io)?;
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
