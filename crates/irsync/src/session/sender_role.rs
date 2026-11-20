@@ -1603,11 +1603,12 @@ impl Drop for CloseClones {
 /// none can be made the file itself is hashed (and, before placing, hashed
 /// again): never an error.
 async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Option<Arc<Cloned>> {
-    let (clones, full) = (clones?, ctx.full_key(key));
-    match blocking(move || clones.clone_file(&full)).await {
+    let (clones, root, key) = (clones?, ctx.base_root.clone(), key.clone());
+    let shown = key.clone();
+    match blocking(move || clones.clone_file(&root, &key)).await {
         Ok(c) => c.map(Arc::new),
         Err(e) => {
-            tracing::debug!(path = ?key, error = %e, "no clone; hashing the file itself");
+            tracing::debug!(path = ?shown, error = %e, "no clone; hashing the file itself");
             None
         }
     }

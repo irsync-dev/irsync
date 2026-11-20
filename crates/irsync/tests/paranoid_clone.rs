@@ -94,7 +94,9 @@ fn reflinks(dir: &Path) -> bool {
     fs::write(&probe, b"probe").unwrap();
     let ok = {
         let clones = Clones::new("probe").within(dir.to_path_buf());
-        let cloned = clones.clone_file(&probe).ok().flatten();
+        let root = irsync::fs::beneath::Root::open(dir).unwrap();
+        let key = irsync::fs::paths::RelPath::new(b".probe").unwrap();
+        let cloned = clones.clone_file(&root, &key).ok().flatten();
         cloned.is_some()
     };
     let _ = fs::remove_file(&probe);

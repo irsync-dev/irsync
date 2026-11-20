@@ -424,8 +424,16 @@ pub struct Root {
     fd: OnceLock<Arc<OwnedFd>>,
     /// Open `path` on first use.
     lazy: bool,
+    /// The root's real path (symlinks resolved), set once when its folder
+    /// is opened; not set for a missing root.
+    real: OnceLock<PathBuf>,
     cap: usize,
     cache: Mutex<Cache>,
+}
+
+/// `path` with its symlinks resolved; `path` itself if that fails.
+fn real_of(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn open_flags() -> OFlag {
@@ -441,7 +449,8 @@ impl Root {
 
     pub fn open_with_cache(path: &Path, cap: usize) -> io::Result<Arc<Root>> {
         let fd = retry(|| openat(AT_FDCWD, path, open_flags(), Mode::empty()).map_err(errno))?;
-        Ok(Self::from_fd(path.to_path_buf(), Arc::new(fd), cap))
+        let real = real_of(path);
+        Ok(Self::from_fd(path.to_path_buf(), real, Arc::new(fd), cap))
     }
 
     /// A root for the folder `path`, which is not there: every lookup
@@ -463,8 +472,10 @@ impl Root {
         Self::new(path.to_path_buf(), OnceLock::new(), true, cap)
     }
 
-    fn from_fd(path: PathBuf, fd: Arc<OwnedFd>, cap: usize) -> Arc<Root> {
-        Self::new(path, OnceLock::from(fd), false, cap)
+    fn from_fd(path: PathBuf, real: PathBuf, fd: Arc<OwnedFd>, cap: usize) -> Arc<Root> {
+        let root = Self::new(path, OnceLock::from(fd), false, cap);
+        let _ = root.real.set(real);
+        root
     }
 
     fn new(path: PathBuf, fd: OnceLock<Arc<OwnedFd>>, lazy: bool, cap: usize) -> Arc<Root> {
@@ -472,6 +483,7 @@ impl Root {
             path,
             fd,
             lazy,
+            real: OnceLock::new(),
             cap,
             cache: Mutex::new(Cache {
                 cap,
@@ -484,6 +496,14 @@ impl Root {
         &self.path
     }
 
+    /// The root's real path: symlinks resolved once, when its folder was
+    /// opened (for a lazy root, the first time it is). The path as given
+    /// for a missing root, and for a lazy one not opened yet. Use it to
+    /// reason about where the root is, never a path below the root.
+    pub fn real_path(&self) -> &Path {
+        self.real.get().map_or(&self.path, PathBuf::as_path)
+    }
+
     /// The root's own handle, opened now for a lazy root.
     fn root_fd(&self) -> io::Result<Arc<OwnedFd>> {
         if let Some(fd) = self.fd.get() {
@@ -493,7 +513,10 @@ impl Root {
             match retry(|| openat(AT_FDCWD, &self.path, open_flags(), Mode::empty()).map_err(errno))
             {
                 // Two threads may both open it; the first one's handle is kept.
-                Ok(fd) => return Ok(self.fd.get_or_init(|| Arc::new(fd)).clone()),
+                Ok(fd) => {
+                    let _ = self.real.set(real_of(&self.path));
+                    return Ok(self.fd.get_or_init(|| Arc::new(fd)).clone());
+                }
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
                 Err(_) => {}
             }
@@ -595,7 +618,13 @@ impl Root {
     /// A new Root at the folder `rel`, with its own cache.
     pub fn sub(&self, rel: &RelPath, missing: Missing) -> io::Result<Arc<Root>> {
         let dir = self.dir(rel, missing)?;
-        Ok(Self::from_fd(self.path.join(rel.to_os()), dir.fd, self.cap))
+        let real = self.real_path().join(rel.to_os());
+        Ok(Self::from_fd(
+            self.path.join(rel.to_os()),
+            real,
+            dir.fd,
+            self.cap,
+        ))
     }
 
     /// Drops cached handles at or below `rel`, so the next use opens the
@@ -912,6 +941,34 @@ mod tests {
             .dir(&RelPath::root(), Missing::Refuse)
             .unwrap();
         (d, out, dir)
+    }
+
+    #[test]
+    fn real_path_is_resolved_when_opened() {
+        let d = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(d.path()).unwrap();
+        std::fs::create_dir(real.join("sub")).unwrap();
+        symlink(&real, real.join("link")).unwrap();
+        let via = real.join("link");
+        let root = Root::open(&via).unwrap();
+        assert_eq!(root.path(), via);
+        assert_eq!(root.real_path(), real);
+        let sub = root
+            .sub(&RelPath::new(b"sub").unwrap(), Missing::Refuse)
+            .unwrap();
+        assert_eq!(sub.real_path(), real.join("sub"));
+        // A lazy root resolves when first opened; a missing one never does.
+        let later = real.join("later");
+        let lazy = Root::lazy(&later);
+        assert_eq!(lazy.real_path(), later);
+        std::fs::create_dir(&later).unwrap();
+        lazy.dir(&RelPath::root(), Missing::Refuse).unwrap();
+        assert_eq!(lazy.real_path(), later);
+        let lazy = Root::lazy(&via.join("later"));
+        lazy.dir(&RelPath::root(), Missing::Refuse).unwrap();
+        assert_eq!(lazy.real_path(), later);
+        let gone = Root::missing(&via.join("nothing"));
+        assert_eq!(gone.real_path(), via.join("nothing"));
     }
 
     #[test]

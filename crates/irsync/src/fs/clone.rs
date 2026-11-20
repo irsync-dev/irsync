@@ -35,6 +35,7 @@ use nix::fcntl::{openat, AtFlags, OFlag, AT_FDCWD};
 use nix::sys::stat::{fstat, fstatat, mkdirat, FileStat, Mode, SFlag};
 use nix::unistd::{access, unlinkat, AccessFlags, UnlinkatFlags};
 
+use crate::fs::beneath::{Missing, Root};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::errno;
 use crate::hasher::Freshness;
@@ -173,13 +174,14 @@ impl Clones {
         self
     }
 
-    /// Clones the regular file at `full` (never through a symlink). `None`
+    /// Clones the regular file `key` below `root` (opened through the
+    /// root, never through a symlink). `None`
     /// when no clone can be made: the filesystem cannot clone, this file
     /// cannot be cloned, no clone folder can be made, or the source kept
     /// changing while it was cloned. Blocking.
-    pub fn clone_file(&self, full: &Path) -> io::Result<Option<Cloned>> {
+    pub fn clone_file(&self, root: &Root, key: &RelPath) -> io::Result<Option<Cloned>> {
         for _ in 0..2 {
-            match self.try_clone(full)? {
+            match self.try_clone(root, key)? {
                 Attempt::Cloned(c) => return Ok(Some(c)),
                 Attempt::NoClone => return Ok(None),
                 Attempt::Changed => {}
@@ -188,22 +190,27 @@ impl Clones {
         Ok(None)
     }
 
-    fn try_clone(&self, full: &Path) -> io::Result<Attempt> {
+    fn try_clone(&self, root: &Root, key: &RelPath) -> io::Result<Attempt> {
         if self.closed.load(Ordering::SeqCst) {
             return Ok(Attempt::NoClone);
         }
-        let (src, s1) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+        let (parent, name) = root.parent(key, Missing::Refuse)?;
+        let (src, s1) = parent.open_regular(&name)?;
         // `st_dev` is narrower on macOS.
         #[allow(clippy::unnecessary_cast)]
         let dev = s1.st_dev as u64;
-        let Some(area) = self.area(full, dev) else {
+        let Some(area) = self.area(root, dev) else {
             return Ok(Attempt::NoClone);
         };
-        let name = OsString::from(self.next.fetch_add(1, Ordering::Relaxed).to_string());
-        let file = match make_clone(&src, &area.dir, &name) {
+        let clone_name = OsString::from(self.next.fetch_add(1, Ordering::Relaxed).to_string());
+        let file = match make_clone(&src, &area.dir, &clone_name) {
             Ok(f) => f,
             Err(e) => {
-                let _ = unlinkat(&*area.dir, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
+                let _ = unlinkat(
+                    &*area.dir,
+                    clone_name.as_os_str(),
+                    UnlinkatFlags::NoRemoveDir,
+                );
                 return match clone_failure(&e) {
                     CloneFailure::Filesystem => {
                         tracing::debug!(error = %e, "this filesystem cannot clone; hashing again instead");
@@ -212,7 +219,7 @@ impl Clones {
                         Ok(Attempt::NoClone)
                     }
                     CloneFailure::File => {
-                        tracing::debug!(path = %full.display(), error = %e, "this file cannot be cloned; hashing again instead");
+                        tracing::debug!(path = %root.path().join(key.to_os()).display(), error = %e, "this file cannot be cloned; hashing again instead");
                         Ok(Attempt::NoClone)
                     }
                     CloneFailure::Error => Err(e),
@@ -221,10 +228,10 @@ impl Clones {
         };
         let cloned = Cloned {
             file,
-            path: area.dir_path.join(&name),
+            path: area.dir_path.join(&clone_name),
             stat: freshness(s1),
             dir: area.dir.clone(),
-            name,
+            name: clone_name,
         };
         // A write while cloning may have given a clone of no real state.
         let s2 = fstat(&src).map_err(errno)?;
@@ -238,13 +245,13 @@ impl Clones {
         self.areas.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The area on device `dev` (the device of `full`), made on first use.
-    fn area(&self, full: &Path, dev: u64) -> Option<Arc<Area>> {
+    /// The area on device `dev` (the device of the file), made on first use.
+    fn area(&self, root: &Root, dev: u64) -> Option<Arc<Area>> {
         let mut areas = self.lock_areas();
         if let Some(a) = areas.get(&dev) {
             return a.clone();
         }
-        let made = match area_dir_below(full, dev, self.within.as_deref())
+        let made = match area_dir_below(root.real_path(), dev, self.within.as_deref())
             .map(|top| (make_area(&top, &self.session), top))
         {
             None => None,
@@ -373,24 +380,25 @@ fn make_clone(src: &File, dir: &OwnedFd, name: &OsStr) -> io::Result<File> {
     Ok(File::from(fd))
 }
 
-/// Where the clone folder for `file` (on device `dev`) goes: of the
-/// directories from the file's filesystem's mount point down to the file,
+/// Where the clone folder for files on device `dev` goes: looked for from
+/// the root's real path (resolved once when the root was opened) upward,
+/// never from a path below it, which could be swapped for a symlink. Of the
+/// directories from the root's filesystem's mount point down to the root,
 /// the first the user can write to (`access(W_OK|X_OK)`) that others
 /// cannot rename things in: not group- or world-writable, unless it has
 /// the sticky bit. `None` if none.
-pub fn area_dir(file: &Path, dev: u64) -> Option<PathBuf> {
-    area_dir_below(file, dev, None)
+pub fn area_dir(root: &Root, dev: u64) -> Option<PathBuf> {
+    area_dir_below(root.real_path(), dev, None)
 }
 
 /// [`area_dir`], looking no higher than `within` when given.
-fn area_dir_below(file: &Path, dev: u64, within: Option<&Path>) -> Option<PathBuf> {
-    let parent = std::fs::canonicalize(file.parent()?).ok()?;
+fn area_dir_below(start: &Path, dev: u64, within: Option<&Path>) -> Option<PathBuf> {
     let within = match within {
         Some(w) => Some(std::fs::canonicalize(w).ok()?),
         None => None,
     };
     let mut chain: Vec<(&Path, u32)> = Vec::new();
-    for dir in parent.ancestors() {
+    for dir in start.ancestors() {
         if within.as_deref().is_some_and(|w| !dir.starts_with(w)) {
             break;
         }
@@ -731,7 +739,7 @@ mod tests {
         std::fs::write(&src, b"content").unwrap();
 
         let clones = Clones::new("me").within(t.path().to_path_buf());
-        let c = clones.clone_file(&src).unwrap();
+        let c = clone_f(&clones, t.path()).unwrap();
         assert!(!stale.exists(), "the stale session was not swept");
         if let Some(c) = &c {
             // Clones go under the resolved folder (macOS: /var is /private/var).
@@ -746,7 +754,68 @@ mod tests {
         drop(c);
         clones.close();
         assert!(!root.exists(), "the clone folder is left");
-        assert!(clones.clone_file(&src).unwrap().is_none());
+        assert!(clone_f(&clones, t.path()).unwrap().is_none());
+    }
+
+    /// Clones the file `f` in `dir`, which is the root.
+    fn clone_f(clones: &Clones, dir: &Path) -> io::Result<Option<Cloned>> {
+        let root = Root::open(dir).unwrap();
+        clones.clone_file(&root, &RelPath::new(b"f").unwrap())
+    }
+
+    /// A folder on the way to the file swapped for a symlink out of the
+    /// root: no clone is made, and no clone folder appears out there.
+    #[test]
+    fn the_clone_folder_is_never_placed_through_a_swapped_parent() {
+        let t = private_tempdir();
+        let root_dir = t.path().join("root");
+        let outside = t.path().join("outside");
+        std::fs::create_dir(&root_dir).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("f"), b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root_dir.join("d")).unwrap();
+        let root = Root::open(&root_dir).unwrap();
+        let clones = Clones::new("me").within(t.path().to_path_buf());
+        let got = clones.clone_file(&root, &RelPath::new(b"d/f").unwrap());
+        assert!(!matches!(got, Ok(Some(_))), "cloned through a symlink");
+        clones.close();
+        let left: Vec<_> = std::fs::read_dir(&outside)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [OsString::from("f")]);
+    }
+
+    /// The clone folder goes at the root or above it, never in a folder
+    /// below the root.
+    #[test]
+    fn area_dir_is_chosen_from_the_root_not_the_file() {
+        let t = private_tempdir();
+        let root_dir = t.path().join("root");
+        let deep = root_dir.join("a/b");
+        std::fs::create_dir_all(&deep).unwrap();
+        chmod(&root_dir, 0o755);
+        chmod(&root_dir.join("a"), 0o755);
+        chmod(&deep, 0o755);
+        std::fs::write(deep.join("f"), b"x").unwrap();
+        let dev = std::fs::metadata(&deep).unwrap().dev();
+        let root = Root::open(&root_dir).unwrap();
+        let real = std::fs::canonicalize(&root_dir).unwrap();
+        let top = area_dir(&root, dev).unwrap();
+        assert!(real.starts_with(&top), "{top:?} is below the root");
+        // Bounded at the root, it is the root itself.
+        assert_eq!(
+            area_dir_below(root.real_path(), dev, Some(&real)),
+            Some(real)
+        );
+    }
+
+    /// A root on another filesystem than the file's gets no clone folder.
+    #[test]
+    fn a_file_on_another_device_gets_no_area() {
+        let t = private_tempdir();
+        let dev = std::fs::metadata(t.path()).unwrap().dev();
+        assert_eq!(area_dir_below(t.path(), dev + 1, None), None);
     }
 
     #[test]
@@ -761,18 +830,20 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let dev = std::fs::metadata(&file).unwrap().dev();
         let bound = std::fs::canonicalize(t.path().join("a")).unwrap();
+        let deep_real = std::fs::canonicalize(&deep).unwrap();
         assert_eq!(
-            area_dir_below(&file, dev, Some(&bound)),
+            area_dir_below(&deep_real, dev, Some(&bound)),
             Some(bound.clone())
         );
         // Unbounded, it is an ancestor at or above the bound (only
         // computed; nothing is made there).
-        let top = area_dir(&file, dev).unwrap();
+        let root = Root::open(&deep).unwrap();
+        let top = area_dir(&root, dev).unwrap();
         assert!(std::fs::canonicalize(&deep).unwrap().starts_with(&top));
         // A read-only directory is passed over for the next one down.
         let ro = t.path().join("a");
         chmod(&ro, 0o555);
-        let got = area_dir_below(&file, dev, Some(&bound));
+        let got = area_dir_below(&deep_real, dev, Some(&bound));
         chmod(&ro, 0o755);
         assert_eq!(got, Some(std::fs::canonicalize(&deep).unwrap()));
     }
@@ -792,12 +863,16 @@ mod tests {
         let dev = std::fs::metadata(&file).unwrap().dev();
         let bound = std::fs::canonicalize(&a).unwrap();
         let deep = std::fs::canonicalize(&deep).unwrap();
+        let deep_real = deep.clone();
         chmod(&a, 0o775);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(deep.clone()));
+        assert_eq!(
+            area_dir_below(&deep_real, dev, Some(&bound)),
+            Some(deep.clone())
+        );
         chmod(&a, 0o757);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(deep));
+        assert_eq!(area_dir_below(&deep_real, dev, Some(&bound)), Some(deep));
         chmod(&a, 0o1777);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(bound));
+        assert_eq!(area_dir_below(&deep_real, dev, Some(&bound)), Some(bound));
         chmod(&a, 0o755);
     }
 
@@ -818,7 +893,7 @@ mod tests {
         let src = t.path().join("f");
         std::fs::write(&src, b"content").unwrap();
         let clones = Clones::new("me").within(t.path().to_path_buf());
-        assert!(clones.clone_file(&src).unwrap().is_none());
+        assert!(clone_f(&clones, t.path()).unwrap().is_none());
         clones.close();
         assert!(victim.join(LOCK).exists());
         assert_eq!(std::fs::read(victim.join("0")).unwrap(), b"a clone");
@@ -905,7 +980,7 @@ mod tests {
         let src = t.path().join("f");
         std::fs::write(&src, b"before").unwrap();
         let clones = Clones::new("me").within(t.path().to_path_buf());
-        let Some(c) = clones.clone_file(&src).unwrap() else {
+        let Some(c) = clone_f(&clones, t.path()).unwrap() else {
             eprintln!("skipping: {} cannot clone", target.display());
             return;
         };
@@ -962,7 +1037,7 @@ mod tests {
             std::ptr::write_bytes((map as *mut u8).add(len - 100), b'y', 100);
         }
         let clones = Clones::new("me").within(t.path().to_path_buf());
-        let cloned = clones.clone_file(&src).unwrap();
+        let cloned = clone_f(&clones, t.path()).unwrap();
         let Some(c) = cloned else {
             // SAFETY: `map` and `len` are exactly the mapping made above,
             // still mapped, and nothing uses it after this.

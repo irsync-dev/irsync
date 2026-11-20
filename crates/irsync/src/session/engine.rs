@@ -466,6 +466,7 @@ impl Ctx {
 
     /// Absolute path of an index key, for messages and logging only: open
     /// folders through [`Ctx::parent_key`].
+    #[cfg(test)]
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
         let key = self.local_key(key);
         if key.as_bytes().is_empty() {
