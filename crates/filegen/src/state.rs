@@ -51,9 +51,16 @@ pub enum StateError {
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(Box<serde_saphyr::Error>),
     #[error("state file format_version {found} is not supported (expected 3)")]
     Version { found: u32 },
+}
+
+// The YAML error is large, so it is boxed to keep `Result`s small.
+impl From<serde_saphyr::Error> for StateError {
+    fn from(e: serde_saphyr::Error) -> Self {
+        Self::Yaml(Box::new(e))
+    }
 }
 
 #[derive(Deserialize)]
@@ -64,18 +71,18 @@ struct Probe {
 
 pub fn read(path: &Path) -> Result<State, StateError> {
     let text = fs::read_to_string(path)?;
-    let probe: Probe = serde_yaml_ng::from_str(&text)?;
+    let probe: Probe = serde_saphyr::from_str(&text)?;
     if probe.format_version != FORMAT_VERSION {
         return Err(StateError::Version {
             found: probe.format_version,
         });
     }
-    Ok(serde_yaml_ng::from_str(&text)?)
+    Ok(serde_saphyr::from_str(&text)?)
 }
 
 /// Write `s` to a temp file next to `path`, fsync it, and rename over `path`.
 pub fn write_atomic(path: &Path, s: &State) -> io::Result<()> {
-    let yaml = serde_yaml_ng::to_string(s).map_err(io::Error::other)?;
+    let yaml = serde_saphyr::to_string(s).map_err(io::Error::other)?;
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp-{}", std::process::id()));
     let tmp: PathBuf = path.with_file_name(name);
@@ -161,7 +168,7 @@ mod tests {
     #[test]
     fn state_yaml_is_human_readable() {
         let (s, _) = sample();
-        let y = serde_yaml_ng::to_string(&s).unwrap();
+        let y = serde_saphyr::to_string(&s).unwrap();
         for want in [
             "seed: 42",
             "steps_done:",

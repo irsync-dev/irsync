@@ -56,17 +56,18 @@ code disagree, the code is what shipped and the entry says so.
    `serde_yaml_ng 0.10`.** Why: `rand 0.8` matches the workspace's
    `rand_core 0.6`; ChaCha8 is fast enough to fill files and its state
    serializes into the state file as `seed`, `stream`, `word_pos`;
-   `serde_yaml_ng` is the maintained fork of `serde_yaml`. Cost if wrong: a
+   `serde_yaml_ng` is the maintained fork of `serde_yaml` (replaced later,
+   see "After merge (YAML library)"). Cost if wrong: a
    later upgrade of `rand`/`rand_chacha` may change the streams, so the same
    seed would produce a different run and old state files would not resume
    identically.
 
 ## Task 3 (configuration)
 
-6. **Modes serialize as single-quoted strings (`- '0644'`).** The plan's
-   test expected double quotes; `serde_yaml_ng` single-quotes strings made
-   of digits. Why: the intent, a quoted octal string, is preserved, and the
-   test was adjusted to the serializer. Cost if wrong: none.
+6. **Modes serialize as quoted strings (`- "0644"`).** Why: a quoted octal
+   string reads back as a string, not as a number. `serde_yaml_ng` wrote
+   single quotes; `serde-saphyr` (see "Later changes") writes double
+   quotes, and both read either. Cost if wrong: none.
 
 ## Task 4 (model and start-up walk)
 
@@ -398,6 +399,30 @@ code disagree, the code is what shipped and the entry says so.
     (negligible), and `rsplit_once(" dur_us=")` in log-normalising code
     must keep stripping the trailing `gen_us` too, which placing `gen_us`
     last guarantees.
+
+## After merge (YAML library)
+
+- **`serde-saphyr` replaces `serde_yaml_ng`.** Why: `serde_yaml_ng` reads
+  YAML through `unsafe-libyaml`, C code translated by machine into unsafe
+  Rust. Its repository is archived, so a bug found in it stays
+  (RUSTSEC-2024-0449). `serde-saphyr` and its parser are written in safe
+  Rust and are maintained.
+- **The merged config is held as a `serde_json::Value` tree.**
+  `serde-saphyr` has no value type of its own. Defaults, the resumed
+  config, the file and each `--set` are turned into such a tree, merged,
+  and then read into `Config`. YAML is still the only format read or
+  written. Cost if wrong: a config value JSON cannot hold (a map key that
+  is not a string, or a number that is not finite) would be refused;
+  `Config` has neither.
+- **Only `true` and `false` are booleans in a config.** `serde-saphyr`
+  would also read `yes`, `no`, `on` and `off` as booleans, which the old
+  library did not; `strict_booleans` keeps them strings, so
+  `--set prefix=on` still works.
+- **Modes are now written with double quotes** (`- "0644"`). Files written
+  before the change, with single quotes, still read.
+- **Pinned behind the newest release.** `serde-saphyr` 2.1.1 and
+  `granit-parser` 2.1.0, because 2.2.0 of each was under a week old.
+  Dependabot moves them on.
 
 ## Process notes
 

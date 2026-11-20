@@ -210,9 +210,9 @@ mod tests {
 
     #[test]
     fn size_serde_string_or_integer() {
-        assert_eq!(serde_yaml_ng::from_str::<Size>("4096").unwrap(), Size(4096));
-        assert_eq!(serde_yaml_ng::from_str::<Size>("4K").unwrap(), Size(4096));
-        assert_eq!(serde_yaml_ng::to_string(&Size(4096)).unwrap().trim(), "4K");
+        assert_eq!(serde_saphyr::from_str::<Size>("4096").unwrap(), Size(4096));
+        assert_eq!(serde_saphyr::from_str::<Size>("4K").unwrap(), Size(4096));
+        assert_eq!(serde_saphyr::to_string(&Size(4096)).unwrap().trim(), "4K");
     }
 
     #[test]

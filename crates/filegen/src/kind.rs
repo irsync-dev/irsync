@@ -118,9 +118,9 @@ mod tests {
     #[test]
     fn kind_names_round_trip_serde() {
         for k in OpKind::ALL {
-            let s = serde_yaml_ng::to_string(&k).unwrap();
+            let s = serde_saphyr::to_string(&k).unwrap();
             assert_eq!(s.trim(), k.name());
-            assert_eq!(serde_yaml_ng::from_str::<OpKind>(&s).unwrap(), k);
+            assert_eq!(serde_saphyr::from_str::<OpKind>(&s).unwrap(), k);
         }
         assert_eq!(OpKind::OverwriteRange.name(), "overwrite_range");
     }

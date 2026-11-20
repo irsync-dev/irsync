@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_yaml_ng::{Mapping, Value};
+use serde_json::{Map, Value};
 
 use crate::cli::{RunArgs, Size};
 use crate::kind::OpKind;
@@ -18,11 +18,22 @@ pub enum ConfigError {
     #[error("reading config: {0}")]
     Io(#[from] std::io::Error),
     #[error("parsing config: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(Box<serde_saphyr::Error>),
+    /// A value of the wrong type for its key. The merged config is held
+    /// as a `serde_json` tree, so this is where such a value is caught.
+    #[error("parsing config: {0}")]
+    Value(#[from] serde_json::Error),
     #[error("unknown config key `{0}`")]
     UnknownKey(String),
     #[error("invalid config: {0}")]
     Invalid(String),
+}
+
+// The YAML error is large, so it is boxed to keep `Result`s small.
+impl From<serde_saphyr::Error> for ConfigError {
+    fn from(e: serde_saphyr::Error) -> Self {
+        Self::Yaml(Box::new(e))
+    }
 }
 
 /// Transition weights: previous kind → next kind → weight.
@@ -390,14 +401,14 @@ pub fn load(
     base: Option<&Config>,
     sets: &[(String, String)],
 ) -> Result<Config, ConfigError> {
-    let defaults = serde_yaml_ng::to_value(Config::default())?;
+    let defaults = serde_json::to_value(Config::default())?;
     let mut merged = defaults.clone();
     if let Some(b) = base {
-        merge(&mut merged, serde_yaml_ng::to_value(b)?);
+        merge(&mut merged, serde_json::to_value(b)?);
     }
     if let Some(path) = file {
         let text = std::fs::read_to_string(path)?;
-        let v: Value = serde_yaml_ng::from_str(&text)?;
+        let v = yaml_value(&text)?;
         // An empty file parses as null: nothing to merge.
         if !v.is_null() {
             check_keys(&defaults, &v, "")?;
@@ -405,12 +416,20 @@ pub fn load(
         }
     }
     for (key, raw) in sets {
-        let v: Value = serde_yaml_ng::from_str(raw)?;
+        let v = yaml_value(raw)?;
         let nested = set_value(&defaults, key, v)?;
         check_keys(&defaults, &nested, "")?;
         merge(&mut merged, nested);
     }
-    serde_yaml_ng::from_value(merged).map_err(map_unknown_field)
+    serde_json::from_value(merged).map_err(map_unknown_field)
+}
+
+/// Parse YAML text into a tree. Only `true` and `false` are booleans:
+/// the library would also read `yes`, `no`, `on` and `off` that way, and
+/// a prefix named `on` must stay a string.
+fn yaml_value(text: &str) -> Result<Value, ConfigError> {
+    let options = serde_saphyr::options! { strict_booleans: true };
+    Ok(serde_saphyr::from_str_with_options(text, options)?)
 }
 
 /// Copy every flag the user gave into `cfg`.
@@ -448,7 +467,7 @@ pub fn apply_flags(cfg: &mut Config, args: &RunArgs) {
 /// other pair is replaced.
 fn merge(into: &mut Value, over: Value) {
     match (into, over) {
-        (Value::Mapping(a), Value::Mapping(b)) => {
+        (Value::Object(a), Value::Object(b)) => {
             for (k, v) in b {
                 match a.get_mut(&k) {
                     Some(slot) => merge(slot, v),
@@ -459,15 +478,6 @@ fn merge(into: &mut Value, over: Value) {
             }
         }
         (slot, v) => *slot = v,
-    }
-}
-
-fn key_name(k: &Value) -> String {
-    match k {
-        Value::String(s) => s.clone(),
-        other => serde_yaml_ng::to_string(other)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default(),
     }
 }
 
@@ -482,9 +492,9 @@ fn join(prefix: &str, key: &str) -> String {
 /// Reject any key in `v` that is not in the default config at the same
 /// position, naming its full dotted path.
 fn check_keys(defaults: &Value, v: &Value, prefix: &str) -> Result<(), ConfigError> {
-    if let (Value::Mapping(d), Value::Mapping(m)) = (defaults, v) {
+    if let (Value::Object(d), Value::Object(m)) = (defaults, v) {
         for (k, sub) in m {
-            let path = join(prefix, &key_name(k));
+            let path = join(prefix, k);
             match d.get(k) {
                 Some(dsub) => check_keys(dsub, sub, &path)?,
                 None => return Err(ConfigError::UnknownKey(path)),
@@ -501,24 +511,24 @@ fn set_value(defaults: &Value, key: &str, v: Value) -> Result<Value, ConfigError
     let mut node = defaults;
     for part in &parts {
         node = node
-            .as_mapping()
+            .as_object()
             .and_then(|m| m.get(*part))
             .ok_or_else(|| ConfigError::UnknownKey(key.to_string()))?;
     }
     Ok(parts.iter().rev().fold(v, |acc, part| {
-        let mut m = Mapping::new();
-        m.insert(Value::String(part.to_string()), acc);
-        Value::Mapping(m)
+        let mut m = Map::new();
+        m.insert(part.to_string(), acc);
+        Value::Object(m)
     }))
 }
 
 /// Surface serde's `unknown field` error as [`ConfigError::UnknownKey`].
-fn map_unknown_field(e: serde_yaml_ng::Error) -> ConfigError {
+fn map_unknown_field(e: serde_json::Error) -> ConfigError {
     let msg = e.to_string();
     msg.split_once("unknown field `")
         .and_then(|(_, rest)| rest.split_once('`'))
         .map(|(name, _)| ConfigError::UnknownKey(name.to_string()))
-        .unwrap_or(ConfigError::Yaml(e))
+        .unwrap_or(ConfigError::Value(e))
 }
 
 fn check_probability(name: &str, p: f64) -> Result<(), ConfigError> {
@@ -658,30 +668,31 @@ mod tests {
     #[test]
     fn default_config_round_trips_through_yaml() {
         let d = Config::default();
-        let s = serde_yaml_ng::to_string(&d).unwrap();
-        assert_eq!(serde_yaml_ng::from_str::<Config>(&s).unwrap(), d);
+        let s = serde_saphyr::to_string(&d).unwrap();
+        assert_eq!(serde_saphyr::from_str::<Config>(&s).unwrap(), d);
         assert!(s.contains("max_total_size: 25G"));
-        // serde_yaml_ng quotes digit-only strings with single quotes.
-        assert!(s.contains("- '0644'"), "{s}");
+        // A mode is written quoted, so it reads back as a string and not
+        // as a number.
+        assert!(s.contains("- \"0644\""), "{s}");
     }
 
     #[test]
     fn mode_parses_octal_strings() {
         assert_eq!(
-            serde_yaml_ng::from_str::<Mode>("\"0644\"").unwrap(),
+            serde_saphyr::from_str::<Mode>("\"0644\"").unwrap(),
             Mode(0o644)
         );
         assert_eq!(
-            serde_yaml_ng::from_str::<Mode>("'644'").unwrap(),
+            serde_saphyr::from_str::<Mode>("'644'").unwrap(),
             Mode(0o644)
         );
         assert_eq!(
-            serde_yaml_ng::from_str::<Mode>("\"4755\"").unwrap(),
+            serde_saphyr::from_str::<Mode>("\"4755\"").unwrap(),
             Mode(0o4755)
         );
         assert_eq!(Mode(0o4755).to_string(), "4755");
-        assert!(serde_yaml_ng::from_str::<Mode>("\"0648\"").is_err());
-        assert!(serde_yaml_ng::from_str::<Mode>("\"64\"").is_err());
+        assert!(serde_saphyr::from_str::<Mode>("\"0648\"").is_err());
+        assert!(serde_saphyr::from_str::<Mode>("\"64\"").is_err());
     }
 
     #[test]
@@ -713,6 +724,23 @@ mod tests {
         .unwrap();
         assert_eq!(c.content.pattern_fraction, 0.2);
         assert_eq!(c.names.extensions, vec!["a", "b"]);
+    }
+
+    /// Only `true` and `false` are booleans. YAML 1.1 also read `yes`,
+    /// `no`, `on` and `off` that way, which turns a prefix such as `on`
+    /// into a value of the wrong type.
+    #[test]
+    fn yes_no_on_off_stay_strings() {
+        for word in ["yes", "no", "on", "off", "y", "n"] {
+            let c = load(None, None, &[("prefix".into(), word.into())]).unwrap();
+            assert_eq!(c.prefix.as_deref(), Some(word));
+            let f = write_tmp(&format!("prefix: {word}\n"));
+            let c = load(Some(&f), None, &[]).unwrap();
+            assert_eq!(c.prefix.as_deref(), Some(word));
+        }
+        assert!(load(None, None, &[("fsync".into(), "yes".into())]).is_err());
+        let c = load(None, None, &[("fsync".into(), "true".into())]).unwrap();
+        assert!(c.fsync);
     }
 
     #[test]
