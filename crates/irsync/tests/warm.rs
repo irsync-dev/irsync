@@ -331,7 +331,8 @@ async fn warm_up_never_hashes_through_a_swapped_folder() {
         .into_handle();
     // Just before the file is opened, its folder is replaced by a link.
     let (r, o) = (root.path().to_path_buf(), outside.path().to_path_buf());
-    let swapped = std::sync::atomic::AtomicBool::new(false);
+    let swapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fired = swapped.clone();
     let hook: irsync::hasher::HashHook = std::sync::Arc::new(move |path: &RelPath, bytes| {
         if bytes == 0
             && path.as_bytes() == b"d/f"
@@ -351,12 +352,19 @@ async fn warm_up_never_hashes_through_a_swapped_folder() {
     .await
     .unwrap();
 
-    // The outside file is never read: no digest of its size is stored.
-    let e = ix.lock().unwrap().get_entry(&rel("d/f")).unwrap();
     assert!(
-        e.and_then(|e| e.digest)
-            .is_none_or(|d| d.size == (100 * KIB) as u64),
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        "hook never fired"
+    );
+    // The folder name leads outside by now, so nothing is read there: no
+    // row for the file, no hashing, and the file is reported as an error.
+    assert!(
+        ix.lock().unwrap().get_entry(&rel("d/f")).unwrap().is_none(),
         "{rep:?}"
     );
-    assert_ne!(rep.bytes, (30 * KIB) as u64, "{rep:?}");
+    assert_eq!((rep.examined, rep.hashed, rep.bytes), (1, 0, 0), "{rep:?}");
+    assert!(
+        rep.errors.iter().any(|(p, _)| p.as_bytes() == b"d/f"),
+        "{rep:?}"
+    );
 }

@@ -1484,8 +1484,6 @@ pub async fn gc_skipping(
 /// (the index lock is held: a receiver cannot index it meanwhile). A walk
 /// that found no file at all prunes nothing: the root may be a mount point
 /// whose filesystem is not mounted.
-// The `stat` field types differ by platform; the casts are no-ops here.
-#[allow(clippy::unnecessary_cast)]
 fn prune_entries(
     ix: &mut crate::index::Index,
     root: &Root,
@@ -1520,7 +1518,11 @@ fn prune_entries(
             .and_then(|(dir, name)| dir.stat(&name))
             .ok()
             .filter(|st| crate::fs::safe::is_regular_mode(st.st_mode as u32))
-            .map(|st| (st.st_ino as u64, st.st_size as u64));
+            // The `stat` field types differ by platform; the casts are no-ops here.
+            .map(|st| {
+                #[allow(clippy::unnecessary_cast)]
+                (st.st_ino as u64, st.st_size as u64)
+            });
         if here == Some((inode, size)) {
             continue;
         }
