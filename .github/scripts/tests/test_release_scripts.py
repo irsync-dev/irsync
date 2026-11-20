@@ -17,11 +17,15 @@ RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
 START = os.path.join(SCRIPTS, "release-start-check.sh")
+PIN = os.path.join(SCRIPTS, "pin-release.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
 FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
 REL = {"body": "", "isDraft": False, "isPrerelease": False}
+# A pipe into grep -q, also when the pipe ends a line and grep starts the
+# next, but not ||. test_workflow_policy.py has the same for workflow steps.
+PIPE_INTO_GREP_Q = re.compile(r"(?<!\|)\|(?!\|)\s*(\\\n\s*)?grep\s+(-\w*\s+)*-\w*q")
 
 
 class FakeGh(unittest.TestCase):
@@ -1333,6 +1337,79 @@ class RealMinisignSignTests(SignTests):
 
 
 
+class PinTests(FakeGh):
+    SHA = "a" * 40
+    REFUSED = "gh: Resource not accessible by integration (HTTP 403)"
+
+    def pin(self, **state):
+        self.set_state(**{"releases": {}, "tags": [], **state})
+        self.env["GITHUB_SHA"] = self.SHA
+        return self.run_script(PIN, "v1.3.0", "main")
+
+    def test_pins_the_tested_commit(self):
+        r = self.pin(branches=["main"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.state()["refs"], {"pinned/v1.3.0": self.SHA})
+
+    def test_tag_exists_now(self):
+        r = self.pin(branches=["main"], tags=["v1.3.0"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("The tag v1.3.0 exists now", r.stderr)
+        self.assertIn("release-resume.yml", r.stderr)
+        self.assertNotIn("refs", self.state())
+
+    def test_failed_tag_lookup_stops(self):
+        r = self.pin(branches=["main"], api_fails=["git/matching-refs/tags/"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Could not read", r.stderr)
+        self.assertNotIn("refs", self.state())
+
+    def test_failed_branch_lookup_stops(self):
+        r = self.pin(branches=["main"], api_fails=["git/matching-refs/heads/"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Could not read", r.stderr)
+        self.assertNotIn("refs", self.state())
+
+    def test_leftover_pin_is_replaced(self):
+        r = self.pin(branches=["main", "pinned/v1.3.0"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("left over from an earlier attempt", r.stdout)
+        s = self.state()
+        self.assertEqual(s["branches"], ["main", "pinned/v1.3.0"])
+        self.assertEqual(s["refs"], {"pinned/v1.3.0": self.SHA})
+
+    def test_branch_changed_a_workflow(self):
+        r = self.pin(branches=["main"], create_ref_fails=self.REFUSED,
+                     compare_files=["src/a.rs", ".github/workflows/ci.yml",
+                                    ".github/workflows/site.yml"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("main has changed workflow files since this gate started on "
+                      f"{self.SHA} (.github/workflows/ci.yml .github/workflows/site.yml)",
+                      r.stderr)
+        self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0", r.stderr)
+
+    def test_refused_without_a_workflow_change(self):
+        for files in (["src/a.rs"], []):
+            r = self.pin(branches=["main"], create_ref_fails=self.REFUSED, compare_files=files)
+            self.assertEqual(r.returncode, 1)
+            self.assertNotIn("changed workflow files", r.stderr)
+            self.assertIn(f"Could not create pinned/v1.3.0 at {self.SHA}: {self.REFUSED}",
+                          r.stderr)
+
+    def test_refused_and_compare_fails(self):
+        r = self.pin(branches=["main"], create_ref_fails=self.REFUSED, api_fails=["compare/"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Could not create pinned/v1.3.0", r.stderr)
+
+    def test_other_error(self):
+        r = self.pin(branches=["main"], create_ref_fails="gh: Bad Gateway (HTTP 502)")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Could not create pinned/v1.3.0 at", r.stderr)
+        self.assertIn("HTTP 502", r.stderr)
+        self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0", r.stderr)
+        self.assertFalse([c for c in self.state()["calls"] if "compare" in " ".join(c)])
+
+
 class NoPipeIntoGrepQTests(unittest.TestCase):
     """A script with pipefail must not pipe into grep -q.
 
@@ -1360,14 +1437,18 @@ class NoPipeIntoGrepQTests(unittest.TestCase):
                 continue
             if "pipefail" not in text:
                 continue
-            for n, line in enumerate(text.splitlines(), 1):
-                if re.search(r"\|\s*grep\s+(-\w*\s+)*-\w*q", line):
-                    found.append(f"{name}:{n}: {line.strip()}")
+            for m in PIPE_INTO_GREP_Q.finditer(text):
+                found.append(f"{name}:{text.count(chr(10), 0, m.start()) + 1}: {m.group(0)!r}")
         self.assertEqual(found, [])
 
     def test_the_check_finds_one(self):
-        self.assertRegex("    printf '%s\\n' \"$x\" | grep -qxF -- \"$y\" || bad=1",
-                         r"\|\s*grep\s+(-\w*\s+)*-\w*q")
+        for text in ["    printf '%s\\n' \"$x\" | grep -qxF -- \"$y\" || bad=1",
+                     "if gh api \"$url\" --jq '.[].ref' |\n    grep -qxF -- \"$ref\"; then",
+                     "gh api \"$url\" \\\n  | grep -q x"]:
+            self.assertRegex(text, PIPE_INTO_GREP_Q)
+
+    def test_the_check_skips_or(self):
+        self.assertNotRegex("[ -f x ] || grep -q y z", PIPE_INTO_GREP_Q)
 
 if __name__ == "__main__":
     unittest.main()

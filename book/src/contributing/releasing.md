@@ -159,8 +159,10 @@ release starts. It does this, in order:
    targets added. If anything fails, it stops. Nothing is published, and no
    tag exists.
 3. **Pin.** It makes a branch `pinned/vX.Y.Z` at the tested commit, so the
-   release builds exactly that commit even if the branch moves on. It
-   deletes a `pinned/vX.Y.Z` left over from an earlier failed attempt. It
+   release builds exactly that commit even if the branch moves on. Don't
+   merge a change to a workflow file into the branch while the gate runs:
+   GitHub then refuses to let the gate make this branch (see
+   [If a release fails](#if-a-release-fails)). It deletes a `pinned/vX.Y.Z` left over from an earlier failed attempt. It
    refuses to go on if a `release.yml` run from an earlier attempt is still
    going. It also deletes a draft release left over for the tag.
 4. **Draft.** It launches `release.yml` on the pinned branch and waits for
@@ -285,6 +287,13 @@ A stray tag is different: see
 was a flaky test, use "Re-run failed jobs" on the gate run. If the failure
 is real, fix it on the branch through a pull request, then start the gate
 again with the same version.
+
+**The pin step failed.** Nothing was built or published, and no tag
+exists. The usual cause: a change to a workflow file was merged into the
+branch while the tests ran. GitHub does not let the gate's built-in token
+create a branch then, and answers "Resource not accessible by
+integration". The error names the workflow files that changed and the
+command that starts the gate again; run it, on the branch's new commit.
 
 **The release step failed.** Look at the `release.yml` run it launched. The
 link is in the gate's log. If the gate could not find the run, look in the
