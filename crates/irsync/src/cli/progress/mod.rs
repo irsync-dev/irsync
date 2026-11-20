@@ -27,8 +27,9 @@
 //! One line per phase (`list`, `transfer`, `delete` with a `--delete*` flag),
 //! each collapsing to `done` and a summary when it ends (`failed` on the
 //! transfer line of a session that ended with an error), and one row per file
-//! the local side is working on (an open stream or a hash), largest first,
-//! capped at half the terminal. Once a file has failed an `errors` section
+//! the local side is working on (an open stream or a hash), capped at half
+//! the terminal: the files that are moving first, fastest first, with a
+//! large file kept on top while it is not stalled. Once a file has failed an `errors` section
 //! closes the block: the count and the newest three failures, one fitted
 //! line each (the full list is printed on stderr after the block is
 //! cleared). The roles log a failed file at `info`, so by default nothing

@@ -232,18 +232,75 @@ pub fn render(live: &Live, g: &Geometry, now: Instant) -> Vec<String> {
     let fixed = 1 + 2 + usize::from(delete.is_some()) + 1 + errors.len();
     let cap = (g.height / 2).saturating_sub(fixed).max(3);
     let mut rows: Vec<(&RelPath, &Row)> = live.rows.iter().filter(|(_, r)| r.shown()).collect();
-    rows.sort_by(|a, b| b.1.size.cmp(&a.1.size).then_with(|| a.0.cmp(b.0)));
-    let overflow = rows.len().saturating_sub(cap);
-    for (path, row) in rows.into_iter().take(cap) {
+    order_rows(&mut rows, cap, now);
+    let hidden = rows.split_off(cap.min(rows.len()));
+    for (path, row) in rows {
         lines.push(row_line(path, row, g, now));
     }
-    if overflow > 0 {
-        let text = format!("  {} and {overflow} more", g.ellipsis());
+    if !hidden.is_empty() {
+        let mut text = format!("  {} and {} more", g.ellipsis(), hidden.len());
+        // Stalled rows sort last, so they are the first to go unseen.
+        let stalled = hidden
+            .iter()
+            .filter(|(_, r)| r.stalled_for(now).is_some())
+            .count();
+        if stalled > 0 {
+            text.push_str(&format!(" ({stalled} stalled)"));
+        }
         lines.push(plain_line(text, g));
     }
     lines.extend(delete);
     lines.extend(errors);
     lines
+}
+
+/// At most this many large files hold a place at the top.
+const PINNED_ROWS: usize = 2;
+/// A file is large when it is at least this many times the median file in
+/// flight. Among files of about one size none is.
+const PINNED_FACTOR: u64 = 4;
+
+/// How much a row has to show, best first: moving, by a coarse speed;
+/// hashing; open and idle; stalled.
+fn activity(row: &Row, now: Instant) -> (u8, std::cmp::Reverse<u32>) {
+    let (tier, speed) = match row.state {
+        _ if row.stalled_for(now).is_some() => (3, 0),
+        RowState::Hashing => (1, 0),
+        // The power of two below the rate: two rows of about one speed
+        // do not swap places each time their rates are recomputed.
+        RowState::Moving { .. } if row.rate >= 1.0 => (0, (row.rate as u64).ilog2()),
+        RowState::Moving { .. } => (2, 0),
+    };
+    (tier, std::cmp::Reverse(speed))
+}
+
+/// Puts the rows in the order they are drawn, of which `cap` fit: the
+/// files that are making progress first, so that those are what is seen.
+/// A large file that is not stalled keeps a place at the top whatever its
+/// speed, to be followed through its whole transfer; the rest go by
+/// [`activity`], then largest first, then by path. The order only changes
+/// when a rate is recomputed or a row stalls, not on every redraw.
+fn order_rows(rows: &mut [(&RelPath, &Row)], cap: usize, now: Instant) {
+    let mut sizes: Vec<u64> = rows.iter().map(|(_, r)| r.size).collect();
+    sizes.sort_unstable();
+    // The lower median: of two files, the larger can stand out.
+    let median = sizes.get(sizes.len().saturating_sub(1) / 2).copied();
+    let floor = median.unwrap_or(0).saturating_mul(PINNED_FACTOR).max(1);
+    let large = |r: &Row| r.stalled_for(now).is_none() && r.size >= floor;
+    let by_size = |a: &(&RelPath, &Row), b: &(&RelPath, &Row)| {
+        b.1.size.cmp(&a.1.size).then_with(|| a.0.cmp(b.0))
+    };
+    rows.sort_by(|a, b| large(b.1).cmp(&large(a.1)).then_with(|| by_size(a, b)));
+    let pinned = rows
+        .iter()
+        .take(PINNED_ROWS.min(cap / 2))
+        .take_while(|(_, r)| large(r))
+        .count();
+    rows[pinned..].sort_by(|a, b| {
+        activity(a.1, now)
+            .cmp(&activity(b.1, now))
+            .then_with(|| by_size(a, b))
+    });
 }
 
 fn has_activity(live: &Live) -> bool {
