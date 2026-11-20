@@ -181,7 +181,7 @@ async fn large_files_are_read_a_few_at_a_time() {
         let items: Vec<_> = (0..WORKERS)
             .map(|i| item(root.path(), format!("{kind}{i}").as_bytes()))
             .collect();
-        let digests = futures::future::join_all(items.iter().map(|it| h.digest(it))).await;
+        let digests = futures_util::future::join_all(items.iter().map(|it| h.digest(it))).await;
         assert!(digests.iter().all(Result::is_ok));
     }
     let (big, small) = (counts[1].load(Relaxed), counts[3].load(Relaxed));

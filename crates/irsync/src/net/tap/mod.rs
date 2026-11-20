@@ -260,7 +260,7 @@ fn selected_path(conn: &Connection) -> Option<String> {
 /// connection closes. Holds only a weak handle, so it never keeps the
 /// connection open.
 fn watch_paths(rt: &tokio::runtime::Handle, conn: &Connection, tap: Arc<ConnInner>) {
-    use futures::StreamExt as _;
+    use futures_util::StreamExt as _;
     use iroh::endpoint::PathEvent;
     // Subscribe before the first look, so no change falls in between.
     let mut events = conn.path_events();

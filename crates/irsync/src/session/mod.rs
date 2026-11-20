@@ -491,11 +491,12 @@ pub type EventLog = Arc<std::sync::Mutex<Vec<String>>>;
 /// the rest; lets a test change the file mid-transfer.
 #[cfg(feature = "test-hooks")]
 pub type FirstChunkHook =
-    Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+    Arc<dyn Fn(&RelPath) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
 
 /// Test hook: runs at a point in a file's handling (see [`SideHooks`]).
 #[cfg(feature = "test-hooks")]
-pub type PathHook = Arc<dyn Fn(&RelPath) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+pub type PathHook =
+    Arc<dyn Fn(&RelPath) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
 
 /// Which side of the session an event describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

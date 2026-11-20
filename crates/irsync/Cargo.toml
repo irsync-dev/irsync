@@ -76,7 +76,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow = { workspace = true }
-futures = { workspace = true }
+futures-util = { workspace = true }
 rpassword = { workspace = true }
 noq-proto = { workspace = true }
 iroh-mainline-address-lookup = { workspace = true }
@@ -99,7 +99,7 @@ minisign = { workspace = true }
 ct-codecs = { workspace = true }
 
 [build-dependencies]
-vergen-gitcl = "10"
+vergen-gitcl = { workspace = true }
 
 # Index throughput and lookups, and a whole pull: run by hand, see the file.
 [[bench]]
