@@ -28,7 +28,6 @@ yanked = "deny"
 unmaintained = "all"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable. It is a build-time macro reached only through iroh's netwatch (netlink-packet-core); it goes when upstream drops it." },
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable. Only filegen uses it (via serde_yaml_ng), to read its own test specs; filegen is a test tool and is not shipped." },
 ]
 
 [licenses]

@@ -79,9 +79,12 @@ differ, the code is what shipped.
    licenses of all the others are still checked before a release
    (`deny-license-check.toml`). Cost if wrong: a platform we build for
    but forgot to list goes unchecked. Accepted today:
-   - `paste` (RUSTSEC-2024-0436) and `unsafe-libyaml` (RUSTSEC-2024-0449):
-     unmaintained, with no known hole. One is a build-time macro reached
-     through iroh. The other is used only by the unshipped `filegen`.
+   - `paste` (RUSTSEC-2024-0436): unmaintained, with no known hole. A
+     build-time macro reached through iroh.
+
+   `unsafe-libyaml` (RUSTSEC-2024-0449) was accepted here until `filegen`
+   moved to a YAML library written in safe Rust (`serde-saphyr`), which
+   removed it from the build.
 
    Cost if wrong: a known hole ships.
 
