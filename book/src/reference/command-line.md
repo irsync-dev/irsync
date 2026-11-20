@@ -166,7 +166,7 @@ different meaning have a section of their own:
 | `--exclude PATTERN` | Exclude paths that match an rsync pattern: `*`, `**`, `?`, `[...]`; a leading `/` anchors the pattern to the root, a trailing `/` matches directories only. |
 | `--include PATTERN` | Include paths that match, even if a later `--exclude` would hide them. |
 | `--exclude-from FILE` | Read exclude patterns from `FILE`, one per line. Blank lines and lines that start with `#` or `;` are skipped. |
-| `--include-from FILE` | Read include patterns from `FILE`, as `--exclude-from` does. |
+| `--include-from FILE` | Read include patterns from `FILE`, as `--exclude-from` does. A pattern may be at most 4,096 bytes long; one run takes at most 16,384 rules, with at most 1 MiB of patterns together. |
 | `--bwlimit RATE` | Limit the rate at which file data is sent, on a push and on a pull. On a pull the daemon does the limiting, and a daemon of version 0.1.0-beta.5 or older ignores the limit. A bare number is KiB/s. `K`, `M`, `G`, `T`, `P` (also `KiB` to `PiB`) are powers of 1024, `KB` to `PB` powers of 1000, `b` is bytes; decimals are allowed (`1.5M`). `0` means no limit. |
 | `--numeric-ids` | Apply owner and group ids as sent. By default the sender's user and group names are mapped to the receiver's ids where they exist, as rsync does. |
 | `--partial-dir DIR` | Keep the partial files of interrupted transfers under `DIR`, relative to the destination root, instead of beside their files. On a pull `DIR` may be absolute; on a push the daemon keeps them, and only a relative `DIR` inside the destination is allowed. |

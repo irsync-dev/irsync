@@ -52,6 +52,12 @@ use irsync_proto::v1::plan_item::Action;
 
 /// Re-offers per file after a change or a hash mismatch.
 pub(super) const MAX_RETRIES: u32 = 1;
+
+/// The longest path the receiver may name in a `PlanItem` or a `CheckLink`.
+/// Such a path is kept for the life of the session, so the 16 MiB a frame
+/// allows is too much. Far above `PATH_MAX` (4 KiB), because a walk can
+/// list a tree deeper than that.
+const MAX_PLAN_PATH: usize = 64 * 1024;
 /// How long to wait for in-flight data streams after `SessionDone`.
 const DRAIN_SENDS: Duration = Duration::from_secs(10);
 
@@ -438,7 +444,8 @@ impl SenderRole {
                         let digest = match append_from {
                             Some(from) => {
                                 let (f, k) = (c.file.try_clone()?, key.clone());
-                                blocking(move || tail_digest_of(f, &k, from))
+                                ctx.hasher
+                                    .bounded_read(size, move || tail_digest_of(f, &k, from))
                                     .await
                                     .map(|h| h.digest)
                             }
@@ -459,7 +466,12 @@ impl SenderRole {
                         // Only the tail: the receiver trusts its prefix.
                         let full = ctx.full_key(&key);
                         let check = !ctx.hooks.no_change_checks();
-                        blocking(move || tail_digest(&full, &key, from, check)).await
+                        // Under the hasher's limits, like a whole-file
+                        // digest: a receiver must not start more reads at
+                        // once by planning files as appends.
+                        ctx.hasher
+                            .bounded_read(size, move || tail_digest(&full, &key, from, check))
+                            .await
                     } else {
                         let since = super::wait_start(&ctx.meter);
                         let digest = match (walked, item) {
@@ -596,7 +608,18 @@ impl SenderRole {
         if self.files.len() >= MAX_INFLIGHT {
             bail!("protocol error: more than {MAX_INFLIGHT} files in flight");
         }
-        let path = RelPath::new(&p.path).unwrap_or_default();
+        // The path is kept for the life of the session (the stored plan,
+        // the errors): one this side could never have listed is refused
+        // before it is.
+        if p.path.len() > MAX_PLAN_PATH {
+            bail!(
+                "protocol error: PlanItem for file id {file_id} has a path of {} bytes",
+                p.path.len()
+            );
+        }
+        let Ok(path) = RelPath::new(&p.path) else {
+            bail!("protocol error: PlanItem for file id {file_id} has an invalid path");
+        };
         // Only paths this side listed as regular files are ever read: a peer
         // cannot ask for something outside the walk (e.g. through a symlink).
         // With a listing of this connection, a receiver plans each listed
@@ -1317,6 +1340,12 @@ impl SenderRole {
     /// One name the receiver is about to link (`-H`, see `CheckLink`):
     /// handed to the checker task.
     fn on_check_link(&mut self, c: CheckLink) -> anyhow::Result<()> {
+        if c.path.len() > MAX_PLAN_PATH {
+            bail!(
+                "protocol error: CheckLink with a path of {} bytes",
+                c.path.len()
+            );
+        }
         if !self.ctx.opts.check_links {
             bail!("protocol error: CheckLink without -H");
         }
@@ -2604,5 +2633,50 @@ mod tests {
             "aborted tasks still run"
         );
         assert_eq!(tasks.len(), 0);
+    }
+
+    fn plan_item(file_id: u64, path: &[u8]) -> PlanItem {
+        PlanItem {
+            file_id,
+            path: path.to_vec(),
+            ..PlanItem::default()
+        }
+    }
+
+    /// A path this side could never have listed is a protocol error: it
+    /// must not be stored in the plan and the errors for the session's life.
+    #[tokio::test]
+    async fn plan_item_with_an_invalid_path_is_refused() {
+        let (mut s, _t) = role().await;
+        for (id, bad) in [&b"/abs"[..], b"a/../b", b"a//b", b"a\0b"]
+            .iter()
+            .enumerate()
+        {
+            let err = s.on_plan(plan_item(id as u64, bad)).unwrap_err();
+            assert!(format!("{err:#}").contains("invalid path"), "{err:#}");
+        }
+        assert!(s.files.is_empty());
+        assert!(s.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_item_with_an_oversized_path_is_refused() {
+        let (mut s, _t) = role().await;
+        let long = vec![b'p'; MAX_PLAN_PATH + 1];
+        let err = s.on_plan(plan_item(1, &long)).unwrap_err();
+        assert!(format!("{err:#}").contains("bytes"), "{err:#}");
+        assert!(s.files.is_empty());
+        assert!(s.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn check_link_with_an_oversized_path_is_refused() {
+        let (mut s, _t) = role().await;
+        let c = CheckLink {
+            path: vec![b'p'; MAX_PLAN_PATH + 1],
+            want: Some(Default::default()),
+        };
+        let err = s.on_check_link(c).unwrap_err();
+        assert!(format!("{err:#}").contains("bytes"), "{err:#}");
     }
 }

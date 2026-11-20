@@ -106,6 +106,47 @@ impl Rule {
     }
 }
 
+/// The longest pattern a rule may have, in bytes: as long as the longest
+/// path it could name (`PATH_MAX`).
+pub const MAX_PATTERN: usize = 4096;
+
+/// The most rules a session takes.
+pub const MAX_RULES: usize = 16 * 1024;
+
+/// The most bytes all patterns of a session may have together. A compiled
+/// pattern takes about 32 bytes a pattern byte, so the rules of a session
+/// stay below about 32 MiB.
+pub const MAX_PATTERN_BYTES: usize = 1024 * 1024;
+
+/// Checks a session's patterns against the limits above. Both sides check:
+/// the client its own rules before it connects, the daemon the rules in a
+/// `Hello` before it compiles them, since they come from the peer.
+pub fn check_limits<'a>(patterns: impl IntoIterator<Item = &'a [u8]>) -> Result<(), String> {
+    let (mut rules, mut bytes) = (0usize, 0usize);
+    for p in patterns {
+        if p.len() > MAX_PATTERN {
+            return Err(format!(
+                "a filter pattern of {} bytes is longer than the limit of {MAX_PATTERN}",
+                p.len()
+            ));
+        }
+        rules += 1;
+        bytes += p.len();
+    }
+    if rules > MAX_RULES {
+        return Err(format!(
+            "{rules} filter rules are more than the limit of {MAX_RULES}"
+        ));
+    }
+    if bytes > MAX_PATTERN_BYTES {
+        return Err(format!(
+            "filter patterns of {bytes} bytes together are more than the limit of \
+             {MAX_PATTERN_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
 /// Ordered rules; the first match wins, the default is include.
 #[derive(Debug, Clone, Default)]
 pub struct FilterSet {
@@ -156,6 +197,8 @@ impl FilterSet {
                 }
             }
         }
+        check_limits(out.iter().map(Rule::pattern))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         Ok(FilterSet { rules: out })
     }
 

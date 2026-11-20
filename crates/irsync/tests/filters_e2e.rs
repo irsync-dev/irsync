@@ -112,3 +112,33 @@ async fn exclude_from_is_read_on_the_client_not_the_daemon() {
     })
     .await;
 }
+
+/// The daemon compiles the rules a client sends. A client that skips its
+/// own check and sends rules over the limits is refused before the daemon
+/// compiles them, in both directions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_refuses_rules_over_the_limits() {
+    use irsync::filter::{Rule, MAX_PATTERN, MAX_RULES};
+    within30(async {
+        let h = Harness::new().await;
+        fs::write(h.local.path().join("a"), b"a").unwrap();
+        let o = opts(&[]);
+        let long = vec![Rule::from_parts(false, &vec![b'x'; MAX_PATTERN + 1])];
+        let many = (0..=MAX_RULES)
+            .map(|_| Rule::from_parts(false, b"a"))
+            .collect::<Vec<_>>();
+        for (rules, needle) in [(long, "longer than the limit"), (many, "filter rules")] {
+            for flow in [Flow::Push, Flow::Pull] {
+                let mut local = Harness::side_for(h.local.path(), h.client_state.path());
+                local.filters = Arc::new(FilterSet::new(rules.clone()));
+                let err = h.run_side(&o, flow, local).await.unwrap_err();
+                let refused = err
+                    .downcast_ref::<irsync::session::engine::SessionRefused>()
+                    .unwrap_or_else(|| panic!("{flow:?}: not a refusal: {err:#}"));
+                assert!(refused.to_string().contains(needle), "{flow:?}: {err:#}");
+            }
+        }
+        assert!(fs::symlink_metadata(h.export.path().join("a")).is_err());
+    })
+    .await;
+}
