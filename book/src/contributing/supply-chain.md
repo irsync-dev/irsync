@@ -79,12 +79,37 @@ maintainer can do. Why each choice was made is in
   signing subkey, which can be revoked and replaced without users trusting
   a new key.
 
+**A bug slips in.**
+
+- Fuzzing feeds the code that reads bytes from a peer millions of made-up
+  inputs and watches for a crash. The seeds are checked on every pull
+  request, and each target is fuzzed for ten minutes every night
+  (`nightly.yml`). A crash fails the run and uploads the input, which is
+  public, as the Fuzzing section of [Testing](testing.md#fuzzing) explains.
+- Every `unsafe` block needs a `// SAFETY:` comment, and clippy refuses one
+  without. Miri runs the tests it can run every night, and stops at
+  undefined behaviour (memory use the language does not allow).
+- zizmor checks the workflows for security problems, in the `workflows`
+  job. CodeQL, GitHub's code analysis, reads the Rust code and the
+  workflows, and shows what it finds in the Security tab. It is not a
+  required check until it has been quiet for a few weeks. See
+  [Static analysis](testing.md#static-analysis).
+
+**Someone finds a vulnerability.**
+
+- There are two ways to report it: the **Report a vulnerability** button on
+  the repository's Security tab (private vulnerability reporting), or an
+  email to `security@irsync.org`. [SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+  says so.
+- A report is answered within 7 days.
+- `tools/github_settings.py check` reports the setting if it is turned off.
+
 ## Checking the settings
 
 `tools/github_settings.py` holds the settings for `irsync-dev/irsync`,
 `irsync-dev/iroh`, `irsync-dev/homebrew-tap` and `irsync-dev/packages`.
 These are the rulesets, environments, secret scanning, SHA pinning and
-immutable releases.
+immutable releases and private vulnerability reporting.
 
 ```sh
 tools/github_settings.py check    # prints every difference, changes nothing

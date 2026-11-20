@@ -2,8 +2,14 @@
 
 ## Report a vulnerability
 
-Email **security@irsync.org**. Please do not open a public GitHub issue for a
-security problem.
+There are two ways to report a vulnerability. Please do not open a public
+GitHub issue for a security problem.
+
+- On GitHub, open the repository's **Security** tab and press **Report a
+  vulnerability**. The report stays private between you and the maintainers.
+- Or email **security@irsync.org**.
+
+We answer within 7 days.
 
 Say what you found, which irsync version (`irsync --version`) and OS it
 affects, and how to reproduce it. We will confirm we got your report and keep

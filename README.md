@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/irsync-dev/irsync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+![Status: beta](https://img.shields.io/badge/status-beta-orange.svg)
 
 irsync is a one-way directory synchroniser in the mould of rsync, rebuilt for
 today's networks. It runs on both ends of a transfer and connects through
