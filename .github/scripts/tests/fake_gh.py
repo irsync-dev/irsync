@@ -15,6 +15,8 @@ State lives in the JSON file named by FAKE_GH_STATE:
     assets right after a release upload, or after publishing)
   new_id_on_upload: int (the release gets this databaseId on upload)
   compare: str (the status of compare/A...B; default "ahead")
+  compare_files: [path, ...] (the files compare/A...B lists, for --jq '.files[]...')
+  create_ref_fails: str (creating a ref fails with this message)
   api_fails: [path, ...] (gh api fails for an endpoint repos/OWNER/REPO/path...)
   keys_at_commit: str (packaging/signing/release-keys.pub in any commit)
   attested_commit, attested_ref: str (what attestation verify checks
@@ -159,7 +161,23 @@ elif args[0] == "api":
             if b.startswith(endpoint[len(heads_prefix):]):
                 print(b)
     elif endpoint.startswith(f"repos/{repo}/compare/"):
-        print(state.get("compare", "ahead"))
+        if (opt("--jq") or "").startswith(".files"):
+            for name in state.get("compare_files", []):
+                print(name)
+        else:
+            print(state.get("compare", "ahead"))
+    elif endpoint == f"repos/{repo}/git/refs":
+        if "create_ref_fails" in state:
+            fail(state["create_ref_fails"])
+        name = fields()["ref"].removeprefix("refs/heads/")
+        state.setdefault("branches", []).append(name)
+        state.setdefault("refs", {})[name] = fields()["sha"]
+        print("{}")
+    elif endpoint.startswith(f"repos/{repo}/git/refs/heads/") and opt("-X") == "DELETE":
+        name = endpoint[len(f"repos/{repo}/git/refs/heads/"):]
+        if name not in state.get("branches", []):
+            fail("gh: Reference does not exist (HTTP 422)")
+        state["branches"].remove(name)
     elif endpoint.startswith(f"repos/{repo}/contents/packaging/signing/release-keys.pub?ref="):
         if "keys_at_commit" not in state:
             fail("gh: Not Found (HTTP 404)")

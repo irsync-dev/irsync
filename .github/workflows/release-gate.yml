@@ -105,31 +105,17 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tests ran on $GITHUB_SHA. release.yml runs on pinned/$TAG, so it
+      # builds exactly that commit, even if the source branch moves on.
       - name: Pin the tested commit
         id: pin
-        run: |
-          set -euo pipefail
-
-          # The check job saw no tag, but the tests took a while. A release
-          # published by an earlier attempt in the meantime has the tag now.
-          if gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq '.[].ref' |
-              grep -qxF -- "refs/tags/$TAG"; then
-            echo "::error::The tag $TAG exists now: an earlier attempt published the release while the tests ran. Finish it with release-resume.yml (see the releasing guide), and do not start the gate again."
-            exit 1
-          fi
-
-          # A pinned/ branch left over from an earlier attempt. The tag does
-          # not exist (the check job made sure), so that attempt released
-          # nothing, and no run of it is still going (the step above).
-          if gh api "repos/$GH_REPO/git/matching-refs/heads/pinned/$TAG" --jq '.[].ref' |
-              grep -qxF -- "refs/heads/pinned/$TAG"; then
-            echo "Deleting pinned/$TAG left over from an earlier attempt."
-            gh api -X DELETE "repos/$GH_REPO/git/refs/heads/pinned/$TAG"
-          fi
-
-          # The tests ran on $GITHUB_SHA. release.yml runs on this branch, so
-          # it builds exactly that commit, even if the source branch moves on.
-          gh api "repos/$GH_REPO/git/refs" -f ref="refs/heads/pinned/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+        env:
+          BRANCH: ${{ needs.check.outputs.branch }}
+        run: .github/scripts/pin-release.sh "$TAG" "$BRANCH"
 
       - name: Delete a leftover draft release
         run: |

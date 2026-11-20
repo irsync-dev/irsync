@@ -665,6 +665,44 @@ class FreeBsdTests(unittest.TestCase):
             r"--component rustfmt --component clippy$")
 
 
+# A pipe into grep -q; the same as in test_release_scripts.py.
+PIPE_INTO_GREP_Q = re.compile(r"(?<!\|)\|(?!\|)\s*(\\\n\s*)?grep\s+(-\w*\s+)*-\w*q")
+
+
+def run_steps():
+    """(file, job id, step, shell) for every step with a run: script."""
+    out = []
+    for name, wf in load_workflows().items():
+        wf_shell = ((wf.get("defaults") or {}).get("run") or {}).get("shell")
+        for job_id, job in jobs(wf).items():
+            job_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell")
+            for step in job.get("steps") or []:
+                if "run" in step:
+                    out.append((name, job_id, step, step.get("shell", job_shell or wf_shell)))
+    return out
+
+
+class RunScriptTests(unittest.TestCase):
+    def test_no_pipe_into_grep_q(self):
+        # With pipefail, grep -q stops reading at the first match, the writer
+        # fails (SIGPIPE) and the match reads as a miss, now and then. See
+        # NoPipeIntoGrepQTests in test_release_scripts.py. shell: bash runs
+        # with -o pipefail too.
+        found = []
+        for name, job_id, step, shell in run_steps():
+            run = step["run"]
+            if "pipefail" not in run and shell != "bash":
+                continue
+            for m in PIPE_INTO_GREP_Q.finditer(run):
+                found.append(f"{name} {job_id} {step.get('name')!r}: {m.group(0)!r}")
+        self.assertEqual(found, [])
+
+    def test_run_steps_finds_the_steps(self):
+        steps = run_steps()
+        self.assertIn("Pin the tested commit",
+                      [s.get("name") for n, _, s, _ in steps if n == "release-gate.yml"])
+
+
 class GateTests(unittest.TestCase):
     def gate(self):
         return load_workflows()["release-gate.yml"]
@@ -680,20 +718,19 @@ class GateTests(unittest.TestCase):
             self.assertNotIn("tags", push, name)
 
     def test_gate_pins_the_tested_commit(self):
+        # pin-release.sh rechecks the tag and pins $GITHUB_SHA; its tests are
+        # PinTests in test_release_scripts.py.
+        steps = jobs(self.gate())["release"]["steps"]
+        names = [s.get("name") for s in steps]
+        pin = steps[names.index("Pin the tested commit")]
+        self.assertEqual(pin["id"], "pin")
+        self.assertEqual(pin["run"], '.github/scripts/pin-release.sh "$TAG" "$BRANCH"')
+        self.assertEqual(pin["env"]["BRANCH"], "${{ needs.check.outputs.branch }}")
+        self.assertLess(names.index("Pin the tested commit"),
+                        names.index("Launch release.yml on the pinned commit"))
         text = job_text("release-gate.yml", "release")
-        self.assertIn('ref="refs/heads/pinned/$TAG" -f sha="$GITHUB_SHA"', text)
         self.assertIn('--ref "refs/heads/pinned/$TAG"', text)
         self.assertIn('"$run_sha" != "$GITHUB_SHA"', text)
-
-    def test_gate_rechecks_the_tag_before_pinning(self):
-        text = job_text("release-gate.yml", "release")
-        self.assertIn("git/matching-refs/tags/$TAG", text)
-        self.assertIn('grep -qxF -- "refs/tags/$TAG"', text)
-        self.assertIn("release-resume.yml", text)
-        self.assertLess(
-            text.index("git/matching-refs/tags/$TAG"),
-            text.index('ref="refs/heads/pinned/$TAG"'),
-        )
 
     def test_gate_clears_stale_pin(self):
         steps = jobs(self.gate())["release"]["steps"]
