@@ -79,8 +79,9 @@ That relies on everything with a deadline reading tokio's clock
 (`tokio::time::Instant`), not `std::time::Instant`. irsync's reconnect,
 `--bwlimit` and persistence timers do; telemetry and loops in blocking
 threads keep the real clock, since paused time stands still there. iroh
-1.3.0 had QUIC read the real clock; the workspace `Cargo.toml` patches in
-the fix from [n0-computer/iroh#4676](https://github.com/n0-computer/iroh/issues/4676)
+up to 1.5.0 has QUIC read the real clock; the workspace `Cargo.toml` takes
+iroh from the upstream commit with the fix
+([n0-computer/iroh#4677](https://github.com/n0-computer/iroh/pull/4677))
 until a release has it.
 [Before pushing](setup.md#before-pushing) lists the other checks.
 

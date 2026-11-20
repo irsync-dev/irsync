@@ -39,7 +39,7 @@ maintainer can do. Why each choice was made is in
 - `cargo deny --locked check` runs on every change (`deny.toml`). It fails on:
   - any RustSec advisory, including unmaintained or yanked crates;
   - a license that isn't on the list;
-  - a crate from anywhere but crates.io and our iroh fork.
+  - a crate from anywhere but crates.io and the pinned upstream iroh commit.
 
   An exception in `deny.toml` that no longer matches any advisory also
   fails the check, so a stale one gets removed.
@@ -131,7 +131,7 @@ Packaging is: irsync has no package registry).
 | Signed-Releases | 1 | Scorecard looks at the last five releases. Only the newest is signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
 | Token-Permissions | 0 | `release.yml` is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
 | Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in `release.yml` (two places) and the rustup install in `tools/dev-setup.sh`. Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
-| Vulnerabilities | 6 | Scorecard reads every entry in `Cargo.lock`. It reports four advisories. Two are for crates that are never built (`rsa` and `crypto-bigint`, optional parts of `ssh-key` that we leave off). One is for a crate built on Windows only (`chrono`). One is for `paste`, an unmaintained build-time macro accepted in `deny.toml`. `cargo deny` checks what is built for the shipped platforms and is clean. | Tracked in [issue 154](https://github.com/irsync-dev/irsync/issues/154). The first two go when `ssh-key` 0.7 is released. |
+| Vulnerabilities | 7 | Scorecard reads every entry in `Cargo.lock`. It reports three advisories. Two are for crates that are never built (`rsa` and `crypto-bigint`, optional parts of `ssh-key` that we leave off). One is for a crate built on Windows only (`chrono`). `cargo deny` checks what is built for the shipped platforms and is clean, with no exceptions. | Tracked in [issue 154](https://github.com/irsync-dev/irsync/issues/154). The first two go when `ssh-key` 0.7 is released. |
 | SAST | 7 | CodeQL has checked 10 of the last 30 commits. It only started recently. | Rises by itself as new commits are checked. |
 
 The scores move when the repository changes and when Scorecard changes its
