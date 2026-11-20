@@ -447,7 +447,7 @@ async fn push_through_symlink_fails() {
                 .unwrap_err();
             let err = format!("{err:#}");
             assert!(err.contains("bad session path"), "{dest:?}: {err}");
-            assert!(err.contains("is not a directory"), "{dest:?}: {err}");
+            assert!(err.contains("not a directory"), "{dest:?}: {err}");
         }
         // Into the link: it is not followed.
         let err = h

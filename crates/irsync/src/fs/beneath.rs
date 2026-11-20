@@ -22,7 +22,7 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::errno::Errno;
@@ -373,7 +373,8 @@ fn is_link(st: &FileStat) -> bool {
     SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFLNK
 }
 
-fn is_dir(st: &FileStat) -> bool {
+/// `st` is a folder's.
+pub(crate) fn is_dir(st: &FileStat) -> bool {
     SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR
 }
 
@@ -405,9 +406,17 @@ impl Cache {
 
 /// A folder everything else is opened below. Its own handle is never
 /// evicted.
+///
+/// A root may also stand for a folder that is not there: a missing root
+/// ([`Root::missing`]) never opens anything, and a lazy root
+/// ([`Root::lazy`]) opens its folder the first time a lookup needs it.
 pub struct Root {
     path: PathBuf,
-    fd: Arc<OwnedFd>,
+    /// The root's own handle; empty for a missing root, and for a lazy one
+    /// until its folder is there.
+    fd: OnceLock<Arc<OwnedFd>>,
+    /// Open `path` on first use.
+    lazy: bool,
     cap: usize,
     cache: Mutex<Cache>,
 }
@@ -428,10 +437,34 @@ impl Root {
         Ok(Self::from_fd(path.to_path_buf(), Arc::new(fd), cap))
     }
 
+    /// A root for the folder `path`, which is not there: every lookup
+    /// fails with `NotFound`, and nothing is ever opened or made, even if
+    /// the folder appears later.
+    pub fn missing(path: &Path) -> Arc<Root> {
+        Self::new(path.to_path_buf(), OnceLock::new(), false, DIR_CACHE)
+    }
+
+    /// A root for `path` that is opened as [`Root::open`] does the first
+    /// time a lookup needs it, and kept from then on. Until the folder is
+    /// there every lookup fails with `NotFound`, and the next one tries
+    /// again. For a folder the user named that a session may make later.
+    pub fn lazy(path: &Path) -> Arc<Root> {
+        Self::lazy_with_cache(path, DIR_CACHE)
+    }
+
+    pub fn lazy_with_cache(path: &Path, cap: usize) -> Arc<Root> {
+        Self::new(path.to_path_buf(), OnceLock::new(), true, cap)
+    }
+
     fn from_fd(path: PathBuf, fd: Arc<OwnedFd>, cap: usize) -> Arc<Root> {
+        Self::new(path, OnceLock::from(fd), false, cap)
+    }
+
+    fn new(path: PathBuf, fd: OnceLock<Arc<OwnedFd>>, lazy: bool, cap: usize) -> Arc<Root> {
         Arc::new(Root {
             path,
             fd,
+            lazy,
             cap,
             cache: Mutex::new(Cache {
                 cap,
@@ -444,17 +477,38 @@ impl Root {
         &self.path
     }
 
+    /// The root's own handle, opened now for a lazy root.
+    fn root_fd(&self) -> io::Result<Arc<OwnedFd>> {
+        if let Some(fd) = self.fd.get() {
+            return Ok(fd.clone());
+        }
+        if self.lazy {
+            match retry(|| openat(AT_FDCWD, &self.path, open_flags(), Mode::empty()).map_err(errno))
+            {
+                // Two threads may both open it; the first one's handle is kept.
+                Ok(fd) => return Ok(self.fd.get_or_init(|| Arc::new(fd)).clone()),
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                Err(_) => {}
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} does not exist", self.path.display()),
+        ))
+    }
+
     /// The folder `rel` below the root; `RelPath::root()` is the root itself.
     pub fn dir(&self, rel: &RelPath, missing: Missing) -> io::Result<Dir> {
+        let root_fd = self.root_fd()?;
         if rel.as_bytes().is_empty() {
             return Ok(Dir {
-                fd: self.fd.clone(),
+                fd: root_fd,
                 rel: rel.clone(),
             });
         }
         let total = rel.components().count();
         // Start from the deepest folder already open.
-        let mut start = (RelPath::root(), self.fd.clone());
+        let mut start = (RelPath::root(), root_fd);
         let mut skip = 0;
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -971,5 +1025,62 @@ mod tests {
         let m = std::fs::symlink_metadata(d.path().join("p")).unwrap();
         assert_eq!(m.permissions().mode() & 0o7777, 0o640);
         assert_eq!(m.mtime(), 5);
+    }
+
+    #[test]
+    fn a_missing_root_finds_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let gone = d.path().join("gone");
+        let root = Root::missing(&gone);
+        let msg = format!("{} does not exist", gone.display());
+        for e in [
+            root.dir(&RelPath::root(), Missing::Refuse).err(),
+            root.dir(&r(b"a"), Missing::Create).err(),
+            root.parent(&r(b"a/b"), Missing::Create).err(),
+            root.sub(&r(b"a"), Missing::Create).err(),
+        ] {
+            let e = e.expect("a missing root opens nothing");
+            assert_eq!(e.kind(), io::ErrorKind::NotFound);
+            assert_eq!(e.to_string(), msg);
+        }
+        // Nothing is made, even when the folder appears later.
+        assert!(!d.path().join("gone/a").exists());
+        std::fs::create_dir(&gone).unwrap();
+        assert_eq!(
+            kind(root.dir(&RelPath::root(), Missing::Refuse)),
+            io::ErrorKind::NotFound
+        );
+        root.forget(&RelPath::root());
+        assert_eq!(root.cached(), 0);
+        assert_eq!(root.path(), gone);
+    }
+
+    #[test]
+    fn a_lazy_root_opens_once_the_folder_is_there() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        // Reached through a symlink the user chose.
+        let link = d.path().join("link");
+        symlink(&real, &link).unwrap();
+        let root = Root::lazy_with_cache(&link, 2);
+        let e = root.dir(&r(b"a"), Missing::Create).err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert_eq!(e.to_string(), format!("{} does not exist", link.display()));
+        assert!(!real.exists());
+        std::fs::create_dir(&real).unwrap();
+        root.dir(&r(b"a/b/c"), Missing::Create).unwrap();
+        assert!(real.join("a/b/c").is_dir());
+        assert_eq!(root.cached(), 2);
+        // The handle is kept: moving the folder away does not lose it.
+        std::fs::rename(&real, d.path().join("moved")).unwrap();
+        root.dir(&r(b"x"), Missing::Create).unwrap();
+        assert!(d.path().join("moved/x").is_dir());
+        assert!(!real.exists());
+        // Below the root a symlink is still refused.
+        symlink(d.path(), d.path().join("moved/esc")).unwrap();
+        assert_eq!(
+            kind(root.dir(&r(b"esc"), Missing::Refuse)),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

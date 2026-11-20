@@ -40,6 +40,7 @@ use super::recv_io::{index_old_file, OldFile};
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::Verdict;
+use crate::fs::beneath::DIR_CACHE;
 use crate::fs::meta::{apply_metadata, create_special};
 use crate::fs::paths::RelPath;
 use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
@@ -84,9 +85,10 @@ pub(super) struct Itemize {
 /// acknowledged) per session; the planner waits for a slot before the next.
 pub(super) const MAX_INFLIGHT: usize = 4096;
 
-/// Descriptors a file in flight may hold: its `.part` and, for a `DELTA`
-/// or `APPEND`, the old file.
-const FDS_PER_INFLIGHT: usize = 2;
+/// Descriptors a file in flight may hold: its `.part`, for a `DELTA` or
+/// `APPEND` the old file, and up to two folders (the file's and the
+/// part's) that the folder cache no longer holds.
+const FDS_PER_INFLIGHT: usize = 4;
 
 /// Open files the in-flight window leaves to everything else: the
 /// connection, the index and its journal, logs, hasher workers, local
@@ -94,11 +96,13 @@ const FDS_PER_INFLIGHT: usize = 2;
 const NOFILE_RESERVE: usize = 256;
 
 /// The in-flight window the process's soft open-file limit allows
-/// ([`MAX_INFLIGHT`] at most, one at least).
+/// ([`MAX_INFLIGHT`] at most, one at least), after the reserve and the
+/// folder caches of a session's two roots (the index root and the session
+/// root).
 fn inflight_for_limit(soft: u64) -> usize {
     let spare = usize::try_from(soft)
         .unwrap_or(usize::MAX)
-        .saturating_sub(NOFILE_RESERVE);
+        .saturating_sub(NOFILE_RESERVE + 2 * DIR_CACHE);
     (spare / FDS_PER_INFLIGHT).clamp(1, MAX_INFLIGHT)
 }
 
@@ -1073,10 +1077,21 @@ mod tests {
         // (the `.part` and the old file) plus the reserve must fit, and
         // most of the limit should still go to files.
         let cap = inflight_for_limit(1024);
-        assert!(cap * FDS_PER_INFLIGHT + NOFILE_RESERVE <= 1024, "{cap}");
-        assert!(cap >= 256, "{cap}");
+        assert!(
+            cap * FDS_PER_INFLIGHT + NOFILE_RESERVE + 2 * DIR_CACHE <= 1024,
+            "{cap}"
+        );
+        assert!(cap >= 128, "{cap}");
         // Never zero, however small the limit.
         assert_eq!(inflight_for_limit(0), 1);
+    }
+
+    #[test]
+    fn inflight_window_leaves_room_for_folder_handles() {
+        // Two roots' folder caches come off the limit before the window.
+        assert_eq!(inflight_for_limit(256), 1);
+        assert_eq!(inflight_for_limit(1024), (1024 - 256 - 128) / 4);
+        assert_eq!(inflight_for_limit(u64::MAX), MAX_INFLIGHT);
     }
 
     #[test]

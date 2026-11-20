@@ -9,7 +9,7 @@ use std::os::unix::fs::{symlink, MetadataExt};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{archive_opts, Flow, Harness};
+use common::{archive_opts, assert_trees_equal, Flow, Harness};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -140,4 +140,118 @@ async fn hardlink_to_failed_target_rejected() {
     assert!(has_error(&out, b"zzz", "hard link"), "{:?}", out.errors);
     assert!(fs::symlink_metadata(h.export.path().join("zzz")).is_err());
     assert_eq!(fs::read(h.export.path().join("zz/t")).unwrap(), b"stale");
+}
+
+fn small_tree(dir: &std::path::Path) {
+    fs::create_dir_all(dir.join("a/b")).unwrap();
+    fs::write(dir.join("top"), b"top").unwrap();
+    fs::write(dir.join("a/one"), b"one").unwrap();
+    fs::write(dir.join("a/b/two"), b"two").unwrap();
+    symlink("one", dir.join("a/ln")).unwrap();
+}
+
+/// Asserts the trees below `a` and `b` are equal; the roots' own
+/// metadata is not compared.
+fn assert_contents_equal(a: &std::path::Path, b: &std::path::Path) {
+    let names = |d: &std::path::Path| {
+        let mut v: Vec<_> = fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(a), names(b));
+    for n in names(a) {
+        assert_trees_equal(&a.join(&n), &b.join(&n), &archive_opts().preserve);
+    }
+}
+
+#[tokio::test]
+async fn a_root_given_through_a_symlink_works_both_ways() {
+    // The export path and the local folder are both symlinks to the real
+    // folders: only what is below a root is guarded, not the way to it.
+    let real = tempfile::tempdir().unwrap();
+    let links = tempfile::tempdir().unwrap();
+    let (export, src, dst) = (
+        real.path().join("export"),
+        real.path().join("src"),
+        real.path().join("dst"),
+    );
+    for d in [&export, &src, &dst] {
+        fs::create_dir(d).unwrap();
+    }
+    for (name, to) in [("export", &export), ("src", &src), ("dst", &dst)] {
+        symlink(to, links.path().join(name)).unwrap();
+    }
+    small_tree(&src);
+    let export_link = links.path().join("export");
+    let h = Harness::with_export(|e| e.path = export_link).await;
+    let opts = archive_opts();
+
+    let push = Harness::side_for(&links.path().join("src"), h.client_state.path());
+    let out = within30(h.run_side(&opts, Flow::Push, push))
+        .await
+        .expect("push");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    // The root's own times are still applied by path, so to the symlink
+    // that names it; only what is below it is compared.
+    assert_contents_equal(&src, &export);
+
+    let pull = Harness::side_for(&links.path().join("dst"), h.client_state.path());
+    let out = within30(h.run_side(&opts, Flow::Pull, pull))
+        .await
+        .expect("pull");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_contents_equal(&export, &dst);
+}
+
+#[tokio::test]
+async fn a_wide_tree_finishes_under_a_low_handle_limit() {
+    // Far more folders than the folder cache holds, with a small window of
+    // files in flight: folders are opened again as needed, never all held.
+    let h = Harness::new().await;
+    for i in 0..300 {
+        let d = h.local.path().join(format!("d{i:03}"));
+        fs::create_dir(&d).unwrap();
+        for j in 0..3 {
+            fs::write(d.join(format!("f{j}")), format!("{i}/{j}")).unwrap();
+        }
+    }
+    {
+        let mut hooks = h.daemon.hooks.lock().unwrap();
+        hooks.max_inflight = Some(8);
+        hooks.dir_cache = Some(4);
+    }
+    let side = || {
+        let mut local = h.local_side();
+        local.hooks.max_inflight = Some(8);
+        local.hooks.dir_cache = Some(4);
+        local
+    };
+    let opts = archive_opts();
+    let no_emfile = |out: &irsync::session::Outcome| {
+        assert!(
+            !out.errors
+                .iter()
+                .any(|(_, m)| m.contains("Too many open files")),
+            "{:?}",
+            out.errors
+        );
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+    };
+    let out = within30(h.run_side(&opts, Flow::Push, side()))
+        .await
+        .expect("push");
+    no_emfile(&out);
+    assert_trees_equal(h.local.path(), h.export.path(), &opts.preserve);
+
+    // And back into an empty folder.
+    fs::remove_dir_all(h.local.path()).unwrap();
+    fs::create_dir(h.local.path()).unwrap();
+    let out = within30(h.run_side(&opts, Flow::Pull, side()))
+        .await
+        .expect("pull");
+    no_emfile(&out);
+    assert_trees_equal(h.export.path(), h.local.path(), &opts.preserve);
 }

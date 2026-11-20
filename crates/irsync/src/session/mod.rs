@@ -458,6 +458,7 @@ pub struct DaemonHooks {
     pub slow_plan: Option<Duration>,
     pub slow_place: Option<Duration>,
     pub max_inflight: Option<usize>,
+    pub dir_cache: Option<usize>,
     pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -700,6 +701,10 @@ pub struct SideHooks {
     /// Receiver: cap on files in flight instead of the default 4096.
     #[cfg(feature = "test-hooks")]
     pub max_inflight: Option<usize>,
+    /// Both roles: folder handles each root of this side keeps open,
+    /// instead of [`crate::fs::beneath::DIR_CACHE`].
+    #[cfg(feature = "test-hooks")]
+    pub dir_cache: Option<usize>,
     /// Receiver: each file's planning takes this much longer (a slow
     /// planner, so the peer's listing backs up).
     #[cfg(feature = "test-hooks")]
@@ -1023,6 +1028,9 @@ impl std::fmt::Debug for SideHooks {
 #[derive(Clone)]
 pub struct LocalSide {
     pub root: PathBuf,
+    /// `root`, opened the first time it is needed (a pull may make it
+    /// first) and shared by every session over this side.
+    pub root_dir: Arc<crate::fs::beneath::Root>,
     /// rsync's trailing-slash rule as typed (part of the session key; the
     /// root itself is already resolved, see [`resolve_roots`]).
     pub contents_only: bool,
@@ -1043,6 +1051,7 @@ impl LocalSide {
     ) -> LocalSide {
         let hasher = Arc::new(Hasher::new(index.clone(), root.clone(), HASH_WORKERS));
         LocalSide {
+            root_dir: crate::fs::beneath::Root::lazy(&root),
             root,
             contents_only,
             index,

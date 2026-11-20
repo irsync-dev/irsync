@@ -10,7 +10,7 @@
 //! plays which role follows `Hello.direction`.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ use super::{
 use crate::cli::location::Location;
 use crate::cli::{Append, DeleteMode, Preserve, SyncOptions};
 use crate::filter::FilterSet;
+use crate::fs::beneath::{self, Dir, Root};
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
 use crate::hasher::{HashEvent, HashProgress, Hasher};
@@ -376,6 +377,10 @@ pub(super) struct Ctx {
     /// The root the index was opened for (`root` = `base` + `scope.prefix`).
     /// The hashers, `Sender` and `FileWriter` work on `base` + index keys.
     pub base: PathBuf,
+    /// The open folder `base`: index keys are relative to it.
+    pub base_root: Arc<Root>,
+    /// The open session root (`root`): listing paths are relative to it.
+    pub session_root: Arc<Root>,
     pub scope: IndexScope,
     pub hasher: Arc<Hasher>,
     /// A second hasher that always re-reads (used after a file changed).
@@ -417,7 +422,8 @@ impl Ctx {
         }
     }
 
-    /// Absolute path of `rel` under the session root.
+    /// Absolute path of `rel` under the session root, for messages and
+    /// logging only: open folders through [`Ctx::parent`].
     pub fn full(&self, rel: &RelPath) -> PathBuf {
         let rel = self.local(rel);
         if rel.as_bytes().is_empty() {
@@ -448,24 +454,46 @@ impl Ctx {
         })
     }
 
-    /// Absolute path of an index key. A single file's key under its wire
-    /// name maps to the key of its local name. Every caller today passes a
-    /// key already built from the local name, so that mapping never fires;
-    /// it is kept as a guard for a caller that passes the wire key.
+    /// Absolute path of an index key, for messages and logging only: open
+    /// folders through [`Ctx::parent_key`].
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
-        let mapped;
-        let key = match &self.single {
-            Some(s) if *key == self.scope.key(&s.wire) => {
-                mapped = self.scope.key(&s.local);
-                &mapped
-            }
-            _ => key,
-        };
+        let key = self.local_key(key);
         if key.as_bytes().is_empty() {
             self.base.clone()
         } else {
             self.base.join(key.to_os())
         }
+    }
+
+    /// An index key with a single file's wire name mapped to its local
+    /// name. Every caller today passes a key already built from the local
+    /// name, so that mapping never fires; it is kept as a guard for a
+    /// caller that passes the wire key.
+    fn local_key<'a>(&self, key: &'a RelPath) -> std::borrow::Cow<'a, RelPath> {
+        match &self.single {
+            Some(s) if *key == self.scope.key(&s.wire) => {
+                std::borrow::Cow::Owned(self.scope.key(&s.local))
+            }
+            _ => std::borrow::Cow::Borrowed(key),
+        }
+    }
+
+    /// The parent folder and local name of the listing path `rel` (maps a
+    /// single file's wire name), below the session root.
+    // No caller yet: the file operations move onto these next.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn parent(&self, rel: &RelPath, missing: beneath::Missing) -> io::Result<(Dir, OsString)> {
+        self.session_root.parent(self.local(rel), missing)
+    }
+
+    /// The same for an index key, below `base_root`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn parent_key(
+        &self,
+        key: &RelPath,
+        missing: beneath::Missing,
+    ) -> io::Result<(Dir, OsString)> {
+        self.base_root.parent(&self.local_key(key), missing)
     }
 
     pub fn index(&self) -> &IndexHandle {
@@ -748,11 +776,25 @@ pub(super) async fn run_client_inner(
         None
     };
 
+    // The local folder, opened once it is needed and kept from then on.
+    #[cfg(feature = "test-hooks")]
+    let local_root = match local.hooks.dir_cache {
+        Some(cap) => Root::lazy_with_cache(&local.root, cap),
+        None => local.root_dir.clone(),
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let local_root = local.root_dir.clone();
     if !sends && !opts.dry_run {
-        let root = local.root.clone();
-        blocking(move || std::fs::create_dir_all(&root))
-            .await
-            .with_context(|| format!("creating {}", local.root.display()))?;
+        // The user named this folder: symlinks on the way to it are theirs.
+        // It is opened right after it is made, so the session keeps that
+        // folder whatever happens to the name later.
+        let (root, open) = (local.root.clone(), local_root.clone());
+        blocking(move || {
+            std::fs::create_dir_all(&root)?;
+            open.dir(&RelPath::root(), beneath::Missing::Refuse)
+        })
+        .await
+        .with_context(|| format!("creating {}", local.root.display()))?;
     }
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
@@ -833,6 +875,9 @@ pub(super) async fn run_client_inner(
         rerequests: local.hooks.rerequests.clone(),
         base: local.root.clone(),
         root: local.root,
+        // The client's index is for its own folder: both roots are the same.
+        base_root: local_root.clone(),
+        session_root: local_root,
         scope: IndexScope::new(index, RelPath::root()),
         hasher,
         forced,
@@ -892,53 +937,73 @@ pub(crate) enum Missing {
     Allow,
 }
 
-/// Checks the session root below the export root: every existing component
-/// must be a real directory (never a symlink, which could lead outside the
-/// export); missing ones are handled as `missing` says.
+/// Opens an export's folder once for a session, keeping `cap` folders
+/// below it open. A missing export gives a root in which nothing exists,
+/// so [`prepare_root`] can say so.
+pub(crate) fn open_export(path: &Path, cap: usize) -> io::Result<Arc<Root>> {
+    match Root::open_with_cache(path, cap) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Root::missing(path)),
+        r => r,
+    }
+}
+
+/// Opens the session root `rel` below the open export root: every existing
+/// component must be a real directory (never a symlink, which could lead
+/// outside the export); missing ones are handled as `missing` says. Gives
+/// the session root's path (for messages) and the open root, which with
+/// [`Missing::Allow`] and a missing folder is one in which nothing exists.
 pub(crate) fn prepare_root(
-    export_root: &Path,
+    export: &Arc<Root>,
     rel: &RelPath,
     missing: Missing,
-) -> io::Result<PathBuf> {
-    let mut p = export_root.to_path_buf();
-    let check = |p: &Path| -> io::Result<bool> {
-        match std::fs::symlink_metadata(p) {
-            Ok(m) if m.is_dir() => Ok(true),
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a directory", p.display()),
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e),
-        }
+) -> io::Result<(PathBuf, Arc<Root>)> {
+    let path = if rel.as_bytes().is_empty() {
+        export.path().to_path_buf()
+    } else {
+        export.path().join(rel.to_os())
     };
-    if !check(&p)? {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "export root is missing",
-        ));
+    match export.dir(&RelPath::root(), beneath::Missing::Refuse) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "export root is missing",
+            ))
+        }
+        r => r?,
+    };
+    let create = match missing {
+        Missing::Create => beneath::Missing::Create,
+        Missing::Refuse | Missing::Allow => beneath::Missing::Refuse,
+    };
+    match export.sub(rel, create) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => match missing {
+            // Nothing below a missing component can exist.
+            Missing::Allow => Ok((path.clone(), Root::missing(&path))),
+            _ => Err(first_missing(export, rel).unwrap_or(e)),
+        },
+        r => Ok((path, r?)),
     }
+}
+
+/// "{path} does not exist" for the first component of `rel` that is
+/// missing below `export`.
+fn first_missing(export: &Root, rel: &RelPath) -> Option<io::Error> {
+    let mut at = RelPath::root();
     for c in rel.components() {
-        p.push(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(c));
-        if !check(&p)? {
-            match missing {
-                Missing::Refuse => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("{} does not exist", p.display()),
-                    ))
-                }
-                Missing::Create => std::fs::create_dir(&p)?,
-                Missing::Allow => {
-                    // Nothing below a missing component can exist.
-                    p = export_root.to_path_buf();
-                    p.push(rel.to_os());
-                    return Ok(p);
-                }
+        at = at.join(c).ok()?;
+        match export.dir(&at, beneath::Missing::Refuse) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let p = export.path().join(at.to_os());
+                return Some(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{} does not exist", p.display()),
+                ));
             }
+            Err(e) => return Some(e),
+            Ok(_) => {}
         }
     }
-    Ok(p)
+    None
 }
 
 /// Serves one session on the daemon after `Hello` was validated: replies
@@ -965,6 +1030,7 @@ pub async fn serve_daemon(
     recv: RecvStream,
     tap: StreamTap,
     place: Place,
+    export: Arc<Root>,
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
@@ -990,9 +1056,11 @@ pub async fn serve_daemon(
             Some(&place.export),
         )
     });
-    let res = serve_daemon_inner(conn, send, recv, tap, place, hello, index, shared, &span)
-        .instrument(span.clone())
-        .await;
+    let res = serve_daemon_inner(
+        conn, send, recv, tap, place, export, hello, index, shared, &span,
+    )
+    .instrument(span.clone())
+    .await;
     if let Ok(out) = &res {
         record_outcome(&span, out);
     }
@@ -1070,6 +1138,7 @@ async fn serve_daemon_inner(
     recv: RecvStream,
     tap: StreamTap,
     place: Place,
+    export: Arc<Root>,
     hello: Hello,
     index: IndexHandle,
     shared: DaemonSessions,
@@ -1106,10 +1175,10 @@ async fn serve_daemon_inner(
         return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
     }
     let prepared = {
-        let (m, r) = (export_root.clone(), rel.clone());
+        let (m, r) = (export.clone(), rel.clone());
         blocking(move || prepare_root(&m, &r, missing)).await
     };
-    let root = match prepared {
+    let (root, session_root) = match prepared {
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
@@ -1278,6 +1347,8 @@ async fn serve_daemon_inner(
         rerequests: Some(shared.rerequests.clone()),
         root,
         base: export_root,
+        base_root: export,
+        session_root,
         scope: IndexScope::new(index, rel),
         hasher,
         forced,
@@ -1324,6 +1395,7 @@ async fn serve_daemon_inner(
                 h.slow_plan = p.slow_plan;
                 h.slow_place = p.slow_place;
                 h.max_inflight = p.max_inflight;
+                h.dir_cache = p.dir_cache;
                 h.listing_peak = p.listing_peak;
                 h.listing_waits = p.listing_waits;
                 h.peer_events_peak = p.peer_events_peak;
@@ -1850,6 +1922,8 @@ pub(super) async fn test_ctx() -> TestCtx {
         rerequests: None,
         root: root.path().to_path_buf(),
         base: root.path().to_path_buf(),
+        base_root: Root::open(root.path()).unwrap(),
+        session_root: Root::open(root.path()).unwrap(),
         scope: IndexScope::new(index, RelPath::root()),
         hasher: hasher.clone(),
         forced: hasher.clone(),
@@ -1893,6 +1967,7 @@ pub(super) async fn test_ctx() -> TestCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::beneath::DIR_CACHE;
 
     #[test]
     fn failed_entries_skip_session_errors_and_count_each_path_once() {
@@ -1910,27 +1985,102 @@ mod tests {
         assert_eq!(failed_entries(&errors[..1]), 0);
     }
 
+    fn rel(s: &[u8]) -> RelPath {
+        RelPath::new(s).unwrap()
+    }
+
     #[test]
     fn session_root_never_passes_through_a_symlink() {
         let m = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), m.path().join("link")).unwrap();
-        let rel = |s: &[u8]| RelPath::new(s).unwrap();
-        assert!(prepare_root(m.path(), &rel(b"link"), Missing::Create).is_err());
-        assert!(prepare_root(m.path(), &rel(b"link/sub"), Missing::Create).is_err());
-        assert!(prepare_root(m.path(), &rel(b"link/sub"), Missing::Allow).is_err());
+        let export = open_export(m.path(), DIR_CACHE).unwrap();
+        assert!(prepare_root(&export, &rel(b"link"), Missing::Create).is_err());
+        assert!(prepare_root(&export, &rel(b"link/sub"), Missing::Create).is_err());
+        assert!(prepare_root(&export, &rel(b"link/sub"), Missing::Allow).is_err());
         assert!(!outside.path().join("sub").exists());
         // Missing components are created only when receiving, and not on a dry run.
-        assert!(prepare_root(m.path(), &rel(b"new/dir"), Missing::Refuse).is_err());
-        let p = prepare_root(m.path(), &rel(b"new/dir"), Missing::Allow).unwrap();
+        assert!(prepare_root(&export, &rel(b"new/dir"), Missing::Refuse).is_err());
+        let (p, _) = prepare_root(&export, &rel(b"new/dir"), Missing::Allow).unwrap();
         assert_eq!(p, m.path().join("new/dir"));
         assert!(!m.path().join("new").exists());
-        let p = prepare_root(m.path(), &rel(b"new/dir"), Missing::Create).unwrap();
+        let (p, _) = prepare_root(&export, &rel(b"new/dir"), Missing::Create).unwrap();
         assert_eq!(p, m.path().join("new/dir"));
         assert!(p.is_dir());
         assert_eq!(
-            prepare_root(m.path(), &RelPath::root(), Missing::Refuse).unwrap(),
+            prepare_root(&export, &RelPath::root(), Missing::Refuse)
+                .unwrap()
+                .0,
             m.path()
         );
+    }
+
+    #[test]
+    fn prepare_root_creates_refuses_and_allows() {
+        let m = tempfile::tempdir().unwrap();
+        let err = |r: io::Result<(PathBuf, Arc<Root>)>| r.err().expect("an error").to_string();
+        let top = beneath::Missing::Refuse;
+
+        // The export itself must be there.
+        let gone = open_export(&m.path().join("gone"), DIR_CACHE).unwrap();
+        assert_eq!(
+            err(prepare_root(&gone, &RelPath::root(), Missing::Allow)),
+            "export root is missing"
+        );
+
+        let export = open_export(m.path(), DIR_CACHE).unwrap();
+        // Refuse: the first missing component is named.
+        assert_eq!(
+            err(prepare_root(&export, &rel(b"a/b"), Missing::Refuse)),
+            format!("{} does not exist", m.path().join("a").display())
+        );
+        // Allow: the path, and a root in which nothing exists; nothing made.
+        let (p, root) = prepare_root(&export, &rel(b"a/b"), Missing::Allow).unwrap();
+        assert_eq!(p, m.path().join("a/b"));
+        let e = root.dir(&RelPath::root(), top).err().unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert!(!m.path().join("a").exists());
+        // Create: made, and the root is open on it.
+        let (p, root) = prepare_root(&export, &rel(b"a/b"), Missing::Create).unwrap();
+        assert!(p.is_dir());
+        std::fs::write(p.join("f"), b"x").unwrap();
+        let (dir, name) = root.parent(&rel(b"f"), top).unwrap();
+        assert!(dir.stat(&name).is_ok());
+        // Refuse on an existing path opens it.
+        let (_, root) = prepare_root(&export, &rel(b"a/b"), Missing::Refuse).unwrap();
+        assert!(root.dir(&RelPath::root(), top).is_ok());
+        // A file on the way is not a folder.
+        std::fs::write(m.path().join("file"), b"x").unwrap();
+        for mode in [Missing::Refuse, Missing::Create, Missing::Allow] {
+            let e = err(prepare_root(&export, &rel(b"file/x"), mode));
+            assert!(e.contains("not a directory"), "{mode:?}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ctx_finds_parents_below_its_roots() {
+        let t = test_ctx().await;
+        let root = t.ctx.root.clone();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d/f"), b"x").unwrap();
+        let (dir, name) = t
+            .ctx
+            .parent(&rel(b"d/f"), beneath::Missing::Refuse)
+            .unwrap();
+        assert_eq!(dir.rel(), &rel(b"d"));
+        assert_eq!(name, "f");
+        assert!(dir.stat(&name).is_ok());
+        let (dir, name) = t
+            .ctx
+            .parent_key(&rel(b"d/f"), beneath::Missing::Refuse)
+            .unwrap();
+        assert!(dir.stat(&name).is_ok());
+        std::os::unix::fs::symlink(&root, root.join("esc")).unwrap();
+        let e = t
+            .ctx
+            .parent(&rel(b"esc/f"), beneath::Missing::Refuse)
+            .err()
+            .unwrap();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
     }
 }

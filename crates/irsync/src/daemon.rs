@@ -28,6 +28,7 @@ use crate::config::file::Config;
 use crate::config::paths::Paths;
 use crate::config::settings::{listen_sockets, DaemonSettings, Settings};
 use crate::filter::FilterSet;
+use crate::fs::beneath::{self, Root};
 use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
@@ -37,7 +38,7 @@ use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
-use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
+use crate::session::engine::{open_export, prepare_root, serve_daemon, Missing, Place};
 use crate::session::single::{is_one_component, place_file, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
@@ -549,14 +550,19 @@ async fn handle(
         Ok(None) => Err(no_access(&hello)),
         Err(e) => Err(e),
     };
+    // The export's folder, opened once for this session (or probe): every
+    // look below it goes through this handle, never through its path again.
+    let validated = match validated {
+        Ok((resolved, rel)) => open_export_root(&shared, &resolved.export.path)
+            .await
+            .map(|root| (resolved, rel, root)),
+        Err(e) => Err(e),
+    };
     if hello.direction == Direction::Probe as i32 {
         let kind = match validated {
-            Ok((resolved, rel)) => {
-                let root = resolved.export.path.clone();
-                tokio::task::spawn_blocking(move || probe_kind(&root, &rel))
-                    .await
-                    .map_err(|e| (Code::Internal, format!("probing the path failed: {e}")))
-            }
+            Ok((_, rel, root)) => tokio::task::spawn_blocking(move || probe_kind(&root, &rel))
+                .await
+                .map_err(|e| (Code::Internal, format!("probing the path failed: {e}"))),
             Err(e) => Err(e),
         };
         return match kind {
@@ -583,18 +589,18 @@ async fn handle(
         };
     }
     let validated = match validated {
-        Ok((resolved, rel)) if hello.single_file => {
-            let (root, hello) = (resolved.export.path.clone(), hello.clone());
+        Ok((resolved, rel, export)) if hello.single_file => {
+            let (root, hello) = (export.clone(), hello.clone());
             tokio::task::spawn_blocking(move || place_single(&root, &rel, &hello))
                 .await
                 .unwrap_or_else(|e| Err((Code::Internal, format!("placing the file failed: {e}"))))
-                .map(|(rel, single)| (resolved, rel, Some(single)))
+                .map(|(rel, single)| (resolved, rel, export, Some(single)))
         }
-        Ok((resolved, rel)) => Ok((resolved, rel, None)),
+        Ok((resolved, rel, export)) => Ok((resolved, rel, export, None)),
         Err(e) => Err(e),
     };
     match validated {
-        Ok((resolved, rel, single)) => {
+        Ok((resolved, rel, export, single)) => {
             let root = resolved.export.path.clone();
             let name = resolved.name.to_string();
             let index = match index_for(&shared, &name, resolved.export) {
@@ -619,7 +625,7 @@ async fn handle(
                 single,
             };
             let res = serve_daemon(
-                conn, send, recv, tap, place, hello, index, hosting, &local_id,
+                conn, send, recv, tap, place, export, hello, index, hosting, &local_id,
             )
             .await;
             #[cfg(feature = "test-hooks")]
@@ -836,16 +842,17 @@ fn admit<'a>(
 /// is looked at through a symlink: the directories above the file are
 /// checked as `prepare_root` checks a session root, first.
 fn place_single(
-    export_root: &Path,
+    export: &Arc<Root>,
     rel: &RelPath,
     hello: &Hello,
 ) -> Result<(RelPath, SingleFile), (Code, String)> {
     if hello.direction == Direction::DaemonSends as i32 {
-        return source_single(export_root, rel, hello);
+        return source_single(export, rel, hello);
     }
     use std::os::unix::ffi::OsStrExt;
     // A missing directory is created later, by the session.
-    prepare_root(export_root, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
+    prepare_root(export, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
+    let export_root = export.path();
     let dest = if rel.as_bytes().is_empty() {
         export_root.to_path_buf()
     } else {
@@ -879,19 +886,23 @@ fn place_single(
 /// The pull half of [`place_single`]: `rel` must name an existing entry
 /// that is not a directory. Its directory becomes the session root.
 fn source_single(
-    export_root: &Path,
+    export: &Arc<Root>,
     rel: &RelPath,
     hello: &Hello,
 ) -> Result<(RelPath, SingleFile), (Code, String)> {
     let parent = rel.parent();
-    let dir = prepare_root(export_root, &parent, Missing::Refuse).map_err(bad_session_path)?;
+    let (dir, root) = prepare_root(export, &parent, Missing::Refuse).map_err(bad_session_path)?;
     let invalid = || (Code::BadPath, "invalid name".to_string());
     let Some(name) = rel.components().last() else {
         return Err((Code::BadPath, PlaceError::IsADirectory(dir).to_string()));
     };
-    let file = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-    match std::fs::symlink_metadata(&file) {
-        Ok(m) if m.is_dir() => {
+    let name_os = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
+    let file = dir.join(name_os);
+    let stat = root
+        .dir(&RelPath::root(), beneath::Missing::Refuse)
+        .and_then(|d| d.stat(name_os));
+    match stat {
+        Ok(st) if beneath::is_dir(&st) => {
             return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
         }
         Ok(_) => {}
@@ -909,20 +920,45 @@ fn source_single(
 /// What `rel` is in the export at `export_root`, for a probe. Like a
 /// pull, it never looks through a symlink: a parent that is one, or is
 /// missing, makes the path missing. The last component is not followed.
-fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
+fn probe_kind(export: &Arc<Root>, rel: &RelPath) -> path_info::Kind {
     use path_info::Kind;
-    let Ok(dir) = prepare_root(export_root, &rel.parent(), Missing::Refuse) else {
+    let Ok((_, root)) = prepare_root(export, &rel.parent(), Missing::Refuse) else {
         return Kind::Missing;
     };
     let Some(name) = rel.components().last() else {
         return Kind::Directory;
     };
-    let path = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-    match std::fs::symlink_metadata(path) {
-        Ok(m) if m.is_dir() => Kind::Directory,
+    let name = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
+    let stat = root
+        .dir(&RelPath::root(), beneath::Missing::Refuse)
+        .and_then(|d| d.stat(name));
+    match stat {
+        Ok(st) if beneath::is_dir(&st) => Kind::Directory,
         Ok(_) => Kind::File,
         Err(_) => Kind::Missing,
     }
+}
+
+/// The export at `path`, opened for one session (see [`open_export`]).
+async fn open_export_root(shared: &Shared, path: &Path) -> Result<Arc<Root>, (Code, String)> {
+    #[cfg(feature = "test-hooks")]
+    let cap = shared
+        .hosting()
+        .daemon_hooks
+        .lock()
+        .unwrap()
+        .dir_cache
+        .unwrap_or(beneath::DIR_CACHE);
+    #[cfg(not(feature = "test-hooks"))]
+    let cap = {
+        let _ = shared;
+        beneath::DIR_CACHE
+    };
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || open_export(&path, cap))
+        .await
+        .unwrap_or_else(|e| Err(io::Error::other(e)))
+        .map_err(bad_session_path)
 }
 
 /// The reply `serve_daemon` gives for a session root it cannot use.
