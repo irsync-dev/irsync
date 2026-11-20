@@ -140,6 +140,28 @@ fn write_meta(db: &Database, ks: &Keyspace, m: &Meta) -> Result<()> {
     Ok(())
 }
 
+/// Refuses a manifest directory that holds anything but directories and
+/// regular files. fjall has no read-only open: opening repairs the
+/// database, which removes and truncates what it finds below the
+/// directory. A symlink in a manifest that came with a tree would take
+/// that repair to wherever the link points.
+fn refuse_links_inside(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            refuse_links_inside(&entry.path())?;
+        } else if !kind.is_file() {
+            bail!(
+                "{} is not a fileset manifest: {} is neither a file nor a directory",
+                dir.display(),
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
 impl FjallStore {
     pub fn open(path: &Path, mode: OpenMode) -> Result<FjallStore> {
         match mode {
@@ -160,6 +182,9 @@ impl FjallStore {
                 )
             }
             _ => {}
+        }
+        if mode != OpenMode::Create {
+            refuse_links_inside(path)?;
         }
         let db = Database::builder(path)
             .open()

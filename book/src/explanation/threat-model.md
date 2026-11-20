@@ -173,6 +173,10 @@ is fine.
 - irsync never follows a symlink it copies.
 - A manifest is compared with the files as they are now. It cannot make
   `fileset` skip a file that is on disk.
+- `fileset` refuses a manifest in the tree that is a symlink, or that has
+  symlinks inside. It opens a SQLite manifest with SQLite's settings for
+  files that are not trusted, and refuses one with views, triggers or
+  virtual tables.
 
 **What is left:**
 
@@ -181,8 +185,10 @@ is fine.
   original. Someone who can change the files can change the manifest too.
   Keep a copy you trust somewhere else, or compare root hashes over another
   channel. See [How fileset works](../fileset/how-it-works.md).
-- **A manifest is a database file from someone else.** Treat one from a
-  source you do not trust like any other file you would not open blindly.
+- **A manifest is a database file from someone else.** The checks above
+  narrow what a crafted one can do; they do not make the database engines
+  safe against every crafted file. A `.fileset.fjall` manifest is repaired
+  when it is opened, even by `check`, so `check` can write into it.
 - Symlinks and setuid files arrive as they were. What other programs do with
   them is up to you.
 
