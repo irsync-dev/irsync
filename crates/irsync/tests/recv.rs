@@ -1118,3 +1118,30 @@ fn index_directory_is_private() {
     drop(Index::open(&state, &root).unwrap());
     assert_eq!(mode(&state.join("index")), 0o700);
 }
+
+/// The chunker cuts no chunk shorter than its minimum, except a file's
+/// last. A list from the other side with tiny chunks is refused.
+#[test]
+fn chunk_list_with_tiny_chunks_is_refused() {
+    let e = env();
+    let data = content(71);
+    let mut cl = chunk_list(&data);
+    assert!(cl.chunks.len() >= 2, "the test needs more than one chunk");
+    // An honest list opens.
+    FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    // Split the first chunk into one byte and the rest.
+    let first = cl.chunks[0];
+    let mut rest = first;
+    rest.offset = 1;
+    rest.len = first.len - 1;
+    let mut one = first;
+    one.len = 1;
+    cl.chunks.splice(0..1, [one, rest]);
+    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+        .err()
+        .expect("a list with a one-byte chunk opened");
+    assert!(
+        err.to_string().contains("shorter than the minimum"),
+        "{err}"
+    );
+}

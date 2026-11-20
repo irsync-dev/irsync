@@ -142,9 +142,18 @@ fn now_secs() -> i64 {
 fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
     let mut chunks = Vec::with_capacity(expected.chunks.len());
     let mut next = 0u64;
-    for &c in &expected.chunks {
+    let last = expected.chunks.len().saturating_sub(1);
+    for (i, &c) in expected.chunks.iter().enumerate() {
         if c.offset != next || c.len == 0 {
             return Err(invalid("chunk list does not tile the file"));
+        }
+        // The chunker never cuts a chunk shorter than its minimum, except
+        // the last of a file. A list of tiny chunks is not an honest one.
+        if i < last && c.len < irsync_proto::chunk::CHUNK_PARAMS.min {
+            return Err(invalid(format!(
+                "chunk of {} bytes is shorter than the minimum",
+                c.len
+            )));
         }
         // Chunks are buffered whole: never more than the chunker's maximum.
         if c.len > MAX_CHUNK_LEN {

@@ -138,6 +138,10 @@ or change what you send.
   the delete pass.
 - Every chunk and every whole file is checked against its BLAKE3 hash before
   it is placed.
+- When a file you already have changes, the sender may ask for parts of
+  your old copy to be reused. The client reuses only whole blocks it
+  described to the sender itself, so a sender cannot probe your old file
+  for its content.
 
 **What is left:**
 

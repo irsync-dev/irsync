@@ -24,7 +24,7 @@ version is refused with `VERSION_MISMATCH`.
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
 | Chunking | FastCDC 2020, normalisation level 1; minimum 64 KiB, average 256 KiB, maximum 1 MiB |
 | Chunk list part | At most 32,768 records |
-| Chunk list | At most 2^24 records |
+| Chunk list | At most 2^24 records. Every chunk but a file's last is at least 64 KiB; the receiver refuses a list with a shorter one. |
 | List room | 2^24 records per connection, across all files |
 | `NeedChunks` | At most 2^18 chunk indices per message |
 | `Hello.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
@@ -232,8 +232,13 @@ than 32 MiB of bases fails the session.
 A chunk with a basis may arrive as `DataChunk.ops` instead of `data`: a list
 of literals and copies (`offset`, `len` in the receiver's old file) that add up
 to the chunk. The sender uses operations only when they are at least a quarter
-smaller than the chunk. The receiver rebuilds the chunk and verifies it against
-the chunk's hash like any other. How the receiver chooses and uses bases is in
+smaller than the chunk. A copy must be a run of whole blocks of the basis the
+receiver sent for that chunk: it starts on a block of the region and its length
+is a multiple of the block length. The receiver refuses any other copy, and any
+operations for a chunk it sent no basis for, and asks for the chunk again
+without a basis. This keeps a sender from finding out what the old file holds
+by asking for single bytes of it. The receiver rebuilds the chunk and verifies
+it against the chunk's hash like any other. How the receiver chooses and uses bases is in
 [Receiving a changed file](../explanation/receiving-a-changed-file.md#bases-and-operations).
 
 ### Heartbeats

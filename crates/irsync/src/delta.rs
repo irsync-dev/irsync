@@ -150,6 +150,56 @@ impl Basis {
     }
 }
 
+/// The part of the old file the receiver signed for one chunk: `blocks`
+/// blocks of `block` bytes from `offset` on. It is all of the old file the
+/// sender may ask to have copied into that chunk, and only in whole blocks.
+///
+/// Without this limit a sender could find out what the old file holds. It
+/// would send a chunk record that is right only if one byte of the old
+/// file has the value it guessed, ask for that byte to be copied, and see
+/// whether the receiver asks for the chunk again. Held to whole signed
+/// blocks, a copy tells the sender nothing the signatures did not: it has
+/// to know a block's content to name a record the block fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub offset: u64,
+    pub block: u32,
+    pub blocks: u32,
+}
+
+impl Region {
+    /// The region `basis` (as it went on the wire) signs.
+    pub fn of(basis: &v1::ChunkBasis) -> Region {
+        Region {
+            offset: basis.offset,
+            block: basis.block,
+            blocks: basis.weak.len() as u32,
+        }
+    }
+
+    /// Checks that every copy in `ops` is a run of whole signed blocks.
+    pub fn admit(&self, ops: &[Op]) -> io::Result<()> {
+        let block = u64::from(self.block);
+        let end = self.offset + block * u64::from(self.blocks);
+        for op in ops {
+            let Op::Copy { offset, len } = *op else {
+                continue;
+            };
+            let len = u64::from(len);
+            let inside = offset >= self.offset && offset.checked_add(len).is_some_and(|e| e <= end);
+            if block == 0
+                || len == 0
+                || !inside
+                || !(offset - self.offset).is_multiple_of(block)
+                || !len.is_multiple_of(block)
+            {
+                return Err(invalid("delta copy is not a run of offered blocks"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One step of rebuilding a chunk: bytes as sent, or a range of the
 /// receiver's old file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,4 +381,86 @@ pub fn decode(
         at += n;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+
+    fn bytes(n: usize, seed: u32) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect()
+    }
+
+    const REGION: Region = Region {
+        offset: 8192,
+        block: 1024,
+        blocks: 4,
+    };
+
+    fn copy(offset: u64, len: u32) -> Op {
+        Op::Copy { offset, len }
+    }
+
+    #[test]
+    fn whole_offered_blocks_are_admitted() {
+        for ops in [
+            vec![],
+            vec![Op::Literal(vec![1, 2, 3])],
+            vec![copy(8192, 1024)],
+            vec![copy(8192, 4096)],
+            vec![copy(11264, 1024), Op::Literal(vec![0]), copy(9216, 2048)],
+        ] {
+            REGION
+                .admit(&ops)
+                .unwrap_or_else(|e| panic!("{ops:?}: {e}"));
+        }
+    }
+
+    /// What a sender would need to learn the old file byte by byte, or to
+    /// read a part of it the receiver did not sign.
+    #[test]
+    fn anything_but_whole_offered_blocks_is_refused() {
+        for op in [
+            copy(8192, 1),
+            copy(8192, 1023),
+            copy(8193, 1024),
+            copy(8192 + 1023, 1),
+            copy(0, 1024),
+            copy(7168, 1024),
+            copy(12288, 1024),
+            copy(11264, 2048),
+            copy(8192, 0),
+            copy(u64::MAX - 5, 1024),
+        ] {
+            let ops = vec![Op::Literal(vec![7; 10]), op.clone()];
+            assert!(REGION.admit(&ops).is_err(), "{op:?}");
+        }
+    }
+
+    /// What `encode` makes against a basis always passes for its region.
+    #[test]
+    fn the_encoders_copies_are_admitted() {
+        for (len, seed) in [(64 * 1024, 1), (300 * 1024 + 77, 2), (1024 * 1024, 3)] {
+            let old = bytes(len, seed);
+            let basis = Basis::sign(4096, &old);
+            let wire = basis.to_wire(1, 0);
+            let region = Region::of(&wire);
+            // The old content moved and patched, so copies come in runs.
+            let mut new = bytes(999, seed + 10);
+            new.extend_from_slice(&old[..len / 2]);
+            new.extend_from_slice(&bytes(5, seed + 20));
+            new.extend_from_slice(&old[len / 3..]);
+            let ops = encode(&new, &basis);
+            assert!(ops.iter().any(|o| matches!(o, Op::Copy { .. })));
+            region.admit(&ops).unwrap();
+        }
+    }
 }
