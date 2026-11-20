@@ -246,6 +246,9 @@ impl Clones {
     }
 
     /// The area on device `dev` (the device of the file), made on first use.
+    /// The folder is looked for from the root's real path upward, so a file
+    /// on another filesystem below the root (a mount, a ZFS child dataset, a
+    /// btrfs subvolume) gets none; that is logged once per device.
     fn area(&self, root: &Root, dev: u64) -> Option<Arc<Area>> {
         let mut areas = self.lock_areas();
         if let Some(a) = areas.get(&dev) {
@@ -254,7 +257,16 @@ impl Clones {
         let made = match area_dir_below(root.real_path(), dev, self.within.as_deref())
             .map(|top| (make_area(&top, &self.session), top))
         {
-            None => None,
+            None => {
+                tracing::info!(
+                    root = %root.real_path().display(),
+                    dev,
+                    "no clone folder for files on this filesystem: it is not the \
+                     root's, or none of the root's folders on it can be written; \
+                     they are hashed a second time instead"
+                );
+                None
+            }
             Some((Ok(a), _)) => Some(Arc::new(a)),
             // Out of file descriptors (each file in flight holds its clone
             // open): no clone for this file, but later ones may still get
@@ -264,7 +276,7 @@ impl Clones {
                 return None;
             }
             Some((Err(e), top)) => {
-                tracing::debug!(dir = %top.display(), error = %e, "no clone folder");
+                tracing::info!(dir = %top.display(), error = %e, "no clone folder");
                 None
             }
         };

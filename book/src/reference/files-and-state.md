@@ -86,8 +86,10 @@ listed, never accepted from a peer and never created as destinations.
 
 irsync opens every folder below a session's root one name at a time and never
 through a symlink. The root itself may be reached through symlinks; below it,
-a symlink is synced as a symlink and never followed. A relative
-`--partial-dir` must be a real folder (or missing) all the way down.
+a symlink is synced as a symlink and never followed. A `--partial-dir` written
+as a plain relative path (no `.` or `..` parts, no trailing slash) must be a
+real folder (or missing) all the way down. On a pull, other spellings are
+taken as a place of your own, like an absolute path.
 
 A folder irsync cannot read, because its user has no read permission on it,
 cannot be written into or listed. Its own permissions and times can still be
@@ -97,8 +99,10 @@ On macOS older than 13, irsync cannot make FIFOs or device nodes; the error
 says "special files need macOS 13 or newer".
 
 With `--paranoid`, the sending side keeps reflink clones in a folder named
-`.irsync-clones-<uid>` (the uid in decimal) in a writable directory on each
-file's filesystem. A directory named exactly `.irsync-clones-` followed by
+`.irsync-clones-<uid>` (the uid in decimal) in a writable directory at or
+above the session's root, on the root's filesystem. A file on another
+filesystem below the root (a mount, a ZFS child dataset, a btrfs subvolume)
+gets no clone and is hashed a second time instead. A directory named exactly `.irsync-clones-` followed by
 digits is never listed and so never synced or deleted; a name such as
 `.irsync-clones-backup` is an ordinary directory.
 

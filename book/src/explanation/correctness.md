@@ -205,9 +205,12 @@ and the run exits 23 if it happens again.
   if the source changes after it was made; irsync logs a note. Cloning works
   on btrfs, xfs, ZFS 2.2 and newer with block cloning, and bcachefs on Linux,
   and on APFS on macOS (not yet tested). Clones live in
-  `.irsync-clones-<uid>/<session>/`, mode 0700, in the highest directory on
-  the file's filesystem that you can write to. Directories that group or
-  others can write to, without the sticky bit, are skipped. irsync removes
+  `.irsync-clones-<uid>/<session>/`, mode 0700, in the highest directory
+  you can write to on the way up from the session's root, on the root's
+  filesystem. Directories that group or others can write to, without the
+  sticky bit, are skipped. A file on another filesystem below the root (a
+  mount, a ZFS child dataset, a btrfs subvolume) gets no clone: it is hashed
+  a second time instead, as below, and irsync logs this once per filesystem. irsync removes
   the clones when the run ends. Clones a crash left are removed by a later
   `--paranoid` run that clones on that filesystem. The scan skips these
   folders. Each file in flight keeps its clone open; if irsync runs out of
