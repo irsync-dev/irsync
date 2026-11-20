@@ -256,12 +256,37 @@ In one place:
 
 ## Where the review stands
 
-The checks on this page are the design. A line-by-line review of every
-place where a name, path or link target from the other side reaches the
-file system is tracked in
-[issue 126](https://github.com/irsync-dev/irsync/issues/126) and is not
-finished. Until it is, give a read-write grant only to keys you would trust
-with the daemon account's own files, and pull only from daemons you trust.
+The code was checked against this page in November 2026. The work is
+tracked in [issue 126](https://github.com/irsync-dev/irsync/issues/126).
+
+The review looked at the limits on what the other side may send, file
+permissions, logs and terminal output, `fileset` manifests, the reuse of old
+file content, and how files are reached by name. What it found there is
+fixed, and the checks above describe the code as it is now.
+
+The review is not finished:
+
+- **How the daemon resolves a client's path was not read to the end.** That
+  part of the review was cut short. What it had found by then is fixed.
+- **Some checks have no test yet.** A directory swapped for a symlink in the
+  middle of a walk is one. So are the same swaps while a file is read for
+  sending or copied from another local file.
+
+Known gaps that are still open:
+
+- The number of hard-link checks a client can queue, and the number of
+  sessions one key can store, have no limit.
+- A config file that other users can write is loaded without a warning, and
+  the permissions of a passphrase file are not checked.
+- A receiver tells the sender which chunks it already has. A sender that can
+  guess the whole content of a chunk can confirm the guess.
+- When irsync reuses chunks from other local files, and in the clone
+  folders of `--paranoid`, it still reaches files by path name. This matters
+  only when another local user can write in those trees.
+
+Until the review is finished, give a read-write grant only to keys you
+would trust with the daemon account's own files, and pull only from daemons
+you trust.
 
 To report a security problem, see the
 [security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
