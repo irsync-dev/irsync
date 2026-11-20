@@ -122,6 +122,26 @@ class BookThemeTest(unittest.TestCase):
         self.assertIn("text-decoration: none", rule.group(1))
         self.assertRegex(RULES, r"\.menu-title a:hover\s*\{[^}]*text-decoration: underline")
 
+    def test_home_link_title_is_not_a_second_h1(self):
+        # mdbook's title is an h1 on every page, beside the page's own.
+        js = _read("book", "theme", "home-link.js")
+        self.assertIn('setAttribute("role", "none")', js)
+        self.assertIn("menu-title-rest", js)
+        self.assertRegex(RULES, r"\.menu-title-rest\s*\{[^}]*display: none")
+
+    def test_a11y_script_is_loaded(self):
+        toml = _read("book", "book.toml")
+        self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/a11y\.js"')
+        js = _read("book", "theme", "a11y.js")
+        for name in ("irsync-skip", "Skip to content", "tabIndex = 0", "scrollWidth"):
+            self.assertIn(name, js)
+        # Hidden until it has the focus.
+        self.assertRegex(RULES, r"\.irsync-skip\s*\{[^}]*top: -10rem")
+        self.assertRegex(RULES, r"\.irsync-skip:focus\s*\{[^}]*top: 1rem")
+
+    def test_prose_keeps_a_readable_measure(self):
+        self.assertRegex(RULES, r"\.content main > :is\(p, ul, ol, dl, blockquote\)\s*\{[^}]*max-width: 35em")
+
     def test_picker_script_is_loaded(self):
         toml = _read("book", "book.toml")
         self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/picker\.js"')

@@ -8,14 +8,14 @@ per release channel: see [The books](#the-books).
 
 | Path | What it holds |
 | --- | --- |
-| `site/index.html`, `site/404.html`, `site/robots.txt`, `site/_headers`, `site/install.sh` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
+| `site/index.html`, `site/404.html`, `site/favicon.svg`, `site/robots.txt`, `site/_headers`, `site/install.sh` | The landing page, the page served for an unknown URL outside `/book/`, and the files served next to them, copied as they are. |
 | `site/tailwind.css` | The landing page's stylesheet: the Tailwind CSS and daisyUI source that the build compiles into `style.css`. |
 | `site/package.json`, `site/package-lock.json` | The npm packages the stylesheet is built with, pinned. Not deployed. |
 | `site/tokens.json` | The design tokens of the landing page and the book: colours, font stacks, text sizes, radius. |
 | `site/tools/` | `gen_tokens.py` (tokens to CSS), `strip_font_link.py` (see [Building](#building)), `versions.py` (see [The release versions](#the-release-versions)), `label_book.py` (see [The books](#the-books)), `check.py` (the checker) and their tests. Not deployed. |
 | `site/build.sh`, `site/serve.sh`, `site/deploy.sh` | Build, serve locally and deploy. Not deployed. |
 | `site/wrangler.jsonc` | The settings both Cloudflare Workers are deployed with. Not deployed. |
-| `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`; `picker.js`, which trims the theme picker; `home-link.js`, which links the title to the landing page). |
+| `book/` | The mdbook: `book.toml`, the pages in `book/src/`, theme overrides in `book/theme/` (`irsync.css`; `picker.js`, which trims the theme picker; `home-link.js`, which links the title to the landing page; `a11y.js`, which adds the skip link; `favicon.svg`, the same icon as the landing page's). |
 
 ## The design tokens
 
@@ -260,7 +260,21 @@ book) links to the landing page at
 `/`, as the landing page's own "irsync" links home; mdbook has no setting
 for this, so `book/theme/home-link.js` adds the link. A click on the bar
 around the title still scrolls to the top. A bare `mdbook serve` has no
-landing page, so the link leads nowhere there.
+landing page, so the link leads nowhere there. The same script stops the
+title being a heading (mdbook makes it an `h1` beside the page's own), and
+on a screen narrower than 520px only "irsync" is shown. The mark before
+the title is the favicon's (`favicon.svg`), drawn in `irsync.css` as a mask
+in the theme's aqua; the landing page and the 404 page have the same mark
+as inline SVG before their "irsync".
+
+Running text is at most 35em wide, about 75 characters a line; code blocks
+and tables use the full 750px, which holds an 80-column line of code.
+
+`book/theme/a11y.js` adds two things for keyboard users: a "Skip to
+content" link as the first stop of the Tab key, before the chapters in the
+sidebar, and a place in the Tab order for every code block and table that
+scrolls sideways. On a touch screen the chapter links and the bar's
+controls are 44px targets.
 
 The version switcher (see [The books](#the-books)) reads like the bar's
 other controls, and its list looks like the theme list (`irsync.css`,

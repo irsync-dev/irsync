@@ -177,6 +177,24 @@ h1, h2, h3, h4, h5, h6,
 
 h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
+  text-wrap: balance;
+}
+
+/* Running text keeps to about 75 characters a line; code blocks and tables
+   may use the full width of the page (mdbook's 750px), which holds an
+   80-column line of code. No single word alone on a last line. */
+.content main > :is(p, ul, ol, dl, blockquote) {
+  box-sizing: border-box;
+  max-width: 35em;
+}
+
+.content main :is(p, li) {
+  text-wrap: pretty;
+}
+
+::selection {
+  background: var(--ir-aqua-ink);
+  color: var(--ir-on-aqua);
 }
 
 /* Bold is the semibold that ships; 700 would be synthesised. */
@@ -306,6 +324,31 @@ input:focus-visible,
   box-shadow: none;
 }
 
+/* The "Skip to content" link (theme/a11y.js): off the page until the Tab
+   key reaches it. The page it leads to shows no outline of its own. */
+.irsync-skip {
+  position: absolute;
+  top: -10rem;
+  left: 1rem;
+  z-index: 1000;
+  padding: 0.8rem 1.2rem;
+  font-family: var(--ir-font-display);
+  font-size: calc(var(--ir-text-label) * var(--ir-book-rem));
+  font-weight: 600;
+  color: var(--ir-on-aqua);
+  background: var(--ir-aqua-ink);
+  border-radius: var(--ir-radius-sm);
+  text-decoration: none;
+}
+
+.irsync-skip:focus {
+  top: 1rem;
+}
+
+.content main:focus {
+  outline: none;
+}
+
 /* Links keep an underline so colour is not the only cue; thicker on hover,
    as on the landing page. */
 .content a:link,
@@ -323,15 +366,59 @@ input:focus-visible,
    and looks like the landing page's "irsync": Barlow semibold in ink. */
 .menu-title a,
 .menu-title a:visited {
+  display: inline-block;
   color: var(--ir-ink);
   font-weight: 600;
   text-decoration: none;
+}
+
+/* The mark beside it, as on the landing page: the favicon's two stops and
+   their link, drawn as a mask so it takes the aqua of the theme. */
+.menu-title a::before {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.33em;
+  vertical-align: -0.1em;
+  background-color: var(--ir-aqua);
+  -webkit-mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M13.2 18.8 21 11" stroke="black" stroke-width="4" fill="none"/><circle cx="8.5" cy="23.5" r="5.5" fill="none" stroke="black" stroke-width="4"/><circle cx="23.5" cy="8.5" r="7.5"/></svg>') no-repeat center / contain;
+  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M13.2 18.8 21 11" stroke="black" stroke-width="4" fill="none"/><circle cx="8.5" cy="23.5" r="5.5" fill="none" stroke="black" stroke-width="4"/><circle cx="23.5" cy="8.5" r="7.5"/></svg>') no-repeat center / contain;
 }
 
 .menu-title a:hover {
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
+}
+
+/* On a narrow screen only "irsync" fits beside the controls
+   (theme/home-link.js puts the rest of the title in this span). */
+@media only screen and (max-width: 520px) {
+  .menu-title-rest {
+    display: none;
+  }
+}
+
+/* The print and repository links are as tall as the bar, like its buttons;
+   on a touch screen they and the chapter links are 44px targets. */
+.right-buttons a {
+  display: inline-block;
+}
+
+@media (pointer: coarse) {
+  .right-buttons a {
+    min-width: 44px;
+    text-align: center;
+  }
+
+  .chapter li a {
+    padding: 11px 0;
+  }
+
+  #irsync-book-list a {
+    padding-block: 1rem;
+  }
 }
 
 /* Headings are links to themselves; they keep the text colour. */

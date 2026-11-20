@@ -181,7 +181,18 @@
   h1,
   h2,
   h3 {
-    @apply font-display font-semibold;
+    @apply font-display font-semibold text-balance;
+  }
+
+  /* No single word alone on a paragraph's last line. */
+  p,
+  li {
+    @apply text-pretty;
+  }
+
+  ::selection {
+    background: var(--ir-aqua-ink);
+    color: var(--ir-on-aqua);
   }
 
   code,
@@ -218,7 +229,7 @@
   }
 
   .cmd pre {
-    @apply min-w-0 flex-1 py-1 text-(length:--ir-text-small) leading-relaxed whitespace-pre-wrap wrap-anywhere;
+    @apply min-w-0 flex-1 py-1 text-(length:--ir-text-small) leading-relaxed text-wrap whitespace-pre-wrap wrap-anywhere;
   }
 
   .cmd .prompt {

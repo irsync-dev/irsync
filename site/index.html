@@ -9,6 +9,15 @@
       name="description"
       content="irsync: peer-to-peer file and directory sync in the spirit of rsync that adapts to any network topology and survives connection drops without restarting."
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://irsync.org/" />
+    <meta property="og:title" content="irsync: resilient file sync over any network" />
+    <meta
+      property="og:description"
+      content="Copy files and directory trees the way rsync does, directly between your devices. Survives network changes and dropped connections."
+    />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <!-- Fetch the fonts alongside the stylesheet, not after it, so the page
          does not first draw in a fallback font. -->
     <link
@@ -56,29 +65,29 @@
       >
         <p class="flex items-center gap-3">
           <a
-            class="text-[1.625rem] leading-none font-semibold text-base-content no-underline"
+            class="-my-2 inline-flex items-center gap-2 py-2 text-heading leading-none font-semibold text-base-content no-underline"
             href="./"
-            >irsync</a
+            ><svg class="size-[0.9em] flex-none text-aqua" viewBox="0 0 32 32" aria-hidden="true"><path d="M13.2 18.8 21 11" stroke="currentColor" stroke-width="4" fill="none" /><circle cx="8.5" cy="23.5" r="5.5" fill="none" stroke="currentColor" stroke-width="4" /><circle cx="23.5" cy="8.5" r="7.5" fill="currentColor" /></svg>irsync</a
           >
           <!-- The build fills the marked regions on this page from the
                release versions in git (site/tools/versions.py). The badge
                shows only while there is no stable release. -->
           <!-- versions:prerelease --><span
-            class="rounded-selector bg-signal px-2 py-0.5 text-[0.8125rem] leading-tight font-semibold text-on-signal"
+            class="rounded-selector bg-signal px-2 py-0.5 text-small leading-tight font-semibold text-on-signal"
             ><!-- versions:channel -->beta<!-- /versions:channel --></span
           ><!-- /versions:prerelease -->
         </p>
         <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
           <li>
             <a
-              class="text-base-content no-underline hover:underline"
+              class="-my-3 inline-block py-3 text-base-content no-underline hover:underline"
               href="book/"
               >Documentation</a
             >
           </li>
           <li>
             <a
-              class="text-base-content no-underline hover:underline"
+              class="-my-3 inline-block py-3 text-base-content no-underline hover:underline"
               href="https://github.com/irsync-dev/irsync"
               >Source</a
             >
@@ -97,7 +106,7 @@
             Resilient file sync over any network
           </h1>
           <p
-            class="mt-4 max-w-[36em] text-lede md:text-[1.1875rem] lg:text-lede"
+            class="mt-4 max-w-[36em] text-lede"
           >
             Copy files and directory trees the way rsync does, directly between
             your devices, with irsync on both ends.
@@ -156,13 +165,13 @@
         </div>
 
         <section class="md:pt-1" aria-labelledby="start-heading">
-          <h2 id="start-heading" class="text-[1.1875rem] leading-tight">
+          <h2 id="start-heading" class="text-lede leading-tight">
             Get started
           </h2>
           <ol class="mt-5">
             <li class="station">
               <span
-                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-semibold bg-base-100"
+                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-small font-semibold bg-base-100"
                 aria-hidden="true"
                 >1</span
               >
@@ -186,7 +195,7 @@
             </li>
             <li class="station">
               <span
-                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-aqua font-display text-[0.875rem] font-semibold bg-aqua text-base-100"
+                class="absolute top-0 left-0 flex size-7 items-center justify-center rounded-full border-[3px] border-primary font-display text-small font-semibold bg-primary text-primary-content"
                 aria-hidden="true"
                 >2</span
               >
@@ -229,7 +238,7 @@
           >MIT license</a
         >.
       </p>
-      <ul class="flex flex-wrap gap-x-6 gap-y-1">
+      <ul class="flex flex-wrap gap-x-6 gap-y-3 sm:gap-y-1">
         <li><a href="book/introduction.html#get-help">Get help</a></li>
         <li>
           <a href="mailto:security@irsync.org">Report a security problem</a>
@@ -241,22 +250,33 @@
       </ul>
     </footer>
 
+    <!-- Where the script below says "Copied" for a screen reader; the
+         change of a button's label is not read out. -->
+    <p id="copy-status" class="sr-only" role="status"></p>
+
     <!-- Adds a copy button to each command, and turns each release version
          into a button that copies the install command of its channel.
          Without script the page is the same, minus the buttons: the
-         versions are plain text. -->
+         versions are plain text. On a touch screen the buttons are at least
+         44px high. -->
     <script>
       if (navigator.clipboard) {
+        const status = document.getElementById("copy-status");
+        const say = (text) => {
+          status.textContent = text;
+          setTimeout(() => (status.textContent = ""), 1500);
+        };
         for (const cmd of document.querySelectorAll(".cmd")) {
           const button = document.createElement("button");
           button.type = "button";
           button.className =
-            "btn btn-xs h-auto flex-none border-term-muted bg-transparent px-2 py-1 font-display text-[0.8125rem] font-semibold text-term-ink hover:bg-term-ink hover:text-term";
+            "btn btn-xs h-auto flex-none border-term-muted bg-transparent px-2 py-1 font-display text-small leading-tight font-semibold text-term-ink hover:bg-term-ink hover:text-term pointer-coarse:min-h-11 pointer-coarse:min-w-11";
           button.textContent = "Copy";
           button.onclick = () => {
             const text = cmd.querySelector(".copy").textContent;
             navigator.clipboard.writeText(text).then(() => {
               button.textContent = "Copied";
+              say("Copied");
               setTimeout(() => (button.textContent = "Copy"), 1500);
             });
           };
@@ -269,7 +289,7 @@
           const button = document.createElement("button");
           button.type = "button";
           button.className =
-            "btn btn-xs h-auto border-base-300 px-2 py-0.5 [font:inherit] text-base-content";
+            "btn btn-xs h-auto border-base-300 px-2 py-0.5 [font:inherit] text-base-content pointer-coarse:min-h-11";
           // Kept here, not read back from the button: a second click while
           // it says "Copied" must not make that its label.
           const label = version.textContent;
@@ -280,6 +300,7 @@
             command.querySelector("#install-tail").textContent = version.dataset.tail;
             navigator.clipboard.writeText(command.textContent).then(() => {
               button.textContent = "Copied";
+              say("Copied the install command for " + label);
               setTimeout(() => (button.textContent = label), 1500);
             });
           };

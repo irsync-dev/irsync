@@ -86,7 +86,7 @@ python3 "$root/site/tools/switcher.py" "$out"
 
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
-for f in 404.html robots.txt _headers install.sh; do
+for f in 404.html robots.txt _headers install.sh favicon.svg; do
   cp "$root/site/$f" "$out/"
 done
 # The landing page itself, with the release versions from git written in.
