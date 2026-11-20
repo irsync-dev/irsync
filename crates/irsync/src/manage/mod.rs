@@ -309,7 +309,13 @@ impl PeerSpec {
     /// `None` when the key is not Ed25519; an error when its comment is
     /// not one line of printable text.
     fn from_key(pk: &ssh_key::PublicKey) -> Result<Option<PeerSpec>, ManageError> {
-        let comment = pk.comment();
+        // A comment is bytes. One from a pasted line is always UTF-8, since
+        // the line was text; the error is there in case a key ever reaches
+        // this from somewhere else.
+        let comment = pk
+            .comment()
+            .as_str()
+            .map_err(|_| ManageError::BadComment(pk.comment().to_string()))?;
         check_comment(comment)?;
         let Some(id) = endpoint_id_of_public_key(pk) else {
             return Ok(None);

@@ -224,6 +224,20 @@ differ, the code is what shipped.
     can drift away from what protects users. Cost if wrong: a visitor may
     read a middling score as neglect. The table is there to answer that.
 
+24. **`ssh-key` is a release candidate, pinned exactly (`=0.7.0-rc.12`).**
+    0.6 lists the old `rsa` and `crypto-bigint` as optional parts. We
+    never build them, but they sit in `Cargo.lock` with open advisories
+    (RUSTSEC-2023-0071, RUSTSEC-2026-0387), next to a second, older copy
+    of the curve crates that iroh already brings. 0.7 uses the fixed
+    versions and shares iroh's copy. Keys stay in the OpenSSH format,
+    with the same cipher and key derivation. Checked by hand on
+    2026-11-20: irsync 0.1.0-beta.3 and `ssh-keygen` read keys the new
+    build writes, and the new build reads theirs, plain and encrypted. Why: fewer crates, and
+    no known-weak code in the lock file. Cost if wrong: a release
+    candidate can still change or carry a bug in how identity keys are
+    read and written. The exact pin means nothing moves until we move
+    it; go to 0.7.0 when it is released.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
