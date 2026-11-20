@@ -49,7 +49,7 @@ pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
 }
 
 /// [`require_regular`], returning the file's `fstat`.
-fn require_regular_stat(f: &File, what: &Path) -> io::Result<FileStat> {
+pub(crate) fn require_regular_stat(f: &File, what: &Path) -> io::Result<FileStat> {
     let st = fstat(f).map_err(errno)?;
     if !is_regular_mode(st.st_mode as u32) {
         return Err(io::Error::new(

@@ -27,13 +27,13 @@ use std::sync::{Arc, Mutex};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::errno::Errno;
 use nix::fcntl::{openat, readlinkat, renameat, AtFlags, OFlag, AT_FDCWD};
-use nix::sys::stat::{fstat, fstatat, mkdirat, utimensat, FileStat, Mode, SFlag, UtimensatFlags};
+use nix::sys::stat::{fstatat, mkdirat, utimensat, FileStat, Mode, SFlag, UtimensatFlags};
 use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, symlinkat, unlinkat, Gid, Uid, UnlinkatFlags};
 
 use crate::fs::meta::{apply_fd, entry_of, may_chgrp, process_ids, ApplyOpts};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{errno, is_regular_mode, is_symlink_errno, nofollow_error, split_last};
+use crate::fs::safe::{errno, is_symlink_errno, nofollow_error, require_regular_stat, split_last};
 use crate::fs::transient::retry;
 
 /// How many folder handles a [`Root`] keeps by default.
@@ -80,8 +80,7 @@ fn name_flags() -> OFlag {
     OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC
 }
 
-/// Makes a FIFO or device node. macOS has no `mkfifoat` or `mknodat` in
-/// nix, so it calls libc, which declares both.
+/// Makes a FIFO or device node.
 #[cfg(not(target_vendor = "apple"))]
 fn make_node(dir: &Dir, name: &OsStr, kind: Kind, perm: Mode, rdev: u64) -> io::Result<()> {
     let sflag = match kind {
@@ -89,9 +88,59 @@ fn make_node(dir: &Dir, name: &OsStr, kind: Kind, perm: Mode, rdev: u64) -> io::
         Kind::Fifo => return nix::unistd::mkfifoat(dir, name, perm).map_err(errno),
         Kind::CharDev => SFlag::S_IFCHR,
         Kind::BlockDev => SFlag::S_IFBLK,
-        _ => SFlag::S_IFSOCK,
+        Kind::Socket => SFlag::S_IFSOCK,
+        _ => return Err(io::Error::from(io::ErrorKind::InvalidInput)),
     };
     nix::sys::stat::mknodat(dir, name, sflag, perm, rdev as _).map_err(errno)
+}
+
+/// `mkfifoat` and `mknodat` exist only from macOS 13, and nix has neither on
+/// Apple. They are looked up when first needed, so the binary still starts on
+/// older systems; there, making a special file fails with `Unsupported`.
+#[cfg(target_vendor = "apple")]
+mod apple_at {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::io;
+    use std::sync::OnceLock;
+
+    use nix::libc::{dev_t, mode_t};
+
+    type MkfifoatFn = unsafe extern "C" fn(c_int, *const c_char, mode_t) -> c_int;
+    type MknodatFn = unsafe extern "C" fn(c_int, *const c_char, mode_t, dev_t) -> c_int;
+
+    fn lookup(name: &std::ffi::CStr) -> Option<*mut c_void> {
+        // SAFETY: `name` is a valid NUL-terminated string; `dlsym` only reads it.
+        let p = unsafe { nix::libc::dlsym(nix::libc::RTLD_DEFAULT, name.as_ptr()) };
+        (!p.is_null()).then_some(p)
+    }
+
+    pub fn mkfifoat() -> io::Result<MkfifoatFn> {
+        static F: OnceLock<Option<MkfifoatFn>> = OnceLock::new();
+        let f = F.get_or_init(|| {
+            // SAFETY: the symbol, when present, is the C function
+            // `int mkfifoat(int fd, const char *path, mode_t mode)`.
+            lookup(c"mkfifoat")
+                .map(|p| unsafe { std::mem::transmute::<*mut c_void, MkfifoatFn>(p) })
+        });
+        f.ok_or_else(unsupported)
+    }
+
+    pub fn mknodat() -> io::Result<MknodatFn> {
+        static F: OnceLock<Option<MknodatFn>> = OnceLock::new();
+        let f = F.get_or_init(|| {
+            // SAFETY: the symbol, when present, is the C function
+            // `int mknodat(int fd, const char *path, mode_t mode, dev_t dev)`.
+            lookup(c"mknodat").map(|p| unsafe { std::mem::transmute::<*mut c_void, MknodatFn>(p) })
+        });
+        f.ok_or_else(unsupported)
+    }
+
+    fn unsupported() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "special files need macOS 13 or newer",
+        )
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -100,20 +149,28 @@ fn make_node(dir: &Dir, name: &OsStr, kind: Kind, perm: Mode, rdev: u64) -> io::
     let c = std::ffi::CString::new(name.as_bytes())
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let fd = dir.as_fd().as_raw_fd();
-    let rc = match kind {
-        // SAFETY: `c` is a valid NUL-terminated string that outlives the call,
-        // and `fd` is an open folder handle held by `dir`.
-        Kind::Fifo => unsafe { nix::libc::mkfifoat(fd, c.as_ptr(), perm.bits() as _) },
-        k => {
-            let sflag = match k {
-                Kind::CharDev => SFlag::S_IFCHR,
-                Kind::BlockDev => SFlag::S_IFBLK,
-                _ => SFlag::S_IFSOCK,
+    let sflag = match kind {
+        Kind::Fifo => {
+            let f = apple_at::mkfifoat()?;
+            // SAFETY: `f` is `mkfifoat(int, const char *, mode_t)`; `c` is a
+            // valid NUL-terminated string that outlives the call, and `fd` is
+            // an open folder handle held by `dir`.
+            let rc = unsafe { f(fd, c.as_ptr(), perm.bits()) };
+            return if rc == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
             };
-            // SAFETY: as above.
-            unsafe { nix::libc::mknodat(fd, c.as_ptr(), sflag.bits() | perm.bits(), rdev as _) }
         }
+        Kind::CharDev => SFlag::S_IFCHR,
+        Kind::BlockDev => SFlag::S_IFBLK,
+        Kind::Socket => SFlag::S_IFSOCK,
+        _ => return Err(io::Error::from(io::ErrorKind::InvalidInput)),
     };
+    let f = apple_at::mknodat()?;
+    // SAFETY: `f` is `mknodat(int, const char *, mode_t, dev_t)`; the string and
+    // folder handle are valid as above.
+    let rc = unsafe { f(fd, c.as_ptr(), sflag.bits() | perm.bits(), rdev as _) };
     if rc == 0 {
         Ok(())
     } else {
@@ -144,13 +201,7 @@ impl Dir {
     /// folder is refused with the same messages as `open_regular_nofollow`.
     pub fn open_regular(&self, name: &OsStr) -> io::Result<(File, FileStat)> {
         let f = self.open_name(name, OFlag::O_RDONLY, Mode::empty())?;
-        let st = fstat(&f).map_err(errno)?;
-        if !is_regular_mode(st.st_mode as u32) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a regular file", self.shown(name).display()),
-            ));
-        }
+        let st = require_regular_stat(&f, &self.shown(name))?;
         Ok((f, st))
     }
 
@@ -167,8 +218,12 @@ impl Dir {
     /// Opens `name` read-only, or write-only if the mode does not allow
     /// reading. Never creates it.
     pub fn open_any(&self, name: &OsStr) -> io::Result<File> {
-        self.open_name(name, OFlag::O_RDONLY, Mode::empty())
-            .or_else(|_| self.open_name(name, OFlag::O_WRONLY, Mode::empty()))
+        match self.open_name(name, OFlag::O_RDONLY, Mode::empty()) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                self.open_name(name, OFlag::O_WRONLY, Mode::empty())
+            }
+            r => r,
+        }
     }
 
     /// `lstat` of `name`.
@@ -281,7 +336,7 @@ impl Dir {
     }
 
     /// `chmod` of `name` that cannot reach through a symlink.
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(not(target_os = "linux"))]
     fn chmod_node(&self, name: &OsStr, mode: Mode) -> io::Result<()> {
         use nix::sys::stat::{fchmodat, FchmodatFlags};
         fchmodat(self, name, mode, FchmodatFlags::NoFollowSymlink).map_err(errno)
@@ -291,8 +346,9 @@ impl Dir {
     /// with `O_PATH` (which does not follow), refuse a symlink, and chmod
     /// that open handle through `/proc`. Without `/proc` this fails, and
     /// nothing is followed.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     fn chmod_node(&self, name: &OsStr, mode: Mode) -> io::Result<()> {
+        use nix::sys::stat::fstat;
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
         let fd = openat(
