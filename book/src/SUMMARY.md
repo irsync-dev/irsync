@@ -34,6 +34,7 @@
 - [How we verify irsync's correctness](explanation/correctness.md)
 - [Sessions and resume](explanation/sessions-and-resume.md)
 - [Identity and trust](explanation/identity-and-trust.md)
+- [Threat model](explanation/threat-model.md)
 - [Connections](explanation/connections.md)
 - [Networking](explanation/networking.md)
 - [The transfer algorithm](explanation/transfer-algorithm.md)

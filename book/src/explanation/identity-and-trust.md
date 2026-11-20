@@ -5,7 +5,8 @@ client and each daemon is an Ed25519 key pair, and its `EndpointId` is the
 public half. Who may connect is a list of `EndpointId`s on the daemon; whom a
 client connects to is the `EndpointId` it dials. This page explains where the
 keys come from, why the client trusts nothing it has not been given, and how
-the daemon decides what a key may reach.
+the daemon decides what a key may reach. The [Threat model](threat-model.md)
+says what all of this does and does not defend against.
 
 ## Keys and EndpointIds
 
