@@ -235,10 +235,78 @@ impl Reader for SqliteReader {
 /// statement cache calls that on each return, so the per-entry lookup
 /// would be prepared again on every call.
 fn stable_plans(conn: &Connection) -> Result<()> {
-    conn.set_db_config(
-        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG,
-        true,
-    )?;
+    use rusqlite::config::DbConfig;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_QPSG, true)?;
+    // A manifest can come with a tree someone else made. These are SQLite's
+    // settings for a database file that is not trusted: its schema cannot
+    // call functions or virtual tables with side effects, and SQL cannot
+    // change the file's internals.
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    Ok(())
+}
+
+/// Refuses a manifest whose schema holds anything but plain tables and
+/// indexes. A manifest that came with a tree could otherwise define
+/// `entries` as a view that never ends, or carry triggers that run when
+/// `update` writes.
+fn check_objects(conn: &Connection) -> Result<()> {
+    use rusqlite::types::ValueRef;
+    // As bytes: a damaged or crafted schema need not hold valid text.
+    let bytes = |v: ValueRef<'_>| match v {
+        ValueRef::Text(b) | ValueRef::Blob(b) => b.to_vec(),
+        _ => Vec::new(),
+    };
+    let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_schema")?;
+    let mut rows = stmt.query([])?;
+    let mut tables = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (kind, name) = (bytes(row.get_ref(0)?), bytes(row.get_ref(1)?));
+        let sql = bytes(row.get_ref(2)?);
+        let is_virtual = sql
+            .split(u8::is_ascii_whitespace)
+            .filter(|w| !w.is_empty())
+            .nth(1)
+            .is_some_and(|w| w.eq_ignore_ascii_case(b"virtual"));
+        if !matches!(&kind[..], b"table" | b"index") || is_virtual {
+            let kind = if is_virtual {
+                &b"virtual table"[..]
+            } else {
+                &kind
+            };
+            bail!(
+                "not a fileset manifest: it holds a {} named {}",
+                crate::escape::escape(kind),
+                crate::escape::escape(&name)
+            );
+        }
+        if kind == b"table" {
+            tables.push(name);
+        }
+    }
+    for needed in ["meta", "entries", "xattrs"] {
+        if !tables.iter().any(|t| t == needed.as_bytes()) {
+            bail!("not a fileset manifest: no table named {needed}");
+        }
+    }
+    Ok(())
+}
+
+/// SQLite follows a symlink at the name of the database and of the files
+/// it keeps beside it. A manifest found in a tree is refused when it is one
+/// (see `locate`); the files beside it are refused here.
+fn refuse_linked_sidecars(path: &Path) -> Result<()> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let side = PathBuf::from(name);
+        if side.symlink_metadata().is_ok_and(|m| !m.is_file()) {
+            bail!(
+                "{} is not a regular file; refusing to open the manifest beside it",
+                side.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -288,12 +356,14 @@ impl SqliteStore {
                 })
             }
             OpenMode::ReadWrite => {
+                refuse_linked_sidecars(path)?;
                 let conn = Connection::open_with_flags(
                     path,
                     OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )
                 .with_context(|| format!("opening {}", path.display()))?;
                 Self::configure(&conn)?;
+                check_objects(&conn)?;
                 let meta = read_meta(&conn)?;
                 check_schema(&meta, mode)?;
                 if meta.schema_version < SCHEMA_VERSION {
@@ -306,12 +376,14 @@ impl SqliteStore {
                 })
             }
             OpenMode::ReadOnly => {
+                refuse_linked_sidecars(path)?;
                 let conn = Connection::open_with_flags(
                     path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )
                 .with_context(|| format!("opening {}", path.display()))?;
                 stable_plans(&conn)?;
+                check_objects(&conn)?;
                 check_schema(&read_meta(&conn)?, mode)?;
                 Ok(SqliteStore {
                     conn,
@@ -368,7 +440,7 @@ impl Store for SqliteStore {
                     anyhow::ensure!(
                         p < path,
                         "manifest is damaged: entries out of order at {}",
-                        String::from_utf8_lossy(&path)
+                        crate::escape::escape(&path)
                     );
                     f(&p, &e)?;
                 }

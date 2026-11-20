@@ -106,6 +106,15 @@ Without `--manifest`, `fileset` looks for `.fileset.sqlite` and
 `.fileset.fjall` at the root. If both exist, it stops and asks for
 `--manifest`.
 
+A manifest found at the root must be a real file or directory. `fileset`
+refuses one that is a symbolic link, because a tree from someone else could
+point it at a manifest of yours. To keep a manifest elsewhere, name it with
+`--manifest`; that path may be a link.
+
+A manifest that came with a tree is not trusted. `fileset` refuses a
+`.fileset.sqlite` that holds anything but plain tables and indexes, and a
+`.fileset.fjall` directory with anything inside but files and directories.
+
 The options above are for the commands that walk a tree. Of them, `list`
 takes only `--manifest`.
 
@@ -361,7 +370,8 @@ next `update` folds it in.
 Exit code 2 covers, among others: a manifest that cannot be opened or read;
 a root that is not a directory; a manifest schema newer than this `fileset`;
 `check` on a manifest schema older than this `fileset` (`update` migrates
-it); both manifests at the root without `--manifest`; `init` on a tree that
+it); both manifests at the root without `--manifest`; a manifest at the root
+that is a symbolic link; `init` on a tree that
 already has a manifest, lies inside a fileset or contains a nested one;
 `update` on a tree that has none.
 

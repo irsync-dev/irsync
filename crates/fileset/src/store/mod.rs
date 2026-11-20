@@ -158,6 +158,17 @@ pub fn locate(
             } else {
                 (Backend::Fjall, fjall)
             };
+            // A manifest found in the tree may have come with the tree. One
+            // that is a symlink would have `update` write to a manifest
+            // somewhere else; `--manifest` is the way to name one elsewhere.
+            if path.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+                anyhow::bail!(
+                    "{} is a symbolic link; a manifest inside the tree must be a real {}. \
+                     Use --manifest to name a manifest elsewhere",
+                    path.display(),
+                    if has_s { "file" } else { "directory" }
+                );
+            }
             if requested.is_some_and(|r| r != backend) {
                 anyhow::bail!(
                     "{} already exists, which conflicts with the requested --store backend",
