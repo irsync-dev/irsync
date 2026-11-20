@@ -6,19 +6,21 @@
 //! chunks the old file already holds at the same offset are verified in
 //! place and never copied.
 
+use crate::fs::beneath::{Dir, Missing, Root};
 use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
+use crate::fs::safe::require_regular;
 use crate::index::{IndexHandle, Partial};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
-use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use nix::sys::stat::FileStat;
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -67,8 +69,13 @@ pub use crate::fs::clone::reflink;
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {
     rel: RelPath,
+    /// Where the file and its `.part` go.
+    place: Arc<Place>,
+    /// `dest` and `part` as paths, for messages only.
     dest: PathBuf,
     part: PathBuf,
+    /// The folder the held `.part` is in, opened with it.
+    part_dir: Option<Dir>,
     /// The `.part`, locked. Absent until the first write when nothing was
     /// there to adopt: a file waiting for its data holds no descriptor.
     file: Option<Arc<File>>,
@@ -120,7 +127,14 @@ pub struct FileWriter {
     fail_at: Option<u32>,
     #[cfg(feature = "test-hooks")]
     finalize_delay: Duration,
+    #[cfg(feature = "test-hooks")]
+    hook: Option<WriterHook>,
 }
+
+/// Test hook: told of a point in a writer's work: `"part-open"` just
+/// before a deferred `.part` is opened, `"place"` just before the rename.
+#[cfg(feature = "test-hooks")]
+pub type WriterHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -160,74 +174,151 @@ fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
 }
 
 /// Where `.part` files go instead of beside their files (`--partial-dir`):
-/// under `dir` (absolute, or relative to the writer's root), mirroring each
-/// file's parent directories. `skip` leading components of the file's path
-/// are not mirrored: the session root's depth below the writer's root, so a
-/// daemon receiving into `sub/` with `.p` writes `sub/.p/<parents>/`, not
-/// `sub/.p/sub/<parents>/`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// the folder `dir` below `root`, mirroring each file's parent folders.
+/// `skip` leading components of the file's path are not mirrored: the
+/// session root's depth below the writer's root, so a daemon receiving into
+/// `sub/` with `.p` writes `sub/.p/<parents>/`, not `sub/.p/sub/<parents>/`.
+#[derive(Clone)]
 pub struct PartialDir {
-    pub dir: PathBuf,
+    /// The root part files live under: the session's base root for a relative
+    /// option, or a Root of its own for an absolute one (a pull to a client).
+    pub root: Arc<Root>,
+    /// The option's path below `root` (empty for an absolute one).
+    pub dir: RelPath,
     pub skip: usize,
 }
 
 impl PartialDir {
-    /// A partial dir for a writer whose root is the session root.
-    pub fn new(dir: &Path) -> PartialDir {
-        PartialDir {
-            dir: dir.to_path_buf(),
-            skip: 0,
-        }
+    /// The partial dir `dir` below `root`, for a writer whose root is the
+    /// session root.
+    pub fn new(root: Arc<Root>, dir: RelPath) -> PartialDir {
+        PartialDir { root, dir, skip: 0 }
     }
 }
 
-/// Paths of the destination and of its `.part` file.
-fn paths(
-    root: &Path,
-    rel: &RelPath,
-    partial_dir: Option<&PartialDir>,
-) -> io::Result<(PathBuf, PathBuf)> {
+/// Where a file and its part file live: each a folder below a root, and a
+/// name in it. Nothing is opened here; the folders are opened when needed.
+#[derive(Clone)]
+pub struct Place {
+    pub root: Arc<Root>,
+    pub dest_dir_rel: RelPath,
+    pub dest_name: OsString,
+    pub part_root: Arc<Root>,
+    pub part_dir_rel: RelPath,
+    pub part_name: OsString,
+}
+
+/// Where `rel` below `root` and its `.part` go.
+fn place(root: &Arc<Root>, rel: &RelPath, partial_dir: Option<&PartialDir>) -> io::Result<Place> {
     let comps: Vec<&[u8]> = rel.components().collect();
     let (name, parents) = comps
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty relative path"))?;
-    let (mut part_dir, skip) = match partial_dir {
-        Some(pd) => (root.join(&pd.dir), pd.skip),
-        None => (root.to_path_buf(), 0),
-    };
-    for p in parents.iter().skip(skip) {
-        part_dir.push(OsStr::from_bytes(p));
-    }
     if is_temp_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "refusing a name reserved for irsync's temporary files",
         ));
     }
-    let part_name = temp_name(name, b".part");
-    Ok((
-        root.join(rel.to_os()),
-        part_dir.join(OsStr::from_bytes(&part_name)),
-    ))
+    let (part_root, mut part_dir_rel, skip) = match partial_dir {
+        Some(pd) => (pd.root.clone(), pd.dir.clone(), pd.skip),
+        None => (root.clone(), RelPath::root(), 0),
+    };
+    for p in parents.iter().skip(skip) {
+        part_dir_rel = part_dir_rel
+            .join(p)
+            .expect("a component of a RelPath is valid");
+    }
+    Ok(Place {
+        root: root.clone(),
+        dest_dir_rel: rel.parent(),
+        dest_name: OsStr::from_bytes(name).to_os_string(),
+        part_root,
+        part_dir_rel,
+        part_name: OsString::from_vec(temp_name(name, b".part")),
+    })
+}
+
+impl Place {
+    /// The destination's path, for messages.
+    fn dest_shown(&self) -> PathBuf {
+        self.root
+            .path()
+            .join(self.dest_dir_rel.to_os())
+            .join(&self.dest_name)
+    }
+
+    /// The `.part`'s path, for messages.
+    fn part_shown(&self) -> PathBuf {
+        self.part_root
+            .path()
+            .join(self.part_dir_rel.to_os())
+            .join(&self.part_name)
+    }
+
+    /// The `.part` and the destination are in the same folder.
+    fn same_dir(&self) -> bool {
+        Arc::ptr_eq(&self.root, &self.part_root) && self.dest_dir_rel == self.part_dir_rel
+    }
+
+    /// The `.part`'s folder, made if missing.
+    fn part_dir(&self) -> io::Result<Dir> {
+        self.part_root.dir(&self.part_dir_rel, Missing::Create)
+    }
+
+    /// The `.part`'s folder if it is there (`None` if it, or a folder on
+    /// the way, is missing).
+    fn find_part_dir(&self) -> io::Result<Option<Dir>> {
+        match self.part_root.dir(&self.part_dir_rel, Missing::Refuse) {
+            Ok(d) => Ok(Some(d)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The destination's folder: the `.part`'s own one when they are the
+    /// same, else opened now (never made).
+    fn dest_dir(&self, part_dir: &Dir) -> io::Result<Dir> {
+        if self.same_dir() {
+            return Ok(part_dir.clone());
+        }
+        self.root.dir(&self.dest_dir_rel, Missing::Refuse)
+    }
+}
+
+/// Drops the cached handles of `rel`'s top folder and everything below it,
+/// so the next use opens the folders by name again. A cached handle follows
+/// its folder, not the name: once the folder was removed (and maybe made
+/// again), a new file cannot be made in it.
+fn forget_folder(root: &Root, rel: &RelPath) {
+    if let Some(top) = rel.components().next() {
+        root.forget(
+            &RelPath::root()
+                .join(top)
+                .expect("a component of a RelPath is valid"),
+        );
+    }
 }
 
 /// Removes a leftover `.part` of `rel` and its progress record, unless
 /// another writer holds the `.part` (then both stay for that writer).
 pub fn discard_part(
-    root: &Path,
+    root: &Arc<Root>,
     rel: &RelPath,
     partial_dir: Option<&PartialDir>,
     index: &IndexHandle,
 ) -> io::Result<()> {
-    let (_, part) = paths(root, rel, partial_dir)?;
-    match open_regular_nofollow(&part) {
-        Ok(file) => match file.try_lock() {
-            Ok(()) => std::fs::remove_file(&part)?,
-            Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
-            Err(std::fs::TryLockError::Error(e)) => return Err(e),
-        },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+    let place = place(root, rel, partial_dir)?;
+    if let Some(dir) = place.find_part_dir()? {
+        match dir.open_regular(&place.part_name) {
+            Ok((file, _)) => match file.try_lock() {
+                Ok(()) => dir.unlink(&place.part_name)?,
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+                Err(std::fs::TryLockError::Error(e)) => return Err(e),
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
     index
         .lock()
@@ -286,20 +377,6 @@ pub const MAX_CHUNK_LEN: u32 = 1024 * 1024;
 /// The error message when another writer holds the `.part` (`WouldBlock`).
 pub const PART_BUSY: &str = "part file busy";
 
-/// Never follow a symlink at the `.part` name, never block on a FIFO there.
-const PART_FLAGS: i32 = nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC;
-
-fn open_rw(part: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .custom_flags(PART_FLAGS)
-        .open(part)
-        .map_err(|e| nofollow_error(e, part))
-}
-
 /// Add owner read/write to our own open `.part` file (`fchmod`).
 fn make_owner_writable(file: &File) -> io::Result<()> {
     let mode = file.metadata()?.permissions().mode();
@@ -309,30 +386,25 @@ fn make_owner_writable(file: &File) -> io::Result<()> {
 /// A previous `finalize` may have applied a read-only mode to the `.part`
 /// before failing: open it with whatever access the mode still allows
 /// (never following a symlink) and restore owner read/write on that fd.
-fn restore_owner_rw(part: &Path) -> io::Result<()> {
-    let open = |read: bool| {
-        OpenOptions::new()
-            .read(read)
-            .write(!read)
-            .custom_flags(PART_FLAGS)
-            .open(part)
-    };
-    let f = open(true).or_else(|_| open(false))?;
-    require_regular(&f, part)?;
+fn restore_owner_rw(dir: &Dir, name: &OsStr, shown: &Path) -> io::Result<()> {
+    let f = dir.open_any(name)?;
+    require_regular(&f, shown)?;
     make_owner_writable(&f)
 }
 
-/// Open the `.part` read/write without following a symlink at its name
-/// ([`open_locked_part`] checks that it is a regular file). The file is ours (`.irsync.<name>.part`): if a
-/// read-only mode left by a failed finalize is in the way, restore owner
-/// read/write through a descriptor and retry once.
-fn open_part(part: &Path) -> io::Result<File> {
-    let file = match open_rw(part) {
+/// Open the `.part` `name` in `dir` read/write, made if missing, without
+/// following a symlink or blocking on a FIFO at its name
+/// ([`open_locked_part`] checks that it is a regular file). The file is
+/// ours (`.irsync.<name>.part`): if a read-only mode left by a failed
+/// finalize is in the way, restore owner read/write through a descriptor
+/// and retry once.
+fn open_part(dir: &Dir, name: &OsStr, shown: &Path) -> io::Result<File> {
+    let file = match dir.open_rw(name, true) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            if restore_owner_rw(part).is_err() {
+            if restore_owner_rw(dir, name, shown).is_err() {
                 return Err(e);
             }
-            open_rw(part)?
+            dir.open_rw(name, true)?
         }
         r => r?,
     };
@@ -341,15 +413,18 @@ fn open_part(part: &Path) -> io::Result<File> {
 
 /// Whether anything is at the `.part` name (a regular file to adopt, or
 /// something `open_part` will refuse).
-fn part_exists(part: &Path) -> io::Result<bool> {
-    match std::fs::symlink_metadata(part) {
+fn part_exists(place: &Place) -> io::Result<bool> {
+    let Some(dir) = place.find_part_dir()? else {
+        return Ok(false);
+    };
+    match dir.stat(&place.part_name) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
 }
 
-/// Which file a descriptor holds: what its path must still name.
+/// Which file a descriptor holds: what its name must still name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FileId {
     dev: u64,
@@ -363,16 +438,26 @@ impl FileId {
             ino: m.ino(),
         }
     }
+
+    /// The regular file `st` is; `None` for anything else.
+    // `st_dev` and `st_mode` are narrower on macOS.
+    #[allow(clippy::unnecessary_cast)]
+    fn of_regular(st: &FileStat) -> Option<FileId> {
+        let fmt = nix::libc::S_IFMT as u32;
+        ((st.st_mode as u32 & fmt) == nix::libc::S_IFREG as u32).then_some(FileId {
+            dev: st.st_dev as u64,
+            ino: st.st_ino,
+        })
+    }
 }
 
-/// Fails unless the `.part` path still names the file we hold open (`held`),
-/// so a rename by path can only move the file that was verified.
-fn still_same_file(held: FileId, part: &Path) -> io::Result<()> {
-    let now = std::fs::symlink_metadata(part)?;
-    if !now.file_type().is_file() || FileId::of(&now) != held {
+/// Fails unless `name` in `dir` still names the file we hold open
+/// (`held`), so a rename by name can only move the file that was verified.
+fn still_same_file(held: FileId, dir: &Dir, name: &OsStr, shown: &Path) -> io::Result<()> {
+    if FileId::of_regular(&dir.stat(name)?) != Some(held) {
         return Err(io::Error::other(format!(
             "{} was replaced while it was written; not placing it",
-            part.display()
+            shown.display()
         )));
     }
     Ok(())
@@ -401,37 +486,43 @@ fn digest_held(file: &File, activity: &AtomicU64) -> io::Result<FileDigest> {
     ))
 }
 
-/// Whether `part` still names the file held open (`held`).
-fn names_file(held: FileId, part: &Path) -> io::Result<bool> {
-    Ok(match std::fs::symlink_metadata(part) {
-        Ok(now) => now.file_type().is_file() && FileId::of(&now) == held,
+/// Whether `name` in `dir` still names the file held open (`held`).
+fn names_file(held: FileId, dir: &Dir, name: &OsStr) -> io::Result<bool> {
+    Ok(match dir.stat(name) {
+        Ok(now) => FileId::of_regular(&now) == Some(held),
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(e),
     })
 }
 
-/// Opens and locks the `.part`, waiting up to [`BUSY_WAIT`] for another
-/// holder: a finalize that outlived its connection releases the lock when it
-/// finishes. The lock is only kept on a regular file the path still names
-/// (a finalize renames its `.part` away; then a fresh one is opened).
-/// Returns the file's metadata too, read once the lock is held: until then
-/// another writer may still have been growing it.
-fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
+/// Opens and locks the `.part` `name` in `dir`, waiting up to
+/// [`BUSY_WAIT`] for another holder: a finalize that outlived its
+/// connection releases the lock when it finishes. The lock is only kept on
+/// a regular file the name still names (a finalize renames its `.part`
+/// away; then a fresh one is opened). Returns the file's metadata too, read
+/// once the lock is held: until then another writer may still have been
+/// growing it. `shown` is its path, for messages.
+fn open_locked_part(
+    dir: &Dir,
+    name: &OsStr,
+    shown: &Path,
+    activity: &AtomicU64,
+) -> io::Result<(File, std::fs::Metadata)> {
     let start = Instant::now();
     loop {
         // A momentary descriptor shortage is waited out rather than failing
         // the file (see `fs::transient`).
-        let file = crate::fs::transient::retry(|| open_part(part))?;
+        let file = crate::fs::transient::retry(|| open_part(dir, name, shown))?;
         match file.try_lock() {
             Ok(()) => {
                 let meta = file.metadata()?;
                 if !meta.file_type().is_file() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("{} is not a regular file", part.display()),
+                        format!("{} is not a regular file", shown.display()),
                     ));
                 }
-                if names_file(FileId::of(&meta), part)? {
+                if names_file(FileId::of(&meta), dir, name)? {
                     return Ok((file, meta));
                 }
             }
@@ -446,27 +537,66 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std:
             Err(std::fs::TryLockError::Error(e)) => {
                 // macOS refuses to lock a FIFO (ENOTSUP): report what is
                 // there, as the check above does where the lock succeeds.
-                require_regular(&file, part)?;
+                require_regular(&file, shown)?;
                 return Err(e);
             }
         }
     }
 }
 
-/// [`open_locked_part`], creating the `.part`'s directory only when the
-/// open finds it missing: the planner has nearly always made it, and
-/// `create_dir_all` on an existing directory costs a failing mkdir and a
-/// stat per file.
-fn open_part_in_dir(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
-    match open_locked_part(part, activity) {
+/// [`open_locked_part`] in the `.part`'s folder, made if missing. A
+/// cached handle of a folder removed meanwhile (and maybe made again) takes
+/// no new file (`NotFound`): then the folder is opened by name again and
+/// the open tried once more. Returns the folder with the file.
+fn open_part_in_dir(
+    place: &Place,
+    shown: &Path,
+    activity: &AtomicU64,
+) -> io::Result<(Dir, File, std::fs::Metadata)> {
+    let dir = place.part_dir()?;
+    match open_locked_part(&dir, &place.part_name, shown, activity) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if let Some(dir) = part.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            open_locked_part(part, activity)
+            forget_folder(&place.part_root, &place.part_dir_rel);
+            let dir = place.part_dir()?;
+            let (file, meta) = open_locked_part(&dir, &place.part_name, shown, activity)?;
+            Ok((dir, file, meta))
         }
-        r => r,
+        r => r.map(|(file, meta)| (dir, file, meta)),
     }
+}
+
+/// Renames the held `.part` (`held`, in `part_dir`) over the destination,
+/// both through open folders. A destination folder whose cached handle was
+/// removed meanwhile fails with `NotFound` while the `.part` is still
+/// there: then it is opened by name again and the rename tried once more.
+fn rename_into_place(
+    place: &Place,
+    part_dir: &Dir,
+    held: FileId,
+    part: &Path,
+    dest: &Path,
+) -> io::Result<()> {
+    let rename = |dest_dir: Dir| part_dir.rename(&place.part_name, &dest_dir, &place.dest_name);
+    let mut res = place.dest_dir(part_dir).and_then(rename);
+    if matches!(&res, Err(e) if e.kind() == io::ErrorKind::NotFound)
+        && !place.same_dir()
+        && names_file(held, part_dir, &place.part_name)?
+    {
+        forget_folder(&place.root, &place.dest_dir_rel);
+        res = place.dest_dir(part_dir).and_then(rename);
+    }
+    res.map_err(|e| {
+        if e.raw_os_error() == Some(nix::libc::EISDIR) {
+            return io::Error::other(format!(
+                "refusing to replace directory {} with a file",
+                dest.display()
+            ));
+        }
+        io::Error::new(
+            e.kind(),
+            format!("rename {} -> {}: {e}", part.display(), dest.display()),
+        )
+    })
 }
 
 fn read_chunk(file: &File, c: &ChunkRecord) -> io::Result<Vec<u8>> {
@@ -494,7 +624,7 @@ impl FileWriter {
     /// This does blocking I/O and may re-hash a large `.part` file; async callers
     /// should run it inside `tokio::task::spawn_blocking`.
     pub fn open(
-        root: &Path,
+        root: &Arc<Root>,
         rel: &RelPath,
         expected: &FileDigest,
         partial_dir: Option<&PartialDir>,
@@ -514,7 +644,7 @@ impl FileWriter {
     /// [`FileWriter::open`], bumping `activity` on local progress (see the
     /// `activity` field). Waits up to 60 s for a busy `.part` lock.
     pub fn open_tracked(
-        root: &Path,
+        root: &Arc<Root>,
         rel: &RelPath,
         expected: &FileDigest,
         partial_dir: Option<&PartialDir>,
@@ -540,7 +670,7 @@ impl FileWriter {
     /// nothing but the attempt.
     #[allow(clippy::too_many_arguments)]
     pub fn open_from(
-        root: &Path,
+        root: &Arc<Root>,
         rel: &RelPath,
         expected: &FileDigest,
         partial_dir: Option<&PartialDir>,
@@ -550,21 +680,19 @@ impl FileWriter {
         clone: Option<CloneSource<'_>>,
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
-        let (dest, part) = paths(root, rel, partial_dir)?;
+        let place = Arc::new(place(root, rel, partial_dir)?);
         // Nothing to adopt and nothing to clone: the `.part` is opened by
         // the first write (or by `finalize`), so a file waiting for the
         // sender's stream holds no descriptor.
-        if clone.is_none() && !part_exists(&part)? {
-            let mut w = Self::new(
-                rel, dest, part, None, expected, chunks, index, activity, meter,
-            );
+        if clone.is_none() && !part_exists(&place)? {
+            let mut w = Self::new(rel, place, None, expected, chunks, index, activity, meter);
             w.hole_from = 0;
             return Ok(w);
         }
         // One writer per `.part`: a second (another session on the same
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
-        let (file, meta) = open_part_in_dir(&part, &activity)?;
+        let (dir, file, meta) = open_part_in_dir(&place, &place.part_shown(), &activity)?;
         let mut hole_from = meta.len();
         let mut cloned = false;
         if let Some(c) = &clone {
@@ -575,9 +703,8 @@ impl FileWriter {
         }
         let mut w = Self::new(
             rel,
-            dest,
-            part,
-            Some(Arc::new(file)),
+            place,
+            Some((dir, Arc::new(file))),
             expected,
             chunks,
             index,
@@ -609,7 +736,7 @@ impl FileWriter {
     /// caller's gate enforces that); the file is never shrunk before
     /// `finalize`, which also applies metadata without a rename.
     pub fn open_inplace(
-        root: &Path,
+        root: &Arc<Root>,
         rel: &RelPath,
         expected: &FileDigest,
         index: IndexHandle,
@@ -618,8 +745,12 @@ impl FileWriter {
         old: CloneSource<'_>,
     ) -> io::Result<FileWriter> {
         let chunks = native_chunks(expected)?;
-        let (dest, _) = paths(root, rel, None)?;
-        let (file, now) = open_locked_part(&dest, &activity)?;
+        // The file written is the destination itself: its "part" is it.
+        let mut place = place(root, rel, None)?;
+        place.part_name = place.dest_name.clone();
+        let dest = place.dest_shown();
+        let dir = root.dir(&place.dest_dir_rel, Missing::Refuse)?;
+        let (file, now) = open_locked_part(&dir, &place.dest_name, &dest, &activity)?;
         let hashed = old.file.metadata()?;
         if now.ino() != hashed.ino() || now.dev() != hashed.dev() {
             return Err(invalid("destination is no longer the file that was hashed"));
@@ -627,9 +758,8 @@ impl FileWriter {
         let hole_from = now.len();
         let mut w = Self::new(
             rel,
-            dest.clone(),
-            dest,
-            Some(Arc::new(file)),
+            Arc::new(place),
+            Some((dir, Arc::new(file))),
             expected,
             chunks,
             index,
@@ -653,24 +783,27 @@ impl FileWriter {
         Ok(w)
     }
 
-    /// A writer over `chunks` with nothing verified yet; `hole_from`,
+    /// A writer over `chunks` with nothing verified yet, holding `file`
+    /// (the `.part` and its folder) if it is open; `hole_from`,
     /// `held_id`, `held_owner`, `cloned` and `inplace` are set by the caller.
     #[allow(clippy::too_many_arguments)]
     fn new(
         rel: &RelPath,
-        dest: PathBuf,
-        part: PathBuf,
-        file: Option<Arc<File>>,
+        place: Arc<Place>,
+        file: Option<(Dir, Arc<File>)>,
         expected: &FileDigest,
         chunks: Vec<ChunkRecord>,
         index: IndexHandle,
         activity: Arc<AtomicU64>,
         meter: Option<Arc<Meter>>,
     ) -> FileWriter {
+        let (part_dir, file) = file.unzip();
         FileWriter {
             rel: rel.clone(),
-            dest,
-            part,
+            dest: place.dest_shown(),
+            part: place.part_shown(),
+            place,
+            part_dir,
             file,
             held_id: FileId::default(),
             held_owner: (0, 0),
@@ -699,6 +832,8 @@ impl FileWriter {
             fail_at: None,
             #[cfg(feature = "test-hooks")]
             finalize_delay: Duration::ZERO,
+            #[cfg(feature = "test-hooks")]
+            hook: None,
         }
     }
 
@@ -721,21 +856,28 @@ impl FileWriter {
         if let Some(f) = &self.file {
             return Ok(f.clone());
         }
-        let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
-        let (file, meta) =
-            tokio::task::spawn_blocking(move || open_sized_part(&part, size, &activity))
+        let (place, part) = (self.place.clone(), self.part.clone());
+        let (size, activity) = (self.size, self.activity.clone());
+        #[cfg(feature = "test-hooks")]
+        if let Some(h) = &self.hook {
+            h("part-open");
+        }
+        let (dir, file, meta) =
+            tokio::task::spawn_blocking(move || open_sized_part(&place, &part, size, &activity))
                 .await
                 .map_err(io::Error::other)??;
-        Ok(self.opened(file, &meta))
+        Ok(self.opened(dir, file, &meta))
     }
 
-    /// Holds the `.part` [`open_sized_part`] opened, `meta` as it was then.
-    fn opened(&mut self, file: File, meta: &std::fs::Metadata) -> Arc<File> {
+    /// Holds the `.part` [`open_sized_part`] opened in `dir`, `meta` as
+    /// it was then.
+    fn opened(&mut self, dir: Dir, file: File, meta: &std::fs::Metadata) -> Arc<File> {
         self.hole_from = meta.len();
         self.held_id = FileId::of(meta);
         self.held_owner = (meta.uid(), meta.gid());
         let file = Arc::new(file);
         self.file = Some(file.clone());
+        self.part_dir = Some(dir);
         file
     }
 
@@ -891,6 +1033,12 @@ impl FileWriter {
         self.fail_at = Some(idx);
     }
 
+    /// Tell `hook` of the points named at [`WriterHook`].
+    #[cfg(feature = "test-hooks")]
+    pub fn set_hook(&mut self, hook: WriterHook) {
+        self.hook = Some(hook);
+    }
+
     /// Make `finalize` take `delay` longer, as slow storage would (reporting
     /// progress every 250 ms like a long re-hash does).
     #[cfg(feature = "test-hooks")]
@@ -919,8 +1067,13 @@ impl FileWriter {
 
     /// Read chunk `idx`'s bytes from `from` at `offset`, then write them
     /// like `write_copied`, all in one blocking call.
-    pub async fn copy_local(&mut self, idx: u32, from: &Path, offset: u64) -> io::Result<()> {
-        let from = from.to_path_buf();
+    /// `from` is the source's folder and name.
+    pub async fn copy_local(
+        &mut self,
+        idx: u32,
+        from: (Dir, OsString),
+        offset: u64,
+    ) -> io::Result<()> {
         self.put_chunk(idx, Source::Local { from, offset }, false)
             .await
     }
@@ -938,15 +1091,18 @@ impl FileWriter {
         #[cfg(not(feature = "test-hooks"))]
         let inject = false;
         let (held, hole_from, sparse) = (self.file.clone(), self.hole_from, self.sparse);
-        let (part, size, activity) = (self.part.clone(), self.size, self.activity.clone());
+        #[cfg(feature = "test-hooks")]
+        let hook = self.hook.clone();
+        let (place, part) = (self.place.clone(), self.part.clone());
+        let (size, activity) = (self.size, self.activity.clone());
         let (opened, data, hole, res) = tokio::task::spawn_blocking(move || {
             let data = match src {
                 Source::Bytes(data) => data,
                 Source::Local { from, offset } => {
                     let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
                     let mut buf = vec![0u8; c.len as usize];
-                    crate::fs::safe::open_regular_nofollow(&from)?
-                        .read_exact_at(&mut buf, offset)?;
+                    let (dir, name) = from;
+                    dir.open_regular(&name)?.0.read_exact_at(&mut buf, offset)?;
                     if let Some(m) = &meter {
                         m.add(Counter::DiskRead, buf.len() as u64);
                     }
@@ -959,11 +1115,17 @@ impl FileWriter {
             let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
             let opened = match held {
                 Some(_) => None,
-                None => Some(open_sized_part(&part, size, &activity)?),
+                None => {
+                    #[cfg(feature = "test-hooks")]
+                    if let Some(h) = &hook {
+                        h("part-open");
+                    }
+                    Some(open_sized_part(&place, &part, size, &activity)?)
+                }
             };
             let (file, hole_from) = match (&held, &opened) {
                 (Some(f), _) => (&**f, hole_from),
-                (None, Some((f, meta))) => (f, meta.len()),
+                (None, Some((_, f, meta))) => (f, meta.len()),
                 (None, None) => unreachable!("opened above"),
             };
             // A hole (`set_len` past the opened length) already reads as
@@ -980,8 +1142,8 @@ impl FileWriter {
         })
         .await
         .map_err(io::Error::other)??;
-        if let Some((file, meta)) = opened {
-            self.opened(file, &meta);
+        if let Some((dir, file, meta)) = opened {
+            self.opened(dir, file, &meta);
         }
         if let Err(e) = res {
             if let Err(pe) = self.persist().await {
@@ -1193,30 +1355,30 @@ impl Verified {
             w.held_id,
             w.held_owner,
         );
+        let (place, part_dir) = (w.place.clone(), w.part_dir.clone());
         let (entry, opts) = (entry.clone(), *opts);
+        #[cfg(feature = "test-hooks")]
+        let hook = w.hook.clone();
         let placed = tokio::task::spawn_blocking(move || {
             // Metadata goes through the held descriptor; the rename (by
-            // path) only once the path still names that very file. In
-            // place, the file is already at its name. A directory at the
-            // destination fails the rename (`EISDIR`), never replaced.
+            // name, in the held folder) only once the name still names that
+            // very file. In place, the file is already at its name. A
+            // directory at the destination fails the rename (`EISDIR`),
+            // never replaced.
+            let part_dir = part_dir.ok_or_else(|| io::Error::other("internal: .part not open"))?;
             let placed = apply_metadata_fd_owned(&*file, &entry, &opts, held_owner)
-                .and_then(|()| still_same_file(held_id, &part))
+                .and_then(|()| {
+                    #[cfg(feature = "test-hooks")]
+                    if let Some(h) = &hook {
+                        h("place");
+                    }
+                    still_same_file(held_id, &part_dir, &place.part_name, &part)
+                })
                 .and_then(|()| {
                     if inplace {
                         return Ok(());
                     }
-                    std::fs::rename(&part, &dest).map_err(|e| {
-                        if e.raw_os_error() == Some(nix::libc::EISDIR) {
-                            return io::Error::other(format!(
-                                "refusing to replace directory {} with a file",
-                                dest.display()
-                            ));
-                        }
-                        io::Error::new(
-                            e.kind(),
-                            format!("rename {} -> {}: {e}", part.display(), dest.display()),
-                        )
-                    })
+                    rename_into_place(&place, &part_dir, held_id, &part, &dest)
                 });
             if let Err(e) = placed {
                 // The applied mode may lack owner write; keep the .part resumable.
@@ -1275,11 +1437,13 @@ impl Verified {
             w.rel.clone(),
             w.recorded,
         );
+        let (name, part_dir) = (w.place.part_name.clone(), w.part_dir.clone());
         let removed = tokio::task::spawn_blocking(move || {
             // Removed only while it is still the file this writer holds
             // (and has locked); the lock goes with the descriptor after.
-            still_same_file(held_id, &part)?;
-            std::fs::remove_file(&part)?;
+            let part_dir = part_dir.ok_or_else(|| io::Error::other("internal: .part not open"))?;
+            still_same_file(held_id, &part_dir, &name, &part)?;
+            part_dir.unlink(&name)?;
             drop(file);
             if recorded {
                 index
@@ -1302,9 +1466,9 @@ impl Verified {
 /// Where [`FileWriter::put_chunk`] takes a chunk's bytes from.
 enum Source {
     Bytes(Vec<u8>),
-    /// Read at `offset` of the regular file `from`.
+    /// Read at `offset` of the regular file `from` (its folder and name).
     Local {
-        from: PathBuf,
+        from: (Dir, OsString),
         offset: u64,
     },
 }
@@ -1318,19 +1482,20 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
     *blake3::hash(data).as_bytes() == c.hash
 }
 
-/// Opens and locks the `.part` at `part` (creating its directory) and
-/// sizes it to `size`; also returns its metadata from before that: its
-/// length then (another writer may have left bytes there meanwhile, and
-/// below that length nothing is known to be a hole), which file it is and
-/// its owner.
+/// Opens and locks the `.part` of `place` (making its folder) and sizes
+/// it to `size`; also returns its folder, and its metadata from before
+/// that: its length then (another writer may have left bytes there
+/// meanwhile, and below that length nothing is known to be a hole), which
+/// file it is and its owner. `part` is its path, for messages.
 fn open_sized_part(
+    place: &Place,
     part: &Path,
     size: u64,
     activity: &AtomicU64,
-) -> io::Result<(File, std::fs::Metadata)> {
-    let (file, meta) = open_part_in_dir(part, activity)?;
+) -> io::Result<(Dir, File, std::fs::Metadata)> {
+    let (dir, file, meta) = open_part_in_dir(place, part, activity)?;
     file.set_len(size)?;
-    Ok((file, meta))
+    Ok((dir, file, meta))
 }
 
 /// A file [`Verified::commit`] put at its name.

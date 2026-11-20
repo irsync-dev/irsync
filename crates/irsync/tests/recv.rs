@@ -1,13 +1,17 @@
+use irsync::fs::beneath::{Missing, Root};
 use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::symlink;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// ~1.5 MiB of xorshift pseudo-random data, so FastCDC yields several chunks.
 fn content(seed: u64) -> Vec<u8> {
@@ -34,6 +38,8 @@ fn piece<'a>(data: &'a [u8], cl: &FileDigest, idx: usize) -> &'a [u8] {
 struct Env {
     _tmp: tempfile::TempDir,
     root: PathBuf,
+    /// `root`, open.
+    r: Arc<Root>,
     index: IndexHandle,
 }
 
@@ -46,6 +52,7 @@ fn env() -> Env {
     let index = Index::open(&state, &root).unwrap().into_handle();
     Env {
         _tmp: tmp,
+        r: Root::open(&root).unwrap(),
         root,
         index,
     }
@@ -100,7 +107,7 @@ async fn out_of_order_chunks_assemble_byte_exact() {
     let data = content(7);
     let cl = chunk_list(&data);
     assert!(cl.chunks.len() >= 3, "want several chunks");
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert_eq!(w.missing_chunks(), all(&cl));
     let mut order = all(&cl);
     order.reverse();
@@ -127,7 +134,7 @@ async fn received_chunks_are_timed_and_counted_as_hashing() {
     let cl = chunk_list(&data);
     let meter = Meter::new(Side::Client, Role::Receiver, None, true);
     let mut w = FileWriter::open_tracked(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         None,
@@ -149,7 +156,7 @@ async fn received_counts_only_chunks_from_the_sender() {
     let data = content(5);
     let cl = chunk_list(&data);
     assert!(cl.chunks.len() >= 2, "want several chunks");
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     let first = cl.chunks[0].len as u64;
     w.write_copied(0, piece(&data, &cl, 0)).await.unwrap();
     assert_eq!(w.received(), 0);
@@ -166,7 +173,7 @@ async fn finalize_rejects_hash_mismatch_and_leaves_no_final_file() {
     let data = content(11);
     let mut cl = chunk_list(&data);
     cl.hash = [0xAB; 32];
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     let err = w
         .finalize(&entry(data.len() as u64), &OPTS)
@@ -193,13 +200,13 @@ async fn adopts_partial_from_previous_writer() {
     let evens: Vec<u32> = (0..n).filter(|i| i % 2 == 0).collect();
     let odds: Vec<u32> = (0..n).filter(|i| i % 2 == 1).collect();
     {
-        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
         write_all(&mut w, &data, &cl, &evens).await;
     }
     let p = e.index.lock().unwrap().partial(&rel()).unwrap().unwrap();
     assert_eq!(p.size, data.len() as u64);
 
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert_eq!(w.missing_chunks(), odds);
     write_all(&mut w, &data, &cl, &odds).await;
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
@@ -208,14 +215,14 @@ async fn adopts_partial_from_previous_writer() {
     // A recorded range whose bytes were corrupted behind the record's back is dropped.
     let rel2 = RelPath::new(b"dir/g.bin").unwrap();
     {
-        let mut w = FileWriter::open(&e.root, &rel2, &cl, None, e.index.clone()).unwrap();
+        let mut w = FileWriter::open(&e.r, &rel2, &cl, None, e.index.clone()).unwrap();
         write_all(&mut w, &data, &cl, &[0, 1]).await;
     }
     let part2 = e.root.join("dir/.irsync.g.bin.part");
     let mut bytes = fs::read(&part2).unwrap();
     bytes[cl.chunks[1].offset as usize] ^= 0xFF;
     fs::write(&part2, &bytes).unwrap();
-    let w = FileWriter::open(&e.root, &rel2, &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel2, &cl, None, e.index.clone()).unwrap();
     assert_eq!(w.missing_chunks(), (1..n).collect::<Vec<_>>());
 }
 
@@ -229,7 +236,7 @@ async fn adopts_unrecorded_part_file_by_rechunking() {
     // A .part holding exactly the first two chunks, with no index record.
     let cut = cl.chunks[2].offset as usize;
     fs::write(part_path(&e.root), &data[..cut]).unwrap();
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert_eq!(w.missing_chunks(), (2..n).collect::<Vec<_>>());
     assert_eq!(w.have().ranges.len(), 1);
     assert_eq!(w.have().ranges[0].offset, 0);
@@ -245,7 +252,7 @@ async fn write_error_keeps_partial_and_no_final_file() {
     let e = env();
     let data = content(29);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     w.fail_write_at(2);
     write_all(&mut w, &data, &cl, &[0, 1]).await;
     let written = w.bytes_written();
@@ -271,7 +278,7 @@ async fn finalize_applies_mtime_and_mode() {
     let cl = chunk_list(&data);
     // An existing regular file at the destination is replaced atomically.
     fs::write(final_path(&e.root), b"old").unwrap();
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     let mut ent = entry(data.len() as u64);
     ent.mode = 0o100640;
@@ -290,7 +297,7 @@ async fn finalize_refuses_incomplete_and_directory_destination() {
     let e = env();
     let data = content(37);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &[0]).await;
     let err = w
         .finalize(&entry(data.len() as u64), &OPTS)
@@ -300,7 +307,7 @@ async fn finalize_refuses_incomplete_and_directory_destination() {
     assert!(!final_path(&e.root).exists());
 
     fs::create_dir_all(final_path(&e.root).join("sub")).unwrap();
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert_eq!(
         w.missing_chunks(),
         (1..cl.chunks.len() as u32).collect::<Vec<_>>()
@@ -325,13 +332,17 @@ async fn partial_dir_and_copy_local() {
     let src = e.root.join("src.bin");
     fs::write(&src, &data).unwrap();
     let pd = e.root.join(".partials");
-    let pdir = irsync::recv::PartialDir::new(&pd);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
+    let pdir = irsync::recv::PartialDir::new(e.r.clone(), RelPath::new(b".partials").unwrap());
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
+    let from = || {
+        let dir = e.r.dir(&RelPath::root(), Missing::Refuse).unwrap();
+        (dir, OsString::from("src.bin"))
+    };
     // A wrong source offset is caught by the hash check.
-    let err = w.copy_local(0, &src, 1).await.unwrap_err();
+    let err = w.copy_local(0, from(), 1).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     for (idx, c) in cl.chunks.iter().enumerate() {
-        w.copy_local(idx as u32, &src, c.offset).await.unwrap();
+        w.copy_local(idx as u32, from(), c.offset).await.unwrap();
     }
     assert!(pd.join("dir/.irsync.f.bin.part").exists());
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
@@ -345,7 +356,7 @@ async fn missing_directory_is_created_at_the_first_write() {
     let data = content(43);
     let cl = chunk_list(&data);
     let rel = RelPath::new(b"new/sub/f.bin").unwrap();
-    let mut w = FileWriter::open(&e.root, &rel, &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel, &cl, None, e.index.clone()).unwrap();
     // Nothing is created until the `.part` is opened.
     assert!(!e.root.join("new").exists());
     write_all(&mut w, &data, &cl, &all(&cl)).await;
@@ -360,7 +371,7 @@ async fn read_only_mode_with_dir_dest_stays_resumable() {
     let data = content(43);
     let cl = chunk_list(&data);
     fs::create_dir_all(final_path(&e.root)).unwrap();
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     let mut ent = entry(data.len() as u64);
     ent.mode = 0o100444;
@@ -373,12 +384,12 @@ async fn read_only_mode_with_dir_dest_stays_resumable() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o644, "{mode:o}");
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
     // Even a .part left read-only by an older failure is reopened.
     drop(w);
     fs::set_permissions(part_path(&e.root), fs::Permissions::from_mode(0o444)).unwrap();
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
 }
 
@@ -408,7 +419,7 @@ async fn record_covering_part_of_a_chunk_does_not_adopt_it() {
             },
         )
         .unwrap();
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert_eq!(
         w.missing_chunks(),
         (1..cl.chunks.len() as u32).collect::<Vec<_>>()
@@ -420,7 +431,7 @@ async fn wrong_length_chunk_is_rejected() {
     let e = env();
     let data = content(53);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     let p = piece(&data, &cl, 0);
     let err = w.write_chunk(0, &p[..p.len() - 1]).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
@@ -442,7 +453,7 @@ async fn oversized_chunk_in_list_is_rejected() {
             hash,
         }],
     };
-    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+    let err = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone())
         .err()
         .expect("oversized chunk must be refused");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
@@ -457,7 +468,7 @@ async fn symlink_at_destination_is_replaced_and_target_untouched() {
     let target = e.root.join("target.txt");
     fs::write(&target, b"keep me").unwrap();
     symlink(&target, final_path(&e.root)).unwrap();
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
     let m = fs::symlink_metadata(final_path(&e.root)).unwrap();
@@ -471,7 +482,7 @@ async fn zero_size_file_finalizes_empty() {
     let e = env();
     let cl = chunk_list(b"");
     assert!(cl.chunks.is_empty());
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
     w.finalize(&entry(0), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), b"");
@@ -493,7 +504,7 @@ async fn sparse_skips_zero_chunks_of_a_fresh_part() {
     let e = env();
     let data = with_zero_run();
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     w.set_sparse(true);
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
@@ -515,7 +526,7 @@ async fn sparse_never_leaves_stale_bytes_of_an_old_part() {
     let stale = content(99).repeat(3);
     fs::write(part_path(&e.root), &stale).unwrap();
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     w.set_sparse(true);
     let missing = w.missing_chunks();
     write_all(&mut w, &data, &cl, &missing).await;
@@ -535,7 +546,7 @@ async fn part_symlink_is_refused() {
     fs::write(&target, b"keep me").unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
     symlink(&target, part_path(&e.root)).unwrap();
-    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+    let err = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone())
         .err()
         .expect("open through a symlinked .part must fail");
     assert!(err.to_string().contains("symlink"), "{err}");
@@ -549,7 +560,7 @@ async fn part_symlink_is_refused() {
     fs::remove_file(part_path(&e.root)).unwrap();
     let absent = e.root.join("created-through-link");
     symlink(&absent, part_path(&e.root)).unwrap();
-    assert!(FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).is_err());
+    assert!(FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).is_err());
     assert!(fs::symlink_metadata(&absent).is_err());
     assert!(fs::symlink_metadata(part_path(&e.root))
         .unwrap()
@@ -563,7 +574,7 @@ async fn part_that_is_not_a_regular_file_is_refused() {
     let data = content(73);
     let cl = chunk_list(&data);
     nix::unistd::mkfifo(&part_path(&e.root), nix::sys::stat::Mode::S_IRWXU).unwrap();
-    let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
+    let err = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone())
         .err()
         .expect("a FIFO at the .part name must be refused");
     assert!(err.to_string().contains("not a regular file"), "{err}");
@@ -574,7 +585,7 @@ async fn part_swapped_before_rename_is_not_placed() {
     let e = env();
     let data = content(79);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     // Someone replaces the `.part` path while the writer holds the file.
     fs::remove_file(part_path(&e.root)).unwrap();
@@ -595,7 +606,7 @@ async fn temp_named_destination_is_refused() {
     let cl = chunk_list(&data);
     for name in [&b"dir/.irsync.x.part"[..], b"dir/.irsync.x.tmp"] {
         let rel = RelPath::new(name).unwrap();
-        assert!(FileWriter::open(&e.root, &rel, &cl, None, e.index.clone()).is_err());
+        assert!(FileWriter::open(&e.r, &rel, &cl, None, e.index.clone()).is_err());
     }
     assert_eq!(fs::read_dir(e.root.join("dir")).unwrap().count(), 0);
 }
@@ -605,11 +616,11 @@ async fn second_writer_waits_and_never_takes_a_placed_file() {
     let e = env();
     let data = content(89);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     // The first write creates and locks the `.part`; a second writer on
     // the same .part then waits for the lock...
     w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap();
-    let (root, cl2, index) = (e.root.clone(), cl.clone(), e.index.clone());
+    let (root, cl2, index) = (e.r.clone(), cl.clone(), e.index.clone());
     let second =
         tokio::task::spawn_blocking(move || FileWriter::open(&root, &rel(), &cl2, None, index));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -629,7 +640,7 @@ async fn busy_part_waits_for_previous_holder() {
     let e = env();
     let data = content(97);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap();
     // The previous connection's writer (e.g. a finalize that outlived it)
     // lets go after 2 s.
@@ -638,7 +649,7 @@ async fn busy_part_waits_for_previous_holder() {
         drop(w);
     });
     let start = std::time::Instant::now();
-    let (root, index) = (e.root.clone(), e.index.clone());
+    let (root, index) = (e.r.clone(), e.index.clone());
     let w2 = tokio::task::spawn_blocking(move || FileWriter::open(&root, &rel(), &cl, None, index))
         .await
         .unwrap()
@@ -726,7 +737,7 @@ async fn finalize_does_not_read_the_part_file_back() {
     let e = env();
     let data = content(13);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     // Every byte was verified in memory and the whole-file hash is folded
     // from those bytes: a byte changed on disk behind the writer's back is
@@ -756,6 +767,7 @@ fn env_in_target() -> Env {
     let index = Index::open(&state, &root).unwrap().into_handle();
     Env {
         _tmp: tmp,
+        r: Root::open(&root).unwrap(),
         root,
         index,
     }
@@ -799,7 +811,7 @@ async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them(
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
     let mut w = FileWriter::open_from(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         None,
@@ -836,11 +848,11 @@ async fn clone_is_skipped_when_a_part_already_holds_progress() {
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
     let old_cl = chunk_list(&content(63));
     {
-        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
         write_all(&mut w, &data, &cl, &[0]).await;
     }
     let w = FileWriter::open_from(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         None,
@@ -871,7 +883,7 @@ async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
     let mut w = FileWriter::open_from(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         None,
@@ -905,7 +917,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
     let ino = fs::metadata(final_path(&e.root)).unwrap().ino();
     let mut w = FileWriter::open_inplace(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         e.index.clone(),
@@ -938,7 +950,7 @@ async fn open_inplace_shrinks_the_file_only_at_finalize() {
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
     let mut w = FileWriter::open_inplace(
-        &e.root,
+        &e.r,
         &rel(),
         &cl,
         e.index.clone(),
@@ -967,7 +979,7 @@ async fn open_inplace_refuses_a_destination_that_is_not_the_hashed_file() {
     fs::write(&other, &old).unwrap();
     let other_file = fs::File::open(&other).unwrap();
     let err = FileWriter::open_inplace(
-        &e.root,
+        &e.r,
         &rel(),
         &old_cl,
         e.index.clone(),
@@ -985,7 +997,7 @@ async fn fresh_writer_creates_the_part_only_on_its_first_chunk() {
     let e = env();
     let data = content(47);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     // Nothing on disk until there is something to write: a file waiting
     // for the sender's stream holds no descriptor.
     assert!(
@@ -1007,7 +1019,7 @@ async fn fresh_empty_file_is_placed_without_a_chunk() {
     let e = env();
     let cl = chunk_list(b"");
     assert!(cl.chunks.is_empty());
-    let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
     w.finalize(&entry(0), &OPTS).await.unwrap();
     assert_eq!(fs::metadata(final_path(&e.root)).unwrap().len(), 0);
@@ -1025,7 +1037,7 @@ async fn a_late_first_chunk_does_not_persist_a_record() {
     let data = content(11);
     let cl = chunk_list(&data);
     assert!(cl.chunks.len() >= 2, "want several chunks");
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, None, e.index.clone()).unwrap();
     tokio::time::advance(std::time::Duration::from_millis(2_100)).await;
     write_all(&mut w, &data, &cl, &[0]).await;
     assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
@@ -1048,7 +1060,7 @@ async fn finalize_flushes_only_when_asked() {
         let cl = chunk_list(&data);
         let meter = Meter::new(Side::Client, Role::Receiver, None, true);
         let mut w = FileWriter::open_tracked(
-            &e.root,
+            &e.r,
             &rel(),
             &cl,
             None,
@@ -1066,4 +1078,52 @@ async fn finalize_flushes_only_when_asked() {
         let flushed = meter.usage().count(Counter::FsyncNanos);
         assert_eq!(flushed > 0, sync, "sync {sync}: {flushed} ns flushing");
     }
+}
+
+#[tokio::test]
+async fn a_255_byte_name_is_placed_through_its_shortened_part() {
+    let e = env();
+    let data = content(101);
+    let cl = chunk_list(&data);
+    let name = vec![b'n'; 255];
+    let rel = RelPath::new(&[b"dir/".as_slice(), &name].concat()).unwrap();
+    let part = e
+        .root
+        .join("dir")
+        .join(OsStr::from_bytes(&irsync::recv::temp_name(&name, b".part")));
+    let mut w = FileWriter::open(&e.r, &rel, &cl, None, e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    assert!(part.exists());
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(
+        fs::read(e.root.join("dir").join(OsStr::from_bytes(&name))).unwrap(),
+        data
+    );
+    assert!(!part.exists());
+}
+
+#[tokio::test]
+async fn a_partial_dir_on_another_filesystem_keeps_the_part_and_reports_the_rename() {
+    let e = env();
+    let dev = fs::metadata(&e.root).unwrap().dev();
+    let Some(other) = ["/dev/shm"]
+        .iter()
+        .filter_map(|d| tempfile::tempdir_in(d).ok())
+        .find(|t| fs::metadata(t.path()).unwrap().dev() != dev)
+    else {
+        eprintln!("skipped: no second filesystem found");
+        return;
+    };
+    let data = content(103);
+    let cl = chunk_list(&data);
+    let pdir = irsync::recv::PartialDir::new(Root::open(other.path()).unwrap(), RelPath::root());
+    let mut w = FileWriter::open(&e.r, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
+    write_all(&mut w, &data, &cl, &all(&cl)).await;
+    let err = w
+        .finalize(&entry(data.len() as u64), &OPTS)
+        .await
+        .expect_err("a rename across filesystems fails");
+    assert!(err.to_string().contains("rename"), "{err}");
+    assert!(other.path().join("dir/.irsync.f.bin.part").exists());
+    assert!(!final_path(&e.root).exists());
 }

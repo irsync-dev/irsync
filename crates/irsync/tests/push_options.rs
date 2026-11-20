@@ -211,6 +211,50 @@ async fn push_with_a_relative_partial_dir_keeps_parts_under_the_destination_root
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pull_with_an_absolute_partial_dir_through_a_symlink_works() {
+    within30(async {
+        // A pull may keep its parts in a folder of the user's choosing,
+        // reached through a symlink (as `/tmp` is on macOS) and made if
+        // missing.
+        let h = Harness::new().await;
+        let (real, links) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::os::unix::fs::symlink(real.path(), links.path().join("p")).unwrap();
+        let pd = links.path().join("p/sub");
+        let o = opts(&["--partial-dir", pd.to_str().unwrap()]);
+        for i in 0..8u8 {
+            fs::write(h.export.path().join(format!("f{i}")), vec![i; 2 << 20]).unwrap();
+        }
+        // Bounded, the drop lands with some files done and others half.
+        h.daemon.sender_parallel(2);
+        h.daemon.fault.drop_after_bytes(9 << 20);
+        let ropts = irsync::session::reconnect::ReconnectOpts {
+            max: Duration::ZERO,
+            ..Default::default()
+        };
+        let (res, _) = h.run_reconnect(&o, Flow::Pull, ropts, h.local_side()).await;
+        assert!(res.is_err(), "the drop should have ended the session");
+        assert!(h.daemon.fault.fired());
+        let parts: Vec<String> = fs::read_dir(real.path().join("sub"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!parts.is_empty(), "no .part was kept in the partial dir");
+        assert!(parts.iter().all(|n| n.ends_with(".part")), "{parts:?}");
+        // The next run resumes from them and finishes.
+        let out = h.run(&o, Flow::Pull).await.unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_eq!(fs::read_dir(real.path().join("sub")).unwrap().count(), 0);
+        for i in 0..8u8 {
+            assert_eq!(
+                fs::read(h.local.path().join(format!("f{i}"))).unwrap(),
+                vec![i; 2 << 20]
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_without_perms_or_times_leaves_them_to_the_daemon() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     within30(async {

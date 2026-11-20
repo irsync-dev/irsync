@@ -85,7 +85,7 @@ pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
 
 /// A chunk one of the receiver's own files holds: its index in the chunk
 /// list, the file (absolute) and the chunk's offset in that file.
-pub(super) type LocalChunk = (u32, PathBuf, u64);
+pub(super) type LocalChunk = (u32, RelPath, u64);
 
 /// A basis to offer for a chunk: its index, and the region of the old file
 /// (offset, length) to sign for it.
@@ -429,10 +429,10 @@ pub(super) async fn open_writer(
         verify_whole = false;
     }
     let (base, rel, index, pd, activity, meter) = (
-        ctx.base.clone(),
+        ctx.base_root.clone(),
         key.clone(),
         ctx.index().clone(),
-        ctx.partial_dir_from_base(),
+        ctx.partial_dir_from_base()?,
         ctx.activity.clone(),
         Some(ctx.meter.clone()),
     );
@@ -497,6 +497,11 @@ pub(super) async fn open_writer(
     if w.inplace() {
         ctx.hooks.event("inplace", &path);
     }
+    #[cfg(feature = "test-hooks")]
+    if let Some(f) = ctx.hooks.on_event.clone() {
+        let p = path.clone();
+        w.set_hook(Arc::new(move |what| f(what, &p)));
+    }
     w.set_sparse(sparse);
     w.set_verify_whole(verify_whole);
     w.set_sync(ctx.opts.fsync);
@@ -512,7 +517,7 @@ pub(super) async fn open_writer(
                     {
                         remote.push(idx)
                     }
-                    Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
+                    Some((p, off)) => local.push((idx, p, off)),
                     None => remote.push(idx),
                 }
             }
@@ -844,13 +849,13 @@ pub(super) async fn settle_identical(
 ) -> Result<(), FinalizeError> {
     let apply = ctx.apply_opts(&entry);
     let (base, key, index, pd) = (
-        ctx.base.clone(),
+        ctx.base_root.clone(),
         ctx.key(&path),
         ctx.index().clone(),
         ctx.partial_dir_from_base(),
     );
     blocking(move || {
-        if let Err(e) = discard_part(&base, &key, pd.as_ref(), &index) {
+        if let Err(e) = pd.and_then(|pd| discard_part(&base, &key, pd.as_ref(), &index)) {
             tracing::warn!(?key, error = %e, "discarding a stale partial file failed");
         }
         apply_metadata_fd(&file, &entry, &apply)
@@ -904,7 +909,7 @@ pub(super) async fn copy_local_chunks(
         let data = if alone {
             None
         } else {
-            match read_local(from.clone(), offset, len, ctx.meter.clone()).await {
+            match read_local(ctx.full_key(&from), offset, len, ctx.meter.clone()).await {
                 Ok(d) => Some(d),
                 Err(e) => {
                     tracing::debug!(from = ?from, idx, error = %e, "local copy failed");
@@ -926,7 +931,10 @@ pub(super) async fn copy_local_chunks(
             Some(data) => write_into(&ctx, &route, w, idx, data, false).await,
             None => {
                 let was_open = w.is_open();
-                let res = w.copy_local(idx, &from, offset).await;
+                let res = match ctx.parent_key(&from, crate::fs::beneath::Missing::Refuse) {
+                    Ok(dir_name) => w.copy_local(idx, dir_name, offset).await,
+                    Err(e) => Err(e),
+                };
                 if !was_open && w.is_open() {
                     ctx.hooks.event("open", &route.path);
                 }

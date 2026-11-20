@@ -7,7 +7,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{symlink, MetadataExt};
+use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -296,16 +296,17 @@ fn swap_d(export: &Path, outside: &Path) {
 }
 
 /// A hook that swaps `d` (once) when the event `what` is recorded for
-/// `d/secret`; `fired` says it did.
+/// `at`; `fired` says it did.
 fn swap_on(
     what: &'static str,
+    at: &'static [u8],
     export: &Path,
     outside: &Path,
     fired: &Arc<AtomicBool>,
 ) -> irsync::session::EventHook {
     let (export, outside, fired) = (export.to_path_buf(), outside.to_path_buf(), fired.clone());
     Arc::new(move |event: &str, path: &RelPath| {
-        if event == what && path.as_bytes() == b"d/secret" && !fired.swap(true, Ordering::SeqCst) {
+        if event == what && path.as_bytes() == at && !fired.swap(true, Ordering::SeqCst) {
             swap_d(&export, &outside);
         }
     })
@@ -346,7 +347,13 @@ async fn pull_swap_before_hashing_sends_nothing_from_outside() {
     let h = Harness::new().await;
     let outside = plant_secret(h.export.path());
     let fired = Arc::new(AtomicBool::new(false));
-    let hook = swap_on("hash-open", h.export.path(), outside.path(), &fired);
+    let hook = swap_on(
+        "hash-open",
+        b"d/secret",
+        h.export.path(),
+        outside.path(),
+        &fired,
+    );
     let out = pull_with_hook(&h, hook, None).await;
     assert!(fired.load(Ordering::SeqCst), "the hook never fired");
     assert_nothing_from_outside(h.local.path(), &out);
@@ -357,7 +364,13 @@ async fn pull_swap_before_sending_sends_nothing_from_outside() {
     let h = Harness::new().await;
     let outside = plant_secret(h.export.path());
     let fired = Arc::new(AtomicBool::new(false));
-    let hook = swap_on("send-open", h.export.path(), outside.path(), &fired);
+    let hook = swap_on(
+        "send-open",
+        b"d/secret",
+        h.export.path(),
+        outside.path(),
+        &fired,
+    );
     // No folder cache: the hashing would otherwise leave `d` open, and the
     // send would read the real folder through that handle (see the next
     // test). Without it, the send walks from the root again.
@@ -371,7 +384,13 @@ async fn pull_swap_before_sending_reads_the_folder_already_open() {
     let h = Harness::new().await;
     let outside = plant_secret(h.export.path());
     let fired = Arc::new(AtomicBool::new(false));
-    let hook = swap_on("send-open", h.export.path(), outside.path(), &fired);
+    let hook = swap_on(
+        "send-open",
+        b"d/secret",
+        h.export.path(),
+        outside.path(),
+        &fired,
+    );
     let out = pull_with_hook(&h, hook, None).await;
     assert!(fired.load(Ordering::SeqCst), "the hook never fired");
     // The folder was opened to hash the file: the send goes on through
@@ -441,4 +460,211 @@ async fn each_session_opens_the_local_folder_anew() {
         .expect("second push");
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     assert_eq!(fs::read(h.export.path().join("b")).unwrap(), b"second");
+}
+
+/// An outside folder holding `keep` (`keep me`, mode 0o600), where a
+/// swapped folder would lead.
+fn canary() -> tempfile::TempDir {
+    let outside = tempfile::tempdir().unwrap();
+    let keep = outside.path().join("keep");
+    fs::write(&keep, b"keep me").unwrap();
+    fs::set_permissions(&keep, fs::Permissions::from_mode(0o600)).unwrap();
+    outside
+}
+
+/// The canary is as it was: only `keep`, with its content and mode.
+fn assert_canary(outside: &Path) {
+    let names: Vec<_> = fs::read_dir(outside)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["keep"], "something appeared outside the export");
+    let keep = outside.join("keep");
+    assert_eq!(fs::read(&keep).unwrap(), b"keep me");
+    assert_eq!(fs::metadata(&keep).unwrap().mode() & 0o7777, 0o600);
+}
+
+/// Pushes with `hook` on the daemon.
+async fn push_with_hook(
+    h: &Harness,
+    hook: Option<irsync::session::EventHook>,
+    opts: &irsync::cli::SyncOptions,
+) -> irsync::session::Outcome {
+    h.daemon.hooks.lock().unwrap().on_event = hook;
+    within30(h.run_side(opts, Flow::Push, h.local_side()))
+        .await
+        .expect("push")
+}
+
+/// Some bytes to push, `n` long.
+fn bytes(n: usize, seed: u8) -> Vec<u8> {
+    (0..n).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
+}
+
+/// The pushed `d/x` either failed or went into the real folder, now
+/// `d.real`.
+fn x_failed_or_inside(h: &Harness, out: &irsync::session::Outcome, want: &[u8]) {
+    let inside = fs::read(h.export.path().join("d.real/x")).ok();
+    assert!(
+        inside.as_deref() == Some(want) || out.errors.iter().any(|(p, _)| p.as_bytes() == b"d/x"),
+        "{:?}",
+        out.errors
+    );
+}
+
+#[tokio::test]
+async fn push_swap_before_the_first_write_stays_inside() {
+    let h = Harness::new().await;
+    let outside = canary();
+    let data = bytes(200_000, 1);
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    fs::write(h.local.path().join("d/x"), &data).unwrap();
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("part-open", b"d/x", h.export.path(), outside.path(), &fired);
+    let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_canary(outside.path());
+    x_failed_or_inside(&h, &out, &data);
+}
+
+#[tokio::test]
+async fn push_swap_before_placing_stays_inside() {
+    let h = Harness::new().await;
+    let outside = canary();
+    let data = bytes(200_000, 2);
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    fs::write(h.local.path().join("d/x"), &data).unwrap();
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("place", b"d/x", h.export.path(), outside.path(), &fired);
+    let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_canary(outside.path());
+    x_failed_or_inside(&h, &out, &data);
+}
+
+#[tokio::test]
+async fn push_inplace_swap_stays_inside() {
+    let h = Harness::new().await;
+    let outside = canary();
+    let (old, mut new) = (bytes(300_000, 3), bytes(300_000, 3));
+    new[150_000..150_100].fill(7);
+    for (root, data) in [(h.export.path(), &old), (h.local.path(), &new)] {
+        fs::create_dir(root.join("d")).unwrap();
+        fs::write(root.join("d/x"), data).unwrap();
+    }
+    fs::File::options()
+        .write(true)
+        .open(h.export.path().join("d/x"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+        .unwrap();
+    let fired = Arc::new(AtomicBool::new(false));
+    let hook = swap_on("inplace", b"d/x", h.export.path(), outside.path(), &fired);
+    let mut opts = archive_opts();
+    opts.inplace = true;
+    let out = push_with_hook(&h, Some(hook), &opts).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert_canary(outside.path());
+    x_failed_or_inside(&h, &out, &new);
+}
+
+fn with_partial_dir(dir: &str) -> irsync::cli::SyncOptions {
+    let mut opts = archive_opts();
+    opts.partial_dir = Some(dir.into());
+    opts
+}
+
+#[tokio::test]
+async fn partial_dir_that_is_a_symlink_is_refused() {
+    let h = Harness::new().await;
+    let outside = canary();
+    symlink(outside.path(), h.export.path().join(".p")).unwrap();
+    for name in ["a", "b"] {
+        fs::write(h.local.path().join(name), bytes(100_000, 4)).unwrap();
+    }
+    let out = push_with_hook(&h, None, &with_partial_dir(".p")).await;
+    for name in [b"a", b"b"] {
+        assert!(
+            has_error(&out, name, "symlink or not a directory"),
+            "{:?}",
+            out.errors
+        );
+    }
+    assert_canary(outside.path());
+}
+
+#[tokio::test]
+async fn a_symlink_below_the_partial_dir_is_refused() {
+    let h = Harness::new().await;
+    let outside = canary();
+    fs::create_dir(h.export.path().join(".p")).unwrap();
+    symlink(outside.path(), h.export.path().join(".p/sub")).unwrap();
+    fs::create_dir(h.local.path().join("sub")).unwrap();
+    fs::write(h.local.path().join("sub/x"), bytes(100_000, 5)).unwrap();
+    let out = push_with_hook(&h, None, &with_partial_dir(".p")).await;
+    assert!(
+        has_error(&out, b"sub/x", "symlink or not a directory"),
+        "{:?}",
+        out.errors
+    );
+    assert!(!h.export.path().join("sub/x").exists());
+    assert_canary(outside.path());
+}
+
+#[tokio::test]
+async fn a_folder_made_again_mid_session_still_takes_files() {
+    // The writer keeps its folders open: `d` removed and made again
+    // between two files must not leave the second writing into the
+    // removed folder.
+    let h = Harness::new().await;
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    fs::write(h.local.path().join("d/a"), bytes(100_000, 6)).unwrap();
+    fs::write(h.local.path().join("d/b"), bytes(100_000, 7)).unwrap();
+    let export = h.export.path().to_path_buf();
+    let fired = Arc::new(AtomicBool::new(false));
+    let f = fired.clone();
+    let hook: irsync::session::EventHook = Arc::new(move |event: &str, path: &RelPath| {
+        if event == "part-open" && path.as_bytes() == b"d/b" && !f.swap(true, Ordering::SeqCst) {
+            fs::remove_file(export.join("d/a")).unwrap();
+            fs::remove_dir(export.join("d")).unwrap();
+            fs::create_dir(export.join("d")).unwrap();
+        }
+    });
+    h.daemon.hooks.lock().unwrap().max_inflight = Some(1);
+    let out = push_with_hook(&h, Some(hook), &archive_opts()).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(
+        fs::read(h.export.path().join("d/b")).unwrap(),
+        bytes(100_000, 7)
+    );
+}
+
+#[tokio::test]
+async fn a_folder_made_again_before_placing_still_takes_files() {
+    // With the parts kept elsewhere, the destination folder is opened at
+    // the rename: `d` removed and made again after the first file was
+    // placed must still take the second.
+    let h = Harness::new().await;
+    fs::create_dir(h.local.path().join("d")).unwrap();
+    fs::write(h.local.path().join("d/a"), bytes(100_000, 8)).unwrap();
+    fs::write(h.local.path().join("d/b"), bytes(100_000, 9)).unwrap();
+    let export = h.export.path().to_path_buf();
+    let fired = Arc::new(AtomicBool::new(false));
+    let f = fired.clone();
+    let hook: irsync::session::EventHook = Arc::new(move |event: &str, path: &RelPath| {
+        if event == "place" && path.as_bytes() == b"d/b" && !f.swap(true, Ordering::SeqCst) {
+            fs::remove_file(export.join("d/a")).unwrap();
+            fs::remove_dir(export.join("d")).unwrap();
+            fs::create_dir(export.join("d")).unwrap();
+        }
+    });
+    h.daemon.hooks.lock().unwrap().max_inflight = Some(1);
+    let out = push_with_hook(&h, Some(hook), &with_partial_dir(".p")).await;
+    assert!(fired.load(Ordering::SeqCst), "the hook never fired");
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(
+        fs::read(h.export.path().join("d/b")).unwrap(),
+        bytes(100_000, 9)
+    );
 }

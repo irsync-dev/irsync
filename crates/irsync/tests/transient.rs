@@ -133,7 +133,8 @@ async fn a_writer_opens_its_part_once_descriptors_free_up() {
     let data = vec![7u8; 100_000];
     let cl = digest_bytes(&data);
     let rel = RelPath::new(b"f.bin").unwrap();
-    let mut w = FileWriter::open(&root, &rel, &cl, None, index).unwrap();
+    let r = irsync::fs::beneath::Root::open(&root).unwrap();
+    let mut w = FileWriter::open(&r, &rel, &cl, None, index).unwrap();
     let first = cl.chunks[0].len as usize;
 
     let held = exhaust_descriptors();

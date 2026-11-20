@@ -382,6 +382,9 @@ pub(super) struct Ctx {
     pub base_root: Arc<Root>,
     /// The open session root (`root`): listing paths are relative to it.
     pub session_root: Arc<Root>,
+    /// A client receiving with a `--partial-dir` outside its folder
+    /// (absolute, or leading out of it): that folder, opened for the session.
+    pub partial_root: Option<Arc<Root>>,
     pub scope: IndexScope,
     pub hasher: Arc<Hasher>,
     /// A second hasher that always re-reads (used after a file changed).
@@ -441,18 +444,35 @@ impl Ctx {
 
     /// `--partial-dir` for a file writer, which works from `base` with index
     /// keys: the option is relative to the session root, so the root's path
-    /// below `base` is put in front (nothing, when they are the same).
-    pub fn partial_dir_from_base(&self) -> Option<crate::recv::PartialDir> {
-        let pd = self.opts.partial_dir.as_deref()?;
+    /// below `base` is put in front (nothing, when they are the same). One
+    /// outside the session root is its own root ([`Ctx::partial_root`]).
+    pub fn partial_dir_from_base(&self) -> io::Result<Option<crate::recv::PartialDir>> {
+        let Some(pd) = self.opts.partial_dir.as_deref() else {
+            return Ok(None);
+        };
         let below = self.root.strip_prefix(&self.base).unwrap_or(Path::new(""));
-        Some(crate::recv::PartialDir {
-            dir: if pd.is_absolute() {
-                pd.to_path_buf()
-            } else {
-                below.join(pd)
-            },
-            skip: below.components().count(),
-        })
+        let skip = below.components().count();
+        if let Some(root) = &self.partial_root {
+            return Ok(Some(crate::recv::PartialDir {
+                root: root.clone(),
+                dir: RelPath::root(),
+                skip,
+            }));
+        }
+        let dir = RelPath::new(below.join(pd).as_os_str().as_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "--partial-dir {} is not a path below the root",
+                    pd.display()
+                ),
+            )
+        })?;
+        Ok(Some(crate::recv::PartialDir {
+            root: self.base_root.clone(),
+            dir,
+            skip,
+        }))
     }
 
     /// Absolute path of an index key, for messages and logging only: open
@@ -488,7 +508,6 @@ impl Ctx {
     }
 
     /// The same for an index key, below `base_root`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn parent_key(
         &self,
         key: &RelPath,
@@ -798,6 +817,27 @@ pub(super) async fn run_client_inner(
         .await
         .with_context(|| format!("creating {}", local.root.display()))?;
     }
+    // A `--partial-dir` outside the local folder is a folder the user
+    // chose too: made if missing and opened once, here, for the session.
+    let partial_root = match opts.partial_dir.as_deref() {
+        Some(pd)
+            if !sends && (pd.is_absolute() || RelPath::new(pd.as_os_str().as_bytes()).is_err()) =>
+        {
+            let path = local.root.join(pd);
+            let root = Root::lazy_with_cache(&path, cache);
+            if !opts.dry_run {
+                let (p, open) = (path.clone(), root.clone());
+                blocking(move || {
+                    std::fs::create_dir_all(&p)?;
+                    open.dir(&RelPath::root(), beneath::Missing::Refuse)
+                })
+                .await
+                .with_context(|| format!("creating --partial-dir {}", path.display()))?;
+            }
+            Some(root)
+        }
+        _ => None,
+    };
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = local.hasher.activity().clone();
@@ -881,6 +921,7 @@ pub(super) async fn run_client_inner(
         // The client's index is for its own folder: both roots are the same.
         base_root: local_root.clone(),
         session_root: local_root,
+        partial_root,
         scope: IndexScope::new(index, RelPath::root()),
         hasher,
         forced,
@@ -1411,6 +1452,7 @@ async fn serve_daemon_inner(
         base: export_root,
         base_root: export,
         session_root,
+        partial_root: None,
         scope: IndexScope::new(index, rel),
         hasher,
         forced,
@@ -1953,6 +1995,7 @@ pub(super) async fn test_ctx() -> TestCtx {
         base: root.path().to_path_buf(),
         base_root: Root::open(root.path()).unwrap(),
         session_root: Root::open(root.path()).unwrap(),
+        partial_root: None,
         scope: IndexScope::new(index, RelPath::root()),
         hasher: hasher.clone(),
         forced: hasher.clone(),
