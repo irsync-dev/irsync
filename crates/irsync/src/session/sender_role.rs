@@ -41,7 +41,6 @@ use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};
 use crate::fs::clone::{Cloned, Clones};
-use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
 use crate::scan::{ScanItem, ScanSummary};
@@ -416,7 +415,8 @@ impl SenderRole {
                         None => {
                             let (base, rel) = (ctx.base.clone(), key.clone());
                             let (entry, ctime) =
-                                blocking(move || lstat_entry_with_ctime(&base, &rel)).await?;
+                                blocking(move || crate::fs::meta::lstat_beneath(&base, &rel))
+                                    .await?;
                             if entry.kind() != Kind::Regular {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidInput,
@@ -464,13 +464,15 @@ impl SenderRole {
                     }
                     let digest = if let Some(from) = append_from {
                         // Only the tail: the receiver trusts its prefix.
-                        let full = ctx.full_key(&key);
+                        let (base, local) = (ctx.base.clone(), ctx.local_key(&key));
                         let check = !ctx.hooks.no_change_checks();
                         // Under the hasher's limits, like a whole-file
                         // digest: a receiver must not start more reads at
                         // once by planning files as appends.
                         ctx.hasher
-                            .bounded_read(size, move || tail_digest(&full, &key, from, check))
+                            .bounded_read(size, move || {
+                                tail_digest(&base, &local, &key, from, check)
+                            })
                             .await
                     } else {
                         let since = super::wait_start(&ctx.meter);
@@ -1498,7 +1500,9 @@ impl PlaceCheck {
             return Verdict::Place;
         }
         let (base, rel) = (ctx.base.clone(), self.key.clone());
-        let (entry, ctime) = match blocking(move || lstat_entry_with_ctime(&base, &rel)).await {
+        let (entry, ctime) = match blocking(move || crate::fs::meta::lstat_beneath(&base, &rel))
+            .await
+        {
             Ok(s) => s,
             Err(e) if self.cloned => {
                 tracing::debug!(path = ?self.key, error = %e, "source not found before placing");
@@ -1530,9 +1534,11 @@ impl PlaceCheck {
                 "no longer a regular file",
             ))
         } else if let Some(from) = self.append_from {
-            let (full, key) = (ctx.full_key(&self.key), self.key.clone());
+            let (base, local, key) = (ctx.base.clone(), ctx.local_key(&self.key), self.key.clone());
             ctx.verify
-                .bounded_read(entry.size, move || tail_digest(&full, &key, from, true))
+                .bounded_read(entry.size, move || {
+                    tail_digest(&base, &local, &key, from, true)
+                })
                 .await
         } else {
             let item = ScanItem {
@@ -1560,13 +1566,15 @@ impl PlaceCheck {
 /// whole-file hash. Like [`crate::hasher::Hasher::digest`], it fails if the
 /// file changes while it is read.
 fn tail_digest(
-    full: &std::path::Path,
+    base: &std::path::Path,
+    local: &RelPath,
     key: &RelPath,
     from: u64,
     check: bool,
 ) -> io::Result<Hashed> {
-    // The open's type check already took the file's stat.
-    let (file, st) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+    // The open's type check already took the file's stat. No symlink is
+    // followed on the way from the base.
+    let (file, st) = crate::fs::safe::open_regular_beneath_stat(base, local)?;
     tail_digest_at(file, st, key, from, check)
 }
 
@@ -1637,8 +1645,8 @@ impl Drop for CloseClones {
 /// none can be made the file itself is hashed (and, before placing, hashed
 /// again): never an error.
 async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Option<Arc<Cloned>> {
-    let (clones, full) = (clones?, ctx.full_key(key));
-    match blocking(move || clones.clone_file(&full)).await {
+    let (clones, base, rel) = (clones?, ctx.base.clone(), ctx.local_key(key));
+    match blocking(move || clones.clone_file_beneath(&base, &rel)).await {
         Ok(c) => c.map(Arc::new),
         Err(e) => {
             tracing::debug!(path = ?key, error = %e, "no clone; hashing the file itself");
@@ -1685,7 +1693,7 @@ async fn recheck(
                 .map(|(path, before)| {
                     c.activity
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let found = match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                    let found = match crate::fs::meta::lstat_beneath(&c.base, &c.key(&path)) {
                         Ok((entry, _)) if entry.kind() != Kind::Regular => Rechecked::Vanished,
                         Ok((entry, ctime)) if Freshness::of_entry(&entry, ctime) == before => {
                             Rechecked::Same
@@ -1790,7 +1798,7 @@ async fn check_links(
                     if !admits(&c, &path) {
                         return Some((path, None));
                     }
-                    match lstat_entry_with_ctime(&c.base, &c.key(&path)) {
+                    match crate::fs::meta::lstat_beneath(&c.base, &c.key(&path)) {
                         Ok((e, ctime)) if Freshness::of_entry(&e, ctime) == want => None,
                         Ok((e, _)) if e.kind() == Kind::Regular => Some((path, Some(e))),
                         _ => Some((path, None)),
@@ -2193,6 +2201,7 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::meta::lstat_entry_with_ctime;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
 
     /// Sets its flag when dropped: the task holding it has ended.

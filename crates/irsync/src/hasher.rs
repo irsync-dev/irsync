@@ -444,7 +444,7 @@ impl Hasher {
         drop(queued);
         let index = self.index.clone();
         let stats = self.stats.clone();
-        let full = self.root.join(path.to_os());
+        let root = self.root.clone();
         let force = self.force;
         let activity = self.activity.clone();
         let progress = self.progress.clone();
@@ -462,8 +462,9 @@ impl Hasher {
             if let Some(h) = &hook {
                 h(&path, 0);
             }
-            // Never follow a symlink swapped in since the walk lstat'ed it.
-            let (file, st) = crate::fs::safe::open_regular_nofollow_stat(&full)?;
+            // Never follow a symlink swapped in since the walk lstat'ed it,
+            // as the final name or anywhere on the way from the root.
+            let (file, st) = crate::fs::safe::open_regular_beneath_stat(&root, &path)?;
             let at_open = crate::fs::meta::stat_entry_with_ctime(st, &path);
             let opened = Freshness::of_entry(&at_open.0, at_open.1);
             let (mut entry, ctime) = stat.unwrap_or(at_open);
@@ -542,5 +543,41 @@ mod tests {
         assert_eq!(cached.stat, fresh);
         assert_eq!(cached.digest, read.digest);
         assert_eq!(h.stats().files_hashed.load(Ordering::Relaxed), 1);
+    }
+
+    /// A file is listed, then a directory on the way to it is swapped for
+    /// a link that leads out of the tree, to a file of the same name. The
+    /// file out there is not read: neither hashed nor stat'ed.
+    #[tokio::test]
+    async fn a_directory_swapped_for_a_link_is_not_followed() {
+        let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let state = tempfile::tempdir().unwrap();
+        let index = crate::index::Index::open(state.path(), root.path())
+            .unwrap()
+            .into_handle();
+        let h = Hasher::new(index, root.path().to_path_buf(), 1);
+        std::fs::create_dir(root.path().join("d")).unwrap();
+        std::fs::write(root.path().join("d/passwd"), b"inside").unwrap();
+        std::fs::write(outside.path().join("passwd"), b"secret").unwrap();
+        let path = RelPath::new(b"d/passwd").unwrap();
+        let (entry, ctime) = crate::fs::meta::lstat_beneath(root.path(), &path).unwrap();
+        let fresh = Freshness::of(&ScanItem {
+            path: path.clone(),
+            entry,
+            ctime,
+        });
+
+        std::fs::remove_dir_all(root.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("d/passwd")).unwrap(),
+            b"secret"
+        );
+
+        let err = h.digest_walked(path.clone(), fresh).await.unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        let err = crate::fs::meta::lstat_beneath(root.path(), &path).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(h.stats().files_hashed.load(Ordering::Relaxed), 0);
     }
 }

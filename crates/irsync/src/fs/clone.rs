@@ -178,8 +178,25 @@ impl Clones {
     /// cannot be cloned, no clone folder can be made, or the source kept
     /// changing while it was cloned. Blocking.
     pub fn clone_file(&self, full: &Path) -> io::Result<Option<Cloned>> {
+        self.clone_opened(full, || crate::fs::safe::open_regular_nofollow_stat(full))
+    }
+
+    /// [`Clones::clone_file`] of `base/rel`, with no symlink followed in
+    /// any component of `rel`.
+    pub fn clone_file_beneath(&self, base: &Path, rel: &RelPath) -> io::Result<Option<Cloned>> {
+        let full = base.join(rel.to_os());
+        self.clone_opened(&full, || {
+            crate::fs::safe::open_regular_beneath_stat(base, rel)
+        })
+    }
+
+    fn clone_opened(
+        &self,
+        full: &Path,
+        open: impl Fn() -> io::Result<(File, FileStat)>,
+    ) -> io::Result<Option<Cloned>> {
         for _ in 0..2 {
-            match self.try_clone(full)? {
+            match self.try_clone(full, &open)? {
                 Attempt::Cloned(c) => return Ok(Some(c)),
                 Attempt::NoClone => return Ok(None),
                 Attempt::Changed => {}
@@ -188,11 +205,15 @@ impl Clones {
         Ok(None)
     }
 
-    fn try_clone(&self, full: &Path) -> io::Result<Attempt> {
+    fn try_clone(
+        &self,
+        full: &Path,
+        open: &impl Fn() -> io::Result<(File, FileStat)>,
+    ) -> io::Result<Attempt> {
         if self.closed.load(Ordering::SeqCst) {
             return Ok(Attempt::NoClone);
         }
-        let (src, s1) = crate::fs::safe::open_regular_nofollow_stat(full)?;
+        let (src, s1) = open()?;
         // `st_dev` is narrower on macOS.
         #[allow(clippy::unnecessary_cast)]
         let dev = s1.st_dev as u64;

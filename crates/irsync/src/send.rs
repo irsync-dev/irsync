@@ -307,7 +307,7 @@ impl Sender {
         }
         let ranges = split_ranges(&sorted, digest, self.inner.split_threshold);
         let digest = Arc::new(digest.clone());
-        let full = self.inner.root.join(path.to_os());
+        let root = self.inner.root.clone();
         let name = Arc::new(name);
         let rel = Arc::new(path.clone());
         let bases = Arc::new(bases);
@@ -341,9 +341,9 @@ impl Sender {
                 }
             }
             let inner = self.inner.clone();
-            let (digest, full, clone, name, rel, cancelled, bases, sent) = (
+            let (digest, root, clone, name, rel, cancelled, bases, sent) = (
                 digest.clone(),
-                full.clone(),
+                root.clone(),
                 clone.clone(),
                 name.clone(),
                 rel.clone(),
@@ -361,7 +361,7 @@ impl Sender {
                 let res = inner
                     .send_range(
                         file_id,
-                        &full,
+                        &root,
                         clone.as_deref(),
                         &name,
                         &rel,
@@ -492,7 +492,7 @@ impl Inner {
     async fn send_range(
         &self,
         file_id: u64,
-        full: &Path,
+        root: &Path,
         clone: Option<&Cloned>,
         name: &str,
         rel: &RelPath,
@@ -502,10 +502,11 @@ impl Inner {
         sent: &AtomicU64,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
-        // Never follow a symlink swapped in since the file was listed.
+        // Never follow a symlink swapped in since the file was listed, as
+        // the final name or anywhere on the way from the root.
         let file = match clone {
             Some(c) => c.file.try_clone(),
-            None => crate::fs::safe::open_regular_nofollow(full),
+            None => crate::fs::safe::open_regular_beneath(root, rel),
         };
         let file = Arc::new(file.map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?);
         // Verify the first chunk before opening a stream: the common
