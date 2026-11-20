@@ -208,6 +208,19 @@ differ, the code is what shipped.
     maintainer has to keep to 7 days. Turning the setting on needs an org
     admin.
 
+23. **Scorecard comes last, and we do not chase the score.** The OpenSSF
+    Scorecard runs weekly, on pushes to `main` and when branch protection
+    changes (`scorecard.yml`), and publishes its result for the README
+    badge. It was added after the other five changes, so that what it
+    measures is already fixed or decided. The score describes the project;
+    we change nothing only to raise it. Checks that stay low are listed in
+    the book with the reason for each: one maintainer (Code-Review, parts
+    of Branch-Protection, Contributors), a young repository (Maintained),
+    files written by dist (Token-Permissions, some of Pinned-Dependencies),
+    and release history (Signed-Releases). Why: a number we work to raise
+    can drift away from what protects users. Cost if wrong: a visitor may
+    read a middling score as neglect. The table is there to answer that.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the

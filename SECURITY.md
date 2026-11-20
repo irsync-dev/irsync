@@ -44,3 +44,7 @@ The apt and dnf repositories at dist.irsync.org are signed by the key
 The signatures come from a signing subkey of that key. The primary key is
 kept offline.
 
+The project's OpenSSF Scorecard result is at
+[scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/irsync-dev/irsync).
+The low checks we accept are listed in
+[Supply chain security](https://irsync.org/dev/contributing/supply-chain).
