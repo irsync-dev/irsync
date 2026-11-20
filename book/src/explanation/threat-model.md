@@ -99,6 +99,8 @@ client's session, or exhaust the daemon.
   swapped for a symlink after it was listed, for example by a second
   session of the same client, makes the operation fail. It does not lead out
   of the export. The same holds for a `--partial-dir` that is a symlink.
+- The walk that lists a tree checks every entry through its directory in
+  the same way. A session root that has become a symlink is not walked.
 - Deleting is done relative to a directory that was opened without following
   symlinks, never by descending into a link.
 - A session can be resumed only by the key that started it.

@@ -53,15 +53,25 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
 // `st_mode` is narrower on macOS.
 #[allow(clippy::unnecessary_cast)]
 pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
-    use nix::fcntl::AtFlags;
     if rel.as_bytes().is_empty() {
         return lstat_entry_with_ctime(base, rel);
     }
     let (dir, name) = crate::fs::safe::open_parent_beneath(base, rel)?;
-    let st = nix::sys::stat::fstatat(&dir, name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+    lstat_at(std::os::fd::AsFd::as_fd(&dir), Path::new(&name), rel)
+}
+
+/// `lstat` of `name` in the open directory `dir`, as the entry of `rel`.
+// `st_mode` is narrower on macOS.
+#[allow(clippy::unnecessary_cast)]
+pub fn lstat_at(
+    dir: std::os::fd::BorrowedFd<'_>,
+    name: &Path,
+    rel: &RelPath,
+) -> io::Result<(FileEntry, (i64, u32))> {
+    let st = nix::sys::stat::fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW)
         .map_err(crate::fs::safe::errno)?;
     let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
-        nix::fcntl::readlinkat(&dir, name.as_os_str())
+        nix::fcntl::readlinkat(dir, name)
             .map_err(crate::fs::safe::errno)?
             .as_bytes()
             .to_vec()

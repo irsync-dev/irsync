@@ -33,7 +33,7 @@ use crate::index::IndexHandle;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::StreamTap;
 use crate::plan::Side;
-use crate::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts, WALK_THREADS};
+use crate::scan::{walk_below, ScanEvent, ScanItem, ScanSummary, WalkOpts, WALK_THREADS};
 use crate::telemetry::Phase;
 
 /// How long to wait for the peer to take our last bytes before giving up.
@@ -461,6 +461,10 @@ pub(super) struct ListingSpec {
     /// The `list` phase; it ends with the walk.
     pub phase: Phase,
     pub root: PathBuf,
+    /// The directory `root` lies below, at `scope.prefix`: the export's
+    /// directory on a daemon. The walk goes down from here without
+    /// following a symlink (see [`walk_below`]).
+    pub base: PathBuf,
     pub filters: Arc<FilterSet>,
     pub hasher: Arc<Hasher>,
     /// Maps listing paths to index keys for the cached-hash lookup.
@@ -523,8 +527,9 @@ pub(super) fn spawn_listing(
             single = Some((s.clone(), tx, stx));
             (rx, srx)
         }
-        None => walk(
-            spec.root.clone(),
+        None => walk_below(
+            spec.base.clone(),
+            spec.scope.prefix.clone(),
             spec.filters.clone(),
             WalkOpts {
                 follow_root_symlink: true,
