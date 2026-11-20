@@ -8,17 +8,17 @@
 
 use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts};
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{nofollow_error, open_regular_nofollow, require_regular};
+use crate::fs::safe::{require_regular, Beneath};
 use crate::index::{IndexHandle, Partial};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
-use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use nix::fcntl::OFlag;
+use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -67,8 +67,8 @@ pub use crate::fs::clone::reflink;
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {
     rel: RelPath,
-    dest: PathBuf,
-    part: PathBuf,
+    dest: Beneath,
+    part: Beneath,
     /// The `.part`, locked. Absent until the first write when nothing was
     /// there to adopt: a file waiting for its data holds no descriptor.
     file: Option<Arc<File>>,
@@ -190,33 +190,48 @@ impl PartialDir {
     }
 }
 
-/// Paths of the destination and of its `.part` file.
+/// The destination and its `.part` file, as places below `root`.
+///
+/// A relative partial dir is part of the `.part`'s path below `root`, so a
+/// symlink at its name is refused like one anywhere else on the way. An
+/// absolute one (or one that leaves the root with `..`) is the user's own
+/// choice on this machine: it is the root the `.part` lies below.
 fn paths(
     root: &Path,
     rel: &RelPath,
     partial_dir: Option<&PartialDir>,
-) -> io::Result<(PathBuf, PathBuf)> {
+) -> io::Result<(Beneath, Beneath)> {
     let comps: Vec<&[u8]> = rel.components().collect();
     let (name, parents) = comps
         .split_last()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty relative path"))?;
-    let (mut part_dir, skip) = match partial_dir {
-        Some(pd) => (root.join(&pd.dir), pd.skip),
-        None => (root.to_path_buf(), 0),
-    };
-    for p in parents.iter().skip(skip) {
-        part_dir.push(OsStr::from_bytes(p));
-    }
     if is_temp_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "refusing a name reserved for irsync's temporary files",
         ));
     }
+    let (part_root, mut part_rel, skip) = match partial_dir {
+        Some(pd) => match RelPath::new(pd.dir.as_os_str().as_bytes()) {
+            Ok(below) if pd.dir.is_relative() => {
+                (root.to_path_buf(), below.as_bytes().to_vec(), pd.skip)
+            }
+            _ => (root.join(&pd.dir), Vec::new(), pd.skip),
+        },
+        None => (root.to_path_buf(), Vec::new(), 0),
+    };
     let part_name = temp_name(name, b".part");
+    for p in parents.iter().skip(skip).copied().chain([&part_name[..]]) {
+        if !part_rel.is_empty() {
+            part_rel.push(b'/');
+        }
+        part_rel.extend_from_slice(p);
+    }
+    let part_rel = RelPath::new(&part_rel)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid relative path"))?;
     Ok((
-        root.join(rel.to_os()),
-        part_dir.join(OsStr::from_bytes(&part_name)),
+        Beneath::new(root, rel.clone()),
+        Beneath::new(&part_root, part_rel),
     ))
 }
 
@@ -229,9 +244,12 @@ pub fn discard_part(
     index: &IndexHandle,
 ) -> io::Result<()> {
     let (_, part) = paths(root, rel, partial_dir)?;
-    match open_regular_nofollow(&part) {
+    match part
+        .open(OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0)
+        .and_then(|f| require_regular(&f, &part.path()).map(|()| f))
+    {
         Ok(file) => match file.try_lock() {
-            Ok(()) => std::fs::remove_file(&part)?,
+            Ok(()) => part.unlink()?,
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
         },
@@ -295,22 +313,12 @@ pub const MAX_CHUNK_LEN: u32 = 1024 * 1024;
 /// The error message when another writer holds the `.part` (`WouldBlock`).
 pub const PART_BUSY: &str = "part file busy";
 
-/// Never follow a symlink at the `.part` name, never block on a FIFO there.
-const PART_FLAGS: i32 = nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC;
-
 /// A new `.part` is readable by its owner only: until the file is placed
 /// it may hold content whose final mode is stricter than the default.
-/// `finalize` sets the final mode.
-fn open_rw(part: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(PART_FLAGS)
-        .open(part)
-        .map_err(|e| nofollow_error(e, part))
+/// `finalize` sets the final mode. No symlink is followed at the `.part`
+/// name or on the way to it, and a FIFO there cannot block the open.
+fn open_rw(part: &Beneath) -> io::Result<File> {
+    part.open(OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NONBLOCK, 0o600)
 }
 
 /// Add owner read/write to our own open `.part` file (`fchmod`).
@@ -322,16 +330,10 @@ fn make_owner_writable(file: &File) -> io::Result<()> {
 /// A previous `finalize` may have applied a read-only mode to the `.part`
 /// before failing: open it with whatever access the mode still allows
 /// (never following a symlink) and restore owner read/write on that fd.
-fn restore_owner_rw(part: &Path) -> io::Result<()> {
-    let open = |read: bool| {
-        OpenOptions::new()
-            .read(read)
-            .write(!read)
-            .custom_flags(PART_FLAGS)
-            .open(part)
-    };
-    let f = open(true).or_else(|_| open(false))?;
-    require_regular(&f, part)?;
+fn restore_owner_rw(part: &Beneath) -> io::Result<()> {
+    let open = |flags: OFlag| part.open(flags | OFlag::O_NONBLOCK, 0);
+    let f = open(OFlag::O_RDONLY).or_else(|_| open(OFlag::O_WRONLY))?;
+    require_regular(&f, &part.path())?;
     make_owner_writable(&f)
 }
 
@@ -339,7 +341,7 @@ fn restore_owner_rw(part: &Path) -> io::Result<()> {
 /// ([`open_locked_part`] checks that it is a regular file). The file is ours (`.irsync.<name>.part`): if a
 /// read-only mode left by a failed finalize is in the way, restore owner
 /// read/write through a descriptor and retry once.
-fn open_part(part: &Path) -> io::Result<File> {
+fn open_part(part: &Beneath) -> io::Result<File> {
     let file = match open_rw(part) {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
             if restore_owner_rw(part).is_err() {
@@ -354,8 +356,8 @@ fn open_part(part: &Path) -> io::Result<File> {
 
 /// Whether anything is at the `.part` name (a regular file to adopt, or
 /// something `open_part` will refuse).
-fn part_exists(part: &Path) -> io::Result<bool> {
-    match std::fs::symlink_metadata(part) {
+fn part_exists(part: &Beneath) -> io::Result<bool> {
+    match part.lstat() {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
@@ -376,16 +378,25 @@ impl FileId {
             ino: m.ino(),
         }
     }
+
+    /// The regular file `st` describes; `None` for anything else.
+    // The `stat` field types differ by platform; some casts are no-ops here.
+    #[allow(clippy::unnecessary_cast)]
+    fn of_regular(st: &nix::sys::stat::FileStat) -> Option<FileId> {
+        crate::fs::safe::is_regular_mode(st.st_mode as u32).then_some(FileId {
+            dev: st.st_dev as u64,
+            ino: st.st_ino as u64,
+        })
+    }
 }
 
 /// Fails unless the `.part` path still names the file we hold open (`held`),
 /// so a rename by path can only move the file that was verified.
-fn still_same_file(held: FileId, part: &Path) -> io::Result<()> {
-    let now = std::fs::symlink_metadata(part)?;
-    if !now.file_type().is_file() || FileId::of(&now) != held {
+fn still_same_file(held: FileId, part: &Beneath) -> io::Result<()> {
+    if FileId::of_regular(&part.lstat()?) != Some(held) {
         return Err(io::Error::other(format!(
             "{} was replaced while it was written; not placing it",
-            part.display()
+            part.path().display()
         )));
     }
     Ok(())
@@ -415,9 +426,9 @@ fn digest_held(file: &File, activity: &AtomicU64) -> io::Result<FileDigest> {
 }
 
 /// Whether `part` still names the file held open (`held`).
-fn names_file(held: FileId, part: &Path) -> io::Result<bool> {
-    Ok(match std::fs::symlink_metadata(part) {
-        Ok(now) => now.file_type().is_file() && FileId::of(&now) == held,
+fn names_file(held: FileId, part: &Beneath) -> io::Result<bool> {
+    Ok(match part.lstat() {
+        Ok(now) => FileId::of_regular(&now) == Some(held),
         Err(e) if e.kind() == io::ErrorKind::NotFound => false,
         Err(e) => return Err(e),
     })
@@ -429,7 +440,7 @@ fn names_file(held: FileId, part: &Path) -> io::Result<bool> {
 /// (a finalize renames its `.part` away; then a fresh one is opened).
 /// Returns the file's metadata too, read once the lock is held: until then
 /// another writer may still have been growing it.
-fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
+fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
     let start = Instant::now();
     loop {
         // A momentary descriptor shortage is waited out rather than failing
@@ -441,7 +452,7 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std:
                 if !meta.file_type().is_file() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        format!("{} is not a regular file", part.display()),
+                        format!("{} is not a regular file", part.path().display()),
                     ));
                 }
                 if names_file(FileId::of(&meta), part)? {
@@ -459,7 +470,7 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std:
             Err(std::fs::TryLockError::Error(e)) => {
                 // macOS refuses to lock a FIFO (ENOTSUP): report what is
                 // there, as the check above does where the lock succeeds.
-                require_regular(&file, part)?;
+                require_regular(&file, &part.path())?;
                 return Err(e);
             }
         }
@@ -470,12 +481,10 @@ fn open_locked_part(part: &Path, activity: &AtomicU64) -> io::Result<(File, std:
 /// open finds it missing: the planner has nearly always made it, and
 /// `create_dir_all` on an existing directory costs a failing mkdir and a
 /// stat per file.
-fn open_part_in_dir(part: &Path, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
+fn open_part_in_dir(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
     match open_locked_part(part, activity) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if let Some(dir) = part.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
+            part.make_parent()?;
             open_locked_part(part, activity)
         }
         r => r,
@@ -671,8 +680,8 @@ impl FileWriter {
     #[allow(clippy::too_many_arguments)]
     fn new(
         rel: &RelPath,
-        dest: PathBuf,
-        part: PathBuf,
+        dest: Beneath,
+        part: Beneath,
         file: Option<Arc<File>>,
         expected: &FileDigest,
         chunks: Vec<ChunkRecord>,
@@ -998,7 +1007,7 @@ impl FileWriter {
         }
         if let Err(e) = res {
             if let Err(pe) = self.persist().await {
-                tracing::warn!(path = ?self.part, error = %pe, "persisting partial after write error failed");
+                tracing::warn!(path = ?self.part.path(), error = %pe, "persisting partial after write error failed");
             }
             return Err(e);
         }
@@ -1229,7 +1238,8 @@ impl Verified {
                     if inplace {
                         return Ok(());
                     }
-                    std::fs::rename(&part, &dest).map_err(|e| {
+                    part.rename_to(&dest).map_err(|e| {
+                        let (part, dest) = (part.path(), dest.path());
                         if e.raw_os_error() == Some(nix::libc::EISDIR) {
                             return io::Error::other(format!(
                                 "refusing to replace directory {} with a file",
@@ -1245,7 +1255,7 @@ impl Verified {
             if let Err(e) = placed {
                 // The applied mode may lack owner write; keep the .part resumable.
                 if let Err(pe) = make_owner_writable(&file) {
-                    tracing::warn!(path = ?part, error = %pe, "restoring u+w on .part failed");
+                    tracing::warn!(path = ?part.path(), error = %pe, "restoring u+w on .part failed");
                 }
                 return Err(e);
             }
@@ -1276,7 +1286,7 @@ impl Verified {
         .and_then(|r| r);
         if let Err(e) = removed {
             // The verified file is already in place; a stale record is harmless.
-            tracing::warn!(path = ?w.dest, error = %e, "removing partial record failed");
+            tracing::warn!(path = ?w.dest.path(), error = %e, "removing partial record failed");
         }
         Ok(placed)
     }
@@ -1303,7 +1313,7 @@ impl Verified {
             // Removed only while it is still the file this writer holds
             // (and has locked); the lock goes with the descriptor after.
             still_same_file(held_id, &part)?;
-            std::fs::remove_file(&part)?;
+            part.unlink()?;
             drop(file);
             if recorded {
                 index
@@ -1318,7 +1328,7 @@ impl Verified {
         .map_err(io::Error::other)
         .and_then(|r| r);
         if let Err(e) = removed {
-            tracing::warn!(path = ?w.part, error = %e, "discarding a verified partial file failed");
+            tracing::warn!(path = ?w.part.path(), error = %e, "discarding a verified partial file failed");
         }
     }
 }
@@ -1348,7 +1358,7 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
 /// below that length nothing is known to be a hole), which file it is and
 /// its owner.
 fn open_sized_part(
-    part: &Path,
+    part: &Beneath,
     size: u64,
     activity: &AtomicU64,
 ) -> io::Result<(File, std::fs::Metadata)> {
@@ -1377,11 +1387,11 @@ impl Drop for FileWriter {
         match self.index.try_lock() {
             Ok(mut ix) => {
                 if let Err(e) = ix.put_partial(&self.rel, &rec) {
-                    tracing::warn!(path = ?self.part, error = %e, "persisting partial on drop failed");
+                    tracing::warn!(path = ?self.part.path(), error = %e, "persisting partial on drop failed");
                 }
             }
             Err(_) => {
-                tracing::warn!(path = ?self.part, "index busy or poisoned; partial not persisted on drop");
+                tracing::warn!(path = ?self.part.path(), "index busy or poisoned; partial not persisted on drop");
             }
         }
     }

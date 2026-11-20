@@ -93,11 +93,12 @@ client's session, or exhaust the daemon.
   part and no NUL. A listing must be in order, with no path twice.
 - Symlinks are stored as they are sent and are not followed when irsync
   walks a tree. A file listed below a symlink is refused.
-- A file is read through its directory, opened step by step from the
+- A file is read, written, renamed and deleted through its directory, and
+  that directory is opened step by step from the
   export's own directory with no symlink followed. A directory that was
   swapped for a symlink after it was listed, for example by a second
-  session of the same client, makes the read fail. It does not lead out
-  of the export.
+  session of the same client, makes the operation fail. It does not lead out
+  of the export. The same holds for a `--partial-dir` that is a symlink.
 - Deleting is done relative to a directory that was opened without following
   symlinks, never by descending into a link.
 - A session can be resumed only by the key that started it.

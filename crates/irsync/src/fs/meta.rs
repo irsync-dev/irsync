@@ -4,7 +4,7 @@ use crate::fs::paths::RelPath;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use nix::fcntl::{AtFlags, AT_FDCWD};
 use nix::sys::stat::{
-    fchmodat, fstat, lstat, mknod, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
+    fchmodat, fstat, lstat, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
 };
 use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, Gid, Uid};
@@ -50,6 +50,8 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
 /// below `base` is followed on the way to it (see
 /// [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)). The
 /// root itself is `lstat`ed by name.
+// `st_mode` is narrower on macOS.
+#[allow(clippy::unnecessary_cast)]
 pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
     use nix::fcntl::AtFlags;
     if rel.as_bytes().is_empty() {
@@ -198,22 +200,58 @@ fn may_chgrp(gid: u32) -> bool {
 /// group only as root or a member of it; otherwise they are silently left
 /// alone.
 pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
+    apply_metadata_at(AT_FDCWD, path, e, opts)
+}
+
+/// [`apply_metadata`] to `name` in the open directory `dir`. With a `dir`
+/// from [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)
+/// nothing is reached through a symlink: not on the way, and not at the
+/// name itself.
+pub fn apply_metadata_at(
+    dir: std::os::fd::BorrowedFd<'_>,
+    name: &Path,
+    e: &FileEntry,
+    opts: &ApplyOpts,
+) -> io::Result<()> {
     let owner = opts.owner && process_ids().root;
     let group = opts.group && may_chgrp(e.gid);
     if owner || group {
         let uid = owner.then(|| Uid::from_raw(e.uid));
         let gid = group.then(|| Gid::from_raw(e.gid));
-        fchownat(AT_FDCWD, path, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
+        fchownat(dir, name, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
     }
     if opts.perms && e.kind() != Kind::Symlink {
         let mode = Mode::from_bits_truncate((e.mode & 0o7777) as _);
-        fchmodat(AT_FDCWD, path, mode, FchmodatFlags::FollowSymlink).map_err(errno)?;
+        chmod_nofollow(dir, name, mode)?;
     }
     if opts.times {
         let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
-        utimensat(AT_FDCWD, path, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno)?;
+        utimensat(dir, name, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno)?;
     }
     Ok(())
+}
+
+/// `chmod` of `name` in `dir` that never changes the target of a symlink
+/// swapped in at `name`. Where the system cannot do that in one call (an
+/// older Linux without `/proc`), the name is checked first, then changed.
+// `st_mode` is narrower on macOS.
+#[allow(clippy::unnecessary_cast)]
+fn chmod_nofollow(dir: std::os::fd::BorrowedFd<'_>, name: &Path, mode: Mode) -> io::Result<()> {
+    match fchmodat(dir, name, mode, FchmodatFlags::NoFollowSymlink) {
+        Ok(()) => Ok(()),
+        Err(nix::Error::EOPNOTSUPP | nix::Error::ENOSYS | nix::Error::EINVAL) => {
+            let st =
+                nix::sys::stat::fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
+            if kind_of(st.st_mode as u32) == Kind::Symlink {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("refusing to follow symlink {}", name.display()),
+                ));
+            }
+            fchmodat(dir, name, mode, FchmodatFlags::FollowSymlink).map_err(errno)
+        }
+        Err(e) => Err(errno(e)),
+    }
 }
 
 /// [`apply_metadata`] through an open descriptor of a regular file (never
@@ -280,10 +318,20 @@ fn apply_fd(
 /// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
 /// `mkfifo` and `mknod` are umask-subject, so callers follow with `apply_metadata` to set exact mode.
 pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
+    create_special_at(AT_FDCWD, path, e)
+}
+
+/// [`create_special`] at `name` in the open directory `dir`.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub fn create_special_at(
+    dir: std::os::fd::BorrowedFd<'_>,
+    name: &Path,
+    e: &FileEntry,
+) -> io::Result<()> {
     let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
     let kind = match e.kind() {
         // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
-        Kind::Fifo => return nix::unistd::mkfifo(path, perm).map_err(errno),
+        Kind::Fifo => return nix::unistd::mkfifoat(dir, name, perm).map_err(errno),
         Kind::CharDev => SFlag::S_IFCHR,
         Kind::BlockDev => SFlag::S_IFBLK,
         Kind::Socket => SFlag::S_IFSOCK,
@@ -294,5 +342,46 @@ pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
             ))
         }
     };
-    mknod(path, kind, perm, e.rdev as _).map_err(errno)
+    nix::sys::stat::mknodat(dir, name, kind, perm, e.rdev as _).map_err(errno)
+}
+
+/// [`create_special`] at `name` in the open directory `dir`. The library
+/// irsync uses for system calls leaves these two out on macOS, so they are
+/// called directly.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub fn create_special_at(
+    dir: std::os::fd::BorrowedFd<'_>,
+    name: &Path,
+    e: &FileEntry,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let c = std::ffi::CString::new(name.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a file name"))?;
+    let perm = (e.mode & 0o7777) as nix::libc::mode_t;
+    let kind = match e.kind() {
+        Kind::Fifo => nix::libc::S_IFIFO,
+        Kind::CharDev => nix::libc::S_IFCHR,
+        Kind::BlockDev => nix::libc::S_IFBLK,
+        Kind::Socket => nix::libc::S_IFSOCK,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a special file kind",
+            ))
+        }
+    };
+    // SAFETY: `c` is a valid NUL-terminated string and `dir` an open
+    // descriptor (or `AT_FDCWD`) for the length of the call.
+    let r = unsafe {
+        if e.kind() == Kind::Fifo {
+            nix::libc::mkfifoat(dir.as_raw_fd(), c.as_ptr(), perm)
+        } else {
+            nix::libc::mknodat(dir.as_raw_fd(), c.as_ptr(), kind | perm, e.rdev as _)
+        }
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }

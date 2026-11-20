@@ -39,6 +39,7 @@ use super::limits::{
 };
 use super::listing_stream::ListingOut;
 use super::parts::{assemble, Assembly, ListBudget};
+use super::planner::apply_metadata_beneath;
 use super::planner::{
     inflight_cap, parent_of, plan, replan, Deferred, Itemize, Linked, Planned, PlannerReport, Prior,
 };
@@ -50,7 +51,6 @@ use super::Outcome;
 use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::FilterSet;
-use crate::fs::meta::apply_metadata;
 use crate::fs::paths::RelPath;
 use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
@@ -1488,7 +1488,7 @@ impl Receiver {
                     continue;
                 }
                 let apply = ctx.apply_opts(&d.entry);
-                if let Err(e) = apply_metadata(&ctx.full(&d.path), &d.entry, &apply) {
+                if let Err(e) = apply_metadata_beneath(&ctx.place(&d.path), &d.entry, &apply) {
                     errors.push((d.path.clone(), format!("directory metadata: {e}")));
                 }
             }

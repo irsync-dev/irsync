@@ -417,14 +417,11 @@ impl Ctx {
         }
     }
 
-    /// Absolute path of `rel` under the session root.
-    pub fn full(&self, rel: &RelPath) -> PathBuf {
-        let rel = self.local(rel);
-        if rel.as_bytes().is_empty() {
-            self.root.clone()
-        } else {
-            self.root.join(rel.to_os())
-        }
+    /// Where a session-relative path lies, for the writes that follow no
+    /// symlink: below `base`, so the session root's own components are
+    /// covered too.
+    pub fn place(&self, rel: &RelPath) -> crate::fs::safe::Beneath {
+        crate::fs::safe::Beneath::new(&self.base, self.key(rel))
     }
 
     /// The index key of a session-relative path.
