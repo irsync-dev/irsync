@@ -130,6 +130,67 @@ pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 
+/// The directories on the way to the entry a walk is at, held open.
+///
+/// A walk visits a tree in path order, so most entries share their
+/// directory, or most of the way to it, with the one before. This keeps
+/// the chain of directories from `base` down to the current one open,
+/// each opened from its parent without following a symlink, and reopens
+/// only what differs for the next entry.
+pub struct DirStack {
+    base: OwnedFd,
+    below: Vec<(Vec<u8>, OwnedFd)>,
+}
+
+impl DirStack {
+    /// `base` itself is opened by name (it may be reached through symlinks
+    /// the user chose).
+    pub fn new(base: &Path) -> io::Result<DirStack> {
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+        Ok(DirStack {
+            base: openat(AT_FDCWD, base, flags, Mode::empty()).map_err(errno)?,
+            below: Vec::new(),
+        })
+    }
+
+    /// The directory `dir` below the base, with no symlink followed.
+    pub fn dir(&mut self, dir: &RelPath) -> io::Result<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::AsFd;
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
+        let comps: Vec<&[u8]> = dir.components().collect();
+        let keep = self
+            .below
+            .iter()
+            .zip(&comps)
+            .take_while(|((have, _), want)| have == *want)
+            .count();
+        self.below.truncate(keep);
+        for c in &comps[keep..] {
+            let parent = self
+                .below
+                .last()
+                .map_or(self.base.as_fd(), |(_, fd)| fd.as_fd());
+            let fd = openat(parent, std::ffi::OsStr::from_bytes(c), flags, Mode::empty()).map_err(
+                |e| {
+                    if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "a path component is a symlink or not a directory",
+                        )
+                    } else {
+                        errno(e)
+                    }
+                },
+            )?;
+            self.below.push((c.to_vec(), fd));
+        }
+        Ok(self
+            .below
+            .last()
+            .map_or(self.base.as_fd(), |(_, fd)| fd.as_fd()))
+    }
+}
+
 /// Opens the directory that holds `base/rel` (see [`open_dir_beneath`]:
 /// no symlink below `base` is followed) and gives `rel`'s final name.
 ///

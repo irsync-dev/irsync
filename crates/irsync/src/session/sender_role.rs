@@ -339,6 +339,7 @@ impl SenderRole {
             ListingSpec {
                 phase: self.ctx.phase(PhaseKind::List),
                 root: self.ctx.root.clone(),
+                base: self.ctx.base.clone(),
                 filters: self.ctx.filters.clone(),
                 hasher: self.ctx.hasher.clone(),
                 scope: self.ctx.scope.clone(),

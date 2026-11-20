@@ -7,6 +7,7 @@ use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::v1::FileEntry;
 use jwalk::{Parallelism, WalkDirGeneric};
 use std::cell::RefCell;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -114,6 +115,23 @@ pub struct WalkOpts {
     pub max_depth: Option<usize>,
 }
 
+/// `b` below `a` (either may be the root).
+fn join_rel(a: &RelPath, b: &RelPath) -> RelPath {
+    match (a.as_bytes(), b.as_bytes()) {
+        ([], _) => b.clone(),
+        (_, []) => a.clone(),
+        (x, y) => {
+            RelPath::new(&[x, b"/", y].concat()).expect("joining canonical paths stays canonical")
+        }
+    }
+}
+
+/// Whether `path` is `dir` or lies below it.
+fn is_below(path: &RelPath, dir: &RelPath) -> bool {
+    let (p, d) = (path.as_bytes(), dir.as_bytes());
+    d.is_empty() || p == d || (p.starts_with(d) && p.get(d.len()) == Some(&b'/'))
+}
+
 fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
     let rest = full.strip_prefix(root).ok()?;
     RelPath::new(rest.as_os_str().as_bytes()).ok()
@@ -127,12 +145,36 @@ pub fn walk(
     opts: WalkOpts,
     meter: Option<Arc<Meter>>,
 ) -> (mpsc::Receiver<ScanEvent>, oneshot::Receiver<ScanSummary>) {
+    walk_below(root, RelPath::root(), filters, opts, meter)
+}
+
+/// [`walk`] of the tree at `prefix` below `base`, for a session: every
+/// entry is stat'ed through its directory, opened from `base` without
+/// following a symlink. A component of `prefix`, or a directory in the
+/// tree, that someone swaps for a symlink while the session runs is then
+/// reported as a gap; what lies behind the link is not listed.
+///
+/// With an empty `prefix` the root is a name this side trusts, and
+/// `opts.follow_root_symlink` applies to it as in [`walk`]. A root below a
+/// prefix is never followed.
+pub fn walk_below(
+    base: PathBuf,
+    prefix: RelPath,
+    filters: Arc<FilterSet>,
+    opts: WalkOpts,
+    meter: Option<Arc<Meter>>,
+) -> (mpsc::Receiver<ScanEvent>, oneshot::Receiver<ScanSummary>) {
+    let (root, anchor) = if prefix.as_bytes().is_empty() {
+        (base, None)
+    } else {
+        (base.join(prefix.to_os()), Some((base, prefix)))
+    };
     let (tx, rx) = mpsc::channel(1024);
     let (stx, srx) = oneshot::channel();
     // Not `spawn_blocking`: the walk waits on the channel for as long as it
     // runs (see `spawn_thread`).
     drop(spawn_thread("irsync-walk", move || {
-        let summary = run_walk(root, filters, opts, tx, meter);
+        let summary = run_walk(root, anchor, filters, opts, tx, meter);
         let _ = stx.send(summary);
     }));
     (rx, srx)
@@ -206,6 +248,7 @@ pub fn is_clone_dir(name: &[u8]) -> bool {
 
 fn run_walk(
     mut root: PathBuf,
+    anchor: Option<(PathBuf, RelPath)>,
     filters: Arc<FilterSet>,
     opts: WalkOpts,
     tx: mpsc::Sender<ScanEvent>,
@@ -220,7 +263,10 @@ fn run_walk(
         sent
     };
     let mut sum = ScanSummary::default();
-    if opts.follow_root_symlink && std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
+    if anchor.is_none()
+        && opts.follow_root_symlink
+        && std::fs::metadata(&root).is_ok_and(|m| m.is_dir())
+    {
         if let Ok(real) = std::fs::canonicalize(&root) {
             root = real;
         }
@@ -232,9 +278,45 @@ fn run_walk(
         sum.errors.push((rel.clone(), message.clone()));
         emit(ScanEvent::Gap { path: rel, message })
     };
+    // The directories down to the entry the walk is at, opened from the
+    // root (from the base, below a prefix) without following a symlink.
+    let (stat_base, stat_prefix) = match &anchor {
+        Some((base, prefix)) => (base.clone(), prefix.clone()),
+        None => (root.clone(), RelPath::root()),
+    };
+    let dirs = RefCell::new(crate::fs::safe::DirStack::new(&stat_base));
+    // A directory that turned out to be a symlink: nothing below it is
+    // listed or named, and it has had its one gap.
+    let blocked: RefCell<Option<RelPath>> = RefCell::new(None);
+    let lstat = |rel: &RelPath| -> std::io::Result<Option<(FileEntry, (i64, u32))>> {
+        if rel.as_bytes().is_empty() && stat_prefix.as_bytes().is_empty() {
+            return lstat_entry_with_ctime(&root, rel).map(Some);
+        }
+        if blocked.borrow().as_ref().is_some_and(|b| is_below(rel, b)) {
+            return Ok(None);
+        }
+        let key = join_rel(&stat_prefix, rel);
+        let (parent, name) = crate::fs::safe::split_last(&key)?;
+        let mut dirs = dirs.borrow_mut();
+        let dirs = dirs
+            .as_mut()
+            .map_err(|e| std::io::Error::new(e.kind(), e.to_string()))?;
+        let dir = match dirs.dir(&parent) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                // The gap goes to the directory, not to what jwalk read
+                // through the link.
+                *blocked.borrow_mut() = Some(rel.parent());
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
+        crate::fs::meta::lstat_at(dir, Path::new(OsStr::from_bytes(&name)), rel).map(Some)
+    };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
-        match lstat_entry_with_ctime(&root, &rel) {
-            Ok((entry, ctime)) => {
+        match lstat(&rel) {
+            Ok(None) => true,
+            Ok(Some((entry, ctime))) => {
                 if !emit(ScanEvent::Entry(ScanItem {
                     path: rel,
                     entry,
@@ -245,12 +327,22 @@ fn run_walk(
                 sum.entries += 1;
                 true
             }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::InvalidInput && !rel.as_bytes().is_empty() =>
+            {
+                gap(sum, rel.parent(), e.to_string())
+            }
             Err(e) => gap(sum, rel, e.to_string()),
         }
     };
     if !send(&mut sum, RelPath::root()) || sum.incomplete {
         // A root that cannot be stat'ed has its gap; the walk would only
         // report it again.
+        return sum;
+    }
+    // A root below a prefix that is not a directory (a symlink put there
+    // meanwhile, a file) has nothing below it to walk.
+    if anchor.is_some() && !std::fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir()) {
         return sum;
     }
 
@@ -370,6 +462,99 @@ mod tests {
             });
         }
         (v, summary.await.unwrap())
+    }
+
+    /// [`events`] for the tree at `prefix` below `base`, as a session walks it.
+    async fn events_below(base: &Path, prefix: &str) -> (Vec<(String, bool)>, ScanSummary) {
+        let (mut rx, summary) = walk_below(
+            base.to_path_buf(),
+            RelPath::new(prefix.as_bytes()).unwrap(),
+            Arc::new(FilterSet::new(vec![])),
+            WalkOpts {
+                follow_root_symlink: true,
+                threads: 2,
+                max_depth: None,
+            },
+            None,
+        );
+        let mut v = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            v.push(match ev {
+                ScanEvent::Entry(i) => (
+                    String::from_utf8_lossy(i.path.as_bytes()).into_owned(),
+                    false,
+                ),
+                ScanEvent::Gap { path, .. } => {
+                    (String::from_utf8_lossy(path.as_bytes()).into_owned(), true)
+                }
+            });
+        }
+        (v, summary.await.unwrap())
+    }
+
+    /// A daemon's session root lies below its export. If it, or a
+    /// directory on the way to it, has become a link out of the export,
+    /// the walk lists nothing of what the link leads to.
+    #[tokio::test]
+    async fn a_session_root_that_became_a_link_is_not_walked() {
+        let (export, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(outside.path().join("private")).unwrap();
+        std::fs::write(outside.path().join("private/key"), b"k").unwrap();
+        std::fs::write(outside.path().join("notes"), b"n").unwrap();
+        let named = |v: &[(String, bool)]| {
+            v.iter()
+                .any(|(p, _)| p.contains("private") || p.contains("key") || p.contains("notes"))
+        };
+
+        // A real session root is walked as ever.
+        std::fs::create_dir_all(export.path().join("real/d")).unwrap();
+        std::fs::write(export.path().join("real/d/f"), b"f").unwrap();
+        let (v, sum) = events_below(export.path(), "real").await;
+        let want = [("", false), ("d", false), ("d/f", false)].map(|(p, g)| (p.to_string(), g));
+        assert_eq!(v, want);
+        assert!(!sum.incomplete);
+
+        // The session root itself is a link.
+        std::os::unix::fs::symlink(outside.path(), export.path().join("s")).unwrap();
+        let (v, _) = events_below(export.path(), "s").await;
+        assert!(!named(&v), "{v:?}");
+        assert_eq!(v, [(String::new(), false)], "only the link itself");
+
+        // A directory on the way to it is a link.
+        std::fs::create_dir(outside.path().join("sub")).unwrap();
+        std::fs::write(outside.path().join("sub/inner"), b"i").unwrap();
+        let (v, sum) = events_below(export.path(), "s/sub").await;
+        assert!(
+            !named(&v) && !v.iter().any(|(p, _)| p.contains("inner")),
+            "{v:?}"
+        );
+        assert!(sum.incomplete);
+        assert_eq!(v, [(String::new(), true)], "one gap, at the root");
+
+        // By name, the same root does lead outside: what `walk_below` avoids.
+        let (v, _) = {
+            let (mut rx, summary) = walk(
+                export.path().join("s"),
+                Arc::new(FilterSet::new(vec![])),
+                WalkOpts {
+                    follow_root_symlink: true,
+                    threads: 2,
+                    max_depth: None,
+                },
+                None,
+            );
+            let mut v = Vec::new();
+            while let Some(ev) = rx.recv().await {
+                if let ScanEvent::Entry(i) = ev {
+                    v.push((
+                        String::from_utf8_lossy(i.path.as_bytes()).into_owned(),
+                        false,
+                    ));
+                }
+            }
+            (v, summary.await.unwrap())
+        };
+        assert!(named(&v));
     }
 
     #[test]

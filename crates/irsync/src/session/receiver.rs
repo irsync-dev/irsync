@@ -1629,6 +1629,7 @@ pub(super) async fn run(
                 ListingSpec {
                     phase: ctx.phase(PhaseKind::List),
                     root: ctx.root.clone(),
+                    base: ctx.base.clone(),
                     // Everything this side has: filters shape the sender's
                     // walk, and the planner applies them for deletions.
                     filters: Arc::new(FilterSet::new(vec![])),
