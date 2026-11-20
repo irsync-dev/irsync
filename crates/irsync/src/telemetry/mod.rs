@@ -5,6 +5,7 @@ pub mod flame;
 pub mod http;
 pub mod init;
 pub mod meter;
+pub mod one_line;
 #[cfg(feature = "otel")]
 pub mod otel;
 #[cfg(feature = "otel")]
