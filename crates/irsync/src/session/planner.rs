@@ -892,7 +892,13 @@ pub(super) async fn replan(
     let dst = blocking(
         move || match crate::fs::meta::lstat_entry_with_ctime(&root, &rel) {
             Ok((entry, _)) => Ok(Some(entry)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            // Gone, or its folder is no longer one: nothing there.
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    || crate::fs::beneath::is_not_a_folder(&e) =>
+            {
+                Ok(None)
+            }
             Err(e) => Err(e),
         },
     )

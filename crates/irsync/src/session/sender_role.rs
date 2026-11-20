@@ -1657,11 +1657,12 @@ async fn recheck(
                             Rechecked::Same
                         }
                         Ok((entry, _)) => Rechecked::Changed(Box::new(entry)),
+                        // Gone, or its folder is no longer one.
                         Err(e)
                             if matches!(
                                 e.kind(),
                                 io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                            ) =>
+                            ) || crate::fs::beneath::is_not_a_folder(&e) =>
                         {
                             Rechecked::Vanished
                         }

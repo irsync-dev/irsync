@@ -822,6 +822,63 @@ async fn paranoid_recheck_vanished_file_exits_24_on_pull() {
     within30(recheck_vanished_for(Flow::Pull)).await;
 }
 
+/// A listed file whose folder became a regular file by the end of a
+/// `--paranoid` run has vanished, like a deleted one: exit 24.
+async fn recheck_folder_gone_for(flow: Flow) {
+    let h = Harness::new().await;
+    fs::write(h.src(flow).join("x.bin"), data(SIZE, 83)).unwrap();
+    for dir in [h.src(flow), h.dst(flow)] {
+        fs::create_dir(dir.join("sub")).unwrap();
+        let y = dir.join("sub/y.txt");
+        fs::write(&y, Y_OLD).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&y)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_005))
+            .unwrap();
+    }
+    let fired = Arc::new(AtomicU32::new(0));
+    let (src, f) = (h.src(flow).to_path_buf(), fired.clone());
+    let hook: FirstChunkHook = Arc::new(move |p: &RelPath| {
+        let hit = p.as_bytes() == b"x.bin";
+        let (sub, f) = (src.join("sub"), f.clone());
+        Box::pin(async move {
+            if hit && f.fetch_add(1, Ordering::SeqCst) == 0 {
+                fs::remove_dir_all(&sub).unwrap();
+                fs::write(&sub, b"now a file").unwrap();
+            }
+        })
+    });
+    let mut local = h.local_side();
+    match flow {
+        Flow::Push => local.hooks.on_first_chunk_sent = Some(hook),
+        Flow::Pull => h.daemon.hooks.lock().unwrap().on_first_chunk_sent = Some(hook),
+    }
+    let out = h
+        .run_side(&opts_with(&["--paranoid"]), flow, local)
+        .await
+        .unwrap();
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "the hook did not fire once"
+    );
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert_eq!(out.vanished, vec![RelPath::new(b"sub/y.txt").unwrap()]);
+    assert_eq!(out.exit_code(), 24, "{:?} {:?}", out.errors, out.vanished);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_file_whose_folder_is_gone_has_vanished() {
+    within30(recheck_folder_gone_for(Flow::Push)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paranoid_recheck_file_whose_folder_is_gone_has_vanished_on_pull() {
+    within30(recheck_folder_gone_for(Flow::Pull)).await;
+}
+
 /// `--paranoid` with the change checks off makes no clones and runs no
 /// final re-check: a file deleted after the walk gives exit 0, not 24.
 async fn paranoid_checks_off_for(flow: Flow) {

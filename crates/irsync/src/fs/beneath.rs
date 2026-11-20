@@ -587,6 +587,28 @@ impl Root {
     }
 }
 
+/// A folder on the way to a name is a symlink or not a folder.
+#[derive(Debug)]
+struct NotAFolder(String);
+
+impl std::fmt::Display for NotAFolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: a path component is a symlink or not a directory",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotAFolder {}
+
+/// Whether `e` is a lookup's refusal of a folder on the way that is a
+/// symlink or not a folder: then nothing is at the name below the root.
+pub fn is_not_a_folder(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<NotAFolder>())
+}
+
 /// Opens the folder `name` inside `parent` without following a symlink.
 /// `whole` is the path being resolved, for messages.
 fn open_child(
@@ -610,10 +632,7 @@ fn open_child(
     let refused = |e: io::Error| match e.raw_os_error().map(Errno::from_raw) {
         Some(n) if is_symlink_errno(n) || n == Errno::ENOTDIR => io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "{}: a path component is a symlink or not a directory",
-                String::from_utf8_lossy(whole.as_bytes())
-            ),
+            NotAFolder(String::from_utf8_lossy(whole.as_bytes()).into_owned()),
         ),
         _ => e,
     };
@@ -661,7 +680,14 @@ mod tests {
                 e.to_string().contains("a symlink or not a directory"),
                 "{e}"
             );
+            assert!(is_not_a_folder(&e), "{p:?}");
         }
+        // A regular file on the way is refused the same way.
+        std::fs::write(d.path().join("f"), b"").unwrap();
+        assert!(is_not_a_folder(
+            &root.dir(&r(b"f/x"), Missing::Refuse).err().unwrap()
+        ));
+        assert!(!is_not_a_folder(&io::Error::other("other")));
     }
 
     #[test]
