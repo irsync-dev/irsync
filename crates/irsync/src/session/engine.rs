@@ -480,7 +480,7 @@ impl Ctx {
     /// name. Every caller today passes a key already built from the local
     /// name, so that mapping never fires; it is kept as a guard for a
     /// caller that passes the wire key.
-    fn local_key<'a>(&self, key: &'a RelPath) -> std::borrow::Cow<'a, RelPath> {
+    pub fn local_key<'a>(&self, key: &'a RelPath) -> std::borrow::Cow<'a, RelPath> {
         match &self.single {
             Some(s) if *key == self.scope.key(&s.wire) => {
                 std::borrow::Cow::Owned(self.scope.key(&s.local))

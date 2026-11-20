@@ -1603,7 +1603,12 @@ impl Drop for CloseClones {
 /// none can be made the file itself is hashed (and, before placing, hashed
 /// again): never an error.
 async fn clone_of(clones: Option<Arc<Clones>>, ctx: &Ctx, key: &RelPath) -> Option<Arc<Cloned>> {
-    let (clones, root, key) = (clones?, ctx.base_root.clone(), key.clone());
+    // A single file's wire name is opened under its local name.
+    let (clones, root, key) = (
+        clones?,
+        ctx.base_root.clone(),
+        ctx.local_key(key).into_owned(),
+    );
     let shown = key.clone();
     match blocking(move || clones.clone_file(&root, &key)).await {
         Ok(c) => c.map(Arc::new),
@@ -2416,6 +2421,25 @@ mod tests {
         assert_eq!(s.files[&1].bases_held, 0);
         assert!(s.files[&1].bases.is_empty());
         assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
+    /// The clone step opens a single file under its local name, though
+    /// the key it is handed may carry the wire name.
+    #[tokio::test]
+    async fn a_single_files_wire_key_maps_to_its_local_name() {
+        let mut t = crate::session::engine::test_ctx().await;
+        let wire = RelPath::new(b"wire").unwrap();
+        let local = RelPath::new(b"local").unwrap();
+        Arc::get_mut(&mut t.ctx)
+            .expect("ctx is not shared yet")
+            .single = Some(crate::session::single::SingleFile {
+            wire: wire.clone(),
+            local: local.clone(),
+        });
+        let ctx = &*t.ctx;
+        let (wk, lk) = (ctx.key(&wire), ctx.key(&local));
+        assert_eq!(*ctx.local_key(&wk), lk);
+        assert_eq!(*ctx.local_key(&lk), lk);
     }
 
     /// A `MayPlace` is about one chunk list. One about a list older than

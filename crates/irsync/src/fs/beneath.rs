@@ -433,7 +433,10 @@ pub struct Root {
 
 /// `path` with its symlinks resolved; `path` itself if that fails.
 fn real_of(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    std::fs::canonicalize(path).unwrap_or_else(|e| {
+        tracing::debug!(path = %path.display(), error = %e, "real path not resolved; using the path as given");
+        path.to_path_buf()
+    })
 }
 
 fn open_flags() -> OFlag {
