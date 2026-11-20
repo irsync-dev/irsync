@@ -161,7 +161,9 @@ where
     let env =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.log_default));
     let fmt = tracing_subscriber::fmt::layer()
-        .with_writer(writer)
+        // An event stays on one line, whatever text from the other side
+        // its fields hold.
+        .with_writer(super::one_line::OneLine(writer))
         .with_filter(env);
     let state = cfg.debug_addr.map(|_| {
         (

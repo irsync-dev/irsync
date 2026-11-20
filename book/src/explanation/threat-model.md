@@ -165,8 +165,11 @@ is fine.
 
 **What stops them:**
 
-- Paths are shown escaped: control characters and bytes that are not UTF-8
-  are printed as `\ooo`.
+- Paths are shown escaped: control characters, bytes that are not UTF-8,
+  and the invisible characters that reverse the direction of text are
+  printed as `\ooo`.
+- A log event stays on one line. Text from the other side cannot end a
+  line and start one that looks like irsync wrote it.
 - irsync never follows a symlink it copies.
 - A manifest is compared with the files as they are now. It cannot make
   `fileset` skip a file that is on disk.

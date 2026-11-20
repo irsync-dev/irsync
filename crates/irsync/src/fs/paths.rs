@@ -107,6 +107,19 @@ fn octal(out: &mut String, b: u8) {
     out.push_str(&format!("\\{b:03o}"));
 }
 
+/// Whether `c` must not reach a terminal or a log as it is: a control
+/// character, or one of the invisible characters that change the direction
+/// text is shown in (the bidi marks, embeddings, overrides and isolates),
+/// which can make a name read as another, `photo<U+202E>gpj.exe` as
+/// `photoexe.jpg`.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c as u32,
+            0x061c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
+        )
+}
+
 /// Text from the other side (an error message, a name, a code) as it is
 /// safe to print: control characters become `\ooo`, so it stays on one
 /// line and cannot drive the terminal. Unlike a path, a backslash is left
@@ -114,7 +127,7 @@ fn octal(out: &mut String, b: u8) {
 pub fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_control() {
+        if hidden(c) {
             let mut buf = [0u8; 4];
             c.encode_utf8(&mut buf)
                 .bytes()
@@ -142,8 +155,7 @@ pub fn escape_path(p: &[u8]) -> String {
             }
         };
         for c in good.chars() {
-            if c.is_control() || c == '\\' {
-                // Control characters and `\` are all ASCII or C1 (2 bytes).
+            if hidden(c) || c == '\\' {
                 let mut buf = [0u8; 4];
                 c.encode_utf8(&mut buf)
                     .bytes()
@@ -188,6 +200,26 @@ mod tests {
             escape_text("a\x1b[2J\r\nb\x07\u{9b}c\x7f"),
             r"a\033[2J\015\012b\007\302\233c\177"
         );
+    }
+
+    #[test]
+    fn direction_changing_characters_are_escaped() {
+        // RIGHT-TO-LEFT OVERRIDE: shown raw, the name reads `photoexe.jpg`.
+        assert_eq!(
+            escape_path("photo\u{202e}gpj.exe".as_bytes()),
+            r"photo\342\200\256gpj.exe"
+        );
+        assert_eq!(escape_text("a\u{202e}b"), r"a\342\200\256b");
+        for c in [
+            '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202d}', '\u{2066}', '\u{2069}',
+        ] {
+            let name = format!("a{c}b");
+            assert!(!escape_path(name.as_bytes()).contains(c), "{:x}", c as u32);
+            assert!(!escape_text(&name).contains(c), "{:x}", c as u32);
+        }
+        // Text in a right-to-left script is left as it is.
+        let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd}.txt";
+        assert_eq!(escape_path(hebrew.as_bytes()), hebrew);
     }
 
     #[test]
