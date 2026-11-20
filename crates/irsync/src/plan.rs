@@ -1,6 +1,6 @@
 //! Pure planning logic: per-path decisions and the sorted merge-join of two listings.
 
-use futures::stream::{self, Stream, StreamExt};
+use futures_util::stream::{self, Stream, StreamExt};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 

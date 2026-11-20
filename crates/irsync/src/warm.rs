@@ -25,7 +25,7 @@ use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::file_entry::Kind;
 
@@ -116,7 +116,7 @@ pub async fn index_root(
     let report = Mutex::new(WarmReport::default());
     let (report_ref, hasher_ref) = (&report, &hasher);
     let items =
-        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
+        futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
             .filter_map(|ev| async move {
                 match ev {
                     crate::scan::ScanEvent::Entry(item) => Some(item),

@@ -1,10 +1,17 @@
-use futures::executor::block_on;
-use futures::stream::{self, StreamExt};
+use futures_util::stream::{self, StreamExt};
 use irsync::cli::Append;
 use irsync::cli::Preserve;
 use irsync::plan::{decide, merge_join, Decision, PlanOpts, Side};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
+
+/// Runs a future to its end on a one-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(f)
+}
 
 fn entry(path: &str, kind: Kind, size: u64, mtime: i64, mode: u32) -> FileEntry {
     FileEntry {

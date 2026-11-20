@@ -332,7 +332,7 @@ impl Drop for Held {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
+    use futures_util::FutureExt;
 
     #[tokio::test]
     async fn acquire_waits_until_release() {

@@ -323,7 +323,7 @@ async fn warm_candidates(ctx: &Ctx, size: u64) {
     if keys.is_empty() {
         return;
     }
-    futures::future::join_all(keys.iter().map(|key| async move {
+    futures_util::future::join_all(keys.iter().map(|key| async move {
         if hash_key(ctx, key).await.is_some() {
             ctx.hooks.event("warm", key);
         }

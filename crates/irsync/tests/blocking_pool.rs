@@ -61,8 +61,11 @@ fn concurrent_pulls_finish_when_their_walks_could_fill_the_blocking_pool() {
         });
         // Generous: a hang never ends, but on a loaded CI runner with a
         // real disk the pulls alone take close to a minute.
-        let done =
-            tokio::time::timeout(Duration::from_secs(180), futures::future::join_all(pulls)).await;
+        let done = tokio::time::timeout(
+            Duration::from_secs(180),
+            futures_util::future::join_all(pulls),
+        )
+        .await;
         let Ok(done) = done else {
             return Err("the pulls did not finish within 180 s".to_string());
         };

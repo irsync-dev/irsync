@@ -25,7 +25,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use irsync_proto::v1::{
     control::Msg, file_entry::Kind, plan_item::Action, FileEntry, Itemized, SessionPlan,
 };
@@ -315,8 +315,8 @@ pub(super) fn mkdir_replacing(full: &Path) -> io::Result<()> {
 fn sides(
     rx: mpsc::Receiver<Listed>,
     gap: Arc<Mutex<Option<RelPath>>>,
-) -> impl futures::Stream<Item = Side> + Send {
-    futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
+) -> impl futures_util::Stream<Item = Side> + Send {
+    futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
         .filter_map(move |item| {
             let gap = gap.clone();
             async move {
@@ -1040,7 +1040,7 @@ async fn plan_listings(
     // Both listings are in order: the peer's listing reader refuses one
     // that is not (a protocol error), and this side's comes from its walk.
     let joined = merge_join(sides(peer, gap.clone()), sides(local, gap.clone()));
-    futures::pin_mut!(joined);
+    futures_util::pin_mut!(joined);
     if mode == Some(DeleteMode::Before) {
         // Every candidate is known only once both listings have ended.
         let mut sources = Vec::new();
