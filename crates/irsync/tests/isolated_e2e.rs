@@ -419,7 +419,7 @@ fn client_index_lives_under_the_configured_state_dir() {
 
 #[test]
 fn unresolvable_address_fails_before_the_identity_is_needed() {
-    use ssh_key::{rand_core::OsRng, Algorithm, LineEnding, PrivateKey};
+    use ssh_key::{getrandom::SysRng, rand_core::UnwrapErr, Algorithm, LineEnding, PrivateKey};
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     for d in ["src", "home", "xdg"] {
@@ -429,9 +429,10 @@ fn unresolvable_address_fails_before_the_identity_is_needed() {
     // An encrypted key: loading it without a passphrase would fail, so the
     // address error can only come first if resolution runs before loading.
     let key = tmp.join("enc_key");
-    PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+    let mut rng = UnwrapErr(SysRng);
+    PrivateKey::random(&mut rng, Algorithm::Ed25519)
         .unwrap()
-        .encrypt(&mut OsRng, "hunter2")
+        .encrypt(&mut rng, "hunter2")
         .unwrap()
         .write_openssh_file(&key, LineEnding::LF)
         .unwrap();

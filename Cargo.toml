@@ -48,7 +48,10 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 tracing-opentelemetry = { version = "0.34", default-features = false, features = ["metrics"] }
 tonic = { version = "0.14", default-features = false }
 rustls = { version = "0.23", default-features = false }
-ssh-key = { version = "0.6", features = ["ed25519", "encryption", "std"] }
+# A release candidate, pinned exactly: 0.6 drags the old `rsa` and
+# `crypto-bigint` into Cargo.lock, both with open advisories, and a second
+# copy of the curve crates beside iroh's. Move to 0.7.0 when it is released.
+ssh-key = { version = "=0.7.0-rc.12", features = ["ed25519", "encryption", "getrandom", "std"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 jwalk = "0.9"
 nix = "0.31"

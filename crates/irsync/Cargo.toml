@@ -89,7 +89,6 @@ nix = { workspace = true, features = ["signal"] }
 # `test-util`: tests that pause tokio's clock and let it jump ahead.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-rand_core = { workspace = true }
 # No default features: `--no-default-features` must reach the test builds too.
 irsync = { path = ".", default-features = false, features = ["test-hooks"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

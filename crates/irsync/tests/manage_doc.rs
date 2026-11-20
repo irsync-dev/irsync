@@ -53,8 +53,8 @@ fn peer_spec_forms() {
     assert!(
         matches!(PeerSpec::parse(&id(2).to_string(), &hosts).unwrap(), PeerSpec::Id { id: got, .. } if got == id(2))
     );
-    let key =
-        ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+    let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
+    let key = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
     let mut pk = key.public_key().clone();
     pk.set_comment("mike@laptop");
     let line = pk.to_openssh().unwrap();

@@ -3,7 +3,8 @@ use irsync::identity::{
     load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
     public_key_line, read_passphrase_file, write_new, IdentityError, KeySource, PassphraseSource,
 };
-use rand_core::OsRng;
+use ssh_key::getrandom::SysRng;
+use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use std::os::unix::fs::PermissionsExt;
 
@@ -32,8 +33,8 @@ fn generated_key_loads_and_public_matches_ssh_pub() {
 fn encrypted_key_needs_passphrase() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("enc");
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    let enc = key.encrypt(&mut OsRng, "hunter2").unwrap();
+    let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
+    let enc = key.encrypt(&mut UnwrapErr(SysRng), "hunter2").unwrap();
     enc.write_openssh_file(&path, LineEnding::LF).unwrap();
 
     assert!(matches!(
@@ -174,8 +175,8 @@ fn parse_endpoint_id_accepts_z32_and_hex() {
 fn encrypted_identity_via_env_and_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("enc");
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    key.encrypt(&mut OsRng, "hunter2")
+    let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut UnwrapErr(SysRng), "hunter2")
         .unwrap()
         .write_openssh_file(&path, LineEnding::LF)
         .unwrap();
@@ -222,8 +223,8 @@ fn encrypted_identity_via_env_and_file() {
 fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     let dir = tempfile::tempdir().unwrap();
     let id = dir.path().join("id");
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    key.encrypt(&mut OsRng, "s3cret")
+    let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut UnwrapErr(SysRng), "s3cret")
         .unwrap()
         .write_openssh_file(&id, LineEnding::LF)
         .unwrap();
@@ -315,9 +316,9 @@ fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
     let home = dir.path().join("home");
     let ssh = home.join(".ssh/id_ed25519");
     std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
-    PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+    PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519)
         .unwrap()
-        .encrypt(&mut OsRng, "the ssh one")
+        .encrypt(&mut UnwrapErr(SysRng), "the ssh one")
         .unwrap()
         .write_openssh_file(&ssh, LineEnding::LF)
         .unwrap();
@@ -368,8 +369,8 @@ fn load_or_generate_creates_once_then_loads_same_key() {
 fn encrypted_existing_key_without_passphrase_is_error_not_regenerated() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("k");
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    let enc = key.encrypt(&mut OsRng, "pw").unwrap();
+    let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
+    let enc = key.encrypt(&mut UnwrapErr(SysRng), "pw").unwrap();
     enc.write_openssh_file(&p, LineEnding::LF).unwrap();
     let before = std::fs::read(&p).unwrap();
     let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
@@ -446,8 +447,8 @@ fn an_encrypted_ssh_key_without_a_passphrase_is_an_error_naming_it() {
     let d = tempfile::tempdir().unwrap();
     let own = d.path().join("irsync/id_ed25519");
     let ssh = d.path().join("id_ed25519");
-    let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
-    key.encrypt(&mut OsRng, "pw")
+    let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
+    key.encrypt(&mut UnwrapErr(SysRng), "pw")
         .unwrap()
         .write_openssh_file(&ssh, LineEnding::LF)
         .unwrap();

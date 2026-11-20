@@ -1,7 +1,8 @@
 //! Node identities derived from OpenSSH Ed25519 keys.
 
 use iroh::{EndpointId, SecretKey};
-use rand_core::OsRng;
+use ssh_key::getrandom::SysRng;
+use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -190,10 +191,13 @@ pub fn generate_openssh_with(
             return Err(IdentityError::AlreadyExists(p.to_path_buf()));
         }
     }
-    let mut key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)?;
+    // The system's random source. It panics if the system has none to
+    // give, as the `OsRng` of older versions did.
+    let mut rng = UnwrapErr(SysRng);
+    let mut key = PrivateKey::random(&mut rng, Algorithm::Ed25519)?;
     key.set_comment(comment);
     let text = match passphrase {
-        Some(p) => key.encrypt(&mut OsRng, p)?.to_openssh(LineEnding::LF)?,
+        Some(p) => key.encrypt(&mut rng, p)?.to_openssh(LineEnding::LF)?,
         None => key.to_openssh(LineEnding::LF)?,
     };
     match write_new(path, text.as_bytes(), 0o600) {
