@@ -282,7 +282,7 @@ fn mid_sync() -> (Live, Instant) {
 }
 
 #[test]
-fn block_has_rule_phases_and_rows_largest_first() {
+fn block_has_rule_phases_and_rows_large_files_first() {
     let (l, t) = mid_sync();
     let lines = render(&l, &Geometry::fixed(120, 40), t);
     assert!(lines[0].chars().all(|c| c == '─'), "{lines:?}");
@@ -1002,4 +1002,154 @@ fn a_file_opened_again_waits_again() {
     assert_eq!(l.in_flight(), 0);
     l.apply(&Event::FileDone(rp("a"), 1000), t);
     assert!(l.rows.is_empty());
+}
+
+/// The paths of the rows drawn, top to bottom.
+fn row_names(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l.starts_with("  [") || l.starts_with("  hashing"))
+        .map(|l| {
+            l.split_whitespace()
+                .find(|w| w.starts_with('f') || w.starts_with("big"))
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Rows `(name, size, bytes per second)` one second into their transfer;
+/// a rate of 0 is a row whose stream is open and has moved nothing.
+fn rows_at_rates(rows: &[(&str, u64, u64)]) -> (Live, Instant) {
+    let (mut l, t) = (live(), Instant::now());
+    for (name, size, _) in rows {
+        l.apply(&Event::FileStart(rp(name), *size), t);
+    }
+    let t = t + Duration::from_secs(1);
+    for (name, _, rate) in rows.iter().filter(|r| r.2 > 0) {
+        l.apply(&Event::FileBytes(rp(name), *rate), t);
+    }
+    l.tick(t);
+    (l, t)
+}
+
+#[test]
+fn moving_rows_come_first_fastest_first() {
+    let (l, t) = rows_at_rates(&[
+        ("f1", 1 << 20, 0),
+        ("f2", 1 << 20, 10_000),
+        ("f3", 1 << 20, 0),
+        ("f4", 1 << 20, 300_000),
+        ("f5", 1 << 20, 40_000),
+    ]);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert_eq!(row_names(&lines), ["f4", "f5", "f2", "f1", "f3"]);
+}
+
+#[test]
+fn rows_of_about_the_same_speed_keep_their_order() {
+    // Within a factor of two the order is by name, so two rows whose
+    // rates cross each second do not swap places.
+    let (l, t) = rows_at_rates(&[
+        ("f1", 1 << 20, 70_000),
+        ("f2", 1 << 20, 120_000),
+        ("f3", 1 << 20, 66_000),
+        ("f4", 1 << 20, 600_000),
+    ]);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert_eq!(row_names(&lines), ["f4", "f1", "f2", "f3"]);
+}
+
+#[test]
+fn moving_files_take_the_places_and_stalled_ones_are_counted() {
+    let mut rows: Vec<(String, u64, u64)> = Vec::new();
+    for i in 0..10 {
+        // The names that sort first move nothing.
+        rows.push((format!("f{i:02}"), 1 << 20, 0));
+    }
+    for i in 10..20 {
+        rows.push((format!("f{i:02}"), 1 << 20, 50_000));
+    }
+    let rows: Vec<(&str, u64, u64)> = rows.iter().map(|r| (r.0.as_str(), r.1, r.2)).collect();
+    let (mut l, t) = rows_at_rates(&rows);
+    // Height 14: three rows fit.
+    let g = Geometry::fixed(120, 14);
+    let lines = render(&l, &g, t);
+    assert_eq!(row_names(&lines), ["f10", "f11", "f12"]);
+    assert!(lines.iter().any(|l| l == "  … and 17 more"), "{lines:?}");
+
+    // A second later the idle ones count as stalled; the others still move.
+    let t = t + Duration::from_secs(1);
+    for (name, _, rate) in rows.iter().filter(|r| r.2 > 0) {
+        l.apply(&Event::FileBytes(rp(name), *rate), t);
+    }
+    l.tick(t);
+    let lines = render(&l, &g, t);
+    assert_eq!(row_names(&lines), ["f10", "f11", "f12"]);
+    assert!(
+        lines.iter().any(|l| l == "  … and 17 more (10 stalled)"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn stalled_rows_are_drawn_when_there_is_room() {
+    let (mut l, t) = rows_at_rates(&[("f1", 1 << 20, 0), ("f2", 1 << 20, 50_000)]);
+    let t = t + Duration::from_secs(1);
+    l.apply(&Event::FileBytes(rp("f2"), 50_000), t);
+    l.tick(t);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert_eq!(row_names(&lines), ["f2", "f1"]);
+    assert!(lines.last().unwrap().contains("stalled 2s"), "{lines:?}");
+    assert!(lines.iter().all(|l| !l.contains("more")), "{lines:?}");
+}
+
+#[test]
+fn a_large_file_keeps_the_top_place_until_it_stalls() {
+    let mut rows = vec![("big.mov", 1u64 << 30, 20_000u64)];
+    let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
+    for n in &names {
+        rows.push((n.as_str(), 1 << 20, 500_000));
+    }
+    let (mut l, t) = rows_at_rates(&rows);
+    let g = Geometry::fixed(120, 14);
+    // Slower than every other row, and still on top.
+    assert_eq!(row_names(&render(&l, &g, t)), ["big.mov", "f00", "f01"]);
+
+    // The small files go on; the large one gets nothing for two seconds.
+    let mut now = t;
+    for _ in 0..2 {
+        now += Duration::from_secs(1);
+        for n in &names {
+            l.apply(&Event::FileBytes(rp(n), 100_000), now);
+        }
+        l.tick(now);
+    }
+    let lines = render(&l, &g, now);
+    assert_eq!(row_names(&lines), ["f00", "f01", "f02"]);
+    assert!(
+        lines.iter().any(|l| l == "  … and 18 more (1 stalled)"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn files_of_one_size_are_not_pinned() {
+    // No file stands out, so the order is by speed alone.
+    let mut rows: Vec<(String, u64, u64)> = (0..30)
+        .map(|i| (format!("f{i:02}"), 1 << 20, 10_000))
+        .collect();
+    rows[29].2 = 900_000;
+    let rows: Vec<(&str, u64, u64)> = rows.iter().map(|r| (r.0.as_str(), r.1, r.2)).collect();
+    let (l, t) = rows_at_rates(&rows);
+    let lines = render(&l, &Geometry::fixed(120, 14), t);
+    assert_eq!(row_names(&lines), ["f29", "f00", "f01"]);
+}
+
+#[test]
+fn hashing_rows_rank_between_moving_and_idle_ones() {
+    let (mut l, t) = rows_at_rates(&[("f1", 1 << 20, 0), ("f3", 1 << 20, 1_000)]);
+    l.apply(&Event::FileHashing(rp("f2"), 1 << 20), t);
+    let lines = render(&l, &Geometry::fixed(120, 40), t);
+    assert_eq!(row_names(&lines), ["f3", "f2", "f1"]);
 }

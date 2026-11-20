@@ -216,8 +216,13 @@ With `--progress` (or `-P`) on a terminal, the client draws a live block at the 
 listing walk on both sides, a transfer bar with rsync's percent semantics, one
 row per file that is being hashed or has a data stream open and is not yet
 sent in full, and the deletion pass. The rows are as many as half the
-terminal's height allows, largest file first; a last line `… and N more`
-counts the others. The transfer bar's `N in flight` counts these files,
+terminal's height allows. The files that are moving come first, fastest
+first, so that progress is what you see: then files being hashed, then idle
+ones, then stalled ones. A file much larger than the others (four times the
+typical file in flight, at most two of them) keeps its place at the top
+while it is not stalled, so you can follow it. A last line `… and N more`
+counts the files without a row, as in `… and 117 more (23 stalled)` when
+some of them are stalled. The transfer bar's `N in flight` counts these files,
 including those beyond the rows drawn. It is not the session's window of up to
 4,096 files in flight described in
 [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams):
