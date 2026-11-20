@@ -37,7 +37,7 @@ use super::engine::{blocking, Ctx};
 use super::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
 use super::receiver::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, Region, MIN_BLOCK};
-use crate::fs::meta::{apply_metadata_fd, lstat_entry_with_ctime};
+use crate::fs::meta::apply_metadata_fd;
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
 use crate::net::frame::read_msg_tapped;
@@ -276,7 +276,7 @@ pub(super) async fn index_old_file(ctx: &Ctx, path: &RelPath) -> Option<OldFile>
 /// hasher (cached when its row is fresh), so its chunks are in the index.
 async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
     let (base, rel) = (ctx.base.clone(), key.clone());
-    let (entry, ctime) = blocking(move || lstat_entry_with_ctime(&base, &rel))
+    let (entry, ctime) = blocking(move || crate::fs::meta::lstat_beneath(&base, &rel))
         .await
         .ok()?;
     if entry.kind() != Kind::Regular {
@@ -334,10 +334,12 @@ async fn warm_candidates(ctx: &Ctx, size: u64) {
 /// Opens the destination if it is still the file `old` was hashed from:
 /// same size, mtime, ctime, device and inode.
 async fn unchanged_file(ctx: &Ctx, key: &RelPath, old: &OldFile) -> Option<File> {
-    let full = ctx.full_key(key);
+    let (base, local) = (ctx.base.clone(), ctx.local_key(key));
     let (entry, ctime) = (old.entry.clone(), old.ctime);
     blocking(move || {
-        let file = crate::fs::safe::open_regular_nofollow(&full)?;
+        // No symlink followed on the way: what is read here is signed and
+        // offered to the sender as the old file.
+        let file = crate::fs::safe::open_regular_beneath(&base, &local)?;
         let m = file.metadata()?;
         let same = m.len() == entry.size
             && m.mtime() == entry.mtime_sec
@@ -546,8 +548,8 @@ pub(super) async fn open_writer(
         .then(|| Arc::new(Gate::new(&w.missing_chunks(), digest.chunks.len())));
     let mut old = old_file;
     if !bases.is_empty() && old.is_none() {
-        let full = ctx.full_key(&key);
-        match blocking(move || crate::fs::safe::open_regular_nofollow(&full)).await {
+        let (base, local) = (ctx.base.clone(), ctx.local_key(&key));
+        match blocking(move || crate::fs::safe::open_regular_beneath(&base, &local)).await {
             Ok(f) => old = Some(Arc::new(f)),
             Err(e) => {
                 tracing::debug!(?path, error = %e, "old file not opened; no bases");
@@ -1187,7 +1189,7 @@ async fn record(
         return;
     }
     let rec = blocking(move || {
-        let stat = lstat_entry_with_ctime(&base, &key)?;
+        let stat = crate::fs::meta::lstat_beneath(&base, &key)?;
         queue_record(&index, key, digest, stat);
         Ok(())
     })

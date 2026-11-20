@@ -448,19 +448,21 @@ impl Ctx {
         })
     }
 
+    /// An index key as a path below `base` (see [`Ctx::full_key`] for the
+    /// single-file mapping): what the opens that follow no symlink take.
+    pub fn local_key(&self, key: &RelPath) -> RelPath {
+        match &self.single {
+            Some(s) if *key == self.scope.key(&s.wire) => self.scope.key(&s.local),
+            _ => key.clone(),
+        }
+    }
+
     /// Absolute path of an index key. A single file's key under its wire
     /// name maps to the key of its local name. Every caller today passes a
     /// key already built from the local name, so that mapping never fires;
     /// it is kept as a guard for a caller that passes the wire key.
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
-        let mapped;
-        let key = match &self.single {
-            Some(s) if *key == self.scope.key(&s.wire) => {
-                mapped = self.scope.key(&s.local);
-                &mapped
-            }
-            _ => key,
-        };
+        let key = &self.local_key(key);
         if key.as_bytes().is_empty() {
             self.base.clone()
         } else {

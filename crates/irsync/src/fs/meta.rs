@@ -46,6 +46,29 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
     lstat_entry_with_ctime(root, rel).map(|(e, _)| e)
 }
 
+/// [`lstat_entry_with_ctime`] for a path the other side named: no symlink
+/// below `base` is followed on the way to it (see
+/// [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)). The
+/// root itself is `lstat`ed by name.
+pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+    use nix::fcntl::AtFlags;
+    if rel.as_bytes().is_empty() {
+        return lstat_entry_with_ctime(base, rel);
+    }
+    let (dir, name) = crate::fs::safe::open_parent_beneath(base, rel)?;
+    let st = nix::sys::stat::fstatat(&dir, name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+        .map_err(crate::fs::safe::errno)?;
+    let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
+        nix::fcntl::readlinkat(&dir, name.as_os_str())
+            .map_err(crate::fs::safe::errno)?
+            .as_bytes()
+            .to_vec()
+    } else {
+        Vec::new()
+    };
+    Ok(entry_of(st, rel, link_target))
+}
+
 /// Like [`lstat_entry`], also returning the inode change time `(sec, nsec)`.
 pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
     let full = if rel.as_bytes().is_empty() {

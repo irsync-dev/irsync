@@ -125,9 +125,79 @@ pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
     Ok(fd)
 }
 
+/// Opens the directory that holds `base/rel` (see [`open_dir_beneath`]:
+/// no symlink below `base` is followed) and gives `rel`'s final name.
+///
+/// A path checked once and used by name later can lead somewhere else by
+/// then: whoever can change the tree, the other side of a second session
+/// included, may have swapped a directory on the way for a symlink.
+/// Everything a session does to a path from the other side therefore
+/// starts here and goes on from the descriptor.
+pub fn open_parent_beneath(
+    base: &Path,
+    rel: &RelPath,
+) -> io::Result<(OwnedFd, std::ffi::OsString)> {
+    let (parent, name) = split_last(rel)?;
+    let dir = open_dir_beneath(base, &parent)?;
+    Ok((dir, std::ffi::OsStr::from_bytes(&name).to_owned()))
+}
+
+/// [`open_regular_nofollow`] for `base/rel`, with no symlink followed in
+/// any component of `rel` (see [`open_parent_beneath`]).
+pub fn open_regular_beneath(base: &Path, rel: &RelPath) -> io::Result<File> {
+    open_regular_beneath_stat(base, rel).map(|(f, _)| f)
+}
+
+/// [`open_regular_beneath`], also returning the open file's `fstat`.
+pub fn open_regular_beneath_stat(base: &Path, rel: &RelPath) -> io::Result<(File, FileStat)> {
+    let what = base.join(rel.to_os());
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let fd = super::transient::retry(|| {
+        let (dir, name) = open_parent_beneath(base, rel)?;
+        openat(&dir, name.as_os_str(), flags, Mode::empty()).map_err(errno)
+    })
+    .map_err(|e| nofollow_error(e, &what))?;
+    let f = File::from(fd);
+    let st = require_regular_stat(&f, &what)?;
+    Ok((f, st))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_regular_beneath_follows_no_symlink_on_the_way() {
+        let (d, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir_all(d.path().join("a/b")).unwrap();
+        std::fs::write(d.path().join("a/b/f"), b"inside").unwrap();
+        std::fs::write(outside.path().join("f"), b"outside").unwrap();
+        let rel = |p: &str| RelPath::new(p.as_bytes()).unwrap();
+        let read = |r: &str| {
+            use std::io::Read;
+            let mut s = String::new();
+            open_regular_beneath(d.path(), &rel(r)).map(|mut f| {
+                f.read_to_string(&mut s).unwrap();
+                s
+            })
+        };
+        assert_eq!(read("a/b/f").unwrap(), "inside");
+        // The directory is swapped for a link to one outside.
+        std::fs::rename(d.path().join("a/b"), d.path().join("a/moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), d.path().join("a/b")).unwrap();
+        assert_eq!(
+            std::fs::read(d.path().join("a/b/f")).unwrap(),
+            b"outside",
+            "by name, the path now leads outside"
+        );
+        let e = read("a/b/f").unwrap_err();
+        assert!(e.to_string().contains("symlink"), "{e}");
+        // A link as the final name, a directory, and the root are refused.
+        std::os::unix::fs::symlink(outside.path().join("f"), d.path().join("l")).unwrap();
+        assert!(read("l").unwrap_err().to_string().contains("symlink"));
+        assert!(read("a").is_err());
+        assert!(open_regular_beneath(d.path(), &RelPath::root()).is_err());
+    }
 
     #[test]
     fn open_regular_nofollow_refuses_symlinks_and_non_files() {
