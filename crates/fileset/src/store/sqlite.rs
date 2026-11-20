@@ -360,6 +360,16 @@ impl Store for SqliteStore {
             let path: Vec<u8> = row.get(0)?;
             if current.as_ref().is_some_and(|(p, _)| *p != path) {
                 if let Some((p, e)) = current.take() {
+                    // A sound table gives paths in rising order. A damaged one
+                    // can hand back an earlier path, and then never end: after
+                    // a lookup on this connection SQLite finds its place in
+                    // this scan again by key, which in a misordered table is
+                    // a row already visited.
+                    anyhow::ensure!(
+                        p < path,
+                        "manifest is damaged: entries out of order at {}",
+                        String::from_utf8_lossy(&path)
+                    );
                     f(&p, &e)?;
                 }
             }
