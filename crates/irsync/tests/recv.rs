@@ -1067,3 +1067,54 @@ async fn finalize_flushes_only_when_asked() {
         assert_eq!(flushed > 0, sync, "sync {sync}: {flushed} ns flushing");
     }
 }
+
+/// Until a file is placed, its `.part` is for the owner only: the content
+/// may belong in a file other users must not read. Placed without `-p`, it
+/// gets the mode any new file gets; with `-p`, the sender's.
+#[tokio::test]
+async fn part_file_is_private_until_placed() {
+    let e = env();
+    let data = content(57);
+    let cl = chunk_list(&data);
+    // What this process's umask gives a new file.
+    let probe = e.root.join("probe");
+    fs::write(&probe, b"").unwrap();
+    let default = fs::metadata(&probe).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(irsync::fs::meta::default_file_mode(), default);
+
+    for (perms, sent, want) in [(false, 0o100640, default), (true, 0o100640, 0o640)] {
+        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        write_all(&mut w, &data, &cl, &all(&cl)).await;
+        let mode = fs::metadata(part_path(&e.root))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o600, "{mode:o}");
+        let mut ent = entry(data.len() as u64);
+        ent.mode = sent;
+        let opts = ApplyOpts { perms, ..OPTS };
+        w.finalize(&ent, &opts).await.unwrap();
+        let mode = fs::metadata(final_path(&e.root))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, want, "perms={perms}: {mode:o}");
+        fs::remove_file(final_path(&e.root)).unwrap();
+    }
+}
+
+/// The index names every file of the tree and its hashes: its directory is
+/// for the owner only, also one that an older build left open.
+#[test]
+fn index_directory_is_private() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, state) = (tmp.path().join("root"), tmp.path().join("state"));
+    fs::create_dir_all(&root).unwrap();
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    drop(Index::open(&state, &root).unwrap());
+    assert_eq!(mode(&state), 0o700);
+    assert_eq!(mode(&state.join("index")), 0o700);
+    fs::set_permissions(state.join("index"), fs::Permissions::from_mode(0o755)).unwrap();
+    drop(Index::open(&state, &root).unwrap());
+    assert_eq!(mode(&state.join("index")), 0o700);
+}

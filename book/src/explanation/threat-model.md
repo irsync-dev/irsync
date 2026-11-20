@@ -188,8 +188,14 @@ is fine.
 **What they could try:** read your key or state, or swap a directory for a
 symlink while a sync runs in a tree they can write.
 
-**What stops them:** a new private key is created readable by its owner
-only, and an existing key is never overwritten.
+**What stops them:**
+
+- A new private key is created readable by its owner only, and an existing
+  key is never overwritten. irsync warns about an unencrypted key that
+  other users can read.
+- A file being received is readable by its owner only until it is placed.
+- The index of file names and hashes sits in a directory only its owner can
+  enter. A new config file and the daemon's log are for the owner only.
 
 **What is left:**
 

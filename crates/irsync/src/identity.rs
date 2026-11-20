@@ -49,9 +49,23 @@ fn secret_of(key: &PrivateKey) -> Result<SecretKey, IdentityError> {
     Ok(SecretKey::from_bytes(&kp.private.to_bytes()))
 }
 
+/// Whether the file's mode lets its group or everyone read or write it.
+/// Whoever reads an unencrypted key file is that identity.
+pub fn open_to_others(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o066 != 0)
+}
+
 /// Load an OpenSSH Ed25519 private key as an iroh secret key.
 pub fn load_secret_key(path: &Path, passphrase: Option<&str>) -> Result<SecretKey, IdentityError> {
     let mut key = PrivateKey::read_openssh_file(path)?;
+    if !key.is_encrypted() && open_to_others(path) {
+        tracing::warn!(
+            "private key {} can be read by other users; run: chmod 600 {}",
+            path.display(),
+            path.display()
+        );
+    }
     if key.is_encrypted() {
         let pass = passphrase.ok_or(IdentityError::PassphraseRequired)?;
         key = key.decrypt(pass)?;

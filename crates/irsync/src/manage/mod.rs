@@ -98,8 +98,18 @@ pub fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, ManageError> {
         })
 }
 
+/// The mode a saved config gets: the mode the file at `path` has, so a
+/// save never opens up a file its owner closed; 0600 for a new file, since
+/// it names exports, peers and grants.
+fn saved_mode(path: &Path) -> std::fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).map_or(0o600, |m| m.permissions().mode() & 0o777);
+    std::fs::Permissions::from_mode(mode)
+}
+
 /// Atomically write `doc` to `path` (temp file in the same directory, then
-/// rename), creating the parent directory and using mode 0644.
+/// rename), creating the parent directory. The file keeps its mode; a new
+/// one is 0600.
 pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
     let io = |source| ManageError::Io {
         path: path.to_path_buf(),
@@ -113,10 +123,7 @@ pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageE
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
     tmp.write_all(doc.to_string().as_bytes()).map_err(io)?;
     tmp.as_file().sync_all().map_err(io)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o644)).map_err(io)?;
-    }
+    std::fs::set_permissions(tmp.path(), saved_mode(path)).map_err(io)?;
     tmp.persist(path).map_err(|e| ManageError::Io {
         path: path.to_path_buf(),
         source: e.error,
@@ -247,11 +254,7 @@ impl ConfigLock {
         let file = self.file.as_mut().expect("held until saved");
         file.write_all(doc.to_string().as_bytes()).map_err(io)?;
         file.sync_all().map_err(io)?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.lock, std::fs::Permissions::from_mode(0o644))
-                .map_err(io)?;
-        }
+        std::fs::set_permissions(&self.lock, saved_mode(&self.path)).map_err(io)?;
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
         // Renamed away: nothing to remove on drop.
         self.file = None;

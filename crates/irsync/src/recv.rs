@@ -289,12 +289,16 @@ pub const PART_BUSY: &str = "part file busy";
 /// Never follow a symlink at the `.part` name, never block on a FIFO there.
 const PART_FLAGS: i32 = nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC;
 
+/// A new `.part` is readable by its owner only: until the file is placed
+/// it may hold content whose final mode is stricter than the default.
+/// `finalize` sets the final mode.
 fn open_rw(part: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
+        .mode(0o600)
         .custom_flags(PART_FLAGS)
         .open(part)
         .map_err(|e| nofollow_error(e, part))
@@ -1199,7 +1203,18 @@ impl Verified {
             // path) only once the path still names that very file. In
             // place, the file is already at its name. A directory at the
             // destination fails the rename (`EISDIR`), never replaced.
-            let placed = apply_metadata_fd_owned(&*file, &entry, &opts, held_owner)
+            // Without `-p` the file gets the mode a new file would have
+            // had (the `.part` was created private). In place, the file
+            // keeps the mode it has.
+            let mode = if opts.perms || inplace {
+                Ok(())
+            } else {
+                file.set_permissions(std::fs::Permissions::from_mode(
+                    crate::fs::meta::default_file_mode(),
+                ))
+            };
+            let placed = mode
+                .and_then(|()| apply_metadata_fd_owned(&*file, &entry, &opts, held_owner))
                 .and_then(|()| still_same_file(held_id, &part))
                 .and_then(|()| {
                     if inplace {
