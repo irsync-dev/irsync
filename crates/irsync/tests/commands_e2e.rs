@@ -757,6 +757,35 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     assert!(err.contains("irsync.toml"), "{err}");
 }
 
+/// A missing export is reported and gives exit 23; the exports after it
+/// are still hashed.
+#[test]
+fn export_update_goes_on_past_a_missing_export() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("srv/gone")).unwrap();
+    std::fs::create_dir_all(home.join("srv/photos")).unwrap();
+    std::fs::write(home.join("srv/photos/a.jpg"), vec![1u8; 4096]).unwrap();
+    for (name, dir) in [("gone", "srv/gone"), ("photos", "srv/photos")] {
+        let target = format!("{name}:{}", home.join(dir).display());
+        let o = irsync(&home, &["export", "add", &target]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    std::fs::remove_dir(home.join("srv/gone")).unwrap();
+    let state = home.join("xdg/irsync");
+    let config = home.join(".config/irsync/irsync.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
+    let o = irsync(&home, &["export", "update", "gone", "photos"]);
+    let (out, err) = (
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr),
+    );
+    assert_eq!(o.status.code(), Some(23), "{out}\n{err}");
+    assert!(err.contains("srv/gone"), "{err}");
+    assert!(out.contains("1 file(s), 1 hashed (4096 bytes)"), "{out}");
+}
+
 #[test]
 fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     let d = tempfile::tempdir().unwrap();

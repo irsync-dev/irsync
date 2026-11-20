@@ -1427,8 +1427,9 @@ fn index_roots(
             let index = Index::open(&state, &root)
                 .with_context(|| format!("open index for {}", root.display()))?
                 .into_handle();
-            let root_handle = irsync::fs::beneath::Root::open(&root)
-                .with_context(|| format!("open {}", root.display()))?;
+            // Opened when the walk first needs it: a missing root is a walk
+            // gap (reported, exit 23), and the other roots are still indexed.
+            let root_handle = irsync::fs::beneath::Root::lazy(&root);
             let r = irsync::warm::index_root(index, root_handle, HASH_WORKERS, dry_run)
                 .await
                 .with_context(|| format!("indexing {}", root.display()))?;
