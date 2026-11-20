@@ -1107,7 +1107,7 @@ impl Receiver {
         self.ctx
             .hooks
             .bus
-            .emit(super::Event::FileStart(f.path.clone(), f.entry.size));
+            .emit(super::Event::FileOpened(f.path.clone(), f.entry.size));
         let Fill {
             writer,
             remote,

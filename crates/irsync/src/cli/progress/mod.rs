@@ -352,6 +352,7 @@ impl Reporter {
             }
             Event::Bytes(_)
             | Event::FileStart(..)
+            | Event::FileOpened(..)
             | Event::Scanned { .. }
             | Event::Total { .. }
             | Event::FileHashing(..)

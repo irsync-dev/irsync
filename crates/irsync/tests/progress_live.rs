@@ -946,3 +946,60 @@ fn a_row_comes_back_when_its_matched_estimate_shrinks() {
     l.apply(&Event::FileMatched(rp("a"), 600), t);
     assert_eq!(l.in_flight(), 1);
 }
+
+#[test]
+fn a_file_the_receiver_waits_for_has_no_row_until_its_data_comes() {
+    let mut l = Live::new(Party::Peer, DeleteMode::Off, Instant::now());
+    let t = Instant::now();
+    l.apply(
+        &Event::Total {
+            party: Party::Peer,
+            files: 2,
+            bytes: 2000,
+        },
+        t,
+    );
+    // Opened for writing, both waiting for the sender's streams.
+    for p in ["a", "b"] {
+        l.apply(&Event::FileOpened(rp(p), 1000), t);
+        l.apply(&Event::FileMatched(rp(p), 200), t);
+    }
+    assert_eq!(l.in_flight(), 0);
+    // What is matched counts already.
+    assert_eq!(l.transfer_fraction(), (400, 2000));
+    // However long the wait, nothing is drawn, stalled or dropped.
+    let late = t + ROW_EXPIRY * 2;
+    l.tick(late);
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.rows.len(), 2);
+
+    // The first data makes the row, with its size known.
+    l.apply(&Event::FileBytes(rp("a"), 300), late);
+    assert_eq!(l.in_flight(), 1);
+    let row = &l.rows[&rp("a")];
+    assert!(row.shown());
+    assert_eq!((row.size, row.position()), (1000, 500));
+    assert_eq!(row.stalled_for(late), None);
+    assert_eq!(row.stalled_for(late + STALL_AFTER), Some(STALL_AFTER));
+    assert_eq!(l.transfer_fraction(), (700, 2000));
+    // The rate is taken from the first byte, not from the wait before it.
+    l.tick(late + Duration::from_secs(1));
+    assert_eq!(l.rows[&rp("a")].rate, 300.0);
+}
+
+#[test]
+fn a_file_opened_again_waits_again() {
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&Event::FileOpened(rp("a"), 1000), t);
+    l.apply(&Event::FileBytes(rp("a"), 300), t);
+    assert_eq!(l.in_flight(), 1);
+    // A new connection plans the file again: it waits for its stream.
+    l.apply(&Event::FileOpened(rp("a"), 1000), t);
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.rows[&rp("a")].position(), 300);
+    l.apply(&Event::FileBytes(rp("a"), 700), t);
+    // All of it is here: waiting to be placed, not drawn.
+    assert_eq!(l.in_flight(), 0);
+    l.apply(&Event::FileDone(rp("a"), 1000), t);
+    assert!(l.rows.is_empty());
+}
