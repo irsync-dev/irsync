@@ -4,9 +4,10 @@
 //!
 //! ```sh
 //! cargo bench -p irsync --bench index --no-run
-//! TMPDIR=/some/real/disk target/release/deps/index-* TREE N REPS [CASES]
+//! TMPDIR=/some/real/disk EXECUTABLE TREE N REPS [CASES]
 //! ```
 //!
+//! `EXECUTABLE` is the path the first command prints.
 //! `TREE` is `short` (`dNN/fNNNNN`), `long` (the 783-byte paths of
 //! `tests/blocking_pool.rs`) or `paths:FILE` (the first `N` relative paths
 //! listed in `FILE`, one a line). `CASES` is a comma-separated subset of
