@@ -853,7 +853,9 @@ fn place_single(
     };
     let placed = place_file_beneath(export_root, rel, &dest, hello.contents_only, &hello.name)
         .map_err(|e| match e {
-            PlaceError::SymlinkToDirectory(_) => (Code::BadPath, format!("bad session path: {e}")),
+            PlaceError::SymlinkToDirectory(_) | PlaceError::SymlinkNotFollowed(_) => {
+                (Code::BadPath, format!("bad session path: {e}"))
+            }
             e => (Code::BadPath, e.to_string()),
         })?;
     let root = placed
@@ -902,8 +904,16 @@ fn place_file_beneath(
             Ok(st) => {
                 let link = SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK;
                 // Only decides; nothing is written through the link.
-                if link && std::fs::metadata(dest).is_ok_and(|t| t.is_dir()) {
-                    return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()));
+                if link {
+                    match link_leads_to(export_root, rel) {
+                        LinkTo::Directory => {
+                            return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()))
+                        }
+                        LinkTo::NotFollowed => {
+                            return Err(PlaceError::SymlinkNotFollowed(dest.to_path_buf()))
+                        }
+                        LinkTo::Other => {}
+                    }
                 }
                 if contents_only {
                     return Err(PlaceError::NotADirectory(dest.to_path_buf()));
@@ -932,6 +942,71 @@ fn place_file_beneath(
         root: dest.to_path_buf(),
         name: src_name.to_vec(),
     })
+}
+
+/// What the symlink at a single file's destination leads to, as far as the
+/// daemon looks.
+#[derive(Debug, PartialEq, Eq)]
+enum LinkTo {
+    /// A directory in the export.
+    Directory,
+    /// A file in the export, or a name in it that is not there: the link
+    /// is a file to replace.
+    Other,
+    /// Out of the export, or through another symlink. What is there is
+    /// not looked at, so the answer is the same whatever it is.
+    NotFollowed,
+}
+
+/// Where the symlink at `rel` in the export at `export_root` leads. Its
+/// target is read as text and worked out inside the export: an absolute
+/// target, or one that climbs out with `..`, is not followed, and neither
+/// is one whose way passes another symlink. A client can put a link at the
+/// destination itself, so looking at what an outside link leads to would
+/// tell it what is at a path it may not see.
+fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
+    use crate::fs::safe::{is_dir_mode, open_parent_beneath, Beneath};
+    use nix::sys::stat::SFlag;
+    use std::os::unix::ffi::OsStrExt;
+    let Ok((dir, name)) = open_parent_beneath(export_root, rel) else {
+        return LinkTo::NotFollowed;
+    };
+    let Ok(target) = nix::fcntl::readlinkat(&dir, name.as_os_str()) else {
+        return LinkTo::NotFollowed;
+    };
+    let target = target.as_bytes();
+    if target.is_empty() || target[0] == b'/' || target.contains(&0) {
+        return LinkTo::NotFollowed;
+    }
+    let parent = rel.parent();
+    let mut parts: Vec<&[u8]> = parent.components().collect();
+    for c in target.split(|&b| b == b'/') {
+        match c {
+            b"" | b"." => {}
+            b".." => {
+                if parts.pop().is_none() {
+                    return LinkTo::NotFollowed;
+                }
+            }
+            c => parts.push(c),
+        }
+    }
+    if parts.is_empty() {
+        // The export's own directory.
+        return LinkTo::Directory;
+    }
+    let Ok(to) = RelPath::new(&parts.join(&b'/')) else {
+        return LinkTo::NotFollowed;
+    };
+    match Beneath::new(export_root, to).lstat() {
+        Ok(st) if is_dir_mode(st.st_mode as _) => LinkTo::Directory,
+        Ok(st) if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK => {
+            LinkTo::NotFollowed
+        }
+        Ok(_) => LinkTo::Other,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => LinkTo::Other,
+        Err(_) => LinkTo::NotFollowed,
+    }
 }
 
 /// The pull half of [`place_single`]: `rel` must name an existing entry
@@ -1632,5 +1707,37 @@ mod banner_tests {
                 }
             }
         }
+    }
+
+    /// Where a link at a single file's destination leads is worked out
+    /// inside the export only.
+    #[test]
+    fn a_link_at_the_destination_is_followed_only_inside_the_export() {
+        let export = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(export.path().join("d/sub")).unwrap();
+        std::fs::write(export.path().join("d/file"), b"x").unwrap();
+        std::fs::create_dir(outside.path().join("dir")).unwrap();
+        let link = |name: &str, to: &std::path::Path| {
+            std::os::unix::fs::symlink(to, export.path().join(name)).unwrap();
+            link_leads_to(export.path(), &RelPath::new(name.as_bytes()).unwrap())
+        };
+        let p = std::path::Path::new;
+        assert_eq!(link("a", p("d/sub")), LinkTo::Directory);
+        assert_eq!(link("d/b", p("sub")), LinkTo::Directory);
+        assert_eq!(link("d/c", p("../d/./sub/")), LinkTo::Directory);
+        assert_eq!(link("d/e", p("..")), LinkTo::Directory);
+        assert_eq!(link("f", p("d/file")), LinkTo::Other);
+        assert_eq!(link("g", p("d/none")), LinkTo::Other);
+        // Out of the export: absolute, or climbing out, whatever is there.
+        assert_eq!(link("h", &outside.path().join("dir")), LinkTo::NotFollowed);
+        assert_eq!(link("i", &outside.path().join("none")), LinkTo::NotFollowed);
+        assert_eq!(link("j", p("../x")), LinkTo::NotFollowed);
+        assert_eq!(link("d/k", p("../../x")), LinkTo::NotFollowed);
+        // An absolute link back into the export is not worked out either.
+        assert_eq!(link("l", &export.path().join("d")), LinkTo::NotFollowed);
+        // Through, or onto, another link.
+        assert_eq!(link("m", p("a")), LinkTo::NotFollowed);
+        assert_eq!(link("n", p("a/x")), LinkTo::NotFollowed);
     }
 }

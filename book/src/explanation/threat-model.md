@@ -276,13 +276,6 @@ Known gaps that are still open:
   the permissions of a passphrase file are not checked.
 - A receiver tells the sender which chunks it already has. A sender that can
   guess the whole content of a chunk can confirm the guess.
-- A push of a single file onto a symlink is refused when the link leads to a
-  directory. A client with a read-write grant can put a link there itself,
-  so the answer tells it whether a path outside the export is a directory.
-- The first part of a relative path is read as an export's name even when
-  the client has no grant for that export. A client that can reach the
-  daemon's home directory through another export can so tell that an export
-  of that name exists.
 
 While these gaps are open, give a read-write grant only to keys you would
 trust with the daemon account's own files, and pull only from daemons you

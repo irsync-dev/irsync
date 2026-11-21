@@ -62,6 +62,17 @@ pub fn resolve_path<'a>(
     home: Option<&Path>,
     exports: &'a BTreeMap<String, Export>,
 ) -> Result<Option<(PathBuf, Option<&'a str>)>, ResolveError> {
+    resolve_path_where(path, home, exports, |_, _| true)
+}
+
+/// [`resolve_path`], where a first component names an export only if
+/// `usable` says so; any other name is a directory under `home`.
+fn resolve_path_where<'a>(
+    path: &[u8],
+    home: Option<&Path>,
+    exports: &'a BTreeMap<String, Export>,
+    usable: impl Fn(&str, &Export) -> bool,
+) -> Result<Option<(PathBuf, Option<&'a str>)>, ResolveError> {
     let (absolute, parts) = components(path)?;
     if absolute {
         return Ok(Some((join(PathBuf::from("/"), &parts), None)));
@@ -70,6 +81,7 @@ pub fn resolve_path<'a>(
         if let Some((name, e)) = std::str::from_utf8(first)
             .ok()
             .and_then(|n| exports.get_key_value(n))
+            .filter(|(n, e)| usable(n, e))
         {
             return Ok(Some((join(e.path.clone(), &parts[1..]), Some(name))));
         }
@@ -144,12 +156,22 @@ pub fn containing<'a>(
 
 /// Both steps for the daemon: `Err(BadPath)`, or `Ok(None)` when the path
 /// cannot be resolved or lies outside every export the peer may use.
+///
+/// A first component stands for an export when the peer has a grant for
+/// that export, or may use the export's directory through another export
+/// (two exports of one directory, or one nested in the other: the grant is
+/// on the directory). The name of any other export is read as a directory
+/// under the home, as if the export were not there: what a path means to
+/// a peer never depends on exports whose directory it may not use.
 pub fn resolve<'a>(
     path: &[u8],
     home: Option<&Path>,
     exports: &'a BTreeMap<String, Export>,
     grants: &Grants,
 ) -> Result<Option<Resolved<'a>>, ResolveError> {
-    Ok(resolve_path(path, home, exports)?
+    let usable = |name: &str, e: &Export| {
+        grants.access_to(name, e).is_some() || containing(&e.path, exports, grants, None).is_some()
+    };
+    Ok(resolve_path_where(path, home, exports, usable)?
         .and_then(|(abs, named)| containing(&abs, exports, grants, named)))
 }

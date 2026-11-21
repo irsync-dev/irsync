@@ -306,11 +306,11 @@ async fn push_onto_symlink_replaces_the_link() {
     within30(async {
         let h = Harness::new().await;
         let f = source(&h, b"image");
-        let outside = tempfile::tempdir().unwrap();
-        let victim = outside.path().join("victim");
+        // A link to a file in the export, by a relative name.
+        let victim = h.export.path().join("victim");
         fs::write(&victim, b"untouched").unwrap();
         let t = h.export.path().join("T");
-        std::os::unix::fs::symlink(&victim, &t).unwrap();
+        std::os::unix::fs::symlink("victim", &t).unwrap();
         let out = h
             .run_single_push(&archive_opts(), &f, b"m/T", false)
             .await
@@ -455,7 +455,7 @@ async fn push_through_symlink_fails() {
             .await
             .unwrap_err();
         assert!(
-            format!("{err:#}").contains("is a symlink to a directory"),
+            format!("{err:#}").contains("is a symlink the daemon does not follow"),
             "{err:#}"
         );
         assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"outside");
@@ -489,7 +489,7 @@ async fn push_onto_symlink_to_dir_is_refused() {
             .unwrap_err();
         let err = format!("{err:#}");
         let want = format!(
-            "bad session path: {} is a symlink to a directory",
+            "bad session path: {} is a symlink the daemon does not follow",
             h.export.path().join("link").display()
         );
         assert!(err.contains(&want), "{err}");
@@ -901,6 +901,68 @@ async fn probe_without_a_reply_times_out() {
             "{err:#}"
         );
         conn.close(0u32.into(), b"done");
+    })
+    .await;
+}
+
+/// A push onto a symlink that leads out of the export gets the same answer
+/// whatever the link leads to: a file, a directory or nothing. The link
+/// stays and nothing out there is touched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_onto_a_symlink_out_of_the_export_says_nothing_about_its_target() {
+    within30(async {
+        let h = Harness::new().await;
+        let f = source(&h, b"image");
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("file"), b"untouched").unwrap();
+        fs::create_dir(outside.path().join("dir")).unwrap();
+        let mut answers = Vec::new();
+        for target in ["file", "dir", "nothing"] {
+            let t = h.export.path().join("T");
+            std::os::unix::fs::symlink(outside.path().join(target), &t).unwrap();
+            let err = h
+                .run_single_push(&archive_opts(), &f, b"m/T", false)
+                .await
+                .unwrap_err();
+            answers.push(format!("{err:#}"));
+            assert!(fs::symlink_metadata(&t).unwrap().is_symlink());
+            fs::remove_file(&t).unwrap();
+        }
+        assert!(
+            answers[0].contains("is a symlink the daemon does not follow"),
+            "{}",
+            answers[0]
+        );
+        assert!(answers.iter().all(|a| *a == answers[0]), "{answers:?}");
+        assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"untouched");
+        assert_eq!(fs::read_dir(outside.path().join("dir")).unwrap().count(), 0);
+    })
+    .await;
+}
+
+/// A push onto a symlink to a directory in the export is still refused,
+/// and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn push_onto_a_symlink_to_a_directory_in_the_export_is_refused() {
+    within30(async {
+        let h = Harness::new().await;
+        let f = source(&h, b"image");
+        fs::create_dir(h.export.path().join("real")).unwrap();
+        let t = h.export.path().join("T");
+        std::os::unix::fs::symlink("real", &t).unwrap();
+        let err = h
+            .run_single_push(&archive_opts(), &f, b"m/T", false)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("is a symlink to a directory"),
+            "{err:#}"
+        );
+        assert!(fs::symlink_metadata(&t).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_dir(h.export.path().join("real")).unwrap().count(),
+            0
+        );
     })
     .await;
 }

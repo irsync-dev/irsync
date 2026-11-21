@@ -40,6 +40,10 @@ The daemon reads `PATH` in this order:
 1. **An export name**, then a path inside it. When the first component of a
    relative `PATH` names an export, the rest is resolved under that export's
    directory: `myserver:photos/2024` is `2024` inside the `photos` export.
+   A name counts only if the client may use that export's directory, through
+   a grant for the export or for another export that contains the directory.
+   Any other export's name is read as in step 2, as if the export were not
+   there.
 2. **A path relative to the home directory** of the account the daemon runs
    as. `myserver:Pictures` is `~/Pictures` on the daemon's machine;
    `myserver:` and `myserver:~` are the home directory itself, and
@@ -125,10 +129,13 @@ pull:
 - `irsync myserver:dir/f.iso` with no destination lists that one file.
 - The missing parent directories of `T` are handled as for a directory
   destination.
-- On a push the daemon does not follow a symlink at `T`. A symlink to a
-  file, or one that points nowhere, is replaced by the file. A symlink to a
-  directory is an error ("is a symlink to a directory"); name the real
-  directory instead.
+- On a push the daemon does not follow a symlink at `T`. It works out where
+  the link leads only inside the export. A symlink to a file there, or to a
+  name that is not there, is replaced by the file. A symlink to a directory
+  there is an error ("is a symlink to a directory"); name the real directory
+  instead. A symlink with an absolute target, one that leads out of the
+  export, or one that leads through another symlink is an error too ("is a
+  symlink the daemon does not follow"), whatever it leads to.
 
 A pull without a trailing slash first asks the daemon whether the path is a
 file, a directory or missing. That costs one extra short connection. A
