@@ -38,7 +38,7 @@ use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
-use crate::session::single::{is_one_component, place_file, PlaceError, SingleFile};
+use crate::session::single::{is_one_component, FilePlace, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, HASH_WORKERS};
@@ -851,8 +851,8 @@ fn place_single(
     } else {
         export_root.join(rel.to_os())
     };
-    let placed =
-        place_file(&dest, hello.contents_only, &hello.name, false).map_err(|e| match e {
+    let placed = place_file_beneath(export_root, rel, &dest, hello.contents_only, &hello.name)
+        .map_err(|e| match e {
             PlaceError::SymlinkToDirectory(_) => (Code::BadPath, format!("bad session path: {e}")),
             e => (Code::BadPath, e.to_string()),
         })?;
@@ -874,6 +874,64 @@ fn place_single(
         )),
         _ => Err((Code::BadPath, "invalid path".into())),
     }
+}
+
+/// [`place_file`] for the daemon: where a single file named `src_name`
+/// lands for the destination `rel` in the export at `export_root` (`dest`
+/// is the same place as a path, for the result and for messages). What is
+/// at the destination is looked at from the export's directory with no
+/// symlink followed on the way, so a directory above it that was swapped
+/// for a link says nothing about what the link leads to.
+fn place_file_beneath(
+    export_root: &Path,
+    rel: &RelPath,
+    dest: &Path,
+    contents_only: bool,
+    src_name: &[u8],
+) -> Result<FilePlace, PlaceError> {
+    use crate::fs::safe::{is_dir_mode, Beneath};
+    use nix::sys::stat::SFlag;
+    let io_at = |p: &Path, e: io::Error| PlaceError::Io(p.to_path_buf(), e);
+    let missing = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
+    let in_dir = if rel.as_bytes().is_empty() {
+        // The export's own directory.
+        true
+    } else {
+        match Beneath::new(export_root, rel.clone()).lstat() {
+            Ok(st) if is_dir_mode(st.st_mode as _) => true,
+            Ok(st) => {
+                let link = SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK;
+                // Only decides; nothing is written through the link.
+                if link && std::fs::metadata(dest).is_ok_and(|t| t.is_dir()) {
+                    return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()));
+                }
+                if contents_only {
+                    return Err(PlaceError::NotADirectory(dest.to_path_buf()));
+                }
+                false
+            }
+            Err(e) if missing(&e) => contents_only,
+            Err(e) => return Err(io_at(dest, e)),
+        }
+    };
+    if !in_dir {
+        let (root, name) = crate::session::single::split_last(dest);
+        return Ok(FilePlace { root, name });
+    }
+    let target = dest.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(src_name));
+    let target_rel = rel
+        .join(src_name)
+        .map_err(|e| io_at(&target, io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+    match Beneath::new(export_root, target_rel).lstat() {
+        Ok(st) if is_dir_mode(st.st_mode as _) => return Err(PlaceError::IsADirectory(target)),
+        Ok(_) => {}
+        Err(e) if missing(&e) => {}
+        Err(e) => return Err(io_at(&target, e)),
+    }
+    Ok(FilePlace {
+        root: dest.to_path_buf(),
+        name: src_name.to_vec(),
+    })
 }
 
 /// The pull half of [`place_single`]: `rel` must name an existing entry
@@ -1529,5 +1587,50 @@ mod banner_tests {
         // The link itself is an entry; nothing behind it is.
         assert_eq!(kind("link"), Kind::File);
         assert_eq!(kind("link/f"), Kind::Missing);
+    }
+
+    /// Where a pushed single file lands is decided from the export's
+    /// directory, with no symlink followed on the way to the destination.
+    #[test]
+    fn a_single_file_is_placed_without_looking_through_a_symlink() {
+        let export = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(export.path().join("d")).unwrap();
+        std::fs::write(export.path().join("d/old"), b"x").unwrap();
+        std::fs::create_dir(outside.path().join("sub")).unwrap();
+        std::fs::write(outside.path().join("old"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), export.path().join("link")).unwrap();
+        let place = |p: &str, contents_only: bool| {
+            let rel = RelPath::new(p.as_bytes()).unwrap();
+            let dest = export.path().join(p);
+            place_file_beneath(export.path(), &rel, &dest, contents_only, b"f.iso")
+        };
+        // Into a directory, onto a file, onto a name that is not there.
+        let p = place("d", false).unwrap();
+        assert_eq!(
+            (p.root, p.name),
+            (export.path().join("d"), b"f.iso".to_vec())
+        );
+        for name in ["d/old", "d/new"] {
+            let p = place(name, false).unwrap();
+            assert_eq!(p.root, export.path().join("d"));
+            assert_eq!(p.name, name.as_bytes()[2..].to_vec());
+        }
+        assert!(matches!(
+            place("d/old", true),
+            Err(PlaceError::NotADirectory(_))
+        ));
+        // Behind the link, a directory, a file and a missing name all get
+        // the same answer: none is looked at.
+        for name in ["link/sub", "link/old", "link/new"] {
+            for contents_only in [false, true] {
+                match place(name, contents_only) {
+                    Err(PlaceError::Io(_, e)) => {
+                        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{name}: {e}")
+                    }
+                    other => panic!("{name}: {other:?}"),
+                }
+            }
+        }
     }
 }
