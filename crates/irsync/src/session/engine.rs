@@ -894,48 +894,67 @@ pub(crate) enum Missing {
 /// Checks the session root below the export root: every existing component
 /// must be a real directory (never a symlink, which could lead outside the
 /// export); missing ones are handled as `missing` says.
+///
+/// Each component is opened from the one above it, without following a
+/// symlink, and a missing one is made in that open directory. So a
+/// directory swapped for a symlink while this runs is refused, and nothing
+/// is made behind it.
 pub(crate) fn prepare_root(
     export_root: &Path,
     rel: &RelPath,
     missing: Missing,
 ) -> io::Result<PathBuf> {
-    let mut p = export_root.to_path_buf();
-    let check = |p: &Path| -> io::Result<bool> {
-        match std::fs::symlink_metadata(p) {
-            Ok(m) if m.is_dir() => Ok(true),
-            Ok(_) => Err(io::Error::new(
+    use crate::fs::safe::{errno, is_symlink_errno};
+    use nix::fcntl::{openat, OFlag, AT_FDCWD};
+    use nix::sys::stat::{mkdirat, Mode};
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let refused = |e: nix::Error, p: &Path| -> io::Error {
+        if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("{} is not a directory", p.display()),
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e),
+            )
+        } else {
+            errno(e)
         }
     };
-    if !check(&p)? {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "export root is missing",
-        ));
-    }
+    let mut p = export_root.to_path_buf();
+    let mut dir = match openat(AT_FDCWD, export_root, flags, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(nix::Error::ENOENT) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "export root is missing",
+            ))
+        }
+        Err(e) => return Err(refused(e, &p)),
+    };
     for c in rel.components() {
-        p.push(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(c));
-        if !check(&p)? {
-            match missing {
+        let name = OsStr::from_bytes(c);
+        p.push(name);
+        let next = match openat(&dir, name, flags, Mode::empty()) {
+            Err(nix::Error::ENOENT) => match missing {
                 Missing::Refuse => {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("{} does not exist", p.display()),
                     ))
                 }
-                Missing::Create => std::fs::create_dir(&p)?,
+                Missing::Create => match mkdirat(&dir, name, Mode::from_bits_truncate(0o777)) {
+                    // Made by someone else meanwhile: fine, if it is a directory.
+                    Ok(()) | Err(nix::Error::EEXIST) => openat(&dir, name, flags, Mode::empty()),
+                    Err(e) => Err(e),
+                },
                 Missing::Allow => {
                     // Nothing below a missing component can exist.
                     p = export_root.to_path_buf();
                     p.push(rel.to_os());
                     return Ok(p);
                 }
-            }
-        }
+            },
+            r => r,
+        };
+        dir = next.map_err(|e| refused(e, &p))?;
     }
     Ok(p)
 }
@@ -1936,5 +1955,12 @@ mod tests {
             prepare_root(m.path(), &RelPath::root(), Missing::Refuse).unwrap(),
             m.path()
         );
+        // A file where a directory should be, and an export root that is
+        // itself a symlink, are refused too.
+        std::fs::write(m.path().join("file"), b"x").unwrap();
+        assert!(prepare_root(m.path(), &rel(b"file/sub"), Missing::Create).is_err());
+        let via = m.path().join("link");
+        assert!(prepare_root(&via, &rel(b"sub"), Missing::Create).is_err());
+        assert!(!outside.path().join("sub").exists());
     }
 }
