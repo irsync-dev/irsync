@@ -2689,4 +2689,24 @@ mod tests {
         let err = s.on_check_link(c).unwrap_err();
         assert!(format!("{err:#}").contains("bytes"), "{err:#}");
     }
+
+    /// A file is listed, then a directory on the way to it is swapped for
+    /// a link out of the tree, to a file of the same name. The tail of
+    /// the file out there is not read for `--append`.
+    #[test]
+    fn an_append_tail_is_not_read_through_a_swapped_directory() {
+        let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(root.path().join("d")).unwrap();
+        std::fs::write(root.path().join("d/log"), b"inside, growing").unwrap();
+        std::fs::write(outside.path().join("log"), b"secret, growing").unwrap();
+        let path = RelPath::new(b"d/log").unwrap();
+        assert!(tail_digest(root.path(), &path, &path, 4, true).is_ok());
+
+        std::fs::remove_dir_all(root.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        let Err(err) = tail_digest(root.path(), &path, &path, 4, true) else {
+            panic!("the tail was read through the link");
+        };
+        assert!(err.to_string().contains("symlink"), "{err}");
+    }
 }
