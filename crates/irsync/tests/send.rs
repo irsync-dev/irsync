@@ -283,3 +283,24 @@ async fn sender_refuses_symlink() {
         .unwrap_err();
     assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
 }
+
+/// A file is hashed, then a directory on the way to it is swapped for a
+/// link out of the tree, to a file with the same name and bytes. The file
+/// out there is not sent.
+#[tokio::test]
+async fn sender_does_not_send_through_a_swapped_directory() {
+    let f = fixture().await;
+    let bytes = data(MIB / 2, 9);
+    std::fs::create_dir(f.root.path().join("d")).unwrap();
+    let (p, d) = put(&f, "d/s.bin", &bytes);
+    let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("s.bin"), &bytes).unwrap();
+    std::fs::remove_dir_all(f.root.path().join("d")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), f.root.path().join("d")).unwrap();
+    assert_eq!(std::fs::read(f.root.path().join("d/s.bin")).unwrap(), bytes);
+    let e = within(sender(&f, 4, 64 << 20, None).send_chunks(1, &p, &d, &idxs))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("symlink"), "{e}");
+}

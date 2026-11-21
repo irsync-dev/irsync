@@ -669,4 +669,65 @@ mod tests {
         assert!(summary.incomplete);
         assert_eq!(summary.errors.len(), 2);
     }
+
+    /// A directory is listed, and then swapped for a link out of the tree
+    /// while the walk is still listing its files. The walk is held there
+    /// by its own full queue: the directory has more files than the queue
+    /// takes, and nothing more is read from it until the swap is done. The
+    /// files listed after the swap are still the directory's own, reached
+    /// through the directory the walk had open; none is from behind the
+    /// link.
+    #[tokio::test]
+    async fn a_directory_swapped_for_a_link_in_mid_walk_is_not_followed() {
+        let t = tempfile::tempdir().unwrap();
+        let (root, outside, aside) = (
+            t.path().join("root"),
+            t.path().join("out"),
+            t.path().join("aside"),
+        );
+        for d in [&root.join("z"), &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        const FILES: usize = 2300;
+        for i in 0..FILES {
+            std::fs::write(root.join(format!("z/f{i:04}")), b"").unwrap();
+            std::fs::write(outside.join(format!("f{i:04}")), b"secret").unwrap();
+        }
+        std::fs::write(outside.join("notes"), b"secret").unwrap();
+
+        let (mut rx, summary) = walk(
+            root.clone(),
+            Arc::new(FilterSet::new(vec![])),
+            WalkOpts {
+                follow_root_symlink: false,
+                threads: 2,
+                max_depth: None,
+            },
+            None,
+        );
+        // Up to the directory's own entry, listed as a directory.
+        loop {
+            match rx.recv().await.expect("the walk ended early") {
+                ScanEvent::Entry(i) if i.path.as_bytes() == b"z" => break,
+                _ => {}
+            }
+        }
+        std::fs::rename(root.join("z"), &aside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("z")).unwrap();
+        assert_eq!(std::fs::read(root.join("z/f0000")).unwrap(), b"secret");
+
+        let mut below = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            if let ScanEvent::Entry(i) = ev {
+                below.push((i.path, i.entry.size));
+            }
+        }
+        let _ = summary.await.unwrap();
+        // More than the queue held at the swap: some were stat'ed after it.
+        assert!(below.len() > 1100, "{} entries", below.len());
+        for (path, size) in &below {
+            assert!(path.as_bytes().starts_with(b"z/f"), "{path:?}");
+            assert_eq!(*size, 0, "{path:?} was read from behind the link");
+        }
+    }
 }

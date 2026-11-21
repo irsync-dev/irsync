@@ -268,10 +268,6 @@ The review is not finished:
 
 - **How the daemon resolves a client's path was not read to the end.** That
   part of the review was cut short. What it had found by then is fixed.
-- **Some checks have no test yet.** A directory swapped for a symlink in the
-  middle of a walk is one. The same swap is tested for the read that hashes
-  a file, but not while a file is sent, cloned for `--paranoid`, or has its
-  tail hashed for `--append`.
 
 Known gaps that are still open:
 
