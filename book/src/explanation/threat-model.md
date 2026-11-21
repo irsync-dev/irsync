@@ -269,13 +269,17 @@ The review is not finished:
 - **How the daemon resolves a client's path was not read to the end.** That
   part of the review was cut short. What it had found by then is fixed.
 - **Some checks have no test yet.** A directory swapped for a symlink in the
-  middle of a walk is one. So are the same swaps while a file is read for
-  sending or copied from another local file.
+  middle of a walk is one. The same swap is tested for the read that hashes
+  a file, but not while a file is sent, cloned for `--paranoid`, or has its
+  tail hashed for `--append`.
 
 Known gaps that are still open:
 
-- The number of hard-link checks a client can queue, and the number of
-  sessions one key can store, have no limit.
+- The number of hard-link checks a client can queue has no limit.
+- The daemon stores one session per pair of source and destination, and a
+  newer one replaces the older. How many such pairs one key can start has
+  no limit. A session that is never finished stays until `irsync gc`
+  removes it.
 - A config file that other users can write is loaded without a warning, and
   the permissions of a passphrase file are not checked.
 - A receiver tells the sender which chunks it already has. A sender that can
