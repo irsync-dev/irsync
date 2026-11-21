@@ -9,18 +9,37 @@
 //! `EXECUTABLE` is the path the first command prints.
 //!
 //! `STORE` is `sqlite` or `fjall`. The manifest holds `N` entries named
-//! `dNN/fNNNNN`; every tenth has two extended attributes. Each rep looks
-//! every entry up once on the store itself and once through a reader, in an
-//! order that jumps around the tree, and prints one line of `key=value`
-//! fields.
+//! `dNN/fNNNNN`; every tenth has two extended attributes. The entries are
+//! looked up in three phases, `REPS` times each:
+//!
+//! - `written`: on the store that has just written them;
+//! - `reopened-rw`: after a close, opened for writing as `update` opens it;
+//! - `reopened-ro`: after another close, opened read-only as `verify` does.
+//!
+//! The reopened phases are what a command on an existing manifest sees, and
+//! the stores behave differently there: SQLite is back in rollback-journal
+//! mode when opened read-only, and fjall reads from its table files instead
+//! of from memory. fjall only writes table files once enough has built up:
+//! a manifest of 300,000 entries is still answered from memory after a
+//! reopen, one of 1,000,000 is not.
+//!
+//! Each rep looks every entry up three ways, in an order that jumps around
+//! the tree, and prints one line of `key=value` fields: `get_us` on the
+//! store itself, `reader_get_us` through a reader, and `get_many_us`
+//! through a reader in batches, as the tree walk reads. All are
+//! microseconds per entry.
 
+use std::path::Path;
 use std::time::Instant;
 
 use fileset::model::{Entry, Flags, Kind, Timespec};
-use fileset::store::{open, Backend, OpenMode};
+use fileset::store::{open, Backend, OpenMode, Store};
 
 /// Entries written per transaction.
-const BATCH: usize = 1000;
+const WRITE_BATCH: usize = 1000;
+
+/// Entries read per `get_many` call.
+const READ_BATCH: usize = 64;
 
 fn main() {
     // `cargo bench` passes `--bench`; nothing else starts with `-`.
@@ -52,39 +71,81 @@ fn main() {
             (format!("d{:02}/f{:05}", i % 20, i / 20).into_bytes(), e)
         })
         .collect();
-    let dir = tempfile::tempdir().unwrap();
-    let mut s = open(&dir.path().join("manifest"), backend, OpenMode::Create).unwrap();
-    for batch in items.chunks(BATCH) {
-        s.put_batch(batch).unwrap();
-    }
-
     // A stride coprime to n visits every index once, far from the last.
     let stride = (1..)
         .map(|k| n / 3 + k)
         .find(|s| gcd(*s, n) == 1)
         .unwrap_or(1);
-    let reader = s.reader().unwrap();
-    for rep in 0..reps {
-        let t = Instant::now();
-        for i in 0..n {
-            let (path, _) = &items[(i * stride) % n];
-            assert!(s.get(path).unwrap().is_some());
-        }
-        let own = t.elapsed();
-        let t = Instant::now();
-        for i in 0..n {
-            let (path, _) = &items[(i * stride) % n];
-            assert!(reader.get(path).unwrap().is_some());
-        }
-        let read = t.elapsed();
-        println!(
-            "case=lookup store={store} n={n} rep={rep} get_us={:.2} reader_get_us={:.2}",
-            own.as_secs_f64() * 1e6 / n as f64,
-            read.as_secs_f64() * 1e6 / n as f64,
-        );
+    let order: Vec<&[u8]> = (0..n).map(|i| &items[(i * stride) % n].0[..]).collect();
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("manifest");
+    let run = Run {
+        store,
+        reps,
+        order: &order,
+    };
+
+    let mut s = open(&manifest, backend, OpenMode::Create).unwrap();
+    for batch in items.chunks(WRITE_BATCH) {
+        s.put_batch(batch).unwrap();
     }
-    drop(reader);
-    s.close().unwrap();
+    run.phase("written", s);
+    run.phase(
+        "reopened-rw",
+        reopen(&manifest, backend, OpenMode::ReadWrite),
+    );
+    run.phase(
+        "reopened-ro",
+        reopen(&manifest, backend, OpenMode::ReadOnly),
+    );
+}
+
+fn reopen(manifest: &Path, backend: Backend, mode: OpenMode) -> Box<dyn Store> {
+    open(manifest, backend, mode).unwrap()
+}
+
+/// What every phase shares.
+struct Run<'a> {
+    store: &'a str,
+    reps: usize,
+    /// Every path once, in the order to look them up.
+    order: &'a [&'a [u8]],
+}
+
+impl Run<'_> {
+    /// Looks every entry up `reps` times on `s` and through a reader of it,
+    /// prints a line per rep, and closes `s`.
+    fn phase(&self, phase: &str, s: Box<dyn Store>) {
+        let n = self.order.len();
+        let per_entry = |t: Instant| t.elapsed().as_secs_f64() * 1e6 / n as f64;
+        let reader = s.reader().unwrap();
+        for rep in 0..self.reps {
+            let t = Instant::now();
+            for path in self.order {
+                assert!(s.get(path).unwrap().is_some());
+            }
+            let get = per_entry(t);
+            let t = Instant::now();
+            for path in self.order {
+                assert!(reader.get(path).unwrap().is_some());
+            }
+            let reader_get = per_entry(t);
+            let t = Instant::now();
+            for batch in self.order.chunks(READ_BATCH) {
+                let found = reader.get_many(batch).unwrap();
+                assert!(found.len() == batch.len() && found.iter().all(Option::is_some));
+            }
+            let get_many = per_entry(t);
+            println!(
+                "case=lookup store={} n={n} phase={phase} rep={rep} get_us={get:.2} \
+                 reader_get_us={reader_get:.2} get_many_us={get_many:.2}",
+                self.store,
+            );
+        }
+        drop(reader);
+        s.close().unwrap();
+    }
 }
 
 /// A regular file's entry, with a hash.
