@@ -14,8 +14,11 @@
 //! leftovers go; a session removes its own at its end. The walk never lists
 //! these folders ([`CLONE_DIR_PREFIX`]).
 //!
-//! Everything below the directory chosen is done relative to open
-//! directories, never following a symlink: whoever else can write there
+//! The directories below the session's own (an export's directory, on a
+//! daemon) are looked at through open directories, one name at a time and
+//! never through a symlink, so a clone folder is never put where a link
+//! leads. Everything below the directory chosen is done relative to open
+//! directories too, never following a symlink: whoever else can write there
 //! cannot swap a symlink in and steer a removal elsewhere.
 
 use std::collections::HashMap;
@@ -178,25 +181,33 @@ impl Clones {
     /// cannot be cloned, no clone folder can be made, or the source kept
     /// changing while it was cloned. Blocking.
     pub fn clone_file(&self, full: &Path) -> io::Result<Option<Cloned>> {
-        self.clone_opened(full, || crate::fs::safe::open_regular_nofollow_stat(full))
+        let Some(dir) = full.parent() else {
+            return Ok(None);
+        };
+        self.clone_opened(dir, &RelPath::root(), full, || {
+            crate::fs::safe::open_regular_nofollow_stat(full)
+        })
     }
 
     /// [`Clones::clone_file`] of `base/rel`, with no symlink followed in
     /// any component of `rel`.
     pub fn clone_file_beneath(&self, base: &Path, rel: &RelPath) -> io::Result<Option<Cloned>> {
         let full = base.join(rel.to_os());
-        self.clone_opened(&full, || {
+        self.clone_opened(base, &rel.parent(), &full, || {
             crate::fs::safe::open_regular_beneath_stat(base, rel)
         })
     }
 
+    /// `full` (for messages) is the file `open` opens, in `dir` below `base`.
     fn clone_opened(
         &self,
+        base: &Path,
+        dir: &RelPath,
         full: &Path,
         open: impl Fn() -> io::Result<(File, FileStat)>,
     ) -> io::Result<Option<Cloned>> {
         for _ in 0..2 {
-            match self.try_clone(full, &open)? {
+            match self.try_clone(base, dir, full, &open)? {
                 Attempt::Cloned(c) => return Ok(Some(c)),
                 Attempt::NoClone => return Ok(None),
                 Attempt::Changed => {}
@@ -207,6 +218,8 @@ impl Clones {
 
     fn try_clone(
         &self,
+        base: &Path,
+        dir: &RelPath,
         full: &Path,
         open: &impl Fn() -> io::Result<(File, FileStat)>,
     ) -> io::Result<Attempt> {
@@ -217,7 +230,7 @@ impl Clones {
         // `st_dev` is narrower on macOS.
         #[allow(clippy::unnecessary_cast)]
         let dev = s1.st_dev as u64;
-        let Some(area) = self.area(full, dev) else {
+        let Some(area) = self.area(base, dir, dev) else {
             return Ok(Attempt::NoClone);
         };
         let name = OsString::from(self.next.fetch_add(1, Ordering::Relaxed).to_string());
@@ -259,14 +272,15 @@ impl Clones {
         self.areas.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The area on device `dev` (the device of `full`), made on first use.
-    fn area(&self, full: &Path, dev: u64) -> Option<Arc<Area>> {
+    /// The area on device `dev` (the device of a file in `dir` below
+    /// `base`), made on first use.
+    fn area(&self, base: &Path, dir: &RelPath, dev: u64) -> Option<Arc<Area>> {
         let mut areas = self.lock_areas();
         if let Some(a) = areas.get(&dev) {
             return a.clone();
         }
-        let made = match area_dir_below(full, dev, self.within.as_deref())
-            .map(|top| (make_area(&top, &self.session), top))
+        let made = match area_top(base, dir, dev, self.within.as_deref())
+            .map(|(fd, top)| (make_area(fd, &top, &self.session), top))
         {
             None => None,
             Some((Ok(a), _)) => Some(Arc::new(a)),
@@ -394,47 +408,93 @@ fn make_clone(src: &File, dir: &OwnedFd, name: &OsStr) -> io::Result<File> {
     Ok(File::from(fd))
 }
 
-/// Where the clone folder for `file` (on device `dev`) goes: of the
-/// directories from the file's filesystem's mount point down to the file,
-/// the first the user can write to (`access(W_OK|X_OK)`) that others
-/// cannot rename things in: not group- or world-writable, unless it has
-/// the sticky bit. `None` if none.
-pub fn area_dir(file: &Path, dev: u64) -> Option<PathBuf> {
-    area_dir_below(file, dev, None)
-}
-
-/// [`area_dir`], looking no higher than `within` when given.
-fn area_dir_below(file: &Path, dev: u64, within: Option<&Path>) -> Option<PathBuf> {
-    let parent = std::fs::canonicalize(file.parent()?).ok()?;
+/// Where the clone folder for a file in `dir` below `base` (on device
+/// `dev`) goes: of the directories from the file's filesystem's mount
+/// point down to the file, the first the user can write to
+/// (`W_OK|X_OK`) that others cannot rename things in: not group- or
+/// world-writable, unless it has the sticky bit. The directory, open, and
+/// its path (for messages); `None` if none. Looks no higher than `within`
+/// when given.
+///
+/// `base` and what is above it are names this side trusts and are looked
+/// at by name. The directories of `dir` are opened one from the other
+/// without following a symlink, and looked at through those descriptors:
+/// a directory someone swapped for a symlink gives no clone folder, never
+/// one where the link leads.
+fn area_top(
+    base: &Path,
+    dir: &RelPath,
+    dev: u64,
+    within: Option<&Path>,
+) -> Option<(OwnedFd, PathBuf)> {
+    use nix::unistd::faccessat;
+    let real = std::fs::canonicalize(base).ok()?;
     let within = match within {
         Some(w) => Some(std::fs::canonicalize(w).ok()?),
         None => None,
     };
-    let mut chain: Vec<(&Path, u32)> = Vec::new();
-    for dir in parent.ancestors() {
-        if within.as_deref().is_some_and(|w| !dir.starts_with(w)) {
-            break;
-        }
-        match std::fs::metadata(dir) {
-            Ok(m) if m.dev() == dev => chain.push((dir, m.mode())),
-            _ => break,
+    let inside = |p: &Path| within.as_deref().is_none_or(|w| p.starts_with(w));
+    // `base` and the directories of `dir`, open, top first.
+    let by_name = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let mut below: Vec<(Option<OwnedFd>, PathBuf)> = Vec::new();
+    let mut path = real.clone();
+    let mut fd = openat(AT_FDCWD, &real, by_name, Mode::empty()).ok()?;
+    for c in dir.components() {
+        let name = OsStr::from_bytes(c);
+        let next = openat(&fd, name, dir_flags(), Mode::empty()).ok()?;
+        below.push((Some(std::mem::replace(&mut fd, next)), path.clone()));
+        path.push(name);
+    }
+    below.push((Some(fd), path));
+    // From the file's directory up, as far as the device stays the same.
+    let mut chain: Vec<(Option<OwnedFd>, PathBuf, u32)> = Vec::new();
+    let mut whole = true;
+    for (fd, path) in below.into_iter().rev() {
+        let st = fd.as_ref().and_then(|fd| fstat(fd).ok());
+        // `st_dev` and `st_mode` are narrower on macOS.
+        #[allow(clippy::unnecessary_cast)]
+        match st {
+            Some(st) if st.st_dev as u64 == dev && inside(&path) => {
+                chain.push((fd, path, st.st_mode as u32));
+            }
+            _ => {
+                whole = false;
+                break;
+            }
         }
     }
-    chain
-        .into_iter()
-        .rev()
-        .find(|&(d, mode)| {
-            let shared = mode & 0o022 != 0 && mode & 0o1000 == 0;
-            !shared && access(d, AccessFlags::W_OK | AccessFlags::X_OK).is_ok()
-        })
-        .map(|(d, _)| d.to_path_buf())
+    if whole {
+        for up in real.ancestors().skip(1) {
+            if !inside(up) {
+                break;
+            }
+            match std::fs::metadata(up) {
+                Ok(m) if m.dev() == dev => chain.push((None, up.to_path_buf(), m.mode())),
+                _ => break,
+            }
+        }
+    }
+    let (fd, path, _) = chain.into_iter().rev().find(|(fd, path, mode)| {
+        let shared = mode & 0o022 != 0 && mode & 0o1000 == 0;
+        let want = AccessFlags::W_OK | AccessFlags::X_OK;
+        let writable = match fd {
+            Some(fd) => faccessat(fd, ".", want, AtFlags::empty()).is_ok(),
+            None => access(path.as_path(), want).is_ok(),
+        };
+        !shared && writable
+    })?;
+    let fd = match fd {
+        Some(fd) => fd,
+        None => openat(AT_FDCWD, &path, dir_flags(), Mode::empty()).ok()?,
+    };
+    Some((fd, path))
 }
 
-/// Makes (or takes) the clone folder in `top`, sweeps it, and makes this
-/// session's locked subfolder in it.
-fn make_area(top: &Path, session: &str) -> io::Result<Area> {
+/// Makes (or takes) the clone folder in the open directory `top_fd` (at
+/// `top`, for messages), sweeps it, and makes this session's locked
+/// subfolder in it.
+fn make_area(top_fd: OwnedFd, top: &Path, session: &str) -> io::Result<Area> {
     let uid = nix::unistd::getuid().as_raw();
-    let top_fd = openat(AT_FDCWD, top, dir_flags(), Mode::empty()).map_err(errno)?;
     let root_name = OsString::from(format!("{CLONE_DIR_PREFIX}{uid}"));
     // Another session may remove an empty clone folder at any moment.
     let mut last = None;
@@ -677,6 +737,50 @@ mod tests {
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    /// Where the clone folder for `file` goes, its own directory taken as
+    /// a name we trust.
+    fn area_of(file: &Path, dev: u64, within: Option<&Path>) -> Option<PathBuf> {
+        area_top(file.parent()?, &RelPath::root(), dev, within).map(|(_, p)| p)
+    }
+
+    /// The directories below the base are looked at through open
+    /// directories: one that became a symlink gives no clone folder, and
+    /// nothing is made where the link leads.
+    #[test]
+    fn the_clone_folder_is_never_put_behind_a_symlink() {
+        let t = private_tempdir();
+        let outside = private_tempdir();
+        let base = t.path().join("base");
+        std::fs::create_dir_all(base.join("d")).unwrap();
+        chmod(&base, 0o755);
+        chmod(&base.join("d"), 0o755);
+        std::fs::write(base.join("d/f"), b"x").unwrap();
+        let dev = std::fs::metadata(base.join("d/f")).unwrap().dev();
+        let bound = std::fs::canonicalize(&base).unwrap();
+        let d = RelPath::new(b"d").unwrap();
+        let top = |within: &Path| area_top(&base, &d, dev, Some(within)).map(|(_, p)| p);
+        assert_eq!(top(&bound), Some(bound.clone()));
+        // A read-only base is passed over for the directory below it.
+        chmod(&base, 0o555);
+        let got = top(&bound);
+        chmod(&base, 0o755);
+        assert_eq!(got, Some(bound.join("d")));
+
+        std::fs::remove_dir_all(base.join("d")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), base.join("d")).unwrap();
+        std::fs::write(outside.path().join("f"), b"x").unwrap();
+        assert_eq!(top(&bound), None);
+        let clones = Clones::new("me").within(bound.clone());
+        let f = RelPath::new(b"d/f").unwrap();
+        assert!(clones.clone_file_beneath(&base, &f).is_err());
+        clones.close();
+        let left: Vec<_> = std::fs::read_dir(outside.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![OsString::from("f")]);
+    }
+
     fn clone_root(t: &tempfile::TempDir) -> PathBuf {
         let r = t.path().join(".irsync-clones-test");
         std::fs::create_dir(&r).unwrap();
@@ -782,18 +886,15 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let dev = std::fs::metadata(&file).unwrap().dev();
         let bound = std::fs::canonicalize(t.path().join("a")).unwrap();
-        assert_eq!(
-            area_dir_below(&file, dev, Some(&bound)),
-            Some(bound.clone())
-        );
+        assert_eq!(area_of(&file, dev, Some(&bound)), Some(bound.clone()));
         // Unbounded, it is an ancestor at or above the bound (only
         // computed; nothing is made there).
-        let top = area_dir(&file, dev).unwrap();
+        let top = area_of(&file, dev, None).unwrap();
         assert!(std::fs::canonicalize(&deep).unwrap().starts_with(&top));
         // A read-only directory is passed over for the next one down.
         let ro = t.path().join("a");
         chmod(&ro, 0o555);
-        let got = area_dir_below(&file, dev, Some(&bound));
+        let got = area_of(&file, dev, Some(&bound));
         chmod(&ro, 0o755);
         assert_eq!(got, Some(std::fs::canonicalize(&deep).unwrap()));
     }
@@ -814,11 +915,11 @@ mod tests {
         let bound = std::fs::canonicalize(&a).unwrap();
         let deep = std::fs::canonicalize(&deep).unwrap();
         chmod(&a, 0o775);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(deep.clone()));
+        assert_eq!(area_of(&file, dev, Some(&bound)), Some(deep.clone()));
         chmod(&a, 0o757);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(deep));
+        assert_eq!(area_of(&file, dev, Some(&bound)), Some(deep));
         chmod(&a, 0o1777);
-        assert_eq!(area_dir_below(&file, dev, Some(&bound)), Some(bound));
+        assert_eq!(area_of(&file, dev, Some(&bound)), Some(bound));
         chmod(&a, 0o755);
     }
 

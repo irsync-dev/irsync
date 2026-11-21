@@ -284,9 +284,6 @@ Known gaps that are still open:
   the permissions of a passphrase file are not checked.
 - A receiver tells the sender which chunks it already has. A sender that can
   guess the whole content of a chunk can confirm the guess.
-- When irsync reuses chunks from other local files, and in the clone
-  folders of `--paranoid`, it still reaches files by path name. This matters
-  only when another local user can write in those trees.
 
 Until the review is finished, give a read-write grant only to keys you
 would trust with the daemon account's own files, and pull only from daemons

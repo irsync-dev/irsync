@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -100,7 +100,7 @@ pub(super) type Routes = Arc<std::sync::Mutex<HashMap<u64, Route>>>;
 
 /// A chunk one of the receiver's own files holds: its index in the chunk
 /// list, the file (absolute) and the chunk's offset in that file.
-pub(super) type LocalChunk = (u32, PathBuf, u64);
+pub(super) type LocalChunk = (u32, crate::fs::safe::Beneath, u64);
 
 /// A basis to offer for a chunk: its index, and the region of the old file
 /// (offset, length) to sign for it.
@@ -529,7 +529,10 @@ pub(super) async fn open_writer(
                     {
                         remote.push(idx)
                     }
-                    Some((p, off)) => local.push((idx, ctx.full_key(&p), off)),
+                    Some((p, off)) => {
+                        let from = crate::fs::safe::Beneath::new(&ctx.base, ctx.local_key(&p));
+                        local.push((idx, from, off))
+                    }
                     None => remote.push(idx),
                 }
             }
@@ -893,9 +896,10 @@ pub(super) async fn settle_identical(
     Ok(())
 }
 
-/// Reads `len` bytes at `offset` of `from` (a regular file, never a symlink).
+/// Reads `len` bytes at `offset` of `from` (a regular file, never a
+/// symlink, and reached through none below its root).
 async fn read_local(
-    from: PathBuf,
+    from: crate::fs::safe::Beneath,
     offset: u64,
     len: u32,
     meter: Arc<Meter>,
@@ -903,7 +907,8 @@ async fn read_local(
     blocking(move || {
         let _timed = meter.start(Activity::Read);
         let mut buf = vec![0u8; len as usize];
-        crate::fs::safe::open_regular_nofollow(&from)?.read_exact_at(&mut buf, offset)?;
+        crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?
+            .read_exact_at(&mut buf, offset)?;
         meter.add(Counter::DiskRead, u64::from(len));
         Ok(buf)
     })
@@ -1046,15 +1051,18 @@ fn local_sources(
 }
 
 /// Whether the file at `h.path` under `base` is still the regular file the
-/// index describes, by inode and size.
+/// index describes, by inode and size. No symlink below `base` is followed
+/// on the way: a file behind one is not a source.
+// `st_mode` and `st_ino` differ in width between systems.
+#[allow(clippy::unnecessary_cast)]
 fn still_indexed(base: &Path, h: &ChunkHolder) -> bool {
-    let full = if h.path.as_bytes().is_empty() {
-        base.to_path_buf()
-    } else {
-        base.join(h.path.to_os())
-    };
-    std::fs::symlink_metadata(&full)
-        .is_ok_and(|m| m.is_file() && m.ino() == h.inode && m.len() == h.size)
+    crate::fs::safe::Beneath::new(base, h.path.clone())
+        .lstat()
+        .is_ok_and(|st| {
+            crate::fs::safe::is_regular_mode(st.st_mode as u32)
+                && st.st_ino as u64 == h.inode
+                && st.st_size as u64 == h.size
+        })
 }
 
 /// Writes a chunk, from the sender (`remote`) or a local file, into the

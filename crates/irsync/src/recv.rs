@@ -941,8 +941,8 @@ impl FileWriter {
 
     /// Read chunk `idx`'s bytes from `from` at `offset`, then write them
     /// like `write_copied`, all in one blocking call.
-    pub async fn copy_local(&mut self, idx: u32, from: &Path, offset: u64) -> io::Result<()> {
-        let from = from.to_path_buf();
+    pub async fn copy_local(&mut self, idx: u32, from: &Beneath, offset: u64) -> io::Result<()> {
+        let from = from.clone();
         self.put_chunk(idx, Source::Local { from, offset }, false)
             .await
     }
@@ -967,7 +967,7 @@ impl FileWriter {
                 Source::Local { from, offset } => {
                     let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
                     let mut buf = vec![0u8; c.len as usize];
-                    crate::fs::safe::open_regular_nofollow(&from)?
+                    crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?
                         .read_exact_at(&mut buf, offset)?;
                     if let Some(m) = &meter {
                         m.add(Counter::DiskRead, buf.len() as u64);
@@ -1336,9 +1336,10 @@ impl Verified {
 /// Where [`FileWriter::put_chunk`] takes a chunk's bytes from.
 enum Source {
     Bytes(Vec<u8>),
-    /// Read at `offset` of the regular file `from`.
+    /// Read at `offset` of the regular file `from`, reached without
+    /// following a symlink below its root.
     Local {
-        from: PathBuf,
+        from: Beneath,
         offset: u64,
     },
 }
