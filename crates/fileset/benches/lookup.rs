@@ -1,5 +1,5 @@
 //! Manifest store benchmark: how fast a store answers the per-entry lookup
-//! that `update` and `verify` make for every file they walk.
+//! that `update` and `check` make for every file they walk.
 //!
 //! ```sh
 //! cargo bench -p fileset --bench lookup --no-run
@@ -14,7 +14,7 @@
 //!
 //! - `written`: on the store that has just written them;
 //! - `reopened-rw`: after a close, opened for writing as `update` opens it;
-//! - `reopened-ro`: after another close, opened read-only as `verify` does.
+//! - `reopened-ro`: after another close, opened read-only as `check` does.
 //!
 //! The reopened phases are what a command on an existing manifest sees, and
 //! the stores behave differently there: SQLite is back in rollback-journal

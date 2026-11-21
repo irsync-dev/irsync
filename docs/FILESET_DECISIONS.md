@@ -336,6 +336,27 @@ and reopened, a lookup took about 71 µs instead of 4.
   a reopened manifest: 1,000,000 entries 71 before, 3.8 after; 4,000,000
   entries 4.7 after.
 
+## Follow-up: `check` looks entries up through the walk (2026-11-21)
+
+Issue #189. `check` asked the store for every entry it walked, one lookup
+at a time, and a second time for every regular file to decide whether to
+hash it. On a SQLite manifest opened read-only each lone lookup is its own
+read transaction in rollback-journal mode: file locks, a check for a
+leftover journal and a re-read of the file header, about 11 µs against 4
+in a batch.
+
+- **Fix.** `check` hands the walk a reader, as `update` does. The walk
+  threads look the entries up in batches and each `Observed` carries what
+  the manifest holds. One lookup per entry instead of up to two.
+- **xattrs are still read from the tree.** With a reader the walk takes
+  xattrs the manifest holds as current from the manifest. `check` sets
+  `force_xattr_reads`, so it reads them as before.
+- **A failed lookup** stops the run when the entry's turn comes, with the
+  message `update` uses.
+- **Measured.** 200,000 empty files, SQLite manifest, 8 CPUs: 5.8 s before,
+  1.26 s after, the same in every tier. The reports of the old and the new
+  binary on a tree with added, deleted and changed entries were identical.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
