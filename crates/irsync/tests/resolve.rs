@@ -222,3 +222,34 @@ fn a_short_name_prefers_its_export_among_equal_paths_and_ties_rank_by_effective_
         "photos"
     );
 }
+
+/// An export the peer has no grant for, in a directory it cannot reach,
+/// does not take its name away: the name is a directory under the home,
+/// exactly as if that export were not there.
+#[test]
+fn the_name_of_an_export_out_of_reach_is_a_directory_under_the_home() {
+    let home = Some(Path::new("/home/d"));
+    let with = exports(&[("home", "/home/d"), ("photos", "/srv/photos")]);
+    let without = exports(&[("home", "/home/d")]);
+    let g = only("home", Access::ReadWrite);
+    for ex in [&with, &without] {
+        let r = resolve(b"photos/2024", home, ex, &g).unwrap().unwrap();
+        assert_eq!((r.name, r.rel.as_bytes()), ("home", &b"photos/2024"[..]));
+    }
+    // With a grant for it, the name is the export.
+    let both = Grants {
+        exports: [
+            ("home".to_string(), Access::ReadWrite),
+            ("photos".to_string(), Access::ReadOnly),
+        ]
+        .into(),
+        all: None,
+        immediate: false,
+    };
+    let r = resolve(b"photos/2024", home, &with, &both)
+        .unwrap()
+        .unwrap();
+    assert_eq!((r.name, r.rel.as_bytes()), ("photos", &b"2024"[..]));
+    // Without a home there is nothing else to read it as.
+    assert!(resolve(b"photos/2024", None, &with, &g).unwrap().is_none());
+}

@@ -59,6 +59,11 @@ pub enum PlaceError {
     /// replaces the link nor writes through it.
     #[error("{} is a symlink to a directory", .0.display())]
     SymlinkToDirectory(PathBuf),
+    /// The daemon's destination is a symlink that leads out of the export,
+    /// or through another symlink: the daemon does not look where it
+    /// leads, so it cannot tell a file from a directory there.
+    #[error("{} is a symlink the daemon does not follow", .0.display())]
+    SymlinkNotFollowed(PathBuf),
     #[error("{}: {}", .0.display(), .1)]
     Io(PathBuf, io::Error),
 }
