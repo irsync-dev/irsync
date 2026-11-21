@@ -2049,6 +2049,7 @@ dependencies = [
  "console",
  "dirs",
  "futures-util",
+ "getrandom 0.4.3",
  "indicatif",
  "iroh",
  "iroh-mainline-address-lookup",
@@ -2064,7 +2065,6 @@ dependencies = [
  "noq-proto",
  "prost",
  "prost-reflect",
- "rand_core 0.6.4",
  "rpassword",
  "rusqlite",
  "serde",
@@ -3534,15 +3534,6 @@ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rand_core"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.17",
 ]
 
 [[package]]

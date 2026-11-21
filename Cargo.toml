@@ -75,7 +75,7 @@ vergen-gitcl = "10"
 # Tests only: signs fake releases with the test key.
 minisign = { version = "0.10", default-features = false }
 ct-codecs = "1"
-rand_core = { version = "0.6", features = ["getrandom"] }
+getrandom = "0.4"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 rpassword = "7"

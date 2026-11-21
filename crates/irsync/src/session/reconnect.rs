@@ -11,7 +11,6 @@ use futures_util::StreamExt;
 use iroh::endpoint::{ConnectError, ConnectWithOptsError, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use irsync_proto::v1::{error::Code, Hello};
-use rand_core::{OsRng, RngCore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
@@ -67,7 +66,8 @@ impl ReconnectOpts {
             .backoff_min
             .saturating_mul(1u32 << attempt.saturating_sub(1).min(16));
         let base = exp.min(self.backoff_max).max(self.backoff_min);
-        base + base.mul_f64(f64::from(OsRng.next_u32() % 1000) / 4000.0)
+        let jitter = getrandom::u32().expect("the system's random source");
+        base + base.mul_f64(f64::from(jitter % 1000) / 4000.0)
     }
 }
 
