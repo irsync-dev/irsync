@@ -544,7 +544,14 @@ pub(super) fn spawn_listing(
     crate::scan::spawn_thread("irsync-listing", move || {
         let _in_list = spec.phase.span().clone().entered();
         if let Some((s, tx, stx)) = single {
-            let _ = stx.send(list_single(spec.root.clone(), &s, &spec.filters, &tx));
+            let _ = stx.send(list_single(
+                spec.root.clone(),
+                &spec.base,
+                &spec.scope.prefix,
+                &s,
+                &spec.filters,
+                &tx,
+            ));
         }
         let under_skip = |p: &RelPath| {
             spec.skip.as_ref().is_some_and(|s| {
@@ -744,39 +751,65 @@ pub(super) fn spawn_listing(
 /// `filters` admit it. A missing file lists nothing; a file that cannot be
 /// stat'ed is a gap. As a walk does, a root that is a symlink to a
 /// directory is listed as that directory.
+///
+/// A root at `prefix` below `base` (a session below an export's directory)
+/// is looked at from `base` with no symlink followed, as the walk does: a
+/// directory on the way that was swapped for a symlink is a gap.
 fn list_single(
     mut root: PathBuf,
+    base: &std::path::Path,
+    prefix: &RelPath,
     single: &SingleFile,
     filters: &FilterSet,
     tx: &mpsc::Sender<ScanEvent>,
 ) -> ScanSummary {
-    use crate::fs::meta::lstat_entry_with_ctime;
+    use crate::fs::meta::{lstat_at, lstat_entry_with_ctime};
+    let anchored = !prefix.as_bytes().is_empty();
     let mut sum = ScanSummary::default();
     let gap = |sum: &mut ScanSummary, path: RelPath, message: String| {
         sum.incomplete = true;
         sum.errors.push((path.clone(), message.clone()));
         let _ = tx.try_send(ScanEvent::Gap { path, message });
     };
-    if std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
+    if !anchored && std::fs::metadata(&root).is_ok_and(|m| m.is_dir()) {
         if let Ok(real) = std::fs::canonicalize(&root) {
             root = real;
         }
     }
-    match lstat_entry_with_ctime(&root, &RelPath::root()) {
+    let lstat = |rel: &RelPath| -> io::Result<(FileEntry, (i64, u32))> {
+        if !anchored {
+            return lstat_entry_with_ctime(&root, rel);
+        }
+        let (dir, name) =
+            crate::fs::safe::open_parent_beneath(base, &super::join_rel(prefix, rel))?;
+        lstat_at(
+            std::os::fd::AsFd::as_fd(&dir),
+            std::path::Path::new(&name),
+            rel,
+        )
+    };
+    match lstat(&RelPath::root()) {
         Ok((entry, ctime)) => {
+            // As in a walk: a root below a prefix that is not a directory
+            // (a symlink put there meanwhile, a file) is listed as what it
+            // is, and has nothing below it.
+            let walkable = !anchored || entry.kind() == Kind::Directory;
             sum.entries += 1;
             let _ = tx.try_send(ScanEvent::Entry(ScanItem {
                 path: RelPath::root(),
                 entry,
                 ctime,
             }));
+            if !walkable {
+                return sum;
+            }
         }
         Err(e) => {
             gap(&mut sum, RelPath::root(), e.to_string());
             return sum;
         }
     }
-    match lstat_entry_with_ctime(&root, &single.local) {
+    match lstat(&single.local) {
         Ok((mut entry, ctime)) => {
             let is_dir = entry.kind() == Kind::Directory;
             if filters.matches(&single.local, is_dir) == Verdict::Exclude {
@@ -1170,5 +1203,54 @@ mod tests {
         let last = v.last().unwrap();
         assert!(last.path.is_empty());
         assert_eq!(last.message, "and 42 more errors");
+    }
+
+    /// The listing of a single file below an export's directory looks at
+    /// nothing through a symlink put where the session root was.
+    #[test]
+    fn a_single_file_is_not_listed_through_a_swapped_directory() {
+        let export = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(export.path().join("d")).unwrap();
+        std::fs::write(export.path().join("d/f"), b"in").unwrap();
+        std::fs::write(outside.path().join("f"), b"outside").unwrap();
+        let rel = |s: &str| RelPath::new(s.as_bytes()).unwrap();
+        let single = SingleFile {
+            wire: rel("f"),
+            local: rel("f"),
+        };
+        let filters = FilterSet::new(vec![]);
+        let list = || {
+            let (tx, mut rx) = mpsc::channel(2);
+            let sum = list_single(
+                export.path().join("d"),
+                export.path(),
+                &rel("d"),
+                &single,
+                &filters,
+                &tx,
+            );
+            drop(tx);
+            let mut got = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                if let ScanEvent::Entry(item) = ev {
+                    got.push((item.path, item.entry.kind(), item.entry.size));
+                }
+            }
+            (sum, got)
+        };
+        let (sum, got) = list();
+        assert!(!sum.incomplete);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, RelPath::root());
+        assert_eq!(got[0].1, Kind::Directory);
+        assert_eq!(got[1], (rel("f"), Kind::Regular, 2));
+
+        std::fs::remove_dir_all(export.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), export.path().join("d")).unwrap();
+        // The link is listed as a link; the file behind it is not looked at.
+        let (_, got) = list();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((&got[0].0, got[0].1), (&RelPath::root(), Kind::Symlink));
     }
 }

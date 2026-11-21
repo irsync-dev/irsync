@@ -890,8 +890,10 @@ fn source_single(
         return Err((Code::BadPath, PlaceError::IsADirectory(dir).to_string()));
     };
     let file = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-    match std::fs::symlink_metadata(&file) {
-        Ok(m) if m.is_dir() => {
+    // Looked at from the export's directory with no symlink followed: the
+    // directories above may have changed since they were checked.
+    match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
+        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => {
             return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
         }
         Ok(_) => {}
@@ -911,15 +913,15 @@ fn source_single(
 /// missing, makes the path missing. The last component is not followed.
 fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
     use path_info::Kind;
-    let Ok(dir) = prepare_root(export_root, &rel.parent(), Missing::Refuse) else {
+    if prepare_root(export_root, &rel.parent(), Missing::Refuse).is_err() {
         return Kind::Missing;
-    };
-    let Some(name) = rel.components().last() else {
+    }
+    if rel.as_bytes().is_empty() {
         return Kind::Directory;
-    };
-    let path = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
-    match std::fs::symlink_metadata(path) {
-        Ok(m) if m.is_dir() => Kind::Directory,
+    }
+    // From the export's directory, with no symlink followed on the way.
+    match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
+        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => Kind::Directory,
         Ok(_) => Kind::File,
         Err(_) => Kind::Missing,
     }
@@ -1508,5 +1510,24 @@ mod banner_tests {
         assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
         assert!(b.contains("relay: disabled"));
         assert!(b.contains("discovery: dns, mdns"));
+    }
+
+    #[test]
+    fn a_probe_looks_at_nothing_through_a_symlink() {
+        use path_info::Kind;
+        let export = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(export.path().join("d")).unwrap();
+        std::fs::write(export.path().join("d/f"), b"x").unwrap();
+        std::fs::write(outside.path().join("f"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), export.path().join("link")).unwrap();
+        let kind = |p: &str| probe_kind(export.path(), &RelPath::new(p.as_bytes()).unwrap());
+        assert_eq!(kind(""), Kind::Directory);
+        assert_eq!(kind("d"), Kind::Directory);
+        assert_eq!(kind("d/f"), Kind::File);
+        assert_eq!(kind("d/none"), Kind::Missing);
+        // The link itself is an entry; nothing behind it is.
+        assert_eq!(kind("link"), Kind::File);
+        assert_eq!(kind("link/f"), Kind::Missing);
     }
 }
