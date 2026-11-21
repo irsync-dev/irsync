@@ -1,6 +1,5 @@
 //! `check`: walk the tree and report how it differs from the manifest.
 
-use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
@@ -16,7 +15,7 @@ use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
 use crate::progress::Progress;
 use crate::report::{line_add, line_chg, line_del, line_entry, line_skp, CheckSummary, FieldDiff};
-use crate::store::{self, OpenMode, Store};
+use crate::store::{self, OpenMode};
 use crate::walk::{self, Observed, WalkEvent};
 
 pub struct CheckOpts {
@@ -42,16 +41,20 @@ pub fn check(
             loc.path.display()
         )
     })?;
-    let store = RefCell::new(store);
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
-    let cfg = walk_config(common, &root, &loc);
+    let mut cfg = walk_config(common, &root, &loc);
+    // The walk threads look every entry up themselves, in batches: a lookup of its own
+    // for each entry costs three times as much on a manifest opened read-only. With a
+    // reader the walk would take xattrs the manifest holds as current from the manifest;
+    // a check reads them from the tree.
+    cfg.force_xattr_reads = true;
+    let reader = store.reader()?;
     let store_parent = store_parent(&cfg, &root);
 
     let mut warnings = Warnings::new(err);
     let mut report = Report::new(out, common.verbose);
     let mut summary = CheckSummary::default();
-    let mut lookup_error: Option<anyhow::Error> = None;
     // Prefixes (see `unobserved_prefix`) of what the walk could not observe; one per
     // directory not descended or object not stat'ed, never one per tree entry.
     let mut not_descended: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -63,7 +66,7 @@ pub fn check(
     let mut excluded: BTreeSet<Vec<u8>> = BTreeSet::new();
     let mut excluded_below: BTreeSet<Vec<u8>> = BTreeSet::new();
 
-    let decide = |obs: &mut Observed| hash_or_skip(&**store.borrow(), obs, &sel, &mut lookup_error);
+    let decide = |obs: &mut Observed| hash_or_skip(obs, &sel);
     let sink = |ev: WalkEvent| -> anyhow::Result<()> {
         let obs = match ev {
             WalkEvent::Warning(text) => return Ok(warnings.emit(&text)?),
@@ -82,11 +85,14 @@ pub fn check(
             }
             WalkEvent::Entry(obs) => obs,
         };
+        if let Some(e) = &obs.lookup_error {
+            anyhow::bail!("cannot look up {} in the manifest: {e}", escape(&obs.path));
+        }
         if obs.entry.blake3.is_some() {
             progress.hashed(obs.entry.size, obs.hash_cpu);
         }
         progress.entry();
-        let Some(stored) = store.borrow().get(&obs.path)? else {
+        let Some(stored) = &obs.stored else {
             report.line(&line_add(&obs.path, obs.entry.kind))?;
             summary.added += 1;
             return Ok(());
@@ -103,7 +109,7 @@ pub fn check(
             replaced.insert(unobserved_prefix(&obs.path));
         }
         let mtime_exempt = obs.path == b"." || store_parent.as_deref() == Some(&obs.path[..]);
-        let diffs = diff(mtime_exempt, &stored, &obs.entry, &sel);
+        let diffs = diff(mtime_exempt, stored, &obs.entry, &sel);
         if diffs.is_empty() {
             report.verbose_line(|| line_entry("EQL", &obs.path, &obs.entry))?;
             summary.unchanged += 1;
@@ -115,17 +121,14 @@ pub fn check(
     };
     pipeline::run(
         common.jobs,
-        move |emit| walk::walk(&cfg, None, emit),
+        move |emit| walk::walk(&cfg, Some(&*reader), emit),
         decide,
         sink,
     )?;
-    if let Some(e) = lookup_error {
-        return Err(e);
-    }
 
     // Second pass: stored paths that are gone from the tree, or that the walk could not
     // observe. Stored content check cannot see is a difference, not just a warning.
-    store.borrow().for_each(&mut |path, stored| {
+    store.for_each(&mut |path, stored| {
         if path == b"." || excluded.contains(path) || is_under(&excluded_below, path) {
             return Ok(());
         }
@@ -195,24 +198,16 @@ fn unverified_diff(kind: Kind) -> FieldDiff {
 }
 
 /// Hashes a regular file only when there is a stored entry to compare its checksum with.
-/// The first store lookup failure is kept in `lookup_error` and the file is skipped.
-fn hash_or_skip(
-    store: &dyn Store,
-    obs: &Observed,
-    sel: &Selection,
-    lookup_error: &mut Option<anyhow::Error>,
-) -> Decision {
+/// An entry the manifest could not be asked about is not hashed: the sink stops the run
+/// when its turn comes.
+fn hash_or_skip(obs: &Observed, sel: &Selection) -> Decision {
     let e = &obs.entry;
     if e.kind != Kind::File || e.flags.contains(Flags::STORE) || !sel.contains(Field::Blake3) {
         return Decision::Skip;
     }
-    match store.get(&obs.path) {
-        Ok(Some(_)) => Decision::Hash,
-        Ok(None) => Decision::Skip,
-        Err(err) => {
-            lookup_error.get_or_insert(err);
-            Decision::Skip
-        }
+    match obs.stored {
+        Some(_) => Decision::Hash,
+        None => Decision::Skip,
     }
 }
 
