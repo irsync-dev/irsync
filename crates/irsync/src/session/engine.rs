@@ -26,7 +26,6 @@ use irsync_proto::v1::hello::{AppendMode as WireAppend, DeleteMode as WireDelete
 use irsync_proto::v1::{error::Code, Error, ExportEntry, ExportList, FileEntry, Hello, HelloAck};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
-use rand_core::{OsRng, RngCore};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -1145,7 +1144,7 @@ async fn serve_daemon_inner(
         SessionKey::for_daemon(remote, &export_name, &rel, &hello, single.as_ref()).into_bytes();
     let (session_id, record, _claim) = if hello.session_id.is_empty() {
         let mut id = [0u8; 16];
-        OsRng.fill_bytes(&mut id);
+        getrandom::fill(&mut id).expect("the system's random source");
         let claim = shared.registry.claim(id, &conn).await?;
         (id, None, claim)
     } else {

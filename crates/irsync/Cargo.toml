@@ -62,7 +62,7 @@ tempfile = { workspace = true }
 clap = { workspace = true }
 url = { workspace = true }
 dirs = { workspace = true }
-rand_core = { workspace = true }
+getrandom = { workspace = true }
 rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 rusqlite = { workspace = true }
