@@ -261,13 +261,9 @@ tracked in [issue 126](https://github.com/irsync-dev/irsync/issues/126).
 
 The review looked at the limits on what the other side may send, file
 permissions, logs and terminal output, `fileset` manifests, the reuse of old
-file content, and how files are reached by name. What it found there is
-fixed, and the checks above describe the code as it is now.
-
-The review is not finished:
-
-- **How the daemon resolves a client's path was not read to the end.** That
-  part of the review was cut short. What it had found by then is fixed.
+file content, how files are reached by name, and how the daemon resolves a
+client's path. What it found there is fixed, and the checks above describe
+the code as it is now.
 
 Known gaps that are still open:
 
@@ -280,6 +276,13 @@ Known gaps that are still open:
   the permissions of a passphrase file are not checked.
 - A receiver tells the sender which chunks it already has. A sender that can
   guess the whole content of a chunk can confirm the guess.
+- A push of a single file onto a symlink is refused when the link leads to a
+  directory. A client with a read-write grant can put a link there itself,
+  so the answer tells it whether a path outside the export is a directory.
+- The first part of a relative path is read as an export's name even when
+  the client has no grant for that export. A client that can reach the
+  daemon's home directory through another export can so tell that an export
+  of that name exists.
 
 Until the review is finished, give a read-write grant only to keys you
 would trust with the daemon account's own files, and pull only from daemons
