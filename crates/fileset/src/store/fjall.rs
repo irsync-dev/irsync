@@ -37,7 +37,7 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-fn to_pb(e: &Entry) -> pb::Entry {
+pub(super) fn to_pb(e: &Entry) -> pb::Entry {
     pb::Entry {
         kind: e.kind.as_u8() as u32,
         mode: e.mode,
@@ -103,7 +103,7 @@ fn from_pb(p: pb::Entry) -> Result<Entry> {
     })
 }
 
-fn decode(bytes: &[u8]) -> Result<Entry> {
+pub(super) fn decode(bytes: &[u8]) -> Result<Entry> {
     from_pb(pb::Entry::decode(bytes).context("decoding entry")?)
 }
 

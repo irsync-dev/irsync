@@ -8,7 +8,7 @@
 //!
 //! `EXECUTABLE` is the path the first command prints.
 //!
-//! `STORE` is `sqlite` or `fjall`. The manifest holds `N` entries named
+//! `STORE` is `sqlite`, `fjall` or `redb`. The manifest holds `N` entries named
 //! `dNN/fNNNNN`; every tenth has two extended attributes. The entries are
 //! looked up in three phases, `REPS` times each:
 //!
@@ -54,7 +54,8 @@ fn main() {
     let backend = match store.as_str() {
         "sqlite" => Backend::Sqlite,
         "fjall" => Backend::Fjall,
-        _ => panic!("STORE: sqlite or fjall"),
+        "redb" => Backend::Redb,
+        _ => panic!("STORE: sqlite, fjall or redb"),
     };
     let n: usize = n.parse().expect("N");
     let reps: usize = reps.parse().expect("REPS");

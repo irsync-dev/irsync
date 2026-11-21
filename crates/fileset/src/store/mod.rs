@@ -1,6 +1,7 @@
 //! Storage abstraction over the manifest database.
 
 pub mod fjall;
+pub mod redb;
 pub mod sqlite;
 
 use crate::model::Entry;
@@ -8,12 +9,31 @@ use std::path::{Path, PathBuf};
 
 pub const SQLITE_NAME: &str = ".fileset.sqlite";
 pub const FJALL_NAME: &str = ".fileset.fjall";
+pub const REDB_NAME: &str = ".fileset.redb";
+/// The names a manifest at the root of a tree can have, with the backend each one means.
+pub const NAMES: [(&str, Backend); 3] = [
+    (SQLITE_NAME, Backend::Sqlite),
+    (FJALL_NAME, Backend::Fjall),
+    (REDB_NAME, Backend::Redb),
+];
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backend {
     Sqlite,
     Fjall,
+    Redb,
+}
+
+impl Backend {
+    /// The name of a manifest of this backend at the root of its tree.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Backend::Sqlite => SQLITE_NAME,
+            Backend::Fjall => FJALL_NAME,
+            Backend::Redb => REDB_NAME,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,6 +82,12 @@ pub trait Store: Send {
     /// Deletes every entry whose path `keep` rejects. Returns count deleted.
     fn sweep(&mut self, keep: &dyn Fn(&[u8]) -> bool) -> anyhow::Result<u64>;
     fn set_meta(&mut self, meta: &Meta) -> anyhow::Result<()>;
+    /// Gives back the space that earlier writes freed, in a store that would otherwise
+    /// keep it. Called after the last write of an `init` or `update`, with every reader
+    /// dropped. The other stores do nothing.
+    fn compact(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Flush, checkpoint, release. Must be called at the end of a successful update.
     /// Returns a note for the user when the release was incomplete but harmless.
     fn close(self: Box<Self>) -> anyhow::Result<Option<String>>;
@@ -90,6 +116,7 @@ pub fn open(path: &Path, backend: Backend, mode: OpenMode) -> anyhow::Result<Box
     match backend {
         Backend::Sqlite => Ok(Box::new(sqlite::SqliteStore::open(path, mode)?)),
         Backend::Fjall => Ok(Box::new(fjall::FjallStore::open(path, mode)?)),
+        Backend::Redb => Ok(Box::new(redb::RedbStore::open(path, mode)?)),
     }
 }
 
@@ -118,7 +145,12 @@ pub fn locate(
             let backend = if md.is_dir() {
                 Backend::Fjall
             } else if md.is_file() {
-                Backend::Sqlite
+                // A file is SQLite unless it starts the way a redb file does.
+                if redb::is_redb_file(m) {
+                    Backend::Redb
+                } else {
+                    Backend::Sqlite
+                }
             } else {
                 anyhow::bail!("manifest {} is neither a file nor a directory", m.display());
             };
@@ -143,21 +175,17 @@ pub fn locate(
             exists: false,
         });
     }
-    let sqlite = root.join(SQLITE_NAME);
-    let fjall = root.join(FJALL_NAME);
-    let has_s = sqlite.symlink_metadata().is_ok();
-    let has_f = fjall.symlink_metadata().is_ok();
-    match (has_s, has_f) {
-        (true, true) => anyhow::bail!(
-            "both {SQLITE_NAME} and {FJALL_NAME} exist in {}; use --manifest to choose one",
+    let found: Vec<(&str, Backend)> = NAMES
+        .into_iter()
+        .filter(|(name, _)| root.join(name).symlink_metadata().is_ok())
+        .collect();
+    match found[..] {
+        [(first, _), (second, _), ..] => anyhow::bail!(
+            "both {first} and {second} exist in {}; use --manifest to choose one",
             root.display()
         ),
-        (true, false) | (false, true) => {
-            let (backend, path) = if has_s {
-                (Backend::Sqlite, sqlite)
-            } else {
-                (Backend::Fjall, fjall)
-            };
+        [(name, backend)] => {
+            let path = root.join(name);
             // A manifest found in the tree may have come with the tree. One
             // that is a symlink would have `update` write to a manifest
             // somewhere else; `--manifest` is the way to name one elsewhere.
@@ -166,7 +194,11 @@ pub fn locate(
                     "{} is a symbolic link; a manifest inside the tree must be a real {}. \
                      Use --manifest to name a manifest elsewhere",
                     path.display(),
-                    if has_s { "file" } else { "directory" }
+                    if backend == Backend::Fjall {
+                        "directory"
+                    } else {
+                        "file"
+                    }
                 );
             }
             if requested.is_some_and(|r| r != backend) {
@@ -181,35 +213,37 @@ pub fn locate(
                 exists: true,
             })
         }
-        (false, false) => {
+        [] => {
             if !for_update {
                 anyhow::bail!(
-                    "no manifest found in {}: neither {SQLITE_NAME} nor {FJALL_NAME} exists",
-                    root.display()
+                    "no manifest found in {}: {}",
+                    root.display(),
+                    none_of_the_names()
                 );
             }
             let backend = requested.unwrap_or(Backend::Sqlite);
-            let path = match backend {
-                Backend::Sqlite => sqlite,
-                Backend::Fjall => fjall,
-            };
             Ok(Location {
                 backend,
-                path,
+                path: root.join(backend.file_name()),
                 exists: false,
             })
         }
     }
 }
 
-/// The nearest `.fileset.sqlite` or `.fileset.fjall` in a proper ancestor of `root`, if
+/// "none of A, B or C exists", for a root that holds no manifest.
+pub fn none_of_the_names() -> String {
+    format!("none of {SQLITE_NAME}, {FJALL_NAME} or {REDB_NAME} exists")
+}
+
+/// The nearest manifest (see [`NAMES`]) in a proper ancestor of `root`, if
 /// any: `root` would then be inside an existing fileset. `root` must be canonical so that
 /// every ancestor is a real directory. Existence is checked without following symlinks.
 pub fn enclosing_manifest(root: &Path) -> Option<PathBuf> {
     root.ancestors().skip(1).find_map(|dir| {
-        [SQLITE_NAME, FJALL_NAME]
+        NAMES
             .into_iter()
-            .map(|name| dir.join(name))
+            .map(|(name, _)| dir.join(name))
             .find(|p| p.symlink_metadata().is_ok())
     })
 }
@@ -270,6 +304,37 @@ mod tests {
         std::fs::create_dir(root.join(FJALL_NAME)).unwrap();
         let err = locate(&root, None, None, true).unwrap_err().to_string();
         assert!(err.contains("both"), "{err}");
+    }
+
+    #[test]
+    fn locate_finds_a_redb_manifest_by_its_name_and_by_how_the_file_starts() {
+        let d = tempfile::tempdir().unwrap();
+        let root = canon(&d);
+        let loc = locate(&root, None, Some(Backend::Redb), true).unwrap();
+        assert_eq!((loc.backend, loc.exists), (Backend::Redb, false));
+        assert_eq!(loc.path, root.join(REDB_NAME));
+        open(&loc.path, Backend::Redb, OpenMode::Create)
+            .unwrap()
+            .close()
+            .unwrap();
+        let loc = locate(&root, None, None, false).unwrap();
+        assert_eq!((loc.backend, loc.exists), (Backend::Redb, true));
+        // Named by path, a file is SQLite unless it starts as a redb file does.
+        let copy = root.join("copy-of-the-manifest");
+        std::fs::copy(&loc.path, &copy).unwrap();
+        let named = locate(&root, Some(&copy), None, false).unwrap();
+        assert_eq!(named.backend, Backend::Redb);
+        let err = locate(&root, Some(&copy), Some(Backend::Sqlite), true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already exists"), "{err}");
+        // Beside another manifest, neither is chosen.
+        std::fs::write(root.join(SQLITE_NAME), b"").unwrap();
+        let err = locate(&root, None, None, true).unwrap_err().to_string();
+        assert!(
+            err.contains(SQLITE_NAME) && err.contains(REDB_NAME),
+            "{err}"
+        );
     }
 
     #[test]

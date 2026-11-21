@@ -37,6 +37,8 @@ pub enum Mode {
 pub struct UpdateOpts {
     pub common: CommonOpts,
     pub mode: Mode,
+    /// Compact the manifest once it is written, in a store that needs it (redb).
+    pub compact: bool,
 }
 
 pub fn update(
@@ -86,11 +88,9 @@ pub fn update(
                 m.display()
             ),
             None => anyhow::bail!(
-                "no manifest found in {}: neither {} nor {} exists; run 'fileset init' to \
-                 create one",
+                "no manifest found in {}: {}; run 'fileset init' to create one",
                 root.display(),
-                store::SQLITE_NAME,
-                store::FJALL_NAME
+                store::none_of_the_names()
             ),
         },
         (_, true) => OpenMode::ReadWrite,
@@ -263,6 +263,9 @@ pub fn update(
         unfinished: false,
         ..old_meta
     })?;
+    if opts.compact {
+        store.compact()?;
+    }
     if let Some(note) = store.close()? {
         warnings.emit(&note)?;
     }
@@ -346,7 +349,13 @@ fn reuse_or_hash(stored: Option<&Entry>, obs: &mut Observed, rehash: bool) -> De
 /// Whether the manifest at `loc` was left by an init that never finished. A manifest
 /// that cannot be opened or read is not one: the caller's own error names it.
 fn unfinished_manifest(loc: &store::Location) -> bool {
-    store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
+    // A redb manifest whose init was killed cannot be read until it is repaired, and
+    // only an open for writing repairs. This is asked by init and update, which write.
+    let mode = match loc.backend {
+        Backend::Redb => OpenMode::ReadWrite,
+        Backend::Sqlite | Backend::Fjall => OpenMode::ReadOnly,
+    };
+    store::open(&loc.path, loc.backend, mode)
         .and_then(|s| {
             let unfinished = s.meta()?.unfinished;
             s.close()?;
@@ -370,6 +379,7 @@ fn remove_created(loc: &store::Location) -> std::io::Result<()> {
             std::fs::remove_file(&loc.path)
         }
         Backend::Fjall => std::fs::remove_dir_all(&loc.path),
+        Backend::Redb => std::fs::remove_file(&loc.path),
     }
 }
 

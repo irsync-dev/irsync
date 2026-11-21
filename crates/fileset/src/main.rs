@@ -76,10 +76,12 @@ fn main() {
             let backend = a.store.map(|b| match b {
                 BackendArg::Sqlite => Backend::Sqlite,
                 BackendArg::Fjall => Backend::Fjall,
+                BackendArg::Redb => Backend::Redb,
             });
             let opts = UpdateOpts {
                 common,
                 mode: Mode::Init { backend },
+                compact: !a.no_compaction,
             };
             update(
                 &opts,
@@ -96,6 +98,7 @@ fn main() {
                     rehash: a.rehash,
                     force_xattr_reads: a.force_xattr_reads,
                 },
+                compact: !a.no_compaction,
             };
             update(
                 &opts,

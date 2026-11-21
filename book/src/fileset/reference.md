@@ -3,8 +3,10 @@
 `fileset` records the state of a directory tree in a manifest and later
 verifies the tree against it. A manifest is a small database that holds each
 file's checksum and metadata, so that a copy of the tree, or the same tree
-later, can be checked against it. It is a SQLite file by default; fjall is the
-other storage backend, which keeps the manifest in a directory.
+later, can be checked against it. It is a SQLite file by default. There are two
+other storage backends: fjall, which keeps the manifest in a directory, and
+[redb](#the-redb-backend), a single file made to be read from media that
+cannot be written to.
 
 [Introduction to fileset](introduction.md) explains the idea and leads to the
 how-to guides: verifying an rsync, rclone or irsync transfer, checking data
@@ -29,8 +31,8 @@ by default. It refuses to run when:
 - a manifest already exists. The exception is a manifest left by an `init`
   that was interrupted (killed, or the machine went down): it holds nothing,
   so `init` replaces it with a warning.
-- the tree lies inside another fileset: a `.fileset.sqlite` or
-  `.fileset.fjall` exists in a parent directory of `PATH`. This is checked
+- the tree lies inside another fileset: a `.fileset.sqlite`, `.fileset.fjall`
+  or `.fileset.redb` exists in a parent directory of `PATH`. This is checked
   before anything is written.
 - the tree holds a manifest in a subdirectory. This is found when the scan
   reaches it; `init` then removes the manifest it had begun.
@@ -59,7 +61,7 @@ not crossed. Each such directory and mount point produces a warning.
 
 `check` scans the tree and reports every difference between it and the
 manifest. It never changes the tree or the manifest's contents. Opening a fjall
-manifest does touch its journal and lock files.
+manifest does touch its journal and lock files; a redb manifest is only read.
 
 `check` hashes a regular file only when the manifest has an entry for it and
 content is compared. A file the manifest holds no hash for (it could not be
@@ -75,8 +77,8 @@ and metadata (see [Listing](#listing)). `fileset ls` is the same command.
 `list` reads only the manifest. It does not look at the tree, so it says what
 was recorded, not whether the tree still matches; that is `check`. It never
 changes the manifest's contents or the tree. As with `check`, opening a fjall
-manifest does touch its journal and lock files; a SQLite manifest is only
-read. With `--manifest`, `PATH` does not have to exist, so a copy of a
+manifest does touch its journal and lock files; a SQLite or redb manifest is
+only read. With `--manifest`, `PATH` does not have to exist, so a copy of a
 manifest can be listed without its tree.
 
 With a `PATTERN`, only the entries whose path matches it are listed. Quote the
@@ -88,7 +90,7 @@ pattern, or the shell expands it first.
 
 | Option | Effect |
 | --- | --- |
-| `--manifest MPATH` | Use the manifest at `MPATH` instead of `PATH/.fileset.sqlite` or `PATH/.fileset.fjall`. It may lie outside the tree. A directory is read as fjall, a file as SQLite. |
+| `--manifest MPATH` | Use the manifest at `MPATH` instead of `PATH/.fileset.sqlite`, `PATH/.fileset.fjall` or `PATH/.fileset.redb`. It may lie outside the tree. A directory is read as fjall, a file that starts as a redb file does as redb, any other file as SQLite. |
 | `--fail-on-warnings` | Exit 1 instead of 0 when the run produced warnings. |
 | `--cross-mount-points` | Descend into directories on other filesystems. |
 | `--no-dir-sort` | Do not sort directory entries before iterating. |
@@ -102,9 +104,9 @@ More walk threads are often slower. On a 16-core machine with an APFS SSD, a
 no-change `update` of a 1.7 million entry tree took 24 s with 4 threads and
 30 s with 8: the kernel serialises much of the metadata work.
 
-Without `--manifest`, `fileset` looks for `.fileset.sqlite` and
-`.fileset.fjall` at the root. If both exist, it stops and asks for
-`--manifest`.
+Without `--manifest`, `fileset` looks for `.fileset.sqlite`,
+`.fileset.fjall` and `.fileset.redb` at the root. If more than one exists, it
+stops and asks for `--manifest`.
 
 A manifest found at the root must be a real file or directory. `fileset`
 refuses one that is a symbolic link, because a tree from someone else could
@@ -113,7 +115,9 @@ point it at a manifest of yours. To keep a manifest elsewhere, name it with
 
 A manifest that came with a tree is not trusted. `fileset` refuses a
 `.fileset.sqlite` that holds anything but plain tables and indexes, and a
-`.fileset.fjall` directory with anything inside but files and directories.
+`.fileset.fjall` directory with anything inside but files and directories. In
+a `.fileset.redb` every entry carries a checksum, and one that does not match
+is an error, not an entry.
 
 The options above are for the commands that walk a tree. Of them, `list`
 takes only `--manifest`.
@@ -122,13 +126,15 @@ takes only `--manifest`.
 
 | Option | Effect |
 | --- | --- |
-| `--store sqlite\|fjall` | Backend to create. Default: `sqlite`. |
+| `--store sqlite\|fjall\|redb` | Backend to create. Default: `sqlite`. |
+| `--no-compaction` | Leave a redb manifest as large as the run made it; see [The redb backend](#the-redb-backend). The other backends ignore it. |
 
 ### update only
 
 | Option | Effect |
 | --- | --- |
 | `--rehash` | Hash every regular file again, even if size, `mtime` and inode are unchanged. |
+| `--no-compaction` | Leave a redb manifest as large as the run made it; see [The redb backend](#the-redb-backend). The other backends ignore it. |
 | `--force-xattr-reads` | Read every entry's extended attributes. By default an entry whose type, inode, size, `mtime` and `ctime` match the manifest keeps the attributes recorded there (changing an attribute updates the `ctime`); only an entry whose attributes could not be read in full is read again. |
 
 ### check only
@@ -354,10 +360,45 @@ drops them.
 | --- | --- |
 | `PATH/.fileset.sqlite` | The manifest, SQLite backend (default). Its `-wal`, `-shm` and `-journal` sidecars are skipped by the scan. |
 | `PATH/.fileset.fjall` | The manifest, fjall backend: a directory. |
+| `PATH/.fileset.redb` | The manifest, redb backend: one file, with none beside it. |
 
 An `update` that finishes leaves the SQLite manifest as a single file. If
 another process holds it open, the `-wal` sidecar stays, with a warning; the
 next `update` folds it in.
+
+## The redb backend
+
+`fileset init --store redb` keeps the manifest in one file,
+`.fileset.redb`. It is for a manifest that travels with its tree, onto a
+disc, a snapshot or a write-protected drive:
+
+- **It reads where nothing can be written.** `check` and `list` open the
+  file for reading only. They create nothing beside it and change nothing in
+  it. The other backends write when they open a manifest, so theirs has to be
+  [copied off such media first](#read-only-media).
+- **It is as small as it gets.** redb uses the space an `update` frees
+  again, but never gives it back, so the file would only grow. `init` and
+  `update` therefore compact the manifest before they finish. Afterwards it
+  is within a hundredth of the size a new `init` of the same tree gives. A
+  million entries take about 100 MB, and compacting them under a second.
+- **It is on disk when the command returns.** The last thing `init` and
+  `update` do is flush the manifest and close it.
+
+`--no-compaction` skips the compaction. The manifest is as good, but can be
+up to twice the size, because redb grows its file in large steps. The next
+`init` or `update` without the option compacts it.
+
+If `init` or `update` is killed, the manifest is left in need of a repair,
+which only an open for writing can make. `check` and `list` then stop with
+exit code 2 and say so. Run `fileset update` where the manifest can be
+written, or `fileset init` again if it was an `init` that was killed. A
+killed `update` keeps what it had recorded up to about a second before.
+
+A redb manifest that is damaged, by a failing medium or on purpose, gives an
+error. Every entry is stored with a checksum of its path and content, which
+is checked whenever the entry is read, and `update` verifies the whole file
+before it writes to it. What this does not catch is an entry that is missing
+altogether, where the damage left a manifest that still reads as sound.
 
 ## Exit codes
 
@@ -370,7 +411,7 @@ next `update` folds it in.
 Exit code 2 covers, among others: a manifest that cannot be opened or read;
 a root that is not a directory; a manifest schema newer than this `fileset`;
 `check` on a manifest schema older than this `fileset` (`update` migrates
-it); both manifests at the root without `--manifest`; a manifest at the root
+it); more than one manifest at the root without `--manifest`; a manifest at the root
 that is a symbolic link; `init` on a tree that
 already has a manifest, lies inside a fileset or contains a nested one;
 `update` on a tree that has none.
@@ -382,6 +423,9 @@ as a snapshot, may fail to open: `fileset` exits 2 with a message that
 suggests `--manifest`. Copy the manifest somewhere writable and point
 `--manifest` at the copy. [Check data for bitrot](bitrot.md#read-only-media-and-snapshots)
 shows how.
+
+A manifest made with `--store redb` does not need this: it
+[opens on read-only media](#the-redb-backend) as it is.
 
 ## Known limitations
 

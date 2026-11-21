@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
-use super::{canonical_root, Outcome};
+use super::{cannot_open, canonical_root, Outcome};
 use crate::glob::Pattern;
 use crate::report::line_listed;
 use crate::store::{self, OpenMode};
@@ -31,13 +31,8 @@ pub fn list(opts: &ListOpts, out: &mut dyn Write) -> anyhow::Result<Outcome> {
         _ => canonical_root(&opts.root)?,
     };
     let loc = store::locate(&root, opts.manifest.as_deref(), None, false)?;
-    let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly).with_context(|| {
-        format!(
-            "cannot open manifest at {}; if it is on read-only media, copy it elsewhere \
-             and pass --manifest",
-            loc.path.display()
-        )
-    })?;
+    let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
+        .with_context(|| cannot_open(&loc))?;
     let pattern = opts.pattern.as_deref().map(Pattern::new);
     let mut closed = false;
     let walked = store.for_each(&mut |path, entry| {

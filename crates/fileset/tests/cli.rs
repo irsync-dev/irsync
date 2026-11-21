@@ -339,6 +339,74 @@ fn cli_store_fjall_creates_directory() {
 }
 
 #[test]
+fn cli_store_redb_creates_one_file_that_reads_where_nothing_can_be_written() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let manifest = t.join(".fileset.redb");
+    let run = |args: &[&str]| {
+        let out = bin().args(args).arg(&t).output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(run(&["init", "-q", "--store", "redb"]).0, Some(0));
+    assert!(manifest.is_file());
+    assert_eq!(run(&["update", "-q", "--no-compaction"]).0, Some(0));
+    assert_eq!(run(&["update", "-q"]).0, Some(0));
+    let names = |dir: &std::path::Path| {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&t), [".fileset.redb", "a.txt", "sub"]);
+
+    // As on a medium that cannot be written to: nothing may be changed or created.
+    use std::os::unix::fs::PermissionsExt;
+    let chmod = |p: &std::path::Path, mode| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    chmod(&manifest, 0o444);
+    chmod(&t.join("sub"), 0o555);
+    chmod(&t, 0o555);
+    let writable = std::fs::write(t.join("probe"), b"").is_ok();
+    let before = std::fs::read(&manifest).unwrap();
+    let check = run(&["check", "-q", "--relaxed"]);
+    let list = bin().arg("list").arg(&t).output().unwrap();
+    let update = run(&["update", "-q"]);
+    let after = std::fs::read(&manifest).unwrap();
+    chmod(&t, 0o755);
+    chmod(&t.join("sub"), 0o755);
+    if writable {
+        eprintln!("skipping: running with privileges that bypass file permissions");
+        return;
+    }
+    assert_eq!(check.0, Some(0), "{}", check.1);
+    assert!(list.status.success());
+    assert_eq!(String::from_utf8_lossy(&list.stdout).lines().count(), 5);
+    assert_eq!(update.0, Some(2), "{}", update.1);
+    assert_eq!(before, after);
+    assert_eq!(names(&t), [".fileset.redb", "a.txt", "sub"]);
+}
+
+#[test]
+fn only_init_and_update_take_no_compaction() {
+    for (verb, takes) in [
+        ("init", true),
+        ("update", true),
+        ("check", false),
+        ("list", false),
+    ] {
+        let out = bin().args([verb, "--help"]).output().unwrap();
+        let help = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(help.contains("--no-compaction"), takes, "{verb}: {help}");
+    }
+}
+
+#[test]
 fn cli_no_dir_sort_still_checks_clean() {
     let d = tree();
     let t = d.path().join("tree");

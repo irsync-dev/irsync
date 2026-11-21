@@ -32,13 +32,14 @@ pub enum Command {
 pub enum BackendArg {
     Sqlite,
     Fjall,
+    Redb,
 }
 
 #[derive(Args, Debug)]
 pub struct CommonArgs {
     /// Root of the tree
     pub path: PathBuf,
-    /// Location of the manifest instead of <PATH>/.fileset.sqlite or <PATH>/.fileset.fjall; may be outside the tree
+    /// Location of the manifest instead of <PATH>/.fileset.sqlite, .fileset.fjall or .fileset.redb; may be outside the tree
     #[arg(long, value_name = "MPATH")]
     pub manifest: Option<PathBuf>,
     /// Treat warnings as failures
@@ -74,6 +75,9 @@ pub struct InitArgs {
     /// Manifest storage backend
     #[arg(long, value_enum)]
     pub store: Option<BackendArg>,
+    /// Leave a redb manifest as large as the run made it, instead of compacting it
+    #[arg(long)]
+    pub no_compaction: bool,
 }
 
 #[derive(Args, Debug)]
@@ -86,6 +90,9 @@ pub struct UpdateArgs {
     /// Read every entry's xattrs, also where size, mtime and ctime match the manifest
     #[arg(long)]
     pub force_xattr_reads: bool,
+    /// Leave a redb manifest as large as the run made it, instead of compacting it
+    #[arg(long)]
+    pub no_compaction: bool,
 }
 
 #[derive(Args, Debug)]
@@ -112,7 +119,7 @@ pub struct ListArgs {
     pub path: PathBuf,
     /// List only entries whose path matches this glob (quote it): `*` and `?` stop at `/`, `**` crosses it
     pub pattern: Option<OsString>,
-    /// Location of the manifest instead of <PATH>/.fileset.sqlite or <PATH>/.fileset.fjall; with it, <PATH> need not exist
+    /// Location of the manifest instead of <PATH>/.fileset.sqlite, .fileset.fjall or .fileset.redb; with it, <PATH> need not exist
     #[arg(long, value_name = "MPATH")]
     pub manifest: Option<PathBuf>,
     /// Also print owner, link count, device numbers and extended attributes

@@ -8,7 +8,9 @@ use std::os::unix::ffi::OsStrExt;
 
 use anyhow::Context;
 
-use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
+use super::{
+    cannot_open, canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings,
+};
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
@@ -34,13 +36,8 @@ pub fn check(
     let common = &opts.common;
     let root = canonical_root(&common.root)?;
     let loc = store::locate(&root, common.manifest.as_deref(), None, false)?;
-    let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly).with_context(|| {
-        format!(
-            "cannot open manifest at {}; if it is on read-only media, copy it elsewhere \
-             and pass --manifest",
-            loc.path.display()
-        )
-    })?;
+    let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
+        .with_context(|| cannot_open(&loc))?;
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
     let mut cfg = walk_config(common, &root, &loc);

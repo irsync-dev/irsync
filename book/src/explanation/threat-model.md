@@ -169,7 +169,7 @@ or change what you send.
 ## Whoever made the tree you sync
 
 File names, symlinks and permissions travel with a tree. So does a
-`.fileset.sqlite` or `.fileset.fjall` manifest inside it.
+`.fileset.sqlite`, `.fileset.fjall` or `.fileset.redb` manifest inside it.
 
 **What they could try:** names that confuse the terminal or a log, symlinks
 that point out of the tree, setuid files, or a manifest that says the copy
@@ -188,7 +188,10 @@ is fine.
 - `fileset` refuses a manifest in the tree that is a symlink, or that has
   symlinks inside. It opens a SQLite manifest with SQLite's settings for
   files that are not trusted, and refuses one with views, triggers or
-  virtual tables.
+  virtual tables. In a redb manifest every entry carries a checksum of its
+  path and content, the whole file is verified before `update` writes to
+  it, and a failure inside the database engine is reported as a damaged
+  manifest.
 
 **What is left:**
 
@@ -200,7 +203,10 @@ is fine.
 - **A manifest is a database file from someone else.** The checks above
   narrow what a crafted one can do; they do not make the database engines
   safe against every crafted file. A `.fileset.fjall` manifest is repaired
-  when it is opened, even by `check`, so `check` can write into it.
+  when it is opened, even by `check`, so `check` can write into it. redb
+  does not check a file it only reads, and says that it may stop on one that
+  was altered; `fileset` turns that into an error, but nothing fuzzes redb's
+  reading of a crafted file here.
 - Symlinks and setuid files arrive as they were. What other programs do with
   them is up to you.
 

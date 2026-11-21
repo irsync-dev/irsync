@@ -357,6 +357,76 @@ in a batch.
   1.26 s after, the same in every tier. The reports of the old and the new
   binary on a tree with added, deleted and changed entries were identical.
 
+## Follow-up: a redb store (2026-11-21)
+
+Issue #192. A third store, `--store redb`, for a manifest that travels with
+its tree: one file, as small as it gets, complete on disk when the command
+returns, and readable where nothing can be written. fjall cannot open
+read-only at all, and a SQLite manifest opens on such media only because
+`close` folds its log in.
+
+What was checked before building, and what came of it:
+
+- **Reading is only reading.** `check` and `list` open the file with
+  `open_read_only`. Under `strace` a `check` opens it `O_RDONLY`, takes read
+  locks on byte ranges of it, and creates, writes and renames nothing. A
+  test runs `check` and `list` on a manifest and a tree with the write
+  permission taken away. A real read-only mount was not tried: it needs
+  root. FreeBSD, where redb locks the whole file instead of ranges, was not
+  tried either.
+- **Readers beside the writer** are read transactions on the one open
+  database. A second, read-only open is refused while it is open for
+  writing.
+- **Compaction.** redb never gives freed pages back, and it grows its file
+  in large steps: after an `update` that changed 1,000 of a million entries
+  the file was twice the size. `Store::compact` runs after the last write
+  of `init` and `update`, and `--no-compaction` skips it. Of redb's two
+  modes, `Maximum` is used: after an update of a tenth of a million
+  entries it left 101.3 MB where a new `init` gives 101.4 MB, in under a
+  second. `Balanced` was about half a percent larger and three times as
+  fast, which is not worth the size here.
+- **Size** of a million entries: redb 102 MB, SQLite 115 MB, fjall 245 MB
+  (104 MB once its journal is folded in).
+- **Speed.** A lookup takes about 2 µs, written or reopened, single or in
+  batches (SQLite 3.5 to 11, fjall 3.8). On a million empty files `init`
+  takes 6.2 s (SQLite 7.8) and `check` 5.7 s (6.4). An `update` that
+  changes a tenth of them takes 3.3 s (2.8): the integrity check on open
+  and the compaction are the difference.
+- **A killed run.** Batches of entries are committed without forcing them
+  to disk, except once a second, and the meta rows that end a run force
+  everything. So a killed `update` loses at most about a second of work,
+  not all of it, and does not pay for an `fsync` per batch. The file is
+  then left in need of a repair, which only an open for writing makes:
+  `check` and `list` say so, and the next `update` repairs it.
+  `unfinished_manifest` opens a redb manifest for writing for this reason.
+- **The sweep does not use `retain`.** It first did. Dropping a thousandth
+  of a million entries then doubled the file. It now finds the paths to
+  drop a page of keys at a time and removes them one by one, which left
+  the file the size it was.
+- **Damaged and crafted files.** This is where redb is weakest. It verifies
+  page checksums when it repairs a file or checks it on an open for
+  writing, never on a read. Of 4,000 random corruptions of a manifest, a
+  read-only open handed back altered entries in about one in ten, and redb
+  panicked in about 170. So:
+  - every entry is stored with four bytes of the BLAKE3 hash of its path
+    and content, checked on every read (4 bytes an entry, 4 MB a million);
+  - an open for writing turns on redb's integrity check, which reads the
+    whole file;
+  - every read through redb runs under `catch_unwind`, and a panic is
+    reported as a damaged manifest. redb's own panic message still reaches
+    stderr first;
+  - `for_each` refuses paths that do not rise, as the SQLite store does.
+
+  With these, the same 4,000 corruptions gave an error or the stored
+  entries, every time. A smaller run of them is a test. What is not
+  covered: an entry missing from a file that still reads as sound, and a
+  file crafted to make redb loop. No fuzz target was added, because under
+  the fuzzer a panic inside redb is a crash whatever `fileset` does with it.
+- **Record format.** The protobuf encoding of the fjall store, reused, with
+  the checksum after it.
+- **`locate`.** A file named by `--manifest` is redb if it starts with
+  redb's magic bytes, and SQLite otherwise.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
