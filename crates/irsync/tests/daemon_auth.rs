@@ -193,26 +193,31 @@ async fn read_only_grant_cannot_send() {
     );
 }
 
-/// `rw` and `ro` share a directory: a key granted only `ro` reaches that
-/// directory under the name `rw` too (the grant is on the directory, and
-/// `ro` is read-only, so it still cannot write there).
+/// `rw` and `ro` share a directory. To a key granted only `ro` the name
+/// `rw` is not an export's: the answer is the one for any name that is no
+/// export, so the key cannot tell that an export `rw` exists. It reaches
+/// the directory under the name it has a grant for.
 #[tokio::test]
-async fn an_ungranted_name_reaches_the_granted_twin_on_the_same_path() {
+async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_path() {
     let g = || Grants {
         exports: [("ro".to_string(), Access::ReadWrite)].into(),
         all: None,
         immediate: false,
     };
+    for name in [&b"rw"[..], b"no-such-export"] {
+        for direction in [Direction::DaemonSends, Direction::ClientSends] {
+            expect_err(
+                exchange_with(g(), hello(name, direction)).await,
+                Code::Unauthorized,
+            );
+        }
+    }
     assert!(matches!(
-        exchange_with(g(), hello(b"rw", Direction::DaemonSends))
+        exchange_with(g(), hello(b"ro", Direction::DaemonSends))
             .await
             .unwrap(),
         HelloAckOrError::Ack(_)
     ));
-    expect_err(
-        exchange_with(g(), hello(b"rw", Direction::ClientSends)).await,
-        Code::ReadOnly,
-    );
 }
 
 /// A grant on an outer export reaches everything below it, an ungranted

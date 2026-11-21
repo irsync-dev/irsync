@@ -208,10 +208,35 @@ fn a_short_name_prefers_its_export_among_equal_paths_and_ties_rank_by_effective_
             .name,
         "rw"
     );
-    // Named but ungranted: the granted twin on the same path serves it,
-    // since the peer reaches that directory either way.
+    // Named but ungranted: the name is not an export's to this peer, also
+    // when a granted twin shares the path. It is a directory under the
+    // home, as if the export `rw` were not there.
     let g = only("ro", Access::ReadWrite);
-    assert_eq!(resolve(b"rw", None, &ex, &g).unwrap().unwrap().name, "ro");
+    assert!(resolve(b"rw", None, &ex, &g).unwrap().is_none());
+    assert!(resolve(b"rw", Some(Path::new("/h")), &ex, &g)
+        .unwrap()
+        .is_none());
+    let mut with_home = ex.clone();
+    with_home.insert("home".to_string(), export("/h", false));
+    let g2 = Grants {
+        exports: [
+            ("ro".to_string(), Access::ReadWrite),
+            ("home".to_string(), Access::ReadWrite),
+        ]
+        .into(),
+        all: None,
+        immediate: false,
+    };
+    let r = resolve(b"rw/x", Some(Path::new("/h")), &with_home, &g2)
+        .unwrap()
+        .unwrap();
+    assert_eq!((r.name, r.rel.as_bytes()), ("home", &b"rw/x"[..]));
+    // The directory itself stays in reach, by the granted name or its path.
+    assert_eq!(resolve(b"ro", None, &ex, &g).unwrap().unwrap().name, "ro");
+    assert_eq!(
+        resolve(b"/data", None, &ex, &g).unwrap().unwrap().name,
+        "ro"
+    );
     // Nesting still wins over the name: `srv/photos` is the inner export.
     let ex = exports(&[("srv", "/srv"), ("photos", "/srv/photos")]);
     assert_eq!(
