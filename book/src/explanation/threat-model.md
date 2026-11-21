@@ -284,9 +284,9 @@ Known gaps that are still open:
   daemon's home directory through another export can so tell that an export
   of that name exists.
 
-Until the review is finished, give a read-write grant only to keys you
-would trust with the daemon account's own files, and pull only from daemons
-you trust.
+While these gaps are open, give a read-write grant only to keys you would
+trust with the daemon account's own files, and pull only from daemons you
+trust.
 
 To report a security problem, see the
 [security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
