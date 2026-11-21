@@ -328,8 +328,16 @@ async fn partial_dir_and_copy_local() {
     let pdir = irsync::recv::PartialDir::new(&pd);
     let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
     // A wrong source offset is caught by the hash check.
+    let at = |p: &str| irsync::fs::safe::Beneath::new(&e.root, RelPath::new(p.as_bytes()).unwrap());
+    let src = at("src.bin");
     let err = w.copy_local(0, &src, 1).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    // A source behind a symlinked directory is not read.
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("src.bin"), &data).unwrap();
+    symlink(outside.path(), e.root.join("lnk")).unwrap();
+    let err = w.copy_local(0, &at("lnk/src.bin"), 0).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     for (idx, c) in cl.chunks.iter().enumerate() {
         w.copy_local(idx as u32, &src, c.offset).await.unwrap();
     }

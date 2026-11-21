@@ -458,6 +458,7 @@ impl Ctx {
     /// name maps to the key of its local name. Every caller today passes a
     /// key already built from the local name, so that mapping never fires;
     /// it is kept as a guard for a caller that passes the wire key.
+    #[cfg(test)]
     pub fn full_key(&self, key: &RelPath) -> PathBuf {
         let key = &self.local_key(key);
         if key.as_bytes().is_empty() {
