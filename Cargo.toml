@@ -80,6 +80,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 rpassword = "7"
 fjall = "3.1"
+redb = "5"
 xattr = "1.7"
 crossbeam-channel = "0.5"
 indicatif = "0.18"

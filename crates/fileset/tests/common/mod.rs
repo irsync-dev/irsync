@@ -80,6 +80,7 @@ pub fn update_opts(
             verbose: false,
         },
         mode,
+        compact: true,
     }
 }
 
@@ -173,10 +174,7 @@ pub fn set_mtime_ro(path: &Path, t: SystemTime) {
 }
 
 pub fn store_name(backend: Backend) -> &'static str {
-    match backend {
-        Backend::Sqlite => store::SQLITE_NAME,
-        Backend::Fjall => store::FJALL_NAME,
-    }
+    backend.file_name()
 }
 
 pub fn open_ro(root: &Path, backend: Backend) -> Box<dyn Store> {

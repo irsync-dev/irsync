@@ -13,8 +13,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Invokes each backend-generic test once per backend.
-macro_rules! for_both_backends {
-    ($($name:ident => $sqlite:ident, $fjall:ident;)*) => {
+macro_rules! for_every_backend {
+    ($($name:ident => $sqlite:ident, $fjall:ident, $redb:ident;)*) => {
         $(
             #[test]
             fn $sqlite() {
@@ -23,6 +23,10 @@ macro_rules! for_both_backends {
             #[test]
             fn $fjall() {
                 $name(Backend::Fjall)
+            }
+            #[test]
+            fn $redb() {
+                $name(Backend::Redb)
             }
         )*
     };
@@ -55,58 +59,59 @@ fn without_macos_xattr_warnings(err: &str) -> String {
     }
 }
 
-for_both_backends! {
-    update_records_every_kind => update_records_every_kind_sqlite, update_records_every_kind_fjall;
-    update_reuses_hash_when_unchanged => update_reuses_hash_when_unchanged_sqlite, update_reuses_hash_when_unchanged_fjall;
-    update_rehash_forces => update_rehash_forces_sqlite, update_rehash_forces_fjall;
-    update_rehashes_when_mtime_changes => update_rehashes_when_mtime_changes_sqlite, update_rehashes_when_mtime_changes_fjall;
-    update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall;
-    update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall;
-    update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall;
-    update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall;
-    update_reuses_stored_xattrs_while_ctime_is_unchanged => update_reuses_stored_xattrs_while_ctime_is_unchanged_sqlite, update_reuses_stored_xattrs_while_ctime_is_unchanged_fjall;
-    update_force_xattr_reads_reads_every_entry => update_force_xattr_reads_reads_every_entry_sqlite, update_force_xattr_reads_reads_every_entry_fjall;
-    update_rereads_xattrs_it_could_not_read_in_full => update_rereads_xattrs_it_could_not_read_in_full_sqlite, update_rereads_xattrs_it_could_not_read_in_full_fjall;
-    update_warns_on_unreadable => update_warns_on_unreadable_sqlite, update_warns_on_unreadable_fjall;
-    update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall;
-    init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall;
-    init_refuses_existing_manifest => init_refuses_existing_manifest_sqlite, init_refuses_existing_manifest_fjall;
-    init_refuses_nested_manifest => init_refuses_nested_manifest_sqlite, init_refuses_nested_manifest_fjall;
-    init_refuses_enclosing_manifest => init_refuses_enclosing_manifest_sqlite, init_refuses_enclosing_manifest_fjall;
-    update_requires_existing_manifest => update_requires_existing_manifest_sqlite, update_requires_existing_manifest_fjall;
-    update_requires_existing_external_manifest => update_requires_existing_external_manifest_sqlite, update_requires_existing_external_manifest_fjall;
-    update_with_external_manifest_flags_nothing => update_with_external_manifest_flags_nothing_sqlite, update_with_external_manifest_flags_nothing_fjall;
-    check_clean_after_update => check_clean_after_update_sqlite, check_clean_after_update_fjall;
-    check_reports_add_del_chg => check_reports_add_del_chg_sqlite, check_reports_add_del_chg_fjall;
-    check_relaxed_ignores_mode_and_mtime => check_relaxed_ignores_mode_and_mtime_sqlite, check_relaxed_ignores_mode_and_mtime_fjall;
-    check_paranoid_reports_nlink => check_paranoid_reports_nlink_sqlite, check_paranoid_reports_nlink_fjall;
-    check_ignore_mode_hides_chmod => check_ignore_mode_hides_chmod_sqlite, check_ignore_mode_hides_chmod_fjall;
-    check_require_uid_stays_clean_same_user => check_require_uid_stays_clean_same_user_sqlite, check_require_uid_stays_clean_same_user_fjall;
-    check_symlink_retarget => check_symlink_retarget_sqlite, check_symlink_retarget_fjall;
-    check_kind_change => check_kind_change_sqlite, check_kind_change_fjall;
-    check_dir_replaced_by_file_deletes_children => check_dir_replaced_by_file_deletes_children_sqlite, check_dir_replaced_by_file_deletes_children_fjall;
-    check_warns_no_stored_checksum => check_warns_no_stored_checksum_sqlite, check_warns_no_stored_checksum_fjall;
-    check_unreadable_at_check_time => check_unreadable_at_check_time_sqlite, check_unreadable_at_check_time_fjall;
-    check_missing_manifest_is_error => check_missing_manifest_is_error_sqlite, check_missing_manifest_is_error_fjall;
-    check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall;
-    check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall;
-    check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall;
-    check_reports_entries_under_a_directory_turned_symlink_as_deleted => check_reports_entries_under_a_directory_turned_symlink_as_deleted_sqlite, check_reports_entries_under_a_directory_turned_symlink_as_deleted_fjall;
-    init_replaces_the_manifest_an_interrupted_init_left => init_replaces_the_manifest_an_interrupted_init_left_sqlite, init_replaces_the_manifest_an_interrupted_init_left_fjall;
-    update_refuses_the_manifest_an_interrupted_init_left => update_refuses_the_manifest_an_interrupted_init_left_sqlite, update_refuses_the_manifest_an_interrupted_init_left_fjall;
-    check_no_stored_checksum_warning_needs_blake3_and_a_file => check_no_stored_checksum_warning_needs_blake3_and_a_file_sqlite, check_no_stored_checksum_warning_needs_blake3_and_a_file_fjall;
-    check_unopenable_manifest_suggests_manifest_flag => check_unopenable_manifest_suggests_manifest_flag_sqlite, check_unopenable_manifest_suggests_manifest_flag_fjall;
-    update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall;
-    external_manifest_ignores_root_level_manifest_names => external_manifest_ignores_root_level_manifest_names_sqlite, external_manifest_ignores_root_level_manifest_names_fjall;
-    in_tree_manifest_with_custom_name_is_clean => in_tree_manifest_with_custom_name_is_clean_sqlite, in_tree_manifest_with_custom_name_is_clean_fjall;
-    check_require_uid_reports_a_changed_owner => check_require_uid_reports_a_changed_owner_sqlite, check_require_uid_reports_a_changed_owner_fjall;
-    update_stores_a_tree_of_exactly_one_batch => update_stores_a_tree_of_exactly_one_batch_sqlite, update_stores_a_tree_of_exactly_one_batch_fjall;
+for_every_backend! {
+    update_records_every_kind => update_records_every_kind_sqlite, update_records_every_kind_fjall, update_records_every_kind_redb;
+    update_reuses_hash_when_unchanged => update_reuses_hash_when_unchanged_sqlite, update_reuses_hash_when_unchanged_fjall, update_reuses_hash_when_unchanged_redb;
+    update_rehash_forces => update_rehash_forces_sqlite, update_rehash_forces_fjall, update_rehash_forces_redb;
+    update_rehashes_when_mtime_changes => update_rehashes_when_mtime_changes_sqlite, update_rehashes_when_mtime_changes_fjall, update_rehashes_when_mtime_changes_redb;
+    update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall, update_sweeps_stale_generation_redb;
+    update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall, update_leaves_unchanged_rows_alone_redb;
+    update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall, update_sweeps_deleted_entries_and_keeps_unchanged_ones_redb;
+    update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall, update_rewrites_a_row_whose_xattrs_changed_redb;
+    update_reuses_stored_xattrs_while_ctime_is_unchanged => update_reuses_stored_xattrs_while_ctime_is_unchanged_sqlite, update_reuses_stored_xattrs_while_ctime_is_unchanged_fjall, update_reuses_stored_xattrs_while_ctime_is_unchanged_redb;
+    update_force_xattr_reads_reads_every_entry => update_force_xattr_reads_reads_every_entry_sqlite, update_force_xattr_reads_reads_every_entry_fjall, update_force_xattr_reads_reads_every_entry_redb;
+    update_rereads_xattrs_it_could_not_read_in_full => update_rereads_xattrs_it_could_not_read_in_full_sqlite, update_rereads_xattrs_it_could_not_read_in_full_fjall, update_rereads_xattrs_it_could_not_read_in_full_redb;
+    update_warns_on_unreadable => update_warns_on_unreadable_sqlite, update_warns_on_unreadable_fjall, update_warns_on_unreadable_redb;
+    update_warns_on_nested_manifest => update_warns_on_nested_manifest_sqlite, update_warns_on_nested_manifest_fjall, update_warns_on_nested_manifest_redb;
+    init_rejects_wrong_store_flag => init_rejects_wrong_store_flag_sqlite, init_rejects_wrong_store_flag_fjall, init_rejects_wrong_store_flag_redb;
+    init_refuses_existing_manifest => init_refuses_existing_manifest_sqlite, init_refuses_existing_manifest_fjall, init_refuses_existing_manifest_redb;
+    init_refuses_nested_manifest => init_refuses_nested_manifest_sqlite, init_refuses_nested_manifest_fjall, init_refuses_nested_manifest_redb;
+    init_refuses_enclosing_manifest => init_refuses_enclosing_manifest_sqlite, init_refuses_enclosing_manifest_fjall, init_refuses_enclosing_manifest_redb;
+    update_requires_existing_manifest => update_requires_existing_manifest_sqlite, update_requires_existing_manifest_fjall, update_requires_existing_manifest_redb;
+    update_requires_existing_external_manifest => update_requires_existing_external_manifest_sqlite, update_requires_existing_external_manifest_fjall, update_requires_existing_external_manifest_redb;
+    update_with_external_manifest_flags_nothing => update_with_external_manifest_flags_nothing_sqlite, update_with_external_manifest_flags_nothing_fjall, update_with_external_manifest_flags_nothing_redb;
+    check_clean_after_update => check_clean_after_update_sqlite, check_clean_after_update_fjall, check_clean_after_update_redb;
+    check_reports_add_del_chg => check_reports_add_del_chg_sqlite, check_reports_add_del_chg_fjall, check_reports_add_del_chg_redb;
+    check_relaxed_ignores_mode_and_mtime => check_relaxed_ignores_mode_and_mtime_sqlite, check_relaxed_ignores_mode_and_mtime_fjall, check_relaxed_ignores_mode_and_mtime_redb;
+    check_paranoid_reports_nlink => check_paranoid_reports_nlink_sqlite, check_paranoid_reports_nlink_fjall, check_paranoid_reports_nlink_redb;
+    check_ignore_mode_hides_chmod => check_ignore_mode_hides_chmod_sqlite, check_ignore_mode_hides_chmod_fjall, check_ignore_mode_hides_chmod_redb;
+    check_require_uid_stays_clean_same_user => check_require_uid_stays_clean_same_user_sqlite, check_require_uid_stays_clean_same_user_fjall, check_require_uid_stays_clean_same_user_redb;
+    check_symlink_retarget => check_symlink_retarget_sqlite, check_symlink_retarget_fjall, check_symlink_retarget_redb;
+    check_kind_change => check_kind_change_sqlite, check_kind_change_fjall, check_kind_change_redb;
+    check_dir_replaced_by_file_deletes_children => check_dir_replaced_by_file_deletes_children_sqlite, check_dir_replaced_by_file_deletes_children_fjall, check_dir_replaced_by_file_deletes_children_redb;
+    check_warns_no_stored_checksum => check_warns_no_stored_checksum_sqlite, check_warns_no_stored_checksum_fjall, check_warns_no_stored_checksum_redb;
+    check_unreadable_at_check_time => check_unreadable_at_check_time_sqlite, check_unreadable_at_check_time_fjall, check_unreadable_at_check_time_redb;
+    check_missing_manifest_is_error => check_missing_manifest_is_error_sqlite, check_missing_manifest_is_error_fjall, check_missing_manifest_is_error_redb;
+    check_with_external_manifest => check_with_external_manifest_sqlite, check_with_external_manifest_fjall, check_with_external_manifest_redb;
+    check_output_is_deterministic => check_output_is_deterministic_sqlite, check_output_is_deterministic_fjall, check_output_is_deterministic_redb;
+    check_unreadable_directory_is_a_difference => check_unreadable_directory_is_a_difference_sqlite, check_unreadable_directory_is_a_difference_fjall, check_unreadable_directory_is_a_difference_redb;
+    check_reports_entries_under_a_directory_turned_symlink_as_deleted => check_reports_entries_under_a_directory_turned_symlink_as_deleted_sqlite, check_reports_entries_under_a_directory_turned_symlink_as_deleted_fjall, check_reports_entries_under_a_directory_turned_symlink_as_deleted_redb;
+    init_replaces_the_manifest_an_interrupted_init_left => init_replaces_the_manifest_an_interrupted_init_left_sqlite, init_replaces_the_manifest_an_interrupted_init_left_fjall, init_replaces_the_manifest_an_interrupted_init_left_redb;
+    update_refuses_the_manifest_an_interrupted_init_left => update_refuses_the_manifest_an_interrupted_init_left_sqlite, update_refuses_the_manifest_an_interrupted_init_left_fjall, update_refuses_the_manifest_an_interrupted_init_left_redb;
+    check_no_stored_checksum_warning_needs_blake3_and_a_file => check_no_stored_checksum_warning_needs_blake3_and_a_file_sqlite, check_no_stored_checksum_warning_needs_blake3_and_a_file_fjall, check_no_stored_checksum_warning_needs_blake3_and_a_file_redb;
+    check_unopenable_manifest_suggests_manifest_flag => check_unopenable_manifest_suggests_manifest_flag_sqlite, check_unopenable_manifest_suggests_manifest_flag_fjall, check_unopenable_manifest_suggests_manifest_flag_redb;
+    update_sweeps_entries_of_interrupted_run => update_sweeps_entries_of_interrupted_run_sqlite, update_sweeps_entries_of_interrupted_run_fjall, update_sweeps_entries_of_interrupted_run_redb;
+    external_manifest_ignores_root_level_manifest_names => external_manifest_ignores_root_level_manifest_names_sqlite, external_manifest_ignores_root_level_manifest_names_fjall, external_manifest_ignores_root_level_manifest_names_redb;
+    in_tree_manifest_with_custom_name_is_clean => in_tree_manifest_with_custom_name_is_clean_sqlite, in_tree_manifest_with_custom_name_is_clean_fjall, in_tree_manifest_with_custom_name_is_clean_redb;
+    check_require_uid_reports_a_changed_owner => check_require_uid_reports_a_changed_owner_sqlite, check_require_uid_reports_a_changed_owner_fjall, check_require_uid_reports_a_changed_owner_redb;
+    update_stores_a_tree_of_exactly_one_batch => update_stores_a_tree_of_exactly_one_batch_sqlite, update_stores_a_tree_of_exactly_one_batch_fjall, update_stores_a_tree_of_exactly_one_batch_redb;
 }
 
 fn other(b: Backend) -> Backend {
     match b {
         Backend::Sqlite => Backend::Fjall,
-        Backend::Fjall => Backend::Sqlite,
+        Backend::Fjall => Backend::Redb,
+        Backend::Redb => Backend::Sqlite,
     }
 }
 
@@ -875,6 +880,7 @@ fn in_tree_manifest_with_custom_name_is_clean(b: Backend) {
     let name = match b {
         Backend::Sqlite => "m.sqlite",
         Backend::Fjall => "m.fjall",
+        Backend::Redb => "m.redb",
     };
     let manifest = dir.path().join("sub").join(name);
     let mut uopts = update_opts(dir.path(), b, false, true);
@@ -963,7 +969,7 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
     let mode = std::fs::metadata(&m).unwrap().permissions().mode();
     chmod(&m, 0o000);
     let readable = match b {
-        Backend::Sqlite => std::fs::read(&m).is_ok(),
+        Backend::Sqlite | Backend::Redb => std::fs::read(&m).is_ok(),
         Backend::Fjall => std::fs::read_dir(&m).is_ok(),
     };
     if readable {
@@ -976,7 +982,8 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
     let e = result.expect_err("an unopenable manifest must fail check");
     let text = format!("{e:#}");
     assert!(text.contains("cannot open manifest at "), "{text}");
-    assert!(text.contains("--manifest"), "{text}");
+    // A redb manifest opens on read-only media, so there is nothing to suggest.
+    assert_eq!(text.contains("--manifest"), b != Backend::Redb, "{text}");
 }
 
 fn check_reports_entries_under_a_directory_turned_symlink_as_deleted(b: Backend) {
@@ -1036,10 +1043,10 @@ fn update_refuses_the_manifest_an_interrupted_init_left(b: Backend) {
     );
 }
 
-for_both_backends! {
-    update_skips_unreadable_builtin_exclude => update_skips_unreadable_builtin_exclude_sqlite, update_skips_unreadable_builtin_exclude_fjall;
-    update_without_builtin_excludes_warns => update_without_builtin_excludes_warns_sqlite, update_without_builtin_excludes_warns_fjall;
-    builtin_excludes_drop_quietly_from_an_old_manifest => builtin_excludes_drop_quietly_from_an_old_manifest_sqlite, builtin_excludes_drop_quietly_from_an_old_manifest_fjall;
+for_every_backend! {
+    update_skips_unreadable_builtin_exclude => update_skips_unreadable_builtin_exclude_sqlite, update_skips_unreadable_builtin_exclude_fjall, update_skips_unreadable_builtin_exclude_redb;
+    update_without_builtin_excludes_warns => update_without_builtin_excludes_warns_sqlite, update_without_builtin_excludes_warns_fjall, update_without_builtin_excludes_warns_redb;
+    builtin_excludes_drop_quietly_from_an_old_manifest => builtin_excludes_drop_quietly_from_an_old_manifest_sqlite, builtin_excludes_drop_quietly_from_an_old_manifest_fjall, builtin_excludes_drop_quietly_from_an_old_manifest_redb;
 }
 
 /// A tree with an unreadable `.Spotlight-V100` at its root, as on a macOS volume. `None`
@@ -1291,12 +1298,12 @@ fn check_verbose_prints_skp_on_stdout(b: Backend) {
     assert!(!err.contains("INFO"), "{err}");
 }
 
-for_both_backends! {
-    check_verbose_prints_eql_per_entry => check_verbose_prints_eql_per_entry_sqlite, check_verbose_prints_eql_per_entry_fjall;
-    check_verbose_keeps_the_difference_lines => check_verbose_keeps_the_difference_lines_sqlite, check_verbose_keeps_the_difference_lines_fjall;
-    check_without_verbose_prints_no_eql_or_skp => check_without_verbose_prints_no_eql_or_skp_sqlite, check_without_verbose_prints_no_eql_or_skp_fjall;
-    check_verbose_without_hashing_has_no_checksum => check_verbose_without_hashing_has_no_checksum_sqlite, check_verbose_without_hashing_has_no_checksum_fjall;
-    check_verbose_prints_skp_on_stdout => check_verbose_prints_skp_on_stdout_sqlite, check_verbose_prints_skp_on_stdout_fjall;
+for_every_backend! {
+    check_verbose_prints_eql_per_entry => check_verbose_prints_eql_per_entry_sqlite, check_verbose_prints_eql_per_entry_fjall, check_verbose_prints_eql_per_entry_redb;
+    check_verbose_keeps_the_difference_lines => check_verbose_keeps_the_difference_lines_sqlite, check_verbose_keeps_the_difference_lines_fjall, check_verbose_keeps_the_difference_lines_redb;
+    check_without_verbose_prints_no_eql_or_skp => check_without_verbose_prints_no_eql_or_skp_sqlite, check_without_verbose_prints_no_eql_or_skp_fjall, check_without_verbose_prints_no_eql_or_skp_redb;
+    check_verbose_without_hashing_has_no_checksum => check_verbose_without_hashing_has_no_checksum_sqlite, check_verbose_without_hashing_has_no_checksum_fjall, check_verbose_without_hashing_has_no_checksum_redb;
+    check_verbose_prints_skp_on_stdout => check_verbose_prints_skp_on_stdout_sqlite, check_verbose_prints_skp_on_stdout_fjall, check_verbose_prints_skp_on_stdout_redb;
 }
 
 /// Counts the bytes' lines and the flushes it is asked for.
@@ -1491,12 +1498,12 @@ fn update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written(b: Bac
     assert_ne!(s.meta().unwrap().updated_at, 0, "the run was recorded");
 }
 
-for_both_backends! {
-    update_verbose_root_and_manifest_are_eql => update_verbose_root_and_manifest_are_eql_sqlite, update_verbose_root_and_manifest_are_eql_fjall;
-    update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written => update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_sqlite, update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_fjall;
-    init_verbose_prints_add_per_entry => init_verbose_prints_add_per_entry_sqlite, init_verbose_prints_add_per_entry_fjall;
-    update_verbose_prints_eql_chg_add_del => update_verbose_prints_eql_chg_add_del_sqlite, update_verbose_prints_eql_chg_add_del_fjall;
-    update_verbose_rehash_prints_eql => update_verbose_rehash_prints_eql_sqlite, update_verbose_rehash_prints_eql_fjall;
-    update_verbose_unreadable_file_has_no_checksum => update_verbose_unreadable_file_has_no_checksum_sqlite, update_verbose_unreadable_file_has_no_checksum_fjall;
-    update_verbose_drops_old_builtin_exclude_rows => update_verbose_drops_old_builtin_exclude_rows_sqlite, update_verbose_drops_old_builtin_exclude_rows_fjall;
+for_every_backend! {
+    update_verbose_root_and_manifest_are_eql => update_verbose_root_and_manifest_are_eql_sqlite, update_verbose_root_and_manifest_are_eql_fjall, update_verbose_root_and_manifest_are_eql_redb;
+    update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written => update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_sqlite, update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_fjall, update_verbose_finishes_the_manifest_when_a_del_line_cannot_be_written_redb;
+    init_verbose_prints_add_per_entry => init_verbose_prints_add_per_entry_sqlite, init_verbose_prints_add_per_entry_fjall, init_verbose_prints_add_per_entry_redb;
+    update_verbose_prints_eql_chg_add_del => update_verbose_prints_eql_chg_add_del_sqlite, update_verbose_prints_eql_chg_add_del_fjall, update_verbose_prints_eql_chg_add_del_redb;
+    update_verbose_rehash_prints_eql => update_verbose_rehash_prints_eql_sqlite, update_verbose_rehash_prints_eql_fjall, update_verbose_rehash_prints_eql_redb;
+    update_verbose_unreadable_file_has_no_checksum => update_verbose_unreadable_file_has_no_checksum_sqlite, update_verbose_unreadable_file_has_no_checksum_fjall, update_verbose_unreadable_file_has_no_checksum_redb;
+    update_verbose_drops_old_builtin_exclude_rows => update_verbose_drops_old_builtin_exclude_rows_sqlite, update_verbose_drops_old_builtin_exclude_rows_fjall, update_verbose_drops_old_builtin_exclude_rows_redb;
 }

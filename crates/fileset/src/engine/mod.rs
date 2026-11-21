@@ -105,6 +105,18 @@ impl<'a> Report<'a> {
     }
 }
 
+/// What `check` and `list` say when the manifest at `loc` does not open. SQLite and fjall
+/// write to a manifest even to read it, so read-only media are a likely cause there.
+pub fn cannot_open(loc: &Location) -> String {
+    let hint = match loc.backend {
+        Backend::Sqlite | Backend::Fjall => {
+            "; if it is on read-only media, copy it elsewhere and pass --manifest"
+        }
+        Backend::Redb => "",
+    };
+    format!("cannot open manifest at {}{hint}", loc.path.display())
+}
+
 /// Canonicalizes `path` and requires it to be a directory.
 pub fn canonical_root(path: &Path) -> anyhow::Result<PathBuf> {
     let root = std::fs::canonicalize(path)

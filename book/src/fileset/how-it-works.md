@@ -17,8 +17,10 @@ directory, symlink and other item it finds. Each entry holds:
 - extended attributes, which are named values some file systems attach to a
   file.
 
-The manifest is a SQLite file, `.fileset.sqlite`, at the top of the tree. A
-second backend, `fjall`, stores it as a directory. The default is the one to
+The manifest is a SQLite file, `.fileset.sqlite`, at the top of the tree. Two
+other backends exist: `fjall` stores it as a directory, and `redb` as a
+single file that can be read from media that cannot be written to (see
+[The redb backend](reference.md#the-redb-backend)). The default is the one to
 use unless you have a reason.
 
 `update` keeps a stored checksum while a file's size, modification time and

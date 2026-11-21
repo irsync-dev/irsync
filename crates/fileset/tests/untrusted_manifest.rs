@@ -1,18 +1,17 @@
 //! A manifest can come with a tree someone else made. Opening it must not
 //! reach outside the manifest, and must not run what its maker put in.
 
-use fileset::store::{self, Backend, OpenMode, FJALL_NAME, SQLITE_NAME};
+use fileset::store::{self, Backend, OpenMode, SQLITE_NAME};
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
 /// A fresh, empty manifest of `backend` in `root`.
 fn manifest(root: &Path, backend: Backend) -> std::path::PathBuf {
-    let name = match backend {
-        Backend::Sqlite => SQLITE_NAME,
-        Backend::Fjall => FJALL_NAME,
-    };
-    let path = root.join(name);
-    drop(store::open(&path, backend, OpenMode::Create).unwrap());
+    let path = root.join(backend.file_name());
+    store::open(&path, backend, OpenMode::Create)
+        .unwrap()
+        .close()
+        .unwrap();
     path
 }
 
@@ -27,7 +26,7 @@ fn open_err(path: &Path, backend: Backend, mode: OpenMode) -> String {
 /// manifest somewhere else. `--manifest` may still name a link.
 #[test]
 fn a_symlinked_manifest_in_the_tree_is_refused() {
-    for backend in [Backend::Sqlite, Backend::Fjall] {
+    for backend in [Backend::Sqlite, Backend::Fjall, Backend::Redb] {
         let (elsewhere, tree) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let real = manifest(elsewhere.path(), backend);
         let link = tree.path().join(real.file_name().unwrap());

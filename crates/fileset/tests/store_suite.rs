@@ -178,6 +178,13 @@ fn fjall_suite() {
     });
 }
 
+#[test]
+fn redb_suite() {
+    suite(Backend::Redb, |p, mode| {
+        store::open(p, Backend::Redb, mode).unwrap()
+    });
+}
+
 /// A reader shared by several threads sees what the open store has committed, and once
 /// dropped it does not keep the store from closing cleanly.
 fn reader_suite(backend: Backend) {
@@ -218,4 +225,9 @@ fn sqlite_reader() {
 #[test]
 fn fjall_reader() {
     reader_suite(Backend::Fjall);
+}
+
+#[test]
+fn redb_reader() {
+    reader_suite(Backend::Redb);
 }

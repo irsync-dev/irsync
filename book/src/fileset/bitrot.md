@@ -72,3 +72,8 @@ manifest somewhere writable and point `--manifest` at the copy:
 cp /mnt/snapshot/photos/.fileset.sqlite /tmp/photos.fileset.sqlite
 fileset check --manifest /tmp/photos.fileset.sqlite /mnt/snapshot/photos
 ```
+
+If you know the tree will end up on such media, create its manifest with
+`fileset init --store redb`. That manifest is a single file that `check`
+only reads, so it needs no copy. See
+[The redb backend](reference.md#the-redb-backend).

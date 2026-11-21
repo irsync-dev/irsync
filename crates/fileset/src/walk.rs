@@ -10,7 +10,7 @@ use std::sync::{Condvar, Mutex};
 
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Partial};
-use crate::store::{Reader, FJALL_NAME, SQLITE_NAME};
+use crate::store::{Reader, NAMES};
 
 #[derive(Clone, Debug)]
 pub struct WalkConfig {
@@ -501,9 +501,7 @@ fn list_dir(
         let is_store = cfg.store_path.as_deref() == Some(abs.as_path());
         if is_store {
             obs.entry.flags.insert(Flags::STORE);
-        } else if dir_rel != b"."
-            && (name_bytes == SQLITE_NAME.as_bytes() || name_bytes == FJALL_NAME.as_bytes())
-        {
+        } else if dir_rel != b"." && NAMES.iter().any(|(n, _)| name_bytes == n.as_bytes()) {
             // Below the root only: a root-level manifest is the tree's own, merely not the
             // one in use (--manifest points elsewhere).
             items.push(Item::Event(WalkEvent::NestedManifest(rel.clone())));
