@@ -162,6 +162,25 @@ fn refuse_links_inside(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The options the `entries` keyspace is created with: fjall's own, except
+/// that every table's filter and index block stay in memory.
+///
+/// By default fjall keeps them only for the newest tables and reads the
+/// rest through its block cache. That cache is split into four shards per
+/// CPU, and a block larger than one shard is never kept: with eight CPUs a
+/// shard is 1 MiB, and the filter of a table holding a million entries is
+/// larger. Each lookup then read and checksummed the whole filter again,
+/// 70 µs instead of 4. Kept in memory they cost about 2 bytes an entry.
+///
+/// fjall stores these options with the keyspace: a manifest created before
+/// this keeps the ones it has.
+fn entries_options() -> KeyspaceCreateOptions {
+    use fjall::config::PinningPolicy;
+    KeyspaceCreateOptions::default()
+        .filter_block_pinning_policy(PinningPolicy::all(true))
+        .index_block_pinning_policy(PinningPolicy::all(true))
+}
+
 impl FjallStore {
     pub fn open(path: &Path, mode: OpenMode) -> Result<FjallStore> {
         match mode {
@@ -189,7 +208,7 @@ impl FjallStore {
         let db = Database::builder(path)
             .open()
             .with_context(|| format!("opening {}", path.display()))?;
-        let entries = db.keyspace("entries", KeyspaceCreateOptions::default)?;
+        let entries = db.keyspace("entries", entries_options)?;
         let meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         if mode == OpenMode::Create {
             let t = now();

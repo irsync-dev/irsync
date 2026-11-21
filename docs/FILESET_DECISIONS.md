@@ -310,6 +310,32 @@ deferred rather than fixed are listed in
     comes, which stops the walk and the hashers. Entries ahead of it in walk
     order are still recorded, as in any interrupted run.
 
+## Follow-up: fjall keeps filter and index blocks in memory (2026-11-21)
+
+Issue #188. On a fjall manifest of a million entries that had been closed
+and reopened, a lookup took about 71 µs instead of 4.
+
+- **Cause.** fjall keeps the filter block only of its newest tables in
+  memory and reads the others through its block cache (32 MiB). That cache
+  is split into four shards per CPU, and a block larger than one shard is
+  never kept. With eight CPUs a shard is 1 MiB; the filter of a table of a
+  million entries is larger, so every lookup read and checksummed it again.
+  The same run limited to two CPUs (16 MiB shards) was fast, which is what
+  confirmed it.
+- **Fix.** The `entries` keyspace is created with the filter and the index
+  block of every table pinned (`entries_options` in `store/fjall.rs`). The
+  index block is pinned too because it would hit the same limit on a
+  machine with more CPUs.
+- **Why not a larger cache.** 64 MiB also fixed it here, but only because
+  it makes a shard 2 MiB on eight CPUs. On sixteen it would be 1 MiB again.
+- **Cost.** About 2 bytes of memory per entry.
+- **Existing manifests keep the old behaviour.** fjall stores a keyspace's
+  options when it is created. A manifest made before this change stays
+  slow until it is made again with `init`.
+- **Measured** with `benches/lookup.rs`, 8 CPUs, microseconds per lookup on
+  a reopened manifest: 1,000,000 entries 71 before, 3.8 after; 4,000,000
+  entries 4.7 after.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
