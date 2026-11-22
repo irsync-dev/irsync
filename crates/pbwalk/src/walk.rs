@@ -889,6 +889,60 @@ mod tests {
     }
 
     #[test]
+    fn scalars_print_as_their_declared_type() {
+        use prost::encoding as enc;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("s.proto"),
+            "syntax = \"proto3\";\n\
+             message S {\n\
+               sint32 a = 1; sint64 b = 2; int32 c = 3; int64 d = 4;\n\
+               fixed32 e = 5; fixed64 f = 6; sfixed32 g = 7; sfixed64 h = 8;\n\
+               float i = 9; double j = 10;\n\
+             }\n",
+        )
+        .unwrap();
+        let fds = protox::compile(["s.proto"], [dir.path()]).unwrap();
+        let pool = DescriptorPool::from_file_descriptor_set(fds).unwrap();
+        let s = pool.get_message_by_name("S").unwrap();
+
+        let mut bytes = Vec::new();
+        enc::sint32::encode(1, &i32::MIN, &mut bytes);
+        enc::sint64::encode(2, &-3, &mut bytes);
+        enc::int32::encode(3, &-1, &mut bytes);
+        enc::int64::encode(4, &i64::MIN, &mut bytes);
+        enc::fixed32::encode(5, &u32::MAX, &mut bytes);
+        enc::fixed64::encode(6, &u64::MAX, &mut bytes);
+        enc::sfixed32::encode(7, &-7, &mut bytes);
+        enc::sfixed64::encode(8, &i64::MIN, &mut bytes);
+        enc::float::encode(9, &-1.5, &mut bytes);
+        enc::double::encode(10, &f64::NEG_INFINITY, &mut bytes);
+
+        let printed: Vec<_> = walk(&s, &bytes)
+            .into_iter()
+            .map(|f| match f.value {
+                Value::Scalar(text) => text,
+                other => panic!("field {}: {other:?}", f.number),
+            })
+            .collect();
+        assert_eq!(
+            printed,
+            [
+                "-2147483648",
+                "-3",
+                "-1",
+                "-9223372036854775808",
+                "4294967295",
+                "18446744073709551615",
+                "-7",
+                "-9223372036854775808",
+                "-1.5",
+                "-inf",
+            ]
+        );
+    }
+
+    #[test]
     fn empty_message_has_no_fields() {
         assert!(walk(&desc("irsync.v1.Hello"), &[]).is_empty());
         let bytes = v1::Control {
