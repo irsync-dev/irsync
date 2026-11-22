@@ -413,8 +413,10 @@ What was checked before building, and what came of it:
   - an open for writing turns on redb's integrity check, which reads the
     whole file;
   - every read through redb runs under `catch_unwind`, and a panic is
-    reported as a damaged manifest. redb's own panic message still reaches
-    stderr first;
+    reported as a damaged manifest. redb's own panic message is kept off
+    stderr (issue #206): a panic hook drops it when the panic comes from
+    redb's source while such a read runs on that thread, and prints every
+    other panic as before;
   - `for_each` refuses paths that do not rise, as the SQLite store does.
 
   With these, the same 4,000 corruptions gave an error or the stored

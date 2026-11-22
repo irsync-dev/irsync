@@ -14,11 +14,12 @@ use redb::{
     Builder, CompactionMode, Database, DatabaseError, Durability, ReadOnlyDatabase,
     ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition,
 };
+use std::cell::Cell;
 use std::io::Read;
 use std::ops::Bound;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 const ENTRIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entries");
@@ -51,11 +52,40 @@ pub fn is_redb_file(path: &Path) -> bool {
 /// and its own documentation says that a plain open of an altered file may panic. A
 /// manifest can come with a tree someone else made, or sit on a medium that rots, so
 /// such a panic is an error here.
+///
+/// The message Rust prints for such a panic is kept off stderr: the error says what
+/// there is to say. That holds only for a panic raised in redb's own code while `f`
+/// runs on this thread. Any other panic is a fault of ours and prints as usual.
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    match catch_unwind(AssertUnwindSafe(f)) {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let print = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let redb = info.location().is_some_and(|l| in_redb(l.file()));
+            if !(redb && GUARDED.get() > 0) {
+                print(info);
+            }
+        }));
+    });
+    GUARDED.set(GUARDED.get() + 1);
+    let caught = catch_unwind(AssertUnwindSafe(f));
+    GUARDED.set(GUARDED.get() - 1);
+    match caught {
         Ok(r) => r,
         Err(_) => bail!("the manifest is damaged: its redb database cannot be read"),
     }
+}
+
+thread_local! {
+    /// How many `guarded` calls this thread is inside.
+    static GUARDED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Whether `file`, the source file a panic names, is one of redb's: Cargo unpacks the
+/// crate into a directory called `redb-` and its version.
+fn in_redb(file: &str) -> bool {
+    file.split(['/', '\\'])
+        .any(|part| part.starts_with("redb-"))
 }
 
 /// The database, as `init` and `update` open it or as the commands that only read do.
@@ -507,6 +537,35 @@ mod tests {
         s.set_meta(&m).unwrap();
         s.compact().unwrap();
         s.close().unwrap();
+    }
+
+    #[test]
+    fn only_a_panic_in_redbs_own_source_is_redbs() {
+        assert!(in_redb(
+            "/home/me/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-5.0.0/src/tree_store/btree.rs"
+        ));
+        assert!(in_redb(
+            r"C:\Users\me\.cargo\registry\src\x\redb-5.0.0\src\db.rs"
+        ));
+        assert!(!in_redb(file!()), "{}", file!());
+        assert!(!in_redb("/rustc/abc/library/core/src/slice/index.rs"));
+    }
+
+    /// A panic of our own inside a guarded read still prints: only redb's are kept quiet.
+    #[test]
+    fn a_panic_that_is_not_redbs_is_still_printed() {
+        let _ = guarded(|| Ok(())); // installs the hook this test wraps
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inner = Arc::new(std::panic::take_hook());
+        let (log, print) = (seen.clone(), inner.clone());
+        std::panic::set_hook(Box::new(move |info| {
+            log.lock().unwrap().push(info.to_string());
+            print(info);
+        }));
+        let err = guarded::<()>(|| panic!("ours")).unwrap_err();
+        std::panic::set_hook(Box::new(move |info| inner(info)));
+        assert!(err.to_string().contains("damaged"), "{err}");
+        assert!(seen.lock().unwrap().iter().any(|m| m.contains("ours")));
     }
 
     #[test]
