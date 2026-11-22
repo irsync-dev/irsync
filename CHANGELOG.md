@@ -5,26 +5,26 @@ what to do when upgrading, and what was fixed. The newest release is on top.
 Each section is also the top of that release's notes on GitHub, where the
 full list of changes follows it.
 
-The sections up to v0.1.0-beta.6 were written afterwards, from the history
-of the code. Their GitHub releases do not carry them.
-
 ## v0.1.0-beta.6
 
 ### New
 
-- `--bwlimit` now limits a pull too, not only a push.
+- `--bwlimit` now limits a pull too, not only a push. [#111]
 - irsync and the install script check the signature of a release before
   they install it. The install script never installs an unsigned release.
+  [#89]
 - The website holds the documentation once per release channel, and the
   book's header switches between them. The homepage shows the current
-  versions.
+  versions. [#105] [#123]
 - The man pages name the authors and the license.
 
 ### Fixed
 
 - After a resume, the progress block and the summary report the right
-  totals, percent and number of created files.
-- A failed session says "failed" in the progress block, not "done".
+  totals, percent and number of created files. [#26] [#103] [#133] [#139]
+- A failed session says "failed" in the progress block, not "done". [#116]
+- After a push of several sources, the finished lines of the last source
+  stay on screen too. [#27]
 
 ### Behind the scenes
 
@@ -44,7 +44,7 @@ from this one on.
   `irsync.toml`.
 - An ssh setup now installs irsync on the server into `~/.local/bin`. A
   server set up by an older version is moved there from
-  `~/.local/share/irsync/bin` the next time it is set up.
+  `~/.local/share/irsync/bin` the next time it is set up. [#28]
 
 ### New
 
@@ -52,26 +52,27 @@ from this one on.
   can set up a FreeBSD server over ssh. There is no FreeBSD download yet,
   so you build it yourself.
 - `irsync sync` and `irsync list` are commands of their own. The short
-  form without a command name still works.
-- `-v`, `-q`, `--config` and `--passphrase-file` work on every command.
+  form without a command name still works. [#62]
+- `-v`, `-q`, `--config` and `--passphrase-file` work on every command. [#31]
 - `irsync id generate --passphrase-file` writes an encrypted key. Where
   `--passphrase-file` is given, irsync refuses a key that is not
   encrypted.
-- The progress block shows the current transfer rate, not only the average.
+- The progress block shows the current transfer rate, not only the
+  average. [#25]
 - The first sync to a server saves its host name as an alias, so the
   name you typed keeps working. The server grants access to the client by
-  its host name too.
+  its host name too. [#33]
 - A remote host can be an IPv6 address in brackets.
 - `--no-install` and the `ssh_install` setting stop irsync from installing
   itself on a server.
 - `irsync host add --client-id` adds a host that only connects to you.
 - Every release is signed with minisign, on a machine that is not part of
-  the build. The book explains how to check a download.
+  the build. The book explains how to check a download. [#89]
 
 ### Behind the scenes
 
 - The developer setup script downloads its tools, with checksums, instead
-  of compiling them.
+  of compiling them. [#35]
 - A release is built as a draft and published only after it is signed.
 
 ## v0.1.0-beta.4
@@ -84,22 +85,23 @@ one file, man pages arrive, and irsync has its own installer.
 - `hosts.toml` and `exports.toml` are no longer read. Everything lives in
   `irsync.toml`. Move what you still keep in the two old files there.
 - The daemon refuses to run as root unless you opt in. An ssh setup
-  refuses a root account as well.
+  refuses a root account as well. [#34]
 - irsync writes host aliases, not raw IDs, into the grant lists whenever it
-  saves the configuration.
+  saves the configuration. [#38]
 
 ### New
 
 - Man pages: `irsync(1)`, `irsync.toml(5)` and one for fileset. They come
-  with the tarballs, the Homebrew formula and the deb and rpm packages.
+  with the tarballs, the Homebrew formula and the deb and rpm packages. [#51]
 - A new install script, written for irsync. It also installs the man
   pages, and it works under Rosetta.
-- `irsync host rename` renames a host and updates its grants.
+- `irsync host rename` renames a host and updates its grants. [#37]
 - `irsync id list` lists the keys. A management command given alone, like
-  `irsync host`, lists.
+  `irsync host`, lists. [#32]
 - `irsync host remove` refuses to remove a host that grants still name.
-- `fileset list` prints what a manifest holds. `fileset -v` prints one
-  line per entry, and the spinner shows the hashing speed.
+- `fileset list` prints what a manifest holds. [#29]
+- `fileset -v` prints one line per entry, and the spinner shows the
+  hashing speed. [#30]
 
 ### Fixed
 
