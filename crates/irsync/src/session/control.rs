@@ -125,6 +125,9 @@ pub(super) struct Out {
     backlog: Arc<Backlog>,
     /// Where the role learns that the backlog went past its ceiling.
     events: mpsc::UnboundedSender<Ev>,
+    /// Set once `SessionDone` is queued: it is the last frame of the
+    /// stream, and whatever comes after it is dropped (see [`Out::queue`]).
+    done: Arc<Mutex<bool>>,
     #[cfg(feature = "test-hooks")]
     peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
@@ -175,7 +178,18 @@ impl Out {
     /// `limits::out_ceiling`) means the peer is not reading what an honest
     /// peer reads: the role is told, once, and fails the session. Nothing
     /// here waits, so the main loops may queue as before.
+    ///
+    /// `SessionDone` ends the stream: a frame queued after it is dropped
+    /// (false). The peer stops reading there, and the tasks beside the role
+    /// (the heartbeat, the walk) do not know that the role has finished.
+    /// The lock keeps a frame from another thread from slipping in behind
+    /// `SessionDone`.
     fn queue(&self, q: Queued) -> bool {
+        let mut done = self.done.lock().unwrap_or_else(|e| e.into_inner());
+        if *done {
+            return false;
+        }
+        *done = matches!(q.frame.msg, Some(Msg::Done(_)));
         let len = q.len;
         if self.backlog.add(len) {
             let _ = self.events.send(Ev::ProtocolError(format!(
@@ -278,6 +292,7 @@ pub(super) fn spawn_writer(
         budget,
         backlog,
         events,
+        done: Arc::default(),
         #[cfg(feature = "test-hooks")]
         peak: hooks.out_peak.clone(),
     };
@@ -1137,6 +1152,49 @@ mod tests {
         let ev = rx.recv().await.expect("an event");
         reader.abort();
         ev
+    }
+
+    /// `SessionDone` is the last frame of a control stream. The heartbeat
+    /// task and the walk run beside the role and may still have a
+    /// `Heartbeat` to send; the peer stops reading at `SessionDone`, so it
+    /// is dropped, and so is a paced frame, whose bytes go back to the
+    /// budget.
+    #[tokio::test]
+    async fn nothing_is_queued_after_session_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Option<Queued>>();
+        let (events, _events_rx) = mpsc::unbounded_channel();
+        let out = Out {
+            tx,
+            budget: Arc::new(ByteBudget::new(OUT_BUDGET)),
+            backlog: Arc::new(Backlog::new(usize::MAX)),
+            events,
+            done: Arc::default(),
+            #[cfg(feature = "test-hooks")]
+            peak: None,
+        };
+        let heartbeat = || Msg::Heartbeat(irsync_proto::v1::Heartbeat::default());
+        out.send(heartbeat());
+        out.send(Msg::Done(irsync_proto::v1::SessionDone::default()));
+        let queued = out.backlog.bytes();
+        out.send(heartbeat());
+        out.clone().send_paced(heartbeat()).await;
+        out.finish();
+
+        let mut names = Vec::new();
+        while let Some(Some(q)) = rx.recv().await {
+            names.push(msg_name(q.frame.msg.as_ref().unwrap()));
+        }
+        assert_eq!(names, ["Heartbeat", "SessionDone"]);
+        assert_eq!(
+            out.backlog.bytes(),
+            queued,
+            "a dropped frame is not counted"
+        );
+        assert_eq!(
+            out.budget.held(),
+            0,
+            "a dropped paced frame gives its bytes back"
+        );
     }
 
     /// Bytes that are not a frame of ours break the protocol; they are not
