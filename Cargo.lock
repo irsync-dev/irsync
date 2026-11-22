@@ -2206,6 +2206,7 @@ dependencies = [
  "pbwalk",
  "prost",
  "prost-reflect",
+ "prost-types",
  "rand 0.10.4",
  "rand_chacha 0.10.0",
  "rpassword",

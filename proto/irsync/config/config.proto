@@ -1,0 +1,127 @@
+// The configuration of irsync, in memory. A reader fills this from
+// irsync.toml and a writer builds the file from it. It is never encoded:
+// field numbers may change whenever the config changes.
+syntax = "proto3";
+package irsync.config;
+
+import "google/protobuf/duration.proto";
+
+message Comment {
+  repeated string above = 1;   // whole lines, from '#' on
+  string trailing = 2;         // at the end of the line, from '#' on; "" for none
+}
+
+message Entry {                // one element of a string array
+  string value = 1;
+  Comment comment = 2;
+}
+
+enum RelayMode { RELAY_MODE_UNSPECIFIED = 0; RELAY_MODE_DEFAULT = 1; RELAY_MODE_DISABLED = 2; }
+enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
+enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_PROTOCOL_HTTP = 2; }
+
+// Every table has: comment (its own), key_comments (by key name) and
+// tail (comment and blank lines after its last key; "" is a blank line).
+
+message Config {
+  repeated string header = 1;  // lines at the top of the file; "" is a blank line
+  repeated string footer = 2;  // lines after everything
+  optional bool unsafe_config_allowed = 3;
+  optional string identity = 4;
+  optional string state_dir = 5;
+  map<string, Comment> key_comments = 6;
+  repeated string tail = 7;    // after the last top-level key
+  Client client = 8;
+  Daemon daemon = 9;
+  Telemetry telemetry = 10;
+  repeated Host hosts = 11;
+  repeated Export exports = 12;
+  GrantTable all = 13;
+  GrantTable immediate = 14;   // only rw is used
+}
+
+message Client {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  optional uint32 parallel = 4;
+  google.protobuf.Duration reconnect = 5;
+  optional uint32 dial_retries = 6;
+  optional bool dht = 7;
+  optional bool ssh_install = 8;
+  optional bool mdns = 9;
+  optional string relay = 10;
+  optional RelayMode relay_mode = 11;
+  optional Congestion congestion = 12;
+}
+
+message Daemon {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  optional string identity = 4;
+  google.protobuf.Duration idle_timeout = 5;
+  google.protobuf.Duration dormant_session_timeout = 6;
+  optional uint32 max_dormant_sessions_per_key = 7;
+  repeated Entry listen = 8;
+  bool listen_set = 9;         // the key is in the file, even when empty
+  optional bool portmap = 10;
+  optional string relay = 11;
+  optional RelayMode relay_mode = 12;
+  optional Congestion congestion = 13;
+  Discovery discovery = 14;
+  optional string debug_addr = 15;
+  optional bool immediate = 16;
+  optional bool allow_root = 17;
+}
+
+message Discovery {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  optional bool dht = 4;
+  optional bool dns = 5;
+  optional bool mdns = 6;
+}
+
+message Telemetry {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  optional string otlp_endpoint = 4;
+  optional OtlpProtocol otlp_protocol = 5;
+}
+
+message Host {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  string name = 4;
+  optional bytes endpoint_id = 5;
+  optional bytes client_id = 6;
+  optional string relay = 7;
+  optional RelayMode relay_mode = 8;
+  optional Congestion congestion = 9;
+  repeated Entry address = 10;
+  bool address_set = 11;
+  optional uint32 parallel = 12;
+  google.protobuf.Duration reconnect = 13;
+  optional uint32 dial_retries = 14;
+  optional bool dht = 15;
+  optional bool mdns = 16;
+  optional string ssh = 17;
+  repeated Entry ssh_aliases = 18;
+  bool ssh_aliases_set = 19;
+}
+
+message Export {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  string name = 4;
+  string path = 5;             // as written
+  optional bool read_only = 6;
+  optional bool warm_index = 7;
+  optional bool fsync = 8;
+  optional bool auto = 9;
+  repeated Entry rw = 10;
+  bool rw_set = 11;
+  repeated Entry ro = 12;
+  bool ro_set = 13;
+}
+
+message GrantTable {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  repeated Entry rw = 4;
+  bool rw_set = 5;
+  repeated Entry ro = 6;
+  bool ro_set = 7;
+}

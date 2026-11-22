@@ -15,6 +15,11 @@ pub mod capture {
     }
 }
 
+/// The configuration of irsync, in memory. Never encoded.
+pub mod config {
+    include!(concat!(env!("OUT_DIR"), "/irsync.config.rs"));
+}
+
 /// Encoded `FileDescriptorSet` for the `irsync.v1` and `irsync.capture.v1` packages.
 pub static FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
@@ -27,6 +32,24 @@ pub const PROTOCOL_VERSION: u32 = 5;
 mod tests {
     use super::*;
     use prost::Message;
+
+    #[test]
+    fn config_message_has_optional_keys_and_comments() {
+        let c = config::Config::default();
+        assert_eq!(c.unsafe_config_allowed, None);
+        assert!(c.hosts.is_empty() && c.header.is_empty());
+        let h = config::Host {
+            name: "nas".into(),
+            ..Default::default()
+        };
+        assert_eq!(h.endpoint_id, None);
+        assert_eq!(h.comment, None);
+        let e = config::Entry {
+            value: "laptop".into(),
+            comment: None,
+        };
+        assert_eq!(e.value, "laptop");
+    }
 
     #[test]
     fn descriptor_set_has_both_packages() {

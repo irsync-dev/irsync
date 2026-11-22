@@ -828,7 +828,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2067,6 +2067,7 @@ dependencies = [
  "pbcap",
  "prost",
  "prost-reflect",
+ "prost-types",
  "rpassword",
  "rusqlite",
  "serde",
@@ -2111,6 +2112,7 @@ dependencies = [
  "fastcdc",
  "prost",
  "prost-build",
+ "prost-types",
  "protox",
 ]
 
