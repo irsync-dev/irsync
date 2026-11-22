@@ -392,6 +392,108 @@ fn cli_store_redb_creates_one_file_that_reads_where_nothing_can_be_written() {
     assert_eq!(names(&t), [".fileset.redb", "a.txt", "sub"]);
 }
 
+/// The start of a command that runs the rest of it with `dir` mounted read-only, in a
+/// mount namespace of its own. Bubblewrap and an unprivileged `unshare` need no root;
+/// where neither is allowed (a GitHub runner), `sudo` without a password does it. None
+/// where no way works.
+#[cfg(target_os = "linux")]
+fn read_only_mount(dir: &std::path::Path) -> Option<Command> {
+    let remount = r#"mount --bind "$0" "$0" && mount -o remount,ro,bind "$0" && exec "$@""#;
+    let ways = [
+        vec![
+            "bwrap",
+            "--dev-bind",
+            "/",
+            "/",
+            "--ro-bind",
+            "DIR",
+            "DIR",
+            "--",
+        ],
+        vec!["unshare", "-rm", "sh", "-c", remount, "DIR"],
+        vec!["sudo", "-n", "unshare", "-m", "sh", "-c", remount, "DIR"],
+    ];
+    let command = |way: &[&str]| {
+        let mut c = Command::new(way[0]);
+        for arg in &way[1..] {
+            if *arg == "DIR" {
+                c.arg(dir);
+            } else {
+                c.arg(arg);
+            }
+        }
+        c
+    };
+    ways.iter().find_map(|way| {
+        // The mount is there if a write fails for that reason.
+        let probe = command(way)
+            .args(["touch".as_ref(), dir.join("probe").as_os_str()])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&probe.stderr)
+            .contains("Read-only file system")
+            .then(|| command(way))
+    })
+}
+
+/// What the redb store is for, on the real thing: `check` and `list` read a manifest on
+/// a mount that cannot be written to, and nothing tries to write.
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_redb_manifest_reads_on_a_read_only_mount() {
+    let d = tree();
+    let t = d.path().join("tree");
+    let manifest = t.join(".fileset.redb");
+    let init = bin()
+        .args(["init", "-q", "--store", "redb"])
+        .arg(&t)
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let before = std::fs::read(&manifest).unwrap();
+
+    let Some(_) = read_only_mount(&t) else {
+        // CI must not pass by skipping this: its runners have sudo.
+        assert!(
+            std::env::var_os("GITHUB_ACTIONS").is_none(),
+            "no way to make a read-only mount on a GitHub runner"
+        );
+        eprintln!("skipping: no bwrap, unshare or sudo that can make a read-only mount");
+        return;
+    };
+    let run = |args: &[&str]| {
+        let out = read_only_mount(&t)
+            .unwrap()
+            .arg(env!("CARGO_BIN_EXE_fileset"))
+            .args(args)
+            .arg(&t)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let check = run(&["check", "-q"]);
+    assert_eq!((check.0, check.1.as_str()), (Some(0), ""), "{}", check.2);
+    let list = run(&["list"]);
+    assert_eq!(list.0, Some(0), "{}", list.2);
+    assert_eq!(list.1.lines().count(), 5, "{}", list.1);
+    // An update has to write, and says why it cannot.
+    let update = run(&["update", "-q"]);
+    assert_eq!(update.0, Some(2), "{}", update.2);
+    assert!(update.2.contains("Read-only file system"), "{}", update.2);
+
+    assert_eq!(std::fs::read(&manifest).unwrap(), before);
+    let mut names: Vec<_> = std::fs::read_dir(&t)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".fileset.redb", "a.txt", "sub"]);
+}
+
 #[test]
 fn only_init_and_update_take_no_compaction() {
     for (verb, takes) in [

@@ -371,8 +371,11 @@ What was checked before building, and what came of it:
   `open_read_only`. Under `strace` a `check` opens it `O_RDONLY`, takes read
   locks on byte ranges of it, and creates, writes and renames nothing. A
   test runs `check` and `list` on a manifest and a tree with the write
-  permission taken away. A real read-only mount was not tried: it needs
-  root. FreeBSD, where redb locks the whole file instead of ranges, was not
+  permission taken away. A real read-only mount was not tried then: it
+  needs root. It was later (issue #206): a test runs `check`, `list` and
+  `update` with the tree bound read-only in a mount namespace of its own,
+  made with Bubblewrap, an unprivileged `unshare`, or `sudo` on a CI runner.
+  Linux only. FreeBSD, where redb locks the whole file instead of ranges, was not
   tried either.
 - **Readers beside the writer** are read transactions on the one open
   database. A second, read-only open is refused while it is open for
