@@ -48,8 +48,10 @@ branch, before you open the pull request:
    something in it: `### Upgrading` (what to do or know before upgrading,
    first because it matters most), `### New`, `### Fixed`, and one short
    `### Behind the scenes` for tests, tooling and dependencies. Name flags
-   and config keys as the user types them. Do not list pull requests one by
-   one: GitHub adds that list below the section.
+   and config keys as the user types them. When a change belongs to an
+   issue, name the issue in square brackets at the end of its line, like
+   `[#123]`. Do not list pull requests one by one: GitHub adds that list
+   below the section.
 4. Write it in the book's style: short sentences, plain words, for people
    who use irsync and have not read the code. For a security fix, say what
    is safer now, and leave out how the problem could have been used.
