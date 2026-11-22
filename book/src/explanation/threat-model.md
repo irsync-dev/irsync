@@ -58,6 +58,14 @@ daemon, or send the client to another machine.
   and roughly how much. The public lookup records tie a daemon's key to its
   relay. irsync does not hide who talks to whom.
 - Anyone on the path can block or slow the connection.
+- **A recording of a connection could be decrypted later** by someone with a
+  large quantum computer. No such machine exists today. The key exchange
+  irsync uses now (X25519) would not hold against one. irsync is to move to
+  a hybrid key exchange that does; see
+  [issue 219](https://github.com/irsync-dev/irsync/issues/219).
+- **The keys are Ed25519,** which such a machine could forge too. That would
+  let it pretend to be a daemon or a client from then on. It does not open
+  up connections recorded before.
 
 ## A key without a grant
 
@@ -272,6 +280,8 @@ In one place:
   it inside your destination directory. It can also check guesses about
   what that directory already holds.
 - Traffic analysis: who talks to whom, when, and how much.
+- A future quantum computer: it could decrypt a connection recorded today,
+  and forge a key.
 - A client with a grant, or a stranger, who sets out to use up the daemon's
   CPU, memory, disk or network.
 - Other users of the same machine who can write in the tree being synced.
