@@ -159,6 +159,7 @@ per file in `fuzz/fuzz_targets/`:
 | `delta` | an old file and a `DataChunk`, rebuilt with `delta::decode` | `decode(encode(new, basis), basis) == new` |
 | `glob` | a pattern and a path, split at a NUL byte, through `Glob::new` and `matches` | the match ends |
 | `manifest` | a file opened as `.fileset.sqlite` the way `fileset list` opens it, then every entry | none |
+| `redb_manifest` | a file opened as `.fileset.redb` the same way, then every entry | none |
 | `pbwalk` | bytes as a capture file, listed with `pbwalk --full`, unwrapped and as-is | none |
 | `relpath` | bytes given to `RelPath::new` | an accepted path is not absolute and has no empty, `.` or `..` component and no NUL |
 

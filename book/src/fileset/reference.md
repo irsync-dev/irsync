@@ -397,8 +397,11 @@ killed `update` keeps what it had recorded up to about a second before.
 A redb manifest that is damaged, by a failing medium or on purpose, gives an
 error. Every entry is stored with a checksum of its path and content, which
 is checked whenever the entry is read, and `update` verifies the whole file
-before it writes to it. What this does not catch is an entry that is missing
-altogether, where the damage left a manifest that still reads as sound.
+before it writes to it. The manifest also holds a checksum of all its entries
+together. `check` and `list` compare it once they have read them all, so an
+entry that damage removed is an error too. These checksums guard against
+damage, not against someone who rewrites the manifest and its checksums to
+match.
 
 ## Exit codes
 

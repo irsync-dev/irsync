@@ -371,8 +371,11 @@ What was checked before building, and what came of it:
   `open_read_only`. Under `strace` a `check` opens it `O_RDONLY`, takes read
   locks on byte ranges of it, and creates, writes and renames nothing. A
   test runs `check` and `list` on a manifest and a tree with the write
-  permission taken away. A real read-only mount was not tried: it needs
-  root. FreeBSD, where redb locks the whole file instead of ranges, was not
+  permission taken away. A real read-only mount was not tried then: it
+  needs root. It was later (issue #206): a test runs `check`, `list` and
+  `update` with the tree bound read-only in a mount namespace of its own,
+  made with Bubblewrap, an unprivileged `unshare`, or `sudo` on a CI runner.
+  Linux only. FreeBSD, where redb locks the whole file instead of ranges, was not
   tried either.
 - **Readers beside the writer** are read transactions on the one open
   database. A second, read-only open is refused while it is open for
@@ -413,15 +416,33 @@ What was checked before building, and what came of it:
   - an open for writing turns on redb's integrity check, which reads the
     whole file;
   - every read through redb runs under `catch_unwind`, and a panic is
-    reported as a damaged manifest. redb's own panic message still reaches
-    stderr first;
-  - `for_each` refuses paths that do not rise, as the SQLite store does.
+    reported as a damaged manifest. redb's own panic message is kept off
+    stderr (issue #206): a panic hook drops it when the panic comes from
+    redb's source while such a read runs on that thread, and prints every
+    other panic as before;
+  - `for_each` refuses paths that do not rise, as the SQLite store does;
+  - the meta table holds a digest of all entries (issue #206): 16 more
+    bytes of each entry's hash, combined with XOR. Every write updates it in
+    the transaction that changes the entries, and a read of all entries, as
+    `check` and `list` make, compares it. It finds an entry that is gone, or
+    is the one an earlier run stored, in a file that is otherwise sound. It
+    is no defence against a file made on purpose, whose maker can write a
+    digest to match. A manifest without the digest is refused: there is no
+    migration.
 
   With these, the same 4,000 corruptions gave an error or the stored
   entries, every time. A smaller run of them is a test. What is not
-  covered: an entry missing from a file that still reads as sound, and a
-  file crafted to make redb loop. No fuzz target was added, because under
-  the fuzzer a panic inside redb is a crash whatever `fileset` does with it.
+  covered: a file crafted to make redb loop. Nothing bounds a read, and
+  none has been seen to loop: the fuzz target below fails on an input that
+  takes over 10 seconds.
+
+  There was no fuzz target at first, because under the fuzzer a panic
+  inside redb is a crash whatever `fileset` does with it. The panic hook
+  above changed that (issue #206): it also keeps redb's caught panics from
+  libFuzzer's hook, which is the one that aborts. The `redb_manifest`
+  target opens altered redb files as `check` and `list` do, and fails only
+  on a panic of `fileset`'s own or one outside a guarded read. Its first
+  180,000 runs found nothing.
 - **Record format.** The protobuf encoding of the fjall store, reused, with
   the checksum after it.
 - **`locate`.** A file named by `--manifest` is redb if it starts with

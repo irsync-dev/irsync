@@ -64,6 +64,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "redb_manifest"
+path = "fuzz_targets/redb_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "manifest"
 path = "fuzz_targets/manifest.rs"
 test = false
