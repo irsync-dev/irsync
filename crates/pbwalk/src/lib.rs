@@ -53,6 +53,10 @@ pub struct Args {
     /// Wrapper fields to break the totals down by.
     #[arg(long, value_name = "F,...", value_delimiter = ',')]
     pub group_by: Vec<String>,
+    /// In the tables by message, by field and by --group-by field, show
+    /// only the N largest rows and fold the rest into one.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub top: Option<u64>,
     /// Skip the per-message listing.
     #[arg(long, conflicts_with = "no_totals")]
     pub totals_only: bool,
@@ -184,8 +188,14 @@ impl Pass<'_> {
         summary: &mut Summary,
     ) -> io::Result<()> {
         let pool = self.wrapper.parent_pool();
-        let mut totals = Totals::new(&self.args.group_by, self.wrapper);
+        let top = self
+            .args
+            .top
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+        let mut totals = Totals::new(&self.args.group_by, self.wrapper, top);
         let mut first_ts = None;
+        // Whether anything came before the totals.
+        let mut listed = false;
         for packet in reader {
             let packet = match packet {
                 Ok(packet) => packet,
@@ -199,6 +209,7 @@ impl Pass<'_> {
                         render::grouped(summary.packets)
                     );
                     render::line(out, self.args.canonical_hex_dump, &[], &text)?;
+                    listed = true;
                     break;
                 }
             };
@@ -231,6 +242,7 @@ impl Pass<'_> {
                     hex: self.args.canonical_hex_dump,
                 };
                 render::entry(out, &place, &entry, pool, listing)?;
+                listed = true;
             }
             totals.add(&entry, self.wrapper);
         }
@@ -238,9 +250,9 @@ impl Pass<'_> {
             if self.args.canonical_hex_dump {
                 // Clear of the hex columns, so that cutting them out of
                 // the whole output gives the bytes and nothing else.
-                totals.write(&mut render::Indented::new(out), summary)?;
+                totals.write(&mut render::Indented::new(out), summary, listed)?;
             } else {
-                totals.write(out, summary)?;
+                totals.write(out, summary, listed)?;
             }
         }
         out.flush()
@@ -536,6 +548,46 @@ mod tests {
         assert!(out.contains("protocol_version = 5"), "{out}");
         assert!(!out.contains("By message"), "{out}");
         assert!(Args::try_parse_from(["pbwalk", "f", "--totals-only", "--no-totals"]).is_err());
+    }
+
+    #[test]
+    fn totals_only_starts_with_the_totals() {
+        let (_, out) = run_on(&["--totals-only"], &capture(&[hello_record(1, 1)]));
+        assert!(out.starts_with("Totals: "), "{out:?}");
+        // After a listing, a blank line keeps the two apart.
+        let (_, out) = run_on(&[], &capture(&[hello_record(1, 1)]));
+        assert!(out.contains("\n\nTotals: "), "{out}");
+    }
+
+    #[test]
+    fn top_folds_the_rest_of_a_table() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record()]);
+        let table = |out: &str, title: &str| -> Vec<String> {
+            let rest = out.split(&format!("\n{title}\n")).nth(1).expect(out);
+            rest.lines()
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                // The key column narrows when long rows are folded away.
+                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect()
+        };
+        let (_, whole) = run_on(&["--totals-only"], &file);
+        let (_, top) = run_on(&["--totals-only", "--top", "1"], &file);
+        let all = table(&whole, "By field");
+        // At least three rows and the total, so that two or more fold.
+        assert!(all.len() >= 4, "{whole}");
+        let short = table(&top, "By field");
+        assert_eq!(short.len(), 3, "{top}");
+        assert_eq!(short[0], all[0]);
+        let folded = format!("({} more rows)", all.len() - 2);
+        assert!(short[1].starts_with(&folded), "{top}");
+        assert_eq!(short[2], all[all.len() - 1], "the total stays the same");
+        // The fixed tables are left whole.
+        assert_eq!(table(&top, "Overhead"), table(&whole, "Overhead"));
+        // A table no longer than N is not folded.
+        let (_, wide) = run_on(&["--totals-only", "--top", "1000"], &file);
+        assert_eq!(table(&wide, "By field"), all);
+        assert!(Args::try_parse_from(["pbwalk", "f", "--top", "0"]).is_err());
     }
 
     #[test]

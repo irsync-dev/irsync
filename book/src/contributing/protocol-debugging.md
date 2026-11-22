@@ -334,6 +334,10 @@ The fields it takes are those on the second line of each message's block:
   `--group-by side,stream` adds one table per field, not one table of the
   two combined. It takes the same fields as `--where`. `direction` adds
   nothing, since the totals always have a `By direction` table.
+- `--top N` keeps the `N` largest rows of `By message`, `By field` and
+  each `--group-by` table, and folds the rest into one row, such as
+  `(97 more rows)`. The totals stay the same. `By field` lists about a
+  hundred rows for a real push; `--top 10` shows where most bytes go.
 - `--totals-only` skips the listing; `--no-totals` skips the totals.
 - Long byte strings, long repeated fields and long header values are
   shortened in the listing. `--full` prints them whole.

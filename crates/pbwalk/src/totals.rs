@@ -46,6 +46,8 @@ pub struct Totals {
     sent: Tally,
     received: Tally,
     unspecified: Tally,
+    /// `--top`: rows kept in the tables that can grow long.
+    top: Option<usize>,
     /// A direction number the envelope does not know.
     other: Tally,
     groups: Vec<(String, BTreeMap<String, Tally>)>,
@@ -54,8 +56,11 @@ pub struct Totals {
 impl Totals {
     /// Totals with one extra table per wrapper field in `group_by`, but
     /// none for the direction field: the By direction table shows it.
-    pub fn new(group_by: &[String], wrapper: &MessageDescriptor) -> Totals {
+    /// With `top`, the long tables keep that many rows and fold the rest
+    /// into one.
+    pub fn new(group_by: &[String], wrapper: &MessageDescriptor, top: Option<usize>) -> Totals {
         Totals {
+            top,
             groups: group_by
                 .iter()
                 .filter(|f| {
@@ -149,10 +154,13 @@ impl Totals {
         }
     }
 
-    /// Writes the tables.
-    pub fn write(&self, out: &mut impl Write, summary: &Summary) -> io::Result<()> {
+    /// Writes the tables, after a blank line when `gap` (when a listing
+    /// came before them).
+    pub fn write(&self, out: &mut impl Write, summary: &Summary, gap: bool) -> io::Result<()> {
         let events: u64 = self.events.values().sum();
-        writeln!(out)?;
+        if gap {
+            writeln!(out)?;
+        }
         writeln!(
             out,
             "Totals: {} and {} of {} read; {} B on the wire, length prefixes ({} B) included",
@@ -181,6 +189,7 @@ impl Totals {
             "type",
             true,
             TOTAL,
+            self.top,
             rows(&self.by_message),
         )?;
         if !self.events.is_empty() {
@@ -195,7 +204,7 @@ impl Totals {
             .iter()
             .map(|(k, b)| Row::bytes(k.escape_debug().to_string(), *b))
             .collect();
-        table(out, "By field", "path", false, TOTAL, fields)?;
+        table(out, "By field", "path", false, TOTAL, self.top, fields)?;
 
         let mut overhead = vec![
             Row::bytes("length prefixes".into(), self.prefixes),
@@ -207,7 +216,7 @@ impl Totals {
         if self.undecodable > 0 {
             overhead.push(Row::bytes("not decodable".into(), self.undecodable));
         }
-        table(out, "Overhead", "", false, TOTAL, overhead)?;
+        table(out, "Overhead", "", false, TOTAL, None, overhead)?;
 
         let mut directions = vec![
             Row::counted("sent".into(), self.sent),
@@ -225,12 +234,13 @@ impl Totals {
             "direction",
             true,
             SUM,
+            None,
             directions,
         )?;
 
         for (field, values) in &self.groups {
             let title = format!("By {} (with prefixes)", field.escape_debug());
-            table(out, &title, field, true, TOTAL, rows(values))?;
+            table(out, &title, field, true, TOTAL, self.top, rows(values))?;
         }
         Ok(())
     }
@@ -266,16 +276,28 @@ const TOTAL: &str = "total";
 const SUM: &str = "sum";
 
 /// A table sorted by bytes, largest first, with a share of its own total
-/// and a last line labelled `total_label`.
+/// and a last line labelled `total_label`. With `top`, rows past the
+/// first `top` are folded into one, so the total stays the same.
+#[allow(clippy::too_many_arguments)]
 fn table(
     out: &mut impl Write,
     title: &str,
     key_head: &str,
     counted: bool,
     total_label: &str,
+    top: Option<usize>,
     mut rows: Vec<Row>,
 ) -> io::Result<()> {
     rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.key.cmp(&b.key)));
+    if let Some(top) = top.filter(|&top| rows.len() > top) {
+        let rest = rows.split_off(top);
+        let n = rest.len();
+        rows.push(Row {
+            key: format!("({n} more {})", if n == 1 { "row" } else { "rows" }),
+            count: rest.iter().fold(0u64, |sum, r| sum.saturating_add(r.count)),
+            bytes: rest.iter().fold(0u64, |sum, r| sum.saturating_add(r.bytes)),
+        });
+    }
     let count: u64 = rows.iter().fold(0u64, |sum, r| sum.saturating_add(r.count));
     let bytes: u64 = rows.iter().fold(0u64, |sum, r| sum.saturating_add(r.bytes));
     let width = rows
