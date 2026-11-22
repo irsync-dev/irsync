@@ -653,17 +653,17 @@ fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
     for mode in [0o640, 0o604, 0o620, 0o602, 0o644] {
         chmod(&plain, mode);
         let e = load_identity_interactive(&plain, &strict).unwrap_err();
-        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}: {e}");
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
         let text = e.to_string();
-        assert!(text.contains(&format!("has mode {mode:04o}")), "{text}");
-        assert!(text.contains("chmod 600"), "{text}");
-        assert!(text.contains(plain.to_str().unwrap()), "{text}");
+        assert!(text.contains(&format!("has mode {mode:04o}")));
+        assert!(text.contains("chmod 600"));
+        assert!(text.contains(plain.to_str().unwrap()));
         // The same through the calls the commands make.
         let e = load_or_generate(&plain, &strict, "irsync").unwrap_err();
-        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}: {e}");
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
         let e = load_client_identity(&d.path().join("none"), Some(&plain), &strict, "irsync")
             .unwrap_err();
-        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}: {e}");
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
         assert_eq!(
             load_identity_interactive(&plain, &allowed)
                 .unwrap()
@@ -686,7 +686,7 @@ fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
     };
     chmod(&locked, 0o644);
     let e = load_identity_interactive(&locked, &with(false)).unwrap_err();
-    assert!(e.to_string().contains("a private key"), "{e}");
+    assert!(e.to_string().contains("a private key"));
     chmod(&locked, 0o600);
 
     // The passphrase file.
@@ -699,8 +699,8 @@ fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
     for mode in [0o640, 0o604, 0o644] {
         chmod(&pf, mode);
         let e = load_identity_interactive(&locked, &with(false)).unwrap_err();
-        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}: {e}");
-        assert!(e.to_string().contains("the passphrase file"), "{e}");
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
+        assert!(e.to_string().contains("the passphrase file"));
         assert!(matches!(
             read_passphrase_file(&pf, false),
             Err(IdentityError::TooOpen(_))

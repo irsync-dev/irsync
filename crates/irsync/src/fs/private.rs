@@ -83,7 +83,7 @@ mod tests {
         }
         for open in [0o640, 0o604, 0o620, 0o602, 0o610, 0o601, 0o644, 0o666] {
             let p = problem(open).unwrap_or_else(|| panic!("{open:o}"));
-            assert!(p.contains(&format!("{open:04o}")), "{p}");
+            assert!(p.contains(&format!("{open:04o}")), "{open:o}");
         }
         // A directory, like a pipe or a device, is not a stored secret.
         std::fs::set_permissions(t.path(), std::fs::Permissions::from_mode(0o755)).unwrap();

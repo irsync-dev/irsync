@@ -2497,7 +2497,10 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
 fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
-    let (home, pf) = passphrase_home(&d, "hunter2\n");
+    let home = d.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let pf = home.join("pf");
+    irsync::fs::private::write(&pf, "hunter2\n").unwrap();
     let pf_s = pf.to_str().unwrap();
     let chmod = |p: &Path, mode: u32| {
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
