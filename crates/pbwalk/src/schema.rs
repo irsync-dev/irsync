@@ -2,6 +2,7 @@
 //! files at startup.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, bail, Context};
 use prost_reflect::{DescriptorPool, MessageDescriptor};
@@ -12,13 +13,17 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// irsync's protos, from `irsync_proto::FILE_DESCRIPTOR_SET`.
+    /// irsync's protos, from `irsync_proto::FILE_DESCRIPTOR_SET`, decoded
+    /// once per process: a `DescriptorPool` is a cheap handle to share.
     pub fn builtin() -> Schema {
+        static POOL: OnceLock<DescriptorPool> = OnceLock::new();
         // The set is built from the repo's protos at compile time, and a
         // test decodes it, so this cannot fail at run time.
-        let pool = DescriptorPool::decode(irsync_proto::FILE_DESCRIPTOR_SET)
-            .expect("the built-in descriptor set decodes");
-        Schema { pool }
+        let pool = POOL.get_or_init(|| {
+            DescriptorPool::decode(irsync_proto::FILE_DESCRIPTOR_SET)
+                .expect("the built-in descriptor set decodes")
+        });
+        Schema { pool: pool.clone() }
     }
 
     /// Every `.proto` file under each directory, each directory an include root.
