@@ -111,6 +111,15 @@ default, on the daemon, and after 7 days on the client. A partial file that a
 stored session still plans to write is kept. When collection runs is in
 [Clean up state](../how-to/clean-up.md#what-runs-on-its-own).
 
+The daemon also limits how many dormant sessions one client key may leave in
+an export: `max_dormant_sessions_per_key`, 25 by default. Each time a session
+of that key ends, the daemon counts the key's dormant sessions in that export
+and drops the ones that went longest without progress until the limit holds.
+A session that a connection is using is never dropped and does not count. A
+client that comes back for a dropped session gets `BAD_SESSION` and plans
+afresh. The partial files stay, so that run still continues the files it had
+begun. The client has no such limit for its own records.
+
 ## Timeouts
 
 Three timers decide when a connection is given up on, and each leads to a

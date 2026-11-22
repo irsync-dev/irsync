@@ -239,6 +239,8 @@ pub struct DaemonHandle {
     /// cap, listing counters).
     pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::DaemonHooks>>,
     sender_parallel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The limit on one key's dormant sessions per export; zero is none.
+    pub max_dormant: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub _state: tempfile::TempDir,
 }
 
@@ -385,6 +387,7 @@ pub async fn spawn_daemon_full(
     let slow_finalize = daemon.slow_finalize();
     let sender_parallel = daemon.sender_parallel();
     let hooks = daemon.daemon_hooks();
+    let max_dormant = daemon.max_dormant_sessions();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = tokio::spawn(daemon.run(shutdown.clone()));
     DaemonHandle {
@@ -402,6 +405,7 @@ pub async fn spawn_daemon_full(
         slow_finalize,
         hooks,
         sender_parallel,
+        max_dormant,
         _state: state,
     }
 }

@@ -77,6 +77,10 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.dormant_session_timeout")),
         Some(vec!["7d".into()])
     );
+    assert_eq!(
+        default_of(&p("daemon.max_dormant_sessions_per_key")),
+        Some(vec!["25".into()])
+    );
     assert_eq!(default_of(&p("daemon.portmap")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("daemon.listen")), Some(vec![]));
     assert_eq!(

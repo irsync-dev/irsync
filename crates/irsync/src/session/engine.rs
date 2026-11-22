@@ -1008,13 +1008,61 @@ pub async fn serve_daemon(
             Some(&place.export),
         )
     });
+    let (peer, limit) = (conn.remote_id(), shared.max_dormant_sessions.clone());
+    let (stored, registry) = (index.clone(), shared.registry.clone());
     let res = serve_daemon_inner(conn, send, recv, tap, place, hello, index, shared, &span)
         .instrument(span.clone())
         .await;
     if let Ok(out) = &res {
         record_outcome(&span, out);
     }
+    // The session has let go of its row by now: finished and deleted, or
+    // left for a resume. Either way the key is held to its limit here.
+    // Read now, not when the session began: a reload may have changed it.
+    let limit = limit.load(std::sync::atomic::Ordering::Relaxed);
+    if limit > 0 {
+        drop_dormant_over(&stored, &registry, peer, limit as usize)
+            .instrument(span)
+            .await;
+    }
     res
+}
+
+/// Deletes the oldest stored sessions of `peer` that no connection hosts,
+/// until `limit` of them are left. A client that comes back for a deleted
+/// one is told `BAD_SESSION` and plans afresh; its partial files stay for
+/// that run, or for the garbage collection.
+async fn drop_dormant_over(
+    index: &IndexHandle,
+    registry: &Arc<super::SessionRegistry>,
+    peer: EndpointId,
+    limit: usize,
+) {
+    let (index, registry) = (index.clone(), registry.clone());
+    let dropped = blocking(move || {
+        let mut ix = index
+            .lock()
+            .map_err(|_| io::Error::other("index poisoned"))?;
+        // Read under the index lock, which a session takes to write its
+        // row: a session that started since is in the set or has no row.
+        let live = registry.live();
+        ix.trim_sessions_of(peer.as_bytes(), &live, limit)
+            .map_err(io::Error::other)
+    })
+    .await;
+    match dropped {
+        Ok(ids) => {
+            for id in ids {
+                tracing::info!(
+                    dropped = %control::hex(&id),
+                    peer = %peer.fmt_short(),
+                    limit,
+                    "dropped the key's oldest dormant session: it has more than the limit"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "limiting the key's dormant sessions failed"),
+    }
 }
 
 /// The `session` span of one session on one side: a root span, with the

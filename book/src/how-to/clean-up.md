@@ -23,6 +23,9 @@ stopped syncing a directory for good.
   default (see [Configuration](../reference/configuration.md#daemon)). Each
   walk logs a summary at `info`. A file it cannot remove is logged and
   reported, and the walk carries on.
+- **The daemon** also drops a client key's oldest dormant sessions as soon as
+  the key has more than `max_dormant_sessions_per_key` of them in an export,
+  25 by default. Their partial files stay until the hourly check removes them.
 
 A partial file is kept as long as a stored session still plans to write it.
 An export that holds another export (such as a whole home exported

@@ -99,6 +99,11 @@ impl Shared {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .idle_timeout = Some(d.idle_timeout);
+        self.hosting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .max_dormant_sessions
+            .store(d.max_dormant_sessions_per_key, Ordering::Relaxed);
         self.dormant_secs
             .store(d.dormant_session_timeout.as_secs(), Ordering::Relaxed);
     }
@@ -172,6 +177,7 @@ impl Daemon {
             dormant_secs: AtomicU64::new(settings.daemon.dormant_session_timeout.as_secs()),
             hosting: Mutex::new(DaemonSessions {
                 idle_timeout: Some(settings.daemon.idle_timeout),
+                max_dormant_sessions: Arc::new(settings.daemon.max_dormant_sessions_per_key.into()),
                 #[cfg(feature = "test-hooks")]
                 fault: Some(Arc::default()),
                 ..DaemonSessions::default()
@@ -250,6 +256,12 @@ impl Daemon {
     #[cfg(feature = "test-hooks")]
     pub fn hosted_sessions(&self) -> Arc<std::sync::Mutex<Vec<[u8; 16]>>> {
         self.shared.hosting().registry.hosted.clone()
+    }
+
+    /// The limit on one key's dormant sessions per export; zero is none.
+    #[cfg(feature = "test-hooks")]
+    pub fn max_dormant_sessions(&self) -> Arc<std::sync::atomic::AtomicU32> {
+        self.shared.hosting().max_dormant_sessions
     }
 
     /// Set to make every daemon receiver's finalize take that much longer.

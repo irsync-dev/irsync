@@ -45,6 +45,7 @@ congestion = "bbr"           # or "cubic", for pushes
 identity = "~/.config/irsync/daemon_ed25519"
 idle_timeout = "30m"         # "0" disables
 dormant_session_timeout = "7d"
+max_dormant_sessions_per_key = 25        # 0: no limit
 # No default: any address, on a port picked at start.
 listen = ["0.0.0.0:4000", "[::]:4000"]
 portmap = true               # UPnP, PCP and NAT-PMP
@@ -226,6 +227,7 @@ take effect at the next start.
 | `identity` | `~/.config/irsync/daemon_ed25519` | The daemon's private key, generated when missing. |
 | `idle_timeout` | `30m` | Drop an authenticated connection that has had no traffic and no local progress, such as hashing or writing, for this long. The client reconnects and resumes. `0` disables it. |
 | `dormant_session_timeout` | `7d` | How long the daemon keeps an interrupted session, and its partial files, for a client to resume. |
+| `max_dormant_sessions_per_key` | `25` | How many interrupted sessions one client key may leave waiting in an export. When a key has more, the daemon drops the one that went longest without progress; the sync it belonged to plans afresh on its next run. A session that a connection is using does not count. `0` removes the limit. |
 | `listen` | none | The sockets to bind, at most one IPv4 and one IPv6; port `0` lets the system pick. Without it the daemon binds any address on a port picked at start. The daemon offers clients the addresses it binds for extra paths: a specific address offers only that one, any address offers every interface. Flag: `--listen`. |
 | `portmap` | `true` | Ask the router for a port mapping with UPnP, PCP or NAT-PMP. Set `false` in isolated setups. |
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. |

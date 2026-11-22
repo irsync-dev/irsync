@@ -691,3 +691,84 @@ async fn resumed_session_reports_the_created_count() {
     })
     .await;
 }
+
+/// One interrupted push of the local tree into `m/<sub>`: the daemon is
+/// left with a dormant session for it. Returns that session's id.
+async fn interrupted_push(h: &Harness, sub: &str) -> [u8; 16] {
+    let before = h.daemon.session_ids().len();
+    let mut hello = Harness::hello(Flow::Push);
+    hello.path = format!("m/{sub}").into_bytes();
+    h.daemon.fault.drop_again_after_bytes(2 * MIB as u64);
+    let (out, _) = h
+        .run_reconnect_hello(&archive_opts(), hello, no_reconnect(), h.local_side())
+        .await;
+    assert!(out.is_err(), "{sub}: the push was not interrupted");
+    let ids = h.daemon.session_ids();
+    assert_eq!(ids.len(), before + 1, "{sub}");
+    ids[before]
+}
+
+/// The ids of the sessions the daemon has stored for export `m`, sorted.
+fn stored(h: &Harness) -> Vec<[u8; 16]> {
+    let rows = h.daemon_index().all_sessions().unwrap();
+    sorted(rows.iter().map(|s| s.id))
+}
+
+fn sorted(ids: impl IntoIterator<Item = [u8; 16]>) -> Vec<[u8; 16]> {
+    let mut v: Vec<_> = ids.into_iter().collect();
+    v.sort();
+    v
+}
+
+/// A key that leaves more dormant sessions than the daemon's limit loses
+/// the oldest one, and only that one. The sync it belonged to still works:
+/// it plans afresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_keeps_only_so_many_dormant_sessions() {
+    use std::sync::atomic::Ordering::SeqCst;
+    within60(async {
+        let h = Harness::new().await;
+        for i in 0..4 {
+            fs::write(h.local.path().join(format!("f{i}")), data(2 * MIB, i + 1)).unwrap();
+        }
+        h.daemon.max_dormant.store(2, SeqCst);
+        let a = interrupted_push(&h, "a").await;
+        let b = interrupted_push(&h, "b").await;
+        assert_eq!(stored(&h), sorted([a, b]));
+        let c = interrupted_push(&h, "c").await;
+        assert_eq!(
+            stored(&h),
+            sorted([b, c]),
+            "the oldest was not the one dropped"
+        );
+
+        // Zero is no limit.
+        h.daemon.max_dormant.store(0, SeqCst);
+        let d = interrupted_push(&h, "d").await;
+        let e = interrupted_push(&h, "e").await;
+        assert_eq!(stored(&h), sorted([b, c, d, e]));
+        // The limit is read when a session ends, so a lowered one applies
+        // from the next session on.
+        h.daemon.max_dormant.store(1, SeqCst);
+        let f = interrupted_push(&h, "f").await;
+        assert_eq!(stored(&h), sorted([f]));
+
+        // The client still has its record of the dropped session. The
+        // daemon no longer knows it, so the same push starts over, and
+        // finishes. (Last: its files would make the later pushes too cheap
+        // to interrupt.)
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = b"m/a".to_vec();
+        let opts = archive_opts();
+        let (out, _) = h
+            .run_reconnect_hello(&opts, hello, fast(), h.local_side())
+            .await;
+        let out = out.unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(!out.resumed);
+        assert_ne!(out.session_id, a);
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert_trees_equal(h.local.path(), &h.export.path().join("a"), &opts.preserve);
+        assert_eq!(stored(&h), sorted([f]));
+    })
+    .await;
+}

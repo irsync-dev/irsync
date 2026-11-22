@@ -46,6 +46,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client", "relay_mode"] | ["client", "congestion"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
+        ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
         ["daemon", "portmap"] | ["daemon", "immediate"] | ["daemon", "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
@@ -118,6 +119,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
         ["daemon", "dormant_session_timeout"] => {
             one(duration::format(s.daemon.dormant_session_timeout))
+        }
+        ["daemon", "max_dormant_sessions_per_key"] => {
+            one(s.daemon.max_dormant_sessions_per_key.to_string())
         }
         ["daemon", "listen"] => Some(s.daemon.listen.iter().map(|a| a.to_string()).collect()),
         ["daemon", "portmap"] => one(s.daemon.portmap.to_string()),

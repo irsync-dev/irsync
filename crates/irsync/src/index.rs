@@ -713,6 +713,9 @@ pub struct SessionRow {
     pub progress: Vec<u8>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The key of the other side of the session; empty when not recorded
+    /// (a row written before the column existed).
+    pub peer: Vec<u8>,
 }
 
 enum SessionBy {
@@ -986,8 +989,18 @@ impl Index {
                ranges BLOB NOT NULL, updated_at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS sessions (
                id BLOB PRIMARY KEY, key BLOB NOT NULL UNIQUE, plan BLOB NOT NULL,
-               progress BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);",
+               progress BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+               peer BLOB);",
         )?;
+        // An index made before sessions recorded their peer gets the
+        // column; its rows keep NULL there. An older irsync names its
+        // columns, so it still reads and writes this table.
+        let has_peer = tx
+            .prepare_cached("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'peer'")?
+            .exists([])?;
+        if !has_peer {
+            tx.execute_batch("ALTER TABLE sessions ADD COLUMN peer BLOB")?;
+        }
         let have_v: Option<i64> = tx
             .prepare_cached("SELECT value FROM meta WHERE key = 'schema_version'")?
             .query_row([], |r| r.get(0))
@@ -1136,11 +1149,11 @@ impl Index {
         tx.prepare_cached("DELETE FROM sessions WHERE key = ?1 AND id != ?2")?
             .execute(params![s.key, &s.id[..]])?;
         tx.prepare_cached(
-            "INSERT INTO sessions (id, key, plan, progress, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6)
+            "INSERT INTO sessions (id, key, plan, progress, created_at, updated_at, peer)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(id) DO UPDATE SET key=excluded.key, plan=excluded.plan,
                progress=excluded.progress, created_at=excluded.created_at,
-               updated_at=excluded.updated_at",
+               updated_at=excluded.updated_at, peer=excluded.peer",
         )?
         .execute(params![
             &s.id[..],
@@ -1148,7 +1161,8 @@ impl Index {
             s.plan,
             s.progress,
             s.created_at,
-            s.updated_at
+            s.updated_at,
+            (!s.peer.is_empty()).then_some(&s.peer)
         ])?;
         tx.commit()?;
         evicted.map(|id| arr(id, "session id")).transpose()
@@ -1165,10 +1179,12 @@ impl Index {
     fn load_session(&self, by: SessionBy, v: &[u8]) -> Result<Option<SessionRow>> {
         let sql = match by {
             SessionBy::Id => {
-                "SELECT id, key, plan, progress, created_at, updated_at FROM sessions WHERE id = ?1"
+                "SELECT id, key, plan, progress, created_at, updated_at, peer
+                 FROM sessions WHERE id = ?1"
             }
             SessionBy::Key => {
-                "SELECT id, key, plan, progress, created_at, updated_at FROM sessions WHERE key = ?1"
+                "SELECT id, key, plan, progress, created_at, updated_at, peer
+                 FROM sessions WHERE key = ?1"
             }
         };
         let row = self
@@ -1183,6 +1199,7 @@ impl Index {
                         progress: r.get(3)?,
                         created_at: r.get(4)?,
                         updated_at: r.get(5)?,
+                        peer: r.get::<_, Option<Vec<u8>>>(6)?.unwrap_or_default(),
                     },
                 ))
             })
@@ -1192,6 +1209,39 @@ impl Index {
             Ok(s)
         })
         .transpose()
+    }
+
+    /// Keeps the `keep` most recently written sessions of `peer` and
+    /// deletes its older ones, returning their ids. Of sessions written in
+    /// the same second, the one stored first counts as older. A session in `live` is
+    /// neither counted nor deleted.
+    pub fn trim_sessions_of(
+        &mut self,
+        peer: &[u8],
+        live: &std::collections::HashSet<[u8; 16]>,
+        keep: usize,
+    ) -> Result<Vec<[u8; 16]>> {
+        let tx = self.conn.transaction()?;
+        let ids = {
+            let mut st = tx.prepare_cached(
+                "SELECT id FROM sessions WHERE peer = ?1
+                 ORDER BY updated_at DESC, created_at DESC, rowid DESC",
+            )?;
+            let rows = st.query_map([peer], |r| r.get::<_, Vec<u8>>(0))?;
+            rows.map(|r| arr(r?, "session id"))
+                .collect::<Result<Vec<[u8; 16]>>>()?
+        };
+        let drop: Vec<[u8; 16]> = ids
+            .into_iter()
+            .filter(|id| !live.contains(id))
+            .skip(keep)
+            .collect();
+        for id in &drop {
+            tx.prepare_cached("DELETE FROM sessions WHERE id = ?1")?
+                .execute([&id[..]])?;
+        }
+        tx.commit()?;
+        Ok(drop)
     }
 
     pub fn delete_sessions_older_than(&mut self, age: Duration) -> Result<Vec<[u8; 16]>> {

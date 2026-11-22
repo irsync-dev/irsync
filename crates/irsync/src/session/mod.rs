@@ -215,6 +215,7 @@ impl SessionRecord {
             progress: self.progress.encode_to_vec(),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            peer: self.plan.remote_id.clone(),
         }
     }
 
@@ -321,6 +322,12 @@ impl Drop for SessionClaim {
 }
 
 impl SessionRegistry {
+    /// The ids of the sessions a connection hosts right now.
+    pub fn live(&self) -> std::collections::HashSet<[u8; 16]> {
+        let map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        map.keys().copied().collect()
+    }
+
     /// Makes `conn` the host of session `id`, closing any earlier host and
     /// waiting (bounded) until it has let go.
     pub async fn claim(
@@ -381,6 +388,13 @@ impl FaultInjector {
         self.armed.store(true, SeqCst);
     }
 
+    /// [`Self::drop_after_bytes`] for a fault that has fired before: it
+    /// fires once more.
+    pub fn drop_again_after_bytes(&self, n: u64) {
+        self.fired.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.drop_after_bytes(n);
+    }
+
     /// Every session from now on: close the connection as soon as the
     /// client has the `HelloAck` (its first frame after it arrives), before
     /// any file data moves. Repeatedly, not once.
@@ -427,6 +441,10 @@ pub struct DaemonSessions {
     /// How long an authenticated session may go without activity (default
     /// [`engine::DAEMON_IDLE_TIMEOUT`]; zero disables the limit).
     pub idle_timeout: Option<Duration>,
+    /// How many sessions that no connection hosts one key may leave stored
+    /// in an export's index; zero is no limit.
+    /// Shared, so a reload reaches the sessions already running.
+    pub max_dormant_sessions: Arc<std::sync::atomic::AtomicU32>,
     #[cfg(feature = "test-hooks")]
     pub fault: Option<Arc<FaultInjector>>,
     /// `NeedChunks` re-requests sent by daemon receivers (test hook).
