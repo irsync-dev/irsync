@@ -7,8 +7,14 @@ use std::net::Ipv6Addr;
 use crate::write::{TAG_DST_PORT, TAG_END, TAG_IPV6_DST, TAG_IPV6_SRC, TAG_SRC_PORT};
 use crate::LINKTYPE_WIRESHARK_UPPER_PDU;
 
-/// The largest block the reader accepts.
+/// The largest block the reader accepts; a larger one is malformed.
+/// Only packet blocks are held in memory, and they have a smaller limit.
 const MAX_BLOCK: u32 = 16 << 20;
+
+/// The largest Enhanced Packet Block the reader accepts, header and
+/// trailer included. The writer never makes one over `MAX_PACKET` bytes of
+/// packet, so this leaves room and still caps what one packet can cost.
+pub const MAX_PACKET_BLOCK: usize = 1 << 20;
 
 const BLOCK_SECTION: u32 = 0x0a0d_0d0a;
 const BLOCK_INTERFACE: u32 = 1;
@@ -76,6 +82,8 @@ impl Packet {
 /// Interface Description Block and checks the link type.
 pub struct Reader<R: Read> {
     input: R,
+    /// A block has been read: the next need not be a section header.
+    started: bool,
     done: bool,
 }
 
@@ -103,7 +111,11 @@ fn u32_le(b: &[u8]) -> u32 {
 
 impl<R: Read> Reader<R> {
     pub fn new(input: R) -> Result<Self, Error> {
-        let mut reader = Reader { input, done: false };
+        let mut reader = Reader {
+            input,
+            started: false,
+            done: false,
+        };
         loop {
             let Some((kind, body)) = reader.block()? else {
                 return Err(Error::Truncated);
@@ -121,8 +133,12 @@ impl<R: Read> Reader<R> {
     }
 
     /// The next block as (type, body between the two lengths), or `None`
-    /// when the input ends exactly between blocks.
+    /// when the input ends exactly between blocks. Only a packet block's
+    /// body is read whole; of any other block the first `KEEP` bytes are
+    /// kept, enough for the checks, and the rest is read and dropped.
     fn block(&mut self) -> Result<Option<(u32, Vec<u8>)>, Error> {
+        /// Bytes kept of a block that is not a packet.
+        const KEEP: u64 = 16;
         let mut head = [0u8; 8];
         match fill(&mut self.input, &mut head)? {
             0 => return Ok(None),
@@ -131,18 +147,55 @@ impl<R: Read> Reader<R> {
         }
         let kind = u32_le(&head);
         let total = u32_le(&head[4..]);
+        if !self.started {
+            if kind != BLOCK_SECTION {
+                return Err(Error::Malformed(
+                    "does not start with a pcapng section header",
+                ));
+            }
+            self.started = true;
+        }
+        let mut body = Vec::new();
+        if kind == BLOCK_SECTION {
+            // The byte-order magic says how to read the length, so it is
+            // checked first: a big-endian file is named as such.
+            let mut magic = [0u8; 4];
+            if fill(&mut self.input, &mut magic)? != 4 {
+                return Err(Error::Truncated);
+            }
+            if u32_le(&magic) != BYTE_ORDER_MAGIC {
+                return Err(Error::Malformed("not a little-endian section"));
+            }
+            body.extend_from_slice(&magic);
+        }
         if !total.is_multiple_of(4) || !(12..=MAX_BLOCK).contains(&total) {
             return Err(Error::Malformed("a block length out of range"));
         }
-        // Read what follows the header without trusting the length for an
-        // up-front allocation: the buffer grows as bytes arrive.
-        let rest = u64::from(total) - 8;
-        let mut body = Vec::new();
-        let got = (&mut self.input).take(rest).read_to_end(&mut body)?;
-        if got as u64 != rest {
+        if kind == BLOCK_PACKET && total as usize > MAX_PACKET_BLOCK {
+            return Err(Error::Malformed("a packet block larger than 1 MiB"));
+        }
+        let Some(rest) = (u64::from(total) - 12).checked_sub(body.len() as u64) else {
+            return Err(Error::Malformed("a section header that is too short"));
+        };
+        let keep = if kind == BLOCK_PACKET {
+            rest
+        } else {
+            rest.min(KEEP - body.len() as u64)
+        };
+        // The buffer grows as bytes arrive, so a block cut short costs no
+        // more than what is there.
+        let got = (&mut self.input).take(keep).read_to_end(&mut body)? as u64;
+        let skipped = std::io::copy(
+            &mut (&mut self.input).take(rest - keep),
+            &mut std::io::sink(),
+        )?;
+        if got + skipped != rest {
             return Err(Error::Truncated);
         }
-        let trailer = body.split_off(body.len() - 4);
+        let mut trailer = [0u8; 4];
+        if fill(&mut self.input, &mut trailer)? != 4 {
+            return Err(Error::Truncated);
+        }
         if u32_le(&trailer) != total {
             return Err(Error::Malformed("a block's two lengths differ"));
         }
@@ -393,6 +446,122 @@ mod tests {
         f.extend_from_slice(&[0, 1, 0, 0]);
         f.extend_from_slice(&(-1i64).to_be_bytes());
         f.extend_from_slice(&28u32.to_be_bytes());
-        assert!(matches!(Reader::new(&f[..]), Err(Error::Malformed(_))));
+        let err = Reader::new(&f[..]).err().unwrap();
+        assert!(
+            matches!(err, Error::Malformed("not a little-endian section")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn classic_pcap_is_malformed() {
+        let mut f = vec![0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0];
+        f.extend_from_slice(&[0; 16]);
+        let err = Reader::new(&f[..]).err().unwrap();
+        assert!(
+            matches!(
+                err,
+                Error::Malformed("does not start with a pcapng section header")
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_file_must_start_with_a_section_header() {
+        let f = write::interface(LINKTYPE_WIRESHARK_UPPER_PDU, 0);
+        let err = Reader::new(&f[..]).err().unwrap();
+        assert!(
+            matches!(
+                err,
+                Error::Malformed("does not start with a pcapng section header")
+            ),
+            "{err}"
+        );
+    }
+
+    /// The 8 bytes that start a block: its type and total length.
+    fn block_head(kind: u32, total: u32) -> Vec<u8> {
+        let mut b = kind.to_le_bytes().to_vec();
+        b.extend_from_slice(&total.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn a_packet_block_over_1_mib_is_malformed_unread() {
+        // Only the head: the body is never read, so this is not Truncated.
+        let mut f = file(&[]);
+        f.extend(block_head(BLOCK_PACKET, MAX_PACKET_BLOCK as u32 + 4));
+        let items: Vec<_> = Reader::new(&f[..]).unwrap().collect();
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(
+                items[0],
+                Err(Error::Malformed("a packet block larger than 1 MiB"))
+            ),
+            "{:?}",
+            items[0]
+        );
+    }
+
+    #[test]
+    fn a_packet_block_of_1_mib_is_read() {
+        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
+        let mut block = write::packet(1, &pdu);
+        // Grow the block to exactly 1 MiB with padding after the packet.
+        let total = MAX_PACKET_BLOCK as u32;
+        let pad = MAX_PACKET_BLOCK - block.len();
+        let trailer = block.len() - 4;
+        block.splice(trailer.., vec![0; pad]);
+        block.extend_from_slice(&total.to_le_bytes());
+        block[4..8].copy_from_slice(&total.to_le_bytes());
+        let mut f = file(&[]);
+        f.extend(block);
+        let got: Vec<_> = Reader::new(&f[..]).unwrap().map(Result::unwrap).collect();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].body, b"b");
+    }
+
+    /// Fails the test on a read into a buffer over 64 KiB: a skipped
+    /// block must go through a small buffer, not into memory whole.
+    struct Limited<'a> {
+        data: &'a [u8],
+    }
+
+    impl Read for Limited<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            // A skip reads in small pieces; one large read means the block
+            // is being held in memory.
+            assert!(buf.len() <= 64 << 10, "a read of {} bytes", buf.len());
+            self.data.read(buf)
+        }
+    }
+
+    #[test]
+    fn a_16_mib_unknown_block_cut_short_is_truncated() {
+        let mut f = file(&[]);
+        let mut block = block_head(5, MAX_BLOCK);
+        block.extend_from_slice(&[0; 12]);
+        assert_eq!(block.len(), 20);
+        f.extend(block);
+        let items: Vec<_> = Reader::new(Limited { data: &f[..] }).unwrap().collect();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(Error::Truncated)), "{:?}", items[0]);
+    }
+
+    #[test]
+    fn a_2_mib_unknown_block_is_skipped() {
+        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
+        let mut f = file(&[(1, pdu.clone())]);
+        let total: u32 = 2 << 20;
+        f.extend(block_head(5, total));
+        f.extend(vec![7; total as usize - 12]);
+        f.extend_from_slice(&total.to_le_bytes());
+        f.extend(write::packet(2, &pdu));
+        let got: Vec<_> = Reader::new(Limited { data: &f[..] })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(got.iter().map(|p| p.ts_micros).collect::<Vec<_>>(), [1, 2]);
     }
 }

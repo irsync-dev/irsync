@@ -7,7 +7,7 @@
 mod read;
 pub mod write;
 
-pub use read::{Error, Packet, Reader};
+pub use read::{Error, Packet, Reader, MAX_PACKET_BLOCK};
 
 /// The envelope every capture's wrapper record follows. Field numbers:
 /// 1 to 19 are the wrapper's own (2 `direction`, 10 `encoded_len`, 11
