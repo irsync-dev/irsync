@@ -429,8 +429,17 @@ What was checked before building, and what came of it:
 
   With these, the same 4,000 corruptions gave an error or the stored
   entries, every time. A smaller run of them is a test. What is not
-  covered: a file crafted to make redb loop. No fuzz target was added, because under
-  the fuzzer a panic inside redb is a crash whatever `fileset` does with it.
+  covered: a file crafted to make redb loop. Nothing bounds a read, and
+  none has been seen to loop: the fuzz target below fails on an input that
+  takes over 10 seconds.
+
+  There was no fuzz target at first, because under the fuzzer a panic
+  inside redb is a crash whatever `fileset` does with it. The panic hook
+  above changed that (issue #206): it also keeps redb's caught panics from
+  libFuzzer's hook, which is the one that aborts. The `redb_manifest`
+  target opens altered redb files as `check` and `list` do, and fails only
+  on a panic of `fileset`'s own or one outside a guarded read. Its first
+  180,000 runs found nothing.
 - **Record format.** The protobuf encoding of the fjall store, reused, with
   the checksum after it.
 - **`locate`.** A file named by `--manifest` is redb if it starts with
