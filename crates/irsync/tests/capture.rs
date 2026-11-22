@@ -156,6 +156,75 @@ fn check_with_pbwalk(path: &Path, records: &[Record]) {
         table_total(&out, "By direction (with prefixes)"),
         with_prefixes
     );
+    check_hex_columns(path);
+}
+
+/// The blocks of a `pbwalk -C --no-totals` listing: each one's hex column,
+/// put back into bytes. A block starts at a line with nothing in its first
+/// DUMP_WIDTH columns and `#` after them. The twin of `hex_blocks` in
+/// `crates/pbwalk/src/lib.rs`.
+fn hex_blocks(out: &str) -> Vec<Vec<u8>> {
+    use pbwalk::render::{DUMP_WIDTH, HEX_WIDTH};
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    for l in out.lines() {
+        let cols: Vec<char> = l.chars().collect();
+        let dump: String = cols.iter().take(DUMP_WIDTH).collect();
+        if dump.trim().is_empty() {
+            if cols.get(DUMP_WIDTH) == Some(&'#') {
+                blocks.push(Vec::new());
+            }
+            continue;
+        }
+        let hex: String = cols
+            .iter()
+            .take(HEX_WIDTH)
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap());
+        blocks
+            .last_mut()
+            .expect("hex before the first block")
+            .extend(bytes);
+    }
+    blocks
+}
+
+/// pbwalk's hex columns are the capture: put back together they are each
+/// packet byte for byte, and, unwrapped, a part of it.
+fn check_hex_columns(path: &Path) {
+    let listing = |extra: &[&str]| {
+        let args = pbwalk::Args::parse_from(
+            ["pbwalk", "-C", "--no-totals"]
+                .iter()
+                .chain(extra)
+                .copied()
+                .chain([path.to_str().unwrap()]),
+        );
+        let mut out = Vec::new();
+        pbwalk::run(&args, File::open(path).unwrap(), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let bodies: Vec<Vec<u8>> = pbcap::Reader::new(&std::fs::read(path).unwrap()[..])
+        .expect("a capture file")
+        .map(|p| p.expect("every block is whole").body)
+        .collect();
+    assert_eq!(
+        hex_blocks(&listing(&["--no-unwrap"])),
+        bodies,
+        "the hex column is not the capture"
+    );
+    let unwrapped = hex_blocks(&listing(&[]));
+    assert_eq!(unwrapped.len(), bodies.len());
+    for (i, (block, body)) in unwrapped.iter().zip(&bodies).enumerate() {
+        assert!(
+            block.is_empty() || body.windows(block.len()).any(|w| w == &block[..]),
+            "packet {}: the hex is not a part of the packet",
+            i + 1
+        );
+    }
+    assert!(unwrapped.iter().any(|b| !b.is_empty()));
 }
 
 fn write_files(dir: &Path, n: usize, size: usize) {

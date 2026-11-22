@@ -19,6 +19,96 @@ const SHORT_HEADER: usize = 32;
 /// Without `--full`, packed fields with more elements than this are shortened.
 const SHORT_VALUES: usize = 8;
 
+/// Width of the hex column.
+pub const HEX_WIDTH: usize = 48;
+/// Width of both columns and the gaps after them; the text starts here.
+pub const DUMP_WIDTH: usize = 70;
+/// Bytes on one line of the hex column.
+const DUMP_BYTES: usize = 16;
+
+/// How the listing is printed.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Listing {
+    /// Long values in full.
+    pub full: bool,
+    /// Each line's bytes in front of it, in hex and as characters.
+    pub hex: bool,
+}
+
+/// Up to 16 bytes as `hexdump -C` prints them, without the offset: the
+/// hex padded to [`HEX_WIDTH`], two spaces, the characters between `|`.
+/// Nothing after the closing `|`.
+fn dump_line(chunk: &[u8]) -> String {
+    let mut out = String::with_capacity(DUMP_WIDTH);
+    for (i, b) in chunk.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        if i == DUMP_BYTES / 2 {
+            out.push(' ');
+        }
+        let _ = write!(out, "{b:02x}");
+    }
+    let _ = write!(out, "{:pad$}  |", "", pad = HEX_WIDTH - out.len());
+    // A printable ASCII character as itself, anything else as a dot.
+    out.extend(chunk.iter().map(|&b| match b {
+        0x20..=0x7e => char::from(b),
+        _ => '.',
+    }));
+    out.push('|');
+    out
+}
+
+/// One line of the listing: `text`, with `bytes` in front of it when
+/// `hex`. More than 16 bytes continue on lines of their own.
+pub(crate) fn line(out: &mut impl Write, hex: bool, bytes: &[u8], text: &str) -> io::Result<()> {
+    if !hex {
+        return writeln!(out, "{text}");
+    }
+    let mut chunks = bytes.chunks(DUMP_BYTES);
+    let first = chunks.next().map(dump_line).unwrap_or_default();
+    writeln!(out, "{first:DUMP_WIDTH$}{text}")?;
+    for chunk in chunks {
+        writeln!(out, "{}", dump_line(chunk))?;
+    }
+    Ok(())
+}
+
+/// Writes to `out` with every line that is not empty moved right by
+/// [`DUMP_WIDTH`]: for output that goes with a listing that has the hex
+/// columns, so that it leaves them clear.
+pub(crate) struct Indented<'w, W> {
+    out: &'w mut W,
+    /// The next byte starts a line.
+    line_start: bool,
+}
+
+impl<'w, W: Write> Indented<'w, W> {
+    pub(crate) fn new(out: &'w mut W) -> Self {
+        Indented {
+            out,
+            line_start: true,
+        }
+    }
+}
+
+impl<W: Write> Write for Indented<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for piece in buf.split_inclusive(|&b| b == b'\n') {
+            if self.line_start && piece != b"\n" {
+                write!(self.out, "{:DUMP_WIDTH$}", "")?;
+            }
+            self.out.write_all(piece)?;
+            self.line_start = piece.ends_with(b"\n");
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
 /// `n` with `,` between groups of three digits: 262,144.
 pub fn grouped(n: u64) -> String {
     let digits = n.to_string();
@@ -99,8 +189,9 @@ pub fn entry(
     place: &Place,
     entry: &Entry,
     pool: &DescriptorPool,
-    full: bool,
+    listing: Listing,
 ) -> io::Result<()> {
+    let Listing { full, hex } = listing;
     let size = match entry.kind {
         Kind::Event => "event".to_owned(),
         Kind::Message if entry.prefix > 0 => format!(
@@ -110,14 +201,15 @@ pub fn entry(
         ),
         Kind::Message | Kind::Raw => format!("{} B", grouped(entry.wire_len)),
     };
-    writeln!(out, "{}  {}  {size}", place_text(place), type_label(entry))?;
+    let first = format!("{}  {}  {size}", place_text(place), type_label(entry));
+    line(out, hex, &[], &first)?;
     if !entry.header.is_empty() {
         let header: Vec<String> = entry
             .header
             .iter()
             .map(|(k, v)| format!("{}={}", k.escape_debug(), header_text(v, full)))
             .collect();
-        writeln!(out, "   {}", header.join(" "))?;
+        line(out, hex, &[], &format!("   {}", header.join(" ")))?;
     }
 
     // An event was never on the wire: its fields are listed without sizes,
@@ -125,6 +217,7 @@ pub fn entry(
     let style = Style {
         pool,
         full,
+        hex,
         sized: entry.kind != Kind::Event,
     };
     for f in &entry.fields {
@@ -134,11 +227,12 @@ pub fn entry(
                     "{} bytes, type not in the protos",
                     grouped(raw.len() as u64)
                 );
-                if style.sized {
-                    row(out, 2, &label, f.sizes.total(), None)?;
+                let text = if style.sized {
+                    row(2, &label, f.sizes.total(), None)
                 } else {
-                    writeln!(out, "  {label}")?;
-                }
+                    format!("  {label}")
+                };
+                line(out, hex, f.own, &text)?;
                 continue;
             }
         }
@@ -147,7 +241,8 @@ pub fn entry(
 
     if entry.cut_content > 0 || entry.cut_pieces > 0 {
         let pieces = plural(entry.cut_pieces, "piece", "pieces");
-        row(out, 2, "cut content", entry.cut_content, Some(pieces))?;
+        let text = row(2, "cut content", entry.cut_content, Some(pieces));
+        line(out, hex, &[], &text)?;
     }
     if entry.cut_other > 0 || entry.dropped_entries > 0 {
         let dropped = (entry.dropped_entries > 0).then(|| {
@@ -156,22 +251,25 @@ pub fn entry(
                 plural(entry.dropped_entries, "entry", "entries")
             )
         });
-        row(out, 2, "cut, not itemised", entry.cut_other, dropped)?;
+        let text = row(2, "cut, not itemised", entry.cut_other, dropped);
+        line(out, hex, &[], &text)?;
     }
     if entry.not_captured > 0 {
-        row(out, 2, "message not captured", entry.not_captured, None)?;
+        let text = row(2, "message not captured", entry.not_captured, None);
+        line(out, hex, &[], &text)?;
     }
     if entry.unexplained > 0 {
-        row(
-            out,
+        let text = row(
             2,
             "not in the capture, unexplained",
             entry.unexplained,
             None,
-        )?;
+        );
+        line(out, hex, &[], &text)?;
     }
     if is_mismatch(entry) {
-        writeln!(out, "  DOES NOT ADD UP: {}", mismatch_text(entry))?;
+        let text = format!("  DOES NOT ADD UP: {}", mismatch_text(entry));
+        line(out, hex, &[], &text)?;
     }
     Ok(())
 }
@@ -220,13 +318,20 @@ struct Style<'p> {
     pool: &'p DescriptorPool,
     /// Long values in full.
     full: bool,
+    /// With each line's bytes in front of it.
+    hex: bool,
     /// With their sizes.
     sized: bool,
 }
 
 /// One field's row, then its children's.
 fn field(out: &mut impl Write, f: &Field, depth: usize, style: &Style) -> io::Result<()> {
-    let Style { pool, full, sized } = *style;
+    let Style {
+        pool,
+        full,
+        hex,
+        sized,
+    } = *style;
     let name = field_name(f);
     let indent = 2 + 2 * depth;
     let label = match &f.value {
@@ -245,19 +350,14 @@ fn field(out: &mut impl Write, f: &Field, depth: usize, style: &Style) -> io::Re
             format!("{} bytes not decodable", grouped(raw.len() as u64))
         }
     };
-    if !sized {
-        writeln!(out, "{:indent$}{label}", "")?;
+    let text = if !sized {
+        format!("{:indent$}{label}", "")
     } else if matches!(f.value, Value::Undecodable(_)) {
-        row(out, indent, &label, f.sizes.total(), None)?;
+        row(indent, &label, f.sizes.total(), None)
     } else {
-        row(
-            out,
-            indent,
-            &label,
-            f.sizes.total(),
-            Some(sizes_text(&f.sizes)),
-        )?;
-    }
+        row(indent, &label, f.sizes.total(), Some(sizes_text(&f.sizes)))
+    };
+    line(out, hex, f.own, &text)?;
     if let Value::Message { fields, .. } = &f.value {
         for child in fields {
             field(out, child, depth + 1, style)?;
@@ -288,26 +388,20 @@ fn sizes_text(sizes: &Sizes) -> String {
     }
 }
 
-fn row(
-    out: &mut impl Write,
-    indent: usize,
-    label: &str,
-    bytes: u64,
-    detail: Option<String>,
-) -> io::Result<()> {
+/// A row's text: its label, its size and what the size is made of.
+fn row(indent: usize, label: &str, bytes: u64, detail: Option<String>) -> String {
     let used = indent + label.chars().count();
     let pad = LABEL_WIDTH.saturating_sub(used);
-    write!(
-        out,
+    let mut text = format!(
         "{:indent$}{label}{:pad$} {:>SIZE_WIDTH$} B",
         "",
         "",
         grouped(bytes)
-    )?;
+    );
     if let Some(detail) = detail {
-        write!(out, "  ({detail})")?;
+        let _ = write!(text, "  ({detail})");
     }
-    writeln!(out)
+    text
 }
 
 /// A nested message's type without its package: `Hello.Preserve`.
@@ -416,5 +510,49 @@ mod tests {
         );
         assert_eq!(packed_text(&v[..8], false), "[1, 2, 3, 4, 5, 6, 7, 8]");
         assert_eq!(packed_text(&v, true).matches(", ").count(), 9);
+    }
+
+    #[test]
+    fn dump_layout() {
+        assert_eq!(dump_line(&[0x10, 0x05]), format!("{:<48}  |..|", "10 05"));
+        let sixteen: Vec<u8> = (0x41..0x51).collect();
+        assert_eq!(
+            dump_line(&sixteen),
+            "41 42 43 44 45 46 47 48  49 4a 4b 4c 4d 4e 4f 50  |ABCDEFGHIJKLMNOP|"
+        );
+        assert_eq!(dump_line(&sixteen).chars().count(), DUMP_WIDTH - 2);
+
+        let text = |bytes: &[u8]| {
+            let mut out = Vec::new();
+            line(&mut out, true, bytes, "  x = 1").unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        // No bytes, fewer than 16, exactly 16: one line, text in column 71.
+        for n in [0, 2, 16] {
+            let out = text(&sixteen[..n]);
+            assert_eq!(out.lines().count(), 1, "{n}");
+            assert_eq!(&out[DUMP_WIDTH..], "  x = 1\n", "{n}");
+        }
+        // 17: the text on the first line, one byte alone on the second.
+        let seventeen = [&sixteen[..], &[0x51]].concat();
+        let out = text(&seventeen);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(&lines[0][DUMP_WIDTH..], "  x = 1");
+        assert_eq!(lines[1], format!("{:<48}  |Q|", "51"));
+        assert!(out.lines().all(|l| !l.ends_with(' ')));
+        // Without hex the line is the text.
+        let mut plain = Vec::new();
+        line(&mut plain, false, &seventeen, "  x = 1").unwrap();
+        assert_eq!(plain, b"  x = 1\n");
+    }
+
+    #[test]
+    fn dump_characters() {
+        // printable, space, control, 0x7f, above ASCII, and the bar itself
+        assert_eq!(
+            dump_line(&[b'a', b' ', 0x1b, 0x7f, 0x80, 0xff, b'|', b'~']),
+            format!("{:<48}  |a ....|~|", "61 20 1b 7f 80 ff 7c 7e")
+        );
     }
 }

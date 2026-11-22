@@ -16,7 +16,7 @@ use prost_reflect::MessageDescriptor;
 pub use account::{raw, unwrap, Entry, Kind, Prefix};
 pub use clap::Parser;
 pub use schema::Schema;
-pub use walk::{walk, Field, Sizes, Value, MAX_DEPTH};
+pub use walk::{own_bytes, walk, Field, Sizes, Value, MAX_DEPTH};
 
 use render::Place;
 use totals::Totals;
@@ -62,6 +62,10 @@ pub struct Args {
     /// Print long byte strings, repeated fields and header values in full.
     #[arg(long)]
     pub full: bool,
+    /// Put each field's bytes in front of its line, in hex and as
+    /// characters; the first 48 columns of the output are then the bytes.
+    #[arg(short = 'C', long, conflicts_with = "totals_only")]
+    pub canonical_hex_dump: bool,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -190,11 +194,11 @@ impl Pass<'_> {
                         pbcap::Error::Truncated => summary.truncated = true,
                         _ => summary.stopped = Some(e.to_string()),
                     }
-                    writeln!(
-                        out,
+                    let text = format!(
                         "! stopped reading after {} packets: {e}",
                         render::grouped(summary.packets)
-                    )?;
+                    );
+                    render::line(out, self.args.canonical_hex_dump, &[], &text)?;
                     break;
                 }
             };
@@ -222,12 +226,22 @@ impl Pass<'_> {
                     micros: i128::from(packet.ts_micros) - i128::from(first),
                     packet: &packet,
                 };
-                render::entry(out, &place, &entry, pool, self.args.full)?;
+                let listing = render::Listing {
+                    full: self.args.full,
+                    hex: self.args.canonical_hex_dump,
+                };
+                render::entry(out, &place, &entry, pool, listing)?;
             }
             totals.add(&entry, self.wrapper);
         }
         if !self.args.no_totals {
-            totals.write(out, summary)?;
+            if self.args.canonical_hex_dump {
+                // Clear of the hex columns, so that cutting them out of
+                // the whole output gives the bytes and nothing else.
+                totals.write(&mut render::Indented::new(out), summary)?;
+            } else {
+                totals.write(out, summary)?;
+            }
         }
         out.flush()
     }
@@ -254,13 +268,19 @@ mod tests {
 
     /// A capture file holding `records`, one packet each, 12.345 ms apart.
     fn capture(records: &[Record]) -> Vec<u8> {
+        let bodies: Vec<Vec<u8>> = records.iter().map(Record::encode_to_vec).collect();
+        capture_bodies(&bodies)
+    }
+
+    /// [`capture`] for packets given as their bytes.
+    fn capture_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
         let mut f = pbcap::write::section_header();
         f.extend(pbcap::write::interface(
             pbcap::LINKTYPE_WIRESHARK_UPPER_PDU,
             0,
         ));
-        for (i, r) in records.iter().enumerate() {
-            let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &r.encode_to_vec());
+        for (i, body) in bodies.iter().enumerate() {
+            let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, body);
             f.extend(pbcap::write::packet(1_000_000 + i as u64 * 12_345, &pdu));
         }
         f
@@ -772,5 +792,200 @@ mod tests {
         assert_eq!(builtin, loaded);
         let mut out = Vec::new();
         assert!(run(&args(&["--type", "no.such.Type"]), &file[..], &mut out).is_err());
+    }
+
+    /// The blocks of a `-C --no-totals` listing: each one's hex column,
+    /// put back into bytes. A block starts at a line with nothing in its
+    /// first DUMP_WIDTH columns and `#` after them.
+    fn hex_blocks(out: &str) -> Vec<Vec<u8>> {
+        let mut blocks: Vec<Vec<u8>> = Vec::new();
+        for l in out.lines() {
+            let cols: Vec<char> = l.chars().collect();
+            let dump: String = cols.iter().take(render::DUMP_WIDTH).collect();
+            if dump.trim().is_empty() {
+                if cols.get(render::DUMP_WIDTH) == Some(&'#') {
+                    blocks.push(Vec::new());
+                }
+                continue;
+            }
+            let hex: String = cols
+                .iter()
+                .take(render::HEX_WIDTH)
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap());
+            blocks
+                .last_mut()
+                .expect("hex before the first block")
+                .extend(bytes);
+        }
+        blocks
+    }
+
+    /// The records every hex test runs over, each with the bytes of the
+    /// message or event inside it as they were built: short and long
+    /// fields, a nested message, an event, a message with nothing in the
+    /// file, a payload of a type the protos lack (field 29, 20 bytes), a
+    /// packed field of over 16 bytes, and a message with 20 bytes at its
+    /// end that do not parse.
+    fn hex_records() -> Vec<(Vec<u8>, Vec<u8>)> {
+        // A record holding `payload` as field `number`, written by hand.
+        fn by_hand(number: u8, payload: &[u8]) -> Vec<u8> {
+            let mut record = Record {
+                direction: 1,
+                encoded_len: payload.len() as u32,
+                ..Default::default()
+            }
+            .encode_to_vec();
+            record.extend([number << 3 | 2, 0x01, payload.len() as u8]);
+            record.extend(payload);
+            record
+        }
+        let ack = v1::HelloAck {
+            build: Some(v1::BuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc".into(),
+                dirty: None,
+            }),
+            ..hello_ack()
+        };
+        let event = StreamEvent {
+            kind: 1,
+            detail: String::new(),
+        };
+        let unknown: Vec<u8> = (100..120).collect();
+        let need = v1::Control {
+            msg: Some(v1::control::Msg::Need(v1::NeedChunks {
+                file_id: 1,
+                chunk_idx: (0..20).collect(),
+            })),
+        };
+        let mut junk_tail = hello().encode_to_vec();
+        junk_tail.extend([0x0b; 20]); // group tags: they do not parse
+        vec![
+            (hello_record(1, 1).encode_to_vec(), hello().encode_to_vec()),
+            (
+                message(1, 2, Msg::HelloAck(ack.clone()), ack.encoded_len()).encode_to_vec(),
+                ack.encode_to_vec(),
+            ),
+            (event_record().encode_to_vec(), event.encode_to_vec()),
+            (cut_chunk_record().encode_to_vec(), Vec::new()),
+            (by_hand(29, &unknown), unknown),
+            (
+                message(1, 1, Msg::Control(need.clone()), need.encoded_len()).encode_to_vec(),
+                need.encode_to_vec(),
+            ),
+            (by_hand(20, &junk_tail), junk_tail),
+        ]
+    }
+
+    /// A capture of [`hex_records`].
+    fn hex_file() -> Vec<u8> {
+        let bodies: Vec<Vec<u8>> = hex_records().into_iter().map(|(r, _)| r).collect();
+        capture_bodies(&bodies)
+    }
+
+    #[test]
+    fn hex_reassembles_each_block() {
+        let (bodies, payloads): (Vec<_>, Vec<_>) = hex_records().into_iter().unzip();
+        let file = hex_file();
+        // As it is in the file: each block is the packet.
+        let (_, out) = run_on(&["-C", "--no-unwrap", "--no-totals"], &file);
+        assert_eq!(hex_blocks(&out), bodies);
+        // Unwrapped: each block is the message as it was built.
+        let (_, out) = run_on(&["-C", "--no-totals"], &file);
+        assert_eq!(hex_blocks(&out), payloads);
+        assert!(out.contains("bytes not decodable"), "{out}");
+        assert!(out.contains("type not in the protos"), "{out}");
+        assert!(out.contains("chunk_idx = [0, 1, 2"), "{out}");
+        // --full changes the text only.
+        let (_, full) = run_on(&["-C", "--no-totals", "--full"], &file);
+        assert_eq!(hex_blocks(&full), payloads);
+    }
+
+    /// What `cut -c1-48` keeps of the output, without the blanks.
+    fn cut_hex(out: &str) -> String {
+        out.lines()
+            .flat_map(|l| l.chars().take(render::HEX_WIDTH))
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn totals_stay_out_of_the_hex_column() {
+        let file = hex_file();
+        let (_, listing) = run_on(&["-C", "--no-totals"], &file);
+        let (_, both) = run_on(&["-C"], &file);
+        assert!(both.contains("By message"), "{both}");
+        // Cutting the hex column gives the same with the totals as without.
+        assert_eq!(cut_hex(&both), cut_hex(&listing));
+        // The output is that without -C, moved right; empty lines stay empty.
+        let (_, plain) = run_on(&[], &file);
+        let stripped: Vec<String> = both
+            .lines()
+            .filter(|l| l.chars().count() > render::DUMP_WIDTH)
+            .map(|l| l.chars().skip(render::DUMP_WIDTH).collect())
+            .collect();
+        let want: Vec<&str> = plain.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(stripped, want);
+        assert_eq!(
+            both.lines().filter(|l| l.is_empty()).count(),
+            plain.lines().filter(|l| l.is_empty()).count()
+        );
+    }
+
+    #[test]
+    fn hex_columns_shift_the_listing_and_nothing_else() {
+        let file = hex_file();
+        let (_, plain) = run_on(&["--no-totals"], &file);
+        let (_, dumped) = run_on(&["-C", "--no-totals"], &file);
+        // Drop the continuation lines, which are shorter than the columns,
+        // and the columns from the rest: the listing without -C.
+        let stripped: Vec<String> = dumped
+            .lines()
+            .filter(|l| l.chars().count() > render::DUMP_WIDTH)
+            .map(|l| l.chars().skip(render::DUMP_WIDTH).collect())
+            .collect();
+        assert_eq!(stripped, plain.lines().collect::<Vec<_>>());
+        assert!(dumped.lines().all(|l| !l.ends_with(' ')));
+        // A 16-byte session_id with tag and length is 18 bytes: two lines.
+        assert!(
+            dumped.contains(&format!("\n{:<48}  |..|\n", "07 07")),
+            "{dumped}"
+        );
+    }
+
+    #[test]
+    fn stopped_line_keeps_the_columns_clear() {
+        // Two records, the second cut in half, as in
+        // truncated_file_lists_what_it_read.
+        let records = [hello_record(1, 1), hello_record(2, 2)];
+        let whole = capture(&records);
+        let last = pbcap::write::packet(
+            0,
+            &pbcap::write::exported_pdu("irsync", A, B, 1, 1, &records[1].encode_to_vec()),
+        )
+        .len();
+        let cut = &whole[..whole.len() - last / 2];
+        let (s, out) = run_on(&["-C", "--no-totals"], cut);
+        assert!(s.truncated);
+        let line = out
+            .lines()
+            .find(|l| l.contains("! stopped reading"))
+            .unwrap();
+        assert!(
+            line.starts_with(&" ".repeat(render::DUMP_WIDTH)),
+            "{line:?}"
+        );
+        assert_eq!(hex_blocks(&out).len(), 1);
+    }
+
+    #[test]
+    fn hex_needs_a_listing() {
+        assert!(Args::try_parse_from(["pbwalk", "-C", "--totals-only", "c"]).is_err());
+        let args = Args::try_parse_from(["pbwalk", "--canonical-hex-dump", "c"]).unwrap();
+        assert!(args.canonical_hex_dump);
     }
 }
