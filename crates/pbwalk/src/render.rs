@@ -74,6 +74,41 @@ pub(crate) fn line(out: &mut impl Write, hex: bool, bytes: &[u8], text: &str) ->
     Ok(())
 }
 
+/// Writes to `out` with every line that is not empty moved right by
+/// [`DUMP_WIDTH`]: for output that goes with a listing that has the hex
+/// columns, so that it leaves them clear.
+pub(crate) struct Indented<'w, W> {
+    out: &'w mut W,
+    /// The next byte starts a line.
+    line_start: bool,
+}
+
+impl<'w, W: Write> Indented<'w, W> {
+    pub(crate) fn new(out: &'w mut W) -> Self {
+        Indented {
+            out,
+            line_start: true,
+        }
+    }
+}
+
+impl<W: Write> Write for Indented<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for piece in buf.split_inclusive(|&b| b == b'\n') {
+            if self.line_start && piece != b"\n" {
+                write!(self.out, "{:DUMP_WIDTH$}", "")?;
+            }
+            self.out.write_all(piece)?;
+            self.line_start = piece.ends_with(b"\n");
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
 /// `n` with `,` between groups of three digits: 262,144.
 pub fn grouped(n: u64) -> String {
     let digits = n.to_string();

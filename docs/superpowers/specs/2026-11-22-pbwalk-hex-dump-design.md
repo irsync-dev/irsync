@@ -131,6 +131,11 @@ Mike has not seen these as decisions; change them if they are wrong.
 - **The unknown-type row** ("N bytes, type not in the protos") and the
   "bytes not decodable" row show all their bytes: they are one row for
   bytes `pbwalk` cannot split further.
+- **The totals and the `! stopped reading` line move right too.** Under
+  `-C` everything `pbwalk` prints starts after the two columns unless it
+  is hex. Found in review: with the totals at the left edge, a run
+  without `--no-totals` put their text into the hex column, and `xxd`
+  turned some of its letters into bytes without complaint.
 - **A packed repeated field is one line** with its tag, length and every
   element, as it is one row today.
 

@@ -382,8 +382,9 @@ cargo run -p pbwalk -- -C --no-totals ~/push.pcapng | cut -c1-48 | xxd -r -p > m
 ```
 
 That gives every message of the capture, one after the other; narrow it
-with `--where`. `--no-totals` is needed, since the totals are not
-indented. `-C` cannot be combined with `--totals-only`.
+with `--where`. Without `--no-totals` the command works the same: under
+`-C` the totals are moved right as well, so nothing but hex is ever in
+those 48 characters. `-C` cannot be combined with `--totals-only`.
 
 Two things the hex is not:
 
