@@ -28,6 +28,38 @@ starts a fresh CI run that includes the fixes from `main`.
   inline comments as outdated and break the reviewer's "changes since
   your last review" view.
 
+## Release notes
+
+When you prepare a release (`.github/scripts/bump-version.sh`, see
+`book/src/contributing/releasing.md`), write its notes too, on the bump
+branch, before you open the pull request:
+
+1. List what was merged since the last release: `gh pr list --state merged
+   --base main --search "merged:>=DATE"`, with the date of the last
+   release, or `git log --merges vLAST..HEAD`. For a stable release, start
+   at the last stable release, so the betas in between are covered.
+2. Read each pull request's description, not only its title. Look for what
+   someone who runs irsync will notice: new flags and config keys, changed
+   defaults, anything that now refuses to start or fails where it worked
+   before, security fixes, and changes to the protocol or to stored state.
+3. Add a section to `CHANGELOG.md`, above the older ones, under the
+   heading `## vX.Y.Z` exactly as the version is written. Start with one or
+   two sentences on what the release is about. Then, each only when it has
+   something in it: `### Upgrading` (what to do or know before upgrading,
+   first because it matters most), `### New`, `### Fixed`, and one short
+   `### Behind the scenes` for tests, tooling and dependencies. Name flags
+   and config keys as the user types them. Do not list pull requests one by
+   one: GitHub adds that list below the section.
+4. Write it in the book's style: short sentences, plain words, for people
+   who use irsync and have not read the code. For a security fix, say what
+   is safer now, and leave out how the problem could have been used.
+5. Commit it on the bump branch (`git commit -m 'Release notes for vX.Y.Z'
+   -- CHANGELOG.md`) and say in the pull request that the section wants a
+   read. The maintainer reviews it there.
+
+A test and the release gate both refuse a version without its section
+(`.github/scripts/changelog-section.sh`).
+
 ## Setup
 
 `tools/dev-setup.sh` installs the Rust tooling (rustup, toolchain, the

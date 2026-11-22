@@ -49,7 +49,15 @@ The three cases differ only in the branch. All the steps are the same.
    updates `Cargo.lock` and `fuzz/Cargo.lock` to match. It commits the four
    files as `Release v1.2.3` on a new branch, `bump-v1.2.3`. It doesn't
    push or tag. It prints the commands for the next steps.
-2. Open a pull request against the branch the release is cut from. Use
+2. Write the release notes: a section `## v1.2.3` in `CHANGELOG.md`, above
+   the older ones, and commit it on the bump branch. See
+   [The release notes](#the-release-notes) for what goes in it.
+
+   ```sh
+   git commit -m 'Release notes for v1.2.3' -- CHANGELOG.md
+   ```
+
+3. Open a pull request against the branch the release is cut from. Use
    `--base`:
 
    ```sh
@@ -57,7 +65,7 @@ The three cases differ only in the branch. All the steps are the same.
    gh pr create --fill --base main           # or release-1.2
    ```
 
-3. Wait for its `CI result` check to pass. That includes the `release build`
+4. Wait for its `CI result` check to pass. That includes the `release build`
    jobs, which run the Linux release build the way the release will. Then
    merge it: `gh pr merge --merge`. On `main`, the merge also rebuilds the
    site: [dev.irsync.org](https://dev.irsync.org/) shows the new version
@@ -65,7 +73,7 @@ The three cases differ only in the branch. All the steps are the same.
    [The release versions](website.md#the-release-versions) and
    [The books](website.md#the-books)). Until the release is published,
    the site cannot be promoted to irsync.org.
-4. Start the release gate on that branch, with the version:
+5. Start the release gate on that branch, with the version:
 
    ```sh
    gh workflow run release-gate.yml --ref main -f version=1.2.3
@@ -73,7 +81,7 @@ The three cases differ only in the branch. All the steps are the same.
 
    For a patch, use `--ref release-1.2`. In the browser: Actions, Release
    gate, Run workflow, pick the branch, enter the version.
-5. When the gate is done, it prints `Draft ready. Sign it:` and the
+6. When the gate is done, it prints `Draft ready. Sign it:` and the
    commands. Plug in the USB stick with the release key and sign the draft,
    with the version:
 
@@ -84,7 +92,7 @@ The three cases differ only in the branch. All the steps are the same.
    It checks the draft, asks you to confirm, asks for the key's password
    once, signs every file and uploads the signatures. The release stays a
    draft. Look at it on GitHub.
-6. Publish it by running the same command with `--publish`:
+7. Publish it by running the same command with `--publish`:
 
    ```sh
    .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key --publish 1.2.3
@@ -93,7 +101,7 @@ The three cases differ only in the branch. All the steps are the same.
    It signs again, publishes the release and starts the resume run. It
    also re-runs the newest staging build of the site, which now reads the
    release from its tag. See [Signing the release](#signing-the-release).
-7. Put the new version on irsync.org. The script ends by printing the
+8. Put the new version on irsync.org. The script ends by printing the
    command. Wait for the staging run it started, check that
    [dev.irsync.org](https://dev.irsync.org/) shows the version and that
    `/book/` there documents it, then run:
@@ -113,6 +121,46 @@ released commit.
 
 Don't start the gate twice for the same version while one run is going. The
 second run deletes the draft the first one made.
+
+## The release notes
+
+Every release has a section in `CHANGELOG.md`, at the root of the
+repository, under a heading that is exactly `## v` and the version:
+
+```markdown
+## v1.2.3
+
+One or two sentences on what this release is about.
+
+### Upgrading
+
+- What someone who runs the previous release has to do or know.
+
+### New
+
+### Fixed
+```
+
+It is written for people who run irsync, not for people who read the code:
+what is new, what changes for them, what was fixed. Leave out a part that
+has nothing in it. A stable release sums up the betas and alphas before
+it, since most people go from one stable release to the next.
+
+dist reads the section and puts it at the top of the GitHub Release, under
+`Release Notes`, so it is in the draft you look at and sign. The full list
+of changes still follows it (see below). Two checks keep a release from
+going out without its notes:
+
+- A test (`crates/irsync/tests/release_version.rs`) fails when
+  `CHANGELOG.md` has no section for the version in `Cargo.toml`, so the
+  pull request with the bump cannot pass `CI result` without one.
+- The release gate stops within seconds when the section is missing or
+  empty (`.github/scripts/changelog-section.sh`).
+
+A change merged after the notes were written and before the gate starts is
+in the release and not in the section. The full list below it has it.
+
+## Changing the version by hand
 
 If you change the version by hand instead, keep all four files in step.
 These checks catch a mismatch:
@@ -150,7 +198,8 @@ release starts. It does this, in order:
 
 1. **Check.** It checks the version, that it runs on the right branch, and
    that the version in `Cargo.toml` and `packaging/dist/dist.toml` is the
-   one you gave. It checks that the tag doesn't exist yet and that there are
+   one you gave. It checks that `CHANGELOG.md` has the release notes of
+   that version (see [The release notes](#the-release-notes)). It checks that the tag doesn't exist yet and that there are
    no stray release tags (see
    [Protecting the release tags](#protecting-the-release-tags)). For `X.Y.0`
    it checks that `release-X.Y` doesn't exist yet. For a patch it checks
@@ -204,8 +253,8 @@ on a `v*` tag:
     pages where `man` looks. This happens before the tap is checked out
     with its token. The script fails if dist's formula template changed,
     so look at the formula then.
-- **Notes.** It adds GitHub's list of changes to the release notes, under
-  the heading `## What's changed`. For a stable release the list starts
+- **Notes.** It adds GitHub's list of changes to the release notes, below
+  what the draft already has, under the heading `## What's changed`. For a stable release the list starts
   at the previous stable release, so it covers the betas in between too.
 
 The release tag is a lightweight tag made by GitHub, not an annotated one.
@@ -278,8 +327,9 @@ abandoned, land the next bump or promote with `allow-unpublished` (see
 [Promoting to irsync.org](website.md#promoting-to-irsyncorg)).
 
 **The check failed.** Nothing ran. Read the error. Usually the version in
-the two files does not match, or you are on the wrong branch, or the branch
-`release-X.Y` is missing or already there. Fix it and start the gate again.
+the two files does not match, `CHANGELOG.md` has no notes for the version,
+or you are on the wrong branch, or the branch `release-X.Y` is missing or
+already there. Fix it and start the gate again.
 A stray tag is different: see
 [Protecting the release tags](#protecting-the-release-tags).
 
