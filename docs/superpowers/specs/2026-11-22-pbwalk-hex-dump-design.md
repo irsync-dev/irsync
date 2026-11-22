@@ -17,30 +17,37 @@ get a byte-identical version of the binary message."
 
 ## What it looks like
 
-A new option, `-C` / `--canonical-hex-dump`, adds a column in front of
-every line of the listing:
+A new option, `-C` / `--canonical-hex-dump`, puts each field's bytes in
+front of its line, in hex and as characters:
 
 ```text
-                                                  #4 0.009941 fd69:7273::1:0:0 → fd69:7273::1 port 1  HelloAck  47 B + 1 B prefix
-                                                     side=SIDE_CLIENT(1) direction=DIRECTION_RECEIVED(2) …
-0a 10 53 f5 97 76 5a f6  db 17 4b 0d 9e 4e e1 12    session_id = 53f597765af6db174b0d9e4ee112ff28           18 B  (tag 1, len 1, value 16)
-ff 28
-10 05                                               protocol_version = 5                                     2 B  (tag 1, value 1)
-1a 19                                               build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
-0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36            version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
+                                                                      #4 0.009941 fd69:7273::1:0:0 → fd69:7273::1 port 1  HelloAck  47 B + 1 B prefix
+                                                                         side=SIDE_CLIENT(1) direction=DIRECTION_RECEIVED(2) …
+0a 10 53 f5 97 76 5a f6  db 17 4b 0d 9e 4e e1 12  |..S..vZ...K..N..|    session_id = 53f597765af6db174b0d9e4ee112ff28           18 B  (tag 1, len 1, value 16)
+ff 28                                             |.(|
+10 05                                             |..|                  protocol_version = 5                                     2 B  (tag 1, value 1)
+1a 19                                             |..|                  build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
+0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36        |..0.1.0-beta.6|        version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
 ```
 
 (The tag bytes in this sketch are made up.)
 
-- The column is 48 characters wide: 16 bytes as two hex digits each, one
-  space between bytes and one more after the eighth, as `hexdump -C`
-  prints them. Two spaces follow, then the line as it is printed today.
-- A field with fewer than 16 bytes is padded with spaces, so the text
-  lines up.
+Two columns come before the line as it is printed today, laid out as
+`hexdump -C` does, without its offsets:
+
+- **The hex column** is 48 characters wide: 16 bytes as two hex digits
+  each, one space between bytes and one more after the eighth.
+- **The character column** follows after two spaces. It shows the same
+  bytes as characters between two `|`: a printable ASCII character (0x20
+  to 0x7e) as itself, every other byte as `.`. It is 18 characters wide.
+- Two more spaces, then today's line. The text starts in column 71.
+- A field with fewer than 16 bytes is padded with spaces in both columns,
+  so the text lines up. The closing `|` comes right after the last
+  character, as in `hexdump -C`; the padding follows it.
 - A field with more than 16 bytes continues on the following lines, which
-  hold hex only.
-- There are no offsets and no ASCII column: `cut -c1-48 | xxd -r -p` turns
-  a block back into bytes.
+  hold the two columns only.
+- The hex column comes first and there are no offsets, so
+  `cut -c1-48 | xxd -r -p` turns a block back into bytes.
 
 ## Goals
 
@@ -50,10 +57,10 @@ ff 28
   children show the rest.
 - **The hex is always complete.** `--full` and the shortening of long
   values apply to the text only.
-- **Every line of the listing has the column.** Lines without bytes leave
-  it empty: a block's first two lines, the "cut content", "cut, not
+- **Every line of the listing has both columns.** Lines without bytes
+  leave them empty: a block's first two lines, the "cut content", "cut, not
   itemised", "message not captured" and "unexplained" rows, and the "DOES
-  NOT ADD UP" line. Otherwise cutting the column would pick up text.
+  NOT ADD UP" line. Otherwise cutting the hex column would pick up text.
 - **The hex shows what the walker decoded.** Each line's bytes are the
   bytes the walker assigned to that field, not bytes counted off by the
   printer. A test that reassembles the column then checks the walker too.
@@ -68,8 +75,8 @@ ff 28
 - Getting back the message as it was on the wire when the capture cut
   something. File content and dropped entries are not in the file. The
   hex gives the message as captured.
-- Offsets, an ASCII column, colours, a way to pick one message (#233,
-  item 6).
+- Offsets, colours, a way to pick one message (#233, item 6).
+- Decoding the character column as UTF-8. It is one character per byte.
 
 ## Anti-goals
 
@@ -97,6 +104,8 @@ Mike picked 1.
 - The option's names: `-C` and `--canonical-hex-dump`.
 - 16 bytes per line; pad short fields; continue long ones on the next
   line.
+- A character column next to the hex, with `.` for every byte that is
+  not an ASCII character, padded the same way.
 - No duplication; nested message lines carry their own bytes.
 - Approach 1.
 
@@ -111,7 +120,14 @@ Mike has not seen these as decisions; change them if they are wrong.
 - **`-C` with `--totals-only` is refused** by the argument parser, as
   `--totals-only` with `--no-totals` is. There is no listing to add the
   column to.
-- **Continuation lines have no trailing spaces.**
+- **No line ends in spaces.** A continuation line stops after its
+  closing `|`.
+- **Control characters are masked too.** Mike asked for `.` in place of
+  non-ASCII bytes. Bytes below 0x20 and 0x7f are ASCII but would garble
+  a terminal, so they are also printed as `.`, as `hexdump -C` does. A
+  space stays a space.
+- **The character column has `|` on both sides**, as in `hexdump -C`, so
+  that spaces at its edges can be seen.
 - **The unknown-type row** ("N bytes, type not in the protos") and the
   "bytes not decodable" row show all their bytes: they are one row for
   bytes `pbwalk` cannot split further.
@@ -124,10 +140,10 @@ Mike has not seen these as decisions; change them if they are wrong.
   Invariant: the slices of a walk, depth first, are the input in order.
 - `crates/pbwalk/src/account.rs`: the row it builds for a payload of
   unknown type carries the payload's bytes.
-- `crates/pbwalk/src/render.rs`: the column, on every line of a block.
+- `crates/pbwalk/src/render.rs`: the two columns, on every line of a block.
 - `crates/pbwalk/src/lib.rs`: the option.
 - `book/src/contributing/protocol-debugging.md`: the option under "More
-  views", with a short example, the `cut | xxd` line, and the two limits
+  views", with a short example of both columns, the `cut | xxd` line, and the two limits
   (as captured, no prefix).
 
 ## Tests
@@ -138,8 +154,10 @@ Mike has not seen these as decisions; change them if they are wrong.
 - Output: run with `-C --no-unwrap` over the session capture, cut the
   column out of each block, and compare with the packet's bytes from
   `pbcap`. The same in the default view against each record's payload.
-- Layout: a field of fewer than 16 bytes, of exactly 16, of 17, and an
-  empty column; the text starts in the same place on each.
+- Layout: a field of fewer than 16 bytes, of exactly 16, of 17, and a
+  line without bytes; the text starts in the same place on each.
+- Characters: a printable byte, a space, a control byte, 0x7f and a byte
+  above it.
 - Without `-C` the output of the existing tests does not change.
 
 ## Left to the builder
