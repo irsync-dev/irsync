@@ -199,7 +199,10 @@ per field, and per kind of overhead. Use it to see where the bytes of a
 session go, or to check what a protocol change saves.
 
 It counts irsync's messages as they are on the wire, with their length
-prefixes. It leaves out what QUIC, TLS and UDP add below that. File content
+prefixes. It leaves out what QUIC, TLS and UDP add below that. So its
+totals come out smaller than the `sent … bytes  received … bytes` line
+irsync prints at the end of a run with `-v` or `--stats`, which counts
+the UDP bytes of the connection. File content
 is not in a capture, but its size is still counted: `pbwalk` takes it from
 the record's `encoded_len` and `trimmed` fields, and prints it as cut.
 
@@ -277,6 +280,15 @@ Overhead
 the tags, the length bytes, the length prefixes, and what the capture
 does not hold.
 
+`By direction` splits the messages into those sent and those received, as
+seen by the side that wrote each one, length prefixes included. Its last
+line is called `sum`, not `total`: in a file that both sides wrote, each
+message is counted once sent and once received, so the sum can be twice
+what went over the wire (see [One side or both](#one-side-or-both)). Two
+more rows appear only when they are not empty: `unspecified` for a record
+without a direction, such as a stream being opened, and `other` for a
+direction this build does not know.
+
 ### Cut rows
 
 A `DataChunk` in the listing shows what the capture left out:
@@ -319,12 +331,41 @@ The fields it takes are those on the second line of each message's block:
 `side`, `direction`, `stream` and so on. `encoded_len`,
 `trimmed` and the message itself are not among them.
 
+### Pick messages
+
+Each block starts with its message's number, such as `#120`. To see only
+that message, or a range of them:
+
+```sh
+cargo run -p pbwalk -- --message 120 ~/push.pcapng
+cargo run -p pbwalk -- --message 100-120 ~/push.pcapng
+```
+
+`--message-type` keeps the messages of one type, as `By message` names
+it:
+
+```sh
+cargo run -p pbwalk -- --message-type DataChunk ~/push.pcapng
+```
+
+Give either more than once to pick more. Note the difference from
+`--where`: a second `--where` narrows, since a message must match both,
+while a second `--message` or `--message-type` widens, since a message
+matches one of them. The options combine with each other and with
+`--where`: a message is shown only if every option picks it. A
+message keeps its number, whatever else is left out. As with `--where`,
+the totals then count only the messages picked.
+
 ### More views
 
 - `--group-by stream` adds totals per stream kind (control, listing, data).
   `--group-by side,stream` adds one table per field, not one table of the
   two combined. It takes the same fields as `--where`. `direction` adds
   nothing, since the totals always have a `By direction` table.
+- `--top N` keeps the `N` largest rows of `By message`, `By field` and
+  each `--group-by` table, and folds the rest into one row, such as
+  `(97 more rows)`. The totals stay the same. `By field` lists about a
+  hundred rows for a real push; `--top 10` shows where most bytes go.
 - `--totals-only` skips the listing; `--no-totals` skips the totals.
 - Long byte strings, long repeated fields and long header values are
   shortened in the listing. `--full` prints them whole.
