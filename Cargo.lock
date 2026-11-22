@@ -3358,6 +3358,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbwalk"
+version = "0.1.0-beta.6"
+dependencies = [
+ "irsync-proto",
+ "prost",
+ "prost-reflect",
+ "protox",
+ "tempfile",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
