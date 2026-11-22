@@ -6,11 +6,14 @@
 
 mod common;
 
+use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use pbwalk::Parser as _;
+use prost::encoding::encoded_len_varint;
 use prost::Message as _;
 
 /// Every record of a capture file, decoded from the body of each packet.
@@ -97,6 +100,27 @@ fn is_event(r: &Record) -> bool {
     matches!(r.msg, Some(Msg::StreamEvent(_)) | Some(Msg::PathChange(_)))
 }
 
+/// pbwalk accounts for the whole capture: nothing fails to add up, and its
+/// totals are the records' own sizes.
+fn check_with_pbwalk(path: &Path, records: &[Record]) {
+    let args = pbwalk::Args::parse_from(["pbwalk", "--totals-only", path.to_str().unwrap()]);
+    let s = pbwalk::run(&args, File::open(path).unwrap(), &mut Vec::new()).unwrap();
+    let wire: Vec<&Record> = records.iter().filter(|r| !is_event(r)).collect();
+    assert_eq!(s.packets, records.len() as u64);
+    assert_eq!(s.messages, wire.len() as u64);
+    assert_eq!(
+        s.wire_bytes,
+        wire.iter().map(|r| u64::from(r.encoded_len)).sum::<u64>()
+    );
+    assert_eq!(
+        s.prefix_bytes,
+        wire.iter()
+            .map(|r| encoded_len_varint(u64::from(r.encoded_len)) as u64)
+            .sum::<u64>()
+    );
+    assert_eq!((s.mismatches, s.truncated), (0, false));
+}
+
 fn write_files(dir: &Path, n: usize, size: usize) {
     for i in 0..n {
         let data: Vec<u8> = (0..size).map(|j| (i * 31 + j * 7) as u8).collect();
@@ -174,4 +198,5 @@ async fn push_capture_has_both_sides_of_every_message() {
         .filter(|r| r.msg.is_some() && !is_event(r))
         .all(|r| r.local_endpoint_id.len() == 32));
     check_with_tshark(&path, recs.len());
+    check_with_pbwalk(&path, &recs);
 }

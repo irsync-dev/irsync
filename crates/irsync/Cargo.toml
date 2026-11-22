@@ -97,6 +97,8 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # test key, whose checksum minisign 0.10 rejects (see tests/common/release.rs).
 minisign = { workspace = true }
 ct-codecs = { workspace = true }
+# Checks its totals against a real capture (tests/capture.rs).
+pbwalk = { path = "../pbwalk" }
 
 [build-dependencies]
 vergen-gitcl = { workspace = true }

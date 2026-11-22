@@ -2203,6 +2203,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pbcap",
+ "pbwalk",
  "prost",
  "prost-reflect",
  "rand 0.10.4",
