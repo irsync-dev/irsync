@@ -6,6 +6,10 @@ pcapng file. It opens in stock Wireshark, with no plugin. Each packet is one
 Wireshark decodes with its built-in protobuf dissector. Fake addresses: the
 daemon is `fd69:7273::1:0:0`, clients are `fd69:7273::<connection>`.
 
+For byte counts, see "Count the bytes" in
+`book/src/contributing/protocol-debugging.md`: `pbwalk` lists every field
+of a capture with its size.
+
 ## Files
 
 - `open-capture.sh FILE` starts `wireshark` with the two settings below and
