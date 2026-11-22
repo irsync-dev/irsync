@@ -74,7 +74,7 @@ impl Totals {
         }
     }
 
-    /// Counts one entry that passed `--where`.
+    /// Counts one entry that was picked (`--where`, `--message`, ...).
     pub fn add(&mut self, entry: &Entry, wrapper: &MessageDescriptor) {
         let name = type_label(entry);
         if entry.kind == Kind::Event {

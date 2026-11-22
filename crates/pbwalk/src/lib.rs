@@ -50,6 +50,14 @@ pub struct Args {
     /// than once.
     #[arg(long = "where", value_name = "F=V")]
     pub filters: Vec<String>,
+    /// Only the messages numbered N, or N to M (the `#N` that starts each
+    /// block); may be given more than once.
+    #[arg(long = "message", value_name = "N[-M]", value_parser = parse_numbers)]
+    pub numbers: Vec<(u64, u64)>,
+    /// Only messages of type NAME, such as DataChunk; may be given more
+    /// than once.
+    #[arg(long = "message-type", value_name = "NAME")]
+    pub message_types: Vec<String>,
     /// Wrapper fields to break the totals down by.
     #[arg(long, value_name = "F,...", value_delimiter = ',')]
     pub group_by: Vec<String>,
@@ -76,13 +84,14 @@ pub struct Args {
 pub struct Summary {
     /// Packets read from the file.
     pub packets: u64,
-    /// Wire messages (or, with `--no-unwrap`, packets) that passed `--where`.
+    /// Wire messages (or, with `--no-unwrap`, packets) that were picked:
+    /// that passed `--where`, `--message` and `--message-type`.
     pub messages: u64,
     /// Their sizes on the wire, without prefixes.
     pub wire_bytes: u64,
     /// Their length prefixes.
     pub prefix_bytes: u64,
-    /// Records that passed `--where` whose numbers do not add up.
+    /// Picked records whose numbers do not add up.
     pub mismatches: u64,
     /// The file ended in the middle of a block.
     pub truncated: bool,
@@ -106,8 +115,15 @@ pub fn run(
         Schema::from_dirs(&args.proto_path)?
     };
     let wrapper = schema.message(&args.type_name)?;
-    if args.no_unwrap && !(args.filters.is_empty() && args.group_by.is_empty()) {
-        bail!("--where and --group-by need the wrapper unwrapped; drop --no-unwrap");
+    if args.no_unwrap
+        && !(args.filters.is_empty() && args.group_by.is_empty() && args.message_types.is_empty())
+    {
+        bail!(
+            "--where, --group-by and --message-type need the wrapper unwrapped; drop --no-unwrap"
+        );
+    }
+    for name in &args.message_types {
+        check_message_type(&wrapper, name).with_context(|| format!("--message-type {name}"))?;
     }
     let filters = args
         .filters
@@ -162,6 +178,41 @@ fn check_header_field(wrapper: &MessageDescriptor, name: &str) -> anyhow::Result
         wrapper.full_name(),
         known.join(", ")
     )
+}
+
+/// Fails unless `name` is the type of a message the wrapper can carry,
+/// naming those it can.
+fn check_message_type(wrapper: &MessageDescriptor, name: &str) -> anyhow::Result<()> {
+    let known: Vec<String> = wrapper
+        .oneofs()
+        .flat_map(|o| o.fields().collect::<Vec<_>>())
+        .filter_map(|f| f.kind().as_message().map(|m| m.name().to_owned()))
+        .collect();
+    if known.iter().any(|k| k == name) {
+        return Ok(());
+    }
+    bail!(
+        "{} carries no message of type {name}; it carries: {}",
+        wrapper.full_name(),
+        known.join(", ")
+    )
+}
+
+/// `N` or `N-M`, as the first and last number, both kept.
+fn parse_numbers(s: &str) -> Result<(u64, u64), String> {
+    let number = |n: &str| {
+        n.trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{n:?} is not a message number"))
+    };
+    let (first, last) = match s.split_once('-') {
+        Some((a, b)) => (number(a)?, number(b)?),
+        None => (number(s)?, number(s)?),
+    };
+    if first > last {
+        return Err(format!("{s}: the range ends before it starts"));
+    }
+    Ok((first, last))
 }
 
 /// `printed` is `want`, or `want` followed by `(...)`: so `SIDE_CLIENT`
@@ -220,7 +271,7 @@ impl Pass<'_> {
             } else {
                 unwrap(self.wrapper, &packet.body, self.args.prefix)
             };
-            if !self.passes(&entry) {
+            if !self.passes(&entry, summary.packets) {
                 continue;
             }
             if entry.kind != Kind::Event {
@@ -258,12 +309,17 @@ impl Pass<'_> {
         out.flush()
     }
 
-    fn passes(&self, entry: &Entry) -> bool {
-        self.filters.iter().all(|(name, want)| {
-            entry
-                .header_value(self.wrapper, name)
-                .is_some_and(|v| matches(&v, want))
-        })
+    /// Whether the entry numbered `number` is picked by `--message`,
+    /// `--message-type` and `--where`.
+    fn passes(&self, entry: &Entry, number: u64) -> bool {
+        let args = self.args;
+        (args.numbers.is_empty() || args.numbers.iter().any(|&(a, b)| (a..=b).contains(&number)))
+            && (args.message_types.is_empty() || args.message_types.contains(&entry.type_name))
+            && self.filters.iter().all(|(name, want)| {
+                entry
+                    .header_value(self.wrapper, name)
+                    .is_some_and(|v| matches(&v, want))
+            })
     }
 }
 
@@ -548,6 +604,69 @@ mod tests {
         assert!(out.contains("protocol_version = 5"), "{out}");
         assert!(!out.contains("By message"), "{out}");
         assert!(Args::try_parse_from(["pbwalk", "f", "--totals-only", "--no-totals"]).is_err());
+    }
+
+    /// The numbers of the listing's blocks: the `N` of each `#N` line.
+    fn blocks(out: &str) -> Vec<u64> {
+        out.lines()
+            .filter_map(|l| l.strip_prefix('#')?.split(' ').next()?.parse().ok())
+            .collect()
+    }
+
+    #[test]
+    fn message_picks_by_number() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record(), hello_record(1, 1)]);
+        let (s, out) = run_on(&["--message", "2"], &file);
+        assert_eq!((s.packets, s.messages), (3, 1));
+        assert_eq!(blocks(&out), [2], "{out}");
+        // The totals cover only what was picked.
+        let by_message = out.split("By message").nth(1).expect(&out);
+        assert!(!by_message.contains("Hello"), "{by_message}");
+        let (s, out) = run_on(&["--message", "2-3"], &file);
+        assert_eq!(s.messages, 2);
+        assert_eq!(blocks(&out), [2, 3], "{out}");
+        let (s, _) = run_on(&["--message", "3", "--message", "1"], &file);
+        assert_eq!(s.messages, 2);
+        let (s, _) = run_on(&["--message", "7-9"], &file);
+        assert_eq!((s.packets, s.messages), (3, 0));
+        // With other filters, a message keeps its number.
+        let (s, _) = run_on(&["--message", "3", "--message-type", "Hello"], &file);
+        assert_eq!(s.messages, 1);
+        let (s, _) = run_on(&["--no-unwrap", "--message", "1"], &file);
+        assert_eq!(s.messages, 1);
+        for bad in ["x", "1-", "-2", "3-1", "1-2-3"] {
+            let parsed = Args::try_parse_from(["pbwalk", "f", "--message", bad]);
+            assert!(parsed.is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn message_type_picks_by_type() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record(), hello_record(1, 1)]);
+        let (s, out) = run_on(&["--message-type", "DataChunk"], &file);
+        assert_eq!(s.messages, 1);
+        assert_eq!(blocks(&out), [2], "{out}");
+        let (s, _) = run_on(&["--message-type", "Hello"], &file);
+        assert_eq!(s.messages, 2);
+        let (s, _) = run_on(
+            &["--message-type", "Hello", "--message-type", "DataChunk"],
+            &file,
+        );
+        assert_eq!(s.messages, 3);
+        let mut out = Vec::new();
+        let err = run(&args(&["--message-type", "Helo"]), &file[..], &mut out).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("--message-type Helo") && text.contains("Hello"),
+            "{text}"
+        );
+        let err = run(
+            &args(&["--no-unwrap", "--message-type", "Hello"]),
+            &file[..],
+            &mut out,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("--no-unwrap"), "{err:#}");
     }
 
     #[test]

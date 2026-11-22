@@ -331,6 +331,28 @@ The fields it takes are those on the second line of each message's block:
 `side`, `direction`, `stream` and so on. `encoded_len`,
 `trimmed` and the message itself are not among them.
 
+### Pick messages
+
+Each block starts with its message's number, such as `#120`. To see only
+that message, or a range of them:
+
+```sh
+cargo run -p pbwalk -- --message 120 ~/push.pcapng
+cargo run -p pbwalk -- --message 100-120 ~/push.pcapng
+```
+
+`--message-type` keeps the messages of one type, as `By message` names
+it:
+
+```sh
+cargo run -p pbwalk -- --message-type DataChunk ~/push.pcapng
+```
+
+Give either more than once to pick more. They combine with each other and
+with `--where`: a message is shown only if every option picks it. A
+message keeps its number, whatever else is left out. As with `--where`,
+the totals then count only the messages picked.
+
 ### More views
 
 - `--group-by stream` adds totals per stream kind (control, listing, data).
