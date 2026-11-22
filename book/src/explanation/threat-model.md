@@ -168,6 +168,18 @@ or change what you send.
   later against a manifest you keep yourself.
 - **Hashes show what the source sent, not what it should have sent.** They
   catch damage on the way, not a source that lies.
+- **On a pull, the daemon can learn whether your destination already holds
+  some content.** The daemon sends the hashes of each file's chunks, and
+  the client asks only for the chunks it finds in no file of the
+  destination tree. That is what makes a renamed or copied file cost
+  nothing. It also means that a daemon which guesses the whole content of a
+  chunk can see whether the guess was right, also for files it never sent
+  you. A chunk is a whole small file, or 64 KiB to 1 MiB of a larger one.
+  The daemon learns nothing about content it cannot guess. Pulling into a directory of its own leaves nothing there to ask
+  about. `--no-rename-detection` makes the client look only at the old
+  version of the same file, at the price of fetching moved and copied
+  files again. On a push there is nothing to learn this way: a key that
+  may write to an export may read all of it anyway.
 
 ## Whoever made the tree you sync
 
@@ -257,7 +269,8 @@ In one place:
 - A machine that is already broken into, on either side, or a stolen key
   file.
 - A daemon you chose to trust that turns out to be hostile, beyond keeping
-  it inside your destination directory.
+  it inside your destination directory. It can also check guesses about
+  what that directory already holds.
 - Traffic analysis: who talks to whom, when, and how much.
 - A client with a grant, or a stranger, who sets out to use up the daemon's
   CPU, memory, disk or network.
@@ -277,14 +290,9 @@ file content, how files are reached by name, and how the daemon resolves a
 client's path. What it found there is fixed, and the checks above describe
 the code as it is now.
 
-One known gap is still open:
-
-- A receiver tells the sender which chunks it already has. A sender that can
-  guess the whole content of a chunk can confirm the guess.
-
-While this gap is open, give a read-write grant only to keys you would
-trust with the daemon account's own files, and pull only from daemons you
-trust.
+No gap found by the review is still open. What irsync leaves to you is
+listed under "What is left" in each section above, and in one place under
+[What irsync does not defend against](#what-irsync-does-not-defend-against).
 
 To report a security problem, see the
 [security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
