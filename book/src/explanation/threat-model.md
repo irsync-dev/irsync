@@ -276,7 +276,6 @@ the code as it is now.
 
 Known gaps that are still open:
 
-- The number of hard-link checks a client can queue has no limit.
 - The daemon stores one session per pair of source and destination, and a
   newer one replaces the older. How many such pairs one key can start has
   no limit. A session that is never finished stays until `irsync gc`
