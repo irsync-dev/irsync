@@ -19,6 +19,8 @@ protox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 prost-types.workspace = true
+pbcap = { path = "../pbcap" }
+prost-reflect.workspace = true
 
 [lints]
 workspace = true

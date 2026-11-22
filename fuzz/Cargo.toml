@@ -18,6 +18,7 @@ irsync = { path = "../crates/irsync", default-features = false }
 irsync-proto = { path = "../crates/irsync-proto" }
 irsync-glob = { path = "../crates/irsync-glob" }
 fileset = { path = "../crates/fileset" }
+pbwalk = { path = "../crates/pbwalk" }
 prost = "0.14"
 tempfile = "3"
 
@@ -65,6 +66,13 @@ bench = false
 [[bin]]
 name = "manifest"
 path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pbwalk"
+path = "fuzz_targets/pbwalk.rs"
 test = false
 doc = false
 bench = false

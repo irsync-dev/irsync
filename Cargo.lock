@@ -2202,6 +2202,8 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "pbcap",
+ "pbwalk",
  "prost",
  "prost-reflect",
  "rand 0.10.4",
@@ -2237,8 +2239,10 @@ version = "0.1.0-beta.6"
 dependencies = [
  "blake3",
  "fastcdc",
+ "pbcap",
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
  "protox",
  "serde",
@@ -3326,6 +3330,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbcap"
+version = "0.1.0-beta.6"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pbkdf2"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,6 +3356,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
 dependencies = [
  "digest 0.11.3",
+]
+
+[[package]]
+name = "pbwalk"
+version = "0.1.0-beta.6"
+dependencies = [
+ "anyhow",
+ "clap",
+ "irsync-proto",
+ "pbcap",
+ "prost",
+ "prost-reflect",
+ "protox",
+ "tempfile",
 ]
 
 [[package]]

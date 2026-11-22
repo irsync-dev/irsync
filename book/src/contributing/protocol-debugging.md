@@ -1,19 +1,21 @@
 # Trace and capture the protocol
 
-Three ways to watch irsync talk, from the simplest to the most detailed:
+Four ways to watch irsync talk, from the simplest to the most detailed:
 
 - **The text trace** prints every protocol message to the log, one line
   each. Use it to read a session as it runs, or to `grep` a log.
 - **The capture file** writes every message to a file that Wireshark opens.
   Use it to browse a session, filter it, and see the streams side by side.
+- **The byte count** reads a capture file and says what each message and
+  field cost in bytes. Use it to see where a session's bytes go.
 - **The key log** lets Wireshark decrypt a capture of the real QUIC packets.
   Use it to see what happens below irsync: packets, loss, retransmits, flow
   control.
 
-The trace and the capture see irsync's messages, after QUIC has decrypted
-and ordered them. They work on any connection: direct, through a relay, and
-in the in-process network tests. The key log works on the raw packets, and
-only on a direct connection.
+The trace, the capture and the byte count see irsync's messages, after
+QUIC has decrypted and ordered them. They work on any connection: direct,
+through a relay, and in the in-process network tests. The key log works on
+the raw packets, and only on a direct connection.
 [Networking](../explanation/networking.md) explains the layers, and walks
 through a traced push.
 
@@ -188,6 +190,185 @@ message inside it. Some ways in:
   address pair) and each stream (a port pair) with its message count and
   bytes.
 
+## Count the bytes
+
+The capture shows what each message holds. `pbwalk` shows what each part of
+it costs. It reads a capture file and lists every protobuf field of every
+message with its size in bytes, then adds up the totals: per message type,
+per field, and per kind of overhead. Use it to see where the bytes of a
+session go, or to check what a protocol change saves.
+
+It counts irsync's messages as they are on the wire, with their length
+prefixes. It leaves out what QUIC, TLS and UDP add below that. File content
+is not in a capture, but its size is still counted: `pbwalk` takes it from
+the record's `encoded_len` and `trimmed` fields, and prints it as cut.
+
+It needs only the clone:
+
+```sh
+cargo run -p pbwalk -- ~/push.pcapng
+```
+
+First comes a listing, one block per message. This is a `Hello`, with its
+last fields cut for space, from a capture of a small push:
+
+```text
+#3 0.000188 fd69:7273::1 → fd69:7273::1:0:0 port 1  Hello  38 B + 1 B prefix
+   side=SIDE_CLIENT(1) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) connection=1 local_endpoint_id=628d53b962da7234… remote_endpoint_id=9af7fe23a076f62b…
+  protocol_version = 5                                     2 B  (tag 1, value 1)
+  path = "m"                                               3 B  (tag 1, len 1, value 1)
+  chunk_min = 65536                                        4 B  (tag 1, value 3)
+  chunk_avg = 262144                                       4 B  (tag 1, value 3)
+  chunk_max = 1048576                                      4 B  (tag 1, value 3)
+  contents_only = true                                     2 B  (tag 1, value 1)
+  preserve: Hello.Preserve                                19 B  (tag 2, len 1, value 16)
+    links = true                                           2 B  (tag 1, value 1)
+    ...
+```
+
+Each line is a field, its value, and its size. The size is the sum of its
+tag (which holds the field number and the kind of value), its length (for
+text, bytes and nested messages) and its value. In `path = "m"`, the
+tag takes 1 byte, the length 1 byte and the text 1 byte, so 3 B. A nested
+message such as `preserve` counts its own tag and length as well as
+everything inside it. The first line, after the message's type, gives its
+size on the wire: 38 B, plus 1 B for the length prefix in front of it.
+
+Then come the totals. For the client's side of a small push, shortened:
+
+```text
+Totals: 41 messages and 13 events of 108 packets read; 901,120 B on the wire, length prefixes (50 B) included
+
+By message
+  type                          count             bytes   share
+  DataChunk                         3         900,012 B   99.9%
+  Control                          32             883 B    0.1%
+  DataStreamHeader                  3              72 B   <0.1%
+  HelloAck                          1              47 B   <0.1%
+  Hello                             1              38 B   <0.1%
+  ListingStreamHeader               1              18 B   <0.1%
+  total                            41         901,070 B  100.0%
+```
+
+```text
+By field
+  path                                                  bytes   share
+  DataChunk (cut content)                           900,000 B   99.9%
+  Control.chunk_list_part.chunks.hash.bytes             102 B   <0.1%
+  Control.chunk_list_part.whole_hash.bytes              102 B   <0.1%
+  ...
+  DataChunk (cut, not itemised)                          12 B   <0.1%
+  ...
+  total                                             901,070 B  100.0%
+```
+
+```text
+Overhead
+                                       bytes   share
+  not in the capture               900,012 B   99.9%
+  values                               715 B    0.1%
+  tags                                 250 B   <0.1%
+  length bytes                          93 B   <0.1%
+  length prefixes                       50 B   <0.1%
+  total                            901,120 B  100.0%
+```
+
+`Overhead` splits the same bytes by what they are: the values themselves,
+the tags, the length bytes, the length prefixes, and what the capture
+does not hold.
+
+### Cut rows
+
+A `DataChunk` in the listing shows what the capture left out:
+
+```text
+#59 0.018612 fd69:7273::1 → fd69:7273::1:0:0 port 3  DataChunk  300,004 B + 3 B prefix
+   side=SIDE_CLIENT(1) direction=DIRECTION_SENT(1) stream=STREAM_KIND_DATA(3) quic_stream_id=2 session_id=b9db550af3b718a1335d80f16246cd08 file_id=3 connection=1 local_endpoint_id=628d53b962da7234… remote_endpoint_id=9af7fe23a076f62b…
+  cut content                                        300,000 B  (1 piece)
+  cut, not itemised                                        4 B
+```
+
+Four rows can appear, and each is counted in the totals:
+
+- **`cut content`**: file content the capture never writes. The size is
+  exact. A message that had content cut shows how many pieces.
+- **`cut, not itemised`**: the rest of what the capture cut. It is the tag
+  and length bytes of the cut fields. If a message was too big for
+  Wireshark and entries were dropped, it also holds their size, and the
+  row says how many were dropped.
+- **`message not captured`**: the whole message is missing from the
+  capture. Its full size is this one row.
+- **`not in the capture, unexplained`**: bytes are missing and the record
+  does not say why. This is not a cut. It can happen when a newer peer sent
+  fields this build does not know.
+
+### One side or both
+
+A capture written by a client or by a daemon holds each message once.
+A file that both wrote, as the tests do when they run client and daemon in
+one process, holds each message twice: once sent, once received. Its totals
+count every message twice. Pick one side:
+
+```sh
+cargo run -p pbwalk -- --where side=SIDE_CLIENT ~/push.pcapng
+```
+
+`--where FIELD=VALUE` keeps the records whose field of the capture's
+wrapper prints as that value. Give it more than once to narrow further.
+The fields it takes are those on the second line of each message's block:
+`side`, `direction`, `stream` and so on. `encoded_len`,
+`trimmed` and the message itself are not among them.
+
+### More views
+
+- `--group-by stream` adds totals per stream kind (control, listing, data).
+  `--group-by side,stream` adds one table per field, not one table of the
+  two combined. It takes the same fields as `--where`. `direction` adds
+  nothing, since the totals always have a `By direction` table.
+- `--totals-only` skips the listing; `--no-totals` skips the totals.
+- Long byte strings, long repeated fields and long header values are
+  shortened in the listing. `--full` prints them whole.
+
+The `By stream` totals of the same push:
+
+```text
+By stream (with prefixes)
+  stream                        count             bytes   share
+  STREAM_KIND_DATA(3)               6         900,096 B   99.9%
+  STREAM_KIND_CONTROL(1)           27             701 B    0.1%
+  STREAM_KIND_LISTING(2)            8             323 B   <0.1%
+  total                            41         901,120 B  100.0%
+```
+
+### Other protocols
+
+`pbwalk` knows nothing of irsync except its default. `--proto-path DIR`
+loads every `.proto` under `DIR`, and `--type NAME` says which message each
+packet holds. `--prefix none` is for protocols without a length prefix.
+
+A capture wraps each message in an envelope, and `pbwalk` unwraps it by
+the numbering of the envelope's fields:
+
+- 1 to 19 are the wrapper's own: where the message was seen, `encoded_len`
+  and `trimmed`.
+- 20 to 39 hold the message.
+- 40 and up are events, such as a stream opening, which are listed but
+  count as 0 bytes.
+
+`--no-unwrap` skips that and walks each packet as `--type` from the top,
+sizes being those of the bytes in the file. It cannot be combined with
+`--where` or `--group-by`, which need the envelope unwrapped. The file
+format and the envelope are in `crates/pbcap`.
+
+### Exit status
+
+`pbwalk` exits with 0 when every message adds up, 1 when a message does not
+(what is present, cut and missing does not equal its size on the wire) or
+when it stops reading early, because the file is cut off or a block in it
+is broken, and 2 when it cannot read the file or the protos. With status 1
+it still prints its listing and totals, and says on stderr which problem
+it found.
+
 ## The key log
 
 The trace and the capture show irsync's messages. To see the QUIC packets
@@ -263,12 +444,13 @@ On Ubuntu, `tshark` (not the Wireshark GUI) reads only files you own in
 
 ## Safety
 
-All three outputs hold things you may not want to share.
+All these outputs hold things you may not want to share.
 
 - **The trace and the capture** hold paths, file names, sizes, owner and
   group names, hashes and both endpoint ids. They never hold file content.
   The trace ends up wherever the logs go, such as the systemd journal for a
   daemon run as a service.
+- **`pbwalk`'s output** holds what the capture holds.
 - **The key log** holds secrets that decrypt every connection it covers.
   Together with a packet capture of the same connection, it gives away
   everything sent, file content included.

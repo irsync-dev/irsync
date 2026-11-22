@@ -6,45 +6,26 @@
 
 mod common;
 
+use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use pbwalk::Parser as _;
+use prost::encoding::encoded_len_varint;
 use prost::Message as _;
 
-fn u32_le(b: &[u8]) -> u32 {
-    u32::from_le_bytes(b[..4].try_into().unwrap())
-}
-
-/// Every record of a capture file: walks the pcapng blocks, skips the
-/// exported-PDU tags of each packet and decodes what follows.
+/// Every record of a capture file, decoded from the body of each packet.
 fn read_capture(path: &Path) -> Vec<Record> {
     let file = std::fs::read(path).unwrap();
-    let mut records = Vec::new();
-    let mut at = 0;
-    while at < file.len() {
-        let kind = u32_le(&file[at..]);
-        let len = u32_le(&file[at + 4..]) as usize;
-        let body = &file[at + 8..at + len - 4];
-        at += len;
-        if kind != 6 {
-            continue; // section header, interface
-        }
-        let cap = u32_le(&body[12..]) as usize;
-        let mut pdu = &body[20..20 + cap];
-        loop {
-            let tag = u16::from_be_bytes([pdu[0], pdu[1]]);
-            let tlen = u16::from_be_bytes([pdu[2], pdu[3]]) as usize;
-            pdu = &pdu[4 + tlen..];
-            if tag == 0 {
-                break;
-            }
-        }
-        records.push(Record::decode(pdu).expect("every record decodes"));
-    }
-    assert_eq!(at, file.len());
-    records
+    pbcap::Reader::new(&file[..])
+        .expect("a capture file")
+        .map(|p| {
+            Record::decode(&p.expect("every block is whole").body[..])
+                .expect("every record decodes")
+        })
+        .collect()
 }
 
 /// Copies the repository's `proto/` tree to `to`. tshark reads the copy:
@@ -117,6 +98,64 @@ fn check_with_tshark(path: &Path, records: usize) {
 
 fn is_event(r: &Record) -> bool {
     matches!(r.msg, Some(Msg::StreamEvent(_)) | Some(Msg::PathChange(_)))
+}
+
+/// The bytes on the last line, `total` or `sum`, of pbwalk's table `title`.
+fn table_total(out: &str, title: &str) -> u64 {
+    let table = out
+        .split(&format!("\n{title}\n"))
+        .nth(1)
+        .unwrap_or_else(|| panic!("no {title} table in\n{out}"));
+    let line = table
+        .lines()
+        .find(|l| {
+            let l = l.trim_start();
+            l.starts_with("total ") || l.starts_with("sum ")
+        })
+        .unwrap_or_else(|| panic!("no total line under {title}"));
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let b = words.iter().position(|w| *w == "B").expect(line);
+    words[b - 1].replace(',', "").parse().expect(line)
+}
+
+/// pbwalk accounts for the whole capture: nothing fails to add up, and its
+/// totals are the records' own sizes.
+fn check_with_pbwalk(path: &Path, records: &[Record]) {
+    let args = pbwalk::Args::parse_from(["pbwalk", path.to_str().unwrap()]);
+    let mut out = Vec::new();
+    let s = pbwalk::run(&args, File::open(path).unwrap(), &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    let wire: Vec<&Record> = records.iter().filter(|r| !is_event(r)).collect();
+    assert_eq!(s.packets, records.len() as u64);
+    assert_eq!(s.messages, wire.len() as u64);
+    assert_eq!(
+        s.wire_bytes,
+        wire.iter().map(|r| u64::from(r.encoded_len)).sum::<u64>()
+    );
+    assert_eq!(
+        s.prefix_bytes,
+        wire.iter()
+            .map(|r| encoded_len_varint(u64::from(r.encoded_len)) as u64)
+            .sum::<u64>()
+    );
+    assert_eq!((s.mismatches, s.truncated, s.stopped), (0, false, None));
+    for bad in [
+        "unexplained",
+        "not decodable",
+        "type not in the protos",
+        "DOES NOT ADD UP",
+    ] {
+        let line = out.lines().find(|l| l.contains(bad));
+        assert_eq!(line, None, "pbwalk printed {bad:?}");
+    }
+    assert_eq!(table_total(&out, "By message"), s.wire_bytes);
+    assert_eq!(table_total(&out, "By field"), s.wire_bytes);
+    let with_prefixes = s.wire_bytes + s.prefix_bytes;
+    assert_eq!(table_total(&out, "Overhead"), with_prefixes);
+    assert_eq!(
+        table_total(&out, "By direction (with prefixes)"),
+        with_prefixes
+    );
 }
 
 fn write_files(dir: &Path, n: usize, size: usize) {
@@ -196,4 +235,5 @@ async fn push_capture_has_both_sides_of_every_message() {
         .filter(|r| r.msg.is_some() && !is_event(r))
         .all(|r| r.local_endpoint_id.len() == 32));
     check_with_tshark(&path, recs.len());
+    check_with_pbwalk(&path, &recs);
 }

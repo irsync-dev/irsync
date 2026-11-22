@@ -21,7 +21,6 @@ use irsync_proto::v1::{
 };
 
 mod capture;
-mod pcapng;
 mod scrub;
 mod text;
 

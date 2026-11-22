@@ -1,0 +1,25 @@
+syntax = "proto3";
+package pbcap.v1;
+
+// What a reader needs from a capture's wrapper record. A project's own
+// record uses these numbers for these fields and adds its own.
+//
+// Field numbering:
+//   1 to 19:  the wrapper's own fields. 2, 10 and 11 are as below; the
+//             rest are the project's.
+//   20 to 39: the message. Exactly one message-typed field, the one that
+//             was sent or received.
+//   40 and up: events. Message-typed fields for things the recorder saw
+//             that were never on the wire.
+message Envelope {
+  Direction direction = 2;
+  uint32 encoded_len = 10;   // the message's size on the wire, no prefix
+  Trimmed trimmed = 11;      // set when anything was cut
+}
+enum Direction { DIRECTION_UNSPECIFIED = 0; DIRECTION_SENT = 1; DIRECTION_RECEIVED = 2; }
+message ContentSummary { uint32 len = 1; bytes blake3_prefix = 2; }
+message Trimmed {
+  uint32 original_len = 1;
+  uint32 dropped_entries = 2;
+  repeated ContentSummary content = 3;
+}

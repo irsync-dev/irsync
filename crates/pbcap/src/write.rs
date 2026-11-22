@@ -2,10 +2,6 @@
 
 use std::net::Ipv6Addr;
 
-/// Wireshark's "upper PDU" link type: each packet starts with tags naming
-/// its decoder.
-pub(crate) const LINKTYPE_WIRESHARK_UPPER_PDU: u16 = 252;
-
 /// A block: type, total length, `body` padded to 4, total length again.
 fn block(kind: u32, body: &[u8]) -> Vec<u8> {
     let padded = body.len().next_multiple_of(4);
@@ -21,7 +17,7 @@ fn block(kind: u32, body: &[u8]) -> Vec<u8> {
 
 /// The Section Header Block that starts the file: little-endian, version
 /// 1.0, section length unknown, no options.
-pub(crate) fn section_header() -> Vec<u8> {
+pub fn section_header() -> Vec<u8> {
     let mut body = Vec::with_capacity(16);
     body.extend_from_slice(&0x1a2b_3c4d_u32.to_le_bytes());
     body.extend_from_slice(&1u16.to_le_bytes());
@@ -32,7 +28,7 @@ pub(crate) fn section_header() -> Vec<u8> {
 
 /// An Interface Description Block with no options, so timestamps are in
 /// microseconds. A `snaplen` of 0 means no limit.
-pub(crate) fn interface(linktype: u16, snaplen: u32) -> Vec<u8> {
+pub fn interface(linktype: u16, snaplen: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(8);
     body.extend_from_slice(&linktype.to_le_bytes());
     body.extend_from_slice(&0u16.to_le_bytes());
@@ -41,7 +37,7 @@ pub(crate) fn interface(linktype: u16, snaplen: u32) -> Vec<u8> {
 }
 
 /// An Enhanced Packet Block on interface 0 holding all of `payload`.
-pub(crate) fn packet(ts_micros: u64, payload: &[u8]) -> Vec<u8> {
+pub fn packet(ts_micros: u64, payload: &[u8]) -> Vec<u8> {
     let len = u32::try_from(payload.len()).expect("a packet fits in u32");
     let mut body = Vec::with_capacity(20 + payload.len());
     body.extend_from_slice(&0u32.to_le_bytes());
@@ -54,15 +50,15 @@ pub(crate) fn packet(ts_micros: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 // Wireshark's exported-PDU tags (`wsutil/exported_pdu_tlvs.h`).
-const TAG_END: u16 = 0;
-const TAG_DISSECTOR_NAME: u16 = 12;
-const TAG_IPV6_SRC: u16 = 22;
-const TAG_IPV6_DST: u16 = 23;
-const TAG_PORT_TYPE: u16 = 24;
-const TAG_SRC_PORT: u16 = 25;
-const TAG_DST_PORT: u16 = 26;
-const TAG_COL_PROT_TEXT: u16 = 33;
-const PORT_TYPE_UDP: u32 = 3;
+pub(crate) const TAG_END: u16 = 0;
+pub(crate) const TAG_DISSECTOR_NAME: u16 = 12;
+pub(crate) const TAG_IPV6_SRC: u16 = 22;
+pub(crate) const TAG_IPV6_DST: u16 = 23;
+pub(crate) const TAG_PORT_TYPE: u16 = 24;
+pub(crate) const TAG_SRC_PORT: u16 = 25;
+pub(crate) const TAG_DST_PORT: u16 = 26;
+pub(crate) const TAG_COL_PROT_TEXT: u16 = 33;
+pub(crate) const PORT_TYPE_UDP: u32 = 3;
 
 /// One tag: `u16` tag and length, big-endian, then the value padded with
 /// zeros to 4 bytes; the length counts the padding.
@@ -75,8 +71,10 @@ fn tag(out: &mut Vec<u8>, tag: u16, value: &[u8]) {
 }
 
 /// An exported-PDU packet: tags that hand `body` to Wireshark's protobuf
-/// decoder, between fake UDP endpoints, then `body`.
-pub(crate) fn exported_pdu(
+/// decoder, between fake UDP endpoints, then `body`. `protocol` is the text
+/// for Wireshark's protocol column.
+pub fn exported_pdu(
+    protocol: &str,
     src: Ipv6Addr,
     dst: Ipv6Addr,
     src_port: u32,
@@ -90,7 +88,7 @@ pub(crate) fn exported_pdu(
     tag(&mut out, TAG_PORT_TYPE, &PORT_TYPE_UDP.to_be_bytes());
     tag(&mut out, TAG_SRC_PORT, &src_port.to_be_bytes());
     tag(&mut out, TAG_DST_PORT, &dst_port.to_be_bytes());
-    tag(&mut out, TAG_COL_PROT_TEXT, b"irsync");
+    tag(&mut out, TAG_COL_PROT_TEXT, protocol.as_bytes());
     tag(&mut out, TAG_END, &[]);
     out.extend_from_slice(body);
     out
@@ -109,7 +107,7 @@ mod tests {
 
     #[test]
     fn exported_pdu_tags_are_padded() {
-        let p = exported_pdu(A, B, 1, 2, b"xy");
+        let p = exported_pdu("irsync", A, B, 1, 2, b"xy");
         assert_eq!(&p[..4], &[0, 12, 0, 8]); // "protobuf" is already 8
         assert_eq!(&p[4..12], b"protobuf");
         assert_eq!(&p[12..16], &[0, 22, 0, 16]);

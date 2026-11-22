@@ -1,0 +1,25 @@
+[package]
+name = "pbwalk"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pbwalk"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+irsync-proto = { path = "../irsync-proto" }
+pbcap = { path = "../pbcap" }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+protox = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
