@@ -3361,7 +3361,10 @@ dependencies = [
 name = "pbwalk"
 version = "0.1.0-beta.6"
 dependencies = [
+ "anyhow",
+ "clap",
  "irsync-proto",
+ "pbcap",
  "prost",
  "prost-reflect",
  "protox",

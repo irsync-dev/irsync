@@ -10,12 +10,15 @@ name = "pbwalk"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+irsync-proto = { path = "../irsync-proto" }
+pbcap = { path = "../pbcap" }
+prost = { workspace = true }
 prost-reflect = { workspace = true }
+protox = { workspace = true }
 
 [dev-dependencies]
-irsync-proto = { path = "../irsync-proto" }
-prost = { workspace = true }
-protox = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
