@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use irsync_proto::v1::control;
 use prost::Message as _;
 
 fn u32_le(b: &[u8]) -> u32 {
@@ -119,6 +120,34 @@ fn is_event(r: &Record) -> bool {
     matches!(r.msg, Some(Msg::StreamEvent(_)) | Some(Msg::PathChange(_)))
 }
 
+fn control(r: &Record) -> Option<&control::Msg> {
+    match &r.msg {
+        Some(Msg::Control(c)) => c.msg.as_ref(),
+        _ => None,
+    }
+}
+
+/// The records without the heartbeats a side sent after its `SessionDone`.
+/// The heartbeat timer runs until the session ends, so on a slow machine
+/// one can go out after the last message. The peer stops reading at
+/// `SessionDone` and never records it.
+fn without_late_heartbeats(recs: Vec<Record>) -> Vec<Record> {
+    let mut done = Vec::new();
+    recs.into_iter()
+        .filter(|r| {
+            if r.direction() != Direction::Sent {
+                return true;
+            }
+            match control(r) {
+                Some(control::Msg::Done(_)) => done.push(r.side()),
+                Some(control::Msg::Heartbeat(_)) => return !done.contains(&r.side()),
+                _ => {}
+            }
+            true
+        })
+        .collect()
+}
+
 fn write_files(dir: &Path, n: usize, size: usize) {
     for i in 0..n {
         let data: Vec<u8> = (0..size).map(|j| (i * 31 + j * 7) as u8).collect();
@@ -140,13 +169,15 @@ async fn push_capture_has_both_sides_of_every_message() {
     .await;
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     irsync::net::tap::drain_capture(Duration::from_secs(30));
-    let recs = read_capture(&path);
+    let all = read_capture(&path);
     if let Some(keep) = std::env::var_os("IRSYNC_KEEP_CAPTURE") {
         // For looking at the capture by hand, see tools/wireshark/README.md.
         std::fs::create_dir_all(&keep).unwrap();
         std::fs::copy(&path, Path::new(&keep).join("c.pcapng")).unwrap();
     }
 
+    let packets = all.len();
+    let recs = without_late_heartbeats(all);
     // Stream events are counted apart: a finish is reported as sent by the
     // writer and as received by the reader, but they are not one message.
     let sent = recs
@@ -195,5 +226,5 @@ async fn push_capture_has_both_sides_of_every_message() {
         .iter()
         .filter(|r| r.msg.is_some() && !is_event(r))
         .all(|r| r.local_endpoint_id.len() == 32));
-    check_with_tshark(&path, recs.len());
+    check_with_tshark(&path, packets);
 }
