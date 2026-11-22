@@ -433,3 +433,63 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         RelayChoice::Custom("https://cli.example".parse().unwrap())
     );
 }
+
+/// Two irsync endpoints agree on the hybrid key exchange, and both ends
+/// can tell.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_irsync_endpoints_use_the_hybrid_key_exchange() {
+    let (a, b) = loopback_pair().await;
+    let (client, server) = connect_pair(&b, &a).await;
+    assert_eq!(
+        irsync::net::key_exchange(&client).as_deref(),
+        Some("X25519MLKEM768")
+    );
+    assert_eq!(
+        irsync::net::key_exchange(&server).as_deref(),
+        Some("X25519MLKEM768")
+    );
+    client.close(0u32.into(), b"done");
+    a.close().await;
+    b.close().await;
+}
+
+/// An endpoint that offers the classical groups only, as an irsync built
+/// on ring does.
+async fn classical_endpoint() -> iroh::Endpoint {
+    use rustls::crypto::aws_lc_rs::{self, kx_group};
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = vec![kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1];
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .crypto_provider(std::sync::Arc::new(provider))
+        .alpns(vec![ALPN.to_vec()])
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .bind()
+        .await
+        .unwrap()
+}
+
+/// A peer without the hybrid still connects, in either direction, with
+/// X25519.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_without_the_hybrid_falls_back_to_x25519() {
+    let ours = common::loopback_endpoint().await;
+    let old = classical_endpoint().await;
+    for (dialler, listener) in [(&old, &ours), (&ours, &old)] {
+        let (client, server) = connect_pair(dialler, listener).await;
+        assert_eq!(
+            irsync::net::key_exchange(&client).as_deref(),
+            Some("X25519")
+        );
+        assert_eq!(
+            irsync::net::key_exchange(&server).as_deref(),
+            Some("X25519")
+        );
+        client.close(0u32.into(), b"done");
+        within(server.closed()).await;
+    }
+    ours.close().await;
+    old.close().await;
+}

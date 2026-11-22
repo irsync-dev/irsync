@@ -140,6 +140,21 @@ Two TLS extensions matter here:
   The daemon's endpoint accepts nothing else. The version of irsync's own
   protocol travels separately, in `Hello`.
 
+**The key exchange.** The two sides agree on the connection's keys with
+`X25519MLKEM768`, a hybrid of two methods: X25519, the classical one, and
+ML-KEM, which is built to hold against a quantum computer
+([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)). The keys are safe
+as long as either of the two holds. irsync offers the hybrid first and the
+classical groups after it (`crypto_provider` in
+`crates/irsync/src/net/endpoint.rs`), so a peer that does not know the
+hybrid, such as an irsync before this change, still connects, with X25519.
+ML-KEM comes from aws-lc-rs, the crypto library rustls runs on here.
+
+The group a connection got is in the logs at info level (`-vv`):
+`handshake done key_exchange=X25519MLKEM768` on the client and
+`connection accepted` with the same field on the daemon. The client's
+`-vv` summary names it too, after `direct` or `relay`.
+
 With `SSLKEYLOGFILE` set, rustls writes the TLS secrets to a file so that
 Wireshark can decrypt a packet capture; see
 [Trace and capture the protocol](../contributing/protocol-debugging.md#the-key-log).

@@ -1173,6 +1173,7 @@ async fn sync(
             to: operand_to,
             reconnects: 0,
             conn: None,
+            key_exchange: None,
             usage: Usage::default(),
             files_transferred: 0,
             files_hashed: 0,
@@ -1184,6 +1185,7 @@ async fn sync(
             Ok(out) => {
                 summary.reconnects = out.reconnects;
                 summary.conn = out.conn;
+                summary.key_exchange = out.key_exchange.clone();
                 summary.usage = out.usage.clone();
                 summary.files_transferred = out.files_transferred;
                 summary.files_hashed = out.files_hashed;

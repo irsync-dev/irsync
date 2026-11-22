@@ -1158,6 +1158,9 @@ pub struct Outcome {
     pub reconnects: u32,
     /// How the last connection was made (`Direct` or `Relay`), if known.
     pub conn: Option<reconnect::ConnState>,
+    /// The key exchange group of the last connection, as rustls names it
+    /// (`X25519MLKEM768`), if known. Set on the client only.
+    pub key_exchange: Option<String>,
     /// Per-file records the role still held when it finished (should be 0).
     #[cfg(feature = "test-hooks")]
     pub retained_files: usize,
