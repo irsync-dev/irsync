@@ -322,8 +322,26 @@ mod tests {
         }
     }
 
+    /// The type of each block in a capture file, in order.
+    fn block_types(file: &[u8]) -> Vec<u32> {
+        let word = |at: usize| u32::from_le_bytes(file[at..at + 4].try_into().unwrap());
+        let mut types = Vec::new();
+        let mut at = 0;
+        while at < file.len() {
+            types.push(word(at));
+            at += word(at + 4) as usize;
+        }
+        assert_eq!(at, file.len(), "the last block runs past the end");
+        types
+    }
+
     /// Parses a whole capture file, checking every packet.
     fn parse(file: &[u8]) -> Vec<Packet> {
+        // A section header, one interface, then packets only: the reader
+        // skips other blocks, so they are looked for here.
+        let types = block_types(file);
+        assert_eq!(types[..2], [0x0a0d_0d0a, 1]);
+        assert!(types[2..].iter().all(|&t| t == 6), "{types:?}");
         pbcap::Reader::new(file)
             .expect("a capture file")
             .map(|p| {
