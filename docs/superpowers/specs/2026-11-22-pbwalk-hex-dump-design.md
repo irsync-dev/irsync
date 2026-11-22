@@ -1,6 +1,6 @@
 # pbwalk: each field's bytes in hex
 
-Date: 2026-11-22. Status: waiting for approval. Issue: #235.
+Date: 2026-11-22. Status: approved for planning. Issue: #235.
 
 A small change to `pbwalk` (design:
 `docs/superpowers/specs/2026-11-22-pbwalk-design.md`).
@@ -142,9 +142,12 @@ Mike has not seen these as decisions; change them if they are wrong.
   unknown type carries the payload's bytes.
 - `crates/pbwalk/src/render.rs`: the two columns, on every line of a block.
 - `crates/pbwalk/src/lib.rs`: the option.
-- `book/src/contributing/protocol-debugging.md`: the option under "More
-  views", with a short example of both columns, the `cut | xxd` line, and the two limits
-  (as captured, no prefix).
+- `book/src/contributing/protocol-debugging.md`: a section of its own,
+  "See the bytes", right after "More views", and a one-line pointer to it
+  in the "More views" list. The section says what the option does, shows
+  a short example of both columns, gives the `cut -c1-48 | xxd -r -p`
+  line, and states the two limits (as captured, no prefix).
+- `pbwalk --help`: the option's help line.
 
 ## Tests
 
