@@ -329,8 +329,12 @@ says so, for "Upgrading" in the release notes.
 - `grant add EXPORT WHO`: `WHO` is a client name, an id, a public key
   line or key file. A name that is only a server is an error that says how
   to add the machine as a client.
-- `irsync NAME:PATH`: `NAME` is a server name or an id. A name that is
-  only a client is an error that says how to add it as a server.
+- `irsync NAME:PATH`: `NAME` is looked up in servers only. A name that is
+  no server is treated as today's unknown name: an ssh destination to set
+  up, after which it is saved as a server. That covers a name that is only
+  a client (today's "saved as a client only; setting it up over ssh" in
+  `main.rs`): the flow stays and writes a server beside the client. **My
+  call.**
 - `config get/set/unset`: `servers.NAME.KEY` and `clients.NAME.client_id`.
   `hosts.*` is an error with the same hint.
 - `show`: a `servers:` and a `clients:` section.
@@ -341,8 +345,11 @@ On the client it writes the server entry (`ssh/onboard.rs`, today
 `host_add` and `host_add_ssh_alias`). On the server it writes the client
 entry (`ssh/setup.rs`, today `host_set_client`). The rules in
 `ssh/setup.rs` about a name that is already a host with another id shrink
-to: the name is already a client with another id. The notes on stderr that
-explain which id a host's grants follow go away.
+to two, both kept from `check_client_name`: the name is already a client
+with another id; and grants still mention the name while no client entry
+says who it is (a hand-edited list, or a name that is only a server), so a
+new client cannot inherit leftover grants. **My call** to keep the second.
+The notes on stderr that explain which id a host's grants follow go away.
 
 ### Book
 
