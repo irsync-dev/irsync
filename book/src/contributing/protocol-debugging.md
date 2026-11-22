@@ -277,6 +277,15 @@ Overhead
 the tags, the length bytes, the length prefixes, and what the capture
 does not hold.
 
+`By direction` splits the messages into those sent and those received, as
+seen by the side that wrote each one, length prefixes included. Its last
+line is called `sum`, not `total`: in a file that both sides wrote, each
+message is counted once sent and once received, so the sum can be twice
+what went over the wire (see [One side or both](#one-side-or-both)). Two
+more rows appear only when they are not empty: `unspecified` for a record
+without a direction, such as a stream being opened, and `other` for a
+direction this build does not know.
+
 ### Cut rows
 
 A `DataChunk` in the listing shows what the capture left out:
