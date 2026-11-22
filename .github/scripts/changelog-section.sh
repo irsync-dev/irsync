@@ -1,22 +1,34 @@
 #!/bin/bash
 # Usage: changelog-section.sh <version>
+#        changelog-section.sh --current
 #
 # Prints the release notes of <version> (written without the "v": 1.3.0,
 # 1.3.0-beta.1) from CHANGELOG.md in the current directory: the text under
-# the heading "## v<version>", up to the next "## " heading.
+# the heading "## v<version>", up to the next "## " heading. With --current
+# the version is the one in Cargo.toml ([workspace.package]), also read from
+# the current directory.
 #
 # Fails when the file or the heading is missing, when the heading is there
 # twice, or when nothing is written under it. dist puts this section at the
 # top of the GitHub Release (it reads CHANGELOG.md at the root of the repo),
 # so a release must not be cut without it. The release gate runs this check
 # (release-start-check.sh), and a test does for the workspace's version
-# (crates/irsync/tests/release_version.rs).
+# (crates/irsync/tests/release_version.rs). A pull request that only touches
+# Markdown skips that test, so ci.yml runs this script with --current on
+# every pull request.
 #
 # Errors go to stderr (GitHub shows ::error:: lines from there too).
 set -euo pipefail
 
-[ $# -eq 1 ] || { echo "usage: $0 <version>" >&2; exit 2; }
+[ $# -eq 1 ] || { echo "usage: $0 <version> | --current" >&2; exit 2; }
 version=$1
+if [ "$version" = --current ]; then
+    version=$(python3 -c '
+import tomllib
+with open("Cargo.toml", "rb") as f:
+    print(tomllib.load(f)["workspace"]["package"]["version"])
+')
+fi
 file=CHANGELOG.md
 heading="## v$version"
 

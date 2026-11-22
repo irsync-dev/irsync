@@ -148,7 +148,7 @@ it, since most people go from one stable release to the next.
 
 dist reads the section and puts it at the top of the GitHub Release, under
 `Release Notes`, so it is in the draft you look at and sign. The full list
-of changes still follows it (see below). Two checks keep a release from
+of changes still follows it (see below). These checks keep a release from
 going out without its notes:
 
 - A test (`crates/irsync/tests/release_version.rs`) fails when
@@ -156,6 +156,10 @@ going out without its notes:
   pull request with the bump cannot pass `CI result` without one.
 - The release gate stops within seconds when the section is missing or
   empty (`.github/scripts/changelog-section.sh`).
+
+A pull request that only touches Markdown skips the tests. So CI also runs
+that script on every pull request, and an edit to `CHANGELOG.md` that
+breaks the section of the current version fails `CI result` too.
 
 A change merged after the notes were written and before the gate starts is
 in the release and not in the section. The full list below it has it.

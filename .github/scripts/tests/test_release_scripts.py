@@ -650,6 +650,18 @@ class ChangelogTests(unittest.TestCase):
         r = subprocess.run([CHANGELOG, version], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_current_reads_the_version_from_cargo_toml(self):
+        d = version_fixture(self, "1.3.0", "1.3.0")
+        r = subprocess.run([CHANGELOG, "--current"], cwd=d, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "What is new.")
+
+    def test_current_without_notes(self):
+        d = version_fixture(self, "1.3.0", "1.3.0", changelog="## v1.2.0\n\nOld.\n")
+        r = subprocess.run([CHANGELOG, "--current"], cwd=d, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("has no section '## v1.3.0'", r.stderr)
+
 
 CODE_CHANGED = os.path.join(SCRIPTS, "code-changed.sh")
 CI_RESULT = os.path.join(SCRIPTS, "ci-result.sh")
