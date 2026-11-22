@@ -328,6 +328,8 @@ The fields it takes are those on the second line of each message's block:
 - `--totals-only` skips the listing; `--no-totals` skips the totals.
 - Long byte strings, long repeated fields and long header values are
   shortened in the listing. `--full` prints them whole.
+- `-C` puts each field's bytes in front of its line; see
+  [See the bytes](#see-the-bytes).
 
 The `By stream` totals of the same push:
 
@@ -339,6 +341,59 @@ By stream (with prefixes)
   STREAM_KIND_LISTING(2)            8             323 B   <0.1%
   total                            41         901,120 B  100.0%
 ```
+
+### See the bytes
+
+`-C`, or `--canonical-hex-dump`, puts the bytes of each field in front of
+its line: first in hex, 16 to a line, then the same bytes as characters,
+with a `.` for every byte that is not a printable ASCII character. It is
+the layout of `hexdump -C` without the offsets. A `HelloAck`:
+
+```sh
+cargo run -p pbwalk -- -C --no-totals ~/push.pcapng
+```
+
+```text
+                                                                      #7 0.010483 fd69:7273::1:0:0 → fd69:7273::2 port 1  HelloAck  47 B + 1 B prefix
+                                                                         side=SIDE_DAEMON(2) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) …
+0a 10 b9 db 55 0a f3 b7  18 a1 33 5d 80 f1 62 46  |....U.....3]..bF|    session_id = b9db550af3b718a1335d80f16246cd08           18 B  (tag 1, len 1, value 16)
+cd 08                                             |..|
+18 05                                             |..|                  protocol_version = 5                                     2 B  (tag 1, value 1)
+22 19                                             |".|                  build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
+0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36        |..0.1.0-beta.6|        version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
+12 07 63 39 64 35 64 64  65                       |..c9d5dde|             commit = "c9d5dde"                                     9 B  (tag 1, len 1, value 7)
+18 01                                             |..|                    dirty = true                                           2 B  (tag 1, value 1)
+```
+
+A field with more than 16 bytes, such as `session_id` with its 18,
+continues on the next line. A nested message such as `build` shows only
+its own two bytes, the tag and the length; the fields under it show the
+rest. So no byte is printed twice and none is left out: the hex of one
+block, read from top to bottom, is the message. Lines that stand for no
+bytes in the file, such as a block's first two lines and the `cut content`
+row, leave both columns empty. `--full` changes the text only; the hex is
+always complete.
+
+The hex column is the first 48 characters of each line, so the bytes can
+be had back:
+
+```sh
+cargo run -p pbwalk -- -C --no-totals ~/push.pcapng | cut -c1-48 | xxd -r -p > messages.bin
+```
+
+That gives every message of the capture, one after the other; narrow it
+with `--where`. `--no-totals` is needed, since the totals are not
+indented. `-C` cannot be combined with `--totals-only`.
+
+Two things the hex is not:
+
+- **The message as it was on the wire, when the capture cut something.**
+  The bytes are those in the file. File content, and the entries dropped
+  from a message over 256 KiB, are not there (see [Trimming](#trimming)).
+- **The length prefix.** It is not in the file; `pbwalk` works its size
+  out. The hex of a block starts with the message's first field.
+
+With `--no-unwrap`, a block is the whole packet, and so is its hex.
 
 ### Other protocols
 
