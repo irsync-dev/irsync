@@ -275,10 +275,14 @@ fn open_error(path: &Path, mode: OpenMode, e: DatabaseError) -> anyhow::Error {
             "{} is damaged: its redb database cannot be repaired",
             path.display()
         ),
-        DatabaseError::DatabaseAlreadyOpen => anyhow!(
+        DatabaseError::DatabaseAlreadyOpen if mode == OpenMode::ReadOnly => anyhow!(
             "{} is open in another fileset that is writing it",
             path.display()
         ),
+        // A writer needs the file alone, and a reader holds it too.
+        DatabaseError::DatabaseAlreadyOpen => {
+            anyhow!("{} is open in another fileset", path.display())
+        }
         e => anyhow::Error::new(e).context(format!("opening {}", path.display())),
     }
 }
@@ -701,6 +705,39 @@ mod tests {
         Box::new(s).close().unwrap();
         let s = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
         s.for_each(&mut |_, _| Ok(())).unwrap();
+    }
+
+    /// redb locks the file, in a way that differs between systems. Whatever the way:
+    /// readers share a manifest, and a writer has it alone.
+    #[test]
+    fn readers_share_a_manifest_and_a_writer_has_it_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m");
+        manifest(&p, &items(10));
+        let refused = |mode| match RedbStore::open(&p, mode) {
+            Ok(_) => panic!("opened {mode:?}"),
+            Err(e) => e.to_string(),
+        };
+
+        let writer = RedbStore::open(&p, OpenMode::ReadWrite).unwrap();
+        for mode in [OpenMode::ReadOnly, OpenMode::ReadWrite] {
+            let err = refused(mode);
+            assert!(
+                err.contains("is open in another fileset"),
+                "{mode:?}: {err}"
+            );
+        }
+        Box::new(writer).close().unwrap();
+
+        let first = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
+        let second = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
+        assert!(first.get(b"d03/f00003").unwrap().is_some());
+        assert!(second.get(b"d03/f00003").unwrap().is_some());
+        let err = refused(OpenMode::ReadWrite);
+        assert!(err.contains("is open in another fileset"), "{err}");
+        Box::new(first).close().unwrap();
+        Box::new(second).close().unwrap();
+        RedbStore::open(&p, OpenMode::ReadWrite).unwrap();
     }
 
     #[test]
