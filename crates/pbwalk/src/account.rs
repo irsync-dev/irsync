@@ -154,6 +154,7 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
                         value: present,
                     },
                     value: Value::Bytes(raw),
+                    own: raw,
                 };
                 payloads.push((number, present, format!("#{number}"), vec![row]));
             }
@@ -571,6 +572,7 @@ mod tests {
         assert_eq!((e.present, e.wire_len, e.not_captured), (5, 5, 0));
         assert_eq!(e.fields.len(), 1);
         assert_eq!(e.fields[0].value, Value::Bytes(&[1, 2, 3, 4, 5]));
+        assert_eq!(e.fields[0].own, &[1, 2, 3, 4, 5]);
         assert_eq!(e.fields[0].sizes.total(), e.present);
         assert!(e.adds_up() && e.mismatch.is_none());
     }

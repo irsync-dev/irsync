@@ -16,7 +16,7 @@ use prost_reflect::MessageDescriptor;
 pub use account::{raw, unwrap, Entry, Kind, Prefix};
 pub use clap::Parser;
 pub use schema::Schema;
-pub use walk::{walk, Field, Sizes, Value, MAX_DEPTH};
+pub use walk::{own_bytes, walk, Field, Sizes, Value, MAX_DEPTH};
 
 use render::Place;
 use totals::Totals;
