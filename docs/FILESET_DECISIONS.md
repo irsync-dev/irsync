@@ -417,12 +417,19 @@ What was checked before building, and what came of it:
     stderr (issue #206): a panic hook drops it when the panic comes from
     redb's source while such a read runs on that thread, and prints every
     other panic as before;
-  - `for_each` refuses paths that do not rise, as the SQLite store does.
+  - `for_each` refuses paths that do not rise, as the SQLite store does;
+  - the meta table holds a digest of all entries (issue #206): 16 more
+    bytes of each entry's hash, combined with XOR. Every write updates it in
+    the transaction that changes the entries, and a read of all entries, as
+    `check` and `list` make, compares it. It finds an entry that is gone, or
+    is the one an earlier run stored, in a file that is otherwise sound. It
+    is no defence against a file made on purpose, whose maker can write a
+    digest to match. A manifest without the digest is refused: there is no
+    migration.
 
   With these, the same 4,000 corruptions gave an error or the stored
   entries, every time. A smaller run of them is a test. What is not
-  covered: an entry missing from a file that still reads as sound, and a
-  file crafted to make redb loop. No fuzz target was added, because under
+  covered: a file crafted to make redb loop. No fuzz target was added, because under
   the fuzzer a panic inside redb is a crash whatever `fileset` does with it.
 - **Record format.** The protobuf encoding of the fjall store, reused, with
   the checksum after it.
