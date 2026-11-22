@@ -329,6 +329,7 @@ mod tests {
     use irsync_proto::capture::v1::{record::Msg, ContentSummary, Record, StreamEvent, Trimmed};
     use irsync_proto::v1;
     use prost::Message as _;
+    use render::hex_blocks;
     use std::net::Ipv6Addr;
 
     const A: Ipv6Addr = Ipv6Addr::new(0xfd69, 0x7273, 0, 0, 0, 0, 0, 1);
@@ -973,36 +974,6 @@ mod tests {
         assert_eq!(builtin, loaded);
         let mut out = Vec::new();
         assert!(run(&args(&["--type", "no.such.Type"]), &file[..], &mut out).is_err());
-    }
-
-    /// The blocks of a `-C --no-totals` listing: each one's hex column,
-    /// put back into bytes. A block starts at a line with nothing in its
-    /// first DUMP_WIDTH columns and `#` after them.
-    fn hex_blocks(out: &str) -> Vec<Vec<u8>> {
-        let mut blocks: Vec<Vec<u8>> = Vec::new();
-        for l in out.lines() {
-            let cols: Vec<char> = l.chars().collect();
-            let dump: String = cols.iter().take(render::DUMP_WIDTH).collect();
-            if dump.trim().is_empty() {
-                if cols.get(render::DUMP_WIDTH) == Some(&'#') {
-                    blocks.push(Vec::new());
-                }
-                continue;
-            }
-            let hex: String = cols
-                .iter()
-                .take(render::HEX_WIDTH)
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            let bytes = (0..hex.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap());
-            blocks
-                .last_mut()
-                .expect("hex before the first block")
-                .extend(bytes);
-        }
-        blocks
     }
 
     /// The records every hex test runs over, each with the bytes of the

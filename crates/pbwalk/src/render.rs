@@ -39,6 +39,11 @@ pub struct Listing {
 /// hex padded to [`HEX_WIDTH`], two spaces, the characters between `|`.
 /// Nothing after the closing `|`.
 fn dump_line(chunk: &[u8]) -> String {
+    debug_assert!(
+        chunk.len() <= DUMP_BYTES,
+        "{} bytes on one line",
+        chunk.len()
+    );
     let mut out = String::with_capacity(DUMP_WIDTH);
     for (i, b) in chunk.iter().enumerate() {
         if i > 0 {
@@ -57,6 +62,42 @@ fn dump_line(chunk: &[u8]) -> String {
     }));
     out.push('|');
     out
+}
+
+/// The blocks of a `-C --no-totals` listing: each one's hex column, put
+/// back into bytes. A block starts at a line with nothing in its first
+/// [`DUMP_WIDTH`] columns and `#` after them. For tests that check the
+/// hex columns against the capture.
+///
+/// # Panics
+///
+/// If `listing` is not such a listing: on hex before the first block, or
+/// on a hex column that is not hex.
+pub fn hex_blocks(listing: &str) -> Vec<Vec<u8>> {
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    for l in listing.lines() {
+        let cols: Vec<char> = l.chars().collect();
+        let dump: String = cols.iter().take(DUMP_WIDTH).collect();
+        if dump.trim().is_empty() {
+            if cols.get(DUMP_WIDTH) == Some(&'#') {
+                blocks.push(Vec::new());
+            }
+            continue;
+        }
+        let hex: String = cols
+            .iter()
+            .take(HEX_WIDTH)
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("a hex column"));
+        blocks
+            .last_mut()
+            .expect("hex before the first block")
+            .extend(bytes);
+    }
+    blocks
 }
 
 /// One line of the listing: `text`, with `bytes` in front of it when

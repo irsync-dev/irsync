@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use pbwalk::render::hex_blocks;
 use pbwalk::Parser as _;
 use prost::encoding::encoded_len_varint;
 use prost::Message as _;
@@ -159,40 +160,35 @@ fn check_with_pbwalk(path: &Path, records: &[Record]) {
     check_hex_columns(path);
 }
 
-/// The blocks of a `pbwalk -C --no-totals` listing: each one's hex column,
-/// put back into bytes. A block starts at a line with nothing in its first
-/// DUMP_WIDTH columns and `#` after them. The twin of `hex_blocks` in
-/// `crates/pbwalk/src/lib.rs`.
-fn hex_blocks(out: &str) -> Vec<Vec<u8>> {
-    use pbwalk::render::{DUMP_WIDTH, HEX_WIDTH};
-    let mut blocks: Vec<Vec<u8>> = Vec::new();
-    for l in out.lines() {
-        let cols: Vec<char> = l.chars().collect();
-        let dump: String = cols.iter().take(DUMP_WIDTH).collect();
-        if dump.trim().is_empty() {
-            if cols.get(DUMP_WIDTH) == Some(&'#') {
-                blocks.push(Vec::new());
-            }
-            continue;
-        }
-        let hex: String = cols
-            .iter()
-            .take(HEX_WIDTH)
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        let bytes = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap());
-        blocks
-            .last_mut()
-            .expect("hex before the first block")
-            .extend(bytes);
+/// The bytes of the message or event inside a record, as they are in
+/// `body`, the record's packet; empty for a record without one.
+fn payload(body: &[u8]) -> Vec<u8> {
+    use prost::bytes::Buf as _;
+    use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
+    let Some(msg) = Record::decode(body).expect("a record").msg else {
+        return Vec::new();
+    };
+    // The field number of the message: that of a record holding only it.
+    let only = Record {
+        msg: Some(msg),
+        ..Default::default()
     }
-    blocks
+    .encode_to_vec();
+    let (number, _) = decode_key(&mut &only[..]).unwrap();
+    let mut buf = body;
+    while buf.has_remaining() {
+        let (n, wire_type) = decode_key(&mut buf).unwrap();
+        if n == number && wire_type == WireType::LengthDelimited {
+            let len = decode_varint(&mut buf).unwrap() as usize;
+            return buf[..len].to_vec();
+        }
+        skip_field(wire_type, n, &mut buf, DecodeContext::default()).unwrap();
+    }
+    panic!("the record's message is not in its packet")
 }
 
 /// pbwalk's hex columns are the capture: put back together they are each
-/// packet byte for byte, and, unwrapped, a part of it.
+/// packet byte for byte, and, unwrapped, the message inside it.
 fn check_hex_columns(path: &Path) {
     let listing = |extra: &[&str]| {
         let args = pbwalk::Args::parse_from(
@@ -216,14 +212,8 @@ fn check_hex_columns(path: &Path) {
         "the hex column is not the capture"
     );
     let unwrapped = hex_blocks(&listing(&[]));
-    assert_eq!(unwrapped.len(), bodies.len());
-    for (i, (block, body)) in unwrapped.iter().zip(&bodies).enumerate() {
-        assert!(
-            block.is_empty() || body.windows(block.len()).any(|w| w == &block[..]),
-            "packet {}: the hex is not a part of the packet",
-            i + 1
-        );
-    }
+    let payloads: Vec<Vec<u8>> = bodies.iter().map(|b| payload(b)).collect();
+    assert_eq!(unwrapped, payloads, "the hex column is not the messages");
     assert!(unwrapped.iter().any(|b| !b.is_empty()));
 }
 
