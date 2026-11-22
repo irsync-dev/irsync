@@ -552,25 +552,43 @@ mod tests {
 
     #[test]
     fn overlapping_guards_do_not_count_as_idle() {
+        let t = Instant::now();
         let m = Meter::new(Side::Daemon, Role::Sender, None, true);
         let barrier = Barrier::new(2);
-        std::thread::scope(|s| {
-            for _ in 0..2 {
-                s.spawn(|| {
+        // Both threads take their guard, then one holds it 30 ms longer
+        // than the other: for that long one guard of the two is left.
+        // Each returns how long it held its guard, measured inside it.
+        let held = std::thread::scope(|s| {
+            let threads = [30, 60].map(|ms| {
+                let (m, barrier) = (&m, &barrier);
+                s.spawn(move || {
                     let _g = m.start(Activity::Read);
+                    let r = Instant::now();
                     barrier.wait();
-                    sleep(MS(30));
-                });
-            }
+                    sleep(MS(ms));
+                    r.elapsed()
+                })
+            });
+            threads.map(|t| t.join().unwrap())
         });
         m.finish();
+        let total = t.elapsed();
         let u = m.usage();
         assert!(
-            u.busy(Activity::Read) >= MS(60),
+            u.busy(Activity::Read) >= MS(90),
             "{:?}",
             u.busy(Activity::Read)
         );
-        assert!(u.peer_wait < MS(15), "{:?}", u.peer_wait);
+        // No time under a guard is idle, so the idle time fits in what is
+        // left of the test beside the longer guard. The bound is measured,
+        // not a fixed few milliseconds: on a busy machine a thread waits
+        // far longer than that for its turn.
+        let longest = held[0].max(held[1]);
+        assert!(
+            u.peer_wait <= total - longest,
+            "{:?} of {total:?}, {longest:?} under a guard",
+            u.peer_wait
+        );
     }
 
     #[test]
