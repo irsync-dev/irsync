@@ -44,9 +44,9 @@ pub fn providers(
 ) -> anyhow::Result<OtelProviders> {
     // The OTLP HTTP client's reqwest is built without a crypto provider
     // (iroh's choice); install one unless something else has. The default
-    // provider is process-wide, so with export on, ring also serves any
+    // provider is process-wide, so with export on, aws-lc-rs also serves any
     // other rustls user here that relies on the default.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let resource = resource(side, endpoint_id);
     let (spans, metrics) = exporters(cfg)?;
     let mut tracer = SdkTracerProvider::builder()

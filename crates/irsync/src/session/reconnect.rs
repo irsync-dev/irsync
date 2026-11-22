@@ -531,6 +531,8 @@ async fn attempts(
     let mut attempt = 0u32;
     // Set by the first dial that succeeds; until then retries are few.
     let mut reached = false;
+    // The key exchange group of the latest connection, for the outcome.
+    let mut key_exchange = None;
     loop {
         on_state(match attempt {
             0 => ConnState::Connecting,
@@ -558,6 +560,11 @@ async fn attempts(
             Ok(conn) => {
                 reached = true;
                 crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
+                key_exchange = crate::net::key_exchange(&conn);
+                tracing::info!(
+                    key_exchange = key_exchange.as_deref().unwrap_or("unknown"),
+                    "handshake done"
+                );
                 let run = run_client_inner(
                     conn.clone(),
                     hello_for(session),
@@ -582,6 +589,7 @@ async fn attempts(
             Ok(mut out) => {
                 out.reconnects = attempt;
                 out.conn = *kind.lock().unwrap();
+                out.key_exchange = key_exchange;
                 return Ok(out);
             }
             Err(e) => e,

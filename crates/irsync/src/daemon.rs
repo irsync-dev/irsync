@@ -506,6 +506,11 @@ async fn handle(
         conn.close(1u32.into(), b"unauthorized");
         return Ok(());
     }
+    tracing::info!(
+        peer = %id.fmt_short(),
+        key_exchange = crate::net::key_exchange(&conn).as_deref().unwrap_or("unknown"),
+        "connection accepted"
+    );
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
         let tap = conn_tap.stream(TapStream::Control, u64::from(recv.id()));

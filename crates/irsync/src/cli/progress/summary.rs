@@ -31,6 +31,8 @@ pub struct SessionSummary {
     pub reconnects: u32,
     /// How the last connection was made; `None` if it never was.
     pub conn: Option<ConnState>,
+    /// The key exchange group of the last connection (`X25519MLKEM768`).
+    pub key_exchange: Option<String>,
     pub usage: Usage,
     pub files_transferred: u64,
     pub files_hashed: u64,
@@ -138,6 +140,13 @@ pub fn render(s: &SessionSummary, width: usize) -> Vec<String> {
         Some(ConnState::Relay) => "relay".to_string(),
         _ => String::new(),
     };
+    if let Some(kx) = &s.key_exchange {
+        conn = if conn.is_empty() {
+            kx.clone()
+        } else {
+            format!("{conn}, {kx}")
+        };
+    }
     if s.reconnects > 0 {
         let n = s.reconnects;
         let plural = if n == 1 { "" } else { "s" };
@@ -323,6 +332,7 @@ mod tests {
             to: "nas:/backup".into(),
             reconnects: 1,
             conn: Some(ConnState::Direct),
+            key_exchange: None,
             usage: u,
             files_transferred: 1882,
             files_hashed: 2107,
@@ -352,6 +362,19 @@ mod tests {
             "  process   cpu 1:12 user, 0:31 sys  peak rss 312.00M  peak fds 214".to_string(),
         ];
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn the_key_exchange_follows_the_path() {
+        let mut s = fixture();
+        s.reconnects = 0;
+        s.key_exchange = Some("X25519MLKEM768".into());
+        assert_eq!(
+            render(&s, 80)[0],
+            "session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, X25519MLKEM768"
+        );
+        s.conn = None;
+        assert!(render(&s, 80)[0].ends_with("wall 3:12  X25519MLKEM768"));
     }
 
     #[test]

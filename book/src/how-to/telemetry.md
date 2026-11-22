@@ -36,6 +36,12 @@ session 1/2  push  ./photos -> nas:/backup  wall 3:12  direct, 1 reconnect
   process   cpu 1:12 user, 0:31 sys  peak rss 312.00M  peak fds 214
 ```
 
+After `direct` or `relay`, the first line names the connection's key
+exchange, as in `direct, X25519MLKEM768`. `X25519MLKEM768` is the hybrid
+that also holds against a quantum computer; `X25519` means the other side
+does not offer it. See
+[Networking](../explanation/networking.md#tls-13-inside-quic).
+
 `busy` and `waiting` show the wall time during which each activity ran,
 followed by `×N` when on average N tasks, 1.5 or more, ran it at once. `waiting peer` is time this side
 had nothing to do. What each activity covers is in

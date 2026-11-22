@@ -88,6 +88,36 @@ pub enum NetError {
     NetSim(anyhow::Error),
 }
 
+/// The TLS crypto provider of every endpoint: aws-lc-rs, offering the
+/// `X25519MLKEM768` hybrid key exchange first. The hybrid keeps a recorded
+/// connection safe from a future quantum computer as long as either X25519
+/// or ML-KEM holds. A peer that does not know it (an irsync built on ring,
+/// a relay, a lookup server) picks one of the classical groups after it.
+///
+/// The list is set here because rustls puts the hybrid first only when it
+/// is built with `prefer-post-quantum`.
+pub fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    use rustls::crypto::aws_lc_rs::{self, kx_group};
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = vec![
+        kx_group::X25519MLKEM768,
+        kx_group::X25519,
+        kx_group::SECP256R1,
+        kx_group::SECP384R1,
+    ];
+    Arc::new(provider)
+}
+
+/// The key exchange group `conn`'s handshake agreed on, as rustls names it
+/// (`X25519MLKEM768`, `X25519`); `None` if the connection does not say.
+pub fn key_exchange(conn: &iroh::endpoint::Connection) -> Option<String> {
+    let data = conn.handshake_data()?;
+    let data = data
+        .downcast::<noq_proto::crypto::rustls::HandshakeData>()
+        .ok()?;
+    data.negotiated_key_exchange_group.map(|g| format!("{g:?}"))
+}
+
 /// Ask the peer to ACK every packet, within 1 ms. A data stream holds one
 /// of the sender's send permits until `stopped()` resolves, which is when
 /// the peer has ACKed every byte (see `send.rs`, where the permit is held
@@ -356,6 +386,7 @@ async fn build(
         .keylog(keylog)
         .clear_address_lookup()
         .secret_key(opts.secret.clone())
+        .crypto_provider(crypto_provider())
         .alpns(vec![irsync_proto::ALPN.to_vec()])
         .transport_config(transport);
 
