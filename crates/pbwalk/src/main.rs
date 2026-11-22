@@ -22,10 +22,13 @@ fn main() -> ExitCode {
     if summary.truncated {
         eprintln!("pbwalk: the capture is cut off; totals cover what was read");
     }
-    if summary.mismatches == 0 && !summary.truncated {
-        ExitCode::SUCCESS
-    } else {
+    if let Some(why) = &summary.stopped {
+        eprintln!("pbwalk: stopped reading: {why}; totals cover what was read");
+    }
+    if summary.mismatches > 0 || summary.truncated || summary.stopped.is_some() {
         ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 

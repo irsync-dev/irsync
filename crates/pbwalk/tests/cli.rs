@@ -103,3 +103,27 @@ fn missing_file_exits_2() {
     assert!(stderr(&out).contains("none.pcapng"), "{}", stderr(&out));
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn malformed_block_exits_1_and_says_where_it_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = capture(&[]);
+    // Where the first packet should be: a block whose two lengths differ.
+    bytes.extend_from_slice(&6u32.to_le_bytes());
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&20u32.to_le_bytes());
+    let file = write(dir.path(), &bytes);
+    let out = pbwalk(&file, &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains(
+            "pbwalk: stopped reading: not a capture file this tool reads: \
+             a block's two lengths differ; totals cover what was read"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("cut off"), "{err}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("By message"));
+}

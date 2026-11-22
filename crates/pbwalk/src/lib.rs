@@ -76,8 +76,11 @@ pub struct Summary {
     pub prefix_bytes: u64,
     /// Records that passed `--where` whose numbers do not add up.
     pub mismatches: u64,
-    /// The file ended, or stopped parsing, in the middle of a block.
+    /// The file ended in the middle of a block.
     pub truncated: bool,
+    /// Why reading stopped early, when it stopped on anything other than
+    /// the file ending in the middle of a block: the reader's own message.
+    pub stopped: Option<String>,
 }
 
 /// Reads the capture from `input`, writes the listing and totals to `out`.
@@ -183,7 +186,10 @@ impl Pass<'_> {
             let packet = match packet {
                 Ok(packet) => packet,
                 Err(e) => {
-                    summary.truncated = true;
+                    match e {
+                        pbcap::Error::Truncated => summary.truncated = true,
+                        _ => summary.stopped = Some(e.to_string()),
+                    }
                     writeln!(
                         out,
                         "! stopped reading after {} packets: {e}",
@@ -363,6 +369,7 @@ mod tests {
                 prefix_bytes: p,
                 mismatches: 0,
                 truncated: false,
+                stopped: None,
             }
         );
         for want in [
@@ -536,10 +543,33 @@ mod tests {
         .len();
         let cut = &whole[..whole.len() - last / 2];
         let (s, out) = run_on(&[], cut);
-        assert_eq!((s.packets, s.truncated), (2, true));
+        assert_eq!((s.packets, s.truncated, s.stopped), (2, true, None));
         assert_eq!(s.messages, 2);
         assert!(out.contains("By message"), "{out}");
         assert!(out.contains("cut off"), "{out}");
+    }
+
+    /// A capture whose third block, where the first packet should be, has
+    /// two lengths that differ.
+    fn malformed_third_block() -> Vec<u8> {
+        let mut f = capture(&[]);
+        f.extend_from_slice(&6u32.to_le_bytes());
+        f.extend_from_slice(&16u32.to_le_bytes());
+        f.extend_from_slice(&[0; 4]);
+        f.extend_from_slice(&20u32.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn malformed_block_stops_without_cut_off() {
+        let (s, out) = run_on(&[], &malformed_third_block());
+        assert!(!s.truncated);
+        assert_eq!(
+            s.stopped.as_deref(),
+            Some("not a capture file this tool reads: a block's two lengths differ")
+        );
+        assert!(out.contains("By message"), "{out}");
+        assert!(!out.contains("cut off"), "{out}");
     }
 
     #[test]
