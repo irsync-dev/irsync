@@ -33,7 +33,7 @@ use super::control::{
     Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, basis_wire_len, list_budget};
+use super::limits::{basis_budget, basis_wire_len, link_backlog, link_wire_len, list_budget};
 use super::listing_stream::ListingOut;
 use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
@@ -83,6 +83,9 @@ pub(super) enum Done {
         vanished: Vec<RelPath>,
         errors: Vec<(RelPath, String)>,
     },
+    /// The link checker took this many bytes of waiting checks off its
+    /// queue (see `limits::LINK_BACKLOG`).
+    LinksTaken(usize),
     /// The checks before placing (see [`SenderRole::verdict`]) are done.
     Verdict {
         file_id: u64,
@@ -301,6 +304,11 @@ struct SenderRole {
     /// `-H`'s link check (see `CheckLink`): the way to the checker task
     /// while the receiver's `CheckLink`s come in, and the task.
     link_tx: Option<mpsc::UnboundedSender<(RelPath, Freshness)>>,
+    /// Bytes of link checks handed to the checker that it has not taken
+    /// yet, and the most that may wait (see `limits::LINK_BACKLOG`): at
+    /// the limit the main loop reads no more peer events.
+    link_backlog: usize,
+    link_backlog_limit: usize,
     link_task: Option<JoinHandle<()>>,
     /// The receiver sent `CheckLinksEnd`.
     links_ended: bool,
@@ -1359,6 +1367,11 @@ impl SenderRole {
             bail!("protocol error: CheckLink without a path or a stat");
         };
         let want = super::parts::freshness_of(&want);
+        self.link_backlog += link_wire_len(&path);
+        #[cfg(feature = "test-hooks")]
+        if let Some(p) = &self.ctx.hooks.link_backlog_peak {
+            p.fetch_max(self.link_backlog, std::sync::atomic::Ordering::SeqCst);
+        }
         let _ = self.link_checker().send((path, want));
         Ok(())
     }
@@ -1366,12 +1379,20 @@ impl SenderRole {
     /// The way to the checker task, started on first use.
     fn link_checker(&mut self) -> &mpsc::UnboundedSender<(RelPath, Freshness)> {
         let (ctx, out, replanned) = (&self.ctx, &self.out, &self.replanned);
-        let task = &mut self.link_task;
+        let (task, events) = (&mut self.link_task, &self.events);
         self.link_tx.get_or_insert_with(|| {
+            // Unbounded, but the main loop stops reading the receiver's
+            // frames while `link_backlog` is at its limit.
             let (tx, rx) = mpsc::unbounded_channel();
             *task = Some(tokio::spawn(
-                check_links(ctx.clone(), out.clone(), rx, replanned.clone())
-                    .instrument(tracing::Span::current()),
+                check_links(
+                    ctx.clone(),
+                    out.clone(),
+                    events.clone(),
+                    rx,
+                    replanned.clone(),
+                )
+                .instrument(tracing::Span::current()),
             ));
             tx
         })
@@ -1774,10 +1795,13 @@ async fn recheck(
 /// then admitted to be planned once more, its retry used, as a re-planned
 /// file is), without one when it is gone or of another kind. Ends, with
 /// `LinksChecked`, once `rx` is closed and drained. Its frames are paced:
-/// one per name, not bounded by the files in flight.
+/// one per name, not bounded by the files in flight. It tells the main
+/// loop what it takes off `rx` (`Done::LinksTaken`), which lets that many
+/// more checks in.
 async fn check_links(
     ctx: Arc<Ctx>,
     out: Out,
+    events: mpsc::UnboundedSender<Ev>,
     mut rx: mpsc::UnboundedReceiver<(RelPath, Freshness)>,
     replanned: Arc<std::sync::Mutex<HashSet<RelPath>>>,
 ) {
@@ -1785,6 +1809,8 @@ async fn check_links(
     let mut batch = Vec::with_capacity(RECHECK_BATCH);
     while rx.recv_many(&mut batch, RECHECK_BATCH).await > 0 {
         let todo = std::mem::take(&mut batch);
+        let taken = todo.iter().map(|(p, _)| link_wire_len(p)).sum();
+        let _ = events.send(Ev::Send(Done::LinksTaken(taken)));
         let paths: Vec<RelPath> = todo.iter().map(|(p, _)| p.clone()).collect();
         let c = ctx.clone();
         let found = blocking(move || {
@@ -1984,6 +2010,8 @@ pub(super) async fn run(
         replanned: Arc::default(),
         rechecking: None,
         link_tx: None,
+        link_backlog: 0,
+        link_backlog_limit: link_backlog(&ctx.hooks),
         link_task: None,
         links_ended: false,
         settled: false,
@@ -2003,7 +2031,9 @@ pub(super) async fn run(
                 continue;
             }
             Some(ev) = events.recv() => ev,
-            Some(ev) = peer.recv() => {
+            // Not while too many link checks wait for the checker: the
+            // receiver's frames then wait on its side (see `LINK_BACKLOG`).
+            Some(ev) = peer.recv(), if s.link_backlog < s.link_backlog_limit => {
                 #[cfg(feature = "test-hooks")]
                 if let Some(d) = ctx.hooks.slow_peer_events {
                     tokio::time::sleep(d).await;
@@ -2056,6 +2086,10 @@ pub(super) async fn run(
             Ev::Ctrl(Msg::CheckLinksEnd(_)) => s.on_check_links_end(),
             Ev::Send(Done::Rechecked { vanished, errors }) => {
                 s.on_rechecked(vanished, errors);
+                Ok(())
+            }
+            Ev::Send(Done::LinksTaken(n)) => {
+                s.link_backlog = s.link_backlog.saturating_sub(n);
                 Ok(())
             }
             Ev::Ctrl(Msg::Itemized(i)) => {
@@ -2329,6 +2363,8 @@ mod tests {
             replanned: Arc::default(),
             rechecking: None,
             link_tx: None,
+            link_backlog: 0,
+            link_backlog_limit: crate::session::limits::LINK_BACKLOG,
             link_task: None,
             links_ended: false,
             settled: false,

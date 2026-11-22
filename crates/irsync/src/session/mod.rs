@@ -745,6 +745,13 @@ pub struct SideHooks {
     /// files in flight.
     #[cfg(feature = "test-hooks")]
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// Sender: bytes of `-H` link checks it holds waiting at once (see
+    /// `limits::LINK_BACKLOG`), instead of the default.
+    #[cfg(feature = "test-hooks")]
+    pub link_backlog: Option<usize>,
+    /// Sender: the most bytes of link checks it has held waiting at once.
+    #[cfg(feature = "test-hooks")]
+    pub link_backlog_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Both roles: how long, at a session's end, the side waits for its
     /// control writer (the daemon also for the client to close) while
     /// nothing moves, instead of the default.

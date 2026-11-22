@@ -1547,3 +1547,53 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
     })
     .await;
 }
+
+/// `-H`: one file under 3000 names, pushed to an empty destination. The
+/// receiver asks the sender to check 2999 links, as fast as the link
+/// carries them. The sender may hold only a few of them waiting (the hook
+/// sets 4 KiB, about 30 names): while that many wait for its checker it
+/// reads nothing more, so the rest wait on the receiver's side. Every link
+/// is still made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
+    use std::os::unix::fs::MetadataExt;
+    const LINKS: usize = 3000;
+    const LIMIT: usize = 4 * 1024;
+    within120(async {
+        let flow = Flow::Push;
+        let h = Harness::new().await;
+        let first = h.src(flow).join("f0000");
+        fs::write(&first, data(4096, 7)).unwrap();
+        for i in 1..LINKS {
+            fs::hard_link(&first, h.src(flow).join(format!("f{i:04}"))).unwrap();
+        }
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut local = h.local_side();
+        local.hooks.link_backlog = Some(LIMIT);
+        local.hooks.link_backlog_peak = Some(peak.clone());
+        let mut opts = archive_opts();
+        opts.preserve.hard_links = true;
+        let out = h
+            .run_side(&opts, flow, local)
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        let ino = fs::metadata(h.dst(flow).join("f0000")).unwrap().ino();
+        for i in 1..LINKS {
+            let m = fs::metadata(h.dst(flow).join(format!("f{i:04}"))).unwrap();
+            assert_eq!(m.ino(), ino, "f{i:04}");
+        }
+        // One ask may take the count past the limit, no more: a name here
+        // counts for under 200 bytes.
+        let peak = peak.load(SeqCst);
+        assert!(
+            peak < LIMIT + 200,
+            "link checks waiting peaked at {peak} bytes"
+        );
+        assert!(
+            peak >= LIMIT,
+            "link checks waiting peaked at {peak} bytes: the limit was never reached"
+        );
+    })
+    .await;
+}

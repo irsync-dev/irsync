@@ -208,6 +208,33 @@ pub(super) fn list_budget(hooks: &super::SideHooks) -> u64 {
     LIST_BUDGET
 }
 
+/// Bytes of `-H` link checks (see `CheckLink`) a sender holds asked for
+/// and not yet looked at. At the limit it reads nothing more from the
+/// receiver until its checker has taken some, so the receiver's frames
+/// wait in its own queue and on the link. An honest receiver asks about
+/// every link at once, as fast as the link carries them, so the count of
+/// its asks is not limited; only how many wait here.
+pub(super) const LINK_BACKLOG: usize = 4 * 1024 * 1024;
+
+/// What one waiting link check counts for besides its path: its stat and
+/// the queue's own bookkeeping, rounded up.
+const LINK_WIRE: usize = 128;
+
+/// A waiting link check's size as counted against [`LINK_BACKLOG`].
+pub(super) fn link_wire_len(path: &crate::fs::paths::RelPath) -> usize {
+    LINK_WIRE + path.as_bytes().len()
+}
+
+/// This side's link backlog: [`LINK_BACKLOG`], unless a test sets another.
+pub(super) fn link_backlog(hooks: &super::SideHooks) -> usize {
+    #[cfg(feature = "test-hooks")]
+    if let Some(n) = hooks.link_backlog {
+        return n;
+    }
+    let _ = hooks;
+    LINK_BACKLOG
+}
+
 /// A basis's size as counted against [`BASIS_BUDGET`]: its block hashes
 /// as they travel.
 pub(super) fn basis_wire_len(b: &ChunkBasis) -> usize {
