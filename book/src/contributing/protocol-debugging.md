@@ -348,8 +348,11 @@ it:
 cargo run -p pbwalk -- --message-type DataChunk ~/push.pcapng
 ```
 
-Give either more than once to pick more. They combine with each other and
-with `--where`: a message is shown only if every option picks it. A
+Give either more than once to pick more. Note the difference from
+`--where`: a second `--where` narrows, since a message must match both,
+while a second `--message` or `--message-type` widens, since a message
+matches one of them. The options combine with each other and with
+`--where`: a message is shown only if every option picks it. A
 message keeps its number, whatever else is left out. As with `--where`,
 the totals then count only the messages picked.
 
