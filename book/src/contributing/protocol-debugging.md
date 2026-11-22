@@ -12,10 +12,10 @@ Four ways to watch irsync talk, from the simplest to the most detailed:
   Use it to see what happens below irsync: packets, loss, retransmits, flow
   control.
 
-The trace, the capture and the byte count see irsync's messages, after QUIC has decrypted
-and ordered them. They work on any connection: direct, through a relay, and
-in the in-process network tests. The key log works on the raw packets, and
-only on a direct connection.
+The trace, the capture and the byte count see irsync's messages, after
+QUIC has decrypted and ordered them. They work on any connection: direct,
+through a relay, and in the in-process network tests. The key log works on
+the raw packets, and only on a direct connection.
 [Networking](../explanation/networking.md) explains the layers, and walks
 through a traced push.
 
@@ -231,8 +231,8 @@ tag (which holds the field number and the kind of value), its length (for
 text, bytes and nested messages) and its value. In `path = "m"`, the
 tag takes 1 byte, the length 1 byte and the text 1 byte, so 3 B. A nested
 message such as `preserve` counts its own tag and length as well as
-everything inside it. The line after the title gives the message's size on
-the wire: 38 B, and 1 B for the length prefix that goes in front of it.
+everything inside it. The first line, after the message's type, gives its
+size on the wire: 38 B, plus 1 B for the length prefix in front of it.
 
 Then come the totals. For the client's side of a small push, shortened:
 
@@ -315,15 +315,19 @@ cargo run -p pbwalk -- --where side=SIDE_CLIENT ~/push.pcapng
 
 `--where FIELD=VALUE` keeps the records whose field of the capture's
 wrapper prints as that value. Give it more than once to narrow further.
+The fields it takes are those on the second line of each message's block:
+`side`, `direction`, `stream` and so on. `encoded_len`,
+`trimmed` and the message itself are not among them.
 
 ### More views
 
 - `--group-by stream` adds totals per stream kind (control, listing, data).
-  `--group-by direction,stream` combines them; any field of the wrapper
-  works.
+  `--group-by side,stream` adds one table per field, not one table of the
+  two combined. It takes the same fields as `--where`. `direction` adds
+  nothing, since the totals always have a `By direction` table.
 - `--totals-only` skips the listing; `--no-totals` skips the totals.
-- Long byte strings and long repeated fields are shortened in the
-  listing. `--full` prints them whole.
+- Long byte strings, long repeated fields and long header values are
+  shortened in the listing. `--full` prints them whole.
 
 The `By stream` totals of the same push:
 
@@ -352,16 +356,18 @@ the numbering of the envelope's fields:
   count as 0 bytes.
 
 `--no-unwrap` skips that and walks each packet as `--type` from the top,
-sizes being those of the bytes in the file. The file format and the
-envelope are in `crates/pbcap`.
+sizes being those of the bytes in the file. It cannot be combined with
+`--where` or `--group-by`, which need the envelope unwrapped. The file
+format and the envelope are in `crates/pbcap`.
 
 ### Exit status
 
 `pbwalk` exits with 0 when every message adds up, 1 when a message does not
 (what is present, cut and missing does not equal its size on the wire) or
-when the file is cut off, and 2 when it cannot read the file or the
-protos. With status 1 it still prints its listing and totals, and says on
-stderr which problem it found.
+when it stops reading early, because the file is cut off or a block in it
+is broken, and 2 when it cannot read the file or the protos. With status 1
+it still prints its listing and totals, and says on stderr which problem
+it found.
 
 ## The key log
 
