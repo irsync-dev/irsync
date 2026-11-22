@@ -102,12 +102,19 @@ pub fn write_private(path: &Path, text: &str) -> Result<()> {
 
 /// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private
 /// key path, the public key line (stdout line 1) and the EndpointId (line 2).
+///
+/// The command gets `<config_dir>/home` as its home, the one
+/// [`crate::client::setup`] gives the client: without it irsync would load
+/// the config file of whoever runs the tool.
 pub fn client_id_generate(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, String, String)> {
     let key = config_dir.join("id_ed25519");
+    let home = config_dir.join("home");
+    std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
     let out = process::output(
         Command::new(irsync)
             .args(["id", "generate", "--out"])
             .arg(&key)
+            .env("HOME", &home)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -672,6 +679,26 @@ mod tests {
         d.stop(Duration::from_millis(500));
         assert!(nix::sys::signal::kill(Pid::from_raw(pid as i32), None).is_err());
         // gone
+    }
+
+    /// The key is made with the client's own home, not the home (and so
+    /// the config file) of whoever runs the tool.
+    #[test]
+    fn client_id_generate_runs_with_the_clients_home() {
+        let t = tempfile::tempdir().unwrap();
+        let fake = t.path().join("irsync");
+        // Stands in for the endpoint id: the home the command saw.
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho 'ssh-ed25519 AAAA'\necho \"$HOME\"\n",
+        )
+        .unwrap();
+        chmod_755(&fake);
+        let config_dir = t.path().join("client");
+        let (key, _, saw_home) = client_id_generate(&fake, &config_dir).unwrap();
+        assert_eq!(key, config_dir.join("id_ed25519"));
+        assert_eq!(Path::new(&saw_home), config_dir.join("home"));
+        assert!(config_dir.join("home").is_dir());
     }
 
     #[test]

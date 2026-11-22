@@ -219,6 +219,8 @@ fn id_generate_prints_endpoint_id_matching_pub() {
         Command::new(env!("CARGO_BIN_EXE_irsync"))
             .args(["id", "generate", "--out"])
             .arg(&out)
+            // Not the config file of whoever runs the tests.
+            .env("HOME", dir.path())
             .output()
             .unwrap()
     };
