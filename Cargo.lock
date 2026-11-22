@@ -2238,8 +2238,10 @@ version = "0.1.0-beta.6"
 dependencies = [
  "blake3",
  "fastcdc",
+ "pbcap",
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
  "protox",
  "serde",
@@ -3330,6 +3332,9 @@ dependencies = [
 name = "pbcap"
 version = "0.1.0-beta.6"
 dependencies = [
+ "prost",
+ "prost-build",
+ "protox",
  "thiserror 2.0.21",
 ]
 
