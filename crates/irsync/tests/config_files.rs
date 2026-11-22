@@ -644,6 +644,22 @@ fn daemon_immediate_defaults_on() {
 }
 
 #[test]
+fn daemon_dormant_session_limit_defaults_to_25() {
+    let c = Config::parse("", Path::new("c")).unwrap();
+    assert_eq!(c.settings.daemon.max_dormant_sessions_per_key, 25);
+    let set = |v: &str| {
+        let text = format!("[daemon]\nmax_dormant_sessions_per_key = {v}\n");
+        Config::parse(&text, Path::new("c")).map(|c| c.settings.daemon.max_dormant_sessions_per_key)
+    };
+    assert_eq!(set("3").unwrap(), 3);
+    assert_eq!(set("0").unwrap(), 0);
+    for bad in ["-1", "\"3\"", "1.5"] {
+        let e = set(bad).unwrap_err().to_string();
+        assert!(e.contains("c:2"), "{bad}: {e}");
+    }
+}
+
+#[test]
 fn daemon_allow_root_defaults_off() {
     let c = Config::parse("", Path::new("c")).unwrap();
     assert!(!c.settings.daemon.allow_root);

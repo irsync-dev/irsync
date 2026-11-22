@@ -183,6 +183,9 @@ pub struct DaemonSettings {
     pub idle_timeout: Duration,
     #[serde(deserialize_with = "de_duration")]
     pub dormant_session_timeout: Duration,
+    /// How many dormant sessions one key may leave in an export; the oldest
+    /// goes when there are more. Zero: no limit.
+    pub max_dormant_sessions_per_key: u32,
     #[serde(deserialize_with = "de_listen")]
     pub listen: Vec<HostPort>,
     pub portmap: bool,
@@ -222,6 +225,7 @@ impl Default for DaemonSettings {
             identity: paths::config_dir().join("daemon_ed25519"),
             idle_timeout: crate::session::engine::DAEMON_IDLE_TIMEOUT,
             dormant_session_timeout: Duration::from_secs(7 * 86400),
+            max_dormant_sessions_per_key: 25,
             listen: Vec::new(),
             portmap: true,
             relay: None,

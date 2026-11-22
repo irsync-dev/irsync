@@ -195,6 +195,7 @@ fn session_lookup_by_key_and_id() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
+        peer: vec![],
     };
     assert_eq!(ix.save_session(&s).unwrap(), None);
     s.progress = vec![3];
@@ -309,6 +310,7 @@ fn save_session_waits_out_another_writer() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
+        peer: vec![],
     };
     assert_eq!(ix.save_session(&s).unwrap(), None);
     other.join().unwrap();
@@ -708,6 +710,7 @@ fn a_new_index_takes_the_partials_and_sessions_of_the_version_1_file() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
+        peer: vec![],
     };
     // An index with an entry, a partial and a session, then renamed to the
     // version 1 name: the copy reads only `partials` and `sessions`, whose
@@ -792,4 +795,99 @@ fn a_path_written_again_keeps_its_id_and_replaces_its_chunks() {
     let holders = at(&ix, &new.chunks[0].hash);
     assert_eq!((holders.len(), holders[0].entry_id), (1, id));
     assert_eq!(ix.entry_identities().unwrap().len(), 2);
+}
+
+/// A key's oldest sessions go when it has more than the limit. A session a
+/// connection holds, another key's sessions, and rows that name no key
+/// are left alone.
+#[test]
+fn trimming_keeps_the_newest_sessions_of_one_key() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ix = Index::open(d.path(), d.path()).unwrap();
+    let row = |id: u8, who: &[u8], at: i64| SessionRow {
+        id: [id; 16],
+        key: vec![id],
+        plan: vec![],
+        progress: vec![],
+        created_at: at,
+        updated_at: at,
+        peer: who.to_vec(),
+    };
+    for (id, at) in [(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)] {
+        ix.save_session(&row(id, b"alice", at)).unwrap();
+    }
+    ix.save_session(&row(6, b"bob", 1)).unwrap();
+    ix.save_session(&row(7, b"", 2)).unwrap();
+    assert_eq!(
+        ix.load_session_by_id(&[5; 16]).unwrap().unwrap().peer,
+        b"alice"
+    );
+    assert_eq!(ix.load_session_by_id(&[7; 16]).unwrap().unwrap().peer, b"");
+
+    let have = |ix: &Index| -> Vec<u8> {
+        let mut v: Vec<u8> = ix.all_sessions().unwrap().iter().map(|s| s.id[0]).collect();
+        v.sort();
+        v
+    };
+    // Session 1 is the oldest, but a connection holds it: 2 goes instead,
+    // and 1 does not count towards the three that stay.
+    let live = std::collections::HashSet::from([[1u8; 16]]);
+    assert_eq!(
+        ix.trim_sessions_of(b"alice", &live, 3).unwrap(),
+        vec![[2; 16]]
+    );
+    assert_eq!(have(&ix), [1, 3, 4, 5, 6, 7]);
+    // Nobody holds it any more: now it is the one over the limit.
+    let none = std::collections::HashSet::new();
+    assert_eq!(
+        ix.trim_sessions_of(b"alice", &none, 3).unwrap(),
+        vec![[1; 16]]
+    );
+    assert_eq!(
+        ix.trim_sessions_of(b"alice", &none, 3).unwrap(),
+        Vec::<[u8; 16]>::new()
+    );
+    assert_eq!(have(&ix), [3, 4, 5, 6, 7]);
+    // Newest first: the two oldest of the three go.
+    assert_eq!(
+        ix.trim_sessions_of(b"alice", &none, 1).unwrap(),
+        vec![[4; 16], [3; 16]]
+    );
+    assert_eq!(have(&ix), [5, 6, 7]);
+}
+
+/// An index made before sessions recorded their key gets the column when
+/// it is opened, and keeps its sessions.
+#[test]
+fn an_index_without_the_peer_column_is_upgraded() {
+    let d = tempfile::tempdir().unwrap();
+    let old = SessionRow {
+        id: [1; 16],
+        key: b"k".to_vec(),
+        plan: vec![1],
+        progress: vec![2],
+        created_at: 10,
+        updated_at: 20,
+        peer: vec![],
+    };
+    Index::open(d.path(), d.path())
+        .unwrap()
+        .save_session(&old)
+        .unwrap();
+    let file = index_files(d.path()).pop().expect("the index file");
+    let conn = rusqlite::Connection::open(&file).unwrap();
+    conn.execute_batch("ALTER TABLE sessions DROP COLUMN peer")
+        .unwrap();
+    drop(conn);
+
+    let mut ix = Index::open(d.path(), d.path()).unwrap();
+    assert_eq!(ix.load_session_by_id(&[1; 16]).unwrap().unwrap(), old);
+    let new = SessionRow {
+        id: [2; 16],
+        key: b"n".to_vec(),
+        peer: b"alice".to_vec(),
+        ..old.clone()
+    };
+    ix.save_session(&new).unwrap();
+    assert_eq!(ix.load_session_by_id(&[2; 16]).unwrap().unwrap(), new);
 }

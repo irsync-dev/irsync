@@ -80,7 +80,8 @@ exports inside it, is in
 
 The daemon re-reads the config file and applies `listen`, `relay`,
 `relay_mode`, `congestion`, `portmap`, the `[daemon.discovery]` table,
-`identity`, `idle_timeout` and `dormant_session_timeout`:
+`identity`, `idle_timeout`, `dormant_session_timeout` and
+`max_dormant_sessions_per_key`:
 
 - It binds a new endpoint with the new network settings and prints
   `endpoint id:` and `listening on:` again.

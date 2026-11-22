@@ -104,6 +104,9 @@ client's session, or exhaust the daemon.
 - Deleting is done relative to a directory that was opened without following
   symlinks, never by descending into a link.
 - A session can be resumed only by the key that started it.
+- A key may leave only `max_dormant_sessions_per_key` interrupted sessions
+  stored in an export, 25 by default. The oldest is dropped when there are
+  more.
 - Messages are limited to 16 MiB, the queues between the two sides have
   fixed sizes, and an idle connection is dropped after `idle_timeout`.
 - The filter rules a client sends are limited in number and size before the
@@ -119,9 +122,9 @@ client's session, or exhaust the daemon.
   including setuid, and, when the daemon runs as root, owners and device
   files. Do not run the daemon as root for keys you do not trust that far.
 - **A granted client can use the daemon's resources:** CPU for hashing, disk
-  reads, memory, and one stored session per path it starts. The limits above
-  bound single messages and queues, not a client that works at being
-  expensive. irsync does not treat a granted key as hostile to the daemon's
+  reads, memory, and the sessions it has open at once. The limits above
+  bound single messages, queues and stored sessions, not a client that works
+  at being expensive. irsync does not treat a granted key as hostile to the daemon's
   uptime.
 - **The immediate grant is the whole account.** Such a key can reach any
   path the daemon's account can. Give it only to machines you would give
@@ -274,16 +277,12 @@ file content, how files are reached by name, and how the daemon resolves a
 client's path. What it found there is fixed, and the checks above describe
 the code as it is now.
 
-Known gaps that are still open:
+One known gap is still open:
 
-- The daemon stores one session per pair of source and destination, and a
-  newer one replaces the older. How many such pairs one key can start has
-  no limit. A session that is never finished stays until `irsync gc`
-  removes it.
 - A receiver tells the sender which chunks it already has. A sender that can
   guess the whole content of a chunk can confirm the guess.
 
-While these gaps are open, give a read-write grant only to keys you would
+While this gap is open, give a read-write grant only to keys you would
 trust with the daemon account's own files, and pull only from daemons you
 trust.
 
