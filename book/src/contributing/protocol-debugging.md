@@ -199,7 +199,10 @@ per field, and per kind of overhead. Use it to see where the bytes of a
 session go, or to check what a protocol change saves.
 
 It counts irsync's messages as they are on the wire, with their length
-prefixes. It leaves out what QUIC, TLS and UDP add below that. File content
+prefixes. It leaves out what QUIC, TLS and UDP add below that. So its
+totals come out smaller than the `sent … bytes  received … bytes` line
+irsync prints at the end of a run with `-v` or `--stats`, which counts
+the UDP bytes of the connection. File content
 is not in a capture, but its size is still counted: `pbwalk` takes it from
 the record's `encoded_len` and `trimmed` fields, and prints it as cut.
 
