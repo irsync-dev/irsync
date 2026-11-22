@@ -455,7 +455,7 @@ fn exports_schema_errors_have_lines() {
 }
 
 fn merged(dir: &Path, text: &str) -> Result<Config, ConfigError> {
-    std::fs::write(dir.join("irsync.toml"), text).unwrap();
+    irsync::fs::private::write(dir.join("irsync.toml"), text).unwrap();
     Config::load(&Paths::resolve(Some(&dir.join("irsync.toml"))))
 }
 
@@ -521,13 +521,13 @@ fn merged_shape_errors_keep_the_old_layout_hints() {
 fn split_files_are_ignored() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("irsync.toml");
-    std::fs::write(&config, "").unwrap();
-    std::fs::write(
+    irsync::fs::private::write(&config, "").unwrap();
+    irsync::fs::private::write(
         dir.path().join("hosts.toml"),
         format!("[hosts.box]\nendpoint_id = \"{}\"\n", id(1)),
     )
     .unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         dir.path().join("exports.toml"),
         "[exports.p]\npath = \"/p\"\n",
     )
@@ -543,7 +543,7 @@ fn split_files_are_ignored() {
         ]
     );
     // A split file that would not parse is ignored all the same.
-    std::fs::write(dir.path().join("hosts.toml"), "not toml [").unwrap();
+    irsync::fs::private::write(dir.path().join("hosts.toml"), "not toml [").unwrap();
     assert!(Config::load(&Paths::resolve(Some(&config))).is_ok());
 }
 
@@ -659,4 +659,68 @@ fn daemon_allow_root_defaults_off() {
 #[test]
 fn export_named_immediate_is_reserved() {
     assert!(parse_exports("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
+}
+
+/// The config file is for its owner only. One that other users can read
+/// or change is refused before anything in it counts, unless the file
+/// itself sets `unsafe_config_allowed = true`.
+#[test]
+fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let paths = Paths::resolve(Some(&d.path().join("irsync.toml")));
+    let set = |text: &str, mode: u32| {
+        let _ = std::fs::remove_file(&paths.config);
+        std::fs::write(&paths.config, text).unwrap();
+        std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(mode)).unwrap();
+        Config::load(&paths)
+    };
+    // No file at all is still the defaults.
+    assert!(!Config::load(&paths).unwrap().settings.unsafe_config_allowed);
+    for mode in [0o600, 0o400] {
+        let c = set("[client]\nparallel = 4\n", mode).unwrap();
+        assert!(!c.settings.unsafe_config_allowed, "{mode:o}");
+    }
+    for mode in [0o640, 0o604, 0o620, 0o602, 0o610, 0o644, 0o666] {
+        let e = set("[client]\nparallel = 4\n", mode).unwrap_err();
+        assert!(matches!(e, ConfigError::TooOpen { .. }), "{mode:o}: {e}");
+        let text = e.to_string();
+        assert!(text.contains(&format!("has mode {mode:04o}")), "{text}");
+        assert!(text.contains("chmod 600"), "{text}");
+        assert!(text.contains("unsafe_config_allowed = true"), "{text}");
+        // Switched off by the file itself.
+        let c = set(
+            "unsafe_config_allowed = true\n[client]\nparallel = 4\n",
+            mode,
+        )
+        .unwrap();
+        assert!(c.settings.unsafe_config_allowed, "{mode:o}");
+    }
+    // The permissions are judged first: a file that does not parse, or
+    // sets the key to anything but true, is refused for being open.
+    for text in [
+        "not toml [",
+        "unsafe_config_allowed = false\n",
+        "unsafe_config_allowed = \"true\"\n",
+        "[client]\nunsafe_config_allowed = true\n",
+        "bogus_key = 1\n",
+    ] {
+        let e = set(text, 0o644).unwrap_err();
+        assert!(matches!(e, ConfigError::TooOpen { .. }), "{text:?}: {e}");
+    }
+    // In a private file the key is an ordinary boolean.
+    assert!(
+        set("unsafe_config_allowed = true\n", 0o600)
+            .unwrap()
+            .settings
+            .unsafe_config_allowed
+    );
+    let e = set("unsafe_config_allowed = \"true\"\n", 0o600).unwrap_err();
+    assert!(e.to_string().contains("expected a boolean"), "{e}");
+    // Editing reads the file under the same rule.
+    set("[client]\nparallel = 4\n", 0o644).unwrap_err();
+    let e = irsync::manage::load_doc(&paths.config).unwrap_err();
+    assert!(e.to_string().contains("has mode 0644"), "{e}");
+    let lock = irsync::manage::lock_config(&paths.config).unwrap();
+    assert!(lock.load().is_err());
 }

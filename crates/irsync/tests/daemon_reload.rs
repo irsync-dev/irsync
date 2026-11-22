@@ -79,7 +79,7 @@ async fn reload_binds_anew_and_retires_the_old_endpoint_after_its_sessions() {
         &data,
         &[client.id(), client2.id(), client3.id()],
     );
-    std::fs::write(&paths.config, &text).unwrap();
+    irsync::fs::private::write(&paths.config, &text).unwrap();
 
     // The daemon starts on an endpoint bound by the test, under the identity
     // the file names, so a reload keeps the id.
@@ -145,14 +145,14 @@ async fn reload_binds_anew_and_retires_the_old_endpoint_after_its_sessions() {
     assert_eq!(within(list_exports(&early)).await, ["data"]);
 
     // A reload with a broken file is refused and changes nothing.
-    std::fs::write(&paths.config, "[daemon\nnot toml").unwrap();
+    irsync::fs::private::write(&paths.config, "[daemon\nnot toml").unwrap();
     notify.notify_one();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         bound_rx.try_recv().is_err(),
         "a failed reload announced an endpoint"
     );
-    std::fs::write(&paths.config, &text).unwrap();
+    irsync::fs::private::write(&paths.config, &text).unwrap();
     let again = within(client3.connect(dial(id, new_addr), irsync_proto::ALPN))
         .await
         .unwrap();

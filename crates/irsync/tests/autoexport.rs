@@ -81,7 +81,7 @@ fn id(n: u8) -> iroh::EndpointId {
 fn file_authorizer_waits_for_the_config_lock() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("irsync.toml");
-    std::fs::write(&config, format!("[immediate]\nrw = [\"{}\"]\n", id(1))).unwrap();
+    irsync::fs::private::write(&config, format!("[immediate]\nrw = [\"{}\"]\n", id(1))).unwrap();
     let lock = dir.path().join("irsync.toml.lock");
     std::fs::write(&lock, b"").unwrap();
     let release = std::thread::spawn({
@@ -133,7 +133,7 @@ fn auto_root_missing_parent_is_not_found() {
 fn auto_export_names_the_peer_by_its_alias() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("irsync.toml");
-    std::fs::write(
+    irsync::fs::private::write(
         &config,
         format!(
             "[hosts.laptop]\nendpoint_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",

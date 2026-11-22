@@ -24,7 +24,7 @@ fn grant_remove_all_removes_an_alias_that_left_the_hosts_table() {
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     let host = format!("[hosts.laptop]\nendpoint_id = \"{id}\"\n");
-    std::fs::write(cfg.join("irsync.toml"), &host).unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), &host).unwrap();
     let target = format!("p:{}", home.join("srv/p").display());
     assert!(irsync(&home, &["export", "add", &target]).status.success());
     assert!(irsync(&home, &["grant", "add", "p", "laptop"])
@@ -33,7 +33,7 @@ fn grant_remove_all_removes_an_alias_that_left_the_hosts_table() {
     // The host entry goes by hand; the grant still names it.
     let text = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
     assert!(text.contains(&host), "{text}");
-    std::fs::write(cfg.join("irsync.toml"), text.replace(&host, "")).unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), text.replace(&host, "")).unwrap();
     let o = irsync(&home, &["grant", "remove", "all", "laptop"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!std::fs::read_to_string(cfg.join("irsync.toml"))
@@ -248,7 +248,7 @@ fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     assert_ne!(own, ssh.public());
     // A named identity is the whole answer: generated beside the ssh key.
     let named = home.join("elsewhere/key");
-    std::fs::write(
+    irsync::fs::private::write(
         home.join(".config/irsync/irsync.toml"),
         format!("identity = {:?}\n", named.display().to_string()),
     )
@@ -303,7 +303,7 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     let config = home.join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.contains("rw = [\"laptop\"]"), "{text}");
-    std::fs::write(
+    irsync::fs::private::write(
         &config,
         text.replace("rw = [\"laptop\"]", "rw = [\"laptop\", \"ghost\"]"),
     )
@@ -663,7 +663,7 @@ fn host_list_refuses_an_old_layout_file() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    std::fs::write(
+    irsync::fs::private::write(
         cfg.join("irsync.toml"),
         format!("[home]\nendpoint_id = \"{id}\"\n"),
     )
@@ -717,7 +717,7 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     let state = home.join("xdg/irsync");
     let config = home.join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
+    irsync::fs::private::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
     // A dry run reads nothing and creates no index.
     let o = irsync(&home, &["export", "update", "-n", "all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -803,7 +803,8 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     // The paths come from the settings file.
     let other = home.join("elsewhere/client_key");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("irsync.toml"), format!("identity = {:?}\n", other)).unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), format!("identity = {:?}\n", other))
+        .unwrap();
     let o = irsync(&home, &["id", "generate"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(other.exists() && home.join("elsewhere/client_key.pub").exists());
@@ -1031,7 +1032,7 @@ fn split_file_warns_on_stderr_and_is_not_read() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    std::fs::write(
+    irsync::fs::private::write(
         cfg.join("hosts.toml"),
         format!("[hosts.box]\nendpoint_id = \"{id}\"\n"),
     )
@@ -1057,7 +1058,7 @@ fn host_add_works_beside_a_split_hosts_file() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    std::fs::write(cfg.join("hosts.toml"), "").unwrap();
+    irsync::fs::private::write(cfg.join("hosts.toml"), "").unwrap();
     // The editing commands warn too: the new table lands in irsync.toml
     // while whatever hosts.toml held stays ignored.
     let warning = format!("ignoring {}", cfg.join("hosts.toml").display());
@@ -1121,7 +1122,7 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let config = cfg.join("irsync.toml");
-    std::fs::write(&config, "[client]\nparallel = 4\n").unwrap();
+    irsync::fs::private::write(&config, "[client]\nparallel = 4\n").unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     for (args, needle) in [
         (
@@ -1268,7 +1269,7 @@ fn index_and_gc_use_the_configured_state_dir() {
     std::fs::write(root.join("f"), b"data").unwrap();
     let state = d.path().join("state");
     let config = d.path().join("irsync.toml");
-    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    irsync::fs::private::write(&config, format!("state_dir = {state:?}\n")).unwrap();
     let c = config.to_str().unwrap();
     let o = irsync(&home, &["index", "--config", c, root.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1295,7 +1296,7 @@ fn gc_removes_an_older_builds_index_file_unless_it_is_open() {
     std::fs::create_dir_all(&home).unwrap();
     let state = d.path().join("state");
     let config = d.path().join("irsync.toml");
-    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    irsync::fs::private::write(&config, format!("state_dir = {state:?}\n")).unwrap();
     let c = config.to_str().unwrap();
     let o = irsync(&home, &["index", "--config", c, root.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1415,7 +1416,7 @@ fn a_bare_noun_runs_its_list() {
     }
     // The flag after a bare noun names the file.
     let other = d.path().join("other.toml");
-    std::fs::write(&other, format!("[hosts.nas]\nendpoint_id = \"{id}\"\n")).unwrap();
+    irsync::fs::private::write(&other, format!("[hosts.nas]\nendpoint_id = \"{id}\"\n")).unwrap();
     let c = other.to_str().unwrap();
     assert_eq!(
         ok(&home, &["host", "--config", c]),
@@ -1456,7 +1457,7 @@ fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
     let locked = d.path().join("locked");
     let key = locked.join("key");
     std::fs::create_dir_all(home.join(".config/irsync")).unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         home.join(".config/irsync/irsync.toml"),
         format!("[daemon]\nidentity = \"{}\"\n", key.display()),
     )
@@ -1485,7 +1486,7 @@ fn home_with(d: &tempfile::TempDir, text: &str) -> (std::path::PathBuf, std::pat
     std::fs::create_dir_all(&cfg).unwrap();
     let file = cfg.join("irsync.toml");
     if !text.is_empty() {
-        std::fs::write(&file, text).unwrap();
+        irsync::fs::private::write(&file, text).unwrap();
     }
     (home, file)
 }
@@ -1814,7 +1815,7 @@ fn passphrase_home(d: &tempfile::TempDir, text: &str) -> (std::path::PathBuf, st
     let home = d.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let pf = home.join("pf");
-    std::fs::write(&pf, text).unwrap();
+    irsync::fs::private::write(&pf, text).unwrap();
     (home, pf)
 }
 
@@ -1855,7 +1856,7 @@ fn id_generate_encrypts_the_key_with_the_passphrase_file() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("is encrypted"));
     // A wrong passphrase is refused.
     let wrong = home.join("wrong");
-    std::fs::write(&wrong, "hunter3\n").unwrap();
+    irsync::fs::private::write(&wrong, "hunter3\n").unwrap();
     assert!(!irsync(
         &home,
         &["id", "show", "--passphrase-file", wrong.to_str().unwrap()]
@@ -1929,9 +1930,9 @@ fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
     let key = home.join(".config/irsync/id_ed25519");
     let pub_key = home.join(".config/irsync/id_ed25519.pub");
     let empty = home.join("empty");
-    std::fs::write(&empty, "").unwrap();
+    irsync::fs::private::write(&empty, "").unwrap();
     let blank_first = home.join("blank");
-    std::fs::write(&blank_first, "\nhunter2\n").unwrap();
+    irsync::fs::private::write(&blank_first, "\nhunter2\n").unwrap();
     let missing = home.join("missing");
     for (f, msg) in [
         (&empty, "is empty"),
@@ -2154,7 +2155,7 @@ fn host_rename_renames_the_host_and_its_grants_in_the_file() {
          [immediate]\nrw = [\"laptop\"]\n\
          [exports.p]\npath = \"/p\"\nrw = [\"laptop\", \"work\"]\n"
     );
-    std::fs::write(cfg.join("irsync.toml"), &text).unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), &text).unwrap();
     let o = irsync(&home, &["host", "rename", "laptop", "work"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
@@ -2417,4 +2418,127 @@ fn host_add_takes_a_client_id() {
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
     assert!(e.contains("--client-id"), "{e}");
+}
+
+/// Every command reads the config file first and stops at once when other
+/// users can read or change it: nothing is made, changed or contacted.
+#[test]
+fn a_config_open_to_other_users_stops_every_command_at_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(home.join("src")).unwrap();
+    let file = cfg.join("irsync.toml");
+    let id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1";
+    let text = format!("[hosts.nas]\nendpoint_id = \"{id}\"\n");
+    std::fs::write(&file, &text).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let src = home.join("src");
+    let src = src.to_str().unwrap();
+    let commands: &[&[&str]] = &[
+        &[src, "nas:x/"],
+        &["nas:x/", src],
+        &["list", "nas:"],
+        &["daemon", "--listen", "127.0.0.1:0"],
+        &["host", "list"],
+        &["host", "add", "box", id],
+        &["export", "add", src],
+        &["grant", "add", "all", "nas"],
+        &["config", "get", "client.parallel"],
+        &["config", "set", "client.parallel", "4"],
+        &["config", "set", "unsafe_config_allowed", "true"],
+        &["id", "show"],
+        &["id", "list"],
+        &["id", "generate"],
+        &["show"],
+        &["index", src],
+        &["gc"],
+    ];
+    for args in commands {
+        let o = irsync(&home, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.contains("has mode 0644"), "{args:?}: {err}");
+        assert!(err.contains("chmod 600"), "{args:?}: {err}");
+        assert!(o.stdout.is_empty(), "{args:?}");
+        // Nothing was written: no key, no lock, no state, the file as it was.
+        let mut left: Vec<_> = std::fs::read_dir(&cfg)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["irsync.toml"], "{args:?}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{args:?}");
+        assert!(!home.join("xdg").exists(), "{args:?}");
+    }
+    // The file's owner can say that this is meant.
+    std::fs::write(&file, format!("unsafe_config_allowed = true\n{text}")).unwrap();
+    assert!(ok(&home, &["host", "list"]).contains("nas"));
+    ok(&home, &["config", "set", "client.parallel", "4"]);
+    assert_eq!(
+        ok(&home, &["config", "get", "unsafe_config_allowed"]),
+        "true\n"
+    );
+    // Closing the file works as well, and the key is then not needed.
+    std::fs::write(&file, &text).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(ok(&home, &["host", "list"]).contains("nas"));
+    assert_eq!(
+        ok(&home, &["config", "get", "unsafe_config_allowed"]),
+        "false\n"
+    );
+}
+
+/// A private key or a passphrase file that other users can read stops the
+/// command that needs it, unless the config allows it.
+#[test]
+fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let (home, pf) = passphrase_home(&d, "hunter2\n");
+    let pf_s = pf.to_str().unwrap();
+    let chmod = |p: &Path, mode: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    let cfg = home.join(".config/irsync");
+    let key = cfg.join("id_ed25519");
+    let config = cfg.join("irsync.toml");
+    let fails = |args: &[&str], what: &str| {
+        let o = irsync(&home, args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.contains(what), "{args:?}: {err}");
+        assert!(err.contains("chmod 600"), "{args:?}: {err}");
+    };
+
+    // An open passphrase file makes no key.
+    chmod(&pf, 0o644);
+    fails(
+        &["id", "generate", "--passphrase-file", pf_s],
+        "the passphrase file",
+    );
+    assert!(!key.exists());
+    chmod(&pf, 0o600);
+    ok(&home, &["id", "generate", "--passphrase-file", pf_s]);
+    let shown = ok(&home, &["id", "show", "--passphrase-file", pf_s]);
+
+    // Nor does it unlock one.
+    chmod(&pf, 0o640);
+    fails(
+        &["id", "show", "--passphrase-file", pf_s],
+        "the passphrase file",
+    );
+    chmod(&pf, 0o600);
+
+    // An open key is not used.
+    chmod(&key, 0o644);
+    fails(&["id", "show", "--passphrase-file", pf_s], "a private key");
+    fails(&["show", "--passphrase-file", pf_s], "a private key");
+
+    // With the config's word, both are.
+    irsync::fs::private::write(&config, "unsafe_config_allowed = true\n").unwrap();
+    chmod(&pf, 0o644);
+    assert_eq!(ok(&home, &["id", "show", "--passphrase-file", pf_s]), shown);
 }

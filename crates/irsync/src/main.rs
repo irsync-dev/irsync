@@ -149,11 +149,17 @@ where
 }
 
 /// The settings for telemetry, read before anything else: a broken config
-/// gives the defaults here and fails later where it is used.
-fn early_settings(config: Option<&std::path::Path>) -> Settings {
-    Config::load(&Paths::resolve(config))
-        .map(|c| c.settings)
-        .unwrap_or_default()
+/// gives the defaults here and fails later where it is used. A config file
+/// that is open to other users is the one error returned: nothing may
+/// happen before it is refused.
+fn early_settings(
+    config: Option<&std::path::Path>,
+) -> Result<Settings, irsync::config::ConfigError> {
+    match Config::load(&Paths::resolve(config)) {
+        Ok(c) => Ok(c.settings),
+        Err(e @ irsync::config::ConfigError::TooOpen { .. }) => Err(e),
+        Err(_) => Ok(Settings::default()),
+    }
 }
 
 /// Exit codes: 0 ok, 1 configuration, operand or connection errors, 23
@@ -161,6 +167,13 @@ fn early_settings(config: Option<&std::path::Path>) -> Settings {
 /// deletions stopped at `--max-delete` (23, 24 and 25 as in rsync; a command
 /// line clap cannot parse has already exited 2).
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
+    let settings = match early_settings(opts.config.as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("irsync: {e}");
+            return 1;
+        }
+    };
     let log = LogWriter::new();
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -169,7 +182,6 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
-    let settings = early_settings(opts.config.as_deref());
     let mut telemetry = {
         let _rt = rt.enter();
         init_telemetry(
@@ -534,7 +546,10 @@ async fn connect_for(
 ) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref());
     let mut config = Config::load(&paths)?;
-    let pass = PassphraseSource::from_env(opts.passphrase_file.clone());
+    let pass = PassphraseSource::from_env(
+        opts.passphrase_file.clone(),
+        config.settings.unsafe_config_allowed,
+    );
     // An unknown host is an ssh destination: set it up and save the alias.
     // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
     // Not an alias and not an id: a saved host may have been set up by
@@ -1501,7 +1516,13 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
             Ok(_) => {}
         }
     }
-    let settings = early_settings(files.config.as_deref());
+    let settings = match early_settings(files.config.as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("irsync daemon: {e}");
+            return 1;
+        }
+    };
     let debug_addr = settings.daemon.debug_addr;
     let mut telemetry = {
         let _rt = rt.enter();
@@ -1528,7 +1549,8 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
 
     let result = {
         let paths = Paths::resolve(files.config.as_deref());
-        let pass = PassphraseSource::from_env(files.passphrase_file.clone());
+        // The daemon sets `allow_open` from the config each time it reads it.
+        let pass = PassphraseSource::from_env(files.passphrase_file.clone(), false);
         rt.block_on(async {
             let debug = match telemetry.start().await {
                 Ok(bound) => bound,
@@ -1825,8 +1847,12 @@ fn run_ssh_setup(
             // asks for a passphrase. Given by hand with no daemon key, refuse
             // rather than generate an unencrypted one.
             if files.passphrase_file.is_some() {
-                let key = Config::load(&file_paths(files))?.settings.daemon.identity;
-                let pass = PassphraseSource::from_env(files.passphrase_file.clone());
+                let settings = Config::load(&file_paths(files))?.settings;
+                let key = settings.daemon.identity;
+                let pass = PassphraseSource::from_env(
+                    files.passphrase_file.clone(),
+                    settings.unsafe_config_allowed,
+                );
                 irsync::identity::refuse_to_generate_with_passphrase_file(&key, &pass)
                     .with_context(|| format!("identity {}", key.display()))?;
             }
@@ -1857,7 +1883,10 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 let (name, path) =
                     manage::exports::parse_add_target(&a.target, &std::env::current_dir()?)?;
                 let settings = Config::load(&paths)?.settings;
-                let pass = PassphraseSource::from_env(files.passphrase_file.clone());
+                let pass = PassphraseSource::from_env(
+                    files.passphrase_file.clone(),
+                    settings.unsafe_config_allowed,
+                );
                 let daemon_key = &settings.daemon.identity;
                 // With --passphrase-file and no daemon key, refuse before the
                 // config lock creates anything.
@@ -2135,13 +2164,16 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
     finish(
         "id generate",
         (|| {
+            // The config is read first, also when --out names the key: it
+            // says whether an open passphrase file may be used.
+            let settings = Config::load(&file_paths(f))?.settings;
+            let allow_open = settings.unsafe_config_allowed;
             let (path, comment) = match out {
                 Some(p) => (
                     p.to_path_buf(),
                     if daemon { "irsync-daemon" } else { "irsync" },
                 ),
                 None => {
-                    let settings = Config::load(&file_paths(f))?.settings;
                     if daemon {
                         (settings.daemon.identity, "irsync-daemon")
                     } else {
@@ -2155,12 +2187,17 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                 None => None,
                 Some(p) => {
                     // `File` already names the path; say it once.
-                    let pass = irsync::identity::read_passphrase_file(p).map_err(|e| match e {
-                        irsync::identity::IdentityError::File { path, source } => {
-                            anyhow::anyhow!("reading passphrase file: {}: {source}", path.display())
-                        }
-                        e => e.into(),
-                    })?;
+                    let pass = irsync::identity::read_passphrase_file(p, allow_open).map_err(
+                        |e| match e {
+                            irsync::identity::IdentityError::File { path, source } => {
+                                anyhow::anyhow!(
+                                    "reading passphrase file: {}: {source}",
+                                    path.display()
+                                )
+                            }
+                            e => e.into(),
+                        },
+                    )?;
                     if pass.is_empty() {
                         return Err(irsync::identity::IdentityError::EmptyPassphraseFile(
                             p.clone(),
@@ -2267,7 +2304,10 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
         "id show",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
-            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
+            let pass = PassphraseSource::from_env(
+                f.passphrase_file.clone(),
+                settings.unsafe_config_allowed,
+            );
             if all {
                 print_client_identity(&settings, &pass)?;
                 print_daemon_identity(&settings, &pass)?;
@@ -2294,7 +2334,10 @@ fn id_list(f: &FilesArgs) -> i32 {
         "id list",
         (|| {
             let settings = Config::load(&file_paths(f))?.settings;
-            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
+            let pass = PassphraseSource::from_env(
+                f.passphrase_file.clone(),
+                settings.unsafe_config_allowed,
+            );
             print_client_identity(&settings, &pass)?;
             // Only a missing file means "no daemon here". A key that
             // cannot be looked at is an error, not a daemon left out.
@@ -2320,7 +2363,10 @@ fn run_show(f: &FilesArgs) -> i32 {
             let settings = &config.settings;
             // The hosts section is `host list`, line for line.
             let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
-            let pass = PassphraseSource::from_env(f.passphrase_file.clone());
+            let pass = PassphraseSource::from_env(
+                f.passphrase_file.clone(),
+                settings.unsafe_config_allowed,
+            );
             let (client, source) = client_identity(None, settings, &pass)?;
             if let KeySource::Generated(p) = &source {
                 eprintln!("generated identity {}", p.display());

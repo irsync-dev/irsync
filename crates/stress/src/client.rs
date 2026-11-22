@@ -1,7 +1,7 @@
 //! The client side of one sync: setup directory, argument vector, running it.
 
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -27,7 +27,7 @@ pub struct ClientSetup {
 /// `config_dir`. `identity` comes from `client_id_generate`.
 pub fn setup(config_dir: &Path, identity: PathBuf) -> Result<ClientSetup> {
     let config = config_dir.join("irsync.toml");
-    File::create(&config).with_context(|| format!("creating {}", config.display()))?;
+    crate::daemon::write_private(&config, "")?;
     let home = config_dir.join("home");
     let xdg_state = config_dir.join("xdg");
     for d in [&home, &xdg_state] {

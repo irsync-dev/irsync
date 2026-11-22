@@ -432,15 +432,18 @@ pub fn run(
 
     // 1. The daemon identity; no one is there to type a passphrase.
     let key = &settings.daemon.identity;
-    let (secret, generated) =
-        match load_or_generate(key, &PassphraseSource::default(), "irsync-daemon") {
-            Ok(r) => r,
-            Err(IdentityError::NoPassphraseSource(_) | IdentityError::PassphraseRequired) => bail!(
+    let pass = PassphraseSource {
+        allow_open: settings.unsafe_config_allowed,
+        ..PassphraseSource::default()
+    };
+    let (secret, generated) = match load_or_generate(key, &pass, "irsync-daemon") {
+        Ok(r) => r,
+        Err(IdentityError::NoPassphraseSource(_) | IdentityError::PassphraseRequired) => bail!(
             "the daemon identity {} is encrypted: start the daemon by hand with `irsync daemon`",
             key.display()
         ),
-            Err(e) => return Err(e).with_context(|| format!("identity {}", key.display())),
-        };
+        Err(e) => return Err(e).with_context(|| format!("identity {}", key.display())),
+    };
     let identity = if generated {
         Created::Generated
     } else {

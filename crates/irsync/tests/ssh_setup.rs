@@ -37,7 +37,7 @@ impl Home {
              listen = [\"127.0.0.1:0\"]\n{extra_daemon}\
              [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n"
         );
-        std::fs::write(cfg.join("irsync.toml"), text).unwrap();
+        irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
         Home { dir }
     }
 
@@ -212,7 +212,7 @@ fn second_run_changes_nothing() {
 /// nothing ever publishes).
 fn dht_on(home: &Home) {
     let text = std::fs::read_to_string(home.config()).unwrap();
-    std::fs::write(home.config(), text.replace("dht = false", "dht = true")).unwrap();
+    irsync::fs::private::write(home.config(), text.replace("dht = false", "dht = true")).unwrap();
 }
 
 /// Without `--no-dht` the setting is only reported. (With it on, the
@@ -400,7 +400,7 @@ fn a_client_with_an_alias_is_granted_by_alias() {
     let client = client_id();
     let mut text = std::fs::read_to_string(home.config()).unwrap();
     text.push_str(&format!("[hosts.laptop]\nendpoint_id = \"{client}\"\n"));
-    std::fs::write(home.config(), text).unwrap();
+    irsync::fs::private::write(home.config(), text).unwrap();
     assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
     let doc = read_config(&home);
     let rw = doc["immediate"]["rw"].as_array().unwrap();
@@ -568,7 +568,7 @@ fn a_taken_client_name_changes_nothing() {
     let home = Home::new("");
     let mut text = std::fs::read_to_string(home.config()).unwrap();
     text.push_str(&format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)));
-    std::fs::write(home.config(), &text).unwrap();
+    irsync::fs::private::write(home.config(), &text).unwrap();
     let out = home.try_setup(&id(2), "myclient", &[]);
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
@@ -618,7 +618,7 @@ fn recheck_does_not_revive_a_leftover_grant() {
     let home = Home::new("");
     let mut text = std::fs::read_to_string(home.config()).unwrap();
     text.push_str("[immediate]\nrw = [\"myclient\"]\n");
-    std::fs::write(home.config(), &text).unwrap();
+    irsync::fs::private::write(home.config(), &text).unwrap();
     for extra in [&["--recheck"][..], &[]] {
         let out = home.try_setup(&id(2), "myclient", extra);
         assert_eq!(out.status.code(), Some(1), "{extra:?}");

@@ -324,7 +324,11 @@ impl Daemon {
         if !r.listen.is_empty() {
             settings.daemon.listen = r.listen.clone();
         }
-        let endpoint = endpoint_from_settings(&settings, &r.pass).await?;
+        let pass = PassphraseSource {
+            allow_open: settings.unsafe_config_allowed,
+            ..r.pass.clone()
+        };
+        let endpoint = endpoint_from_settings(&settings, &pass).await?;
         if endpoint.id() != self.endpoint.id() {
             tracing::warn!(
                 old = %self.endpoint.id(),
@@ -1133,6 +1137,10 @@ pub async fn run_from_settings(
     if !listen.is_empty() {
         settings.daemon.listen = listen.clone();
     }
+    let pass = &PassphraseSource {
+        allow_open: settings.unsafe_config_allowed,
+        ..pass.clone()
+    };
     // With --passphrase-file and no key the daemon refuses below; refuse
     // here instead, before the lock writes anything.
     let identity = &settings.daemon.identity;

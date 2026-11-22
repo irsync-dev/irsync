@@ -218,8 +218,11 @@ symlink while a sync runs in a tree they can write.
 **What stops them:**
 
 - A new private key is created readable by its owner only, and an existing
-  key is never overwritten. irsync warns about an unencrypted key that
-  other users can read.
+  key is never overwritten.
+- irsync stops when the config file, a private key or a passphrase file can
+  be read or written by other users, or belongs to another user. The config
+  file is checked before anything else happens. Setting
+  `unsafe_config_allowed = true` in the config file turns these checks off.
 - A file being received is readable by its owner only until it is placed.
 - The index of file names and hashes sits in a directory only its owner can
   enter. A new config file and the daemon's log are for the owner only.
@@ -278,8 +281,6 @@ Known gaps that are still open:
   newer one replaces the older. How many such pairs one key can start has
   no limit. A session that is never finished stays until `irsync gc`
   removes it.
-- A config file that other users can write is loaded without a warning, and
-  the permissions of a passphrase file are not checked.
 - A receiver tells the sender which chunks it already has. A sender that can
   guess the whole content of a chunk can confirm the guess.
 

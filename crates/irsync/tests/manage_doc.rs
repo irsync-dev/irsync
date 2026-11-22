@@ -26,7 +26,7 @@ fn load_missing_is_empty_and_save_creates_parent_atomically() {
 fn save_preserves_comments_and_order() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("e.toml");
-    std::fs::write(
+    irsync::fs::private::write(
         &p,
         "# top\n[b]\npath = \"/b\" # keep\n\n[a]\npath = \"/a\"\n",
     )
@@ -108,7 +108,7 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("sub/irsync.toml");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, "# keep\n[client]\nparallel = 4\n").unwrap();
+    irsync::fs::private::write(&p, "# keep\n[client]\nparallel = 4\n").unwrap();
     let lock_file = d.path().join("sub/irsync.toml.lock");
 
     let lock = lock_config(&p).unwrap();
@@ -237,6 +237,8 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     lock.save(&mut doc).unwrap();
     assert_eq!(mode(&locked), 0o600);
 
+    // A file open to other users loads only when it says so itself.
+    doc["unsafe_config_allowed"] = toml_edit::value(true);
     for kept in [0o640, 0o644, 0o600] {
         std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(kept)).unwrap();
         doc["client"]["parallel"] = toml_edit::value(i64::from(kept));

@@ -930,7 +930,7 @@ pub fn spawn_daemon_binary_env(
     use std::process::{Command, Stdio};
     let cfg = server_home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         cfg.join("irsync.toml"),
         "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
          [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",

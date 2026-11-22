@@ -323,7 +323,8 @@ and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
   encrypted. So the commands that would generate a missing key (a sync, a
   listing, `id show`, `id list`, `show`, `export add` and the daemon) fail
   instead. They write nothing and name `irsync id generate --passphrase-file
-  PATH`.
+  PATH`. The file must be for its owner only (`chmod 600`); see
+  [File permissions](configuration.md#file-permissions).
 - `irsync show --passphrase-file PATH` reads both the client's and the
   daemon's key. Both must exist already: without the flag it would generate
   the missing one.

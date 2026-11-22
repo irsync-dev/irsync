@@ -23,7 +23,7 @@ fn home(text: &str) -> (tempfile::TempDir, PathBuf) {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join(".config/irsync")).unwrap();
-    std::fs::write(home.join(".config/irsync/irsync.toml"), text).unwrap();
+    irsync::fs::private::write(home.join(".config/irsync/irsync.toml"), text).unwrap();
     (d, home)
 }
 
@@ -116,7 +116,7 @@ fn as_root_the_flag_lets_the_daemon_start_with_a_warning() {
 fn as_root_the_config_key_lets_the_daemon_start_from_another_file() {
     let (d, home) = home(&config(""));
     let other = d.path().join("other.toml");
-    std::fs::write(&other, config("allow_root = true\n")).unwrap();
+    irsync::fs::private::write(&other, config("allow_root = true\n")).unwrap();
     let r = daemon(&home, true, &["--config", other.to_str().unwrap()]);
     assert!(r.started, "{}", r.err);
     assert!(r.err.contains("running as root"), "{}", r.err);

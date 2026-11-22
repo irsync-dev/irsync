@@ -296,20 +296,20 @@ async fn exports_file_is_read_on_every_connection() {
         d.path().join("data"),
         client.id()
     );
-    std::fs::write(&exports, &grant).unwrap();
+    irsync::fs::private::write(&exports, &grant).unwrap();
     std::fs::create_dir_all(d.path().join("data")).unwrap();
     assert!(matches!(
         exchange_against(&daemon, &client, h.clone()).await,
         Ok(HelloAckOrError::Ack(_))
     ));
-    std::fs::write(&exports, "[x\n").unwrap(); // broken: fail closed, daemon alive
+    irsync::fs::private::write(&exports, "[x\n").unwrap(); // broken: fail closed, daemon alive
     assert!(exchange_against(&daemon, &client, h.clone()).await.is_err());
-    std::fs::write(&exports, &grant).unwrap(); // fixed again: still serving
+    irsync::fs::private::write(&exports, &grant).unwrap(); // fixed again: still serving
     assert!(matches!(
         exchange_against(&daemon, &client, h.clone()).await,
         Ok(HelloAckOrError::Ack(_))
     ));
-    std::fs::write(
+    irsync::fs::private::write(
         &exports,
         format!("[exports.data]\npath = {:?}\n", d.path().join("data")),
     )
@@ -335,7 +335,7 @@ async fn index_open_failure_is_an_internal_error_reply() {
     std::fs::write(state.path().join("index"), b"").unwrap();
     let authz = Arc::new(FileAuthorizer::new(Paths::resolve(Some(&exports))));
     let daemon = spawn_daemon_with_state(authz, state).await;
-    std::fs::write(
+    irsync::fs::private::write(
         &exports,
         format!(
             "[exports.data]\npath = {:?}\nro = [\"{}\"]\n",
