@@ -2202,6 +2202,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "pbcap",
  "prost",
  "prost-reflect",
  "rand 0.10.4",
@@ -3323,6 +3324,13 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "pbcap"
+version = "0.1.0-beta.6"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -19,12 +19,12 @@ use irsync_proto::capture::v1::{Direction, Record, Side, StreamKind};
 use prost::Message as _;
 use tracing::warn;
 
-use super::pcapng;
 use super::scrub::{fit, scrub};
+use pbcap::write as pcapng;
 
 /// The largest record we write: Wireshark's 256 KiB packet limit, less room
 /// for the exported-PDU tags and the packet block around it.
-const MAX_RECORD: usize = 262_144 - 128;
+const MAX_RECORD: usize = pbcap::MAX_PACKET - 128;
 
 /// The daemon's fake address. Bytes 10–11 are 1, so it never equals a
 /// client address.
@@ -60,7 +60,7 @@ fn packet_of(ts_micros: u64, mut record: Record) -> Vec<u8> {
         StreamKind::Unspecified => 0,
         _ => port_for(record.quic_stream_id),
     };
-    let pdu = pcapng::exported_pdu(src, dst, port, port, &record.encode_to_vec());
+    let pdu = pcapng::exported_pdu("irsync", src, dst, port, port, &record.encode_to_vec());
     pcapng::packet(ts_micros, &pdu)
 }
 
@@ -245,7 +245,7 @@ fn write_loop(file: File, path: &Path, rx: &mpsc::Receiver<Job>, pending: &Pendi
         failed: false,
     };
     out.write(&pcapng::section_header());
-    out.write(&pcapng::interface(pcapng::LINKTYPE_WIRESHARK_UPPER_PDU, 0));
+    out.write(&pcapng::interface(pbcap::LINKTYPE_WIRESHARK_UPPER_PDU, 0));
     while let Ok(job) = rx.recv() {
         let mut n = 1;
         out.write(&packet_of(job.ts_micros, job.record));
@@ -300,10 +300,6 @@ mod tests {
     use irsync_proto::capture::v1::{record::Msg, Direction, PathChange, Side, StreamKind};
     use irsync_proto::v1::{control, Control, DataChunk, NeedChunks};
 
-    fn u32_le(b: &[u8]) -> u32 {
-        u32::from_le_bytes(b[..4].try_into().unwrap())
-    }
-
     /// One packet of a capture file: its timestamp, the exported-PDU tags
     /// as `(tag, value)` and the record.
     struct Packet {
@@ -326,50 +322,20 @@ mod tests {
         }
     }
 
-    /// Parses a whole capture file block by block, checking every block.
+    /// Parses a whole capture file, checking every packet.
     fn parse(file: &[u8]) -> Vec<Packet> {
-        let mut blocks = Vec::new();
-        let mut at = 0;
-        while at < file.len() {
-            let kind = u32_le(&file[at..]);
-            let len = u32_le(&file[at + 4..]) as usize;
-            assert_eq!(len % 4, 0);
-            assert_eq!(
-                u32_le(&file[at + len - 4..]) as usize,
-                len,
-                "trailing length"
-            );
-            blocks.push((kind, &file[at + 8..at + len - 4]));
-            at += len;
-        }
-        assert_eq!(at, file.len());
-        assert_eq!(blocks[0].0, 0x0a0d_0d0a);
-        assert_eq!(blocks[1].0, 1);
-        assert_eq!(u16::from_le_bytes([blocks[1].1[0], blocks[1].1[1]]), 252);
-        blocks[2..]
-            .iter()
-            .map(|(kind, b)| {
-                assert_eq!(*kind, 6);
-                let ts = (u64::from(u32_le(&b[4..])) << 32) | u64::from(u32_le(&b[8..]));
-                let cap = u32_le(&b[12..]) as usize;
-                assert!(cap + 32 <= 262_144);
-                let mut pdu = &b[20..20 + cap];
-                let mut tags = Vec::new();
-                loop {
-                    let tag = u16::from_be_bytes([pdu[0], pdu[1]]);
-                    let len = u16::from_be_bytes([pdu[2], pdu[3]]) as usize;
-                    assert_eq!(len % 4, 0);
-                    let value = pdu[4..4 + len].to_vec();
-                    pdu = &pdu[4 + len..];
-                    if tag == 0 {
-                        break;
-                    }
-                    tags.push((tag, value));
-                }
+        pbcap::Reader::new(file)
+            .expect("a capture file")
+            .map(|p| {
+                let p = p.expect("every block is whole");
+                let tag_bytes: usize = p.tags.iter().map(|(_, v)| 4 + v.len()).sum();
+                // The PDU, its end tag and the 32 bytes of block framing.
+                assert!(p.body.len() + tag_bytes + 4 + 32 <= pbcap::MAX_PACKET);
+                assert!(p.tags.iter().all(|(_, v)| v.len() % 4 == 0));
                 Packet {
-                    ts,
-                    tags,
-                    record: Record::decode(pdu).expect("every record decodes"),
+                    ts: p.ts_micros,
+                    tags: p.tags,
+                    record: Record::decode(&p.body[..]).expect("every record decodes"),
                 }
             })
             .collect()

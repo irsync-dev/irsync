@@ -13,38 +13,16 @@ use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
 use prost::Message as _;
 
-fn u32_le(b: &[u8]) -> u32 {
-    u32::from_le_bytes(b[..4].try_into().unwrap())
-}
-
-/// Every record of a capture file: walks the pcapng blocks, skips the
-/// exported-PDU tags of each packet and decodes what follows.
+/// Every record of a capture file, decoded from the body of each packet.
 fn read_capture(path: &Path) -> Vec<Record> {
     let file = std::fs::read(path).unwrap();
-    let mut records = Vec::new();
-    let mut at = 0;
-    while at < file.len() {
-        let kind = u32_le(&file[at..]);
-        let len = u32_le(&file[at + 4..]) as usize;
-        let body = &file[at + 8..at + len - 4];
-        at += len;
-        if kind != 6 {
-            continue; // section header, interface
-        }
-        let cap = u32_le(&body[12..]) as usize;
-        let mut pdu = &body[20..20 + cap];
-        loop {
-            let tag = u16::from_be_bytes([pdu[0], pdu[1]]);
-            let tlen = u16::from_be_bytes([pdu[2], pdu[3]]) as usize;
-            pdu = &pdu[4 + tlen..];
-            if tag == 0 {
-                break;
-            }
-        }
-        records.push(Record::decode(pdu).expect("every record decodes"));
-    }
-    assert_eq!(at, file.len());
-    records
+    pbcap::Reader::new(&file[..])
+        .expect("a capture file")
+        .map(|p| {
+            Record::decode(&p.expect("every block is whole").body[..])
+                .expect("every record decodes")
+        })
+        .collect()
 }
 
 /// Copies the repository's `proto/` tree to `to`. tshark reads the copy:
