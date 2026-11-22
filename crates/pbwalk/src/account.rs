@@ -12,7 +12,7 @@ use pbcap::v1::{Direction, Envelope};
 use prost::Message as _;
 use prost_reflect::{FieldDescriptor, MessageDescriptor};
 
-use crate::walk::{walk, Field, Value};
+use crate::walk::{walk, Field, Sizes, Value};
 
 /// The wrapper's field numbers that are not printed on the header.
 const ENCODED_LEN: u32 = 10;
@@ -130,14 +130,40 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
         })
         .collect();
 
-    let mut payloads = walked.into_iter().filter_map(|f| match f.value {
-        Value::Message { type_name, fields } if f.number >= *pbcap::MESSAGE_FIELDS.start() => {
-            Some((f.number, f.sizes.value, type_name, fields))
+    let mut payloads = Vec::new();
+    for f in walked {
+        if f.number < *pbcap::MESSAGE_FIELDS.start() {
+            continue;
         }
-        _ => None,
-    });
-    let payload = payloads.next();
-    let extra = payloads.count();
+        let number = f.number;
+        let present = f.sizes.value;
+        match f.value {
+            Value::Message { type_name, fields } => {
+                payloads.push((number, present, short_name(&type_name).to_owned(), fields));
+            }
+            // A length-delimited field these protos do not know as a
+            // message: a message type added later, kept as one row of
+            // bytes so its size is still counted.
+            Value::Unknown { wire_type: 2, raw } | Value::Bytes(raw) => {
+                let row = Field {
+                    number,
+                    name: None,
+                    sizes: Sizes {
+                        tag: 0,
+                        len: 0,
+                        value: present,
+                    },
+                    value: Value::Bytes(raw),
+                };
+                payloads.push((number, present, format!("#{number}"), vec![row]));
+            }
+            _ => problems.push(format!(
+                "field {number} is numbered as a message but is not length-delimited"
+            )),
+        }
+    }
+    let extra = payloads.len().saturating_sub(1);
+    let payload = payloads.into_iter().next();
     if extra > 0 {
         problems.push(format!(
             "the record holds {} messages, not one; the first is shown",
@@ -168,7 +194,7 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
 
     match payload {
         Some((number, present, type_name, fields)) => {
-            entry.type_name = short_name(&type_name).to_owned();
+            entry.type_name = type_name;
             entry.fields = fields;
             if pbcap::MESSAGE_FIELDS.contains(&number) {
                 entry.present = present;
@@ -509,6 +535,62 @@ mod tests {
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "Hello");
         assert!(e.mismatch.is_some());
+    }
+
+    /// A record with direction Sent, the given encoded_len, and `tail`
+    /// appended as raw bytes.
+    fn record_with(encoded_len: u32, tail: &[u8]) -> Vec<u8> {
+        let mut body = Record {
+            direction: 1,
+            encoded_len,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        body.extend_from_slice(tail);
+        body
+    }
+
+    #[test]
+    fn unknown_payload_is_shown_as_its_number() {
+        // field 29, length-delimited, 5 bytes: a message these protos lack.
+        let body = record_with(5, &[0xea, 0x01, 5, 1, 2, 3, 4, 5]);
+        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "#29"));
+        assert_eq!((e.present, e.wire_len, e.not_captured), (5, 5, 0));
+        assert_eq!(e.fields.len(), 1);
+        assert_eq!(e.fields[0].value, Value::Bytes(&[1, 2, 3, 4, 5]));
+        assert_eq!(e.fields[0].sizes.total(), e.present);
+        assert!(e.adds_up() && e.mismatch.is_none());
+    }
+
+    #[test]
+    fn unknown_field_from_40_up_is_an_event() {
+        // field 45, length-delimited, 2 bytes.
+        let body = record_with(0, &[0xea, 0x02, 2, 8, 1]);
+        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        assert_eq!((e.kind, e.type_name.as_str()), (Kind::Event, "#45"));
+        assert_eq!((e.present, e.wire_len, e.prefix), (0, 0, 0));
+        assert!(e.adds_up() && e.mismatch.is_none());
+    }
+
+    #[test]
+    fn unknown_payload_counts_toward_two_payloads() {
+        let n = hello_len();
+        let mut body = hello_record(n as u32, None);
+        body.extend_from_slice(&[0xea, 0x01, 1, 0]);
+        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        assert_eq!(e.type_name, "Hello");
+        assert!(e.mismatch.is_some());
+    }
+
+    #[test]
+    fn varint_from_20_up_is_a_mismatch() {
+        // field 21 (hello_ack) as a varint.
+        let body = record_with(0, &[0xa8, 0x01, 7]);
+        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        assert!(e.mismatch.is_some());
+        assert!(e.fields.is_empty());
+        assert_eq!(e.type_name, "");
     }
 
     #[test]
